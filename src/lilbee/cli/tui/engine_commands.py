@@ -64,8 +64,9 @@ def _roles_text() -> str:
 
 def _builds_text() -> str:
     lines = [view.label for view in engine_service.builds()] or [engine_service.NO_BUILDS]
+    damaged = [str(error) for error in engine_service.damaged_folders()]
     folder = engine_service.FOLDER_LINE.format(folder=engine_service.engines_folder())
-    return "\n".join([*lines, folder])
+    return "\n".join([*lines, *damaged, folder])
 
 
 def _use(role: WorkerRole, model: str, engine: str, confirmed: bool = False) -> EngineCommandResult:

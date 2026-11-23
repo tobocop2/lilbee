@@ -38,6 +38,7 @@ from lilbee.providers.fleet.engine_store import (
     ChecksumError,
     EngineConflictError,
     EngineDiskError,
+    EngineFolderError,
     EngineInUseError,
     EngineNotInstalledError,
     EngineStore,
@@ -71,7 +72,13 @@ from lilbee.runtime.cancellation import CancelSignal
 log = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
-STORE_REFUSALS = (BundledEngineError, EngineInUseError, EngineNotInstalledError, StorePathError)
+STORE_REFUSALS = (
+    BundledEngineError,
+    EngineFolderError,
+    EngineInUseError,
+    EngineNotInstalledError,
+    StorePathError,
+)
 NO_BUILDS = "No engine builds are installed."
 FOLDER_LINE = (
     "Engines folder: {folder} (shared by every data directory; LILBEE_MODELS_DIR moves it)"
@@ -287,11 +294,17 @@ def builds(config: Config = cfg) -> list[BuildView]:
     ]
 
 
+def damaged_folders(config: Config = cfg) -> list[EngineFolderError]:
+    """The error of each engine folder, or build folder in one, that lilbee cannot read."""
+    return EngineStore(engines_root(config.models_dir)).damaged()
+
+
 @dataclass(frozen=True)
 class EngineListView:
-    """What every surface returns for the engine list: builds, missing engines, engines folder."""
+    """What every surface returns for the list: builds, damaged and missing engines, the folder."""
 
     builds: list[BuildView]
+    damaged: list[EngineFolderError]
     not_installed: list[str]
     folder: Path
 
@@ -307,14 +320,17 @@ class EngineListView:
                 }
                 for b in self.builds
             ],
+            "damaged": [{"folder": str(e.folder), "error": str(e)} for e in self.damaged],
             "not_installed": self.not_installed,
             "engines_folder": str(self.folder),
         }
 
 
 def engine_list(config: Config = cfg) -> EngineListView:
-    """The installed builds and the engines with no installed build."""
-    return EngineListView(builds(config), not_installed(), engines_folder(config))
+    """The installed builds, the damaged folders and the engines with no installed build."""
+    return EngineListView(
+        builds(config), damaged_folders(config), not_installed(), engines_folder(config)
+    )
 
 
 def _removal_changes_embedder(
@@ -590,7 +606,7 @@ def _build_row(
     )
 
 
-def engine_rows(config: Config = cfg) -> list[EngineRow]:
+def engine_rows(config: Config = cfg, listed: EngineListView | None = None) -> list[EngineRow]:
     """The engine list as table rows: one row per build, then each missing engine.
 
     An engine counts as installed or missing by the rule of ``engine_list``, so a user
@@ -601,7 +617,7 @@ def engine_rows(config: Config = cfg) -> list[EngineRow]:
     for view in roles(config):
         if view.engine and view.model.strip():
             used.setdefault(view.engine, []).append(view.role.value)
-    listed = engine_list(config)
+    listed = listed or engine_list(config)
     missing = set(listed.not_installed)
     present = offered_engines()
     store = EngineStore(listed.folder)

@@ -68,6 +68,7 @@ def _listing(builds: list[dict[str, object]]) -> dict[str, object]:
     return {
         "command": "engine list",
         "builds": builds,
+        "damaged": [],
         "not_installed": [],
         "engines_folder": "/fake/engines",
     }
@@ -590,7 +591,7 @@ def test_pinned_keys_equal_what_the_cli_writes_for_engine_roles() -> None:
 
 def test_pinned_keys_equal_what_the_cli_writes_for_engine_list() -> None:
     builds = [BuildView(_ENGINE, _PIN, "cpu", ())]
-    view = engine_service.EngineListView(builds, [], Path("/fake/engines"))
+    view = engine_service.EngineListView(builds, [], [], Path("/fake/engines"))
     with mock.patch.object(engine_service, "engine_list", return_value=view):
         payload = _cli_json(["engine", "list"])
     assert set(payload) == LIST_TOP_KEYS
@@ -670,9 +671,24 @@ def test_a_set_model_step_round_trips_and_a_failed_one_fails() -> None:
 _RUN1 = Path(__file__).parent / "fixtures" / "engine_demo" / "run1_llamacpp.json"
 
 
-def _run1() -> dict[str, Any]:
+def _recorded_run1() -> dict[str, Any]:
     payload: dict[str, Any] = json.loads(_RUN1.read_text(encoding="utf-8"))
     return payload
+
+
+def _run1() -> dict[str, Any]:
+    """The recorded run with the field that the engine list gained after the recording."""
+    payload = _recorded_run1()
+    for step in payload["steps"]:
+        if step["name"].startswith("engine-list"):
+            step["stdout"] = json.dumps({**json.loads(step["stdout"]), "damaged": []})
+    return payload
+
+
+def test_the_recording_fails_only_on_the_list_field_it_predates() -> None:
+    failures = judge(Transcript.from_json(_recorded_run1()))
+    assert len(failures) == 2
+    assert all("damaged" in failure.detail for failure in failures)
 
 
 def _run1_edited(step_names: tuple[str, ...], **fields: object) -> Transcript:
