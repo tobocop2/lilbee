@@ -385,7 +385,7 @@ class TestPrestartMpResourceTracker:
             mock.patch.object(
                 tui, "_redirect_native_stderr_to", lambda _p: events.append("redirect")
             ),
-            mock.patch.object(LilbeeApp, "run", lambda _self: events.append("run")),
+            mock.patch.object(LilbeeApp, "run", lambda _self, **_kw: events.append("run")),
             mock.patch.object(LilbeeApp, "__init__", lambda _self, **_kw: None),
             mock.patch.object(LilbeeApp, "task_bar", create=True),
             mock.patch.object(LilbeeApp, "return_code", None),
