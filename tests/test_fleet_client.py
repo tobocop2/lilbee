@@ -1198,6 +1198,39 @@ def test_a_tei_input_past_the_cap_reaches_the_server_whole_and_is_counted_once(
     assert counted == [[text]]
 
 
+def test_a_tei_client_reads_the_input_limit_from_info_once() -> None:
+    reads: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        reads.append(request.url.path)
+        return httpx.Response(200, json={"max_input_length": 400})
+
+    client = _tei_embed_client(handler, cap=640)
+    assert client.input_limit() == 400
+    assert client.input_limit() == 400
+    assert reads == ["/upstream/m/info"]
+
+
+def test_a_tei_client_whose_info_read_fails_reports_no_limit_and_waits_out_the_pause() -> None:
+    reads: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        reads.append(request.url.path)
+        return httpx.Response(503, text="restarting")
+
+    client = _tei_embed_client(handler, cap=640)
+    assert client.input_limit() is None
+    assert client.input_limit() is None
+    assert reads == ["/upstream/m/info"]
+
+
+def test_a_client_without_an_info_route_reports_no_input_limit() -> None:
+    http = httpx.Client(transport=httpx.MockTransport(lambda _r: httpx.Response(500)))
+    profile = LLAMA.request_profile(WorkerRole.EMBED)
+    client = LlamaServerClient("http://cpu0", "m", http=http, token_cap=504, profile=profile)
+    assert client.input_limit() is None
+
+
 _BODY_BOUND = _EMBED_PAYLOAD_LIMIT - _EMBED_BODY_MARGIN
 
 
