@@ -15,7 +15,8 @@
 #   OUT                           the folder that receives the wheel and its sha256 file
 #
 # engine-versions.env holds the pins of llama-swap, gguf-parser and Go. The script leaves license-expression.txt,
-# cuda-libs.sha256 and vs-licence.docx in the checkout for the check of the wheel, and out/ beside them.
+# cuda-libs.sha256 and vs-licence.docx in the checkout, and out/ beside them. check_llama_wheel.sh reads them, and
+# only a wheel that passes it reaches OUT.
 #
 # The script needs Python 3.12, Go, git and a gh login. A source cell needs docker, another cell needs cmake. The build
 # writes into the wheel project, so the script refuses a checkout that an earlier build used.
@@ -36,7 +37,9 @@ require_inputs() {
   os="$(host_os)"
   names=(UPSTREAM_REPO UPSTREAM_TAG WHEEL_VERSION BUILD_NUMBER GO_LICENSES_VERSION BACKEND PLATFORM LICENSE_TERMS
     MACOSX_DEPLOYMENT_TARGET OUT)
-  tools=(go git gh)
+  tools=(go git gh unzip)
+  # check_llama_wheel.sh runs these on a Linux wheel.
+  if [ "${os}" = Linux ]; then tools+=(ldd objdump); fi
   if [ "${BUILD:-}" = source ]; then
     [ "${os}" = Linux ] || { echo "pack_llama: no source cell builds on ${os}" >&2; return 2; }
     names+=(MANYLINUX_IMAGE)
@@ -51,7 +54,7 @@ require_inputs() {
   for name in "${tools[@]}"; do
     command -v "${name}" > /dev/null || { echo "pack_llama: ${name} is not installed" >&2; return 2; }
   done
-  for name in upstream deps-build cuda-libs.sha256 license-expression.txt vs-licence.docx repaired out pack-venv \
+  for name in upstream deps-build cuda-libs.sha256 license-expression.txt vs-licence.docx repaired out pack-venv check-venv \
     "${BIN}" "${WHEEL_TREE}/dist"; do
     [ ! -e "${name}" ] || { echo "pack_llama: an earlier build used this checkout (${name} exists). Use a fresh one." >&2; return 2; }
   done
@@ -276,6 +279,7 @@ list_gfx_targets() {  # file
 }
 
 main() {
+  local wheels
   cd "$(dirname "${BASH_SOURCE[0]}")/../.."
   require_inputs
   # shellcheck source=/dev/null
@@ -303,6 +307,9 @@ main() {
   build_wheel
   if [ "$(host_os)" = macOS ]; then collect_wheel repaired out; else collect_wheel "${WHEEL_TREE}/dist" out; fi
   if [ "${BACKEND}" = rocm ]; then list_gfx_targets out/lilbee-linux-x86_64-rocm.gfx.txt; fi
+  wheels=(out/*.whl)
+  bash tools/wheel-build/check_llama_wheel.sh "${wheels[0]}"
+  # Only a wheel that passed its checks reaches the output folder.
   mkdir -p "${OUT}"
   cp out/* "${OUT}/"
 }
