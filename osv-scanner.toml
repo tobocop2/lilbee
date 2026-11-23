@@ -9,23 +9,5 @@ id = "CVE-2025-69872"
 reason = "diskcache 5.6.3 is a direct lilbee dependency. No upstream fix published. Exploitation requires write access to the user's own cache directory, which is already a post-compromise scenario. Revisit when diskcache ships a fix."
 
 [[IgnoredVulns]]
-id = "PYSEC-2022-42969"
-reason = "py 1.11.0 (unmaintained) pulled in transitively by pytest-forked>=1.6.0, which the `make test-ci-forked` target uses. The advisory is a ReDoS in py.path.svnwc that requires attacker-controlled Subversion repository paths; lilbee and pytest-forked never call py.path.svnwc, and it is not exposed to untrusted input. No upstream fix will ship. Revisit if pytest-forked drops the py dependency."
-
-# pygments is never a runtime or dev dependency; it is only resolved
-# transitively under tools/qa/requirements.txt (the QA-matrix runner venv,
-# pulled in via pytest). That harness is not published to PyPI or shipped to
-# users, and uv.lock pins pygments 2.20.0 (patched) for everything else.
-# pip-audit scans uv.lock and so does not flag these; osv-scanner resolves the
-# QA requirements file and does. Revisit if the QA runner is ever distributed.
-[[IgnoredVulns]]
-id = "PYSEC-2023-117"
-reason = "ReDoS in pygments lexers (CVE-2022-40896 / GHSA-mrwq-x4v8-fh7p). pygments is only resolved transitively under tools/qa/requirements.txt, the QA-matrix runner venv, which is never shipped. The dev and runtime environments pin pygments 2.20.0 (patched) via uv.lock."
-
-[[IgnoredVulns]]
-id = "GHSA-5239-wwwm-4pmq"
-reason = "ReDoS in pygments GUID matching (CVE-2026-4539). pygments is only resolved transitively under tools/qa/requirements.txt, the QA-matrix runner venv, which is never shipped. The dev and runtime environments pin pygments 2.20.0 (patched) via uv.lock."
-
-[[IgnoredVulns]]
 id = "PYSEC-2025-183"
 reason = "DISPUTED weak-encryption finding in pyjwt (CVE-2025-45768). Upstream's response: HMAC key length is chosen by the application, not the library; pyjwt has no plan to enforce a minimum and there is no fixed version. pyjwt is pulled in transitively by mcp 1.26.0; lilbee never imports pyjwt or calls jwt.encode/decode with caller-controlled key material. Revisit if a real (non-disputed) advisory ships or if mcp drops the dependency."
