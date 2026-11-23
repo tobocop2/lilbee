@@ -397,6 +397,52 @@ class TestPrestartMpResourceTracker:
             tui.run_tui()
         assert events == ["prestart", "redirect", "run"]
 
+    def _run_tui_with_return_code(
+        self, return_code: int | None
+    ) -> tuple[mock.Mock, str | int | None]:
+        """Run the real run_tui with an app that ends with *return_code*.
+
+        Returns the straggler-exit mock and the SystemExit status (None if none raised).
+        """
+        from lilbee.cli import tui
+        from lilbee.cli.tui.app import LilbeeApp
+
+        straggler_exit = mock.Mock()
+        raised: str | int | None = None
+        with (
+            mock.patch.object(tui, "_prestart_mp_resource_tracker"),
+            mock.patch.object(tui, "_redirect_native_stderr_to"),
+            mock.patch.object(LilbeeApp, "run", lambda _self: None),
+            mock.patch.object(LilbeeApp, "__init__", lambda _self, **_kw: None),
+            mock.patch.object(LilbeeApp, "task_bar", create=True),
+            mock.patch.object(LilbeeApp, "return_code", return_code),
+            mock.patch.object(tui, "_restore_native_stderr"),
+            mock.patch("lilbee.cli.sync.shutdown_executor"),
+            mock.patch.object(tui, "reset_services_on_exit"),
+            mock.patch.object(tui, "exit_when_stragglers_would_hang", straggler_exit),
+        ):
+            try:
+                tui.run_tui()
+            except SystemExit as exc:
+                raised = exc.code
+        return straggler_exit, raised
+
+    @pytest.mark.parametrize("return_code", [3, 130])
+    def test_run_tui_raises_the_nonzero_app_status_and_hands_it_to_the_straggler_exit(
+        self, return_code: int
+    ) -> None:
+        straggler_exit, raised = self._run_tui_with_return_code(return_code)
+        assert raised == return_code
+        straggler_exit.assert_called_once_with(return_code)
+
+    @pytest.mark.parametrize("return_code", [0, None])
+    def test_run_tui_returns_and_passes_zero_when_the_app_ends_cleanly(
+        self, return_code: int | None
+    ) -> None:
+        straggler_exit, raised = self._run_tui_with_return_code(return_code)
+        assert raised is None
+        straggler_exit.assert_called_once_with(0)
+
     @_POSIX_ONLY
     def test_spawn_primitive_survives_a_stderr_without_a_descriptor(self, tmp_path: Path) -> None:
         # Control: with no prestart the same stream crashes the tracker launch.
