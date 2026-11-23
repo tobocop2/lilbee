@@ -7521,6 +7521,70 @@ class TestChunkAndEmbedPagesEmpty:
         assert await chunk_and_embed_pages([(1, "   ")], "s", "pdf", noop_callback) == []
 
 
+_LONG_TITLE = "Annual report of the river authority " * 60
+
+
+def _assert_each_chunk_follows_a_bounded_head(mock_svc, chunks: list[str]) -> None:
+    """Every embed input ends with its whole chunk after a head within the headroom."""
+    from lilbee.providers.engine_params import INPUT_HEADROOM_TOKENS
+
+    inputs = mock_svc.embedder.embed_batch.call_args.args[0]
+    assert len(inputs) == len(chunks)
+    for sent, chunk in zip(inputs, chunks, strict=True):
+        assert sent.endswith(f"\n{chunk}")
+        head = sent[: -len(chunk) - 1]
+        assert head
+        assert mock_svc.provider.count_tokens(head) <= INPUT_HEADROOM_TOKENS
+
+
+class TestEmbedInputsKeepTheChunkAtEachCaller:
+    """A long title or situating sentence is cut to the headroom on every ingest path."""
+
+    async def test_dataset_import_cuts_a_long_scoped_title(self, mock_svc, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.document import _title_scope, chunk_and_embed_pages
+        from lilbee.runtime.progress import noop_callback
+
+        monkeypatch.setattr(cfg, "embed_titles", True)
+        with _title_scope(_LONG_TITLE):
+            records = await chunk_and_embed_pages(
+                [(1, "Flow rates rose every spring.")], "s", "pdf", noop_callback
+            )
+        _assert_each_chunk_follows_a_bounded_head(mock_svc, [r["chunk"] for r in records])
+
+    async def test_markdown_ingest_cuts_a_long_heading_title(
+        self, isolated_env, mock_svc, monkeypatch
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        monkeypatch.setattr(cfg, "embed_titles", True)
+        (isolated_env / "notes.md").write_text(
+            f"# {_LONG_TITLE}\n\nSome content here.", encoding="utf-8"
+        )
+        await sync(quiet=True)
+        items = mock_svc.store.write_chunks_batch.call_args.args[0]
+        item = next(it for it in items if it.source == "notes.md")
+        _assert_each_chunk_follows_a_bounded_head(mock_svc, [r["chunk"] for r in item.records])
+
+    async def test_document_ingest_cuts_a_long_situating_sentence(
+        self, isolated_env, mock_svc, monkeypatch
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import ChatResult, FinishReason
+
+        monkeypatch.setattr(cfg, "contextual_enrichment", True)
+        mock_svc.provider.chat.return_value = ChatResult(
+            text=_LONG_TITLE, tool_calls=(), finish_reason=FinishReason.STOP
+        )
+        (isolated_env / "notes.txt").write_text("Flow rates rose every spring.", encoding="utf-8")
+        await sync(quiet=True)
+        items = mock_svc.store.write_chunks_batch.call_args.args[0]
+        item = next(it for it in items if it.source == "notes.txt")
+        _assert_each_chunk_follows_a_bounded_head(mock_svc, [r["chunk"] for r in item.records])
+
+
 class TestIngestDocumentOcrPath:
     @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
     async def test_empty_pdf_warns_no_usable_text(self, mock_kf, isolated_env, mock_svc, caplog):

@@ -1,5 +1,8 @@
 """Tests for document title and source-metadata derivation at ingest."""
 
+from contextlib import contextmanager
+
+import pytest
 from xberg import Metadata
 
 from lilbee.core.web_names import WEB_PREFIX
@@ -140,8 +143,114 @@ class TestJunkStems:
         assert derive_title("IMG_1234.jpg", "Sunset over the harbor") == "Sunset over the harbor"
 
 
+@contextmanager
+def _counting_services(count_tokens):
+    """Services whose embedder counts tokens with *count_tokens*."""
+    from unittest.mock import MagicMock
+
+    from lilbee.app.services import set_services
+
+    svc = MagicMock()
+    svc.provider.count_tokens.side_effect = count_tokens
+    set_services(svc)
+    try:
+        yield svc
+    finally:
+        set_services(None)
+
+
+def _no_tokenizer(text: str) -> int:
+    raise NotImplementedError
+
+
+def _one_token_a_character(text: str) -> int:
+    return len(text)
+
+
+_NOMIC_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+_NOMIC_PREFIX = "search_document: "
+_FULL_CHUNK_ESTIMATED = "w" * (512 * 3)
+_FULL_CHUNK_COUNTED = "w" * 512
+_INPUT_LIMIT = 640
+
+
+class TestEmbedInputsKeepTheChunk:
+    """A long title or sentence takes only the headroom, so the limit never cuts the chunk."""
+
+    @pytest.fixture(autouse=True)
+    def _titles_on_nomic(self, monkeypatch):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "embed_titles", True)
+        monkeypatch.setattr(cfg, "embedding_model", _NOMIC_REF)
+
+    def _inputs(self, count_tokens, texts, title, sentences=None):
+        from lilbee.data.extract.document import _embed_inputs
+
+        with _counting_services(count_tokens):
+            return _embed_inputs(texts, title, sentences)
+
+    @pytest.mark.parametrize("title_chars", [368, 1000])
+    def test_a_long_english_title_leaves_the_estimated_chunk_whole(self, title_chars):
+        from lilbee.data.extract.backends.tokenizer import _estimate_tokens
+
+        title = ("Annual report of the river authority " * 40)[:title_chars]
+        [sent] = self._inputs(_no_tokenizer, [_FULL_CHUNK_ESTIMATED], title)
+        assert sent.endswith(f"\n{_FULL_CHUNK_ESTIMATED}")
+        assert sent.startswith("Annual report")
+        assert _estimate_tokens(_NOMIC_PREFIX + sent) <= _INPUT_LIMIT
+
+    def test_a_long_cjk_title_leaves_the_counted_chunk_whole(self):
+        title = "河川管理局年次報告書" * 40
+        [sent] = self._inputs(_one_token_a_character, [_FULL_CHUNK_COUNTED], title)
+        assert sent.endswith(f"\n{_FULL_CHUNK_COUNTED}")
+        assert sent.startswith("河川管理局")
+        assert len(_NOMIC_PREFIX + sent) <= _INPUT_LIMIT
+
+    def test_title_and_sentence_share_the_headroom_title_first(self):
+        title = "T" * 100
+        sentence = "S" * 100
+        [sent] = self._inputs(_one_token_a_character, [_FULL_CHUNK_COUNTED], title, [sentence])
+        assert sent.startswith(f"{title}\nS")
+        assert sent.endswith(f"\n{_FULL_CHUNK_COUNTED}")
+        assert len(_NOMIC_PREFIX + sent) <= _INPUT_LIMIT
+
+    def test_a_sentence_alone_is_bounded_too(self, monkeypatch):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "embed_titles", False)
+        [sent] = self._inputs(_one_token_a_character, [_FULL_CHUNK_COUNTED], "ignored", ["S" * 300])
+        assert sent.endswith(f"S\n{_FULL_CHUNK_COUNTED}")
+        assert len(_NOMIC_PREFIX + sent) <= _INPUT_LIMIT
+
+    def test_a_short_title_and_sentence_stay_whole(self):
+        [sent] = self._inputs(_one_token_a_character, ["chunk"], "Annual Report", ["It covers Q3."])
+        assert sent == "Annual Report\nIt covers Q3.\nchunk"
+
+    def test_one_title_is_counted_once_for_all_chunks(self):
+        from lilbee.data.extract.document import _embed_inputs
+
+        with _counting_services(_one_token_a_character) as svc:
+            inputs = _embed_inputs(["a", "b", "c"], "Annual Report")
+        assert inputs == ["Annual Report\na", "Annual Report\nb", "Annual Report\nc"]
+        counted = [call.args[0] for call in svc.provider.count_tokens.call_args_list]
+        assert counted.count("Annual Report") == 1
+
+    def test_the_head_budget_is_the_headroom_less_the_prefix_and_newline(self):
+        from lilbee.data.extract.document import _head_budget
+        from lilbee.providers.engine_params import INPUT_HEADROOM_TOKENS
+
+        with _counting_services(_one_token_a_character):
+            assert _head_budget() == INPUT_HEADROOM_TOKENS - len(_NOMIC_PREFIX) - 1
+
+
 class TestEmbedTitles:
     """Opt-in title prefixing of embedding inputs; stored chunk text unchanged."""
+
+    @pytest.fixture(autouse=True)
+    def _counted(self):
+        with _counting_services(_one_token_a_character):
+            yield
 
     def test_off_by_default_passes_texts_through(self):
         from lilbee.core.config import cfg
@@ -187,9 +296,9 @@ class TestContextualEnrichment:
     def test_off_by_default_is_passthrough(self):
         from lilbee.data.extract.document import _enrich_texts
 
-        assert _enrich_texts(["chunk"], "doc head", "a.pdf") == ["chunk"]
+        assert _enrich_texts(["chunk"], "doc head", "a.pdf") == [""]
 
-    def test_on_prepends_the_sentence_to_the_embed_input(self):
+    def test_on_writes_one_sentence_for_each_chunk(self):
         from unittest.mock import patch
 
         from lilbee.core.config import cfg
@@ -202,7 +311,7 @@ class TestContextualEnrichment:
                 out = _enrich_texts(["chunk text"], "doc head", "a.pdf")
         finally:
             cfg.contextual_enrichment = False
-        assert out == ["This chunk covers the budget section of the annual report.\nchunk text"]
+        assert out == ["This chunk covers the budget section of the annual report."]
 
     def test_turns_thinking_off(self):
         """One situating sentence on a small cap: a thinking model spends the
@@ -235,4 +344,4 @@ class TestContextualEnrichment:
                 out = _enrich_texts(["chunk text"], "doc head", "a.pdf")
         finally:
             cfg.contextual_enrichment = False
-        assert out == ["chunk text"]
+        assert out == [""]
