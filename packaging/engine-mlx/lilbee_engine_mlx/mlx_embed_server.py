@@ -27,6 +27,7 @@ import sys
 import threading
 from collections.abc import Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
@@ -37,6 +38,10 @@ ROUTES = {TASK_EMBED: "/v1/embeddings", TASK_RERANK: "/v1/rerank"}
 TOKENIZE = "/tokenize"
 DETOKENIZE = "/detokenize"
 """The routes of the llama.cpp server that the client reads to cut an input to the window."""
+FAMILIES = {TASK_EMBED: "Qwen3-Embedding", TASK_RERANK: "Qwen3-Reranker"}
+"""The one model family that each task implements."""
+MODEL_TYPE = "qwen3"
+"""The ``model_type`` in config.json of both families."""
 HEALTH = "/health"
 SERVED_NAME = "default_model"
 OVERFLOW = "the input holds {count} tokens, which exceeds the window of {limit} tokens"
@@ -336,8 +341,31 @@ def serve(args: argparse.Namespace, backend: Backend) -> None:
         server.server_close()
 
 
+def check_model(path: str, task: str) -> None:
+    """Stop with a plain message unless the folder *path* holds a Qwen3 model for *task*.
+
+    The pooling and the prompt of this server are those of Qwen3-Embedding and
+    Qwen3-Reranker. Any other model loads and gives wrong vectors or scores, or fails to load.
+    """
+    family = FAMILIES[task]
+    try:
+        config = json.loads((Path(path) / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SystemExit(
+            f"mlx-embed-server: cannot read config.json in {path} ({exc}). "
+            f"The {task} task runs {family} models only."
+        ) from None
+    model_type = config.get("model_type") if isinstance(config, dict) else None
+    if model_type != MODEL_TYPE:
+        raise SystemExit(
+            f"mlx-embed-server: the model in {path} has model type {model_type!r}. "
+            f"The {task} task runs {family} models only, which have model type {MODEL_TYPE!r}."
+        )
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    check_model(args.model, args.task)
     serve(args, MlxBackend(args.model))
 
 

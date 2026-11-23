@@ -13,6 +13,7 @@ from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import canonical_ref, model_format
 from lilbee.catalog.types import ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import cfg
+from lilbee.core.config.model import mlx_role_refusal
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.fleet.engines.choice import loadable_refs
 from lilbee.providers.model_ref import parse_model_ref
@@ -219,6 +220,10 @@ def adopt_embedder(ref: str) -> AdoptResult:
     from lilbee.catalog.types import ModelSource
 
     ref = canonical_ref(ref)
+    # Refuse before the download: an embedder the engine cannot run is not worth a pull.
+    refusal = mlx_role_refusal("embedding_model", ref)
+    if refusal is not None:
+        raise ValueError(refusal)
     manager = get_services().model_manager
     installed = manager.is_installed(ref, ModelSource.NATIVE)
     already_active = cfg.embedding_model == ref and installed

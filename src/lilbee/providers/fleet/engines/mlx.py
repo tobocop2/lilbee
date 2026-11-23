@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from lilbee.catalog.hf_client import HfToken
+from lilbee.catalog.refs import model_format, parse_model_ref
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
@@ -32,6 +33,7 @@ from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import estimate_memory
 from lilbee.providers.folder_embed_width import read_folder_config, read_generation_config
+from lilbee.providers.model_ref import routes_to_native_model
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "0.32.2"
@@ -48,6 +50,14 @@ _ENDPOINTS = {
     WorkerRole.EMBED: "/v1/embeddings",
     WorkerRole.RERANK: "/v1/rerank",
 }
+SERVED_FAMILIES: dict[WorkerRole, tuple[str, str]] = {
+    WorkerRole.EMBED: ("Qwen3-Embedding", "mlx-community/Qwen3-Embedding-0.6B-8bit#mlx"),
+    WorkerRole.RERANK: ("Qwen3-Reranker", "mlx-community/Qwen3-Reranker-0.6B-4bit#mlx"),
+}
+"""The one model family that the embed server runs for each of its roles, and an example ref.
+
+The server implements the pooling of Qwen3-Embedding and the prompt of Qwen3-Reranker only.
+"""
 _EMBED_BATCH_LIMIT = 32
 """The most inputs of one embed or rerank request; the server runs each request as one batch."""
 _HOST = "127.0.0.1"
@@ -120,6 +130,25 @@ _PROFILES = {
     WorkerRole.EMBED: _EMBED_PROFILE,
     WorkerRole.RERANK: _RERANK_PROFILE,
 }
+
+
+def role_refusal(role: WorkerRole, ref: str) -> str | None:
+    """Why the mlx engine cannot serve *ref* for *role*, in plain words, or ``None``.
+
+    Only a ``#mlx`` ref that routes to the mlx engine is checked, and only for a role that
+    the embed server serves. The family is read from the repo name.
+    """
+    served = SERVED_FAMILIES.get(role)
+    if served is None or model_format(ref) is not ModelFormat.MLX or not routes_to_native_model(ref):
+        return None
+    family, example = served
+    repo = parse_model_ref(ref).hf_repo
+    if family.lower() in repo.lower():
+        return None
+    return (
+        f"The mlx engine runs the {role.value} role only for {family} models, and {repo} is "
+        f"not one. Choose a {family} model, for example {example}."
+    )
 
 
 def _floor_text() -> str:
