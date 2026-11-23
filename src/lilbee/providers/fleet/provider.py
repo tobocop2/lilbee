@@ -3818,7 +3818,7 @@ class FleetProvider:
     def _preload_after(
         self, previous: threading.Thread | None, roles: frozenset[WorkerRole]
     ) -> None:
-        """Warm *roles* once the previous reload's warm ends, so two warms never overlap."""
+        """Warm *roles* once the previous reload's warm ends, so two reload warms never overlap."""
         if previous is not None:
             previous.join()
         self._preload_roles(roles=roles)
