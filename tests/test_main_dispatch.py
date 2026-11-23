@@ -443,6 +443,38 @@ class TestPrestartMpResourceTracker:
         assert raised is None
         straggler_exit.assert_called_once_with(0)
 
+    def test_run_tui_swallows_ctrl_c_runs_every_cleanup_and_exits_with_status_zero(self) -> None:
+        from lilbee.cli import tui
+        from lilbee.cli.tui.app import LilbeeApp
+
+        calls = mock.Mock()
+        escaped: BaseException | None = None
+        with (
+            mock.patch.object(tui, "_prestart_mp_resource_tracker"),
+            mock.patch.object(tui, "_redirect_native_stderr_to"),
+            mock.patch.object(LilbeeApp, "run", side_effect=KeyboardInterrupt),
+            mock.patch.object(LilbeeApp, "__init__", lambda _self, **_kw: None),
+            mock.patch.object(LilbeeApp, "task_bar", calls.task_bar, create=True),
+            mock.patch.object(LilbeeApp, "return_code", None),
+            mock.patch.object(tui, "_restore_native_stderr", calls.restore_stderr),
+            mock.patch("lilbee.cli.sync.shutdown_executor", calls.shutdown_executor),
+            mock.patch.object(tui, "reset_services_on_exit", calls.reset_services),
+            mock.patch.object(tui, "exit_when_stragglers_would_hang", calls.straggler_exit),
+        ):
+            try:
+                tui.run_tui()
+            except BaseException as exc:  # a leaked Ctrl-C must fail here, not abort pytest
+                escaped = exc
+        assert escaped is None
+        assert [c[0] for c in calls.mock_calls] == [
+            "task_bar.stop_all",
+            "restore_stderr",
+            "shutdown_executor",
+            "reset_services",
+            "straggler_exit",
+        ]
+        calls.straggler_exit.assert_called_once_with(0)
+
     @_POSIX_ONLY
     def test_spawn_primitive_survives_a_stderr_without_a_descriptor(self, tmp_path: Path) -> None:
         # Control: with no prestart the same stream crashes the tracker launch.
