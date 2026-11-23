@@ -20,7 +20,7 @@ from lilbee.catalog import runnable
 from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import run_engine_command
 from lilbee.core.config import cfg
-from lilbee.providers.fleet import engine_store
+from lilbee.providers.fleet import engine_manifest, engine_store
 from lilbee.providers.fleet.engine_store import (
     RECORD_NAME,
     EngineFolderError,
@@ -103,6 +103,8 @@ def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     flags = {"flags": ["avx2", "avx512f"]}
     host = collect(system="Linux", machine="x86_64", cpu_info=flags, nvidia=None)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
+    # The host above is Linux on every computer, so its glibc is set here too.
+    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     store = engines_root(cfg.models_dir)
     for engine in (*GOOD, ENGINE):
         _write_build(store, engine)
