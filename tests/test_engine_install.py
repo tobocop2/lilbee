@@ -62,7 +62,19 @@ ENGINE = EngineName.IK_LLAMA
 VERSION = "git-0123456789ab"
 NO_AVX2 = "This host has no AVX2. ik_llama.cpp needs it."
 STAYS = "llama.cpp stays in use."
-BAD_PACK = (
+def bad_copy(path: Path) -> str:
+    """The refusal for a file the user copied that does not match its pin."""
+    text = (
+        f"The file {path} for engine ik_llama.cpp git-0123456789ab (cpu) does not match its "
+        f"pin, so lilbee did not install it. Copy {path.name} again from the lilbee release "
+        "that matches this version and run the install again."
+    )
+    if path.parent.name == "packs":
+        text += f" Or remove it from {path.parent} to download it."
+    return text
+
+
+BAD_DOWNLOAD = (
     "The file for engine ik_llama.cpp git-0123456789ab (cpu) does not match its pin, "
     "so lilbee did not install it. Run the install again. If this happens again, report it."
 )
@@ -184,14 +196,14 @@ def test_a_good_wheel_is_installed_and_the_engine_is_listed(good: Path) -> None:
     assert ENGINE in installed_engines()
 
 
-def test_a_wrong_sha256_is_refused_with_the_store_text_and_leaves_nothing(
+def test_a_wheel_that_does_not_match_its_pin_is_refused_with_the_text_to_copy_it_again(
     good: Path, tmp_path: Path, root: Path
 ) -> None:
     other = tmp_path / "other.whl"
     make_wheel(other, package="lilbee_engine_other")
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install(ENGINE.value, other)
-    assert str(exc.value) == BAD_PACK
+    assert str(exc.value) == bad_copy(other)
     assert _builds() == []
     assert [p.name for p in root.glob("*") if p.name != LOCK_DIR] == []
 
@@ -216,9 +228,10 @@ def test_a_damaged_pack_in_the_packs_folder_is_refused_with_the_text_to_copy_it_
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install(ENGINE.value)
     assert str(exc.value) == (
-        f"The pack {pack} for engine {ENGINE} {VERSION} (cpu) does not match its pin, "
-        f"so lilbee did not install it. Copy {pack.name} into {pack.parent} again "
-        "from its source and run the install again."
+        f"The file {pack} for engine {ENGINE} {VERSION} (cpu) does not match its pin, "
+        f"so lilbee did not install it. Copy {pack.name} again from the lilbee release "
+        f"that matches this version and run the install again. "
+        f"Or remove it from {pack.parent} to download it."
     )
     assert _builds() == []
 
@@ -234,6 +247,19 @@ def test_a_download_from_the_release_url_installs_the_build(
     assert (built.engine, built.version, built.backend) == (ENGINE.value, VERSION, "cpu")
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
     assert len(release.requests) == 1
+
+
+def test_a_download_that_does_not_match_its_pin_says_to_run_the_install_again(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release.files["/fx.whl"] = good.read_bytes()
+    sha = "0" * 64
+    cells = _cell(f"{release.url}/fx.whl", sha, size=good.stat().st_size)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(ENGINE.value)
+    assert str(exc.value) == BAD_DOWNLOAD
+    assert _builds() == []
 
 
 def test_a_host_with_no_cell_is_refused_and_no_request_is_sent(
@@ -628,7 +654,7 @@ def test_the_cli_refuses_with_the_service_text(good: Path, tmp_path: Path) -> No
     make_wheel(other, package="lilbee_engine_other")
     assert _cli("install", ENGINE.value, "--wheel", str(other)) == (
         1,
-        {"command": "engine install", "error": BAD_PACK, "code": INSTALL_REFUSED},
+        {"command": "engine install", "error": bad_copy(other), "code": INSTALL_REFUSED},
     )
     result = CliRunner().invoke(cli_app, ["engine", "install", ENGINE.value, "--wheel", str(other)])
     assert result.exit_code == 1
@@ -1149,7 +1175,7 @@ def test_a_wheel_of_the_top_digest_is_refused_when_the_cell_digest_differs(
     _two_digest_pin(monkeypatch, "https://example.invalid/x.whl", "b" * 64, top_sha)
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install(ENGINE.value, wheel)
-    assert str(exc.value) == BAD_PACK
+    assert str(exc.value) == bad_copy(wheel)
     assert _builds() == []
 
 
