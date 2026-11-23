@@ -740,7 +740,7 @@ class TestProvider:
         self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=spy)
-        monkeypatch.setattr(cfg, "embedding_model", "org/repo#mlx")
+        monkeypatch.setattr(cfg, "embedding_model", "mlx-community/Qwen3-Embedding-0.6B-8bit#mlx")
         monkeypatch.setattr(EngineBook, "read", lambda self: BookReading({}, {}))
         provider = FleetProvider()
         swap = SimpleNamespace(endpoint=lambda: "http://127.0.0.1:1", log_path=tmp_path / "log")

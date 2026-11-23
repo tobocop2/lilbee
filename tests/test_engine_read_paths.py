@@ -28,6 +28,7 @@ from lilbee.server.handlers.models import models_show
 from tests.conformance.fake_adapter import BundledFakeAdapter
 
 MLX_REF = "org/repo#mlx"
+MLX_EMBED_REF = "mlx-community/Qwen3-Embedding-0.6B-8bit#mlx"
 GGUF_REF = "org/repo/file.gguf"
 ROLES = {WorkerRole.CHAT: "chat_model", WorkerRole.EMBED: "embedding_model"}
 NO_ENGINE_TEXT = "No installed engine loads the mlx format"
@@ -56,7 +57,8 @@ def no_engine(
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     for role, field in ROLES.items():
-        monkeypatch.setattr(cfg, field, MLX_REF if role is request.param else GGUF_REF)
+        mlx_ref = MLX_EMBED_REF if role is WorkerRole.EMBED else MLX_REF
+        monkeypatch.setattr(cfg, field, mlx_ref if role is request.param else GGUF_REF)
     services = build_services(cfg)
     monkeypatch.setattr(services_mod._state, "singleton", services)
     yield services

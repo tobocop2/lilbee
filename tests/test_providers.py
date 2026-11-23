@@ -3800,7 +3800,7 @@ class TestRoutingProviderRerank:
         rp = self._make_provider()
         rp._local = mock.MagicMock()
         rp._sdk_provider = mock.MagicMock()
-        cfg.reranker_model = "acme/reranker#mlx"
+        cfg.reranker_model = "mlx-community/Qwen3-Reranker-0.6B-4bit#mlx"
         with pytest.raises(NoEngineError, match="No installed engine loads the mlx format"):
             rp.rerank("q", ["a"])
         rp._local.rerank.assert_not_called()
