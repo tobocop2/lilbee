@@ -8,6 +8,7 @@ from xberg import Metadata
 from lilbee.core.web_names import WEB_PREFIX
 from lilbee.crawler import url_to_filename
 from lilbee.data.title import derive_title, source_meta_from_extraction
+from lilbee.providers.engine_params import INPUT_HEADROOM_TOKENS
 
 
 class TestDeriveTitle:
@@ -144,14 +145,15 @@ class TestJunkStems:
 
 
 @contextmanager
-def _counting_services(count_tokens):
-    """Services whose embedder counts tokens with *count_tokens*."""
+def _counting_services(count_tokens, window: int | None = None):
+    """Services whose embedder counts tokens with *count_tokens* and has the token *window*."""
     from unittest.mock import MagicMock
 
     from lilbee.app.services import set_services
 
     svc = MagicMock()
     svc.provider.count_tokens.side_effect = count_tokens
+    svc.provider.embed_token_cap.return_value = window
     set_services(svc)
     try:
         yield svc
@@ -241,7 +243,83 @@ class TestEmbedInputsKeepTheChunk:
         from lilbee.providers.engine_params import INPUT_HEADROOM_TOKENS
 
         with _counting_services(_one_token_a_character):
-            assert _head_budget() == INPUT_HEADROOM_TOKENS - len(_NOMIC_PREFIX) - 1
+            assert _head_budget().room == INPUT_HEADROOM_TOKENS - len(_NOMIC_PREFIX) - 1
+
+
+_LOCAL_EMBEDDER = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q8_0.gguf"
+_REMOTE_EMBEDDER = "openai/text-embedding-3-small"
+_LONG_TITLE = "T" * 1000
+
+
+class TestTheEmbedInputFollowsTheWindow:
+    """One embed input is the prefix, the head and one whole chunk; the head takes only the
+    room the embedder's window leaves after the chunk (one test per acceptance row)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract import document
+        from lilbee.retrieval.embedding_profiles import EmbeddingProfile
+
+        monkeypatch.setattr(cfg, "embed_titles", True)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        profile = EmbeddingProfile(doc_prefix=_NOMIC_PREFIX)
+        monkeypatch.setattr(document, "resolve_embedding_profile", lambda _ref: profile)
+        monkeypatch.setattr(
+            "lilbee.retrieval.embedding_profiles.resolve_embedding_profile", lambda _ref: profile
+        )
+        self.cfg = cfg
+        self.monkeypatch = monkeypatch
+
+    def _sent(self, window, *, remote=False):
+        """(chunk, the full input with its prefix) for one longest chunk under a long title."""
+        from lilbee.data.extract.chunk import token_budget
+        from lilbee.data.extract.document import _embed_inputs
+
+        model = _REMOTE_EMBEDDER if remote else _LOCAL_EMBEDDER
+        self.monkeypatch.setattr(self.cfg, "embedding_model", model)
+        count = _no_tokenizer if remote else _one_token_a_character
+        with _counting_services(count, window):
+            tokens = token_budget()
+            chunk = "c" * (tokens * 3 if remote else tokens)
+            [sent] = _embed_inputs([chunk], title=_LONG_TITLE)
+        return chunk, _NOMIC_PREFIX + sent
+
+    def test_a_small_window_that_holds_a_chunk_cuts_only_the_title(self):
+        chunk, sent = self._sent(600)
+        assert len(chunk) == 512
+        assert sent.endswith("\n" + chunk)
+        assert len(sent) == 600
+
+    def test_a_window_below_one_chunk_refuses_with_the_working_size(self):
+        from lilbee.data.extract.chunk import EmbedWindowError
+
+        with pytest.raises(EmbedWindowError) as raised:
+            self._sent(400)
+        assert str(raised.value) == (
+            f"{_LOCAL_EMBEDDER}: The embedding model accepts 400 tokens per input; "
+            "chunk_size 512 does not fit. Set chunk_size to 272 or lower."
+        )
+
+    def test_a_window_with_room_gives_the_title_the_full_headroom(self):
+        chunk, sent = self._sent(640)
+        assert len(chunk) == 512
+        assert sent.endswith("\n" + chunk)
+        assert len(sent) == 640
+
+    def test_an_unknown_window_keeps_the_headroom_budget(self):
+        chunk, sent = self._sent(None)
+        assert len(chunk) == 512
+        assert sent.endswith("\n" + chunk)
+        assert len(sent) == 512 + INPUT_HEADROOM_TOKENS
+
+    def test_a_remote_embedder_fills_the_character_guard(self):
+        from lilbee.retrieval.embedder import embed_char_budget
+
+        chunk, sent = self._sent(None, remote=True)
+        assert len(chunk) == 512 * 3
+        assert sent.endswith("\n" + chunk)
+        assert len(sent) == embed_char_budget(self.cfg)
 
 
 class TestEmbedTitles:

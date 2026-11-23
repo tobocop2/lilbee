@@ -33,6 +33,7 @@ from lilbee.providers.model_cache import (
     kv_bytes_per_token,
 )
 from lilbee.providers.model_ref import is_loose_model_file
+from lilbee.retrieval.embedding_profiles import resolve_embedding_profile
 
 log = logging.getLogger(__name__)
 
@@ -53,8 +54,8 @@ def resolve_embed_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
 
     Every chunker cuts its chunks to ``chunk_size`` tokens of the embedder's own tokenizer,
     so that count, not a character count, bounds the input. A trained context below it
-    caps the window, and the chunkers then size chunks at the served cap (see
-    :func:`embed_token_cap`)."""
+    caps the window: the title then gets only the room the window leaves after a full chunk,
+    and ingest refuses a window smaller than one chunk (see :func:`embed_window_warning`)."""
     train_ctx = train_ctx_from_meta(meta, fallback=EMBED_FALLBACK_CTX, model_path=model_path)
     return min(train_ctx, cfg.chunk_size + INPUT_HEADROOM_TOKENS + _EMBED_CTX_MARGIN)
 
@@ -64,17 +65,30 @@ def embed_token_cap(ctx: int) -> int:
     return max(1, ctx - _EMBED_CTX_MARGIN)
 
 
+def embed_input_reserve() -> int:
+    """Tokens every embed input carries beside its chunk: the document prefix and the newline.
+
+    Counted at one token a character, which no tokenizer exceeds on the ASCII prefixes, so
+    the count needs no engine and the health route and ingest reach the same answer.
+    """
+    return len(resolve_embedding_profile(cfg.embedding_model).doc_prefix) + 1
+
+
 def embed_window_warning(cap: int) -> HealthWarning | None:
-    """The warning that chunks are cut below ``chunk_size``, when *cap* is under it."""
-    if cap >= cfg.chunk_size:
+    """The warning that one chunk and :func:`embed_input_reserve` do not fit *cap*, else None.
+
+    Ingest refuses on the same warning, so the health route shows it whenever ingest refuses.
+    The remedy names the chunk size that leaves the full headroom.
+    """
+    if cap >= cfg.chunk_size + embed_input_reserve():
         return None
     return HealthWarning(
         code=WarningCode.EMBED_WINDOW_BELOW_CHUNK,
         message=(
-            f"The embedding model accepts {cap} tokens per input, below chunk_size "
-            f"{cfg.chunk_size}, so each chunk holds at most {cap} tokens."
+            f"The embedding model accepts {cap} tokens per input; "
+            f"chunk_size {cfg.chunk_size} does not fit."
         ),
-        remedy=f"Set chunk_size to {cap} or lower.",
+        remedy=f"Set chunk_size to {max(1, cap - INPUT_HEADROOM_TOKENS)} or lower.",
     )
 
 

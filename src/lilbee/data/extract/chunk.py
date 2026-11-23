@@ -43,11 +43,31 @@ def count_embed_tokens(text: str) -> int:
     return LilbeeTokenizerBackend(count_fn=get_services().provider.count_tokens).count_tokens(text)
 
 
-def token_budget() -> int:
-    """Tokens one chunk may hold: ``chunk_size``, cut to the embedder's cap when it has one."""
+class EmbedWindowError(RuntimeError):
+    """The embedder's window cannot hold one chunk beside the document prefix."""
+
+
+def check_embed_window() -> None:
+    """Refuse a known embed window smaller than one chunk plus the prefix and newline.
+
+    The refusal is the health route's own warning, so the two never disagree.
+    """
+    from lilbee.providers.engine_params import embed_window_warning
+
     cap = _embed_token_cap()
-    size = active_config().chunk_size
-    return size if cap is None else min(size, cap)
+    warning = None if cap is None else embed_window_warning(cap)
+    if warning is not None:
+        model = active_config().embedding_model
+        raise EmbedWindowError(f"{model}: {warning.message} {warning.remedy}")
+
+
+def token_budget() -> int:
+    """Tokens one chunk may hold: always ``chunk_size``; the chunk is never cut to the window.
+
+    Raises :class:`EmbedWindowError` when the embedder's window cannot hold one chunk.
+    """
+    check_embed_window()
+    return active_config().chunk_size
 
 
 def _char_budget() -> tuple[int, int]:

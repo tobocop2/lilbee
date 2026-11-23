@@ -5283,8 +5283,8 @@ class TestWarnWhenChatDownsized:
         with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
             planning_mod.warn_when_embed_window_below_chunk(launch)
         assert [r.message for r in caplog.records] == [
-            "The embedding model accepts 504 tokens per input, below chunk_size 512, "
-            "so each chunk holds at most 504 tokens. Set chunk_size to 504 or lower."
+            "The embedding model accepts 504 tokens per input; chunk_size 512 does not fit. "
+            "Set chunk_size to 376 or lower."
         ]
 
     def test_stays_quiet_when_the_embed_window_holds_the_chunk_size(

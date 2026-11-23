@@ -33,6 +33,7 @@ from lilbee.data.types import (
 )
 from lilbee.providers.base import aux_options
 from lilbee.providers.engine_params import INPUT_HEADROOM_TOKENS
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.retrieval.embedding_profiles import resolve_embedding_profile
 from lilbee.runtime.cancellation import CancelSignal
 from lilbee.runtime.progress import (
@@ -44,6 +45,7 @@ from lilbee.runtime.progress import (
     noop_callback,
 )
 
+from .backends.tokenizer import FALLBACK_CHARS_PER_TOKEN
 from .backends.vision_ocr import backend_options_for, ocr_request
 from .batch import active_extract_batcher
 from .chunk import (
@@ -129,12 +131,13 @@ def _embed_inputs(
 
     Only the vector sees the title and the situating sentence; the stored chunk text is
     unchanged. ``None`` falls back to the scoped per-file title (the OCR chains).
-    The title and the sentence are cut to the input headroom, so the chunk is never cut.
+    The title and the sentence are cut to the room the embedder's window leaves after a full
+    chunk, so the chunk is never cut.
     """
     effective = title if title is not None else _embed_title.get()
     if not active_config().embed_titles:
         effective = ""
-    budget: int | None = None
+    budget: _HeadBudget | None = None
     # A title without a sentence is the same head for every chunk: count it once.
     bounded: dict[str, str] = {}
     inputs: list[str] = []
@@ -151,23 +154,43 @@ def _embed_inputs(
     return inputs
 
 
-def _head_budget() -> int:
-    """Tokens the title and sentence may take: the headroom less the document prefix and newline."""
-    prefix = resolve_embedding_profile(active_config().embedding_model).doc_prefix
-    return INPUT_HEADROOM_TOKENS - count_embed_tokens(prefix) - count_embed_tokens("\n")
+@dataclass(frozen=True)
+class _HeadBudget:
+    """The room the title and sentence may take, in the unit *count* measures."""
+
+    room: int
+    count: Callable[[str], int]
 
 
-def _bounded_head(head: str, budget: int) -> str:
-    """The longest start of *head* that the embedder counts at most *budget* tokens.
+def _head_budget() -> _HeadBudget:
+    """The room one full chunk leaves for the title and sentence in one embed input.
 
-    The count is the chunker's own (the embedder's tokenizer, else its character estimate).
+    A remote embedder has no token window: its bound is the embedder's character guard, less
+    the prefix, the newline and the longest chunk in characters. A local one has the window
+    the provider reports, at most a chunk plus the headroom, less the chunk, prefix and newline.
     """
-    if count_embed_tokens(head) <= budget:
+    from lilbee.retrieval.embedder import embed_char_budget
+
+    config = active_config()
+    prefix = resolve_embedding_profile(config.embedding_model).doc_prefix
+    if config.embedding_model and parse_model_ref(config.embedding_model).is_remote:
+        longest_chunk = config.chunk_size * FALLBACK_CHARS_PER_TOKEN
+        return _HeadBudget(embed_char_budget(config) - len(prefix) - 1 - longest_chunk, len)
+    full = config.chunk_size + INPUT_HEADROOM_TOKENS
+    window = get_services().provider.embed_token_cap()
+    total = full if window is None else min(window, full)
+    room = total - config.chunk_size - count_embed_tokens(prefix) - count_embed_tokens("\n")
+    return _HeadBudget(room, count_embed_tokens)
+
+
+def _bounded_head(head: str, budget: _HeadBudget) -> str:
+    """The longest start of *head* that *budget* counts at most its room."""
+    if budget.count(head) <= budget.room:
         return head
     low, high = 0, len(head) - 1
     while low < high:
         middle = (low + high + 1) // 2
-        if count_embed_tokens(head[:middle]) <= budget:
+        if budget.count(head[:middle]) <= budget.room:
             low = middle
         else:
             high = middle - 1
