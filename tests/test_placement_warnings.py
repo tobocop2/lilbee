@@ -10,6 +10,7 @@ from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import WorkerRole
+from tests._engine_logs import enrol_launch
 
 
 class TestPlacementWarnings:
@@ -51,7 +52,7 @@ class TestPlacementWarnings:
             model="chat-model",
             est_vram_bytes=4000 * MIB,
         )
-        manager._launch_by_model = {"chat-0": launch}
+        enrol_launch(manager, launch)
         manager._check_estimates({"chat-0"})
         codes = [w.code for w in manager.health_warnings()]
         assert codes == [WarningCode.PLACEMENT_DIVERGED]
@@ -86,7 +87,7 @@ class TestPlacementWarnings:
             est_vram_bytes=4 * GIB,
             est_vram_by_device={"CUDA0": 4 * GIB},
         )
-        manager._launch_by_model = {launch.model_id: launch}
+        enrol_launch(manager, launch)
         manager._member_port_by_model = {launch.model_id: 5901}
         manager._check_estimates({launch.model_id})
         codes = [w.code for w in manager.health_warnings()]

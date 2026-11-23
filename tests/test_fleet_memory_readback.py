@@ -33,6 +33,7 @@ from lilbee.providers.fleet.readback import (
 )
 from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import WorkerRole
+from tests._engine_logs import enrol_launch
 
 GIB = 1024**3
 
@@ -463,10 +464,7 @@ def _manager_with_launch(
         est_vram_bytes=4 * GIB,
         est_vram_by_device={"CUDA0": 4 * GIB},
     )
-    manager._launch_by_model = {launch.model_id: launch}
-    # Record the log file the way start does: llama-server writes its own, with no --memory.
-    log_path = readback.engine_log_of(LLAMA, launch, manager.log_path.parent)
-    manager._engine_logs = {} if log_path is None else {launch.model_id: log_path}
+    enrol_launch(manager, launch)
     if port is not None:
         manager._member_port_by_model = {launch.model_id: port}
     return manager

@@ -81,6 +81,7 @@ def test_a_ready_engine_clears_that_role(monkeypatch, tmp_path) -> None:
     mgr._log_path = tmp_path / "swap.log"
     launch = type("L", (), {"role": WorkerRole.CHAT, "est_vram_bytes": 0, "argv": []})()
     mgr._launch_by_model = {"chat-0": launch}
+    mgr._engine_logs = {}
     monkeypatch.setattr(sm, "report_missing_log", lambda *_a: False)
     mgr._check_estimates({"chat-0"})
 
