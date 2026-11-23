@@ -10,8 +10,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest import mock
 from typing import Any
+from unittest import mock
 from unittest.mock import MagicMock, patch
 
 import pytest

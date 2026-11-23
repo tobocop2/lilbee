@@ -795,7 +795,8 @@ def test_the_inputs_of_a_batch_split_by_width(widths: list[int], groups: list[li
 def test_the_families_of_the_server_are_those_of_the_adapter() -> None:
     from lilbee.providers.fleet.engines.mlx import SERVED_FAMILIES
 
-    assert srv.FAMILIES == {
+    expected = {
         srv.TASK_EMBED: SERVED_FAMILIES[WorkerRole.EMBED][0],
         srv.TASK_RERANK: SERVED_FAMILIES[WorkerRole.RERANK][0],
     }
+    assert expected == srv.FAMILIES
