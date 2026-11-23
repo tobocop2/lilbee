@@ -2,20 +2,30 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from textual.await_complete import AwaitComplete
 from textual.screen import ModalScreen, Screen, ScreenResultType
 
 
-def pop_screens_above(screen: Screen[Any]) -> None:
-    """Close each screen above *screen*, top first, so that *screen* is on top.
+def pop_screens_above(screen: Screen[Any], retry: Callable[[], object]) -> bool:
+    """Close each screen above *screen*, top first; return whether *screen* is now on top.
 
-    The pops are not awaited, because one of the screens above can be the caller,
-    and Textual refuses that await.
+    A screen above that has not mounted yet stays open, and *retry* runs once it has
+    mounted: Textual still runs the mount handler of a screen closed before its mount,
+    and that handler then reads a stack that no longer holds it. A *screen* that is no
+    longer on the stack returns False and schedules nothing. The pops are not awaited,
+    because one of the screens above can be the caller, and Textual refuses that await.
     """
-    while not screen.is_active:
-        screen.app.screen.dismiss()
+    app = screen.app
+    while screen in app.screen_stack and not screen.is_active:
+        top = app.screen
+        if not top.is_mounted:
+            top.call_later(retry)
+            return False
+        top.dismiss()
+    return screen in app.screen_stack
 
 
 class Dialog(ModalScreen[ScreenResultType]):
@@ -28,7 +38,11 @@ class Dialog(ModalScreen[ScreenResultType]):
         dialog closes still sends it an answer, and Textual's dismiss pops whichever
         screen is on top.
         """
-        if self not in self.app.screen_stack:
+
+        def _again() -> None:
+            # Not awaited: the retry runs on the screen above, which this dismiss closes.
+            self.dismiss(result)
+
+        if not pop_screens_above(self, _again):
             return AwaitComplete()
-        pop_screens_above(self)
         return super().dismiss(result)
