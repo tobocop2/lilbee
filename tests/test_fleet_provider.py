@@ -926,6 +926,46 @@ def test_reload_of_a_bound_engine_preloads_the_reacquired_roles(monkeypatch) -> 
     assert kicked and kicked[0]["name"] == "fleet-reload-warm"  # roles warmed off-thread
 
 
+def test_a_reload_after_shutdown_starts_no_warm(monkeypatch) -> None:
+    """A reload that lands after the shutdown latch leaves no warm to outlive the provider."""
+    kicked = _stub_warm_thread(monkeypatch)
+    p = FleetProvider()
+    p._shut_down = True
+
+    p._preload_restarted([WorkerRole.CHAT])
+
+    assert kicked == []
+    assert p._reload_warm is None
+
+
+def test_a_second_reload_warm_waits_for_the_first(monkeypatch) -> None:
+    """Two reload warms never overlap: the second starts its requests after the first ends."""
+    p = FleetProvider()
+    first_started = threading.Event()
+    release_first = threading.Event()
+    order: list[frozenset[WorkerRole]] = []
+
+    def preload(roles: frozenset[WorkerRole]) -> None:
+        if roles == {WorkerRole.CHAT}:
+            first_started.set()
+            release_first.wait(timeout=5.0)
+        order.append(roles)
+
+    monkeypatch.setattr(p, "_preload_roles", preload)
+    p._preload_restarted([WorkerRole.CHAT])
+    assert first_started.wait(timeout=5.0)
+    p._preload_restarted([WorkerRole.EMBED])
+    second = p._reload_warm
+    assert second is not None
+
+    second.join(timeout=0.2)
+    assert second.is_alive()  # held behind the first warm
+    release_first.set()
+    second.join(timeout=5.0)
+
+    assert order == [frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.EMBED})]
+
+
 def test_ensure_fleet_refused_after_shutdown(monkeypatch, tmp_path: Path) -> None:
     """bb-dpp source guard: once shut down (and likely discarded by reset_services),
     a lingering warm-up/reload thread's _ensure_fleet must not spawn a new llama-swap

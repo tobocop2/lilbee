@@ -759,6 +759,17 @@ def test_chat_abortable_stops_before_headers_once_cancelled(deadline_s: float | 
     assert client.in_flight == 0
 
 
+def test_chat_abortable_stops_before_headers_once_the_client_closes() -> None:
+    """A close while the server holds its headers ends the request at once."""
+    client = _client(_headers_held())
+    threading.Timer(0.2, client.close).start()
+    started = time.monotonic()
+    with pytest.raises(TaskCancelledError):
+        client.chat_abortable([{"role": "user", "content": "hi"}])
+    assert time.monotonic() - started < 2.0
+    assert client.in_flight == 0
+
+
 def test_chat_abortable_surfaces_a_server_error_body() -> None:
     """The error body of a streamed response is read before it is reported."""
 
