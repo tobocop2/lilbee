@@ -74,6 +74,7 @@ def _row(ref: str, entry: Mapping[str, Any]) -> CatalogModel:
         gguf_filename="",
         size_gb=size_gb,
         min_ram_gb=estimate_min_ram_gb(size_gb) if footprint is None else round(footprint, 1),
+        footprint_gb=0.0 if footprint is None else float(footprint),
         description=_description(name, int(context)),
         featured=False,
         downloads=0,

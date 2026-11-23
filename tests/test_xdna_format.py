@@ -22,10 +22,13 @@ from lilbee.modelhub.model_manager.validation import _first_installed_local_ref
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.modelhub.role_validator import validate_model_task_assignment
 from lilbee.providers.fleet import model_memory as mm
+from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.fleet.engines.lemonade import LEMONADE
 from lilbee.providers.fleet.memory_types import MemoryRequest
 from lilbee.providers.model_ref import routes_to_native_model
+from lilbee.providers.roles import WorkerRole
 
 
 class TestRef:
@@ -275,3 +278,31 @@ class TestMemory:
         )
         est = mm.estimate_memory(ModelFormat.XDNA, request)
         assert est.device_bytes == mm.UNKNOWN_SIZE_RESERVE_BYTES
+
+    def test_the_estimate_states_the_size_is_unknown_and_charges_host_memory(
+        self, tmp_path: Path
+    ) -> None:
+        request = MemoryRequest(
+            model_path=tmp_path / "t.json",
+            ctx=2048,
+            slots=1,
+            gpu_layers=0,
+            flash_attn=False,
+            kv_cache_type=KvCacheType.F16,
+        )
+        est = mm.estimate_memory(ModelFormat.XDNA, request)
+        assert (est.size_known, est.host_bytes) == (False, mm.UNKNOWN_SIZE_RESERVE_BYTES)
+
+    def test_the_planner_charges_a_lemonade_model_the_reserve_on_card_and_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        folder = tmp_path / "model"
+        folder.mkdir()
+        monkeypatch.setattr(planning.engine_params, "resolve_model_path", lambda ref: folder)
+        monkeypatch.setattr(LEMONADE, "model_meta", lambda path: None)
+        charged = planning._estimate_role(WorkerRole.CHAT, "ref", engine=LEMONADE, slots=1)
+        assert (charged.size_known, charged.est_vram_bytes, charged.est_ram_bytes) == (
+            False,
+            mm.UNKNOWN_SIZE_RESERVE_BYTES,
+            mm.UNKNOWN_SIZE_RESERVE_BYTES,
+        )
