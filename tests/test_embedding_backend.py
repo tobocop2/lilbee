@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import gc
+import subprocess
+import sys
 import threading
 import zlib
 from unittest.mock import MagicMock
@@ -148,6 +150,15 @@ class TestProviderEmbedders:
         assert register.call_count == 2
         assert embedders.name_for(first) == register.call_args_list[0].args[0].name()
 
+    def test_two_tables_never_hand_out_the_same_name(self, monkeypatch):
+        import xberg
+
+        from lilbee.data.extract.backends.embedding import _ProviderEmbedders
+
+        monkeypatch.setattr(xberg, "register_embedding_backend", MagicMock())
+        first, second = MagicMock(), MagicMock()
+        assert _ProviderEmbedders().name_for(first) != _ProviderEmbedders().name_for(second)
+
     def test_two_first_uses_at_once_agree_on_the_name_stored_first(self, monkeypatch):
         import xberg
 
@@ -177,6 +188,11 @@ class TestProviderEmbedders:
         assert len(registered) == 2
         assert len(set(names)) == 1
         assert names[0] == registered[1]
+
+        unregister = MagicMock()
+        monkeypatch.setattr(xberg, "unregister_embedding_backend", unregister)
+        embedders.name_for(provider)
+        unregister.assert_called_once_with(registered[0])
 
     def test_the_backend_routes_to_its_providers_embed_and_reports_the_dimension(self, monkeypatch):
         import xberg
@@ -214,3 +230,82 @@ class TestProviderEmbedders:
         gc.collect()
         with pytest.raises(ReferenceError, match="no longer exists"):
             backend.embed(["hello"])
+
+
+class TestABackendLeavesWithItsProvider:
+    def test_collecting_built_providers_returns_the_registry_to_its_start(self):
+        import xberg
+
+        from lilbee.data.extract.backends.embedding import provider_embedders
+
+        keeper = MagicMock()
+        start = _settled_names(keeper)
+        providers = [MagicMock() for _ in range(5)]
+        for provider in providers:
+            provider_embedders.name_for(provider)
+        assert len(set(xberg.list_embedding_backends()) - start) == 5
+        del provider, providers
+        assert _settled_names(keeper) == start
+
+    def test_a_live_providers_backend_stays_registered(self):
+        from lilbee.data.extract.backends.embedding import provider_embedders
+
+        keeper, provider = MagicMock(), MagicMock()
+        name = provider_embedders.name_for(provider)
+        assert name in _settled_names(keeper)
+        del provider
+        assert name not in _settled_names(keeper)
+
+    def test_unregistering_a_backend_that_is_gone_is_a_no_op(self):
+        from lilbee.data.extract.backends.embedding import _unregister, provider_embedders
+
+        keeper, provider = MagicMock(), MagicMock()
+        start = _settled_names(keeper)
+        name = provider_embedders.name_for(provider)
+        del provider
+        assert _settled_names(keeper) == start
+        _unregister(name)
+        _unregister(name)
+        assert _settled_names(keeper) == start
+
+    def test_a_collection_while_xberg_registers_does_not_hang(self):
+        result = subprocess.run(
+            [sys.executable, "-c", _COLLECT_DURING_REGISTER],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr[-2000:]
+        assert result.stdout.strip() == "gone"
+
+
+def _settled_names(keeper: MagicMock) -> set[str]:
+    """xberg's embedding names once collected providers are released and a lookup has run."""
+    import xberg
+
+    from lilbee.data.extract.backends.embedding import provider_embedders
+
+    gc.collect()
+    provider_embedders.name_for(keeper)
+    return set(xberg.list_embedding_backends())
+
+
+# A provider that only the cyclic collector frees, collected while xberg holds its
+# registry lock and calls the new backend's initialize.
+_COLLECT_DURING_REGISTER = """
+import gc
+from unittest.mock import MagicMock
+import xberg
+from lilbee.data.extract.backends.embedding import LilbeeEmbeddingBackend, provider_embedders
+gc.disable()
+old = MagicMock()
+old.me = old
+old_name = provider_embedders.name_for(old)
+del old
+LilbeeEmbeddingBackend.initialize = lambda self: gc.collect()
+live = MagicMock()
+provider_embedders.name_for(live)
+provider_embedders.name_for(live)
+print("gone" if old_name not in xberg.list_embedding_backends() else "left")
+"""

@@ -8,7 +8,6 @@ lilbee's embedder is a GGUF model whose vocab isn't published that way. This let
 
 from __future__ import annotations
 
-import collections
 import itertools
 import logging
 import threading
@@ -17,6 +16,8 @@ from typing import TYPE_CHECKING
 
 from lilbee.data.types import TokenizerBackendName
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+from .released import ReleasedNames
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -113,7 +114,7 @@ class _ProviderTokenizers:
         self._names: weakref.WeakKeyDictionary[LLMProvider, str] = weakref.WeakKeyDictionary()
         self._serial = itertools.count(1)
         self._failures: dict[str, int] = {}
-        self._released: collections.deque[str] = collections.deque()
+        self._released = ReleasedNames()
         self._lock = threading.Lock()
 
     def name_for(self, provider: LLMProvider) -> str:
@@ -133,11 +134,10 @@ class _ProviderTokenizers:
         with self._lock:
             stored = self._names.setdefault(provider, name)
             if stored != name:
-                self._released.append(name)
+                self._released.release(name)
                 return stored
             self._failures[name] = 0
-        # The finalizer only appends: it can run in a garbage collection while any lock is held.
-        weakref.finalize(provider, self._released.append, name)
+        self._released.release_when_collected(provider, name)
         return name
 
     def failures(self, name: str) -> int | None:
@@ -147,11 +147,7 @@ class _ProviderTokenizers:
 
     def _unregister_released(self) -> None:
         """Unregister the name of each released provider and drop its count."""
-        while True:
-            try:
-                name = self._released.popleft()
-            except IndexError:  # empty; another thread may have taken the last name
-                return
+        for name in self._released.take():
             with self._lock:
                 self._failures.pop(name, None)
             _unregister(name)
