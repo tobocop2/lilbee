@@ -243,9 +243,10 @@ class TestTheCheckRunsOnARealLog:
             ENV_LOG_FILE,
             ENV_LOG_VERBOSITY,
             engine_log_env,
+            engine_log_path,
         )
 
-        env = engine_log_env(tmp_path, "rerank-1")
+        env = engine_log_env(engine_log_path(tmp_path, "rerank-1"))
         assert env[ENV_LOG_FILE].endswith("engine-rerank-1.log")
         # Below this the engine prints no buffer report at all, so the check
         # would silently never fire.
@@ -420,9 +421,10 @@ class TestBothEnvSpellingsAreSet:
             ENV_LOG_FILE,
             ENV_LOG_VERBOSITY,
             engine_log_env,
+            engine_log_path,
         )
 
-        env = engine_log_env(tmp_path, "chat-0")
+        env = engine_log_env(engine_log_path(tmp_path, "chat-0"))
         assert env[ENV_LOG_FILE] == env[ENV_ARG_LOG_FILE]
         assert env[ENV_LOG_VERBOSITY] == env[ENV_ARG_LOG_VERBOSITY] == "4"
         assert env[ENV_LOG_FILE].endswith("engine-chat-0.log")
