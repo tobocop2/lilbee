@@ -9,7 +9,7 @@ import pytest
 
 from lilbee.app.engine_choice import BookReading, EngineBook
 from lilbee.core.config import cfg
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import binary, first_use
 from lilbee.providers.fleet.engines import LLAMA, EngineAdapter
 from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
@@ -195,3 +195,9 @@ class TestAPlannedEngineWithNoInstall:
     ) -> None:
         with pytest.raises(ProviderError, match="not installed"):
             FleetProvider()._raise_no_clients(role)
+
+    def test_the_binary_error_has_the_not_found_kind(self, absent_engine: EngineAdapter) -> None:
+        with pytest.raises(ProviderError, match="not installed") as raised:
+            absent_engine.binary()
+
+        assert raised.value.kind is ProviderErrorKind.NOT_FOUND

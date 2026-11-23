@@ -14,7 +14,7 @@ from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.types import ModelFormat
 from lilbee.catalog.xdna import read_checkpoint
 from lilbee.core.config import cfg
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe
 from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
@@ -172,7 +172,10 @@ class LemonadeAdapter:
         tool = store_tool(self.pin_record(), _TOOL, session_host())
         tool = tool or self.user_binary()
         if tool is None:
-            raise ProviderError(f"The Lemonade engine is not installed. {_INSTALL_HINT}")
+            raise ProviderError(
+                f"The Lemonade engine is not installed. {_INSTALL_HINT}",
+                kind=ProviderErrorKind.NOT_FOUND,
+            )
         return tool
 
     def user_binary(self) -> Path | None:
