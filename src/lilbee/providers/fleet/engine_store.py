@@ -718,7 +718,15 @@ class EngineStore:
             return found
         pack = self.pack_path(lock)
         if pack.is_file():
-            return self.install_from_wheel(lock, pack)
+            try:
+                return self.install_from_wheel(lock, pack)
+            except ChecksumError as exc:
+                raise ChecksumError(
+                    f"The pack {pack} for engine {lock.engine} {lock.version} "
+                    f"({lock.backend}) does not match its pin, so lilbee did not install it. "
+                    f"Copy {pack.name} into {pack.parent} again from its source "
+                    "and run the install again."
+                ) from exc
         with self._scratch() as scratch:
             try:
                 wheel = fetch(lock, scratch)
