@@ -29,6 +29,7 @@ from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines.llama import LlamaCppAdapter
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
@@ -4429,15 +4430,40 @@ def test_a_chat_request_into_a_model_that_cannot_load_names_the_model_and_its_en
     assert snap.error == line
 
 
-def test_a_chat_request_names_no_log_for_an_engine_that_writes_none(monkeypatch, tmp_path) -> None:
-    """A launch that serves its numbers over HTTP has no engine log file, so none is named."""
+def test_a_chat_request_names_the_group_log_for_a_launch_that_serves_its_memory(
+    monkeypatch, tmp_path
+) -> None:
+    """A launch that serves its numbers over HTTP writes no log of its own: the group log is named."""
     from lilbee.providers.base import ProviderError
 
     p = _chat_that_cannot_load(monkeypatch, tmp_path, ["llama-server", "--memory"])
     with pytest.raises(ProviderError) as info:
         p.chat([{"role": "user", "content": "hi"}])
     assert str(info.value) == (
-        "The engine for acme/bort-GGUF/unk-arch.gguf stopped before it could answer (HTTP 500)."
+        "The engine for acme/bort-GGUF/unk-arch.gguf stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {tmp_path / 'logs' / 'llama-swap-chat.log'}."
+    )
+
+
+class _NoOwnLogEngine(LlamaCppAdapter):
+    """An engine like TEI: it reads no log variables, so llama-swap keeps its output."""
+
+    writes_own_log = False
+
+
+def test_a_request_into_an_engine_that_writes_no_log_names_the_group_log(
+    monkeypatch, tmp_path
+) -> None:
+    """A worker without a log of its own is named by the llama-swap log that holds its output."""
+    from lilbee.providers.base import ProviderError
+
+    p = _chat_that_cannot_load(monkeypatch, tmp_path, ["text-embeddings-router"])
+    monkeypatch.setattr(p, "_engine_of", lambda _launch: _NoOwnLogEngine())
+    with pytest.raises(ProviderError) as info:
+        p.chat([{"role": "user", "content": "hi"}])
+    assert str(info.value) == (
+        "The engine for acme/bort-GGUF/unk-arch.gguf stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {tmp_path / 'logs' / 'llama-swap-chat.log'}."
     )
 
 

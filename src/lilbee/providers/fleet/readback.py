@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.providers.fleet.binary import engine_help, help_lists_option
@@ -40,6 +41,10 @@ from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.model_memory import memory_size_text
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.roles import WorkerRole
+
+if TYPE_CHECKING:
+    from lilbee.providers.fleet.engines.base import EngineAdapter
+    from lilbee.providers.fleet.launch import InstanceLaunch
 
 log = logging.getLogger(__name__)
 
@@ -230,18 +235,21 @@ def engine_log_path(log_dir: Path, model_id: str) -> Path:
     return log_dir / _ENGINE_LOG_TEMPLATE.format(model_id=model_id)
 
 
-def writes_engine_log(argv: list[str]) -> bool:
-    """Whether a launch with *argv* writes the engine log file.
+def engine_log_of(engine: EngineAdapter, launch: InstanceLaunch, log_dir: Path) -> Path | None:
+    """The file *launch*'s engine writes its own output to, or None when it writes none.
 
-    A launch carrying ``--memory`` serves its numbers over HTTP and gets no log
-    env, so no file exists for it.
+    Only an engine that reads the log variables writes one. A launch carrying
+    ``--memory`` serves its numbers over HTTP and gets no log env, so no file
+    exists for it either.
     """
-    return MEMORY_FLAG not in argv
+    if not engine.writes_own_log or MEMORY_FLAG in launch.argv:
+        return None
+    return engine_log_path(log_dir, launch.model_id)
 
 
-def engine_log_env(log_dir: Path, model_id: str) -> dict[str, str]:
+def engine_log_env(log_path: Path) -> dict[str, str]:
     """Environment that makes the engine report what it allocated, and where."""
-    path = str(engine_log_path(log_dir, model_id))
+    path = str(log_path)
     return {
         ENV_LOG_FILE: path,
         ENV_ARG_LOG_FILE: path,

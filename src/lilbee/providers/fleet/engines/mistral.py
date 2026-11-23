@@ -236,6 +236,7 @@ class MistralAdapter:
     equal_split_only = True
     takes_device_names = False
     concatenates_pooling = True
+    writes_own_log = False
     bundled = False
     server_process = ServerProcess(name=_TOOL)
 

@@ -18,6 +18,7 @@ import pytest
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import swap_manager as sm
 from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines.llama import LlamaCppAdapter
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_manager import EngineLifetime, SwapManager
@@ -93,6 +94,12 @@ def _raise_connect_error(url):
     raise httpx.ConnectError("refused", request=None)
 
 
+class _NoOwnLogEngine(LlamaCppAdapter):
+    """An engine like TEI: it reads no log variables, so llama-swap keeps its output."""
+
+    writes_own_log = False
+
+
 def _launch(role: WorkerRole) -> InstanceLaunch:
     return InstanceLaunch(
         role=role,
@@ -112,6 +119,31 @@ class TestStart:
         mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         assert mgr.log_path == tmp_path / "logs" / "llama-swap-chat.log"
         assert mgr.log_path.is_file()
+
+    def test_a_worker_without_its_own_log_has_its_output_copied_to_the_group_log(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, SwapGroup.EMBED)
+        mgr.start(
+            [_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(_NoOwnLogEngine())
+        )
+        config = json.loads(mgr._config_path.read_text())
+        assert config["logToStdout"] == "proxy,upstream"
+        assert "env" not in config["models"]["embed-0"]
+
+    def test_a_worker_with_its_own_log_is_pointed_at_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, SwapGroup.EMBED)
+        mgr.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(LLAMA))
+        config = json.loads(mgr._config_path.read_text())
+        assert config["logToStdout"] == "proxy"
+        log_file = tmp_path / "logs" / "engine-embed-0.log"
+        assert f"LLAMA_LOG_FILE={log_file}" in config["models"]["embed-0"]["env"]
 
     def test_writes_config_and_becomes_ready(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2234,11 +2266,20 @@ class TestEstimateReadback:
             est_vram_bytes=est,
         )
 
+    @staticmethod
+    def _enrol(manager, launch, engine=LLAMA) -> None:
+        """Record *launch* the way ``start`` does, with the log file its engine writes."""
+        from lilbee.providers.fleet.readback import engine_log_of
+
+        manager._launch_by_model = {launch.model_id: launch}
+        log_path = engine_log_of(engine, launch, manager._log_path.parent)
+        manager._engine_logs = {} if log_path is None else {launch.model_id: log_path}
+
     def test_a_ready_engine_is_checked_against_its_estimate(self, tmp_path, caplog) -> None:
         from lilbee.providers.fleet.readback import engine_log_path
 
         manager = self._manager(tmp_path)
-        manager._launch_by_model = {"chat-0": self._launch(4 * 1024**3)}
+        self._enrol(manager, self._launch(4 * 1024**3))
         log_dir = manager._log_path.parent
         log_dir.mkdir(parents=True, exist_ok=True)
         engine_log_path(log_dir, "chat-0").write_text(
@@ -2252,7 +2293,7 @@ class TestEstimateReadback:
         from lilbee.providers.fleet.readback import engine_log_path
 
         manager = self._manager(tmp_path)
-        manager._launch_by_model = {"chat-0": self._launch(4 * 1024**3)}
+        self._enrol(manager, self._launch(4 * 1024**3))
         log_dir = manager._log_path.parent
         log_dir.mkdir(parents=True, exist_ok=True)
         engine_log_path(log_dir, "chat-0").write_text(
@@ -2269,7 +2310,7 @@ class TestEstimateReadback:
         from lilbee.providers.fleet.readback import engine_log_path
 
         manager = self._manager(tmp_path)
-        manager._launch_by_model = {"chat-0": self._launch(0)}
+        self._enrol(manager, self._launch(0))
         log_dir = manager._log_path.parent
         log_dir.mkdir(parents=True, exist_ok=True)
         engine_log_path(log_dir, "chat-0").write_text(
@@ -2284,11 +2325,22 @@ class TestEstimateReadback:
         # build never accepted the settings that produce one. Silent, that reads
         # as a passing check forever, which is how a wrong variable name hid.
         manager = self._manager(tmp_path)
-        manager._launch_by_model = {"chat-0": self._launch(4 * 1024**3)}
+        self._enrol(manager, self._launch(4 * 1024**3))
         manager._log_path.parent.mkdir(parents=True, exist_ok=True)
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
             manager._check_estimates({"chat-0"})
         assert "wrote no log" in caplog.text
+
+    def test_a_ready_engine_that_writes_no_log_of_its_own_is_not_reported(
+        self, tmp_path, caplog
+    ) -> None:
+        # Its output is in the group log, so there is no file of its own to miss.
+        manager = self._manager(tmp_path)
+        self._enrol(manager, self._launch(4 * 1024**3), engine=_NoOwnLogEngine())
+        manager._log_path.parent.mkdir(parents=True, exist_ok=True)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
+            manager._check_estimates({"chat-0"})
+        assert caplog.text == ""
 
     def test_an_unknown_model_id_is_skipped(self, tmp_path, caplog) -> None:
         manager = self._manager(tmp_path)

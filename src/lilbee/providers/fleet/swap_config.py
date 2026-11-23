@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from lilbee.data.offload import max_workers
 from lilbee.providers.fleet.engines.base import PORT_SLOT
-from lilbee.providers.fleet.readback import engine_log_env, writes_engine_log
+from lilbee.providers.fleet.readback import engine_log_env
 from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
@@ -40,6 +40,12 @@ _COLD_LOAD_FLOOR_S: dict[WorkerRole, int] = {
 # Conservative cold-load disk rate; a slow network volume streams well under this.
 _COLD_LOAD_BYTES_PER_S = 150 * 1024 * 1024
 _LOG_LEVEL = "info"
+# The streams llama-swap copies to its stdout, which lilbee writes to the group
+# log. The upstream stream is the engines' own output: it goes in only when an
+# engine writes no log file of its own, because a llama-server at trace verbosity
+# would put every line in both files. The http stream (one line per request) never does.
+_STDOUT_PROXY = "proxy"
+_STDOUT_PROXY_AND_UPSTREAM = "proxy,upstream"
 # Matches the --host every server argv binds (adapters); "localhost" would have
 # llama-swap dial [::1] first, where another process could hold the same port.
 _PROXY_URL_TEMPLATE = "http://127.0.0.1:{port}"
@@ -58,12 +64,14 @@ _CONCURRENCY_PROCESSES = 4
 # Part of the engine pin, so a peer never binds an engine launched under another
 # contract. Raise it when a launch rule changes. 1: every model carries
 # concurrencyLimit. 2: an equal split across cards runs tensor parallel. 3: a swap
-# process keeps a residency class loaded together.
-SWAP_CONFIG_REVISION = 3
+# process keeps a residency class loaded together. 4: the llama-swap log holds the
+# output of every engine that writes no log of its own.
+SWAP_CONFIG_REVISION = 4
 
 # llama-swap config keys.
 _KEY_HEALTH_TIMEOUT = "healthCheckTimeout"
 _KEY_LOG_LEVEL = "logLevel"
+_KEY_LOG_TO_STDOUT = "logToStdout"
 _KEY_MODELS = "models"
 _KEY_CMD = "cmd"
 _KEY_PROXY = "proxy"
@@ -83,7 +91,7 @@ def build_swap_config(
     *,
     swap: bool = False,
     ttl_seconds: int = 0,
-    engine_log_dir: Path | None = None,
+    engine_logs: Mapping[str, Path] | None = None,
 ) -> str:
     """Render a llama-swap config (JSON, which is valid YAML) for *launches*.
 
@@ -97,14 +105,16 @@ def build_swap_config(
     llama-swap's fixed ``startPort`` range) so a previous instance's lingering
     server can't collide with the new fleet's bind.
 
-    ``engine_log_dir`` points each engine at its own log there, at the verbosity
-    that reports what it allocated. llama-swap forwards none of the upstream's
-    output, so for an engine without ``GET /memory`` that file is the only place
-    those numbers exist, and reading them back is what tells the planner whether
-    its estimate held (:mod:`lilbee.providers.fleet.readback`). A launch carrying
-    ``--memory`` serves the same numbers over HTTP instead and gets no log env:
-    the trace-level file is exactly what the endpoint retires.
+    ``engine_logs`` maps a model id to the file its engine writes its own log to,
+    at the verbosity that reports what it allocated
+    (:func:`lilbee.providers.fleet.readback.engine_log_of`). For an engine
+    without ``GET /memory`` that file is the only place those numbers exist, and
+    reading them back is what tells the planner whether its estimate held. A
+    member with no entry writes no file, so llama-swap copies its output into
+    the group log instead; without that copy the output of a member that fails
+    to start is lost when the group stops.
     """
+    engine_logs = engine_logs or {}
     models: dict[str, object] = {}
     for launch in launches:
         port = member_ports[launch.model_id]
@@ -115,8 +125,9 @@ def build_swap_config(
             _KEY_CONCURRENCY_LIMIT: _concurrency_limit(launch),
         }
         env = dict(launch.env_overrides)
-        if engine_log_dir is not None and writes_engine_log(launch.argv):
-            env.update(engine_log_env(engine_log_dir, launch.model_id))
+        log_path = engine_logs.get(launch.model_id)
+        if log_path is not None:
+            env.update(engine_log_env(log_path))
         if env:
             entry[_KEY_ENV] = [f"{key}={value}" for key, value in env.items()]
         entry.update(launch.swap_extras)
@@ -124,6 +135,11 @@ def build_swap_config(
     config: dict[str, object] = {
         _KEY_HEALTH_TIMEOUT: health_check_timeout_s(launches),
         _KEY_LOG_LEVEL: _LOG_LEVEL,
+        _KEY_LOG_TO_STDOUT: (
+            _STDOUT_PROXY
+            if all(launch.model_id in engine_logs for launch in launches)
+            else _STDOUT_PROXY_AND_UPSTREAM
+        ),
         _KEY_MODELS: models,
         _KEY_GROUPS: _evicting_groups(launches) if swap else _resident_group(launches),
     }
