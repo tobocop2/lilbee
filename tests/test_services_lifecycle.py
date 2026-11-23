@@ -988,10 +988,14 @@ def test_a_second_signal_force_quits_with_its_status(sig, monkeypatch):
 
 _STUCK_WORKER_CHILD = """
 import asyncio
+import logging
 import sys
 import time
 
 from lilbee.app.services import install_engine_lifecycle_hooks
+
+# The stop thread logs a signal after the handler took it: the test waits for that line.
+logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(message)s")
 
 
 def _worker() -> None:
@@ -1040,13 +1044,19 @@ def _wait_or_kill(child: subprocess.Popen[str], timeout: float) -> tuple[int | N
 def test_a_second_terminate_ends_a_process_whose_worker_thread_is_stuck(tmp_path):
     """The exit after a first SIGTERM joins the stuck worker; the second SIGTERM ends it."""
     child = _start_worker_child(tmp_path, worker_s=120.0)
-    child.send_signal(signal.SIGTERM)
-    time.sleep(1.0)
-    still_running = child.poll() is None
-    child.send_signal(signal.SIGTERM)
+    assert child.stdout is not None
+    try:
+        child.send_signal(signal.SIGTERM)
+        # A second SIGTERM sent before the handler ran merges with the first one.
+        took_first = child.stdout.readline()
+        still_running = child.poll() is None
+        child.send_signal(signal.SIGTERM)
+        status = child.wait()  # bounded by the test timeout
+    finally:
+        child.kill()  # a no-op once the child ended
+    _, stderr = child.communicate()
 
-    status, stderr = _wait_or_kill(child, timeout=5.0)
-
+    assert took_first.startswith("Received signal SIGTERM"), stderr
     assert still_running, stderr
     assert status == 128 + signal.SIGTERM, stderr
     assert services_mod._FORCE_QUIT_NOTE in stderr
