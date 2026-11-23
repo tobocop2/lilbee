@@ -89,7 +89,6 @@ jobs:
           #   is transitive via mcp; lilbee never imports it.
           ignore-vulns: |
             CVE-2025-69872
-            PYSEC-2022-42969
             PYSEC-2025-183
 
   osv-scan:
