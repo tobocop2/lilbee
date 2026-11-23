@@ -1473,9 +1473,14 @@ def _saved_choices() -> dict[str, str]:
     return json.loads(cfg.engine_choices or "{}")
 
 
+def _picker_list_has_focus(app: LilbeeAppHost) -> bool:
+    """Whether the engine picker is on top with its list focused, so Enter reaches the list."""
+    return isinstance(app.screen, EnginePickerModal) and isinstance(app.focused, OptionList)
+
+
 async def _enter_keeps_the_saved_engine(app: LilbeeAppHost, pilot) -> None:
     """Open on a saved engine: that row is highlighted, and Enter alone keeps the choice."""
-    assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+    assert await wait_until(pilot, lambda: _picker_list_has_focus(app))
     assert app.screen.query_one(OptionList).highlighted == _OPENVINO_ROW
     await pilot.press("enter")
     assert await wait_until(pilot, lambda: not isinstance(app.screen, EnginePickerModal))
@@ -1518,3 +1523,19 @@ async def test_enter_enter_from_the_fleet_keeps_a_saved_engine() -> None:
             await _fleet_ready(app, pilot)
         app.query_one("#eng-chat", FleetPill).press()
         await _enter_keeps_the_saved_engine(app, pilot)
+
+
+async def test_the_picker_list_is_built_on_the_saved_engine() -> None:
+    """The saved row is highlighted when the list is built, before the picker mounts."""
+    from textual.compose import compose
+
+    cfg.engine_choices = json.dumps({GGUF_REF: "openvino"})
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        options = engine_service.engine_options(GGUF_REF)
+        modal = EnginePickerModal("title", "subtitle", GGUF_REF, None, options)
+        await app.screen.mount_all(compose(modal))
+        await pilot.pause()
+        assert app.screen.query_one("#engine-picker-list", OptionList).highlighted == (
+            _OPENVINO_ROW
+        )
