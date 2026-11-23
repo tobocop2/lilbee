@@ -1250,6 +1250,24 @@ def test_the_exit_wait_never_blocks_longer_than_a_slice(monkeypatch):
     assert timeouts == [services_mod._STOPPING_NOTE_GRACE_S, slice_s, slice_s]
 
 
+def test_the_exit_wait_lasts_until_the_stop_ends(monkeypatch):
+    """No count of slices ends the wait; only the end of the stop does."""
+    slices_before_the_end = 500
+    calls = 0
+
+    def _wait(timeout: float) -> bool:
+        nonlocal calls
+        calls += 1
+        return calls > slices_before_the_end
+
+    monkeypatch.setattr(services_mod._lifecycle, "wait_stopped", _wait)
+    monkeypatch.setattr(services_mod, "_write_exit_note", lambda note: None)
+
+    services_mod._wait_for_stop()
+
+    assert calls == slices_before_the_end + 1
+
+
 def test_a_fast_exit_stays_silent(capsys):
     """A teardown inside the grace keeps the exit as quiet as it always was."""
     _install_stub_services()
