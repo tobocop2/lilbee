@@ -69,7 +69,16 @@ def test_the_pattern_before_spaces_missed_a_spaced_extras_list() -> None:
 
 
 def test_no_command_installs_the_wheel_from_an_index_that_lacks_it() -> None:
-    for name in ("README.md", "docs/install.md", "docs/usage.md", "site/index.html"):
+    for name in (
+        "README.md",
+        "docs/install.md",
+        "docs/usage.md",
+        "docs/engines/README.md",
+        "docs/engines/auto.md",
+        "docs/engines/choose.md",
+        "docs/engines/install.md",
+        "site/index.html",
+    ):
         text = (ROOT / name).read_text(encoding="utf-8")
         assert "lilbee-engine-llama-cpp --extra-index-url" not in text, name
         assert "lilbee-engine-llama-cpp lilbee" not in text, name
