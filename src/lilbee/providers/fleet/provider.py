@@ -3393,6 +3393,9 @@ class FleetProvider:
             try:
                 with shard.open("rb", buffering=0) as handle:
                     while True:
+                        # A large model reads for minutes; shutdown must not wait on it.
+                        if self._shut_down:
+                            return
                         read = handle.readinto(chunk)
                         if not read:
                             break
