@@ -25,7 +25,7 @@ import json
 import signal
 import sys
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Protocol
@@ -87,7 +87,8 @@ class MlxBackend:
     """A model folder loaded by mlx-lm; the batch is padded on the right.
 
     A causal model reads no token after a position, so right padding leaves the state at
-    each sequence's own last token unchanged.
+    each sequence's own last token unchanged. The service passes inputs of similar width
+    together, so the padding stays small.
     """
 
     def __init__(self, path: str) -> None:
@@ -124,6 +125,43 @@ class MlxBackend:
         logits = head(states) if head is not None else self._model.model.embed_tokens.as_linear(states)
         chosen = logits[:, self._mx.array(list(picks))].astype(self._mx.float32)
         return np.array(chosen)
+
+
+MIN_BUCKET_WIDTH = 64
+"""Inputs up to this many tokens share one forward pass, however much they differ in width."""
+BUCKET_GROWTH = 2
+"""A forward pass holds inputs up to this many times as wide as its narrowest one."""
+
+
+def width_groups(batch: Sequence[Sequence[int]]) -> list[list[int]]:
+    """The indexes of *batch* in groups of similar width, each group in input order.
+
+    A forward pass pads its inputs to the widest one, on the right. One input near the window
+    would pad every short input beside it to that width, in memory and in time. Sorted by width,
+    an input joins the open group while it is at most ``BUCKET_GROWTH`` times as wide as the
+    narrowest input of that group, or at most ``MIN_BUCKET_WIDTH`` tokens wide.
+    """
+    groups: list[list[int]] = []
+    narrowest = 0
+    for index in sorted(range(len(batch)), key=lambda i: len(batch[i])):
+        width = len(batch[index])
+        if groups and width <= max(MIN_BUCKET_WIDTH, BUCKET_GROWTH * narrowest):
+            groups[-1].append(index)
+        else:
+            groups.append([index])
+            narrowest = width
+    return [sorted(group) for group in groups]
+
+
+def run_in_width_groups(
+    batch: Sequence[Sequence[int]], run: Callable[[Sequence[Sequence[int]]], np.ndarray]
+) -> np.ndarray:
+    """The rows of ``run`` over each width group of *batch*, back in the order of *batch*."""
+    groups = width_groups(batch)
+    rows = np.concatenate([run([batch[i] for i in group]) for group in groups])
+    ordered = np.empty_like(rows)
+    ordered[[i for group in groups for i in group]] = rows
+    return ordered
 
 
 class RequestError(Exception):
@@ -172,7 +210,7 @@ class Service:
             raise RequestError(400, "encoding_format must be float or base64")
         with self._lock:
             batch = [self._embed_ids(text) for text in texts]
-            states = self.backend.last_hidden(batch)
+            states = run_in_width_groups(batch, self.backend.last_hidden)
         wanted = body.get("dimensions")
         if wanted is not None and wanted != states.shape[1]:
             raise RequestError(
@@ -225,7 +263,9 @@ class Service:
         with self._lock:
             batch = [self._rerank_ids(query, doc, instruction) for doc in documents]
             picks = [self.backend.token_id(_NO), self.backend.token_id(_YES)]
-            logits = self.backend.last_logits(batch, picks).astype(np.float64)
+            logits = run_in_width_groups(
+                batch, lambda part: self.backend.last_logits(part, picks)
+            ).astype(np.float64)
         shifted = np.exp(logits - logits.max(axis=1, keepdims=True))
         scores = shifted[:, 1] / shifted.sum(axis=1)
         order = sorted(range(len(documents)), key=lambda i: -scores[i])[:top_n]
