@@ -663,6 +663,77 @@ def test_the_server_checks_the_model_before_it_loads_it(
         srv.main(_server_args(5800, str(folder)))
 
 
+class _ContentBackend(FakeBackend):
+    """A backend whose vector depends on the content of each input, not only on its width."""
+
+    def last_hidden(self, batch: Sequence[Sequence[int]]) -> np.ndarray:
+        self.batches.append([list(ids) for ids in batch])
+        return np.array(
+            [[float(sum(ids)), float(7 * len(ids) + ids[0])] for ids in batch], dtype=np.float32
+        )
+
+
+def _widths(backend: FakeBackend) -> list[int]:
+    """The width that each forward pass padded its inputs to."""
+    return [max(len(ids) for ids in batch) for batch in backend.batches]
+
+
+def test_one_long_input_does_not_pad_the_short_inputs_beside_it() -> None:
+    short = ["a" * (n + 1) for n in range(31)]
+    texts = [*short[:10], "b" * 2000, *short[10:]]
+    backend = _ContentBackend()
+    answer = service(srv.TASK_EMBED, max_length=4096, backend=backend).embed({"input": texts})
+    assert len(answer["data"]) == 32
+    long_pass = [batch for batch in backend.batches if max(len(ids) for ids in batch) > 64]
+    assert [len(batch) for batch in long_pass] == [1]
+    assert len(long_pass[0][0]) == 2001
+    assert sorted(_widths(backend)) == [32, 2001]
+
+
+def test_a_batch_in_groups_gives_the_vectors_of_one_input_at_a_time() -> None:
+    texts = ["a" * 2000, "bb", "c" * 150, "d", "e" * 300, "ff" * 40]
+    together = service(srv.TASK_EMBED, max_length=4096, backend=_ContentBackend()).embed(
+        {"input": texts}
+    )
+    for index, text in enumerate(texts):
+        alone = service(srv.TASK_EMBED, max_length=4096, backend=_ContentBackend()).embed(
+            {"input": [text]}
+        )
+        assert together["data"][index]["index"] == index
+        assert together["data"][index]["embedding"] == alone["data"][0]["embedding"]
+
+
+def test_a_rerank_batch_in_groups_gives_the_scores_of_one_document_at_a_time() -> None:
+    documents = ["x" * 3000, "x", "xx", "x" * 400, "plain"]
+    backend = FakeBackend()
+    together = service(srv.TASK_RERANK, max_length=8192, backend=backend).rerank(
+        {"query": "q", "documents": documents}
+    )
+    assert len(backend.batches) > 1
+    scores = {r["index"]: r["relevance_score"] for r in together["results"]}
+    for index, document in enumerate(documents):
+        alone = service(srv.TASK_RERANK, max_length=8192).rerank(
+            {"query": "q", "documents": [document]}
+        )
+        assert scores[index] == pytest.approx(alone["results"][0]["relevance_score"])
+
+
+@pytest.mark.parametrize(
+    ("widths", "groups"),
+    [
+        ([3, 3, 3], [[0, 1, 2]]),
+        ([1] * 31 + [4000], [list(range(31)), [31]]),
+        ([200, 5, 100, 6], [[1, 3], [0, 2]]),
+        ([10, 500, 600, 1000], [[0], [1, 2, 3]]),
+        ([100, 201], [[0], [1]]),
+        ([100, 200], [[0, 1]]),
+        ([1, 64, 65], [[0, 1], [2]]),
+    ],
+)
+def test_the_inputs_of_a_batch_split_by_width(widths: list[int], groups: list[list[int]]) -> None:
+    assert srv.width_groups([[0] * width for width in widths]) == groups
+
+
 def test_the_families_of_the_server_are_those_of_the_adapter() -> None:
     from lilbee.providers.fleet.engines.mlx import SERVED_FAMILIES
 
