@@ -41,6 +41,8 @@ The Machine column names the machine that the recording names. The Version colum
 | ik-llama-cuda | chat, embed | NVIDIA GPU | not recorded |  |  |
 | mlx-chat-metal | chat | Apple silicon Mac | not recorded |  |  |
 | mlx-embed-rerank-metal | embed, rerank | Apple M3 Pro | pass, 3 of 3 steps | 0.32.2 | `mlx-embed-rerank-metal.json` |
+| mlx-metal | chat, embed, rerank | Apple M3 Pro | pass, 9 of 9 steps | 0.32.2 | `mlx-metal.json` |
+| llama-metal | chat, embed, rerank | Apple M3 Pro | pass, 9 of 9 steps | 1.12032.1 | `llama-metal.json` |
 | ovms-intel-igpu | chat | Intel machine | not recorded, no machine |  |  |
 | ovms-intel-npu | embed, rerank | Intel NPU machine | not recorded, no machine |  |  |
 | geniex-snapdragon-npu | chat | Snapdragon X machine | not recorded, no machine |  |  |
