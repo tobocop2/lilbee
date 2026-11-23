@@ -570,12 +570,18 @@ def _server_args(port: int, model: str = "m") -> list[str]:
     return ["--model", model, "--port", str(port), "--task", "embed", "--max-length", "8"]
 
 
-def _model_folder(root: Path, model_type: str | None = "qwen3") -> Path:
-    """A model folder whose config.json names *model_type*; none when it is None."""
-    root.mkdir(exist_ok=True)
+def _model_folder(
+    root: Path, model_type: str | None = "qwen3", repo: str = "Qwen3-Embedding-0.6B-8bit"
+) -> Path:
+    """A snapshot folder of *repo* in the Hugging Face cache layout, as lilbee passes it.
+
+    Its config.json names *model_type*; there is none when it is None.
+    """
+    folder = root / f"models--mlx-community--{repo}" / "snapshots" / "0a1b2c"
+    folder.mkdir(parents=True)
     if model_type is not None:
-        (root / "config.json").write_text(json.dumps({"model_type": model_type}), encoding="utf-8")
-    return root
+        (folder / "config.json").write_text(json.dumps({"model_type": model_type}), encoding="utf-8")
+    return folder
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
@@ -679,9 +685,62 @@ def test_the_server_binds_to_the_loopback_address_unless_told_otherwise() -> Non
     assert srv.parse_args(_server_args(5800)).host == "127.0.0.1"
 
 
+_REPOS = {
+    srv.TASK_EMBED: "Qwen3-Embedding-0.6B-8bit",
+    srv.TASK_RERANK: "Qwen3-Reranker-0.6B-4bit",
+}
+
+
 @pytest.mark.parametrize("task", [srv.TASK_EMBED, srv.TASK_RERANK])
-def test_a_qwen3_model_folder_passes_the_start_check(tmp_path: Path, task: str) -> None:
-    srv.check_model(str(_model_folder(tmp_path / "m")), task)
+def test_a_model_folder_of_the_family_of_its_task_passes_the_start_check(
+    tmp_path: Path, task: str
+) -> None:
+    srv.check_model(str(_model_folder(tmp_path / "m", repo=_REPOS[task])), task)
+
+
+@pytest.mark.parametrize("task", [srv.TASK_EMBED, srv.TASK_RERANK])
+def test_a_plain_folder_named_for_the_family_passes_the_start_check(
+    tmp_path: Path, task: str
+) -> None:
+    folder = tmp_path / _REPOS[task]
+    folder.mkdir()
+    (folder / "config.json").write_text(json.dumps({"model_type": "qwen3"}), encoding="utf-8")
+    srv.check_model(str(folder), task)
+
+
+@pytest.mark.parametrize(
+    ("task", "repo"),
+    [
+        (srv.TASK_EMBED, "Qwen3-4B-4bit"),
+        (srv.TASK_EMBED, "Qwen3-Reranker-0.6B-4bit"),
+        (srv.TASK_RERANK, "Qwen3-4B-4bit"),
+        (srv.TASK_RERANK, "Qwen3-Embedding-0.6B-8bit"),
+    ],
+)
+def test_a_qwen3_model_of_another_role_stops_the_server_and_names_the_role_family(
+    tmp_path: Path, task: str, repo: str
+) -> None:
+    folder = _model_folder(tmp_path / "m", repo=repo)
+    with pytest.raises(SystemExit, match=f"runs {srv.FAMILIES[task]} models only") as stop:
+        srv.check_model(str(folder), task)
+    assert f"The {task} task" in str(stop.value)
+    assert repo in str(stop.value)
+
+
+def test_a_plain_folder_of_another_role_stops_the_server(tmp_path: Path) -> None:
+    folder = tmp_path / "Qwen3-4B-4bit"
+    folder.mkdir()
+    (folder / "config.json").write_text(json.dumps({"model_type": "qwen3"}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="Qwen3-Embedding"):
+        srv.check_model(str(folder), srv.TASK_EMBED)
+
+
+def test_the_org_of_a_cached_model_does_not_count_as_its_family(tmp_path: Path) -> None:
+    folder = tmp_path / "models--Qwen3-Embedding-fans--bge-m3-mlx" / "snapshots" / "0a1b2c"
+    folder.mkdir(parents=True)
+    (folder / "config.json").write_text(json.dumps({"model_type": "qwen3"}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="Qwen3-Embedding"):
+        srv.check_model(str(folder), srv.TASK_EMBED)
 
 
 @pytest.mark.parametrize(
@@ -692,7 +751,7 @@ def test_a_qwen3_model_folder_passes_the_start_check(tmp_path: Path, task: str) 
 def test_a_model_folder_of_another_family_stops_the_server_and_names_the_family(
     tmp_path: Path, task: str, family: str, model_type: str | None
 ) -> None:
-    folder = _model_folder(tmp_path / "m", model_type)
+    folder = _model_folder(tmp_path / "m", model_type, _REPOS[task])
     with pytest.raises(SystemExit, match=family):
         srv.check_model(str(folder), task)
 
