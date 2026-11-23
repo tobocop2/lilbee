@@ -117,13 +117,22 @@ def write_text_atomically(path: Path, text: str) -> None:
     _write_atomically(path, text, None)
 
 
+def sibling_temp_path(path: Path) -> Path:
+    """Return a new hidden name beside *path* for a temporary file, random per call.
+
+    Open it exclusive (mode ``x``): two writers to one *path* then never share a
+    temporary file, and a name that is taken fails instead of being truncated.
+    """
+    return path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+
+
 def _write_atomically(path: Path, text: str, opener: _Opener | None) -> None:
     """Write a temp file beside *path*, fsync it, then ``os.replace`` it onto *path*.
 
     The data is fsynced before the rename, so a crash cannot leave the target empty.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    tmp = sibling_temp_path(path)
     try:
         with open(tmp, "x", encoding="utf-8", newline="\n", opener=opener) as handle:
             handle.write(text)
