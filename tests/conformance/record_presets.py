@@ -122,6 +122,10 @@ _LABEL_BACKENDS = {
 _LOG_DEVICE_ID = re.compile(r"\bmodel on (?P<kind>[A-Za-z]+)\(\w+\(DeviceId\((?P<index>\d+)\)\)\)")
 # "llama_prepare_model_devices: using device CUDA0 (NVIDIA GeForce RTX 3090)" names the label.
 _LOG_DEVICE_LABEL = re.compile(r"\busing device (?P<label>\S+)")
+# "mlx device: Device(gpu, 0) (Apple M3 Pro)" is the MLX server's own line; MLX names its Apple
+# GPU "gpu", and the mlx pack builds only for Metal, so the label of its gpu is Metal0.
+_LOG_DEVICE_MLX = re.compile(r"\bmlx device: Device\((?P<kind>gpu|cpu), (?P<index>\d+)\)")
+_MLX_LABELS = {"gpu": "Metal", "cpu": "CPU"}
 
 
 class DeviceSource(StrEnum):
@@ -209,6 +213,7 @@ def logged_devices(path: Path) -> list[str]:
         raise SystemExit(f"--engine-log {path}: {exc.strerror}") from exc
     labels = {f"{m['kind']}{m['index']}" for m in _LOG_DEVICE_ID.finditer(text)}
     labels.update(m["label"] for m in _LOG_DEVICE_LABEL.finditer(text))
+    labels.update(f"{_MLX_LABELS[m['kind']]}{m['index']}" for m in _LOG_DEVICE_MLX.finditer(text))
     return sorted(labels)
 
 

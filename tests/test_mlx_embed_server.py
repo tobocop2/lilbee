@@ -548,6 +548,8 @@ class Loading:
         except (ConnectionRefusedError, TimeoutError):
             # Windows retries a refused connect for about two seconds, so it times out here.
             print("PORT-CLOSED-DURING-LOAD", flush=True)
+    def device_line(self):
+        return "mlx device: Device(gpu, 0) (Fake GPU)"
 s.MlxBackend = Loading
 s.main(sys.argv[2:])
 """
@@ -615,6 +617,59 @@ def test_the_port_opens_only_after_the_model_loads(tmp_path: Path) -> None:
             proc.kill()
             proc.wait()
     assert report == "PORT-CLOSED-DURING-LOAD"
+
+
+def test_the_server_prints_the_device_of_its_backend_at_start(tmp_path: Path) -> None:
+    port = _free_port()
+    folder = _model_folder(tmp_path / "model")
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _LOAD_RUNNER, str(SERVER), *_server_args(port, str(folder))],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+    )
+    try:
+        _wait_for_health(port)
+        proc.send_signal(signal.SIGTERM)
+        _, stderr = proc.communicate(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    assert "mlx device: Device(gpu, 0) (Fake GPU)" in stderr.splitlines()
+
+
+class _Mx:
+    """The part of mlx.core that names the device."""
+
+    def __init__(self, info: dict[str, Any] | None, *, in_metal: bool = False) -> None:
+        self._info = info
+        if info is not None and in_metal:
+            self.metal = type("Metal", (), {"device_info": staticmethod(lambda: info)})()
+        elif info is not None:
+            self.device_info = lambda: info
+
+    @staticmethod
+    def default_device() -> str:
+        return "Device(gpu, 0)"
+
+
+@pytest.mark.parametrize(
+    ("mx", "line"),
+    [
+        (_Mx({"device_name": "Apple M3 Pro"}), "mlx device: Device(gpu, 0) (Apple M3 Pro)"),
+        (_Mx({"device_name": "Apple M3 Pro"}, in_metal=True), "mlx device: Device(gpu, 0) (Apple M3 Pro)"),
+        (_Mx({"architecture": "applegpu_g15s"}), "mlx device: Device(gpu, 0) (applegpu_g15s)"),
+        (_Mx({}), "mlx device: Device(gpu, 0)"),
+        (_Mx(None), "mlx device: Device(gpu, 0)"),
+    ],
+)
+def test_the_device_line_is_the_default_device_and_the_name_that_mlx_reports(
+    mx: _Mx, line: str
+) -> None:
+    backend = srv.MlxBackend.__new__(srv.MlxBackend)
+    backend._mx = mx
+    assert backend.device_line() == line
 
 
 def test_the_server_binds_to_the_loopback_address_unless_told_otherwise() -> None:

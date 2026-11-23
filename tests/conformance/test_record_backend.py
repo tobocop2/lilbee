@@ -255,6 +255,9 @@ _LLAMA_CUDA_LOG = """\
   [45325] 0.00.233.880 I cmn  common_param:   - CUDA0   : NVIDIA GeForce RTX 3090 (24126 MiB, 23861 MiB free)
   [45325] 0.00.776.313 I llama_prepare_model_devices: using device CUDA0 (NVIDIA GeForce RTX 3090) (0000:a1:00.0) - 23861 MiB free
 """  # noqa: E501
+# The startup line of lilbee's mlx embed server (packaging/engine-mlx), which prints it itself.
+_MLX_LOG = "mlx device: Device(gpu, 0) (Apple M3 Pro)\n127.0.0.1 POST /v1/embeddings 200\n"
+_MLX_CPU_LOG = "mlx device: Device(cpu, 0)\n"
 
 
 _HELD: list[IO[str]] = []
@@ -286,6 +289,26 @@ class TestLoggedDevices:
         devices = record_presets.logged_devices(Path(_log(tmp_path, _LLAMA_CUDA_LOG)))
         assert devices == ["CUDA0"]
 
+    def test_the_startup_line_of_the_mlx_server_names_its_gpu_as_metal(
+        self, tmp_path: Path
+    ) -> None:
+        devices = record_presets.logged_devices(Path(_log(tmp_path, _MLX_LOG)))
+        assert devices == ["Metal0"]
+        assert record_presets.reported_backend(devices) == "metal"
+
+    def test_the_startup_line_of_the_mlx_server_names_its_cpu_as_a_host_device(
+        self, tmp_path: Path
+    ) -> None:
+        devices = record_presets.logged_devices(Path(_log(tmp_path, _MLX_CPU_LOG)))
+        assert devices == ["CPU0"]
+        assert record_presets.reported_backend(devices) == "cpu"
+
+    def test_a_line_in_the_words_of_llama_cpp_is_not_the_line_of_the_mlx_server(
+        self, tmp_path: Path
+    ) -> None:
+        text = "mlx: using Device(gpu, 0)\n"
+        assert record_presets.logged_devices(Path(_log(tmp_path, text))) == []
+
     def test_a_log_without_a_device_line_names_no_device(self, tmp_path: Path) -> None:
         assert record_presets.logged_devices(Path(_log(tmp_path, _TEI_NO_DEVICE_LOG))) == []
 
@@ -307,6 +330,19 @@ class TestRecorderWithAnEngineLog:
         assert "devices: Cuda1" in lines
         assert "devices-from: engine-log" in lines
         assert "reported-backend: cuda" in lines
+
+    def test_the_log_of_the_mlx_server_shows_a_metal_run(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        with _engine(None) as url:
+            rc, out = _record(
+                monkeypatch, tmp_path, url, "metal", "--engine-log", _log(tmp_path, _MLX_LOG)
+            )
+        assert rc == 0
+        lines = out.with_suffix(".log").read_text(encoding="utf-8").splitlines()
+        assert "devices: Metal0" in lines
+        assert "devices-from: engine-log" in lines
+        assert "reported-backend: metal" in lines
 
     def test_a_gpu_label_is_refused_when_the_log_names_no_device(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
