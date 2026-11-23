@@ -2376,11 +2376,18 @@ class FleetProvider:
             return self._chat_slots if WorkerRole.CHAT in self._role_group else None
 
     def embed_token_cap(self) -> int | None:
-        """The served embed launch's token cap, or the planned one before it is up."""
+        """The served embed launch's token cap, or the planned one before it is up.
+
+        A live engine that reports its own input limit (TEI's ``max_input_length``) may
+        serve a smaller window than the launch planned: the smaller of the two wins.
+        """
         with self._lock:
             launches = self._role_launches(WorkerRole.EMBED)
+            clients = list(self._clients.get(WorkerRole.EMBED, []))
         if launches:
-            return launches[0].token_cap
+            limits = [launches[0].token_cap, *(client.input_limit() for client in clients)]
+            known = [limit for limit in limits if limit is not None]
+            return min(known) if known else None
         try:
             engine = self._engines()[WorkerRole.EMBED]
         except (ProviderError, KeyError):

@@ -1408,6 +1408,19 @@ class LlamaServerClient:
             with self._flights_lock:
                 del self._flights[key]
 
+    def input_limit(self) -> int | None:
+        """The server's ``max_input_length``, or None when it reports none or the read fails.
+
+        A failed read pauses the next one for the truncation check's cool-down, so a router
+        without the route is not asked again on every call.
+        """
+        if self._max_input is None and time.monotonic() < self._check_resume_at:
+            return None
+        try:
+            return self._input_limit()
+        except _TRUNCATION_CHECK_FAILURES:
+            return None
+
     def _input_limit(self) -> int | None:
         """The server's ``max_input_length``, read once per client."""
         path = self._profile.input_limit_path

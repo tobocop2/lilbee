@@ -5194,6 +5194,25 @@ class TestEmbedTokenCap:
         monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: 8184)
         assert p.embed_token_cap() == 504
 
+    @pytest.mark.parametrize(
+        ("cap", "served", "expected"),
+        [(504, 400, 400), (504, 8192, 504), (504, None, 504), (None, 700, 700), (None, None, None)],
+    )
+    def test_the_smaller_of_the_launch_cap_and_the_served_input_limit_wins(
+        self, cap, served, expected
+    ) -> None:
+        """TEI reports its own window in /info; the smaller of it and the launch cap wins."""
+        p = FleetProvider()
+        launch = _fake_launch(WorkerRole.EMBED, ctx=512)
+        launch.token_cap = cap
+        p._swaps = {SwapGroup.EMBED: _FakeSwap()}
+        p._role_group = {WorkerRole.EMBED: SwapGroup.EMBED}
+        p._launches = {SwapGroup.EMBED: (launch,)}
+        client = MagicMock()
+        client.input_limit.return_value = served
+        p._clients = {WorkerRole.EMBED: [client]}
+        assert p.embed_token_cap() == expected
+
     def test_plans_the_cap_from_the_configured_embedder_before_the_engine_is_up(
         self, monkeypatch
     ) -> None:

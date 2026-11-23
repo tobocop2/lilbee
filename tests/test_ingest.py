@@ -573,6 +573,32 @@ class TestSync:
         )
         mock_extract_file.assert_not_called()
 
+    async def test_a_sync_reads_the_window_the_warm_embed_engine_serves(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        """TEI's planned cap is a guess (chunk_size + 128) until its engine is up and /info
+        reports 512: the sync starts the engine first, then refuses on the served window."""
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import EmbedWindowError
+        from lilbee.data.ingest import sync
+
+        warm = {"up": False}
+
+        def _count(text: str) -> int:
+            warm["up"] = True  # any call on the embed role starts its engine
+            return len(text)
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "embedding_model", "BAAI/bge-base-en-v1.5")
+        mock_svc.provider.count_tokens.side_effect = _count
+        mock_svc.provider.embed_token_cap.side_effect = lambda: 512 if warm["up"] else 640
+        (isolated_env / "doc.txt").write_text("A document. " * 40, encoding="utf-8")
+
+        with pytest.raises(EmbedWindowError, match="accepts 512 tokens per input"):
+            await sync()
+
+        mock_extract_file.assert_not_called()
+
     async def test_the_sync_summary_counts_each_cut_of_the_run_once(
         self, mock_extract_file, isolated_env, mock_svc
     ):
