@@ -24,6 +24,7 @@ from typing import Any
 
 IN_USE_NAME = ".in-use"
 _OWNER_ONLY_MODE = 0o600
+_BUILD_PATH_PARTS = 3  # engine folder, build folder, a file inside the build
 
 if sys.platform == "win32":  # pragma: no cover - proved on windows-latest, not on the CI host
     import ctypes
@@ -162,7 +163,7 @@ def builds_run_by(store_root: Path, binaries: Iterable[str | os.PathLike[str]]) 
     builds = []
     for binary in binaries:
         path = Path(os.path.abspath(binary))
-        if path.is_relative_to(root) and len(path.relative_to(root).parts) >= 3:
+        if path.is_relative_to(root) and len(path.relative_to(root).parts) >= _BUILD_PATH_PARTS:
             engine, build = path.relative_to(root).parts[:2]
             builds.append(root / engine / build)
     return list(dict.fromkeys(builds))
