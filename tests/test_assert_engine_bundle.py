@@ -122,16 +122,35 @@ def test_non_cuda_wheel_carrying_cuda_runtime_is_rejected(tmp_path: Path) -> Non
     assert "non-CUDA wheel ships CUDA runtime" in problems[0]
 
 
-def test_windows_wheel_without_the_msvc_runtime_is_rejected(tmp_path: Path) -> None:
-    wheel = _wheel(
-        tmp_path,
-        "lilbee_engine_llama_cpp-1.0-1.vulkan-py3-none-win_amd64.whl",
-        ("llama-server.exe", "ggml-vulkan.dll", "msvcp140.dll"),
-    )
-    problems = acb.check(wheel)
-    assert [p for p in problems if "vcruntime140.dll" in p]
-    assert [p for p in problems if "vcruntime140_1.dll" in p]
-    assert not [p for p in problems if "msvcp140.dll" in p]
+def _vulkan_windows_wheel(tmp_path: Path, imports: tuple[str, ...]) -> Path:
+    """A vulkan wheel whose exe imports *imports*; it holds msvcp140.dll and no other runtime."""
+    path = tmp_path / "lilbee_engine_llama_cpp-1.0-1.vulkan-py3-none-win_amd64.whl"
+    files = {
+        "llama-server.exe": _pe(("kernel32.dll", *imports)),
+        "ggml-vulkan.dll": b"x",
+        "msvcp140.dll": _pe(("kernel32.dll",)),
+    }
+    with zipfile.ZipFile(path, "w") as zf:
+        for entry, data in files.items():
+            zf.writestr(f"lilbee_engine_llama_cpp/bin/{entry}", data)
+    return path
+
+
+def test_windows_wheel_whose_exe_imports_a_missing_msvc_runtime_dll_is_rejected(
+    tmp_path: Path,
+) -> None:
+    # A wheel ships only the runtime DLLs its files import, so the import check rejects a miss.
+    imports = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
+    problems = acb.check(_vulkan_windows_wheel(tmp_path, imports))
+    assert len(problems) == 1
+    assert "llama-server.exe imports vcruntime140.dll, vcruntime140_1.dll" in problems[0]
+    assert "msvcp140.dll" not in problems[0]
+
+
+def test_windows_wheel_whose_exe_does_not_import_a_runtime_dll_may_lack_it(
+    tmp_path: Path,
+) -> None:
+    assert acb.check(_vulkan_windows_wheel(tmp_path, ("msvcp140.dll",))) == []
 
 
 def test_empty_bin_dir_is_rejected(tmp_path: Path) -> None:
