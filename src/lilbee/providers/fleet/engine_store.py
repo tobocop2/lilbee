@@ -719,7 +719,7 @@ def _in_use_error(label: str, retry: str) -> EngineInUseError:
     )
 
 
-def _discard(build: Path, retry: str) -> None:
+def discard_build(build: Path, retry: str) -> None:
     """Delete one build slot; a folder goes to trash first, so no half build stays listed.
 
     A folder stays held from the rename to the delete, so no launch starts from it then.
@@ -955,7 +955,7 @@ class EngineStore:
         self._write_record(stage, lock, binary)
         make_in_use_file(stage)
         if os.path.lexists(final):
-            _discard(final, _INSTALL_AGAIN)
+            discard_build(final, _INSTALL_AGAIN)
         stage.rename(final)
 
     def _inside_root(self, path: Path) -> Path:
@@ -1001,7 +1001,7 @@ class EngineStore:
             if in_use(engine, version, backend):
                 raise _in_use_error(engine_label(engine, version, backend), _REMOVE_AGAIN)
             try:
-                _discard(target, _REMOVE_AGAIN)
+                discard_build(target, _REMOVE_AGAIN)
             except FileNotFoundError as exc:
                 raise EngineNotInstalledError(absent) from exc
         return RemoveResult(path=target, canary_warning=True)
@@ -1245,6 +1245,7 @@ __all__ = [
     "StorePathError",
     "UnsafeWheelError",
     "UnsupportedPlatformError",
+    "discard_build",
     "engines_root",
     "fetch_frozen",
     "launch_uses_engine",
