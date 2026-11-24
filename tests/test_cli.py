@@ -71,6 +71,7 @@ from tests._crawlberg_stub import error as crawlberg_error
 from tests._gguf_fixture import GGUF_MAGIC
 from tests._held import held_kinds, hold_failed
 from tests._mock_effects import repeat_last
+from tests._signals import press_ctrl_c_in_a_run
 from tests.conftest import (
     ctrl_c_reaches_python,
     make_mock_services,
@@ -5529,9 +5530,9 @@ class TestCrawlUrlsBlocking:
 
         crawled: list[str] = []
 
-        async def fake_crawl(url, **_kwargs):
+        async def fake_crawl(url, *, cancel, **_kwargs):
             crawled.append(url)
-            signal.raise_signal(signal.SIGINT)
+            press_ctrl_c_in_a_run(cancel)
             return []
 
         with (
@@ -9314,12 +9315,12 @@ class TestSyncCancelledExit:
     def _crawl_saves_a_page(*, ctrl_c: bool) -> contextlib.ExitStack:
         """Patch the crawler to save one page; with *ctrl_c* the Ctrl+C lands in the crawl."""
 
-        async def _crawl(_url, **_kwargs):
+        async def _crawl(_url, *, cancel, **_kwargs):
             page = cfg.documents_dir / "_web" / "page.md"
             page.parent.mkdir(parents=True, exist_ok=True)
             page.write_text("hello world " * 50, encoding="utf-8")
             if ctrl_c:
-                signal.raise_signal(signal.SIGINT)
+                press_ctrl_c_in_a_run(cancel)
             return [page]
 
         stage_patch = contextlib.ExitStack()
@@ -9377,7 +9378,7 @@ class TestSyncCancelledExit:
             events.append(kwargs["cancel"])
             result = await real_sync(**kwargs)
             if ctrl_c_after:
-                signal.raise_signal(signal.SIGINT)
+                press_ctrl_c_in_a_run(kwargs["cancel"])
             return result
 
         return mock.patch.object(ingest_mod, "sync", _sync)
@@ -9407,7 +9408,7 @@ class TestSyncCancelledExit:
             real_discover = pipeline.discover_corpus
 
             def _discover(*args, **kwargs):
-                signal.raise_signal(signal.SIGINT)
+                press_ctrl_c_in_a_run(events[0])
                 return real_discover(*args, **kwargs)
 
             stage_patch = mock.patch.object(pipeline, "discover_corpus", _discover)
@@ -9415,7 +9416,7 @@ class TestSyncCancelledExit:
             real_passes = pipeline._run_post_ingest_passes
 
             async def _passes(*args, **kwargs):
-                signal.raise_signal(signal.SIGINT)
+                press_ctrl_c_in_a_run(events[0])
                 return await real_passes(*args, **kwargs)
 
             stage_patch = mock.patch.object(pipeline, "_run_post_ingest_passes", _passes)
