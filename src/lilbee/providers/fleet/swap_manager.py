@@ -29,7 +29,12 @@ import psutil
 
 from lilbee.core.health_warnings import HealthWarning
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap, router_release
+from lilbee.providers.fleet.binary import (
+    ROUTER_GO_INSTALL,
+    engine_pin,
+    resolve_llama_swap,
+    router_release,
+)
 from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_child
 from lilbee.providers.fleet.gpu_env import engine_environ
 from lilbee.providers.fleet.groups import SwapGroup
@@ -57,9 +62,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
-# Where a router older than ROUTER_FLOOR is replaced from.
+# Where a router older than ROUTER_FLOOR is replaced from, beside ROUTER_GO_INSTALL.
 _ROUTER_RELEASES_URL = "https://github.com/mostlygeek/llama-swap/releases"
-_ROUTER_GO_INSTALL = "go install github.com/mostlygeek/llama-swap@latest"
 # One llama-swap per swap group: the group name lands in the config filename so
 # each group's processes are identified (and stopped) by their own config path,
 # and a placement change can restart one group without touching the others.
@@ -424,7 +428,7 @@ class SwapManager:
                 router,
                 ROUTER_FLOOR,
                 _ROUTER_RELEASES_URL,
-                _ROUTER_GO_INSTALL,
+                ROUTER_GO_INSTALL,
             )
         return False
 
