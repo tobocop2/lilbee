@@ -29,7 +29,7 @@ import psutil
 
 from lilbee.core.health_warnings import HealthWarning
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
+from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap, router_release
 from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_child
 from lilbee.providers.fleet.gpu_env import engine_environ
 from lilbee.providers.fleet.groups import SwapGroup
@@ -44,6 +44,7 @@ from lilbee.providers.fleet.readback import (
 )
 from lilbee.providers.fleet.swap_config import (
     PORT_FLAG,
+    ROUTER_FLOOR,
     build_swap_config,
     health_check_timeout_s,
 )
@@ -56,6 +57,9 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
+# Where a router older than ROUTER_FLOOR is replaced from.
+_ROUTER_RELEASES_URL = "https://github.com/mostlygeek/llama-swap/releases"
+_ROUTER_GO_INSTALL = "go install github.com/mostlygeek/llama-swap@latest"
 # One llama-swap per swap group: the group name lands in the config filename so
 # each group's processes are identified (and stopped) by their own config path,
 # and a placement change can restart one group without touching the others.
@@ -327,9 +331,10 @@ class SwapManager:
         *origin* goes into the state, so a peer can see a fleet planned before a config write.
         """
         self._origin = origin
-        # Found first, so a router too old to read the config fails here, before
-        # anything is stopped or written.
-        self._swap_binary = str(resolve_llama_swap())
+        # Found first, so a missing router fails here, before anything is stopped
+        # or written.
+        router = resolve_llama_swap()
+        self._swap_binary = str(router)
         # Idempotent safety net; the provider reaps before planning so the GPU
         # probe already saw the real free memory.
         self.reap_stale()
@@ -349,6 +354,7 @@ class SwapManager:
             log_path = engine_log_of(engines[launch.role], launch, self._log_path.parent)
             if log_path is not None:
                 self._engine_logs[launch.model_id] = log_path
+        reads_streams = self._router_reads_streams(router, launches)
         self._estimate_checked.clear()
         self._ready_at = None
         with self._warnings_lock:
@@ -363,6 +369,7 @@ class SwapManager:
                 swap=self._group.swaps,
                 ttl_seconds=ttl_seconds,
                 engine_logs=self._engine_logs,
+                router_reads_streams=reads_streams,
             ),
         )
         self._port = ports[0]
@@ -393,6 +400,33 @@ class SwapManager:
         self._write_state()
         self._await_health()
         log_role_launches(launches, engines=engines)
+
+    def _router_reads_streams(self, router: Path, launches: list[InstanceLaunch]) -> bool:
+        """Whether *router* reads a list of streams; warns when a member's output is lost.
+
+        A release with no number (a source build, or a router that does not answer
+        the probe) counts as current. Call after ``_engine_logs`` is filled.
+        """
+        release = router_release(router)
+        if release is None or release >= ROUTER_FLOOR:
+            return True
+        lost = [launch.model_id for launch in launches if launch.model_id not in self._engine_logs]
+        if lost:
+            log.warning(
+                "The llama-swap router at %s is v%d, so the output of %s is not in %s. "
+                "llama-swap v%d or later puts it there. Replace the file at %s with "
+                "llama-swap v%d or later, from %s or from '%s'.",
+                router,
+                release,
+                ", ".join(lost),
+                self._log_path,
+                ROUTER_FLOOR,
+                router,
+                ROUTER_FLOOR,
+                _ROUTER_RELEASES_URL,
+                _ROUTER_GO_INSTALL,
+            )
+        return False
 
     def reap_stale(self) -> None:
         """Kill every dead or unhealthy recorded engine; see :func:`reap_stale`."""
@@ -493,8 +527,8 @@ class SwapManager:
             # next plan, a freed machine, or a model the user switched to.
             clear_ctx_downshift(launch.role)
             # A launch carrying --memory serves its own report on GET /memory
-            # and was given no trace log to read (swap_config), so the log-side
-            # checks would misfire on it by construction.
+            # and writes a log at the default verbosity, with no load report
+            # (swap_config), so the log-side checks would misfire on it by construction.
             if MEMORY_FLAG in launch.argv:
                 self._check_memory_estimate(model_id, launch)
                 continue

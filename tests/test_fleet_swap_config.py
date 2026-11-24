@@ -226,6 +226,13 @@ class TestBuildSwapConfig:
         cfg = json.loads(build_swap_config([chat, embed], ports, engine_logs=engine_logs))
         assert cfg["logToStdout"] == "proxy,upstream"
 
+    def test_a_router_that_reads_no_stream_list_gets_the_proxy_stream_alone(self) -> None:
+        launch = _launch(WorkerRole.EMBED, ["/bin/text-embeddings-router"])
+        rendered = build_swap_config(
+            [launch], {launch.model_id: _BASE_PORT}, router_reads_streams=False
+        )
+        assert json.loads(rendered)["logToStdout"] == "proxy"
+
     def test_member_never_times_out(self) -> None:
         cfg = _config([_launch(WorkerRole.CHAT, ["/bin/llama-server"])])
         assert cfg["models"][_mid(WorkerRole.CHAT)]["ttl"] == 0
