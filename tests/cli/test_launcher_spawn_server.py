@@ -25,7 +25,9 @@ from tests._mock_effects import repeat_last
 from tests.conftest import clean_env
 
 # A stand-in for `lilbee serve`: it answers the health probe and writes the session
-# files the launcher reads, and records every stop signal it gets.
+# files the launcher reads. It records every stop signal it gets, and runs serve's
+# parent watcher, which records "parent-gone" and exits. With FAKE_SERVE_SLOW_STOP
+# set it keeps running after a SIGTERM, as a real serve does while it stops.
 _FAKE_SERVE = """\
 import http.server
 import json
@@ -33,15 +35,26 @@ import os
 import signal
 import sys
 
+from lilbee.parent_monitor import parse_parent_pid, watch_parent_thread
+
 record = os.environ["FAKE_SERVE_RECORD"]
 data = os.path.join(os.environ["LILBEE_DATA"], "data")
 
 
-def note(signum, _frame):
+def write(event):
     with open(record, "a", encoding="utf-8") as handle:
-        handle.write(signal.Signals(signum).name + "\\n")
-    if signum == signal.SIGTERM:
+        handle.write(event + "\\n")
+
+
+def note(signum, _frame):
+    write(signal.Signals(signum).name)
+    if signum == signal.SIGTERM and not os.environ.get("FAKE_SERVE_SLOW_STOP"):
         sys.exit(0)
+
+
+def parent_gone():
+    write("parent-gone")
+    os._exit(0)
 
 
 class Health(http.server.BaseHTTPRequestHandler):
@@ -59,6 +72,7 @@ class Health(http.server.BaseHTTPRequestHandler):
 
 signal.signal(signal.SIGINT, note)
 signal.signal(signal.SIGTERM, note)
+watch_parent_thread(parse_parent_pid(), parent_gone, poll_interval_secs=0.05)
 with open(os.environ["FAKE_SERVE_PID"], "w", encoding="utf-8") as handle:
     handle.write(str(os.getpid()))
 port = int(sys.argv[sys.argv.index("--port") + 1])
@@ -106,6 +120,29 @@ except KeyboardInterrupt:
     print("interrupted", flush=True)
 """
 
+# A launcher that spawns serve and then ends its spawner thread. Linux sends the
+# death signal each time a thread that holds the child exits, so this forces the
+# first of the two a hard kill can send.
+_LAUNCHER_ENDS_ITS_SPAWNER = """\
+import os
+import sys
+import time
+
+from lilbee.cli.launchers.server import spawn_server
+from lilbee.providers.fleet import child_guard
+
+spawn_server(int(sys.argv[1]))
+while not os.path.exists(os.environ["FAKE_SERVE_PID"]):
+    time.sleep(0.01)
+thread = child_guard._spawner._thread
+child_guard._spawner.close()
+# The join returns a moment before the kernel task of the thread is gone.
+while thread is not None and os.path.exists(f"/proc/self/task/{thread.native_id}"):
+    time.sleep(0.01)
+print("spawner gone", flush=True)
+time.sleep(60)
+"""
+
 
 def _write_script(path: Path, source: str) -> Path:
     path.write_text(f"#!{sys.executable}\n{source}", encoding="utf-8")
@@ -113,8 +150,15 @@ def _write_script(path: Path, source: str) -> Path:
     return path
 
 
-def _start_launcher(tmp_path: Path) -> subprocess.Popen[str]:
-    """Start a launcher, in a process group of its own as a terminal job, up to the client."""
+def _start_launcher(
+    tmp_path: Path,
+    source: str = _LAUNCHER,
+    *,
+    ready: str = "client ready",
+    args: tuple[str, ...] = (),
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.Popen[str]:
+    """Start a launcher, in a process group of its own as a terminal job, up to *ready*."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _write_script(bin_dir / "lilbee", _FAKE_SERVE)
@@ -125,11 +169,12 @@ def _start_launcher(tmp_path: Path) -> subprocess.Popen[str]:
         "LILBEE_LAUNCHER_SERVE_QUIET": "1",
         "FAKE_CLIENT": str(client),
         "FAKE_CLIENT_PID": str(tmp_path / "client.pid"),
-        "FAKE_SERVE_RECORD": str(tmp_path / "signals.txt"),
+        "FAKE_SERVE_RECORD": str(tmp_path / "stops.txt"),
         "FAKE_SERVE_PID": str(tmp_path / "serve.pid"),
+        **(extra_env or {}),
     }
     launcher = subprocess.Popen(
-        [sys.executable, "-c", _LAUNCHER],
+        [sys.executable, "-c", source, *args],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -139,7 +184,7 @@ def _start_launcher(tmp_path: Path) -> subprocess.Popen[str]:
     assert launcher.stdout is not None
     try:
         for line in launcher.stdout:
-            if line.strip() == "client ready":
+            if line.strip() == ready:
                 return launcher
     except BaseException:
         # A timeout here leaves the launcher and its fakes running; they are ours to end.
@@ -148,12 +193,20 @@ def _start_launcher(tmp_path: Path) -> subprocess.Popen[str]:
         raise
     stdout, stderr = launcher.communicate()
     _end_fakes(tmp_path)
-    raise AssertionError(f"the launcher ended before the client ran: {stdout}{stderr}")
+    raise AssertionError(f"the launcher ended before it was ready: {stdout}{stderr}")
 
 
-def _signals_seen(tmp_path: Path) -> list[str]:
-    record = tmp_path / "signals.txt"
+def _stops_seen(tmp_path: Path) -> list[str]:
+    """Every stop the fake serve recorded: a signal name, or "parent-gone" from its watcher."""
+    record = tmp_path / "stops.txt"
     return record.read_text(encoding="utf-8").split() if record.exists() else []
+
+
+def _wait_for_stop(tmp_path: Path, event: str, timeout: float) -> None:
+    """Wait until the fake serve records *event*, or *timeout* seconds pass."""
+    deadline = time.monotonic() + timeout
+    while event not in _stops_seen(tmp_path) and time.monotonic() < deadline:
+        time.sleep(0.05)
 
 
 def _end_fakes(tmp_path: Path) -> None:
@@ -816,22 +869,48 @@ def test_a_ctrl_c_to_the_launcher_group_leaves_the_stop_to_the_launcher(tmp_path
 
     assert launcher.returncode == 0, stderr
     assert stdout.split()[-1:] == ["interrupted"], stderr
-    assert _signals_seen(tmp_path) == ["SIGTERM"]
+    assert _stops_seen(tmp_path) == ["SIGTERM"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows ends the child through a job object")
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SIGKILL to send")
 def test_serve_still_stops_when_the_launcher_is_killed(tmp_path: Path) -> None:
-    """Outside the launcher's group, serve still gets SIGTERM when the launcher dies hard."""
+    """When the launcher dies hard, serve's parent watcher alone stops it, with no signal."""
     launcher = _start_launcher(tmp_path)
     try:
         os.kill(launcher.pid, signal.SIGKILL)
         launcher.wait(timeout=30)
-        deadline = time.monotonic() + 10
-        while not _signals_seen(tmp_path) and time.monotonic() < deadline:
-            time.sleep(0.05)
+        _wait_for_stop(tmp_path, "parent-gone", timeout=10)
     finally:
         # The orphaned client holds the launcher's output pipes open until it ends.
         _end_fakes(tmp_path)
         launcher.communicate(timeout=30)
 
-    assert _signals_seen(tmp_path) == ["SIGTERM"]
+    assert _stops_seen(tmp_path) == ["parent-gone"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SIGKILL to send")
+def test_serve_gets_no_signal_when_the_launcher_threads_end_one_by_one(tmp_path: Path) -> None:
+    """A second SIGTERM force-quits serve, so no death signal reaches it at all.
+
+    The launcher ends the thread that spawned serve, then is killed: on Linux each
+    of those two exits sends a death signal to a child bound to that thread.
+    """
+    launcher = _start_launcher(
+        tmp_path,
+        _LAUNCHER_ENDS_ITS_SPAWNER,
+        ready="spawner gone",
+        args=(str(server_mod.free_port()),),
+        extra_env={"FAKE_SERVE_SLOW_STOP": "1"},
+    )
+    try:
+        # A first death signal is recorded within milliseconds; give it time, so a
+        # second one cannot merge with it while it is still pending.
+        _wait_for_stop(tmp_path, "SIGTERM", timeout=2)
+        os.kill(launcher.pid, signal.SIGKILL)
+        launcher.wait(timeout=30)
+        _wait_for_stop(tmp_path, "parent-gone", timeout=10)
+    finally:
+        _end_fakes(tmp_path)
+        launcher.communicate(timeout=30)
+
+    assert _stops_seen(tmp_path) == ["parent-gone"]
