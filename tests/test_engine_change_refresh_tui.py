@@ -158,3 +158,33 @@ async def test_a_refused_remove_publishes_nothing(
         await pilot.pause()
         assert heard == []
         assert _notice(app) == ""
+
+
+class _FleetAndSettingsApp(_SettingsApp):
+    """The fleet editor on the base screen, the Settings screen on top of it."""
+
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+        yield FleetBody()
+
+
+async def test_a_remove_from_the_tab_repaints_the_fleet_editor(
+    roles: _Roles, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def remove(*_a: object, **_k: object) -> str:
+        roles.views = [_FELL_BACK]
+        return "ik_llama.cpp 1.2.3 (cuda)"
+
+    def shown(app: LilbeeAppHost) -> str:
+        return str(app.screen_stack[0].query_one("#placement-engines", Static).render())
+
+    monkeypatch.setattr(engine_service, "remove_build", remove)
+    app = _FleetAndSettingsApp()
+    async with app.run_test(size=(140, 40)) as pilot:
+        table = await _open_engines(app, pilot)
+        assert "ik_llama.cpp is gone" not in shown(app)
+        await _select_row(pilot, table, "ik_llama.cpp")
+        assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
+        await pilot.press("y")
+        assert await wait_until(pilot, lambda: "ik_llama.cpp is gone" in shown(app))
