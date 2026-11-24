@@ -169,6 +169,11 @@ class OvmsAdapter:
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
         """The server command; the HTTP port is ``--rest_port`` and the gRPC port stays off."""
         device = _DEVICES.get(request.target, _DEVICES[RoleTarget.CPU])
+        bound = (
+            ["--max_length", str(request.ctx_per_slot)]
+            if spec.role is WorkerRole.EMBED and request.target is RoleTarget.NPU
+            else []
+        )
         return [
             str(request.binary),
             "--model_path",
@@ -182,6 +187,7 @@ class OvmsAdapter:
             "--target_device",
             device,
             *spec.extra_args,
+            *bound,
         ]
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
