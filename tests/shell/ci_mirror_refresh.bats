@@ -92,7 +92,7 @@ at_day() {  # day-number command...
 @test "a restore falls back to the previous bucket" {
   at_day 65 publish k "${SRC}"
   run at_day 95 fetch k "${DEST}"
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 3 ]
   [[ "$output" == *"k.b2.tar.gz"* ]]
   [ -f "${DEST}/obj" ]
 }
@@ -120,6 +120,8 @@ at_day() {  # day-number command...
     [[ "$output" == *"MIRROR_REFRESH_DAYS must be a whole number"* ]]
     MIRROR_REFRESH_DAYS="${bad}" run at_day 65 fetch k "${DEST}"
     [ "$status" -eq 2 ]
+    MIRROR_REFRESH_DAYS="${bad}" run at_day 65 check
+    [ "$status" -eq 2 ]
   done
   [ ! -e "${MIRROR}/k.b2.tar.gz" ]
 }
@@ -130,8 +132,76 @@ at_day() {  # day-number command...
   [ -f "${MIRROR}/k.tar.gz" ]
 }
 
-@test "the Nuitka cache action sets a refresh period for both phases" {
+@test "the Nuitka cache action sets a refresh period for the check, the restore and the publish" {
   run yq -r '[.runs.steps[].env.MIRROR_REFRESH_DAYS] | map(select(. != null)) | length' "${ACTION}"
   [ "$status" -eq 0 ]
-  [ "$output" = "2" ]
+  [ "$output" = "3" ]
+}
+
+@test "the action checks the refresh period first, with no condition and no continue-on-error" {
+  run yq -r '.runs.steps[0] | [.name, (.["continue-on-error"] // "none"), (.if // "none"), .run] | join("|")' "${ACTION}"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Check the refresh period|none|none|bash tools/wheel-build/ci_mirror.sh check" ]
+}
+
+@test "no workflow lets the restore phase continue past an error" {
+  for wf in release.yml build-gpu-executables.yml; do
+    run yq -r '.jobs[].steps[] | select(.id == "nuitka-mirror") | (.["continue-on-error"] // "none")' "${REPO_ROOT}/.github/workflows/${wf}"
+    [ "$status" -eq 0 ]
+    [ "$output" = "none" ]
+  done
+}
+
+# Runs the action's restore step as written, for a key and a day, and prints its outputs.
+run_restore_step() {  # day
+  local day="$1" script
+  script="$(yq -r '.runs.steps[] | select(.id == "restore") | .run' "${ACTION}")"
+  script="${script//\$\{\{ inputs.key \}\}/k}"
+  script="${script//\$\{\{ inputs.cache-dir \}\}/${DEST}}"
+  : > "${BATS_TEST_TMPDIR}/gh-output"
+  (cd "${REPO_ROOT}" && GITHUB_OUTPUT="${BATS_TEST_TMPDIR}/gh-output" MIRROR_NOW=$((day * 86400)) bash -c "${script}") > /dev/null 2>&1
+  cat "${BATS_TEST_TMPDIR}/gh-output"
+}
+
+# The workflows publish when the current bucket was not restored.
+publish_gate_open() {  # outputs
+  [[ "$1" != *"current=true"* ]]
+}
+
+@test "both workflows publish on the current bucket, not on any restore" {
+  for wf in release.yml build-gpu-executables.yml; do
+    run yq -r '.jobs[].steps[] | select(.name == "Publish the Nuitka cache to the mirror") | .if' "${REPO_ROOT}/.github/workflows/${wf}"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"steps.nuitka-mirror.outputs.current != 'true'"* ]]
+    [[ "$output" != *"outputs.restored"* ]]
+  done
+}
+
+@test "the first build of a new bucket restores the old blob and still publishes the new one" {
+  # Bucket 2 starts cold, publishes, and the next bucket must not start cold.
+  out="$(run_restore_step 65)"
+  [[ "$out" == *"restored=false"* ]]
+  publish_gate_open "${out}"
+  at_day 65 publish k "${SRC}"
+
+  out="$(run_restore_step 95)"
+  [[ "$out" == *"restored=true"* ]]
+  [[ "$out" == *"current=false"* ]]
+  publish_gate_open "${out}"
+  at_day 95 publish k "${SRC}"
+  [ -f "${MIRROR}/k.b3.tar.gz" ]
+
+  out="$(run_restore_step 100)"
+  [[ "$out" == *"restored=true"* ]]
+  [[ "$out" == *"current=true"* ]]
+  run publish_gate_open "${out}"
+  [ "$status" -ne 0 ]
+}
+
+@test "with no refresh period a restore sets current and restored together" {
+  unset MIRROR_REFRESH_DAYS
+  at_day 65 publish k "${SRC}"
+  out="$(run_restore_step 400)"
+  [[ "$out" == *"restored=true"* ]]
+  [[ "$out" == *"current=true"* ]]
 }
