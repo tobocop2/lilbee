@@ -34,6 +34,11 @@ FLAG_KV_UNIFIED = "--kv-unified"
 FLAG_KV_UNIFIED_PER_SLOT = "--kv-unified-per-slot"
 # Refuse a prompt longer than the context instead of cutting it.
 FLAG_NO_CONTEXT_SHIFT = "--no-context-shift"
+# llama-server sends a ":" comment this often while a stream waits for its first token.
+# The flag on the command line beats LLAMA_ARG_SSE_PING_INTERVAL=-1 in the user's
+# environment, and the client's idle bound after the headers relies on the comment.
+FLAG_SSE_PING = "--sse-ping-interval"
+SSE_PING_SECONDS = "30"
 
 
 @dataclass(frozen=True)
@@ -273,6 +278,7 @@ _OPTIONAL_FLAGS: dict[str, _OptionalFlag] = {
     _FLAG_POOLING: _OptionalFlag(1, "the model's own pooling applies"),
     FLAG_KV_UNIFIED: _OptionalFlag(0, "the slots keep separate KV caches"),
     FLAG_NO_CONTEXT_SHIFT: _OptionalFlag(0, "the engine keeps its own context shift default"),
+    FLAG_SSE_PING: _OptionalFlag(1, "a prefill with no output for 120 s ends the chat stream"),
 }
 
 
@@ -415,5 +421,6 @@ def build_server_argv(
         optional += [MEMORY_FLAG]
     optional += [FLAG_NO_CONTEXT_SHIFT]
     optional += list(spec.extra_args)
+    optional += [FLAG_SSE_PING, SSE_PING_SECONDS]
     _require_rank_pooling(binary, spec)
     return argv + _drop_unlisted_flags(binary, optional)
