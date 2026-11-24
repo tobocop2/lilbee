@@ -298,9 +298,7 @@ def download_url(
     Each attempt is one request, so a server that goes quiet is reported after one
     read timeout.
     """
-    from huggingface_hub import constants as hub_constants
     from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
-    from huggingface_hub.utils import get_session, hf_raise_for_status
 
     dest.mkdir(parents=True, exist_ok=True)
     target = dest / url_filename(url)
@@ -309,27 +307,8 @@ def download_url(
         done = target.stat().st_size if target.exists() else 0
         if done == size:
             return target
-        headers = {"Range": f"bytes={done}-"} if done else {}
         try:
-            with (
-                get_session().stream(
-                    "GET", url, headers=headers, timeout=hub_constants.HF_HUB_DOWNLOAD_TIMEOUT
-                ) as response,
-                target.open("ab") as handle,
-            ):
-                hf_raise_for_status(response)
-                if response.status_code == HTTPStatus.OK:
-                    handle.truncate(0)  # the server sent the whole file, not the range
-                    done = 0
-                for chunk in response.iter_bytes(chunk_size=hub_constants.DOWNLOAD_CHUNK_SIZE):
-                    handle.write(chunk)
-                    done += len(chunk)
-                    if on_progress is not None:
-                        on_progress(done, size)
-            if done != size:
-                raise _TransientDownloadError(
-                    f"Transfer failed: {url} should be {size} bytes, but {done} arrived."
-                )
+            done = _stream_into(url, target, done, size, on_progress)
         except HfHubHTTPError as exc:
             if exc.response.status_code in _PERMANENT_STATUSES:
                 raise RuntimeError(
@@ -340,9 +319,39 @@ def download_url(
             raise RuntimeError(f"Downloads are switched off, so {url} was not fetched.") from exc
         except (httpx2.RequestError, OSError) as exc:
             raise _TransientDownloadError(f"Transfer failed: {exc}") from None
+        if done != size:
+            raise _TransientDownloadError(
+                f"Transfer failed: {url} should be {size} bytes, but {done} arrived."
+            )
         return target
 
     return _retry_transient(fetch, on_retry, cancel)
+
+
+def _stream_into(
+    url: str, target: Path, done: int, size: int, on_progress: ProgressCallback | None
+) -> int:
+    """Append *url* to *target* from byte *done* in one request; return the bytes on disk."""
+    from huggingface_hub import constants as hub_constants
+    from huggingface_hub.utils import get_session, hf_raise_for_status
+
+    headers = {"Range": f"bytes={done}-"} if done else {}
+    with (
+        get_session().stream(
+            "GET", url, headers=headers, timeout=hub_constants.HF_HUB_DOWNLOAD_TIMEOUT
+        ) as response,
+        target.open("ab") as handle,
+    ):
+        hf_raise_for_status(response)
+        if response.status_code == HTTPStatus.OK:
+            handle.truncate(0)  # the server sent the whole file, not the range
+            done = 0
+        for chunk in response.iter_bytes(chunk_size=hub_constants.DOWNLOAD_CHUNK_SIZE):
+            handle.write(chunk)
+            done += len(chunk)
+            if on_progress is not None:
+                on_progress(done, size)
+    return done
 
 
 def _download_with_retry(
