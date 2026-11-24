@@ -7192,6 +7192,62 @@ def test_healthy_states_leaves_out_a_failed_group(monkeypatch, tmp_path: Path) -
     assert prov_mod._healthy_states(machine) == {}
 
 
+class _ClockPair:
+    """A ``time`` module stand-in whose wall and monotonic clocks move apart."""
+
+    def __init__(self, wall: float, mono: float) -> None:
+        self.wall = wall
+        self.mono = mono
+
+    def time(self) -> float:
+        return self.wall
+
+    def monotonic(self) -> float:
+        return self.mono
+
+
+def _answering_engine_that_has_not_loaded(monkeypatch, tmp_path: Path, clocks: _ClockPair) -> Path:
+    """A recorded chat engine whose proxy answers with nothing loaded, under *clocks*."""
+    from lilbee.providers.fleet import swap_manager as sm
+
+    machine = tmp_path / "machine-slot"
+    chat = sm.SwapState(
+        pid=1,
+        pgid=None,
+        created_at=clocks.wall,
+        proxy_port=4100,
+        launches=(_chat_launch().to_state(),),
+    )
+    monkeypatch.setattr(
+        prov_mod, "find_live_state", lambda _dir, group: chat if group is SwapGroup.CHAT else None
+    )
+    listing = SimpleNamespace(status_code=200, json=lambda: {"running": []})
+    monkeypatch.setattr(sm, "_probe_client", lambda: SimpleNamespace(get=lambda *_a, **_k: listing))
+    monkeypatch.setattr(prov_mod, "time", clocks)
+    monkeypatch.setattr(sm, "_first_seen_s", {}, raising=False)  # no read left from another test
+    return machine
+
+
+def test_a_forward_clock_step_does_not_fail_a_loading_engine(monkeypatch, tmp_path: Path) -> None:
+    clocks = _ClockPair(wall=1_000_000.0, mono=50.0)
+    machine = _answering_engine_that_has_not_loaded(monkeypatch, tmp_path, clocks)
+    assert set(prov_mod._healthy_states(machine)) == {SwapGroup.CHAT}
+    clocks.wall += 10 * 86_400  # NTP or an operator steps the wall clock forward ten days
+    assert set(prov_mod._healthy_states(machine)) == {SwapGroup.CHAT}
+
+
+def test_an_engine_that_never_loads_still_fails_after_the_deadline(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from lilbee.providers.fleet import swap_manager as sm
+
+    clocks = _ClockPair(wall=1_000_000.0, mono=50.0)
+    machine = _answering_engine_that_has_not_loaded(monkeypatch, tmp_path, clocks)
+    assert set(prov_mod._healthy_states(machine)) == {SwapGroup.CHAT}
+    clocks.mono += sm.health_check_timeout_s([_chat_launch()]) + sm._BOOT_TIMEOUT_S
+    assert prov_mod._healthy_states(machine) == {}
+
+
 def test_the_slot_wait_keeps_waiting_on_an_in_use_engine_that_never_loaded(
     monkeypatch, tmp_path: Path
 ) -> None:
