@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -58,6 +59,7 @@ _ENDPOINTS = {
     WorkerRole.EMBED: "/v3/embeddings",
     WorkerRole.RERANK: "/v3/rerank",
 }
+_POSITION_KEY = "max_position_embeddings"
 _DEVICES = {RoleTarget.CPU: "CPU", RoleTarget.GPU: "GPU", RoleTarget.NPU: "NPU"}
 """The ``--target_device`` value of each target a launch accepts."""
 _PIN_LAUNCH = [
@@ -90,6 +92,18 @@ _RERANK_PROFILE = replace(
     rerank_model=_SERVED_NAME,
     batch_limit=_BATCH_LIMIT,
 )
+
+
+def _position_limit(model_dir: Path) -> int | None:
+    """The input length that the model's ``config.json`` names, or ``None``."""
+    try:
+        config = json.loads((model_dir / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    limit = config.get(_POSITION_KEY) if isinstance(config, dict) else None
+    if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+        return limit
+    return None
 
 
 class OvmsAdapter:
@@ -167,13 +181,17 @@ class OvmsAdapter:
         return RoleServerSpec(role, _ENDPOINTS[role], ("--task", _TASKS[role]), server_capable=True)
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
-        """The server command; the HTTP port is ``--rest_port`` and the gRPC port stays off."""
+        """The server command; the HTTP port is ``--rest_port`` and the gRPC port stays off.
+
+        An embed launch on the NPU bounds the input and cuts a longer one: the NPU compiles for
+        one fixed length. The bound is the smaller of the window and the model's position limit.
+        """
         device = _DEVICES.get(request.target, _DEVICES[RoleTarget.CPU])
-        bound = (
-            ["--max_length", str(request.ctx_per_slot)]
-            if spec.role is WorkerRole.EMBED and request.target is RoleTarget.NPU
-            else []
-        )
+        bound: list[str] = []
+        if spec.role is WorkerRole.EMBED and request.target is RoleTarget.NPU:
+            limit = _position_limit(request.model_path) or request.ctx_per_slot
+            limit = min(limit, request.ctx_per_slot)
+            bound = ["--max_length", str(limit), "--truncate", "true"]
         return [
             str(request.binary),
             "--model_path",
