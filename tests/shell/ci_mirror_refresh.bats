@@ -113,6 +113,23 @@ at_day() {  # day-number command...
   [ "$status" -eq 0 ]
 }
 
+@test "a refresh period that is not a whole number of days is refused by name" {
+  for bad in 0 -3 abc 1.5 "3 days"; do
+    MIRROR_REFRESH_DAYS="${bad}" run at_day 65 publish k "${SRC}"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"MIRROR_REFRESH_DAYS must be a whole number"* ]]
+    MIRROR_REFRESH_DAYS="${bad}" run at_day 65 fetch k "${DEST}"
+    [ "$status" -eq 2 ]
+  done
+  [ ! -e "${MIRROR}/k.b2.tar.gz" ]
+}
+
+@test "an empty refresh period counts as unset" {
+  MIRROR_REFRESH_DAYS="" run at_day 65 publish k "${SRC}"
+  [ "$status" -eq 0 ]
+  [ -f "${MIRROR}/k.tar.gz" ]
+}
+
 @test "the Nuitka cache action sets a refresh period for both phases" {
   run yq -r '[.runs.steps[].env.MIRROR_REFRESH_DAYS] | map(select(. != null)) | length' "${ACTION}"
   [ "$status" -eq 0 ]
