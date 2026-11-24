@@ -176,6 +176,7 @@ class ProviderErrorKind(StrEnum):
     CPU_UNSUPPORTED = "cpu_unsupported"
     MISSING_LIBRARY = "missing_library"
     STARTING = "starting"
+    ENGINE_MISSING = "engine_missing"
     UNKNOWN = "unknown"
 
 

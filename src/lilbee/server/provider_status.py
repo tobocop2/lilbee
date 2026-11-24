@@ -8,6 +8,12 @@ CLIENT_FAULT_STATUSES: dict[ProviderErrorKind, int] = {
     ProviderErrorKind.BAD_REQUEST: 400,
 }
 
+APP_ERROR_STATUSES: dict[ProviderErrorKind, int] = {
+    **CLIENT_FAULT_STATUSES,
+    ProviderErrorKind.NOT_FOUND: 404,
+}
+"""The statuses the app-level handler answers for a provider error no route caught."""
+
 UNAVAILABLE_RETRY_AFTER_SECONDS = 5
 
 # Failures that end by themselves: a server that is not up yet, a busy engine, a port
