@@ -52,8 +52,10 @@ the same behavior, so a developer can reproduce a CI build off-runner.
   `ik-tools.constraints` pins the ones that build the ik_llama.cpp server.
   `llama-tools-linux.constraints`, `llama-tools-macos.constraints` and
   `llama-tools-windows.constraints` do the same for the llama.cpp pack.
-  `mistralrs-check-tools.constraints` pins pefile, which the wheel check of the mistral.rs pack
-  uses to read import tables. It is not a build tool.
+  `windows-bundle-tools.constraints` pins pefile, which the Windows packs of mistral.rs and
+  llama.cpp use to read import tables. It is not a build tool. A Windows pack prunes each
+  bundled Visual C++ runtime DLL that no file of the wheel imports
+  (`tools/qa/assert_engine_bundle.py --prune-runtime`).
 - `check_glibc_floor.sh` — fails when a file in a pack imports glibc above 2.34
   or libstdc++ above 3.4.29.
 - `build_lilbee_binary.sh` — Nuitka one-file build of the lilbee standalone

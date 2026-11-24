@@ -107,11 +107,20 @@ PY
   )
 }
 
+# Delete each Visual C++ runtime DLL that no file of the Windows wheel imports. Run it in the wheel project, after pefile
+# is installed.
+prune_windows_runtime() {
+  [ "$(host_os)" = Windows ] || return 0
+  python ../../tools/qa/assert_engine_bundle.py --prune-runtime lilbee_engine_mistral_rs/bin
+  ls lilbee_engine_mistral_rs/bin
+}
+
 build_wheel() {
   (
     cd "${WHEEL_TREE}"
     # A relative path: Windows Python does not read a Git Bash path.
-    install_build_tools python ../../tools/wheel-build/build-tools.constraints ../../tools/wheel-build/mistralrs-check-tools.constraints
+    install_build_tools python ../../tools/wheel-build/build-tools.constraints ../../tools/wheel-build/windows-bundle-tools.constraints
+    prune_windows_runtime
     build_wheel_with_tools python -C--build-option="--build-number=1.${BACKEND}"
     python -m wheel tags --remove --platform-tag "${PLATFORM}" dist/*.whl
     ls dist

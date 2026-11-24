@@ -205,12 +205,13 @@ build_tools_and_licences() {
 # Put the Visual C++ runtime beside the exe.
 add_windows_runtime() {
   bash tools/wheel-build/bundle_windows_runtime.sh "${BIN}" "${WHEEL_TREE}/NOTICE-MICROSOFT-VC-RUNTIME" vs-licence.docx
-  # This build uses libomp.dll, so nothing needs vcomp140.
-  if (cd "${BIN}" && grep -rilaF vcomp140 --include='*.dll' --include='*.exe' . | grep -vi '^./vcomp140.dll$'); then
-    echo "pack_llama: a binary imports vcomp140.dll" >&2
-    return 1
-  fi
-  rm -f packaging/engine-wheel/lilbee_engine_llama_cpp/bin/vcomp140.dll
+}
+
+# Delete each Visual C++ runtime DLL that no file of the Windows wheel imports. The build tools hold pefile by now.
+prune_windows_runtime() {
+  [ "$(host_os)" = Windows ] || return 0
+  python tools/qa/assert_engine_bundle.py --prune-runtime "${BIN}"
+  ls "${BIN}"
 }
 
 # Set the version, the licence expression and the licence files in the wheel project, and write the pin of the engine.
@@ -244,7 +245,9 @@ build_wheel() (
   # A relative path: Windows Python does not read a Git Bash path.
   files=(tools/wheel-build/build-tools.constraints)
   if [ "$(host_os)" = macOS ]; then files+=(tools/wheel-build/llama-tools-macos.constraints); fi
+  if [ "$(host_os)" = Windows ]; then files+=(tools/wheel-build/windows-bundle-tools.constraints); fi
   install_build_tools python "${files[@]}"
+  prune_windows_runtime
   (
     cd "${WHEEL_TREE}"
     build_wheel_with_tools python -C--build-option="--build-number=${BUILD_NUMBER}.${BACKEND}"
