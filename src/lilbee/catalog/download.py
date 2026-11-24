@@ -249,8 +249,8 @@ def _retry_transient(
 
     Every other error propagates on the first attempt, cancellation included,
     so a defect or a configuration error is never hidden behind a retry. A
-    transfer that goes quiet raises nothing here, so it is the parent process
-    that ends it, not this loop.
+    model transfer that goes quiet raises nothing here, so it is the parent
+    process that ends it, not this loop.
     """
     last_error: Exception | None = None
     for attempt in range(_TRANSFER_RETRIES + 1):
@@ -294,24 +294,41 @@ def download_url(
     offline switch, end the transfer at once.
     *on_progress* receives byte counts and *on_retry* each failed attempt. A set
     *cancel* ends the wait between attempts with ``TaskCancelledError``.
+
+    Each attempt is one request, so a server that goes quiet is reported after one
+    read timeout.
     """
+    from huggingface_hub import constants as hub_constants
     from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
-    from huggingface_hub.file_download import http_get
+    from huggingface_hub.utils import get_session, hf_raise_for_status
 
     dest.mkdir(parents=True, exist_ok=True)
     target = dest / url_filename(url)
-    tqdm_class = _ProgressTracker(on_progress).make_tqdm_class() if on_progress else None
 
     def fetch() -> Path:
         done = target.stat().st_size if target.exists() else 0
+        if done == size:
+            return target
+        headers = {"Range": f"bytes={done}-"} if done else {}
         try:
-            with target.open("ab") as handle:
-                http_get(
-                    url,
-                    handle,
-                    resume_size=done,
-                    expected_size=size,
-                    tqdm_class=tqdm_class,
+            with (
+                get_session().stream(
+                    "GET", url, headers=headers, timeout=hub_constants.HF_HUB_DOWNLOAD_TIMEOUT
+                ) as response,
+                target.open("ab") as handle,
+            ):
+                hf_raise_for_status(response)
+                if response.status_code == HTTPStatus.OK:
+                    handle.truncate(0)  # the server sent the whole file, not the range
+                    done = 0
+                for chunk in response.iter_bytes(chunk_size=hub_constants.DOWNLOAD_CHUNK_SIZE):
+                    handle.write(chunk)
+                    done += len(chunk)
+                    if on_progress is not None:
+                        on_progress(done, size)
+            if done != size:
+                raise _TransientDownloadError(
+                    f"Transfer failed: {url} should be {size} bytes, but {done} arrived."
                 )
         except HfHubHTTPError as exc:
             if exc.response.status_code in _PERMANENT_STATUSES:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import inspect
 import json
 import re
 import socket
@@ -20,7 +19,6 @@ from unittest import mock
 
 import pytest
 from huggingface_hub import constants as hub_constants
-from huggingface_hub.file_download import http_get
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel
 from rich.text import Text
@@ -1234,8 +1232,7 @@ def test_each_refusing_engine_gives_its_reason_and_the_install_sentence(
 
 
 STALL_TIMEOUT = 0.3
-# One attempt is the first request plus the retries the Hub client makes on a timeout.
-HUB_REQUESTS_PER_ATTEMPT = inspect.signature(http_get).parameters["_nb_retries"].default + 1
+# One attempt is one request: a timeout ends the attempt and the retry loop reports it.
 ATTEMPTS = 3
 
 
@@ -1254,14 +1251,14 @@ def stalling(good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch
 def test_a_silent_server_names_each_failed_attempt_with_its_cause(
     stalling: ReleaseServer,
 ) -> None:
-    stalling.silent_next = ATTEMPTS * HUB_REQUESTS_PER_ATTEMPT
+    stalling.silent_next = ATTEMPTS
     retries: list[str] = []
     with (
         mock.patch.object(download.time, "sleep"),
         pytest.raises(engine_service.EngineRefusedError, match="cannot be downloaded"),
     ):
         engine_service.install(ENGINE.value, on_retry=retries.append)
-    assert len(stalling.requests) == ATTEMPTS * HUB_REQUESTS_PER_ATTEMPT
+    assert len(stalling.requests) == ATTEMPTS
     assert [t.split(". ")[-1] for t in retries] == [
         "Attempt 1 of 3 failed; trying again.",
         "Attempt 2 of 3 failed; trying again.",
@@ -1301,7 +1298,7 @@ def test_a_healthy_download_reports_no_retry_and_completes(
 def test_the_cli_tells_the_user_about_each_retry_on_stderr(
     stalling: ReleaseServer, flags: list[str]
 ) -> None:
-    stalling.silent_next = ATTEMPTS * HUB_REQUESTS_PER_ATTEMPT
+    stalling.silent_next = ATTEMPTS
     with mock.patch.object(download.time, "sleep"):
         result = CliRunner().invoke(cli_app, [*flags, "engine", "install", ENGINE.value])
     assert result.exit_code == 1
@@ -1312,7 +1309,7 @@ def test_the_cli_tells_the_user_about_each_retry_on_stderr(
 
 
 def test_the_slash_command_hands_each_retry_to_the_screen(stalling: ReleaseServer) -> None:
-    stalling.silent_next = ATTEMPTS * HUB_REQUESTS_PER_ATTEMPT
+    stalling.silent_next = ATTEMPTS
     retries: list[str] = []
     with mock.patch.object(download.time, "sleep"):
         out = run_engine_command(f"install {ENGINE.value}", on_retry=retries.append)

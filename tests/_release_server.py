@@ -20,7 +20,7 @@ class ReleaseServer:
     it sends a status line. ``silent_next`` accepts a request and sends nothing. ``stall_next``
     sends the first half of the body and then goes quiet on the open socket, so a resume past
     the half gets nothing. Both hold the socket until
-    the server stops.
+    the server stops. ``ignore_range`` answers every request with the whole file and 200.
     """
 
     def __init__(self) -> None:
@@ -32,6 +32,7 @@ class ReleaseServer:
         self.close_next = 0
         self.silent_next = 0
         self.stall_next = 0
+        self.ignore_range = False
         self.stop = threading.Event()
         self.url = ""
 
@@ -69,6 +70,7 @@ class ReleaseServer:
                     self.end_headers()
                     return
                 start = int(self.headers.get("Range", "bytes=0-")[6:].split("-")[0])
+                start = 0 if owner.ignore_range else start
                 self.send_response(206 if start else 200)
                 self.send_header("Content-Length", str(len(body) - start))
                 self.end_headers()
