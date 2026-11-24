@@ -62,6 +62,8 @@ ENGINE = EngineName.IK_LLAMA
 VERSION = "git-0123456789ab"
 NO_AVX2 = "This host has no AVX2. ik_llama.cpp needs it."
 STAYS = "llama.cpp stays in use."
+
+
 def bad_copy(path: Path) -> str:
     """The refusal for a file the user copied that does not match its pin."""
     text = (
