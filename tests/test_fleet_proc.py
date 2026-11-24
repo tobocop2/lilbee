@@ -39,9 +39,7 @@ def test_stderr_sink_is_filled_when_the_child_times_out() -> None:
     code = "import sys,time; sys.stderr.write('slow'); sys.stderr.flush(); time.sleep(30)"
     sink: list[str] = []
     with pytest.raises(subprocess.TimeoutExpired):
-        proc.run_bounded(
-            [sys.executable, "-c", code], timeout_s=1, kill_wait_s=3, stderr_sink=sink
-        )
+        proc.run_bounded([sys.executable, "-c", code], timeout_s=1, kill_wait_s=3, stderr_sink=sink)
     assert sink == ["slow"]
 
 
