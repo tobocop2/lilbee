@@ -31,7 +31,10 @@ _HTTP_UNPROCESSABLE = 422
 
 
 async def _call(action: Callable[[], _T]) -> _T:
-    """Run a service call off the loop; a refusal becomes its status; a held lock or an unreadable config.toml is 503."""
+    """Run a service call off the loop; a refusal becomes its status.
+
+    A held lock or an unreadable config.toml is 503.
+    """
     try:
         return await asyncio.to_thread(action)
     except service.PresetNotFoundError as exc:
