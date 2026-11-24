@@ -52,6 +52,8 @@ from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 _STREAM_INTERRUPTED_MESSAGE = (
     "The model server stopped answering and the answer is cut. Send your message again."
 )
+# Shown when a stream sends its headers and then no frame within the idle bound.
+_STREAM_SILENT_MESSAGE = "The model server sent no answer for {wait:g} s, so the request stopped."
 
 # Fleet clients only ever talk to a loopback llama-server over plain HTTP, so TLS is
 # never negotiated. httpx still builds a default SSL context per client (loads the
@@ -504,6 +506,10 @@ _TRANSIENT_KINDS = _RETRY_KINDS | {ProviderErrorKind.RATE_LIMIT}
 _DONE_SENTINEL = "[DONE]"
 _DATA_PREFIX = "data:"
 _DEFAULT_TIMEOUT_S = 300.0
+# The longest silence, in seconds, between two reads of a chat stream's body. The client
+# timeout stays the wait for the headers: llama-swap sends no byte while it loads a model,
+# and llama-server sends a ":" comment every 30 s once the headers are out.
+_STREAM_IDLE_TIMEOUT_S = 120.0
 # How often an abortable chat checks its cancel signal.
 _CANCEL_POLL_S = 0.1
 # Short, separate timeout for /health: a server can wedge under heavy prompt
@@ -559,6 +565,17 @@ class StreamInterruptedError(ProviderError):
 
     def __init__(self, provider: str = "") -> None:
         super().__init__(_STREAM_INTERRUPTED_MESSAGE, provider=provider)
+
+
+class StreamSilentError(httpx.ReadTimeout):
+    """A chat stream sent its headers and then no frame within the idle bound.
+
+    It is a read timeout, so the fleet's retry and restart rules for a timeout apply
+    unchanged; only the message is lilbee's own.
+    """
+
+    def __init__(self, wait: float, *, request: httpx.Request) -> None:
+        super().__init__(_STREAM_SILENT_MESSAGE.format(wait=wait), request=request)
 
 
 class _SideRouteRefusalError(ProviderError):
@@ -904,21 +921,31 @@ class LlamaServerClient:
         self, payload: dict[str, Any], timeout: Any = httpx.USE_CLIENT_DEFAULT
     ) -> Iterator[str]:
         inliner = ThinkInliner(enabled=self._inline_reasoning)
-        with (
-            self._track(),
-            self._http.stream(
-                "POST", _CHAT_PATH, json={**payload, "stream": True}, timeout=timeout
-            ) as resp,
-        ):
-            self._raise_for_status(resp)
-            self._abortable(resp)
-            for line in resp.iter_lines():
-                delta = inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
-                if delta:
-                    yield delta
-            tail = inliner.finish()
-            if tail:
-                yield tail
+        started = False
+        bounded: httpx.Request | None = None
+        try:
+            with (
+                self._track(),
+                self._http.stream(
+                    "POST", _CHAT_PATH, json={**payload, "stream": True}, timeout=timeout
+                ) as resp,
+            ):
+                self._raise_for_status(resp)
+                bounded = _bound_body_reads(resp)
+                self._abortable(resp)
+                for line in resp.iter_lines():
+                    delta = inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
+                    if delta:
+                        started = True
+                        yield delta
+                tail = inliner.finish()
+                if tail:
+                    yield tail
+        except httpx.ReadTimeout as exc:
+            _raise_stream_failure(
+                exc, started=started, bounded=bounded, provider=self._profile.label
+            )
+            raise
 
     def chat_abortable(
         self,
@@ -974,12 +1001,22 @@ class LlamaServerClient:
     async def _stream_text(self, http: httpx.AsyncClient, payload: dict[str, Any]) -> str:
         inliner = ThinkInliner(enabled=self._inline_reasoning)
         parts: list[str] = []
-        async with http.stream("POST", _CHAT_PATH, json=payload) as resp:
-            if not resp.is_success:
-                await resp.aread()
-            self._raise_for_status(resp)
-            async for line in resp.aiter_lines():
-                parts.append(inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field)))
+        bounded: httpx.Request | None = None
+        try:
+            async with http.stream("POST", _CHAT_PATH, json=payload) as resp:
+                if not resp.is_success:
+                    await resp.aread()
+                self._raise_for_status(resp)
+                bounded = _bound_body_reads(resp)
+                async for line in resp.aiter_lines():
+                    parts.append(
+                        inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
+                    )
+        except httpx.ReadTimeout as exc:
+            _raise_stream_failure(
+                exc, started=any(parts), bounded=bounded, provider=self._profile.label
+            )
+            raise
         parts.append(inliner.finish())
         return "".join(parts)
 
@@ -1113,12 +1150,14 @@ class LlamaServerClient:
         prefilling = False
         started = False
         ended = False
+        bounded: httpx.Request | None = None
         try:
             with (
                 self._track(),
                 self._http.stream("POST", _CHAT_PATH, json=payload) as resp,
             ):
                 self._raise_for_status(resp)
+                bounded = _bound_body_reads(resp)
                 self._abortable(resp)
                 for line in resp.iter_lines():
                     if on_prefill is not None:
@@ -1142,9 +1181,10 @@ class LlamaServerClient:
                     yield tail
                 _raise_if_cut(started=started, ended=ended, provider=self._profile.label)
         except httpx.TransportError as exc:
-            if not started:
-                raise
-            raise StreamInterruptedError(self._profile.label) from exc
+            _raise_stream_failure(
+                exc, started=started, bounded=bounded, provider=self._profile.label
+            )
+            raise
         finally:
             # A stream that dies or is closed mid-prefill must not leave a
             # stale in-progress reading on the status surface.
@@ -2172,6 +2212,36 @@ def _prefill_progress(line: str) -> tuple[int, int] | None:
         return int(progress["processed"]), int(progress["total"])
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _bound_body_reads(resp: httpx.Response) -> httpx.Request:
+    """Lower the body read timeout of the stream *resp* to the idle bound; its request.
+
+    httpx builds the request's ``timeout`` extension for this one request, and httpcore
+    reads the body's read timeout from it at the first body read. The change therefore
+    covers this response only and never reaches the pooled connection. A shorter read
+    timeout stays as it is.
+    """
+    timeouts = resp.request.extensions["timeout"]
+    read = timeouts["read"]
+    timeouts["read"] = _STREAM_IDLE_TIMEOUT_S if read is None else min(read, _STREAM_IDLE_TIMEOUT_S)
+    return resp.request
+
+
+def _raise_stream_failure(
+    exc: httpx.TransportError, *, started: bool, bounded: httpx.Request | None, provider: str
+) -> None:
+    """Raise the error a chat stream that broke with *exc* ends with, if it has one.
+
+    After a frame the answer is cut. A read timeout of the *bounded* request before a
+    frame is the server's silence after the headers. Any other failure is left to the
+    caller.
+    """
+    if started:
+        raise StreamInterruptedError(provider) from exc
+    if bounded is not None and isinstance(exc, httpx.ReadTimeout):
+        wait = bounded.extensions["timeout"]["read"]
+        raise StreamSilentError(wait, request=bounded) from exc
 
 
 def _raise_if_cut(*, started: bool, ended: bool, provider: str) -> None:

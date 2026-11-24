@@ -2670,6 +2670,35 @@ def test_a_timeout_on_llama_cpp_keeps_the_one_retry_and_no_restart(
     assert getattr(client, method).call_count == 2
 
 
+def _silent_stream() -> httpx.ReadTimeout:
+    """The error of a chat stream that sent its headers and then no frame."""
+    from lilbee.providers.fleet.client import StreamSilentError
+
+    return StreamSilentError(120.0, request=httpx.Request("POST", _SERVED_CHAT_URL))
+
+
+def test_a_silent_stream_on_llama_cpp_takes_the_one_retry_and_no_restart(monkeypatch) -> None:
+    silent = _silent_stream()
+    p, client, restarted = _timing_out_chat(monkeypatch, LLAMA, "chat_stream_items", silent)
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        p.chat(_CHAT_MESSAGES, stream=True)
+    assert caught.value.__cause__ is silent
+    assert restarted == []
+    assert client.chat_stream_items.call_count == 2
+
+
+def test_a_silent_stream_on_mlx_restarts_the_chat_server_and_sends_no_retry(monkeypatch) -> None:
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    silent = _silent_stream()
+    p, client, restarted = _timing_out_chat(monkeypatch, MLX, "chat_stream_items", silent)
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        p.chat(_CHAT_MESSAGES, stream=True)
+    assert caught.value.__cause__ is silent
+    assert restarted == [WorkerRole.CHAT]
+    assert client.chat_stream_items.call_count == 1
+
+
 def test_a_timeout_on_llama_cpp_keeps_its_retry_when_the_engine_choice_is_gone(
     monkeypatch,
 ) -> None:

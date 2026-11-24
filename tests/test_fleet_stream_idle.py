@@ -1,0 +1,327 @@
+"""The silence of a chat stream's body ends at the idle bound.
+
+The client timeout is the cold-load budget, and it holds until the headers arrive: llama-swap
+sends no byte while it loads a model. After the headers, the silence between two reads of the
+body is bounded by the idle bound. Each test runs the real client against a loopback server
+that sends headers and frames on a script.
+
+The tests that assert a time also guard the mechanism. The client lowers the read timeout in
+the request's own ``timeout`` extension after the headers, and httpcore reads it at the first
+body read. If httpcore took the read timeout earlier, the body would wait the client timeout,
+which is far over ``_QUICK_S``.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import socket
+import threading
+import time
+from collections.abc import Callable, Collection, Iterator
+from dataclasses import dataclass
+from typing import BinaryIO
+
+import httpx
+import pytest
+
+from lilbee.providers.fleet import client as fleet_client
+from lilbee.providers.fleet.client import LlamaServerClient, StreamInterruptedError
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.roles import WorkerRole
+
+# The client timeout of a test: the cold-load budget in the real client. At the base commit a
+# silent stream waits this long, which is well above `_QUICK_S` and below the test timeout.
+_COLD_LOAD_S = 20.0
+# The idle bound of a test.
+_IDLE_S = 0.5
+# A stream bounded by the idle bound must end within this time of the last frame.
+_QUICK_S = 5.0
+_MESSAGES = [{"role": "user", "content": "hi"}]
+_HEADERS = (
+    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+    b"Transfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n"
+)
+_ANSWER = json.dumps(
+    {
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+        ]
+    }
+).encode()
+
+
+def _chunk(data: bytes) -> bytes:
+    return f"{len(data):x}\r\n".encode() + data + b"\r\n"
+
+
+def _frame(text: str, *, finish: bool = False) -> bytes:
+    choice = {"index": 0, "delta": {"content": text}, "finish_reason": "stop" if finish else None}
+    return _chunk(f"data: {json.dumps({'choices': [choice]})}\n\n".encode())
+
+
+@dataclass(frozen=True)
+class _Script:
+    """What the server does with each request; every wait is in seconds."""
+
+    head_wait_s: float = 0.0  # before a stream's headers, as llama-swap holds a cold load
+    wait_s: float = 0.0  # after the headers, before the first frame
+    heartbeat_s: float = 0.0  # a ":" comment this often during wait_s; 0 sends none
+    frames: int = 1
+    gap_s: float = 0.0
+    end: bool = False  # end the stream; otherwise go silent
+    answer_wait_s: float = 0.0  # before the answer to a request that does not stream
+
+
+class _ScriptedServer:
+    """A keep-alive loopback server that answers every request on its script."""
+
+    def __init__(self, script: _Script) -> None:
+        self._script = script
+        self._release = threading.Event()
+        # The client port of each request, in order: one port means one connection.
+        self.peers: list[int] = []
+        self._sock = socket.socket()
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(8)
+        self.url = f"http://127.0.0.1:{self._sock.getsockname()[1]}"
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def _accept(self) -> None:
+        while True:
+            try:
+                conn, peer = self._sock.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._serve, args=(conn, peer[1]), daemon=True).start()
+
+    def _serve(self, conn: socket.socket, peer: int) -> None:
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        with conn, contextlib.suppress(OSError), conn.makefile("rb") as reader:
+            while (body := _read_request(reader)) is not None:
+                self.peers.append(peer)
+                if not self._answer(conn, body):
+                    return
+
+    def _answer(self, conn: socket.socket, body: dict[str, object]) -> bool:
+        """Send one answer; whether the connection stays open for the next request."""
+        script = self._script
+        if not body.get("stream"):
+            self._release.wait(script.answer_wait_s)
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                + f"Content-Length: {len(_ANSWER)}\r\n\r\n".encode()
+                + _ANSWER
+            )
+            return True
+        self._release.wait(script.head_wait_s)
+        out = bytearray(_HEADERS)
+
+        def pause(seconds: float) -> None:
+            if seconds > 0:
+                conn.sendall(out)
+                out.clear()
+                self._release.wait(seconds)
+
+        if script.heartbeat_s:
+            deadline = time.monotonic() + script.wait_s
+            while time.monotonic() < deadline:
+                pause(script.heartbeat_s)
+                out.extend(_chunk(b": keep-alive\n\n"))
+        else:
+            pause(script.wait_s)
+        for number in range(script.frames):
+            if number:
+                pause(script.gap_s)
+            out.extend(_frame(f"w{number}"))
+        if script.end:
+            out.extend(_frame("", finish=True) + b"0\r\n\r\n")
+            conn.sendall(out)
+            return True
+        conn.sendall(out)
+        self._release.wait(60)
+        return False
+
+    def close(self) -> None:
+        self._release.set()
+        self._sock.close()
+
+
+def _read_request(reader: BinaryIO) -> dict[str, object] | None:
+    """The JSON body of the next request on *reader*, or None once the client closes."""
+    length = 0
+    line = reader.readline()
+    if not line:
+        return None
+    while line not in (b"\r\n", b""):
+        name, _, value = line.partition(b":")
+        if name.strip().lower() == b"content-length":
+            length = int(value.strip())
+        line = reader.readline()
+    return json.loads(reader.read(length) or b"{}")
+
+
+@pytest.fixture(autouse=True)
+def _short_idle_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    # raising=False: the same tests run at the base commit, which has no idle bound.
+    monkeypatch.setattr(fleet_client, "_STREAM_IDLE_TIMEOUT_S", _IDLE_S, raising=False)
+
+
+@contextlib.contextmanager
+def _serve(
+    script: _Script, timeout: float = _COLD_LOAD_S
+) -> Iterator[tuple[_ScriptedServer, LlamaServerClient]]:
+    server = _ScriptedServer(script)
+    client = LlamaServerClient(
+        server.url, "m", timeout=timeout, profile=LLAMA.request_profile(WorkerRole.CHAT)
+    )
+    client._needs_alternation = False
+    try:
+        yield server, client
+    finally:
+        server.close()
+        client.close()
+
+
+# The three streaming chat sites, each read to its end.
+_SITES: dict[str, Callable[[LlamaServerClient], Collection[object]]] = {
+    "items": lambda client: list(client.chat_stream_items(_MESSAGES)),
+    "text": lambda client: list(client.chat(_MESSAGES, stream=True)),
+    "abortable": lambda client: client.chat_abortable(_MESSAGES),
+}
+
+
+def test_a_stream_quiet_after_its_first_frame_ends_with_the_cut_answer_error() -> None:
+    with _serve(_Script()) as (_server, client):
+        stream = client.chat_stream_items(_MESSAGES)
+        assert next(stream) == "w0"
+        start = time.monotonic()
+        with pytest.raises(StreamInterruptedError) as caught:
+            list(stream)
+        waited = time.monotonic() - start
+    assert "stopped answering" in str(caught.value)
+    assert isinstance(caught.value.__cause__, httpx.ReadTimeout)
+    assert waited < _QUICK_S
+
+
+def test_a_quiet_wait_after_the_headers_ends_at_the_idle_bound() -> None:
+    """A prefill that sends nothing after the headers is cut, though frames would come."""
+    with _serve(_Script(wait_s=_IDLE_S * 3, end=True)) as (_server, client):
+        start = time.monotonic()
+        with pytest.raises(httpx.ReadTimeout) as caught:
+            list(client.chat_stream_items(_MESSAGES))
+        waited = time.monotonic() - start
+    assert str(caught.value) == "The model server sent no answer for 0.5 s, so the request stopped."
+    assert caught.value.request.url.path == "/v1/chat/completions"
+    assert waited < _QUICK_S
+
+
+@pytest.mark.parametrize("site", sorted(_SITES))
+def test_headers_then_silence_ends_at_the_idle_bound(site: str) -> None:
+    with _serve(_Script(wait_s=60.0)) as (_server, client):
+        start = time.monotonic()
+        with pytest.raises(httpx.ReadTimeout, match=r"model server sent no answer for 0\.5 s"):
+            _SITES[site](client)
+        waited = time.monotonic() - start
+    assert waited < _QUICK_S
+
+
+@pytest.mark.parametrize("site", sorted(_SITES))
+def test_a_cold_load_past_the_client_timeout_ends_with_the_plain_read_timeout(site: str) -> None:
+    """No headers came, so the server's silence after the headers is not the cause."""
+    with (
+        _serve(_Script(head_wait_s=_IDLE_S * 3, end=True), timeout=_IDLE_S) as (_server, client),
+        pytest.raises(httpx.ReadTimeout) as caught,
+    ):
+        _SITES[site](client)
+    assert not isinstance(caught.value, fleet_client.StreamSilentError)
+
+
+@pytest.mark.parametrize("site", sorted(_SITES))
+def test_a_prefill_that_sends_comments_is_not_cut(site: str) -> None:
+    """llama-server sends a ":" comment during a long prefill; each one resets the bound."""
+    script = _Script(wait_s=_IDLE_S * 3, heartbeat_s=_IDLE_S / 4, end=True)
+    with _serve(script) as (_server, client):
+        assert "w0" in _SITES[site](client)
+
+
+@pytest.mark.parametrize("site", sorted(_SITES))
+def test_a_cold_load_before_the_headers_keeps_the_cold_load_budget(site: str) -> None:
+    with _serve(_Script(head_wait_s=_IDLE_S * 3, end=True)) as (_server, client):
+        assert "w0" in _SITES[site](client)
+
+
+def test_a_slow_steady_stream_is_not_cut() -> None:
+    """Each gap is under the idle bound; the whole stream is far over it."""
+    with _serve(_Script(frames=6, gap_s=_IDLE_S * 0.6, end=True)) as (_server, client):
+        start = time.monotonic()
+        items = [item for item in client.chat_stream_items(_MESSAGES) if isinstance(item, str)]
+        total = time.monotonic() - start
+    assert items == [f"w{number}" for number in range(6)]
+    assert total > _IDLE_S * 2
+
+
+def test_a_shorter_client_timeout_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The idle bound only lowers a longer read timeout."""
+    monkeypatch.setattr(fleet_client, "_STREAM_IDLE_TIMEOUT_S", 4.0, raising=False)
+    with _serve(_Script(), timeout=0.5) as (_server, client):
+        stream = client.chat_stream_items(_MESSAGES)
+        assert next(stream) == "w0"
+        start = time.monotonic()
+        with pytest.raises(StreamInterruptedError):
+            list(stream)
+        waited = time.monotonic() - start
+    assert 0.5 <= waited < 2.5
+
+
+def test_a_read_timeout_of_none_is_bounded_too() -> None:
+    """A client built without a read timeout still gets the idle bound after the headers."""
+    with _serve(_Script()) as (server, client):
+        client._http.close()
+        client._http = httpx.Client(base_url=server.url, timeout=httpx.Timeout(None))
+        stream = client.chat_stream_items(_MESSAGES)
+        assert next(stream) == "w0"
+        start = time.monotonic()
+        with pytest.raises(StreamInterruptedError):
+            list(stream)
+        waited = time.monotonic() - start
+    assert waited < _QUICK_S
+
+
+def test_the_text_stream_is_bounded_after_its_first_frame() -> None:
+    with _serve(_Script()) as (_server, client):
+        stream = client.chat(_MESSAGES, stream=True)
+        assert next(stream) == "w0"
+        start = time.monotonic()
+        with pytest.raises(StreamInterruptedError) as caught:
+            list(stream)
+        waited = time.monotonic() - start
+    assert isinstance(caught.value.__cause__, httpx.ReadTimeout)
+    assert waited < _QUICK_S
+
+
+def test_the_abortable_chat_is_bounded_after_its_first_frame() -> None:
+    with _serve(_Script()) as (_server, client):
+        start = time.monotonic()
+        with pytest.raises(StreamInterruptedError) as caught:
+            client.chat_abortable(_MESSAGES)
+        waited = time.monotonic() - start
+    assert isinstance(caught.value.__cause__, httpx.ReadTimeout)
+    assert waited < _QUICK_S
+
+
+def test_a_later_slow_request_on_the_same_connection_is_not_cut() -> None:
+    """The bound ends with its stream: the pooled connection keeps the client timeout."""
+    with _serve(_Script(end=True, answer_wait_s=_IDLE_S * 3)) as (server, client):
+        assert "w0" in list(client.chat_stream_items(_MESSAGES))
+        assert client.chat(_MESSAGES) == "ok"
+    assert len(server.peers) == 2
+    assert len(set(server.peers)) == 1
+
+
+def test_many_streams_on_one_connection_end_without_an_error() -> None:
+    with _serve(_Script(end=True)) as (server, client):
+        for _ in range(1500):
+            assert "w0" in list(client.chat_stream_items(_MESSAGES))
+    assert len(server.peers) == 1500
+    assert len(set(server.peers)) == 1
