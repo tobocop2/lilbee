@@ -950,7 +950,7 @@ class LlamaServerClient:
                 tail = inliner.finish()
                 if tail:
                     yield tail
-        except httpx.ReadTimeout as exc:
+        except httpx.TransportError as exc:
             _raise_stream_failure(
                 exc, started=started, bounded=bounded, provider=self._profile.label
             )
@@ -1021,7 +1021,7 @@ class LlamaServerClient:
                     parts.append(
                         inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
                     )
-        except httpx.ReadTimeout as exc:
+        except httpx.TransportError as exc:
             _raise_stream_failure(
                 exc, started=any(parts), bounded=bounded, provider=self._profile.label
             )
