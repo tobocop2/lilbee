@@ -45,6 +45,7 @@ check_licences() {  # wheel crate-licences expression
   fi
   listing="$(python -m zipfile -l "${wheel}")" || return 1
   metadata="$(dist_info "${wheel}" METADATA)" || return 1
+  metadata="$(metadata_header <<< "${metadata}")"
   grep -xF "License-Expression: ${expression}" <<< "${metadata}" || refuse "wheel lacks the licence expression ${expression}" || return 1
   grep -q "dist-info/licenses/LICENSE-mistral.rs " <<< "${listing}" || refuse "wheel lacks the mistral.rs licence" || return 1
   grep -q "dist-info/licenses/THIRD-PARTY/mistral.rs/" <<< "${listing}" || refuse "wheel lacks the crate licences" || return 1
@@ -83,7 +84,7 @@ start_tool() {  # wheel
     python "${tools}/qa/assert_engine_bundle.py" --imports-only "${bindir}" || refuse "a file of the wheel imports a DLL that nothing provides"
   fi
   if [ "${os}" = macOS ]; then
-    libraries="$(otool -L "${exe}")"
+    libraries="$(otool -L "${exe}")" || refuse "otool failed on ${exe}" || return 1
     echo "${libraries}"
     only_system_libraries <<< "${libraries}" || refuse "the binary loads a library outside the system"
   fi
