@@ -578,7 +578,7 @@ def test_a_failed_pass_after_a_rediscover_stops_the_server_it_took(
 def test_a_failed_pass_without_a_rediscover_gives_the_server_back_running(
     engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The plan after the drain fails; the fleet still maps the taken server, which keeps serving."""
+    """The plan after the drain fails; the fleet still maps the taken server, so it serves on."""
     provider, _swaps = engine_fleet
     monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", plan_tests._LONG_DRAIN_S)
     old_chat = provider._swap_for(CHAT)
@@ -588,7 +588,9 @@ def test_a_failed_pass_without_a_rediscover_gives_the_server_back_running(
     real_drain = provider._drain_clients
 
     def drain(clients: list[object], until: float) -> None:
-        old_chat.engine.release.set()
+        # The first loop turn drains nothing; the held chat must still run at the first plan.
+        if clients:
+            old_chat.engine.release.set()
         real_drain(clients, until)  # type: ignore[arg-type]
 
     monkeypatch.setattr(provider, "_drain_clients", drain)
