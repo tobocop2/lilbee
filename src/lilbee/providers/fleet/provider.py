@@ -594,7 +594,11 @@ def _retry_on_other_replica(
 
 
 def _output_log_of(engine: EngineAdapter, launch: InstanceLaunch, swap_log: Path) -> Path:
-    """The file with *launch*'s engine output: its own log, else the group's llama-swap log."""
+    """The file with *launch*'s engine output: its own log, else the group's llama-swap log.
+
+    The caller passes the engine of the role's first launch for every replica,
+    because one role runs one engine.
+    """
     return engine_log_of(engine, launch, swap_log.parent) or swap_log
 
 
