@@ -107,7 +107,7 @@ def _linux_pick(host: HostCaps) -> BuildPick:
     if not host.nvidia_known:
         return BuildPick(_CPU, f"{host.nvidia_reason}, so the CPU archive runs.")
     if not host.gpus:
-        return BuildPick(_CPU, "This host has no NVIDIA GPU, so the CPU archive runs.")
+        return BuildPick(_CPU, "This computer has no NVIDIA GPU, so the CPU archive runs.")
     return BuildPick(_CPU, _NO_CUDA_PACK)
 
 
