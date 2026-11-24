@@ -439,6 +439,35 @@ def test_a_drained_role_that_left_the_fleet_restarts_nothing(engine_fleet: Fleet
     assert provider._swap_for(EMBED) is embed_swap
 
 
+def test_a_drained_group_restarts_after_a_rediscover_cleared_the_role_map(
+    engine_fleet: FleetFixture,
+) -> None:
+    """The pass restarts the group it took, though the fleet no longer maps the role to it."""
+    provider, swaps = engine_fleet
+    embed_swap = provider._swap_for(EMBED)
+    reload_dir = provider._reload_dir()
+    with provider._lock:
+        running = set(provider._swaps)
+        old = dict(provider._launches)
+        drained = {EMBED: provider._clients.pop(EMBED)}
+        owned = {provider._role_group[EMBED]: embed_swap}
+    provider._drop_swap_refs()
+
+    restarted = provider._restart_changed(
+        reload_dir,
+        running,
+        old,
+        frozenset(),
+        drained,
+        owned,  # type: ignore[arg-type]
+    )
+
+    assert restarted == [EMBED]
+    assert embed_swap.shutdowns == 1
+    assert provider._swap_for(EMBED) is swaps[-1]
+    assert swaps[-1] is not embed_swap
+
+
 def _plan_without_chat(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make every plan leave out the chat launches, so a reload drops the chat group."""
     real_plan = planning_mod.plan_all_launches
