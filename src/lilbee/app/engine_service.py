@@ -475,7 +475,7 @@ def not_installed() -> list[str]:
     host = runnable.session_host()
     if hidden and (host.os is None or host.arch is None):
         log.warning(
-            "The engine list hides %s: the OS or CPU of this computer could not be read.",
+            "The engine list hides %s: the OS or CPU of this host could not be read.",
             ", ".join(hidden),
         )
     return offered
