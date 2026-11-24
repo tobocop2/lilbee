@@ -275,7 +275,9 @@ class TestSurfaceColumns:
     def test_cli_column_keeps_the_dedicated_commands(self, generator):
         assert "use-embedder" in generator._cli_cell("embedding_model")
         assert "placement set" in generator._cli_cell("placement")
-        assert generator._cli_cell("chat_model") == "no"
+        assert generator._cli_cell("chat_model") == "`lilbee model use chat REF`"
+        for key in SERVICE_ONLY_FIELDS:
+            assert generator._cli_cell(key) == "no"
         assert generator._cli_cell("linked_roots") == "`lilbee add`, `lilbee remove`"
 
     def test_cli_column_says_no_for_a_key_the_cli_cannot_write(self, generator):
