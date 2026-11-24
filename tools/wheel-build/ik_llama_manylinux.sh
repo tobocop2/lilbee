@@ -18,6 +18,10 @@
 
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/wheel-build/pack_common.sh
+. "${script_dir}/pack_common.sh"
+
 : "${UPSTREAM_REPO:?}" "${UPSTREAM_COMMIT:?}" "${BACKEND:?}" "${BIN_DIR:?}" "${OWNER:?}" "${SRC_DIR:?}"
 case "${BACKEND}" in
   cpu | cuda) ;;
@@ -132,10 +136,7 @@ elif grep -q 'libcudart\|libcublas' <<< "${needed}"; then
   exit 1
 fi
 # The NVIDIA driver library comes from the host, so the container does not have it.
-if ldd "${BIN_DIR}/llama-server" | grep 'not found' | grep -v 'libcuda\.so\.1'; then
-  echo "llama-server has an unresolved library" >&2
-  exit 1
-fi
+assert_libraries_resolve "${BIN_DIR}/llama-server" 'libcuda\.so\.1'
 
 chown -R "${OWNER}" "${BIN_DIR}" "${SRC_DIR}"
 if [ "${BACKEND}" = cuda ]; then chown "${OWNER}" "${SHA_FILE}" "${NOTICE_FILE}"; fi

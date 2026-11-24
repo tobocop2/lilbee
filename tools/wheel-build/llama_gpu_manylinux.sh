@@ -224,7 +224,7 @@ esac
 test "$(find "${BIN_DIR}" -name 'libggml-cpu-*.so' | wc -l)" -ge 2
 
 "${script_dir}/check_glibc_floor.sh" "${BIN_DIR}"
-if ldd "${BIN_DIR}/llama-server" | grep 'not found'; then echo "llama-server has an unresolved library" >&2; exit 1; fi
+assert_libraries_resolve "${BIN_DIR}/llama-server"
 du -sh "${BIN_DIR}"
 df -h / | tail -1
 
