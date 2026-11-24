@@ -468,6 +468,37 @@ class TestWeightsFromFiles:
         sizes = {"openvino_model.xml": 0, "openvino_model.bin": 0}
         assert mm.weights_from_files(sizes) == RESERVE
 
+    def test_a_vision_ir_is_the_sum_of_its_part_files(self) -> None:
+        parts = ("language", "text_embeddings", "vision_embeddings")
+        sizes = {
+            f"openvino_{p}_model.{e}": 1000 * (i + 1)
+            for i, p in enumerate(parts)
+            for e in ("xml", "bin")
+        }
+        sizes |= {
+            "openvino_tokenizer.bin": 500,
+            "openvino_tokenizer.xml": 5,
+            "pytorch_model.bin": 9000,
+        }
+        assert mm.weights_from_files(sizes) == 2 * (1000 + 2000 + 3000)
+
+    def test_a_vision_ir_part_without_its_bin_is_not_counted_as_a_pair(self) -> None:
+        sizes = {
+            "openvino_language_model.xml": 10,
+            "openvino_language_model.bin": 1000,
+            "openvino_vision_embeddings_model.xml": 10,
+        }
+        assert mm.weights_from_files(sizes) == RESERVE
+
+    def test_a_vision_ir_counts_only_the_shallowest_folder(self) -> None:
+        sizes = {
+            "ov/openvino_language_model.xml": 1,
+            "ov/openvino_language_model.bin": 100,
+            "a/b/openvino_language_model.xml": 1,
+            "a/b/openvino_language_model.bin": 5000,
+        }
+        assert mm.weights_from_files(sizes) == 101
+
 
 class TestWeightsFromGgufReport:
     def test_reads_the_file_size(self) -> None:

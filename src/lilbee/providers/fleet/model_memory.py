@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from lilbee.catalog.formats import ir_parts, ir_weights_file
 from lilbee.catalog.header_probe import gguf_bytes_on_disk, gguf_is_incomplete
 from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.catalog.xdna import read_footprint, read_task
@@ -30,7 +31,6 @@ _SAFETENSORS_METADATA_KEY = "__metadata__"
 _SAFETENSORS_OFFSETS_KEY = "data_offsets"
 _SAFETENSORS_OFFSET_COUNT = 2
 _IR_MODEL_STEM = "openvino_model"
-_IR_SUFFIXES = (".xml", ".bin")
 _IR_WEIGHTS_SUFFIX = ".bin"
 _IR_WEIGHT_SPAN = re.compile(r'<data\b[^>]*?\boffset="(\d+)"[^>]*?\bsize="(\d+)"')
 """A constant's ``offset`` and ``size`` in the ``.bin``, in the order the IR writer emits them."""
@@ -277,50 +277,46 @@ def encoder_estimate(weights: int | None) -> MemoryEstimate:
     return _sized_estimate(weights + ENCODER_RUNTIME_BYTES)
 
 
-def _ir_pair_folder(sizes: Mapping[str, int]) -> str | None:
-    """The shallowest folder that holds both ``openvino_model.xml`` and ``.bin``, or None."""
-    folders = sorted(
-        (
-            posixpath.dirname(name)
-            for name in sizes
-            if posixpath.basename(name) == _IR_MODEL_STEM + ".xml"
-            and posixpath.join(posixpath.dirname(name), _IR_MODEL_STEM + ".bin") in sizes
-        ),
-        key=lambda folder: (folder.count("/"), folder),
-    )
-    return folders[0] if folders else None
+def _ir_pairs(sizes: Mapping[str, int]) -> list[tuple[str, str]]:
+    """The ``(xml, bin)`` pair of each IR part in the listing, or none if any part lacks its bin."""
+    pairs = [(part, ir_weights_file(part)) for part in ir_parts(sizes)]
+    if any(weights not in sizes for _, weights in pairs):
+        return []
+    return pairs
 
 
 def _ir_pair_bytes(sizes: Mapping[str, int]) -> int:
-    """Bytes of ``openvino_model.xml`` plus ``.bin`` in the shallowest folder that holds both."""
-    folder = _ir_pair_folder(sizes)
-    if folder is None:
-        return 0
-    return sum(sizes[posixpath.join(folder, _IR_MODEL_STEM + suffix)] for suffix in _IR_SUFFIXES)
+    """Bytes of every IR part's ``.xml`` plus ``.bin`` in the IR folder."""
+    return sum(sizes[name] for pair in _ir_pairs(sizes) for name in pair)
+
+
+def _declared_weight_bytes(xml_path: Path) -> int | None:
+    """The weight bytes an IR ``.xml`` lists, or None when it cannot be read."""
+    try:
+        xml_text = xml_path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    return max(
+        (int(offset) + int(size) for offset, size in _IR_WEIGHT_SPAN.findall(xml_text)), default=0
+    )
 
 
 def _ir_bin_is_cut_off(model_path: Path, sizes: Mapping[str, int]) -> bool:
-    """Whether the ``.bin`` of the IR pair is shorter than the weight offsets its ``.xml`` lists."""
-    folder = _ir_pair_folder(sizes)
-    if folder is None:
-        return False
-    try:
-        xml_text = (model_path / folder / (_IR_MODEL_STEM + ".xml")).read_text(encoding="utf-8")
-    except (OSError, ValueError):
-        return False
-    declared = max(
-        (int(offset) + int(size) for offset, size in _IR_WEIGHT_SPAN.findall(xml_text)), default=0
-    )
-    return sizes[posixpath.join(folder, _IR_MODEL_STEM + _IR_WEIGHTS_SUFFIX)] < declared
+    """Whether the ``.bin`` of any IR part is shorter than the weight offsets its ``.xml`` lists."""
+    for xml_name, bin_name in _ir_pairs(sizes):
+        declared = _declared_weight_bytes(model_path / xml_name)
+        if declared is not None and sizes[bin_name] < declared:
+            return True
+    return False
 
 
 def weights_from_files(sizes: Mapping[str, int]) -> int:
     """Weight bytes of an OpenVINO IR model from a ``name -> size`` listing.
 
-    Only ``openvino_model.xml`` and ``openvino_model.bin`` in the shallowest folder
-    that holds both count: a pickled ``pytorch_model.bin``, ONNX files and tokenizer
-    IR files are not the model's weights. A repo with no such pair counts the total of
-    its ``openvino_model*.bin`` files, and a repo with none gives the unknown-size reserve.
+    Only the ``.xml`` and ``.bin`` of each IR part in the shallowest IR folder count (see
+    ``ir_parts``): a pickled ``pytorch_model.bin``, ONNX files and tokenizer IR files are
+    not the model's weights. A repo with no complete IR counts the total of its
+    ``openvino_model*.bin`` files, and a repo with none gives the unknown-size reserve.
     """
     pair = _ir_pair_bytes(sizes)
     if pair > 0:
