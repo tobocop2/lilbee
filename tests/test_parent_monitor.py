@@ -10,10 +10,12 @@ from unittest import mock
 import psutil
 import pytest
 
+from lilbee import parent_monitor
 from lilbee.parent_monitor import (
     PARENT_PID_ENV,
     _parent_start_time,
     _same_process,
+    _start_identity,
     parse_parent_pid,
     watch_parent_thread,
 )
@@ -29,6 +31,13 @@ def clean_env() -> Iterator[None]:
         os.environ.pop(PARENT_PID_ENV, None)
     else:
         os.environ[PARENT_PID_ENV] = snapshot
+
+
+@pytest.fixture(autouse=True)
+def create_time_identity() -> Iterator[None]:
+    """Run the identity tests on the create-time path; the Linux path has its own tests."""
+    with mock.patch("lilbee.parent_monitor._is_linux", return_value=False):
+        yield
 
 
 class TestParseParentPid:
@@ -65,6 +74,18 @@ class TestParseParentPid:
 
 
 class TestParentIdentity:
+    def test_identity_is_create_time_off_linux(self):
+        proc = mock.MagicMock()
+        proc.create_time.return_value = 7.5
+        with mock.patch("lilbee.parent_monitor.psutil.Process", return_value=proc):
+            assert _start_identity(123) == 7.5
+
+    def test_is_linux_reads_the_platform(self):
+        with mock.patch("lilbee.parent_monitor.sys.platform", "linux"):
+            assert parent_monitor._is_linux() is True
+        with mock.patch("lilbee.parent_monitor.sys.platform", "darwin"):
+            assert parent_monitor._is_linux() is False
+
     def test_start_time_returns_create_time(self):
         proc = mock.MagicMock()
         proc.create_time.return_value = 100.0
@@ -114,13 +135,99 @@ class TestParentIdentity:
 _OUR_START = 100.0
 
 
+def _write_stat(root, pid: int, start_ticks: int, comm: str = "lilbee") -> None:
+    """A /proc/<pid>/stat with *start_ticks* in field 22."""
+    (root / str(pid)).mkdir(exist_ok=True)
+    after_comm = ["S", "1"] + ["0"] * 17 + [str(start_ticks), "0", "0"]
+    (root / str(pid) / "stat").write_text(f"{pid} ({comm}) " + " ".join(after_comm) + "\n")
+
+
+class TestLinuxStartTicks:
+    """On Linux the identity is the boot-relative start ticks, which a clock step cannot move."""
+
+    @pytest.fixture(autouse=True)
+    def linux(self, tmp_path):
+        with (
+            mock.patch("lilbee.parent_monitor._is_linux", return_value=True),
+            mock.patch.object(parent_monitor, "_PROC_ROOT", tmp_path),
+        ):
+            yield
+
+    def test_identity_is_field_22_of_proc_stat(self, tmp_path):
+        _write_stat(tmp_path, 42, 987654)
+        assert _start_identity(42) == 987654.0
+
+    def test_identity_survives_a_comm_with_spaces_and_parens(self, tmp_path):
+        _write_stat(tmp_path, 42, 555, comm="a) (b c")
+        assert _start_identity(42) == 555.0
+
+    def test_missing_proc_entry_is_no_such_process(self):
+        with pytest.raises(psutil.NoSuchProcess):
+            _start_identity(42)
+
+    def test_unreadable_proc_entry_is_access_denied(self, tmp_path):
+        _write_stat(tmp_path, 42, 1)
+        with mock.patch("pathlib.Path.read_text", side_effect=PermissionError):
+            with pytest.raises(psutil.AccessDenied):
+                _start_identity(42)
+
+    def test_vanished_mid_read_is_no_such_process(self, tmp_path):
+        _write_stat(tmp_path, 42, 1)
+        with mock.patch("pathlib.Path.read_text", side_effect=ProcessLookupError):
+            with pytest.raises(psutil.NoSuchProcess):
+                _start_identity(42)
+
+    def test_malformed_stat_is_access_denied(self, tmp_path):
+        (tmp_path / "42").mkdir()
+        (tmp_path / "42" / "stat").write_text("42 (x) S 1\n")
+        with pytest.raises(psutil.AccessDenied):
+            _start_identity(42)
+
+    def test_a_clock_step_does_not_fire_the_watcher(self, tmp_path):
+        """psutil's create_time moves with btime; the start ticks do not."""
+        _write_stat(tmp_path, os.getpid(), 100)
+        _write_stat(tmp_path, 123, 50)
+        btime = iter([1000.0 + 3 * n for n in range(1000)])  # the wall clock steps each read
+
+        def process(pid: int | None = None) -> mock.MagicMock:
+            proc = mock.MagicMock()
+            proc.create_time.side_effect = lambda: next(btime)
+            return proc
+
+        called = threading.Event()
+        with (
+            mock.patch("lilbee.parent_monitor.psutil.pid_exists", return_value=True),
+            mock.patch("lilbee.parent_monitor.psutil.Process", side_effect=process),
+        ):
+            watch_parent_thread(123, called.set, poll_interval_secs=0.01)
+            assert not called.wait(timeout=0.3), "a clock step was taken for a reused pid"
+
+    def test_a_different_start_tick_fires_the_watcher(self, tmp_path):
+        _write_stat(tmp_path, os.getpid(), 100)
+        _write_stat(tmp_path, 123, 50)
+        called = threading.Event()
+        with mock.patch("lilbee.parent_monitor.psutil.pid_exists", return_value=True):
+            watch_parent_thread(123, called.set, poll_interval_secs=0.05)
+            assert not called.wait(timeout=0.2)
+            _write_stat(tmp_path, 123, 60)  # the pid now names another process
+            assert called.wait(timeout=2.0), "a reused pid was taken for the parent"
+
+    def test_started_after_us_compares_start_ticks(self, tmp_path):
+        _write_stat(tmp_path, os.getpid(), 100)
+        _write_stat(tmp_path, 123, 200)
+        called = threading.Event()
+        with mock.patch("lilbee.parent_monitor.psutil.pid_exists", return_value=True):
+            watch_parent_thread(123, called.set, poll_interval_secs=60)
+            assert called.wait(timeout=2.0)
+
+
 def _processes(parent_starts: list[float]) -> mock.MagicMock:
     """A psutil.Process stand-in: this process started at _OUR_START, the parent at each poll."""
     starts = iter(parent_starts)
 
     def process(pid: int | None = None) -> mock.MagicMock:
         proc = mock.MagicMock()
-        proc.create_time.return_value = _OUR_START if pid is None else next(starts)
+        proc.create_time.return_value = _OUR_START if pid == os.getpid() else next(starts)
         return proc
 
     return mock.MagicMock(side_effect=process)
