@@ -605,8 +605,6 @@ class EngineRow:
     ``download_bytes`` is set only for a missing engine that has a pack for this computer.
     ``size_bytes`` is the size on disk of a build, None when it cannot be read.
     ``roles`` names the roles that use the engine now.
-    ``outside_store`` is True for a build whose folder links out of the engines folder;
-    remove refuses such a build, and it has no size.
     """
 
     engine: str
@@ -616,13 +614,12 @@ class EngineRow:
     download_bytes: int | None = None
     roles: tuple[str, ...] = ()
     size_bytes: int | None = None
-    outside_store: bool = False
 
 
 def _build_row(
     store: EngineStore, build: BuildView, state: EngineState, users: tuple[str, ...] = ()
 ) -> EngineRow:
-    """The row of one build on disk, with its size and whether remove can reach it."""
+    """The row of one build on disk, with its size."""
     return EngineRow(
         build.engine,
         state,
@@ -630,7 +627,6 @@ def _build_row(
         build.backend,
         roles=users,
         size_bytes=store.build_size(build.engine, build.version, build.backend),
-        outside_store=not store.holds(build.engine, build.version, build.backend),
     )
 
 
