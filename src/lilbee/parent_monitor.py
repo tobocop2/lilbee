@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 import psutil
 
@@ -33,10 +35,49 @@ def parse_parent_pid(env: dict[str, str] | None = None) -> int | None:
     return pid
 
 
-def _parent_start_time(pid: int) -> float | None:
-    """Process create-time for *pid*, or None if it is gone or unreadable."""
+_PROC_ROOT = Path("/proc")
+_STAT_START_TICKS_INDEX = 19  # field 22 of /proc/<pid>/stat, counted after the "(comm)" field
+
+
+def _is_linux() -> bool:
+    return sys.platform.startswith("linux")
+
+
+def _linux_start_ticks(pid: int) -> float:
+    """Start time of *pid* in ticks since boot, which a wall-clock step does not change.
+
+    psutil's Linux create_time adds the ``btime`` line of /proc/stat to these ticks and reads
+    it again on each call, so a clock step moves it. Raises the psutil errors for a missing
+    or unreadable process, as ``psutil.Process`` does.
+    """
     try:
-        return float(psutil.Process(pid).create_time())
+        raw = (_PROC_ROOT / str(pid) / "stat").read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        raise psutil.NoSuchProcess(pid) from None
+    except PermissionError:
+        raise psutil.AccessDenied(pid) from None
+    try:
+        # The comm field may hold spaces and parentheses; the last ")" ends it.
+        return float(raw.rpartition(")")[2].split()[_STAT_START_TICKS_INDEX])
+    except (ValueError, IndexError):
+        raise psutil.AccessDenied(pid) from None
+
+
+def _start_identity(pid: int) -> float:
+    """What tells *pid* apart from a process that later reuses the pid.
+
+    Linux: start ticks since boot. Elsewhere: psutil's create time, which is fixed there.
+    Raises ``psutil.NoSuchProcess`` or ``psutil.AccessDenied``.
+    """
+    if _is_linux():
+        return _linux_start_ticks(pid)
+    return float(psutil.Process(pid).create_time())
+
+
+def _parent_start_time(pid: int) -> float | None:
+    """Start identity of *pid*, or None if it is gone or unreadable."""
+    try:
+        return _start_identity(pid)
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return None
 
@@ -46,7 +87,7 @@ def _same_process(pid: int, start_time: float | None) -> bool:
     if start_time is None:
         return True
     try:
-        return bool(psutil.Process(pid).create_time() == start_time)
+        return _start_identity(pid) == start_time
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
 
@@ -62,7 +103,7 @@ def _started_after_us(start_time: float | None) -> bool:
     The parent pid can name a grandparent (an editor, or a console-script wrapper),
     so the test is the create-time order, not ``os.getppid()``.
     """
-    return start_time is not None and start_time > psutil.Process().create_time()
+    return start_time is not None and start_time > _start_identity(os.getpid())
 
 
 def watch_parent_thread(
