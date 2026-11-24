@@ -105,6 +105,81 @@ def test_a_repeated_failure_logs_once_and_a_clean_run_rearms_it(
     assert len(caplog.records) == 2
 
 
+def test_one_failing_device_among_working_ones_logs_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """xpu-smi runs once per device: a device that keeps failing is one warning, not one per poll."""
+    monkeypatch.setenv("PATH", str(tmp_path))
+    script = tmp_path / "xpu-smi"
+    script.write_text(
+        f"#!{sys.executable}\nimport sys\nsys.exit(1 if sys.argv[3] == '1' else 0)\n",
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            run_smi("xpu-smi", ["stats", "-d", "0", "-j"])
+            run_smi("xpu-smi", ["stats", "-d", "1", "-j"])
+    assert len(caplog.records) == 1
+
+
+def test_only_the_tail_of_a_flooding_stderr_is_logged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    script = tmp_path / "ioreg"
+    script.write_text(
+        f"#!{sys.executable}\nimport sys\n"
+        "sys.stderr.write('x' * 1000000 + 'THE-END')\nsys.exit(1)\n",
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    with caplog.at_level(logging.WARNING):
+        run_smi("ioreg", [])
+    (record,) = caplog.records
+    assert record.message.endswith("THE-END")
+    assert len(record.message) < 5000
+
+
+def test_rocm_smi_missing_a_device_falls_back_to_amd_smi_for_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lilbee.providers.fleet.gpu_backends import amd as amd_mod
+
+    amd_rows = (
+        '[{"gpu": 0, "gfx_activity": 10, "temperature_c": 1},'
+        ' {"gpu": 1, "gfx_activity": 72, "temperature_c": 61}]'
+    )
+    monkeypatch.setattr(
+        amd_mod,
+        "run_smi",
+        lambda tool, *_a, **_k: _ROCM_ROWS if tool == amd_mod._TOOL_ROCM_SMI else amd_rows,
+    )
+    samples = AmdBackend().sample(frozenset({0, 1}))
+    assert samples[0].utilization_pct != 10  # rocm-smi keeps the device it printed
+    assert samples[1].utilization_pct == 72  # amd-smi fills the one it missed
+
+
+def test_a_rocm_smi_that_covers_every_device_never_runs_amd_smi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lilbee.providers.fleet.gpu_backends import amd as amd_mod
+
+    def _run(tool: str, *_a: object, **_k: object) -> str:
+        assert tool == amd_mod._TOOL_ROCM_SMI
+        return _ROCM_ROWS
+
+    monkeypatch.setattr(amd_mod, "run_smi", _run)
+    assert set(AmdBackend().sample(_INDICES)) == _INDICES
+
+
+@pytest.mark.parametrize("raw", ["5", "null", '{"gpu_data": 5}', '{"gpu": "x"}'])
+def test_amd_smi_scalar_json_gives_no_rows(raw: str) -> None:
+    from lilbee.providers.fleet.gpu_backends.amd import _parse_amd_smi
+
+    assert _parse_amd_smi(raw, _INDICES) == {}
+
+
 def test_a_tool_that_cannot_start_logs_nothing(tools, caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING):
         assert run_smi("ioreg", []) == ""

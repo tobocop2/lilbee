@@ -21,6 +21,9 @@ from lilbee.providers.fleet.child_guard import spawn_bound_child
 
 log = logging.getLogger(__name__)
 
+# How much of a child's stderr a ``stderr_sink`` receives: the end, where a tool prints why it failed.
+STDERR_TAIL_BYTES = 4096
+
 
 def run_bounded(
     argv: list[str],
@@ -50,17 +53,20 @@ def run_bounded(
     right for a handful of engines and wrong for a probe sampled every second.
 
     *stderr_sink* keeps stdout clean and appends the child's stderr text to the
-    list when the call ends, for a caller that logs why a tool failed.
+    list when the call ends, for a caller that logs why a tool failed. Only the
+    last ``STDERR_TAIL_BYTES`` bytes are read back, so a tool that floods stderr
+    cannot flood the caller.
     """
     args = (argv, timeout_s, kill_wait_s, env, merge_stderr, label, bind_lifetime, cwd)
     if stderr_sink is None:
         return _spawn_and_wait(*args, None)
-    with tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as err:
+    with tempfile.TemporaryFile("w+b") as err:
         try:
             return _spawn_and_wait(*args, err)
         finally:
-            err.seek(0)
-            stderr_sink.append(err.read())
+            size = err.seek(0, os.SEEK_END)
+            err.seek(max(0, size - STDERR_TAIL_BYTES))
+            stderr_sink.append(err.read().decode("utf-8", errors="replace"))
 
 
 def _spawn_and_wait(
@@ -72,9 +78,9 @@ def _spawn_and_wait(
     label: str | None,
     bind_lifetime: bool,
     cwd: str | os.PathLike[str] | None,
-    stderr_file: IO[str] | None,
+    stderr_file: IO[bytes] | None,
 ) -> tuple[str, int]:
-    stderr: int | IO[str] = subprocess.DEVNULL
+    stderr: int | IO[bytes] = subprocess.DEVNULL
     if merge_stderr:
         stderr = subprocess.STDOUT
     elif stderr_file is not None:
