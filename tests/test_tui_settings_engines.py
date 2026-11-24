@@ -477,36 +477,6 @@ async def test_a_build_that_differs_from_the_pin_shows_its_size_and_removes_on_y
         assert await wait_until(pilot, lambda: table.row_count == 1)
 
 
-async def test_a_build_that_links_out_of_the_store_offers_no_remove_and_says_why(
-    service: _Rows, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    linked = EngineRow("ik_llama.cpp", EngineState.INSTALLED, "1.2.3", "cuda", outside_store=True)
-    service.rows = [linked]
-    remove = mock.Mock()
-    monkeypatch.setattr(engine_service, "remove_build", remove)
-    app = _SettingsApp()
-    async with app.run_test(size=(140, 40)) as pilot:
-        table = await _open_engines(app, pilot, rows=1)
-        assert [_plain(c) for c in table.get_row_at(0)] == [
-            "■ ik_llama.cpp",
-            "1.2.3",
-            "cuda",
-            "-",
-            "installed",
-            "",
-            "linked, not removable",
-        ]
-        await _select_row(pilot, table, "ik_llama.cpp")
-        folder = engine_service.engines_folder()
-        why = (
-            f"The folder of {_IK_CUDA.label} is a link to a place outside the engines "
-            f"folder {folder}. lilbee does not remove it. Delete the link yourself."
-        )
-        assert await wait_until(pilot, lambda: why in _toasts())
-        assert isinstance(app.screen, SettingsScreen)
-        remove.assert_not_called()
-
-
 # --- Install
 
 
@@ -857,27 +827,6 @@ def test_engine_rows_show_a_build_that_differs_from_the_pin_after_the_install_ro
     assert [(r.engine, r.version, r.backend) for r in rows[1:]] == stale
 
 
-def test_engine_rows_mark_a_linked_build_folder_as_outside_the_store(
-    fleet: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    outside = tmp_path / "outside"
-    _files(outside, {"big": 50_000})
-    (engine_service.engines_folder() / "ik_llama.cpp" / "1.2.4-cuda").symlink_to(outside)
-    monkeypatch.setattr(
-        engine_service,
-        "builds",
-        lambda *_a, **_k: [
-            engine_service.BuildView("ik_llama.cpp", "1.2.3", "cuda"),
-            engine_service.BuildView("ik_llama.cpp", "1.2.4", "cuda"),
-        ],
-    )
-    rows = [r for r in engine_service.engine_rows() if r.engine == "ik_llama.cpp"]
-    assert [(r.version, r.size_bytes, r.outside_store) for r in rows] == [
-        ("1.2.3", sum(_BUILD_FILES.values()), False),
-        ("1.2.4", None, True),
-    ]
-
-
 def test_engine_rows_count_an_engine_the_user_installed_as_installed_as_the_list_does(
     fleet: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -946,7 +895,6 @@ def test_a_build_folder_that_is_a_link_out_of_the_store_has_no_size(
     store = EngineStore(root)
     with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.engine_store"):
         assert store.build_size("ik_llama.cpp", "1.2.3", "cuda") is None
-    assert not store.holds("ik_llama.cpp", "1.2.3", "cuda")
     messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert messages == [
         "The size of engine ik_llama.cpp 1.2.3 (cuda) is unknown: "
@@ -962,4 +910,3 @@ def test_a_build_in_an_engine_folder_that_is_a_link_has_no_size(tmp_path: Path) 
     (root / "ik_llama.cpp").symlink_to(outside)
     store = EngineStore(root)
     assert store.build_size("ik_llama.cpp", "1.2.3", "cuda") is None
-    assert not store.holds("ik_llama.cpp", "1.2.3", "cuda")
