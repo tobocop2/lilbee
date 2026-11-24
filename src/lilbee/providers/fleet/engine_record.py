@@ -24,7 +24,7 @@ _WHEEL = re.compile(
     rf"-{_PART}-{_PART}-(?P<platform>{_PART})\.whl"
 )
 _URL = re.compile(
-    r"https://[A-Za-z0-9.-]+(?::\d+)?/(?:[A-Za-z0-9][A-Za-z0-9._-]*/)+[A-Za-z0-9._+]+"
+    r"https://[A-Za-z0-9.-]+(?::\d+)?/(?:[A-Za-z0-9][A-Za-z0-9._-]*/)+[A-Za-z0-9._+-]+"
 )
 _BUILD = re.compile(r"(?P<number>\d+)\.(?P<backend>[a-z0-9_]+)")
 _MANYLINUX = re.compile(r"manylinux_2_(?P<minor>\d+)_(?P<arch>x86_64|aarch64)")
