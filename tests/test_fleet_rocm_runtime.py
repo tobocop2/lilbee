@@ -56,6 +56,7 @@ def test_rocm_build_enumerating_nothing_on_an_amd_host_fails_loud(monkeypatch, t
     with pytest.raises(ProviderError) as err:
         assert_rocm_devices_usable(tmp_path / "llama-server", [], "rocBLAS error\n")
     assert "/dev/kfd" in str(err.value)
+    assert "this computer has an AMD GPU" in str(err.value)
 
 
 def test_rocm_build_is_silent_when_the_host_has_no_amd_gpu(monkeypatch, tmp_path) -> None:
