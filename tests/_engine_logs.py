@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from lilbee.providers.fleet.engines import LLAMA
-from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.engines.base import EngineAdapter
+from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_manager import SwapManager
 
 
