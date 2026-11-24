@@ -109,7 +109,7 @@ async def test_a_host_without_the_npu_shows_the_hidden_note_and_no_row(
 ) -> None:
     _browse(monkeypatch, NO_NPU)
     reason = LEMONADE.host_gate(NO_NPU).reason
-    note = f"1 hidden (This host cannot run it. {reason})"
+    note = f"1 hidden (This computer cannot run it. {reason})"
     async with _App().run_test(size=size) as pilot:
         screen = CatalogScreen()
         await pilot.app.push_screen(screen)
