@@ -43,7 +43,10 @@ from lilbee.app.ingest import (
     AddRollback,
     RegisterResult,
     forget_unfinished_on_cancel,
+    held_failures,
+    iter_removable_names,
     leave_as_cancel,
+    removable_among,
     removable_names,
     remove_documents_durably,
 )
@@ -210,6 +213,8 @@ class _TurnEnded(Message):
 # through its stop signal, so its body always runs and always ends the turn.
 _TURN_WORKER_GROUP = "chat_turn"
 _SYNC_FAILED_TOAST_SECONDS = 8.0
+# Names ``/delete`` lists when given no argument; the rest are counted.
+_DELETE_LISTED = 50
 
 
 # ``/crawl`` command flags.
@@ -273,13 +278,18 @@ def _setting_type_hint(kind: type) -> str:
     return _SETTING_TYPE_HINTS.get(kind, f"a valid {kind.__name__} value")
 
 
-def _closest_source(name: str, known: set[str]) -> str | None:
-    """The indexed name most likely meant by *name*, or None when nothing is close."""
+def _closest_source(name: str) -> str | None:
+    """The removable name most likely meant by *name*, or None when nothing is close.
+
+    Two name matches are enough to rule out a unique substring, so the store reads two.
+    Close-spelling matches stream the names, keeping nothing but the best.
+    """
     low = name.lower()
-    contains = [k for k in known if low in k.lower()]
+    names = removable_names(get_services().store.source_names(name, limit=2))
+    contains = [n for n in names if low in n.lower()]
     if len(contains) == 1:
         return contains[0]
-    matches = difflib.get_close_matches(name, sorted(known), n=1, cutoff=0.6)
+    matches = difflib.get_close_matches(name, iter_removable_names(), n=1, cutoff=0.6)
     return matches[0] if matches else None
 
 
@@ -1315,27 +1325,35 @@ class ChatScreen(Screen[None]):
     @work(thread=True, name="chat_cmd_delete", exit_on_error=False)
     def _cmd_delete_worker(self, name: str) -> None:
         """Validate and execute /delete off the UI thread; notify back via dispatch."""
+        # Every read is bounded or streamed: the cost of /delete does not grow with the library.
         try:
-            sources = get_services().store.get_sources()
+            store = get_services().store
+            indexed = store.count_sources()
+            has_failures = bool(held_failures())
+            page = store.source_names("", limit=_DELETE_LISTED) if indexed and not name else []
+            exists = bool(name) and bool(removable_among([name]))
+            suggestion = None
+            if name and not exists and (indexed or has_failures):
+                suggestion = _closest_source(name)
         except Exception:
             log.debug("Failed to list documents for /delete", exc_info=True)
             call_from_thread(self, self.notify, msg.CMD_DELETE_READ_FAILED, severity="error")
             return
 
-        known = set(removable_names([s.get("filename", s.get("source", "?")) for s in sources]))
-        if not known:
+        if not indexed and not has_failures:
             call_from_thread(self, self.notify, msg.CMD_DELETE_NO_DOCS, severity="warning")
             return
 
         if not name:
-            names = ", ".join(strip_control_characters(n) for n in sorted(known))
+            names = ", ".join(strip_control_characters(n) for n in sorted(removable_names(page)))
+            if indexed > len(page):
+                names += msg.CMD_DELETE_USAGE_MORE.format(count=indexed - len(page))
             usage = msg.CMD_DELETE_USAGE.format(names=names)
             call_from_thread(self, self.notify, usage)
             return
 
-        if name not in known:
+        if not exists:
             message = msg.CMD_DELETE_NOT_FOUND.format(name=name)
-            suggestion = _closest_source(name, known)
             if suggestion is not None:
                 hint = msg.CMD_DELETE_SUGGESTION.format(name=strip_control_characters(suggestion))
                 message = f"{message}. {hint}"

@@ -3599,14 +3599,24 @@ async def test_chat_slash_theme_no_arg():
         assert app.screen.query_one("#chat-input").value == "/theme "
 
 
+def _delete_library(mock_svc, names, *, missing=frozenset()):
+    """Make the mock store answer /delete's bounded reads for a library holding *names*."""
+    store = mock_svc.store
+    store.count_sources.return_value = len(names)
+    store.source_names.side_effect = lambda term="", *, limit: [
+        n for n in names if term.lower() in n.lower()
+    ][:limit]
+    store.iter_source_heads.side_effect = lambda: iter({"filename": n} for n in names)
+    store.missing_sources.side_effect = lambda asked: set(asked) & set(missing)
+    store.get_sources.side_effect = AssertionError("/delete must not load every source")
+
+
 async def test_chat_slash_delete_with_match(mock_svc):
     """``/delete <name>`` deletes both the chunks and the source row.
 
     Awaits the worker before asserting so the dispatch lands first.
     """
-    mock_svc.store.get_sources.return_value = [
-        {"filename": "notes.md", "source": "notes.md"},
-    ]
+    _delete_library(mock_svc, ["notes.md"])
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         # Re-inject mock after mount (model bar events may call reset_services)
@@ -3621,7 +3631,7 @@ async def test_chat_slash_delete_where_the_library_cannot_lock_files(mock_svc):
     from lilbee.runtime.lock import LockingUnsupportedError
 
     refused = "/data is on a filesystem that does not support file locking."
-    mock_svc.store.get_sources.return_value = [{"filename": "notes.md", "source": "notes.md"}]
+    _delete_library(mock_svc, ["notes.md"])
     mock_svc.store.remove_documents.side_effect = LockingUnsupportedError(refused)
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -3634,9 +3644,7 @@ async def test_chat_slash_delete_where_the_library_cannot_lock_files(mock_svc):
 
 
 async def test_chat_slash_delete_not_found(mock_svc):
-    mock_svc.store.get_sources.return_value = [
-        {"filename": "notes.md", "source": "notes.md"},
-    ]
+    _delete_library(mock_svc, ["notes.md"], missing={"nonexistent.md"})
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
@@ -3650,10 +3658,11 @@ async def test_chat_slash_delete_not_found(mock_svc):
 
 async def test_chat_slash_delete_not_found_suggests_near_match(mock_svc):
     """A miss that is a substring of exactly one indexed name offers it back."""
-    mock_svc.store.get_sources.return_value = [
-        {"filename": "qa-corpus/tested-models.md", "source": "qa-corpus/tested-models.md"},
-        {"filename": "qa-corpus/usage.md", "source": "qa-corpus/usage.md"},
-    ]
+    _delete_library(
+        mock_svc,
+        ["qa-corpus/tested-models.md", "qa-corpus/usage.md"],
+        missing={"tested"},
+    )
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
@@ -3668,9 +3677,7 @@ async def test_chat_slash_delete_not_found_suggests_near_match(mock_svc):
 
 
 async def test_chat_slash_delete_no_arg(mock_svc):
-    mock_svc.store.get_sources.return_value = [
-        {"filename": "notes.md", "source": "notes.md"},
-    ]
+    _delete_library(mock_svc, ["notes.md"])
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
@@ -3683,7 +3690,7 @@ async def test_chat_slash_delete_no_arg(mock_svc):
 
 
 async def test_chat_slash_delete_store_error(mock_svc):
-    mock_svc.store.get_sources.side_effect = Exception("no store")
+    mock_svc.store.count_sources.side_effect = Exception("no store")
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
@@ -3696,8 +3703,38 @@ async def test_chat_slash_delete_store_error(mock_svc):
             assert "Could not read" in mock_notify.call_args[0][0]
 
 
+async def test_chat_slash_delete_lists_a_page_and_counts_the_rest(mock_svc):
+    from lilbee.cli.tui.screens.chat import _DELETE_LISTED
+
+    names = [f"doc-{i:04d}.md" for i in range(_DELETE_LISTED + 7)]
+    _delete_library(mock_svc, names)
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(mock_svc)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_delete("")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
+            text = mock_notify.call_args[0][0]
+            assert "doc-0000.md" in text
+            assert f"doc-{_DELETE_LISTED:04d}.md" not in text
+            assert ", and 7 more" in text
+
+
+async def test_chat_slash_delete_suggests_a_close_spelling(mock_svc):
+    _delete_library(mock_svc, ["qa-corpus/usage.md", "qa-corpus/other.md"], missing={"qa-corpus/usagee.md"})
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(mock_svc)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_delete("qa-corpus/usagee.md")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
+            assert "Did you mean qa-corpus/usage.md" in mock_notify.call_args[0][0]
+
+
 async def test_chat_slash_delete_empty_sources(mock_svc):
-    mock_svc.store.get_sources.return_value = []
+    _delete_library(mock_svc, [])
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
@@ -17916,7 +17953,7 @@ async def test_status_screen_tables_show_a_name_without_control_characters(
 
 @pytest.mark.parametrize("name", CONTROL_TITLES)
 async def test_chat_slash_delete_lists_a_name_without_control_characters(mock_svc, name):
-    mock_svc.store.get_sources.return_value = [{"filename": name, "source": name}]
+    _delete_library(mock_svc, [name])
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)

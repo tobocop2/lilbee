@@ -6,7 +6,7 @@ import asyncio
 import fnmatch
 import logging
 from collections import Counter
-from collections.abc import Callable, Collection, Generator, Iterable
+from collections.abc import Callable, Collection, Generator, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -381,31 +381,34 @@ def _is_glob(name: str) -> bool:
     return any(char in _GLOB_CHARS for char in name)
 
 
-def folder_members(name: str, known: Iterable[str]) -> list[str]:
-    """Known sources under folder *name*, matched on whole path segments.
-
-    ``myrepo`` covers ``myrepo/a.py`` but never ``myrepo-2/x``. Empty when *name*
-    is not a parent directory of any known source.
-    """
-    prefix = name.rstrip("/") + "/"
-    return [source for source in known if source.startswith(prefix)]
-
-
 def held_failures() -> dict[str, HeldRecord]:
     """The record of each file whose ingestion failed, by path, sorted."""
     held = get_services().store.held_records()
     return {name: held[name] for name in sorted(held) if held[name].kind in INGEST_FAILURES}
 
 
-def removable_names(indexed: list[str] | None = None) -> list[str]:
-    """What a remove can name: *indexed* (the store's sources when not given), then failures."""
-    if indexed is None:
-        indexed = [s["filename"] for s in get_services().store.get_sources()]
+def removable_names(indexed: list[str]) -> list[str]:
+    """What a remove can name: the *indexed* names given, then failures."""
     seen = set(indexed)
     return indexed + [name for name in held_failures() if name not in seen]
 
 
-def expand_remove_targets(names: list[str], known: list[str]) -> list[str]:
+def iter_removable_names() -> Iterator[str]:
+    """Every name a remove can name, streamed so no list of the library is held."""
+    failed = held_failures()
+    for head in get_services().store.iter_source_heads():
+        failed.pop(head["filename"], None)
+        yield head["filename"]
+    yield from failed
+
+
+def removable_among(names: list[str]) -> set[str]:
+    """The *names* that are an indexed source or a held-out failure, from one scan of the names."""
+    indexed = set(names) - get_services().store.missing_sources(names)
+    return indexed | (set(names) & held_failures().keys())
+
+
+def expand_remove_targets(names: list[str], known: Iterable[str]) -> list[str]:
     """Expand folder names and glob patterns to the known sources they cover.
 
     An exact source name is kept. A folder name (a parent directory of known
@@ -413,30 +416,29 @@ def expand_remove_targets(names: list[str], known: list[str]) -> list[str]:
     ``* ? [``) expands to every source it fnmatches. A name matching none of
     these is kept unchanged so the caller reports it not-found. Order and
     de-duplication are preserved. *known* is what a remove can name,
-    ``removable_names()``.
+    ``iter_removable_names()``; it is read once and only the matches are kept.
     """
-    known_set = set(known)
+    wanted = set(names)
+    exact: set[str] = set()
+    matches: dict[str, list[str]] = {name: [] for name in names}
+    globs = [name for name in matches if _is_glob(name)]
+    folders = {name: name.rstrip("/") + "/" for name in matches if not _is_glob(name)}
+    for source in known:
+        if source in wanted:
+            exact.add(source)
+        matches_here = [g for g in globs if fnmatch.fnmatchcase(source, g)]
+        matches_here += [f for f, prefix in folders.items() if source.startswith(prefix)]
+        for name in matches_here:
+            matches[name].append(source)
     expanded: list[str] = []
     seen: set[str] = set()
-
-    def _add(candidate: str) -> None:
-        if candidate not in seen:
-            seen.add(candidate)
-            expanded.append(candidate)
-
     for name in names:
-        if name in known_set:
-            _add(name)
-            continue
-        if _is_glob(name):
-            matches = [source for source in known if fnmatch.fnmatchcase(source, name)]
-        else:
-            matches = folder_members(name, known)
-        if matches:
-            for match in matches:
-                _add(match)
-        else:
-            _add(name)  # not-found; reported by the store
+        # An exact name stays; else its folder or glob matches; else it stays for the store to
+        # report not-found.
+        for candidate in [name] if name in exact else matches[name] or [name]:
+            if candidate not in seen:
+                seen.add(candidate)
+                expanded.append(candidate)
     return expanded
 
 
@@ -491,14 +493,13 @@ def remove_documents_durably(
     The removal and the records it holds out are one write of the index.
     """
     store = get_services().store
-    known = removable_names()
     if targets is None:
-        targets = expand_remove_targets(names, known)
+        targets = expand_remove_targets(names, iter_removable_names())
     failed = held_failures()
     settings.refresh_registry(active_config())
     linked = active_config().linked_roots
     going = [label for label in (name.strip("/") for name in names) if label in linked]
-    removable = set(known)
+    removable = removable_among(targets)
     holds = _removal_holds([name for name in targets if name in removable], going, failed)
     result = store.remove_documents(targets, holds)
     held = [name for name in result.not_found if name in failed]

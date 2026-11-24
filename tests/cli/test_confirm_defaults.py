@@ -75,7 +75,12 @@ def _reset(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], MagicMock]:
 def _remove_glob(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], MagicMock]:
     _no_overrides(monkeypatch, "lilbee.cli.commands.ingest_sync")
     documents = ["docs/a.pdf", "docs/b.pdf"]
-    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.removable_names", lambda: documents)
+    monkeypatch.setattr(
+        "lilbee.cli.commands.ingest_sync.iter_removable_names", lambda: iter(documents)
+    )
+    monkeypatch.setattr(
+        "lilbee.cli.commands.ingest_sync.removable_among", lambda names: set(documents)
+    )
     monkeypatch.setattr(
         "lilbee.cli.commands.ingest_sync.expand_remove_targets", lambda names, known: documents
     )
