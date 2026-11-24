@@ -11,7 +11,7 @@ from lilbee.app import engine_service
 from lilbee.catalog import runnable
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config.enums import KvCacheType
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import host_caps
 from lilbee.providers.fleet.engines import choice, ovms, proof
 from lilbee.providers.fleet.engines.base import (
@@ -190,6 +190,13 @@ def test_a_missing_install_says_where_to_get_the_server(monkeypatch: pytest.Monk
     assert "PATH" in text
     assert "LD_LIBRARY_PATH" in text
     assert "lilbee engine install" not in text
+
+
+def test_a_missing_install_is_not_found_for_the_callers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ovms.shutil, "which", lambda name: None)
+    with pytest.raises(ProviderError) as exc:
+        OVMS.binary()
+    assert exc.value.kind is ProviderErrorKind.NOT_FOUND
 
 
 def test_an_ovms_on_path_counts_as_installed(monkeypatch: pytest.MonkeyPatch) -> None:

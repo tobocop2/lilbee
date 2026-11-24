@@ -7659,6 +7659,25 @@ class TestEmbedInputsKeepTheChunkAtEachCaller:
             )
         _assert_each_chunk_follows_a_bounded_head(mock_svc, [r["chunk"] for r in records])
 
+    async def test_dataset_import_embeds_the_situating_sentence_with_the_chunk(
+        self, mock_svc, monkeypatch
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.document import chunk_and_embed_pages
+        from lilbee.providers.base import ChatResult, FinishReason
+        from lilbee.runtime.progress import noop_callback
+
+        sentence = "This chunk covers spring flow rates."
+        monkeypatch.setattr(cfg, "contextual_enrichment", True)
+        mock_svc.provider.chat.return_value = ChatResult(
+            text=sentence, tool_calls=(), finish_reason=FinishReason.STOP
+        )
+        records = await chunk_and_embed_pages(
+            [(1, "Flow rates rose every spring.")], "s", "pdf", noop_callback
+        )
+        inputs = mock_svc.embedder.embed_batch.call_args.args[0]
+        assert inputs == [f"{sentence}\n{r['chunk']}" for r in records]
+
     async def test_markdown_ingest_cuts_a_long_heading_title(
         self, isolated_env, mock_svc, monkeypatch
     ):
