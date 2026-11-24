@@ -70,6 +70,52 @@ REQUIRED = {
 # A fresh Windows image ships an older msvcp140 and no vcomp140, so the engine
 # faults or fails to load before listing a device.
 WINDOWS_CRT = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "vcomp140.dll")
+# The list above is what was found so far. The import check finds the next one: each
+# DLL a bundled PE file imports is in the bundle, or is a file Windows or the GPU
+# driver provides. Names are lower case, as Windows compares them.
+WINDOWS_SYSTEM_DLLS = frozenset(
+    {
+        "advapi32.dll",
+        "bcrypt.dll",
+        "cfgmgr32.dll",
+        "combase.dll",
+        "comctl32.dll",
+        "comdlg32.dll",
+        "crypt32.dll",
+        "dbghelp.dll",
+        "dxgi.dll",
+        "gdi32.dll",
+        "imm32.dll",
+        "iphlpapi.dll",
+        "kernel32.dll",
+        "kernelbase.dll",
+        "msvcrt.dll",
+        "ncrypt.dll",
+        "normaliz.dll",
+        "ntdll.dll",
+        "nvcuda.dll",
+        "ole32.dll",
+        "oleaut32.dll",
+        "powrprof.dll",
+        "psapi.dll",
+        "rpcrt4.dll",
+        "sechost.dll",
+        "secur32.dll",
+        "setupapi.dll",
+        "shell32.dll",
+        "shlwapi.dll",
+        "ucrtbase.dll",
+        "user32.dll",
+        "userenv.dll",
+        "version.dll",
+        "vulkan-1.dll",
+        "winmm.dll",
+        "wldap32.dll",
+        "ws2_32.dll",
+    }
+)
+# Windows maps these virtual names onto the system's own files.
+_WINDOWS_SYSTEM_PREFIXES = ("api-ms-win-", "ext-ms-win-")
 # What a ROCm wheel carries beside its backend. Matched on the library, not its
 # SONAME version, which moves every release. The kernels are the easy one to miss:
 # rocBLAS loads them as data, so without them the engine dies on the first matmul.
@@ -205,6 +251,76 @@ def _bin_entries(bundle: Path) -> list[str]:
     return [n[len(BIN_DIR) :] for n in names if n.startswith(BIN_DIR) and not n.endswith("/")]
 
 
+def _pe_imports(data: bytes) -> list[str]:
+    """The DLL names the PE file *data* imports, lower case; empty for a file that is not a PE.
+
+    Both the load-time and the delay-load tables count: a delay-loaded DLL that is
+    absent fails on the first call into it, which is as late and as bad as it sounds.
+    """
+    if data[:2] != b"MZ":
+        return []
+    # A QA requirement (tools/qa/requirements.txt), needed only for a Windows bundle.
+    import pefile
+
+    pe = pefile.PE(data=data, fast_load=True)
+    try:
+        pe.parse_data_directories(
+            directories=[
+                pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"],
+                pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT"],
+            ]
+        )
+        tables = (
+            *getattr(pe, "DIRECTORY_ENTRY_IMPORT", ()),
+            *getattr(pe, "DIRECTORY_ENTRY_DELAY_IMPORT", ()),
+        )
+        return sorted({t.dll.decode("ascii", "replace").lower() for t in tables})
+    finally:
+        pe.close()
+
+
+def _unbundled_imports(imports: dict[str, list[str]], entries: list[str]) -> dict[str, list[str]]:
+    """Map each file of *imports* to the imported DLLs that neither the bundle nor Windows holds."""
+    bundled = {e.rsplit("/", 1)[-1].lower() for e in entries}
+    return {
+        file: missing
+        for file, names in imports.items()
+        if (
+            missing := [
+                n
+                for n in names
+                if n not in bundled
+                and n not in WINDOWS_SYSTEM_DLLS
+                and not n.startswith(_WINDOWS_SYSTEM_PREFIXES)
+            ]
+        )
+    }
+
+
+def _import_problems(bundle: Path, name: str, entries: list[str], kind: str) -> list[str]:
+    """The problems with a Windows *bundle* importing a DLL it does not carry."""
+    imports: dict[str, list[str]] = {}
+    archive = None if bundle.is_dir() else zipfile.ZipFile(bundle)
+    try:
+        for entry in entries:
+            if not entry.lower().endswith((".dll", ".exe")):
+                continue
+            data = (
+                (bundle / entry).read_bytes()
+                if archive is None
+                else archive.read(f"{BIN_DIR}{entry}")
+            )
+            imports[entry] = _pe_imports(data)
+    finally:
+        if archive is not None:
+            archive.close()
+    return [
+        f"{name}: windows {kind} {file} imports {', '.join(missing)}, which {BIN_DIR} does not "
+        "carry and Windows does not provide (a machine without it cannot start the engine)"
+        for file, missing in _unbundled_imports(imports, entries).items()
+    ]
+
+
 def _server_problems(
     bundle: Path, name: str, tool: str | None, libraries: tuple[str, ...]
 ) -> list[str]:
@@ -268,6 +384,7 @@ def check(
             for crt in WINDOWS_CRT
             if crt not in entries
         )
+        problems.extend(_import_problems(bundle, name, entries, kind))
 
     # A declared flavor is the better answer, since the whole point of the check
     # above is that the payload can disagree with what the build asked for.
