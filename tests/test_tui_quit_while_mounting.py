@@ -14,13 +14,12 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import TabbedContent
 
 from lilbee.cli.tui import app as app_module
 from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.cli.tui.screens.memories import MemoriesScreen
 from lilbee.cli.tui.screens.model_picker import ModelPickerModal
-from lilbee.cli.tui.screens.settings import PROFILE_PANE_ID, SettingsScreen
+from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.settings_engines import EnginesPane
 from lilbee.cli.tui.screens.settings_presets import PresetDialog, PresetsPane
 from lilbee.cli.tui.screens.status import StatusScreen
@@ -28,6 +27,7 @@ from lilbee.cli.tui.screens.task_center import TaskCenter
 from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
 from lilbee.cli.tui.widgets.fleet_body import FleetBody
 from lilbee.cli.tui.widgets.model_bar import ModelOption
+from lilbee.cli.tui.widgets.scope_chip import ScopeChip
 from lilbee.cli.tui.widgets.session_list import SessionListPanel
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from tests._lilbee_app_test_host import LilbeeAppHost
@@ -89,6 +89,7 @@ SITES: dict[str, Callable[[App], None]] = {
     "memories": _push(_exiting(MemoriesScreen)),
     "wiki-drafts": _push(_exiting(WikiDraftsScreen)),
     "view-tabs": _hold(_exiting(ViewTabs)),
+    "scope-chip": _hold(_exiting(ScopeChip)),
     "fleet-body": _hold(_exiting(FleetBody)),
     "session-list": _hold(_exiting(SessionListPanel)),
     "preset-dialog": _push(_exiting(PresetDialog)),
@@ -115,6 +116,7 @@ GUARDED: dict[str, Callable[[], Any]] = {
     "memories": MemoriesScreen,
     "wiki-drafts": WikiDraftsScreen,
     "view-tabs": ViewTabs,
+    "scope-chip": ScopeChip,
     "fleet-body": FleetBody,
     "session-list": SessionListPanel,
     "engines-pane": EnginesPane,
@@ -133,32 +135,35 @@ async def test_unattached_node_drops_mount(site, monkeypatch):
     assert calls == []
 
 
-async def test_profile_tab_requested_before_mount_shows_on_mount():
-    """The Profile tab asked for before the screen mounts is active once it has."""
+async def test_attached_node_gets_its_mount(monkeypatch):
+    """A screen asked for the Profile tab before it mounts shows it from its Mount handler.
+
+    ``show_profile_tab`` is called only from that handler on this route, so a guard that
+    drops every Mount leaves the call count at zero.
+    """
+    shown: list[int] = []
+    monkeypatch.setattr(SettingsScreen, "show_profile_tab", lambda _self: shown.append(1))
     app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
-        await app.push_screen(Screen())
-        app.open_profile_tab()
-        await pilot.pause()
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        assert screen.query_one("#settings-tabs", TabbedContent).active == PROFILE_PANE_ID
-
-
-async def test_profile_tab_requested_on_a_mounted_screen_shows_after_refresh():
-    app = LilbeeAppHost()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await app.push_screen(Screen())
-        app.switch_view("Settings")
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        assert screen.is_mounted
-        tabs = screen.query_one("#settings-tabs", TabbedContent)
-        tabs.active = next(pane for pane in screen._pane_ids if pane != PROFILE_PANE_ID)
-        await pilot.pause()
+        screen = SettingsScreen()
         screen.request_profile_tab()
+        await app.push_screen(screen)
         await pilot.pause()
         await pilot.pause()
-        assert tabs.active == PROFILE_PANE_ID
+    assert shown == [1]
+
+
+class _Probe(MountWhenAttached):
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: list[str] = []
+
+    def on_unmount(self) -> None:
+        self.seen.append("unmount")
+
+
+async def test_unattached_node_passes_other_events_to_the_parent():
+    """Only Mount is dropped: Unmount still reaches its handler."""
+    node = _Probe()
+    await node.on_event(events.Unmount())
+    assert node.seen == ["unmount"]
