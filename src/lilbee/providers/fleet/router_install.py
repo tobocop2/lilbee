@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import stat
 import tarfile
@@ -24,8 +25,10 @@ from lilbee.providers.fleet.engine_store import (
     STAGE_PREFIX,
     ChecksumError,
     EngineDiskError,
+    EngineInUseError,
     PackUrlError,
     copy_with_digest,
+    discard_build,
     engines_root,
     file_digest,
     require_pinned_digest,
@@ -42,6 +45,8 @@ _BINARY_NAME = "llama-swap"
 _BINARY_NAMES = (_BINARY_NAME, f"{_BINARY_NAME}.exe")
 _LICENCE_MARK = "MIT License"
 _INSTALL_LOCK_S = 1800.0
+# The next step an in-use refusal names.
+_INSTALL_AGAIN = "install it again"
 
 
 class ArchiveKind(StrEnum):
@@ -120,6 +125,7 @@ ROUTER_REFUSALS = (
     EngineDiskError,
     FileLockUnavailableError,
     PackUrlError,
+    EngineInUseError,
     OSError,
 )
 """The errors that stop a router install for a reason the user can act on."""
@@ -258,7 +264,8 @@ def install_router(
             _unpack(asset, archive, stage)
             archive.unlink()
             make_in_use_file(stage)
-            shutil.rmtree(final, ignore_errors=True)
+            if os.path.lexists(final):
+                discard_build(final, _INSTALL_AGAIN)
             stage.rename(final)
         finally:
             shutil.rmtree(stage, ignore_errors=True)
@@ -283,6 +290,9 @@ def router_on_first_use() -> Path:
     _refusals.raise_if_refused(key)
     try:
         return install_router()
+    except EngineInUseError:
+        # A running router holds the folder now and stops later: the next lookup asks again.
+        raise
     except ROUTER_REFUSALS as exc:
         _refusals.remember(key, exc)
         raise
