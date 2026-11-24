@@ -104,7 +104,7 @@ The slash command refuses `--key`. Give the key in the dialog. No `/preset` line
 
 The body fields are `name`, `url`, `roles`, `api_key`, `rerank_wire` and `memory_reserve_gb`. An edit also takes `clear_reserve` and `clear_key`. The key is write only. The response shows `has_key`, `memory_reserve_gb` and `reserve_note`. The note is null unless a remote preset has a reserve.
 
-The errors are 404 for an unknown name, 409 for a name that exists, 503 when `config.toml` cannot be read or is locked, and 422 for any other refusal.
+The errors are 404 for an unknown name, 409 for a name that exists, 503 when `config.toml` cannot be read, is read-only or is locked, and 422 for any other refusal.
 
 ### MCP
 

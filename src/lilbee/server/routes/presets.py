@@ -14,7 +14,7 @@ from litestar.handlers.base import BaseRouteHandler
 import lilbee.app.presets as service
 from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError
-from lilbee.core.settings import ConfigReadFailedError
+from lilbee.core.settings import ConfigReadFailedError, ReadOnlyConfigError
 from lilbee.server.models import (
     PresetAddBody,
     PresetEditBody,
@@ -33,7 +33,7 @@ _HTTP_UNPROCESSABLE = 422
 async def _call(action: Callable[[], _T]) -> _T:
     """Run a service call off the loop; a refusal becomes its status.
 
-    A held lock or an unreadable config.toml is 503.
+    A held lock, an unreadable config.toml or a read-only config.toml is 503.
     """
     try:
         return await asyncio.to_thread(action)
@@ -43,7 +43,7 @@ async def _call(action: Callable[[], _T]) -> _T:
         raise HTTPException(status_code=_HTTP_CONFLICT, detail=service.failure_text(exc)) from exc
     except FileLockUnavailableError:
         raise
-    except ConfigReadFailedError as exc:
+    except (ConfigReadFailedError, ReadOnlyConfigError) as exc:
         raise HTTPException(
             status_code=_HTTP_UNAVAILABLE, detail=service.failure_text(exc)
         ) from exc
