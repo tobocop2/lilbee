@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import threading
 
 import pytest
@@ -185,19 +186,40 @@ class TestProviderTokenizers:
         monkeypatch.setattr(tokenizer_module, "_register", registered.append)
         tokenizers = _ProviderTokenizers()
         first, second = _StopsAfterTheProbe(), _WordCounter()
-        first_name, second_name = (
-            f"{TokenizerBackendName.LILBEE}-1",
-            f"{TokenizerBackendName.LILBEE}-2",
-        )
-        assert tokenizers.failures(first_name) is None
-        assert tokenizers.name_for(first) == first_name
-        assert tokenizers.name_for(second) == second_name
+        first_name = tokenizers.name_for(first)
+        second_name = tokenizers.name_for(second)
+        assert first_name != second_name
+        assert first_name.startswith(f"{TokenizerBackendName.LILBEE}-")
+        assert tokenizers.failures("never-registered") is None
         assert [b.name() for b in registered] == [first_name, second_name]
         assert tokenizers.failures(first_name) == 0
         with pytest.raises(ProviderError, match="The embedding server stopped"):
             registered[0].count_tokens("two words")
         assert tokenizers.failures(first_name) == 1
         assert tokenizers.failures(second_name) == 0
+
+    def test_two_tables_never_hand_out_the_same_name(self, monkeypatch):
+        registered: list[LilbeeTokenizerBackend] = []
+        monkeypatch.setattr(tokenizer_module, "_register", registered.append)
+        first = _ProviderTokenizers().name_for(_WordCounter())
+        second = _ProviderTokenizers().name_for(_WordCounter())
+        assert first != second
+        assert len({b.name() for b in registered}) == 2
+
+    def test_closing_one_table_leaves_the_backend_of_the_other_registered(self, monkeypatch):
+        unregistered: list[str] = []
+        monkeypatch.setattr(tokenizer_module, "_register", lambda backend: None)
+        monkeypatch.setattr(tokenizer_module, "_unregister", unregistered.append)
+        first_table, second_table = _ProviderTokenizers(), _ProviderTokenizers()
+        gone = _WordCounter()
+        gone_name = first_table.name_for(gone)
+        kept = _WordCounter()
+        kept_name = second_table.name_for(kept)
+        del gone
+        gc.collect()
+        first_table.name_for(_WordCounter())
+        assert gone_name in unregistered
+        assert kept_name not in unregistered
 
     def test_every_failed_count_adds_to_the_failures_of_its_name(self, monkeypatch):
         registered: list[LilbeeTokenizerBackend] = []
