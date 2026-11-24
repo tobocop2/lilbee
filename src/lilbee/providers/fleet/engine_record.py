@@ -18,9 +18,13 @@ _ENGINES = {
     "llama_cpp": "llama.cpp",
     "mlx": "mlx",
 }
+_PART = r"[A-Za-z0-9._+]+"
 _WHEEL = re.compile(
-    r"lilbee_engine_(?P<slug>[a-z0-9_]+)-(?P<version>[^-]+)-(?P<build>[^-]+)"
-    r"-[^-]+-[^-]+-(?P<platform>[^-]+)\.whl"
+    rf"lilbee_engine_(?P<slug>[a-z0-9_]+)-(?P<version>{_PART})-(?P<build>{_PART})"
+    rf"-{_PART}-{_PART}-(?P<platform>{_PART})\.whl"
+)
+_URL = re.compile(
+    r"https://[A-Za-z0-9.-]+(?::\d+)?/(?:[A-Za-z0-9][A-Za-z0-9._-]*/)+[A-Za-z0-9._+]+"
 )
 _BUILD = re.compile(r"(?P<number>\d+)\.(?P<backend>[a-z0-9_]+)")
 _MANYLINUX = re.compile(r"manylinux_2_(?P<minor>\d+)_(?P<arch>x86_64|aarch64)")
@@ -90,7 +94,7 @@ def _cell(label: str, entry: Mapping[str, Any]) -> tuple[str, str, str, dict[str
     _check_fields(label, entry)
     name, url = entry["file"], entry["url"]
     cell = wheel_cell(label, name)
-    if not url.startswith("https://") or url.rsplit("/", 1)[-1] != name:
+    if _URL.fullmatch(url) is None or url.rsplit("/", 1)[-1] != name:
         raise PackRecordError(
             f"{label}: the url {url!r} is not an https url that ends with the file."
         )
