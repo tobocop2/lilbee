@@ -28,6 +28,7 @@ import httpx
 import psutil
 
 from lilbee.core.health_warnings import HealthWarning
+from lilbee.parent_monitor import linux_start_stamp
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
 from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_child
@@ -80,6 +81,8 @@ _STATE_FILE_GLOB = f"{_STATE_FILENAME_PREFIX}*"
 _STATE_KEY_PID = "pid"
 _STATE_KEY_PGID = "pgid"
 _STATE_KEY_CREATED_AT = "created_at"
+_STATE_KEY_BOOT_ID = "boot_id"
+_STATE_KEY_START_TICKS = "start_ticks"
 _STATE_KEY_NAME = "name"
 _STATE_KEY_MEMBER_PORTS = "member_ports"
 _STATE_KEY_PROXY_PORT = "proxy_port"
@@ -219,6 +222,8 @@ class SwapState:
     pid: int
     pgid: int | None
     created_at: float | None = None
+    boot_id: str | None = None  # with start_ticks, the Linux identity a clock step cannot move
+    start_ticks: float | None = None
     member_ports: tuple[int, ...] = ()
     proxy_port: int | None = None
     launches: tuple[dict, ...] = ()
@@ -422,6 +427,9 @@ class SwapManager:
             _STATE_KEY_ENGINE_PIN: engine_pin(),
             _STATE_KEY_SWAP_BINARY: self._swap_binary,
         }
+        stamp = linux_start_stamp(swap_pid)
+        if stamp is not None:
+            state[_STATE_KEY_BOOT_ID], state[_STATE_KEY_START_TICKS] = stamp
         if self._origin is not None:
             state[_STATE_KEY_CONFIG_ROOT] = self._origin.config_root
             state[_STATE_KEY_FLEET_VIEW] = self._origin.fleet_view
@@ -1261,6 +1269,8 @@ def _load_state(path: Path) -> SwapState | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
         raw_pgid = payload.get(_STATE_KEY_PGID)
         raw_created = payload.get(_STATE_KEY_CREATED_AT)
+        raw_boot_id = payload.get(_STATE_KEY_BOOT_ID)
+        raw_ticks = payload.get(_STATE_KEY_START_TICKS)
         raw_ports = payload.get(_STATE_KEY_MEMBER_PORTS) or []
         raw_proxy = payload.get(_STATE_KEY_PROXY_PORT)
         raw_root = payload.get(_STATE_KEY_CONFIG_ROOT)
@@ -1274,6 +1284,8 @@ def _load_state(path: Path) -> SwapState | None:
             pid=int(payload[_STATE_KEY_PID]),
             pgid=int(raw_pgid) if raw_pgid is not None else None,
             created_at=float(raw_created) if raw_created is not None else None,
+            boot_id=str(raw_boot_id) if raw_boot_id and raw_ticks is not None else None,
+            start_ticks=float(raw_ticks) if raw_boot_id and raw_ticks is not None else None,
             member_ports=tuple(int(port) for port in raw_ports),
             proxy_port=int(raw_proxy) if raw_proxy is not None else None,
             launches=tuple(payload.get(_STATE_KEY_LAUNCHES) or ()),
@@ -1289,9 +1301,12 @@ def _load_state(path: Path) -> SwapState | None:
 def _is_live_llama_swap(state: SwapState) -> bool:
     """True when the recorded pid is alive and is the recorded llama-swap.
 
-    A recorded create time that differs from the live process's is pid reuse,
-    even when the recycled pid runs another instance's llama-swap; a legacy
-    state file without one falls back to the cmdline match alone.
+    A recorded identity that differs from the live process's is pid reuse,
+    even when the recycled pid runs another instance's llama-swap. On Linux
+    the identity is the boot id plus start ticks, compared exactly: a wall-clock
+    step moves psutil's create time but not these. A record without them (an
+    older file, or another platform) is compared by create time with a tolerance,
+    and a legacy state file without one falls back to the cmdline match alone.
     """
     try:
         proc = psutil.Process(state.pid)
@@ -1299,7 +1314,10 @@ def _is_live_llama_swap(state: SwapState) -> bool:
         create_time = proc.create_time()
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
-    if state.created_at is not None and abs(create_time - state.created_at) > (
+    if state.boot_id is not None and state.start_ticks is not None:
+        if linux_start_stamp(state.pid) != (state.boot_id, state.start_ticks):
+            return False
+    elif state.created_at is not None and abs(create_time - state.created_at) > (
         _CREATE_TIME_TOLERANCE_S
     ):
         return False
