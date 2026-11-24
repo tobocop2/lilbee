@@ -111,7 +111,7 @@ build_wheel() {
   (
     cd "${WHEEL_TREE}"
     # A relative path: Windows Python does not read a Git Bash path.
-    install_build_tools python ../../tools/wheel-build/build-tools.constraints
+    install_build_tools python ../../tools/wheel-build/build-tools.constraints ../../tools/wheel-build/mistralrs-check-tools.constraints
     build_wheel_with_tools python -C--build-option="--build-number=1.${BACKEND}"
     python -m wheel tags --remove --platform-tag "${PLATFORM}" dist/*.whl
     ls dist

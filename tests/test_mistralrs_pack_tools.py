@@ -25,6 +25,7 @@ from tests._pack_workflow import pack_cells, pack_workflow
 from tests._pe_fixture import pe_file
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools" / "wheel-build"
+QA = Path(__file__).resolve().parents[1] / "tools" / "qa"
 PACKAGING = Path(__file__).resolve().parents[1] / "packaging" / "engine-wheel-mistral-rs"
 
 
@@ -261,6 +262,7 @@ def _tree(tmp_path: Path) -> Path:
             ignore=shutil.ignore_patterns("bin", "__pycache__", "*.egg-info"),
         )
         (root / "tools" / "qa").mkdir()
+        shutil.copy(QA / "assert_engine_bundle.py", root / "tools" / "qa")
         (root / "tools" / "qa" / "check_mistralrs_chat.py").write_text(
             "import pathlib, sys\n"
             "pathlib.Path(__file__).with_name('asked').write_text('\\n'.join(sys.argv[1:]))\n",
@@ -741,7 +743,7 @@ _RUNTIME = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
 
 
 def _windows_check(tmp_path: Path, bundled: dict[str, bytes]) -> subprocess.CompletedProcess[str]:
-    """Run the start stage on a Windows wheel that holds *bundled* files beside a tool that starts."""
+    """Run the start stage on a Windows wheel of *bundled* files and a tool that starts."""
     stubs = tmp_path / "stubs"
     stubs.mkdir()
     # The check runs the interpreter that a Windows venv holds.
