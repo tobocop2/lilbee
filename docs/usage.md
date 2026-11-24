@@ -183,7 +183,7 @@ Tabs for features that aren't installed are hidden, not greyed out:
 - **API-Keys** appears only when the `providers` extra is installed.
 - **Crawling** appears only when the `crawler` extra is installed.
 - **Wiki** appears only when the wiki layer is enabled
-  (`cfg.wiki = true` in `config.toml` or `LILBEE_WIKI=1`).
+  (`wiki = true` in `config.toml` or `LILBEE_WIKI=1`).
 
 Install the relevant extra (or flip the wiki flag) and the tab shows up on
 the next visit.
@@ -1868,7 +1868,9 @@ export LILBEE_SEMANTIC_CHUNKING=true
 
 # TUI /set command (interactive)
 /set semantic_chunking true
+```
 
+```toml
 # config.toml in your .lilbee/ vault
 semantic_chunking = true
 ```

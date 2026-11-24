@@ -68,12 +68,14 @@ GROUP_ORDER: tuple[SettingGroup, ...] = (
 
 # Commands that write a setting beyond `lilbee settings set`. A model role cannot go
 # through `settings set` (the CLI refuses it), so each role has its own command, read
-# from `role_command`. `placement` takes `settings set` too, and has a command that
-# edits it as a whole.
+# from `role_command`. `placement` takes `settings set` too, and has a command that edits it as a whole.
+# `linked_roots` is a table, so `settings set` refuses it; `add` and `remove` maintain it.
 CLI_COMMANDS: dict[str, str] = {
     "placement": "`lilbee placement set`",
+    "linked_roots": "`lilbee add`, `lilbee remove`",
 }
 CLI_SET = "`lilbee settings set`"
+TABLE_TYPE = "dict"  # the type name of a field that holds a table
 
 MAX_DEFAULT_CHARS = 48
 
@@ -246,14 +248,15 @@ def _http_cell(key: str) -> str:
 def _cli_cell(key: str) -> str:
     """The commands that write *key*.
 
-    `lilbee settings set` calls ``apply_settings_update(..., allow_model_roles=False)``, which
-    accepts each writable key except the model roles. This is that rule, not a list. A model
+    `lilbee settings set` hands the value over as text, and `apply_settings_update` accepts it for
+    a writable key whose type a text value can fill. A table (a `dict` field) cannot be filled
+    from text, so the CLI refuses every value for it. A model
     role has its own command.
     """
     if key in MODEL_FIELD_TO_ROLE:
         return f"`{role_command(MODEL_FIELD_TO_ROLE[key]).replace('<ref>', 'REF')}`"
     commands = []
-    if key in WRITABLE_CONFIG_FIELDS:
+    if key in WRITABLE_CONFIG_FIELDS and field_type_name(key) != TABLE_TYPE:
         commands.append(CLI_SET)
     if key in CLI_COMMANDS:
         commands.append(CLI_COMMANDS[key])
