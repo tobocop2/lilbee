@@ -1633,6 +1633,28 @@ class TestPlaywrightBrowserCheck:
         monkeypatch.setattr("sys.platform", "win32")
         assert _browsers_cache_path() == Path("/tmp/localappdata/ms-playwright")
 
+    def test_path_win32_skips_home_when_localappdata_set(self, monkeypatch):
+        """LOCALAPPDATA names the directory, so no home directory lookup runs."""
+        from lilbee.crawler.bootstrap import _browsers_cache_path
+
+        def no_home():
+            raise RuntimeError("Could not determine home directory.")
+
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", "/tmp/localappdata")
+        monkeypatch.setattr("sys.platform", "win32")
+        monkeypatch.setattr(Path, "home", staticmethod(no_home))
+        assert _browsers_cache_path() == Path("/tmp/localappdata/ms-playwright")
+
+    def test_path_win32_falls_back_to_home_when_localappdata_unset(self, monkeypatch, tmp_path):
+        from lilbee.crawler.bootstrap import _browsers_cache_path
+
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr("sys.platform", "win32")
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        assert _browsers_cache_path() == tmp_path / "AppData" / "Local" / "ms-playwright"
+
 
 class TestSetupEventHelpers:
     """bb-wq8g: _emit_setup_start / _emit_setup_done no-op when callback is None."""
