@@ -44,11 +44,11 @@ _LOG_LEVEL = "info"
 # log. The upstream stream is the engines' own output, and it is one setting for
 # the whole llama-swap process. It goes in only when a member's engine writes no
 # log file of its own (TEI, MLX, OVMS and the other engines that read no log
-# variables). A llama-server also prints every line of its own log to its console,
-# so in a group that also holds such an engine, each llama member's output is in
-# both files, at trace verbosity for a member that reports its load. A group of
-# llama-servers alone keeps upstream off. The http stream (one line per request)
-# never goes in.
+# variables), and only for a router that reads a list (ROUTER_FLOOR). A
+# llama-server also prints every line of its own log to its console, so in a group
+# that also holds such an engine, each llama member's output is in both files, at
+# trace verbosity for a member that reports its load. A group of llama-servers
+# alone keeps upstream off. The http stream (one line per request) never goes in.
 _STDOUT_PROXY = "proxy"
 _STDOUT_PROXY_AND_UPSTREAM = "proxy,upstream"
 # The first llama-swap release that reads a list of streams in logToStdout
