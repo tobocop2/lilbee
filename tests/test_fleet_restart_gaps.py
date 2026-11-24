@@ -491,25 +491,34 @@ def _plan_without_chat(monkeypatch: pytest.MonkeyPatch, *, then_fail: bool = Fal
 
 def _rediscover_during_the_drain(
     provider: FleetProvider, monkeypatch: pytest.MonkeyPatch, release: threading.Event
-) -> list[int]:
-    """Run a rediscover when the pass starts its drain, then let the held request answer."""
+) -> tuple[list[int], threading.Thread]:
+    """Start a request thread's rediscover when the pass drains a client, then release the held request.
+
+    The request fails once while the drain runs, so its rediscover starts inside the drain.
+    Returns the calls of that request and its thread.
+    """
     real_drain = provider._drain_clients
     calls: list[int] = []
+    failed = threading.Event()
 
     def fail_once() -> str:
         calls.append(1)
         if len(calls) == 1:
+            failed.set()
             raise _connection_error()
         return "retried"
 
+    request = threading.Thread(target=provider._with_rediscover, args=(fail_once,))
+
     def drain(clients: list[object], until: float) -> None:
-        if clients and not calls:
-            assert provider._with_rediscover(fail_once) == "retried"
+        if clients and not request.ident:
+            request.start()
+            assert failed.wait(_JOIN_S)
             release.set()
         real_drain(clients, until)  # type: ignore[arg-type]
 
     monkeypatch.setattr(provider, "_drain_clients", drain)
-    return calls
+    return calls, request
 
 
 def test_a_rediscover_during_the_drain_still_stops_the_group_the_new_plan_drops(
@@ -520,11 +529,12 @@ def test_a_rediscover_during_the_drain_still_stops_the_group_the_new_plan_drops(
     old_chat = provider._swap_for(CHAT)
     answers: list[object] = []
     caller = plan_tests._held_chat(provider, answers)
-    calls = _rediscover_during_the_drain(provider, monkeypatch, old_chat.engine.release)
+    calls, request = _rediscover_during_the_drain(provider, monkeypatch, old_chat.engine.release)
     _plan_without_chat(monkeypatch)
 
     provider.reload_role(CHAT)
     caller.join(_JOIN_S)
+    request.join(_JOIN_S)
     _join_fleet_threads()
 
     assert calls == [1, 1]
@@ -542,37 +552,47 @@ def test_a_rediscover_during_a_stalled_drain_still_stops_the_group_the_new_plan_
     old_chat = provider._swap_for(CHAT)
     answers: list[object] = []
     caller = plan_tests._held_chat(provider, answers)
-    calls = _rediscover_during_the_drain(provider, monkeypatch, old_chat.engine.release)
+    calls, request = _rediscover_during_the_drain(provider, monkeypatch, old_chat.engine.release)
     _plan_without_chat(monkeypatch)
 
     provider._force_restart(CHAT, stopped_answering=True)
     caller.join(_JOIN_S)
+    request.join(_JOIN_S)
     _join_fleet_threads()
 
     assert calls == [1, 1]
     assert old_chat.shutdowns == 1
 
 
-def test_a_failed_pass_after_a_rediscover_stops_the_server_it_took(
+def test_a_rediscover_in_a_failed_pass_waits_until_the_pass_gave_the_server_back(
     engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The plan after the drain fails; no group maps the taken server, so the pass stops it."""
+    """The plan after the drain fails; the fleet still maps the taken server when the pass gives it back."""
     provider, _swaps = engine_fleet
     monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", plan_tests._LONG_DRAIN_S)
     old_chat = provider._swap_for(CHAT)
     answers: list[object] = []
     caller = plan_tests._held_chat(provider, answers)
-    calls = _rediscover_during_the_drain(provider, monkeypatch, old_chat.engine.release)
+    calls, request = _rediscover_during_the_drain(provider, monkeypatch, old_chat.engine.release)
     plans = _plan_without_chat(monkeypatch, then_fail=True)
+    real_give_back = provider._give_back_clients
+    mapped_at_give_back: list[bool] = []
+
+    def give_back(drained: dict[WorkerRole, list[object]]) -> None:
+        mapped_at_give_back.append(provider._swap_for(CHAT) is old_chat)
+        real_give_back(drained)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(provider, "_give_back_clients", give_back)
 
     provider.reload_role(CHAT)
     caller.join(_JOIN_S)
+    request.join(_JOIN_S)
     _join_fleet_threads()
 
     assert calls == [1, 1]
     assert len(plans) == 2
-    assert old_chat not in provider._swaps.values()
-    assert old_chat.shutdowns == 1
+    assert mapped_at_give_back == [True]
+    assert old_chat.shutdowns == 0
 
 
 def test_a_failed_pass_without_a_rediscover_gives_the_server_back_running(

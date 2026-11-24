@@ -603,6 +603,15 @@ def _output_log_of(engine: EngineAdapter, launch: InstanceLaunch, swap_log: Path
     return engine_log_of(engine, launch, swap_log.parent) or swap_log
 
 
+def _still_starting_error() -> ProviderError:
+    """The error for a caller whose wait on the fleet work reached ``_FLEET_WAIT_S``."""
+    return ProviderError(
+        f"The engines are still starting after {_FLEET_WAIT_S:.0f} s.",
+        provider=_PROVIDER_NAME,
+        kind=ProviderErrorKind.STARTING,
+    )
+
+
 def _raise_no_healthy_replica(cause: Exception) -> NoReturn:
     """Raise the user-facing error for a call with no healthy replica left to retry on.
 
@@ -1505,11 +1514,7 @@ class FleetProvider:
                 kind=ProviderErrorKind.STARTING,
             )
         if not finished:
-            raise ProviderError(
-                f"The engines are still starting after {_FLEET_WAIT_S:.0f} s.",
-                provider=_PROVIDER_NAME,
-                kind=ProviderErrorKind.STARTING,
-            )
+            raise _still_starting_error()
         work.result()
 
     def stop_waiting(self) -> None:
@@ -2626,11 +2631,18 @@ class FleetProvider:
         busy ones stay retired for a later pass.
 
         *close_all* is the terminal-shutdown path, where nothing will read again and
-        whatever remains must actually be closed.
+        whatever remains must actually be closed. Any other drop waits, in the same
+        hold, until no fleet work runs: a reload or a build owns the map while it runs,
+        and a drop inside its drain would orphan the groups it keeps. A drop that is
+        still waiting at the fleet-work limit raises, and the map stays as it is.
         """
         doomed: list[LlamaServerClient] = []
         with self._lock:
-            live = [client for pool in self._clients.values() for client in pool]
+            if not close_all and not self._reload_done.wait_for(
+                lambda: self._fleet_work is None, _FLEET_WAIT_S
+            ):
+                raise _still_starting_error()
+            live =[client for pool in self._clients.values() for client in pool]
             self._swaps = {}
             self._launches = {}
             self._role_group = {}
@@ -3569,15 +3581,14 @@ class FleetProvider:
         reload_dir = self._reload_dir()
         # Every drain runs with the build lock free, so a peer can take the lock
         # during the wait. A server that stopped answering drains before the plan.
-        # The pass keeps each server it takes out of dispatch, so it stops that
-        # server even when a rediscover clears the fleet's own map during a drain.
+        # The pass keeps each server it takes out of dispatch and stops that one. A
+        # rediscover waits for the fleet work, so the fleet's map holds through a drain.
         owned: dict[SwapGroup, SwapManager] = {}
         drained = self._drain_stuck_groups(force, owned)
         try:
             restarted = self._restart_changed(reload_dir, running, old, force, drained, owned)
         except BaseException:
             self._give_back_clients(drained)
-            self._stop_lost_servers(owned)
             raise
         finally:
             with self._lock:
@@ -3783,8 +3794,7 @@ class FleetProvider:
         here: a pass that fails gives the clients of *drained* back to dispatch, so
         the stop phase keeps them open until their own group stops.
 
-        The server of each group goes into *owned*. A rediscover during the drain
-        clears the fleet's own map, and the pass still stops the server it took.
+        The server of each group goes into *owned*, and the pass stops that server.
         """
         owned.update((group, self._swaps[group]) for group in groups if group in self._swaps)
         taken: list[LlamaServerClient] = []
@@ -3795,18 +3805,6 @@ class FleetProvider:
             client.notify_when_idle(self._start_hold_sweep)
         self._retiring_clients = self._retiring_clients + taken
         return taken
-
-    def _stop_lost_servers(self, owned: dict[SwapGroup, SwapManager]) -> None:
-        """Stop each server in *owned* that the fleet no longer maps, after a pass that failed.
-
-        A failed pass gives its groups back, but a rediscover during the drain clears
-        the fleet's map, so a server the pass took has no owner left to stop it. A
-        server that the fleet still maps serves again and keeps running.
-        """
-        with self._lock:
-            lost = [swap for group, swap in owned.items() if self._swaps.get(group) is not swap]
-        for swap in lost:
-            swap.shutdown()
 
     def _give_back_clients(self, drained: dict[WorkerRole, list[LlamaServerClient]]) -> None:
         """Put *drained* clients back in dispatch after a pass that failed before its stop phase.
