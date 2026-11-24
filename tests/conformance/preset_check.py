@@ -594,7 +594,10 @@ def _replay_handler(
 
 @contextmanager
 def replaying(exchanges: list[Exchange]) -> Iterator[str]:
-    """A server that answers each recorded request, matched on method, path and body (less its sampling knobs), in order."""
+    """A server that answers each recorded request in order, matched on method, path and body.
+
+    The body is matched without its sampling knobs.
+    """
     queues: dict[tuple[str, str, str], deque[Exchange]] = defaultdict(deque)
     for exchange in exchanges:
         queues[_queue_key(exchange.method, exchange.path, exchange.request)].append(exchange)
