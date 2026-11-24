@@ -2019,7 +2019,9 @@ class FleetProvider:
                 # Every serving process passes through adoption (fresh launch,
                 # reload, guest bind), so the warning fires in each of them.
                 planning.warn_when_chat_downsized(role_launches[0])
-            if role is WorkerRole.EMBED:
+            # An engine that reports its own window serves it, not the planned cap, so its
+            # warning comes from the health route once the engine is up.
+            if role is WorkerRole.EMBED and profile.input_limit_path is None:
                 planning.warn_when_embed_window_below_chunk(role_launches[0])
             self._retire_clients(old_clients)
         self._reload_done.notify_all()
@@ -2393,22 +2395,31 @@ class FleetProvider:
         with self._lock:
             return self._chat_slots if WorkerRole.CHAT in self._role_group else None
 
-    def embed_token_cap(self) -> int | None:
+    def embed_token_cap(self, *, known_only: bool = False) -> int | None:
         """The served embed launch's token cap, or the planned one before it is up.
 
-        A live engine that reports its own input limit (TEI's ``max_input_length``) may
-        serve a smaller window than the launch planned: the smaller of the two wins.
+        An engine that reports its own input limit (TEI's ``max_input_length``) serves
+        that window and ignores the planned context, so its window is the limit its live
+        clients report, and None (not known) while it is not up. With *known_only* the
+        clients send no request and report only a limit they have already read.
         """
         with self._lock:
             launches = self._role_launches(WorkerRole.EMBED)
             clients = list(self._clients.get(WorkerRole.EMBED, []))
         if launches:
-            limits = [launches[0].token_cap, *(client.input_limit() for client in clients)]
-            known = [limit for limit in limits if limit is not None]
-            return min(known) if known else None
+            if any(client.profile.input_limit_path is not None for client in clients):
+                limits = (
+                    client.known_input_limit if known_only else client.input_limit()
+                    for client in clients
+                )
+                known = [limit for limit in limits if limit is not None]
+                return min(known) if known else None
+            return launches[0].token_cap
         try:
             engine = self._engines()[WorkerRole.EMBED]
         except (ProviderError, KeyError):
+            return None
+        if engine.request_profile(WorkerRole.EMBED).input_limit_path is not None:
             return None
         return planning.planned_embed_token_cap(cfg.embedding_model, engine=engine)
 

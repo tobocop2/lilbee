@@ -175,6 +175,109 @@ def test_raise_for_status_gateway_premature_exit_stays_connection(monkeypatch) -
     assert excinfo.value.kind is ProviderErrorKind.CONNECTION
 
 
+_HEALTH_TIMEOUT_BODY = (
+    '{"error":"unable to start process: health check timed out after 2m0s"}'  # llama-swap
+)
+
+
+@pytest.mark.parametrize("status", [500, 502])
+def test_a_health_timeout_is_a_warm_timeout_sent_once(status) -> None:
+    """A launch that did not pass llama-swap's health wait is not retried: a retry
+    starts the same slow launch again."""
+    from lilbee.providers.base import ProviderErrorKind, WarmTimeoutError
+    from lilbee.providers.fleet.client import is_rebuildable_failure
+
+    calls = {"n": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(status, text=_HEALTH_TIMEOUT_BODY)
+
+    client = _tei_client(handler)
+    with pytest.raises(WarmTimeoutError) as excinfo:
+        client.count_tokens("\n")
+    assert excinfo.value.kind is ProviderErrorKind.WARM_TIMEOUT
+    assert excinfo.value.wait_s == 120.0
+    assert str(excinfo.value) == "The engine for the model did not finish starting in time."
+    assert calls["n"] == 1
+    assert not is_rebuildable_failure(excinfo.value)
+    assert not is_connection_failure(excinfo.value)
+    # The window this client knows sends no request: a request would start the launch again.
+    assert client.known_input_limit is None
+    assert calls["n"] == 1
+
+
+def test_a_warm_that_later_answers_reports_its_window_again() -> None:
+    """A warm failure is the result of one request: the user syncs again in the same
+    process, the engine starts, and the client reads and reports its window."""
+    from lilbee.providers.base import WarmTimeoutError
+
+    counts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/info"):
+            return httpx.Response(200, json={"max_input_length": 512})
+        counts["n"] += 1
+        if counts["n"] == 1:
+            return httpx.Response(502, text=_HEALTH_TIMEOUT_BODY)
+        return httpx.Response(200, json=[[{"id": 1}, {"id": 2}]])
+
+    client = _tei_client(handler)
+    with pytest.raises(WarmTimeoutError):
+        client.count_tokens("\n")
+    assert client.count_tokens("hi") == 2
+    assert client.input_limit() == 512
+
+
+@pytest.mark.parametrize(
+    ("body", "wait_s"),
+    [
+        ("health check timed out after 1h2m3s", 3723.0),
+        ("health check timed out after 45s", 45.0),
+        ("health check timed out after 1m30s without loading progress", 90.0),
+        ("health check timed out", None),
+    ],
+)
+def test_the_health_wait_is_read_from_llama_swaps_duration(body, wait_s) -> None:
+    from lilbee.providers.fleet.client import _health_wait_s
+
+    assert _health_wait_s(body) == wait_s
+
+
+def test_a_timeout_before_a_launchs_first_answer_is_a_warm_timeout() -> None:
+    from lilbee.providers.base import WarmTimeoutError
+
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://cpu0")
+    client = LlamaServerClient(
+        "http://cpu0", "m", http=http, timeout=240.0, profile=TEI.request_profile(WorkerRole.EMBED)
+    )
+    with pytest.raises(WarmTimeoutError) as excinfo:
+        client.embed(["hello"])
+    assert excinfo.value.wait_s == 240.0
+    assert calls["n"] == 1
+
+
+def test_a_timeout_after_the_first_answer_stays_a_transport_error() -> None:
+    answered = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        answered["n"] += 1
+        if answered["n"] == 1:
+            return httpx.Response(200, json=[[{"id": 1}, {"id": 2}]])
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    client = _tei_client(handler)
+    assert client.count_tokens("hi") == 2
+    with pytest.raises(httpx.ReadTimeout):
+        client.count_tokens("hi")
+
+
 def test_embed_retries_transient_gateway_error_then_succeeds(monkeypatch) -> None:
     # A 502 while the upstream restarts is retried instead of dropping the input.
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
@@ -1206,8 +1309,10 @@ def test_a_tei_client_reads_the_input_limit_from_info_once() -> None:
         return httpx.Response(200, json={"max_input_length": 400})
 
     client = _tei_embed_client(handler, cap=640)
+    assert client.known_input_limit is None
     assert client.input_limit() == 400
     assert client.input_limit() == 400
+    assert client.known_input_limit == 400
     assert reads == ["/upstream/m/info"]
 
 

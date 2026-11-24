@@ -37,6 +37,16 @@ _TOKENIZER_FILES = (
 )
 _POOLING_FILES = ("1_Pooling/config.json", "modules.json")
 _MODULES_FILE = "modules.json"
+# The Sentence Transformers config names that TEI reads for an embedder's input limit.
+_SENTENCE_CONFIG_FILES = (
+    "sentence_bert_config.json",
+    "sentence_roberta_config.json",
+    "sentence_distilbert_config.json",
+    "sentence_camembert_config.json",
+    "sentence_albert_config.json",
+    "sentence_xlm-roberta_config.json",
+    "sentence_xlnet_config.json",
+)
 _MODULE_FILE_RE = re.compile(r"\d+_[^/]+/(?:config\.json|model\.safetensors)")
 
 
@@ -131,7 +141,9 @@ def _select_safetensors(fmt: ModelFormat, names: list[str]) -> list[str]:
     index = _present(names, [SAFETENSORS_INDEX])
     extras = _present(names, ["config.json", *_TOKENIZER_FILES])
     if fmt == ModelFormat.SAFETENSORS:
-        extras += _present(names, ["generation_config.json", *_PROCESSOR_FILES])
+        extras += _present(
+            names, ["generation_config.json", *_PROCESSOR_FILES, *_SENTENCE_CONFIG_FILES]
+        )
         extras += _module_files(names)
     entry = index + weights if shards else weights + index
     return [*entry, *sorted(extras)]

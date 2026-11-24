@@ -10322,6 +10322,43 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
         assert "doc.txt" in str(captured["exc"])
 
 
+async def test_a_tui_sync_whose_embed_engine_cannot_warm_fails_on_the_plain_refusal():
+    """The sync task fails with the refusal's own text, which the Task Center shows."""
+    import threading
+
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+    from lilbee.data.extract.chunk import EmbedWarmError
+
+    refusal = EmbedWarmError("nomic-ai/nomic-embed-text-v1.5#safetensors", 8064, 120.0)
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+
+        async def refused_sync(**kwargs):
+            raise refusal
+
+        row_id = app.task_bar.add_task("Sync", TaskType.SYNC.value)
+        reporter = ProgressReporter(app.task_bar, app.task_bar.queue.get_task(row_id))
+        captured: dict[str, Exception] = {}
+
+        def _run_worker() -> None:
+            try:
+                app.screen._do_sync(reporter)
+            except Exception as exc:
+                captured["exc"] = exc
+
+        with patch("lilbee.data.ingest.sync", new=refused_sync):
+            thread = threading.Thread(target=_run_worker)
+            thread.start()
+            thread.join(timeout=5)
+
+        assert captured["exc"] is refusal
+        assert str(captured["exc"]) == (
+            "nomic-ai/nomic-embed-text-v1.5#safetensors cannot embed chunks of 8064 tokens on "
+            "this machine: its engine did not finish starting within 120 s at that size. Set "
+            "chunk_size to a smaller value, or run the embedding model on a GPU."
+        )
+
+
 async def test_sync_called_with_quiet_true():
     """B2: _run_sync_worker passes quiet=True to suppress Rich progress bar."""
     app = ChatTestApp()
