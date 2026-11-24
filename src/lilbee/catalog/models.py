@@ -154,6 +154,8 @@ class CatalogModel:
     formats: frozenset[ModelFormat] = frozenset({ModelFormat.GGUF})
     # The memory in GiB that the publisher states for the loaded model. 0 when it states none.
     footprint_gb: float = 0.0
+    # The context window in tokens that the publisher states. 0 when it states none.
+    context_length: int = 0
 
     @property
     def ref(self) -> str:
