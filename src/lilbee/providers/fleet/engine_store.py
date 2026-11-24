@@ -30,7 +30,14 @@ from lilbee.catalog.download import (
 )
 from lilbee.catalog.download_progress import ProgressCallback
 from lilbee.core.security import FileLockUnavailableError, file_lock
-from lilbee.providers.fleet.build_use import BuildInUseError, build_in_use, removing
+from lilbee.providers.fleet.build_use import (
+    BuildInUseError,
+    build_in_use,
+    build_label,
+    engine_label,
+    make_in_use_file,
+    removing,
+)
 from lilbee.providers.fleet.engine_crates import MPL_CRATE_CHECKSUMS, MPL_PYPI_CHECKSUMS
 from lilbee.providers.fleet.engine_record import PACKAGES_URL
 from lilbee.providers.fleet.wheel_server import server_entry, server_problems
@@ -151,6 +158,9 @@ LOCK_DIR = ".locks"
 _LOCK_TIMEOUT_S = 300.0
 _COPY_CHUNK_BYTES = 1024 * 1024
 STAGE_PREFIX = ".stage-"
+# The next step of an in-use refusal, by the command that met it.
+_INSTALL_AGAIN = "install it again"
+_REMOVE_AGAIN = "remove it again"
 _DOWNLOAD_PREFIX = ".download-"
 _TRASH_PREFIX = ".trash-"
 _BUNDLED = "bundled"
@@ -702,10 +712,18 @@ def _clean_up(folder: Path) -> None:
         log.warning(_STAYS, folder, exc_info=exc)
 
 
-def _discard(build: Path) -> None:
+def _in_use_error(label: str, retry: str) -> EngineInUseError:
+    """The refusal of a remove or a replace while an engine runs the build *label*."""
+    return EngineInUseError(
+        f"Engine {label} is in use. Stop the engine with 'lilbee engine stop' and {retry}."
+    )
+
+
+def _discard(build: Path, retry: str) -> None:
     """Delete one build slot; a folder goes to trash first, so no half build stays listed.
 
     A folder stays held from the rename to the delete, so no launch starts from it then.
+    *retry* is the next step the in-use refusal names.
     """
     try:
         if not stat.S_ISDIR(os.lstat(build).st_mode):
@@ -716,11 +734,11 @@ def _discard(build: Path) -> None:
             build.rename(trash)
             _delete(trash)
     except BuildInUseError as exc:
-        raise EngineInUseError(
-            f"Engine {build.parent.name} {build.name} is in use. Stop the engine with "
-            f"'lilbee engine stop' and try again."
-        ) from exc
+        raise _in_use_error(build_label(build), retry) from exc
     except PermissionError as exc:
+        # Windows refuses the rename while a launch holds the file it opened after the probe.
+        if build_in_use(build):
+            raise _in_use_error(build_label(build), retry) from exc
         raise ReadOnlyFolderError(build.parent, build.parent.name, exc) from exc
 
 
@@ -902,9 +920,8 @@ class EngineStore:
         if os.path.lexists(self.build_dir(lock)) and launch_uses_engine(
             self.root, lock.engine, lock.version, lock.backend
         ):
-            raise EngineInUseError(
-                f"Engine {lock.engine} {lock.version} ({lock.backend}) is in use. Stop the "
-                f"engine with 'lilbee engine stop' and install it again."
+            raise _in_use_error(
+                engine_label(lock.engine, lock.version, lock.backend), _INSTALL_AGAIN
             )
 
     def _install_private(
@@ -936,8 +953,9 @@ class EngineStore:
         """Write the record into *stage*, then rename it onto the final name."""
         final = self.build_dir(lock)
         self._write_record(stage, lock, binary)
+        make_in_use_file(stage)
         if os.path.lexists(final):
-            _discard(final)
+            _discard(final, _INSTALL_AGAIN)
         stage.rename(final)
 
     def _inside_root(self, path: Path) -> Path:
@@ -981,12 +999,9 @@ class EngineStore:
                 if isinstance(found, EngineFolderError):
                     raise found
             if in_use(engine, version, backend):
-                raise EngineInUseError(
-                    f"Engine {engine} {version} ({backend}) is in use. Stop the engine "
-                    f"with 'lilbee engine stop' and remove it again."
-                )
+                raise _in_use_error(engine_label(engine, version, backend), _REMOVE_AGAIN)
             try:
-                _discard(target)
+                _discard(target, _REMOVE_AGAIN)
             except FileNotFoundError as exc:
                 raise EngineNotInstalledError(absent) from exc
         return RemoveResult(path=target, canary_warning=True)

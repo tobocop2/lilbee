@@ -1,7 +1,8 @@
 """The build folder says whether an engine runs from it.
 
-Every launch of an engine opens a file inside each store build it runs and hands that open
-file to the engine process. The operating system keeps the file open for as long as the
+The install creates a file inside each store build. Every launch of an engine opens that
+file read-only in each build it runs and hands the open file to the engine process, so a
+launch needs no write to the build. The operating system keeps the file open for as long as the
 engine lives, also after the lilbee that started it has exited. A remove or a prune asks the
 operating system whether the file is open and refuses when it is. No list of engine
 folders, state files or config roots is needed, so one machine-wide store with many
@@ -21,6 +22,7 @@ file free.
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import subprocess
@@ -36,10 +38,32 @@ IN_USE_NAME = ".in-use"
 _OWNER_ONLY_MODE = 0o600
 _BUILD_PATH_PARTS = 3  # engine folder, build folder, a file inside the build
 _PROVIDER = "llama-server"
+# The errors of a create in a folder that refuses writes.
+_UNWRITABLE = (errno.EACCES, errno.EPERM, errno.EROFS)
 
 
 class BuildInUseError(Exception):
     """An engine holds the in-use file of the build a remove wants."""
+
+
+def engine_label(engine: str, version: str, backend: str) -> str:
+    """The name of one build in every message: ``engine version (backend)``."""
+    return f"{engine} {version} ({backend})"
+
+
+def build_label(build: Path) -> str:
+    """The ``engine_label`` of a build folder ``<engine>/<version>-<backend>``.
+
+    Versions are release tags with no hyphen, so the first hyphen ends the version.
+    """
+    version, _, backend = build.name.partition("-")
+    return engine_label(build.parent.name, version, backend)
+
+
+def make_in_use_file(stage: Path) -> None:
+    """Create the in-use file in the stage folder of an install, before its rename, so a
+    launch opens it read-only."""
+    os.close(os.open(stage / IN_USE_NAME, os.O_WRONLY | os.O_CREAT, _OWNER_ONLY_MODE))
 
 
 if sys.platform == "win32":  # pragma: windows only - the Windows CI lanes measure it
@@ -112,8 +136,19 @@ if sys.platform == "win32":  # pragma: windows only - the Windows CI lanes measu
 else:  # pragma: posix only - Windows takes the branch above
     import fcntl
 
-    def _locked(path: Path, operation: int) -> int:
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, _OWNER_ONLY_MODE)
+    def _locked(path: Path, operation: int) -> int | None:
+        """A read-only descriptor of *path* under *operation*; None for an older build that
+        has no file and refuses to get one (a read-only folder)."""
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except FileNotFoundError:
+            # A build installed before the install made the file; a gone folder raises here.
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_CREAT, _OWNER_ONLY_MODE)
+            except OSError as exc:
+                if exc.errno not in _UNWRITABLE:
+                    raise
+                return None
         try:
             fcntl.flock(fd, operation | fcntl.LOCK_NB)
         except OSError:
@@ -121,9 +156,10 @@ else:  # pragma: posix only - Windows takes the branch above
             raise
         return fd
 
-    def _hold(path: Path) -> int:
+    def _hold(path: Path) -> int | None:
         fd = _locked(path, fcntl.LOCK_SH)
-        os.set_inheritable(fd, True)
+        if fd is not None:
+            os.set_inheritable(fd, True)
         return fd
 
     @contextmanager
@@ -132,7 +168,8 @@ else:  # pragma: posix only - Windows takes the branch above
         try:
             yield
         finally:
-            os.close(fd)
+            if fd is not None:
+                os.close(fd)
 
     def _release(handle: int) -> None:
         os.close(handle)
@@ -141,7 +178,7 @@ else:  # pragma: posix only - Windows takes the branch above
         return {"pass_fds": handles}
 
     def _open_elsewhere(path: Path) -> bool:
-        fd = os.open(path, os.O_RDWR)
+        fd = os.open(path, os.O_RDONLY)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -162,11 +199,13 @@ class BuildHolds:
         self._handles: list[int] = []
         try:
             for build in dict.fromkeys(builds):
-                self._handles.append(_hold(build / IN_USE_NAME))
+                handle = _hold(build / IN_USE_NAME)
+                if handle is not None:
+                    self._handles.append(handle)
         except (BlockingIOError, FileNotFoundError) as exc:
             self.close()
             raise ProviderError(
-                f"Engine {build.parent.name} {build.name} is being removed. Install it again "
+                f"Engine {build_label(build)} is being removed. Install it again "
                 f"before you start it.",
                 provider=_PROVIDER,
                 kind=ProviderErrorKind.SERVER,
@@ -192,15 +231,14 @@ def removing(build: Path) -> Iterator[None]:
     """Hold the in-use file of *build* for a remove; raise BuildInUseError while an engine
     holds it. A launch in the hold fails at once (see ``BuildHolds``).
 
-    A build where the file cannot be made runs no launch: a launch must make it too.
+    An older build with no file gets one; when its folder refuses that, no launch holds it
+    either, and the rename of the remove meets the same refusal.
     """
     with ExitStack() as stack:
         try:
             stack.enter_context(_claimed(build / IN_USE_NAME))
         except BlockingIOError as exc:
             raise BuildInUseError(build) from exc
-        except PermissionError:  # pragma: posix only - a read-only folder; Windows ignores it
-            pass
         yield
 
 
