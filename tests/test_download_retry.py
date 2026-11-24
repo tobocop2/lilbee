@@ -173,7 +173,11 @@ class TestRetryIsOnEveryTransfer:
         gguf = tmp_path / "f.gguf"
 
         def _fake_retried(
-            entry: CatalogModel, config: dl.DownloadConfig, cancel: object = None
+            entry: CatalogModel,
+            config: dl.DownloadConfig,
+            cancel: object = None,
+            *,
+            on_retry: object = None,
         ) -> Path:
             retried.append(config.filename)
             gguf.write_bytes(b"g")  # lands only when the transfer ran
@@ -188,6 +192,30 @@ class TestRetryIsOnEveryTransfer:
         call(_entry())
 
         assert retried, "the transfer bypassed the retry loop"
+
+    def test_a_model_download_hands_on_retry_to_every_transfer(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The model and its projector both report a failed attempt to the caller."""
+        heard: list[tuple[int, int, str]] = []
+        gguf = tmp_path / "f.gguf"
+
+        def _fake_transfer(entry: CatalogModel, config: dl.DownloadConfig) -> Path:
+            if config.filename not in {name for _a, _n, name in heard}:
+                raise dl._TransientDownloadError(config.filename)
+            gguf.write_bytes(b"g")
+            return gguf
+
+        monkeypatch.setattr(dl, "_hf_download_or_translate", _fake_transfer)
+        monkeypatch.setattr(dl.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(dl, "_models_dir", lambda: tmp_path)
+        monkeypatch.setattr(dl, "resolve_filename", lambda entry, engine: "f.gguf")
+        monkeypatch.setattr(dl, "fetch_remote_file", lambda *a: dl.RemoteFile(size=1, blob="abc"))
+        monkeypatch.setattr(dl, "_resolve_mmproj_filename", lambda *a: "mmproj.gguf")
+
+        dl.download_model(_entry(), engine=LLAMA, on_retry=lambda *notice: heard.append(notice))
+
+        assert heard == [(1, 3, "f.gguf"), (1, 3, "mmproj.gguf")]
 
 
 class TestTransientErrorTranslation:

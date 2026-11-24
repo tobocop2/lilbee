@@ -57,3 +57,39 @@ async def test_download_shows_the_pull_warning_as_a_warning_toast(
         await wait_until(pilot, lambda: not pilot.app.task_bar.queue.active_tasks, max_pauses=100)
         await wait_until(pilot, lambda: bool(toasts), max_pauses=20)
         assert toasts == expected
+
+
+class _Reporter:
+    """The slice of the task reporter a download target writes to."""
+
+    def __init__(self) -> None:
+        self.updates: list[tuple[float, str]] = []
+
+    def update(self, progress: float, detail: str = "") -> None:
+        self.updates.append((progress, detail))
+
+    def is_set(self) -> bool:
+        return False
+
+
+def test_a_failed_attempt_shows_in_the_task_detail_at_the_current_percent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lilbee.catalog.models import DownloadProgress
+    from lilbee.cli.tui.widgets.task_bar_controller import _download_target
+
+    def _pull(*_a: object, on_update, on_retry, **_kw: object) -> PullResult:
+        on_update(DownloadProgress(percent=40.0, detail="400 MB / 1 GB", is_cache_hit=False))
+        on_retry("timed out. Attempt 1 of 6 failed; trying again.")
+        return PullResult(model="acme/vl-GGUF", source="native", status=PullStatus.OK)
+
+    monkeypatch.setattr("lilbee.app.models.pull_model_data", _pull)
+    reporter = _Reporter()
+
+    _download_target(reporter, _model())  # type: ignore[arg-type]
+
+    name = _model().display_name
+    assert reporter.updates == [
+        (40.0, f"{name}: 400 MB / 1 GB"),
+        (40.0, f"{name}: timed out. Attempt 1 of 6 failed; trying again."),
+    ]

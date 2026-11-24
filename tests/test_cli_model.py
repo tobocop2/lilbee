@@ -95,6 +95,7 @@ class _FakeManager:
         self.cache_only: set[str] = set()
         self.pull_calls: list[tuple[str, ModelSource]] = []
         self.pull_notice: str | None = None
+        self.pull_retry: tuple[int, int, str] | None = None
         self.remove_calls: list[tuple[str, ModelSource | None]] = []
 
     def list_installed(self, source: ModelSource | None = None) -> list[str]:
@@ -125,13 +126,23 @@ class _FakeManager:
         return None
 
     def pull(
-        self, model, source, *, on_bytes=None, on_notice=None, allow_unsupported=False, cancel=None
+        self,
+        model,
+        source,
+        *,
+        on_bytes=None,
+        on_notice=None,
+        on_retry=None,
+        allow_unsupported=False,
+        cancel=None,
     ):
         self.pull_calls.append((model, source))
         if self.pull_notice is not None and on_notice is not None:
             on_notice(self.pull_notice)
         if on_bytes is not None:
             on_bytes(50, 100)
+        if self.pull_retry is not None and on_retry is not None:
+            on_retry(*self.pull_retry)
         return f"/fake/{model}.gguf"
 
     def remove(self, model, source=None) -> bool:
@@ -973,6 +984,18 @@ class TestPullCmd:
         assert result.exit_code == 0, result.output
         assert "Warning:" in result.output
         assert "is unknown, so 8.0 GiB is reserved" in " ".join(result.output.split())
+
+    def test_human_mode_shows_a_failed_attempt_in_the_progress_line(
+        self, fake_manager, native_manifests, monkeypatch
+    ):
+        monkeypatch.setenv("COLUMNS", "400")
+        fake_manager.pull_retry = (1, 6, "Network error downloading Qwen/Qwen3-8B-GGUF: timed out")
+        result = runner.invoke(app, ["model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"])
+        assert result.exit_code == 0, result.output
+        assert (
+            "Network error downloading Qwen/Qwen3-8B-GGUF: timed out. "
+            "Attempt 1 of 6 failed; trying again." in result.output
+        )
 
     def test_a_pull_with_no_notice_has_no_warning(
         self, fake_manager, native_manifests, monkeypatch

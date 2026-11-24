@@ -241,7 +241,7 @@ class TestPullWithProgress:
 
         mock_manager = mock.MagicMock()
 
-        def fake_pull(model, source, *, on_bytes=None, on_notice=None):
+        def fake_pull(model, source, *, on_bytes=None, on_notice=None, on_retry=None):
             if on_bytes:
                 on_bytes(100, 100)
             return
@@ -256,7 +256,7 @@ class TestPullWithProgress:
 
         mock_manager = mock.MagicMock()
 
-        def fake_pull(model, source, *, on_bytes=None, on_notice=None):
+        def fake_pull(model, source, *, on_bytes=None, on_notice=None, on_retry=None):
             if on_bytes:
                 on_bytes(0, 0)
             return
@@ -312,6 +312,19 @@ class TestPullWithProgressProjector:
         assert (
             "Warning: The size of this model is unknown, so 8.0 GiB is reserved for it. "
             "no projector" in out
+        )
+
+    def test_prints_each_failed_attempt_while_the_download_runs(self):
+        services = self._services()
+        services.model_manager.pull.side_effect = lambda *a, on_retry=None, **k: on_retry(
+            1, 6, "Network error downloading acme/vl-GGUF: timed out"
+        )
+        console = models.PlainConsole(file=io.StringIO(), width=300)
+        with mock.patch("lilbee.app.models.ensure_vision_projector", return_value=None):
+            models.pull_with_progress("acme/vl-GGUF", console=console)
+        assert (
+            "Network error downloading acme/vl-GGUF: timed out. "
+            "Attempt 1 of 6 failed; trying again." in console.file.getvalue()
         )
 
     def test_prints_no_warning_when_nothing_is_wrong(self):

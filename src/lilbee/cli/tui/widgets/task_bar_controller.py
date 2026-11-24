@@ -647,14 +647,22 @@ def _download_target(
     from lilbee.catalog.types import ModelSource
     from lilbee.providers.fleet.engines.choice import NoEngineError
 
+    percent = 0.0
+
     def _on_progress(p: DownloadProgress) -> None:
+        nonlocal percent
+        percent = p.percent
         reporter.update(p.percent, f"{model.display_name}: {p.detail}")
+
+    def _on_retry(text: str) -> None:
+        reporter.update(percent, f"{model.display_name}: {text}")
 
     try:
         result = pull_model_data(
             model.pull_ref,
             ModelSource.NATIVE,
             on_update=_on_progress,
+            on_retry=_on_retry,
             allow_unsupported=allow_unsupported,
             cancel=reporter,
         )

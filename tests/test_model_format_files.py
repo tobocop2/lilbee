@@ -418,7 +418,9 @@ class TestDownloadRouting:
         listing = ["README.md", "config.json", "model.safetensors", "tokenizer.json"]
         fetched: list[list[str]] = []
 
-        def fake_fetch(_entry, _dir, _token, files, _progress, _probe, _cached) -> list[Path]:
+        def fake_fetch(
+            _entry, _dir, _token, files, _progress, _probe, _cached, *, on_retry
+        ) -> list[Path]:
             fetched.append(files)
             return [tmp_path / name for name in files]
 
@@ -436,7 +438,9 @@ class TestDownloadRouting:
     def test_an_embedding_pull_fetches_the_module_files(self, tmp_path: Path) -> None:
         fetched: list[list[str]] = []
 
-        def fake_fetch(_entry, _dir, _token, files, _progress, _probe, _cached) -> list[Path]:
+        def fake_fetch(
+            _entry, _dir, _token, files, _progress, _probe, _cached, *, on_retry
+        ) -> list[Path]:
             fetched.append(files)
             return [tmp_path / name for name in files]
 
@@ -456,7 +460,9 @@ class TestDownloadRouting:
         old += ["tokenizer.json", "tokenizer_config.json", "vocab.json", "generation_config.json"]
         seen: list[tuple[list[str], frozenset[str]]] = []
 
-        def fake_fetch(_entry, _dir, _token, files, _progress, _probe, cached) -> list[Path]:
+        def fake_fetch(
+            _entry, _dir, _token, files, _progress, _probe, cached, *, on_retry
+        ) -> list[Path]:
             seen.append((files, cached))
             return [tmp_path / name for name in files]
 
@@ -544,7 +550,9 @@ class TestDownloadRouting:
             mock.patch.object(download, "discard_partial_blobs"),
             mock.patch.object(download, "_free_bytes", return_value=15),
             mock.patch.object(
-                download, "_download_with_retry", side_effect=lambda _e, c: tmp_path / c.filename
+                download,
+                "_download_with_retry",
+                side_effect=lambda _e, c, **_retry: tmp_path / c.filename,
             ) as fetch,
             mock.patch.object(Path, "stat", return_value=mock.Mock(st_size=1)),
         ):
@@ -661,7 +669,9 @@ class TestIndexDeclaredShards:
         ):
             download.fetch_format_files(entry, tmp_path, "token", on_probe=probe)
         cached.assert_called_once_with("org/repo", _INDEX, tmp_path)
-        fetch.assert_called_once_with(entry, tmp_path, "token", [_INDEX], None, probe)
+        fetch.assert_called_once_with(
+            entry, tmp_path, "token", [_INDEX], None, probe, on_retry=None
+        )
         index.read_text.assert_called_once_with(encoding="utf-8")
 
     def test_a_cached_index_is_read_without_a_fetch(self, tmp_path: Path) -> None:
@@ -749,7 +759,9 @@ class _PullingManager:
     def pull(
         self, _ref: str, _source: object, *, on_bytes: object = None, cancel: object = None
     ) -> None:
-        def fake_fetch(_entry, _dir, _token, files, _progress, _probe, _cached) -> list[Path]:
+        def fake_fetch(
+            _entry, _dir, _token, files, _progress, _probe, _cached, *, on_retry
+        ) -> list[Path]:
             self.fetched.append(files)
             return [self.tmp_path / name for name in files]
 
