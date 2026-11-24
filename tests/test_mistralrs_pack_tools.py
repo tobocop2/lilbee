@@ -22,6 +22,7 @@ import pytest
 import yaml
 
 from tests._pack_workflow import pack_cells, pack_workflow
+from tests._pe_fixture import pe_file
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools" / "wheel-build"
 PACKAGING = Path(__file__).resolve().parents[1] / "packaging" / "engine-wheel-mistral-rs"
@@ -739,11 +740,8 @@ def test_the_check_fails_a_macos_tool_that_loads_a_library_outside_the_system(
 _RUNTIME = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
 
 
-@_POSIX_TOOL
-@pytest.mark.parametrize("missing", [None, *_RUNTIME])
-def test_the_check_fails_a_windows_wheel_that_lacks_a_runtime_dll(
-    tmp_path: Path, missing: str | None
-) -> None:
+def _windows_check(tmp_path: Path, bundled: dict[str, bytes]) -> subprocess.CompletedProcess[str]:
+    """Run the start stage on a Windows wheel that holds *bundled* files beside a tool that starts."""
     stubs = tmp_path / "stubs"
     stubs.mkdir()
     # The check runs the interpreter that a Windows venv holds.
@@ -760,12 +758,39 @@ def test_the_check_fails_a_windows_wheel_that_lacks_a_runtime_dll(
     )
     stub.chmod(0o755)
     folder = "lilbee_engine_mistral_rs/bin"
-    more = {f"{folder}/{name}": b"dll" for name in _RUNTIME if name != missing}
+    more = {f"{folder}/{name}": data for name, data in bundled.items()}
     more[f"{folder}/mistralrs.exe"] = b"#!/bin/sh\necho mistralrs 0.9.5\n"
-    done = _check(tmp_path, _wheel(tmp_path, more=more), "start_tool", RUNNER_OS="Windows")
+    return _check(tmp_path, _wheel(tmp_path, more=more), "start_tool", RUNNER_OS="Windows")
+
+
+@_POSIX_TOOL
+@pytest.mark.parametrize("missing", [None, *_RUNTIME])
+def test_the_check_fails_a_windows_wheel_whose_dll_imports_a_runtime_dll_it_lacks(
+    tmp_path: Path, missing: str | None
+) -> None:
+    bundled = {name: b"dll" for name in _RUNTIME if name != missing}
+    bundled["engine.dll"] = pe_file(("kernel32.dll", *_RUNTIME))
+    done = _windows_check(tmp_path, bundled)
     assert done.returncode == (0 if missing is None else 1), done.stderr
     if missing is not None:
-        assert f"wheel lacks {missing}" in done.stderr
+        assert f"engine.dll imports {missing}" in done.stderr
+
+
+@_POSIX_TOOL
+def test_the_check_asks_a_windows_wheel_for_no_runtime_dll_that_nothing_imports(
+    tmp_path: Path,
+) -> None:
+    done = _windows_check(tmp_path, {"engine.dll": pe_file(("kernel32.dll",))})
+    assert done.returncode == 0, done.stderr
+
+
+@_POSIX_TOOL
+def test_the_check_fails_a_windows_wheel_whose_delay_loaded_dll_is_not_bundled(
+    tmp_path: Path,
+) -> None:
+    done = _windows_check(tmp_path, {"engine.dll": pe_file((), ("vcomp140.dll",))})
+    assert done.returncode == 1
+    assert "engine.dll imports vcomp140.dll" in done.stderr
 
 
 @pytest.mark.parametrize("name", ["LICENSE-mistral.rs", "NOTICE-OpenSSL", "SOURCE-MPL-2.0"])
