@@ -53,8 +53,9 @@ _STDOUT_PROXY = "proxy"
 _STDOUT_PROXY_AND_UPSTREAM = "proxy,upstream"
 # The first llama-swap release that reads a list of streams in logToStdout
 # (ParseLogToStdout in internal/config/config.go). v258 and older accept only
-# proxy, upstream, both or none and refuse the config at load. No single value
-# works on both sides: from v259 on, "both" also turns on the http stream.
+# proxy, upstream, both or none, and refuse a list at load, so an older router
+# gets proxy alone. No single value copies upstream on both sides: from v259 on,
+# "both" also turns on the http stream.
 ROUTER_FLOOR = 259
 # Matches the --host every server argv binds (adapters); "localhost" would have
 # llama-swap dial [::1] first, where another process could hold the same port.
@@ -103,6 +104,7 @@ def build_swap_config(
     swap: bool = False,
     ttl_seconds: int = 0,
     engine_logs: Mapping[str, Path] | None = None,
+    router_reads_streams: bool = True,
 ) -> str:
     """Render a llama-swap config (JSON, which is valid YAML) for *launches*.
 
@@ -124,8 +126,10 @@ def build_swap_config(
     held. A ``--memory`` launch serves the numbers over HTTP and logs at the
     default verbosity. A member with no entry writes no file, so llama-swap
     copies its output into the group log instead; without that copy the output
-    of a member that fails to start is lost when the group stops. The config
-    needs llama-swap :data:`ROUTER_FLOOR` or later.
+    of a member that fails to start is lost when the group stops. llama-swap
+    copies that output from :data:`ROUTER_FLOOR` on. ``router_reads_streams``
+    says the router is that release or later; when it is false, the config
+    writes the proxy stream alone, which every release reads.
     """
     engine_logs = engine_logs or {}
     models: dict[str, object] = {}
@@ -149,9 +153,10 @@ def build_swap_config(
         _KEY_HEALTH_TIMEOUT: health_check_timeout_s(launches),
         _KEY_LOG_LEVEL: _LOG_LEVEL,
         _KEY_LOG_TO_STDOUT: (
-            _STDOUT_PROXY
-            if all(launch.model_id in engine_logs for launch in launches)
-            else _STDOUT_PROXY_AND_UPSTREAM
+            _STDOUT_PROXY_AND_UPSTREAM
+            if router_reads_streams
+            and any(launch.model_id not in engine_logs for launch in launches)
+            else _STDOUT_PROXY
         ),
         _KEY_MODELS: models,
         _KEY_GROUPS: _evicting_groups(launches) if swap else _resident_group(launches),
