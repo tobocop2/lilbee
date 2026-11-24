@@ -4110,9 +4110,10 @@ class TestQuantBytesPerParam:
     def test_no_estimate_sits_below_its_ggml_type(self) -> None:
         """Bare type names and the suffixed labels publishers really ship.
 
-        A file cannot cost less per weight than the type its tensors carry, so
-        an estimate under that rate is arithmetic that went wrong. Iterating
-        bare names alone passed while every suffixed label failed.
+        The estimate stays at or above the rate of the type its name carries,
+        the direction a published file usually lands, so an estimate under that
+        rate is arithmetic that went wrong. Iterating bare names alone passed
+        while every suffixed label failed.
         """
         from lilbee.catalog.models import _quant_bytes_per_param
 
