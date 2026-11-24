@@ -825,10 +825,12 @@ class TestEngineReadiness:
         assert sm.engine_readiness(_readiness_state(), now=1000.0) is sm.EngineReadiness.IDLE
 
     def _spawned_record(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: dict[str, float]
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: dict[str, float | str]
     ) -> sm.SwapState:
         """The record a real start writes on a host with no boot pair, read back from disk."""
+        clock.setdefault("boot", "boot-1")
         monkeypatch.setattr(sm.time, "monotonic", lambda: clock["mono"])
+        monkeypatch.setattr(sm, "_boot_stamp", lambda: clock["boot"])
         monkeypatch.setattr(sm, "linux_start_stamp", lambda _pid: None)
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
@@ -851,18 +853,57 @@ class TestEngineReadiness:
         clock["mono"] += 1
         assert sm.engine_readiness(state, now=1000.0) is sm.EngineReadiness.FAILED
 
-    def test_a_monotonic_reading_ahead_of_the_clock_falls_back_to_the_wall_clock(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("mono_now", [10.0, 5010.0], ids=["ahead", "behind"])
+    def test_a_record_of_another_boot_falls_back_to_the_wall_clock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mono_now: float
     ) -> None:
-        clock = {"mono": 5000.0}
+        # The recorded reading is 5000; this boot's clock reads ahead of it or behind it. Either
+        # way the reading is meaningless, so the wall clock decides.
+        clock: dict[str, float | str] = {"mono": 5000.0}
         state = self._spawned_record(tmp_path, monkeypatch, clock)
-        clock["mono"] = 10.0  # another boot: the clock restarted below the recorded reading
+        clock.update(mono=mono_now, boot="boot-2")
         assert sm.engine_readiness(state, now=1000.0 + self._deadline - 1) is (
             sm.EngineReadiness.IDLE
         )
         assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
             sm.EngineReadiness.FAILED
         )
+
+    @pytest.mark.parametrize(
+        ("recorded", "current", "expected"),
+        [
+            ("boot-1", "boot-1", True),
+            ("boot-1", "boot-2", False),
+            ("1700000000.5", "1700000010.25", True),
+            ("1700000000.5", "1700000100.0", False),
+            ("boot-1", "1700000000.5", False),
+        ],
+    )
+    def test_boot_identity_matches_by_id_or_by_boot_time_within_a_tolerance(
+        self, monkeypatch: pytest.MonkeyPatch, recorded: str, current: str, expected: bool
+    ) -> None:
+        monkeypatch.setattr(sm, "_boot_stamp", lambda: current)
+        assert sm._is_current_boot(recorded) is expected
+
+    @pytest.mark.parametrize(
+        ("boot_id", "expected"), [("boot-A", "boot-A"), (None, "1700000000.5")]
+    )
+    def test_the_boot_stamp_is_the_linux_boot_id_else_the_boot_time(
+        self, monkeypatch: pytest.MonkeyPatch, boot_id: str | None, expected: str
+    ) -> None:
+        monkeypatch.setattr(sm, "linux_boot_id", lambda: boot_id)
+        monkeypatch.setattr(sm.psutil, "boot_time", lambda: 1700000000.5)
+        assert sm._boot_stamp() == expected
+
+    def test_a_record_with_a_reading_but_no_boot_identity_loads_without_either(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / sm._state_filename(223, _GROUP.value)
+        path.write_text(
+            json.dumps({"pid": 2, "member_ports": [], "started_mono": 5.0}), encoding="utf-8"
+        )
+        state = sm._load_state(path)
+        assert state is not None and state.started_mono is None and state.started_boot is None
 
     def test_an_old_record_written_without_ready_at_loads_unstamped(self, tmp_path: Path) -> None:
         path = tmp_path / sm._state_filename(222, _GROUP.value)
