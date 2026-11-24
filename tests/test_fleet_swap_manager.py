@@ -824,6 +824,46 @@ class TestEngineReadiness:
         _patch_http(monkeypatch, lambda _url: _fake_response(payload={"running": ["junk"]}))
         assert sm.engine_readiness(_readiness_state(), now=1000.0) is sm.EngineReadiness.IDLE
 
+    def _spawned_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: dict[str, float]
+    ) -> sm.SwapState:
+        """The record a real start writes on a host with no boot pair, read back from disk."""
+        monkeypatch.setattr(sm.time, "monotonic", lambda: clock["mono"])
+        monkeypatch.setattr(sm, "linux_start_stamp", lambda _pid: None)
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
+        self._listing(monkeypatch)
+        state = sm._load_state(_own_state_path(tmp_path))
+        assert state is not None
+        return dataclasses.replace(state, created_at=1000.0)
+
+    def test_a_forward_wall_clock_step_does_not_fail_a_loading_engine_without_a_boot_pair(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = {"mono": 5000.0}
+        state = self._spawned_record(tmp_path, monkeypatch, clock)
+        clock["mono"] += self._deadline - 1
+        # The wall clock stepped a day ahead: the recorded create time is far behind it.
+        assert sm.engine_readiness(state, now=1000.0 + 86400.0) is sm.EngineReadiness.IDLE
+        clock["mono"] += 1
+        assert sm.engine_readiness(state, now=1000.0) is sm.EngineReadiness.FAILED
+
+    def test_a_monotonic_reading_ahead_of_the_clock_falls_back_to_the_wall_clock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = {"mono": 5000.0}
+        state = self._spawned_record(tmp_path, monkeypatch, clock)
+        clock["mono"] = 10.0  # another boot: the clock restarted below the recorded reading
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline - 1) is (
+            sm.EngineReadiness.IDLE
+        )
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
+            sm.EngineReadiness.FAILED
+        )
+
     def test_an_old_record_written_without_ready_at_loads_unstamped(self, tmp_path: Path) -> None:
         path = tmp_path / sm._state_filename(222, _GROUP.value)
         path.write_text(
