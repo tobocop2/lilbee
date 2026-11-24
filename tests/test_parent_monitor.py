@@ -34,6 +34,9 @@ def clean_env() -> Iterator[None]:
         os.environ[PARENT_PID_ENV] = snapshot
 
 
+_REAL_IS_LINUX = parent_monitor._is_linux
+
+
 @pytest.fixture(autouse=True)
 def create_time_identity() -> Iterator[None]:
     """Run the identity tests on the create-time path; the Linux path has its own tests."""
@@ -82,10 +85,11 @@ class TestParentIdentity:
             assert _start_identity(123) == 7.5
 
     def test_is_linux_reads_the_platform(self):
+        # The autouse fixture replaces the module's _is_linux, so call the one kept at import.
         with mock.patch("lilbee.parent_monitor.sys.platform", "linux"):
-            assert parent_monitor._is_linux() is True
+            assert _REAL_IS_LINUX() is True
         with mock.patch("lilbee.parent_monitor.sys.platform", "darwin"):
-            assert parent_monitor._is_linux() is False
+            assert _REAL_IS_LINUX() is False
 
     def test_start_time_returns_create_time(self):
         proc = mock.MagicMock()
@@ -140,7 +144,9 @@ def _write_stat(root: Path, pid: int, start_ticks: int, comm: str = "lilbee") ->
     """A /proc/<pid>/stat with *start_ticks* in field 22."""
     (root / str(pid)).mkdir(exist_ok=True)
     after_comm = ["S", "1"] + ["0"] * 17 + [str(start_ticks), "0", "0"]
-    (root / str(pid) / "stat").write_text(f"{pid} ({comm}) " + " ".join(after_comm) + "\n")
+    (root / str(pid) / "stat").write_text(
+        f"{pid} ({comm}) " + " ".join(after_comm) + "\n", encoding="utf-8"
+    )
 
 
 class TestLinuxStartTicks:
@@ -161,6 +167,13 @@ class TestLinuxStartTicks:
     def test_identity_survives_a_comm_with_spaces_and_parens(self, tmp_path):
         _write_stat(tmp_path, 42, 555, comm="a) (b c")
         assert _start_identity(42) == 555.0
+
+    def test_identity_survives_a_comm_that_is_not_utf8(self, tmp_path):
+        (tmp_path / "42").mkdir()
+        after_comm = ["S", "1"] + ["0"] * 17 + ["777", "0", "0"]
+        raw = b"42 (\xff\xfe) " + " ".join(after_comm).encode() + b"\n"
+        (tmp_path / "42" / "stat").write_bytes(raw)
+        assert _start_identity(42) == 777.0
 
     def test_missing_proc_entry_is_no_such_process(self):
         with pytest.raises(psutil.NoSuchProcess):
@@ -184,7 +197,7 @@ class TestLinuxStartTicks:
 
     def test_malformed_stat_is_access_denied(self, tmp_path):
         (tmp_path / "42").mkdir()
-        (tmp_path / "42" / "stat").write_text("42 (x) S 1\n")
+        (tmp_path / "42" / "stat").write_text("42 (x) S 1\n", encoding="utf-8")
         with pytest.raises(psutil.AccessDenied):
             _start_identity(42)
 
