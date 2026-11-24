@@ -70,7 +70,7 @@ class _Hub:
             raise RuntimeError(f"Cannot query files for {hf_repo}: 503")
         return self.listing
 
-    def _fetch_model(self, entry, models_dir, token, shards, on_progress, on_probe):
+    def _fetch_model(self, entry, models_dir, token, shards, on_progress, on_probe, *, on_retry):
         self.model_fetches += 1
         paths = [models_dir / shard for shard in shards]
         for path in paths:
@@ -78,7 +78,12 @@ class _Hub:
         return paths
 
     def _transfer(
-        self, entry: CatalogModel, config: dl.DownloadConfig, cancel: object = None
+        self,
+        entry: CatalogModel,
+        config: dl.DownloadConfig,
+        cancel: object = None,
+        *,
+        on_retry: object = None,
     ) -> Path:
         if self.fail_transfer is not None:
             raise self.fail_transfer

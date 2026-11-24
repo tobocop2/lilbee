@@ -739,6 +739,7 @@ class TestModelManagerPull:
             *,
             on_progress: object = None,
             on_complete: object = None,
+            on_retry: object = None,
             cancel: object = None,
         ) -> Path:
             path = models_dir / entry.gguf_filename
@@ -781,6 +782,7 @@ class TestModelManagerPull:
             *,
             on_progress: object = None,
             on_complete: object = None,
+            on_retry: object = None,
             cancel: object = None,
         ) -> Path:
             captured.append(entry)

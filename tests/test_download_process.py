@@ -292,7 +292,9 @@ def test_the_child_body_reports_the_fetched_path(
     monkeypatch.setattr(
         dl,
         "fetch_model_files",
-        lambda entry, models_dir, token, engine, on_progress, on_probe: tmp_path / "x.gguf",
+        lambda entry, models_dir, token, engine, on_progress, on_probe, on_retry: (
+            tmp_path / "x.gguf"
+        ),
     )
 
     dp._run_download_child(sender, _entry(), str(tmp_path), None, engine=LLAMA)
@@ -311,7 +313,13 @@ def test_the_child_body_serializes_a_failure(
     monkeypatch.setattr(dp, "_silence_output", lambda: None)
 
     def _boom(
-        entry: Any, models_dir: Any, token: Any, engine, on_progress: Any, on_probe: Any
+        entry: Any,
+        models_dir: Any,
+        token: Any,
+        engine,
+        on_progress: Any,
+        on_probe: Any,
+        on_retry: Any,
     ) -> Path:
         raise PermissionError("gated")
 
@@ -400,6 +408,7 @@ def test_download_model_routes_to_a_child_when_cancellable(
         engine,
         *,
         on_progress: Any,
+        on_retry: Any,
         cancel: Any,
     ) -> Path:
         calls.append(models_dir)
@@ -600,6 +609,116 @@ def test_a_persistently_quiet_download_fails_with_the_stalled_message(
 
     assert len(started) == dp.STALL_ATTEMPTS
     assert all(worker.terminated for worker in workers)
+
+
+_STALL_NOTICE = "Transfer of acme/x-GGUF stalled with almost no data arriving"
+
+
+def test_a_child_the_watchdog_stops_is_one_retry_notice(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _shorten_deadline(monkeypatch, 0.05, 1024)
+    workers = [_FakeWorker(), _FakeWorker()]
+    _started, _senders = _wire_attempts(
+        monkeypatch, [[], [dp._Done(kind="done", path=str(tmp_path / "x.gguf"))]], workers
+    )
+    heard: list[tuple[int, int, str]] = []
+
+    dp.download_in_subprocess(
+        _entry(),
+        tmp_path,
+        None,
+        on_progress=None,
+        on_retry=lambda *notice: heard.append(notice),
+        cancel=_Flag(),
+        engine=LLAMA,
+    )
+
+    assert heard == [(1, dp.STALL_ATTEMPTS, _STALL_NOTICE)]
+
+
+def test_the_last_stalled_child_is_the_error_not_a_retry_notice(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _shorten_deadline(monkeypatch, 0.05, 1024)
+    workers = [_FakeWorker() for _ in range(dp.STALL_ATTEMPTS)]
+    _started, _senders = _wire_attempts(monkeypatch, [[] for _ in workers], workers)
+    heard: list[tuple[int, int, str]] = []
+
+    with pytest.raises(RuntimeError, match=r"kept stalling"):
+        dp.download_in_subprocess(
+            _entry(),
+            tmp_path,
+            None,
+            on_progress=None,
+            on_retry=lambda *notice: heard.append(notice),
+            cancel=_Flag(),
+            engine=LLAMA,
+        )
+
+    assert heard == [
+        (attempt, dp.STALL_ATTEMPTS, _STALL_NOTICE) for attempt in range(1, dp.STALL_ATTEMPTS)
+    ]
+
+
+def test_a_retry_the_child_reports_reaches_the_caller_while_the_download_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    receiver, sender = _pipe()
+    _wire(monkeypatch, _FakeWorker(), receiver)
+    sender.send(dp._Retried(kind="retry", attempt=1, attempts=6, cause="timed out"))
+    sender.send(dp._Done(kind="done", path=str(tmp_path / "x.gguf")))
+    heard: list[tuple[int, int, str]] = []
+
+    dp.download_in_subprocess(
+        _entry(),
+        tmp_path,
+        None,
+        on_progress=None,
+        on_retry=lambda *notice: heard.append(notice),
+        cancel=_Flag(),
+        engine=LLAMA,
+    )
+
+    assert heard == [(1, 6, "timed out")]
+
+
+def test_a_retry_with_no_listener_is_dropped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    receiver, sender = _pipe()
+    _wire(monkeypatch, _FakeWorker(), receiver)
+    sender.send(dp._Retried(kind="retry", attempt=1, attempts=6, cause="timed out"))
+    sender.send(dp._Done(kind="done", path=str(tmp_path / "x.gguf")))
+
+    path = dp.download_in_subprocess(
+        _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+    )
+
+    assert path == tmp_path / "x.gguf"
+
+
+def test_download_model_hands_on_retry_to_the_child_relay(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import lilbee.catalog.download as dl
+
+    monkeypatch.setattr(dl, "_models_dir", lambda: tmp_path)
+    monkeypatch.setattr(dl, "hf_token", lambda: None)
+    seen: list[Any] = []
+
+    def _fake_run(*_args: Any, on_retry: Any, **_signals: Any) -> Path:
+        seen.append(on_retry)
+        return tmp_path / "x.gguf"
+
+    monkeypatch.setattr(dp, "download_in_subprocess", _fake_run)
+
+    def listener(attempt: int, attempts: int, cause: str) -> None:
+        return None
+
+    dl.download_model(_entry(), engine=LLAMA, on_retry=listener)
+
+    assert seen == [listener]
 
 
 def test_a_slow_but_moving_transfer_is_left_alone(
@@ -1208,6 +1327,7 @@ def test_download_model_routes_every_pull_through_a_child(
         engine,
         *,
         on_progress: Any,
+        on_retry: Any,
         cancel: Any,
     ) -> Path:
         signals.append(cancel.is_set())
