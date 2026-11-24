@@ -216,7 +216,7 @@ class TestStart:
             "Replace the file at /usr/bin/llama-swap with llama-swap v259 or later. "
             "Download it from https://github.com/mostlygeek/llama-swap/releases, or run "
             "'go install github.com/mostlygeek/llama-swap@latest' and copy the llama-swap "
-            "file from your Go bin folder to /usr/bin/llama-swap."
+            "file from your Go bin folder to /usr/bin/llama-swap. Then restart lilbee."
         )
         assert [record.getMessage() for record in caplog.records] == [f"{text} {remedy}"]
         (warning,) = mgr.health_warnings()
