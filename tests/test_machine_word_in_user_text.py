@@ -24,7 +24,10 @@ RENDERED = {
 IK = EngineName.IK_LLAMA
 GGUF = ModelFormat.GGUF
 NO_AVX2 = collect(
-    system="Linux", machine="x86_64", cpu_info={"flags": ["sse4_2"], "brand_raw": "Xeon"}
+    system="Linux",
+    machine="x86_64",
+    cpu_info={"flags": ["sse4_2"], "brand_raw": "Xeon"},
+    nvidia=None,
 )
 
 
