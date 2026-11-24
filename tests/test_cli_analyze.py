@@ -1,5 +1,6 @@
 """The ``lilbee analyze`` command, and the analyze tip on ``init``, ``add`` and ``sync``."""
 
+import asyncio
 import json
 import signal
 import sys
@@ -23,7 +24,8 @@ from lilbee.core.config import cfg
 from lilbee.core.profile_files import PROFILES_DIRNAME
 from lilbee.core.project_state import STATE_FILE_NAME, read_state
 from lilbee.data.types import SkippedSource, SyncResult
-from lilbee.runtime.cancellation import TaskCancelledError
+from lilbee.runtime.cancellation import SignalFlag, TaskCancelledError
+from tests._signals import press_ctrl_c_in_a_run
 from tests._unreadable import deny_listing
 from tests.conftest import make_mock_services, make_pdf
 
@@ -471,9 +473,11 @@ def test_a_force_quit_of_analyze_follows_the_close_of_its_bar(project, notes, mo
         real_stop(progress)
         steps.append("bar closed")
 
-    async def interrupted(*_args: object, **_kwargs: object) -> None:
-        signal.raise_signal(signal.SIGINT)
-        signal.raise_signal(signal.SIGINT)
+    async def interrupted(*_args: object, cancel: SignalFlag, **_kwargs: object) -> None:
+        press_ctrl_c_in_a_run(cancel)
+        press_ctrl_c_in_a_run()
+        # The second press ends the main thread's wait, which cancels this wait.
+        await asyncio.Event().wait()
 
     monkeypatch.setattr(Progress, "stop", stop)
     monkeypatch.setattr(svc_mod, "force_quit", lambda: steps.append("force quit"))

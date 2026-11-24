@@ -263,7 +263,7 @@ def test_a_run_takes_the_main_threads_context() -> None:
 
 
 @posix_only
-def test_a_ctrl_c_that_sets_the_flag_cancels_the_run() -> None:
+def test_a_ctrl_c_that_stops_the_run_cancels_its_task() -> None:
     flag = SignalFlag()
 
     async def waits_forever() -> None:
@@ -273,6 +273,7 @@ def test_a_ctrl_c_that_sets_the_flag_cancels_the_run() -> None:
 
     def press(_signum: int, _frame: object) -> None:
         flag.set()
+        flag.stop_run()
 
     with _sigint_handler(press), pytest.raises(asyncio.CancelledError):
         asyncio_loop.run_interruptible(waits_forever(), flag)
