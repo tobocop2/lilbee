@@ -34,6 +34,18 @@ def test_stderr_sink_receives_stderr_and_stdout_stays_clean() -> None:
     assert sink == ["err"]
 
 
+def test_stderr_tail_that_starts_inside_a_character_decodes_with_a_replacement() -> None:
+    """The euro sign is three bytes; the cut falls after its first byte."""
+    code = (
+        "import sys; sys.stderr.buffer.write(b'\\xe2\\x82\\xac' + b'x' * "
+        f"{proc.STDERR_TAIL_BYTES - 1})"
+    )
+    sink: list[str] = []
+    proc.run_bounded([sys.executable, "-c", code], timeout_s=10, kill_wait_s=2, stderr_sink=sink)
+    (tail,) = sink
+    assert tail == "�" + "x" * (proc.STDERR_TAIL_BYTES - 1)
+
+
 @pytest.mark.timeout(10)
 def test_stderr_sink_is_filled_when_the_child_times_out() -> None:
     code = "import sys,time; sys.stderr.write('slow'); sys.stderr.flush(); time.sleep(30)"
