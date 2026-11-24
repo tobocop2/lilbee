@@ -239,23 +239,27 @@ def engine_log_of(engine: EngineAdapter, launch: InstanceLaunch, log_dir: Path) 
     """The file *launch*'s engine writes its own output to, or None when it writes none.
 
     Only an engine that reads the log variables writes one. A launch carrying
-    ``--memory`` serves its numbers over HTTP and gets no log env, so no file
-    exists for it either.
+    ``--memory`` writes one too, at the engine's default verbosity: it serves its
+    numbers over HTTP, so it needs no load report, but its boot errors still
+    need a file (:func:`engine_log_env`).
     """
-    if not engine.writes_own_log or MEMORY_FLAG in launch.argv:
+    if not engine.writes_own_log:
         return None
     return engine_log_path(log_dir, launch.model_id)
 
 
-def engine_log_env(log_path: Path) -> dict[str, str]:
-    """Environment that makes the engine report what it allocated, and where."""
+def engine_log_env(log_path: Path, *, load_report: bool = True) -> dict[str, str]:
+    """Environment that makes the engine write its output to *log_path*.
+
+    With *load_report* the engine also logs at the verbosity that reports what it
+    allocated. Without it the engine keeps its default verbosity.
+    """
     path = str(log_path)
-    return {
-        ENV_LOG_FILE: path,
-        ENV_ARG_LOG_FILE: path,
-        ENV_LOG_VERBOSITY: LOAD_REPORT_VERBOSITY,
-        ENV_ARG_LOG_VERBOSITY: LOAD_REPORT_VERBOSITY,
-    }
+    env = {ENV_LOG_FILE: path, ENV_ARG_LOG_FILE: path}
+    if load_report:
+        env[ENV_LOG_VERBOSITY] = LOAD_REPORT_VERBOSITY
+        env[ENV_ARG_LOG_VERBOSITY] = LOAD_REPORT_VERBOSITY
+    return env
 
 
 def check_launch(

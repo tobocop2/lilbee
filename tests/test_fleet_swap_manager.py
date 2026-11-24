@@ -144,6 +144,39 @@ class TestStart:
         log_file = tmp_path / "logs" / "engine-embed-0.log"
         assert f"LLAMA_LOG_FILE={log_file}" in config["models"]["embed-0"]["env"]
 
+    def test_a_co_tenant_chat_that_serves_its_memory_keeps_the_engine_output_out_of_the_group_log(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        chat = _launch(WorkerRole.CHAT)
+        chat.argv = ["/bin/llama-server", "--memory"]
+        mgr = SwapManager(tmp_path, SwapGroup.CO_TENANT)
+        mgr.start([chat, _launch(WorkerRole.EMBED)], engines=engines_for_all_roles(LLAMA))
+        config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
+        assert config["logToStdout"] == "proxy"
+        log_file = tmp_path / "logs" / "engine-chat-0.log"
+        assert config["models"]["chat-0"]["env"] == [
+            f"LLAMA_LOG_FILE={log_file}",
+            f"LLAMA_ARG_LOG_FILE={log_file}",
+        ]
+
+    def test_a_router_too_old_for_the_config_stops_the_start_before_the_config_is_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def too_old() -> Path:
+            raise ProviderError("The llama-swap router at /usr/bin/llama-swap is v223")
+
+        spawned: list[object] = []
+        monkeypatch.setattr(sm, "resolve_llama_swap", too_old)
+        monkeypatch.setattr(sm, "spawn_bound_child", lambda *a, **k: spawned.append(a))
+        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
+        mgr = SwapManager(tmp_path, _GROUP)
+        with pytest.raises(ProviderError, match="v223"):
+            mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
+        assert not mgr._config_path.exists()
+        assert spawned == []
+
     def test_writes_config_and_becomes_ready(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

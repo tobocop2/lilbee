@@ -130,6 +130,8 @@ engine. To install the router with no network, copy the release archive into the
 `packs` folder (for example `llama-swap_272_linux_amd64.tar.gz`). The router also
 installs on first use. A `llama-swap` on PATH, or one inside the llama.cpp pack, is
 used when no router is installed.
+That router must be v259 or later. If it reports an older release, the engine does not start,
+and the error names the version found.
 
 ### Engines you install yourself
 
