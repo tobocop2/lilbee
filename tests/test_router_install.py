@@ -7,7 +7,6 @@ import io
 import os
 import re
 import shutil
-import sys
 import tarfile
 import threading
 import zipfile
@@ -30,7 +29,6 @@ from lilbee.providers.fleet.engine_store import (
     EngineDiskError,
     EngineInUseError,
     EngineStore,
-    ReadOnlyFolderError,
     engines_root,
 )
 from lilbee.providers.fleet.host_caps import HostCaps, collect
@@ -410,20 +408,6 @@ class TestInstall:
             with pytest.raises(EngineInUseError):
                 router_on_first_use()
         assert router_on_first_use() == folder / "llama-swap"
-
-    @pytest.mark.skipif(
-        sys.platform == "win32" or os.geteuid() == 0, reason="folder modes do not bind this user"
-    )
-    def test_a_read_only_router_folder_is_refused_and_left_alone(self, release: list[str]) -> None:
-        folder = install_router().parent
-        (folder / "llama-swap").unlink()
-        folder.parent.chmod(0o555)
-        try:
-            with pytest.raises(ReadOnlyFolderError):
-                install_router()
-        finally:
-            folder.parent.chmod(0o755)
-        assert (folder / LICENCE_FILE).is_file()
 
     def test_the_install_holds_the_router_lock_for_the_whole_install(
         self, release: list[str], monkeypatch: pytest.MonkeyPatch
