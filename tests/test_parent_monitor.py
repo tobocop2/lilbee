@@ -386,7 +386,7 @@ class TestMcpMainIntegration:
         watcher.assert_not_called()
         build.return_value.run_stdio_async.assert_awaited_once()
 
-    def test_main_logs_when_pre_warm_fails(self, monkeypatch, caplog):
+    def test_main_stops_and_logs_when_the_services_build_fails(self, monkeypatch, caplog):
         from lilbee import mcp_server as mcp_mod
 
         monkeypatch.delenv(PARENT_PID_ENV, raising=False)
@@ -394,11 +394,11 @@ class TestMcpMainIntegration:
             mock.patch.object(mcp_mod, "get_services", side_effect=RuntimeError("no provider")),
             mock.patch.object(mcp_mod, "build_mcp_server") as build,
             caplog.at_level("DEBUG", logger="lilbee.mcp_server"),
+            pytest.raises(RuntimeError, match="no provider"),
         ):
-            build.return_value.run_stdio_async = mock.AsyncMock()
             mcp_mod.main()
-        assert "MCP pre-warm failed" in caplog.text
-        build.return_value.run_stdio_async.assert_awaited_once()
+        assert "The services build failed" in caplog.text
+        build.assert_not_called()
 
 
 def test_mcp_parent_death_releases_services_before_hard_exit(monkeypatch):

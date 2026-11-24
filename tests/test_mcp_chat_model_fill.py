@@ -267,7 +267,7 @@ def test_search_expands_the_query_with_the_filled_chat_model(
     assert set(seen) == {installed_chat}
 
 
-def test_a_failed_fill_warns_on_stderr_and_leaves_stdout_empty(
+def test_a_failed_fill_stops_the_start_and_leaves_stdout_empty(
     capfd: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
 ) -> None:
     served = []
@@ -275,7 +275,7 @@ def test_a_failed_fill_warns_on_stderr_and_leaves_stdout_empty(
     async def serve(server: Any) -> None:
         served.append(server)
 
-    # The CLI sends the log to stderr at WARNING; stdout carries the MCP protocol.
+    # The CLI sends the log to stderr; stdout carries the MCP protocol.
     handler = logging.StreamHandler(sys.stderr)
     handler.setLevel(logging.WARNING)
     root = logging.getLogger()
@@ -285,19 +285,17 @@ def test_a_failed_fill_warns_on_stderr_and_leaves_stdout_empty(
             mock.patch.object(mcp_mod, "fill_empty_chat_model", side_effect=OSError("registry")),
             mock.patch.object(mcp_mod, "_serve_stdio", serve),
             mock.patch("lilbee.parent_monitor.parse_parent_pid", return_value=None),
+            pytest.raises(OSError, match="registry"),
         ):
             mcp_mod.main()
     finally:
         root.removeHandler(handler)
 
     out, err = capfd.readouterr()
-    assert served
+    assert not served
     assert out == ""
-    assert "The chat model could not be filled at start (registry)" in err
-    [record] = [r for r in caplog.records if "could not be filled" in r.getMessage()]
-    assert record.levelno == logging.WARNING
-    assert record.getMessage() == (
-        "The chat model could not be filled at start (registry); tools use the chat model as set."
-    )
+    assert "The services build failed (the chat-model fill or the build)" in err
+    [record] = [r for r in caplog.records if "services build failed" in r.getMessage()]
+    assert record.levelno == logging.ERROR
     assert record.exc_info
     assert record.exc_info[0] is OSError
