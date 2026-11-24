@@ -2915,3 +2915,42 @@ class TestHfTokenWrite:
                 {"hf_token": "hf_FakeToken-0123_abc"}
             )  # pragma: allowlist secret
         assert appset.cfg.hf_token == "hf_FakeToken-0123_abc"  # pragma: allowlist secret
+
+
+class TestUnreadableConfigIsAReadFailure:
+    """A read-modify-write that cannot read config.toml reports a read, not a write."""
+
+    @pytest.fixture
+    def unreadable_root(self, tmp_path):
+        # A directory in place of the file: open fails with IsADirectoryError, even as root.
+        (tmp_path / "config.toml").mkdir()
+        return tmp_path
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda root: settings.set_value(root, "top_k", 7),
+            lambda root: settings.update_values(root, {"top_k": 7}),
+            lambda root: settings.delete_value(root, "top_k"),
+            lambda root: settings.delete_values(root, ["top_k"]),
+        ],
+    )
+    def test_the_failure_text_says_read(self, unreadable_root, call) -> None:
+        from lilbee.app.settings import config_write_failure_message
+
+        with pytest.raises(settings.ConfigReadFailedError) as caught:
+            call(unreadable_root)
+        assert caught.value.errno is not None
+        assert config_write_failure_message(caught.value).startswith("Could not read config.toml")
+
+    def test_a_changed_file_says_read(self) -> None:
+        from lilbee.app.settings import config_write_failure_message
+
+        exc = settings.ConfigChangedWhileReadError("config.toml changed while it was read")
+        assert config_write_failure_message(exc).startswith("Could not read config.toml")
+
+    def test_a_write_failure_still_says_write(self) -> None:
+        from lilbee.app.settings import config_write_failure_message
+
+        text = config_write_failure_message(OSError(28, "No space left on device"))
+        assert text.startswith("Could not write config.toml")
