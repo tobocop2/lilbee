@@ -206,7 +206,7 @@ async def test_panel_keeps_the_failure_when_an_in_flight_probe_lands_late(
         panel = app.query_one(GpuFleetPanel)
         panel.set_probe_failed("GPU driver did not respond")
         # Simulate the racing worker's completion callback arriving afterwards.
-        panel._apply_stats({}, {}, {})
+        panel._apply_stats({}, {}, {}, None)
         rendered = str(panel.render())
         assert "GPU driver did not respond" in rendered
         assert "no GPUs detected" not in rendered
@@ -314,6 +314,51 @@ async def test_panel_shows_intel_install_hint_when_tool_absent(
         panel = app.query_one(GpuFleetPanel)
         panel.set_devices([_make_device(0, backend="SYCL")], labels={0: "SYCL0"})
         panel._request_stats()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "igt-gpu-tools" in str(panel.render())
+
+
+@pytest.mark.asyncio
+async def test_panel_stays_responsive_while_the_intel_hint_probe_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blocking Intel hint probe must not freeze the UI thread; the hint shows once it returns."""
+    import asyncio
+    import threading
+    import time
+
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+    from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+
+    release = threading.Event()
+    stat = _make_stat(0, utilization_pct=None)
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {0: stat})
+
+    def _blocking_hint(devices: object, stats: object) -> IntelUtilHint:
+        # Bounded so a regression fails the test instead of hanging it.
+        release.wait(timeout=3)
+        return IntelUtilHint(IntelHintKind.INSTALL, None)
+
+    monkeypatch.setattr(panel_mod, "intel_util_hint", _blocking_hint)
+
+    app = _PanelHost()
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        panel.set_devices([_make_device(0, backend="SYCL")], labels={0: "SYCL0"})
+        panel._request_stats()
+        worst_gap = 0.0
+        last = time.monotonic()
+        for _ in range(6):
+            await asyncio.sleep(0.05)
+            now = time.monotonic()
+            worst_gap = max(worst_gap, now - last)
+            last = now
+        assert worst_gap < 1.0
+        assert "igt-gpu-tools" not in str(panel.render())
+        release.set()
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert "igt-gpu-tools" in str(panel.render())
