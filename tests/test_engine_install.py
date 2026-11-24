@@ -1195,7 +1195,7 @@ def test_the_mcp_install_schema_lists_no_wheel_argument() -> None:
     assert list(schema["properties"]) == ["engine"]
 
 
-NOTE = "This host has no NVIDIA GPU, so the CPU archive runs."
+NOTE = "This computer has no NVIDIA GPU, so the CPU archive runs."
 
 
 def test_a_note_from_the_host_gate_reaches_every_install_surface(

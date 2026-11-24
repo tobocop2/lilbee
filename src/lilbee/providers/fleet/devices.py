@@ -296,7 +296,7 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
             "before it listed any device, so "
             "the engine cannot start. Something ended the probe: a GPU driver fault, "
             "the out-of-memory killer or a service manager. lilbee does not guess a GPU "
-            "from the host's Vulkan loader here, because the engine would then fail the "
+            "from the Vulkan loader of this computer here, because the engine would then fail the "
             "same way.\n"
             f"The probe reported: {_probe_tail(output)}",
             provider=_PROVIDER,
@@ -410,7 +410,7 @@ def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:
             f"The GPU device probe ({binary.name} --list-devices) did not respond "
             f"within {timeout_s:.0f}s, so the engine cannot start. The GPU driver is "
             "most likely wedged; check that your vendor's tool responds (nvidia-smi, "
-            "rocm-smi, xpu-smi) and reboot the host if it hangs.\n"
+            "rocm-smi, xpu-smi) and reboot the computer if it hangs.\n"
             f"The probe reported: {_probe_tail(_decoded_output(exc.output))}",
             provider=_PROVIDER,
             kind=ProviderErrorKind.SERVER,
