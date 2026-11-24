@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import dataclasses
 import itertools
 import json
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import httpx
+import psutil
 import pytest
 
 from lilbee import parent_monitor
@@ -653,6 +655,19 @@ class TestRoleReady:
         assert state is not None and state.ready_at is not None
 
 
+class _FakeLibc:
+    """The ``sysctlbyname`` of a macOS libc: names the boot, or fails when the clock says so."""
+
+    def __init__(self, clock: dict[str, float | str]) -> None:
+        self._clock = clock
+
+    def sysctlbyname(self, _key: bytes, buffer, _size, _new, _newlen) -> int:
+        if self._clock.get("fail"):
+            return -1
+        buffer.value = str(self._clock["boot"]).encode("ascii")
+        return 0
+
+
 def _readiness_state(
     *, ready_at: float | None = None, created_at: float | None = 1000.0
 ) -> sm.SwapState:
@@ -829,8 +844,13 @@ class TestEngineReadiness:
     ) -> sm.SwapState:
         """The record a real start writes on a host with no boot pair, read back from disk."""
         clock.setdefault("boot", "boot-1")
+        clock.setdefault("boot_time", 1_700_000_000.0)
         monkeypatch.setattr(sm.time, "monotonic", lambda: clock["mono"])
-        monkeypatch.setattr(sm, "_boot_stamp", lambda: clock["boot"])
+        # A macOS host: the boot is named by the kernel's boot session UUID, while the boot time
+        # that psutil reports follows the wall clock (XNU adjusts it on a clock step).
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(ctypes, "CDLL", lambda _name: _FakeLibc(clock))
+        monkeypatch.setattr(psutil, "boot_time", lambda: clock["boot_time"])
         monkeypatch.setattr(sm, "linux_start_stamp", lambda _pid: None)
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
@@ -848,7 +868,9 @@ class TestEngineReadiness:
         clock = {"mono": 5000.0}
         state = self._spawned_record(tmp_path, monkeypatch, clock)
         clock["mono"] += self._deadline - 1
-        # The wall clock stepped a day ahead: the recorded create time is far behind it.
+        # The wall clock stepped a day ahead: the recorded create time is far behind it, and
+        # the boot time derived from the wall clock moved with it.
+        clock["boot_time"] += 86400.0
         assert sm.engine_readiness(state, now=1000.0 + 86400.0) is sm.EngineReadiness.IDLE
         clock["mono"] += 1
         assert sm.engine_readiness(state, now=1000.0) is sm.EngineReadiness.FAILED
@@ -869,31 +891,15 @@ class TestEngineReadiness:
             sm.EngineReadiness.FAILED
         )
 
-    @pytest.mark.parametrize(
-        ("recorded", "current", "expected"),
-        [
-            ("boot-1", "boot-1", True),
-            ("boot-1", "boot-2", False),
-            ("1700000000.5", "1700000010.25", True),
-            ("1700000000.5", "1700000100.0", False),
-            ("boot-1", "1700000000.5", False),
-        ],
-    )
-    def test_boot_identity_matches_by_id_or_by_boot_time_within_a_tolerance(
-        self, monkeypatch: pytest.MonkeyPatch, recorded: str, current: str, expected: bool
+    def test_a_host_that_gives_no_boot_identity_stores_none_and_the_wall_clock_decides(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(sm, "_boot_stamp", lambda: current)
-        assert sm._is_current_boot(recorded) is expected
-
-    @pytest.mark.parametrize(
-        ("boot_id", "expected"), [("boot-A", "boot-A"), (None, "1700000000.5")]
-    )
-    def test_the_boot_stamp_is_the_linux_boot_id_else_the_boot_time(
-        self, monkeypatch: pytest.MonkeyPatch, boot_id: str | None, expected: str
-    ) -> None:
-        monkeypatch.setattr(sm, "linux_boot_id", lambda: boot_id)
-        monkeypatch.setattr(sm.psutil, "boot_time", lambda: 1700000000.5)
-        assert sm._boot_stamp() == expected
+        clock: dict[str, float | str] = {"mono": 5000.0, "fail": 1.0}
+        state = self._spawned_record(tmp_path, monkeypatch, clock)
+        assert state.started_mono is None and state.started_boot is None
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
+            sm.EngineReadiness.FAILED
+        )
 
     def test_a_record_with_a_reading_but_no_boot_identity_loads_without_either(
         self, tmp_path: Path

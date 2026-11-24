@@ -1,0 +1,47 @@
+name: k-p2-178 harness
+
+on:
+  push:
+    branches: [engines/k-p2-178-harness]
+
+jobs:
+  boot-identity:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install psutil
+      - name: Read the boot identity twice and across a wall-clock step
+        shell: python
+        run: |
+          import datetime, platform, subprocess, sys, time
+          sys.path.insert(0, "src")
+          import psutil
+          from lilbee.parent_monitor import boot_identity
+
+          def show(label):
+              print(f"{label}: identity={boot_identity()!r} psutil_boot_time={psutil.boot_time():.1f}", flush=True)
+
+          show("read 1")
+          show("read 2")
+          step = datetime.timedelta(hours=2)
+          now = datetime.datetime.now(datetime.timezone.utc)
+          if platform.system() == "Windows":
+              up = ["powershell", "-Command", f"Set-Date -Adjust (New-TimeSpan -Hours 2) | Out-Null"]
+              down = ["powershell", "-Command", f"Set-Date -Adjust (New-TimeSpan -Hours -2) | Out-Null"]
+          else:
+              up = ["sudo", "date", "-u", (now + step).strftime("%m%d%H%M%y")]
+              down = ["sudo", "date", "-u", now.strftime("%m%d%H%M%y")]
+          r = subprocess.run(up, capture_output=True, text=True)
+          print("step forward rc", r.returncode, r.stderr.strip(), flush=True)
+          print("wall clock now", datetime.datetime.now(datetime.timezone.utc).isoformat(), "was", now.isoformat(), flush=True)
+          show("after step")
+          r = subprocess.run(down, capture_output=True, text=True)
+          print("step back rc", r.returncode, r.stderr.strip(), flush=True)
+          show("after restore")
