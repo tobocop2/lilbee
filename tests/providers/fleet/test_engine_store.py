@@ -37,7 +37,7 @@ from lilbee.providers.fleet.engine_store import (
 )
 from lilbee.providers.fleet.engines.choice import PinError, pin_lock
 from tests._pack_workflow import pack_workflow
-from tests._unreadable import POSIX_DENIES_READS, unreadable
+from tests._unreadable import POSIX_DENIES_READS
 
 
 def make_wheel(path: Path, licence: str | None = "MIT", body: str = "#!/bin/sh\n") -> str:
@@ -1898,8 +1898,12 @@ def test_sweep_never_raises_when_the_root_cannot_be_read(
     store: EngineStore, caplog: pytest.LogCaptureFixture
 ) -> None:
     (store.root / "fx" / ".trash-a").mkdir(parents=True)
-    with unreadable(store.root), caplog.at_level("WARNING"):
-        assert store.sweep() == []
+    store.root.chmod(0)
+    try:
+        with caplog.at_level("WARNING"):
+            assert store.sweep() == []
+    finally:
+        store.root.chmod(0o755)
     assert (store.root / "fx" / ".trash-a").is_dir()
     assert [str(store.root) in m and "permissions" in m for m in caplog.messages] == [True]
 
@@ -1907,12 +1911,12 @@ def test_sweep_never_raises_when_the_root_cannot_be_read(
 def test_prune_also_clears_a_damaged_build(store: EngineStore, tmp_path: Path) -> None:
     installed_store(store, tmp_path, ("1", "2"))
     (store.root / "fx" / "1-cpu" / RECORD_NAME).unlink()
-    (store.root / "fx" / "notes.txt").write_text("x", encoding="utf-8")
+    (store.root / "fx" / "stray-file").write_text("x", encoding="utf-8")
     (store.root / "packs").mkdir()
     (store.root / "packs" / "fx-1-cpu.whl").write_text("pack", encoding="utf-8")
     gone = store.prune(keep={("fx", "2", "cpu")}, in_use=lambda *_: False)
     assert [p.name for p in gone] == ["1-cpu"]
-    assert names(store.root / "fx") == ["2-cpu", "notes.txt"]
+    assert names(store.root / "fx") == ["2-cpu", "stray-file"]
     assert (store.root / "packs" / "fx-1-cpu.whl").is_file()
 
 
