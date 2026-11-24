@@ -123,7 +123,14 @@ def _print_engine_logs_when_stalled(request):
     """
     seconds = _timeout_seconds(request.node) * STALL_SHARE
     basetemp = request.config.stash.get(_BASETEMP_KEY, None)
-    timer = threading.Timer(seconds, lambda: emit(failure_section(log_roots(basetemp))))
+    capman = request.config.pluginmanager.getplugin("capturemanager")
+
+    def print_tails() -> None:
+        # Capture would hold the text until the test ends; suspend it so it reaches the log now.
+        with capman.global_and_fixture_disabled():
+            emit(failure_section(log_roots(basetemp)))
+
+    timer = threading.Timer(seconds, print_tails)
     timer.daemon = True
     timer.start()
     yield
