@@ -3,7 +3,8 @@ name: Build old-Mac executables
 # Standalone executables for Macs below the main build's macOS floor. They
 # bundle the owner's old-macOS forks of crawlberg and liter-llm, served from
 # https://lilbee.sh/compat/. Called from release-candidate.yml, or dispatched
-# for an already-released tag. Cells are independent and droppable: no publish
+# for a released tag that has tools/wheel-build/oldmac-wheels.in (an older tag
+# lacks the pins, so its install step fails). Cells are independent and droppable: no publish
 # step or required check waits on this workflow, so a fork that lags upstream
 # delays these assets and nothing else. Under workflow_call each cell attaches
 # to the pre-release itself; under workflow_dispatch it attaches to the named

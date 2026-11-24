@@ -88,7 +88,7 @@ Intel CPUs before 2013 and AMD CPUs before Zen lack [AVX2](https://en.wikipedia.
 | **Binary + GPU** | [`lilbee-compat-linux-x86_64-cu124`](https://github.com/tobocop2/lilbee/releases/latest) (NVIDIA, driver 550+) or [`lilbee-compat-linux-x86_64-rocm`](https://github.com/tobocop2/lilbee/releases/latest) (AMD). These need a CPU with AVX (2011+). |
 | **pip**      | `pip install --pre lilbee 'lancedb==0.40.0+compat' --extra-index-url https://lilbee.sh/compat/` (no engine, see below) |
 
-Use a bundled build if you can. The compat package index carries only the patched lancedb, so the `pip` row installs lilbee without an engine. Every model call fails until you set `LILBEE_LLAMA_SERVER_PATH` to a `llama-server` that runs on your CPU.
+Use a bundled build if you can. The compat package index carries the patched lancedb and the old-macOS builds below, but no engine, so the `pip` row installs lilbee without an engine. Every model call fails until you set `LILBEE_LLAMA_SERVER_PATH` to a `llama-server` that runs on your CPU.
 
 For an older CPU with an NVIDIA GPU (AVX, 2011+), `lilbee-compat-cuda` is the compat build with CUDA 12.4. It needs NVIDIA driver 550+ on Linux and 551.61+ on Windows.
 
@@ -107,7 +107,7 @@ The crash comes from [lancedb](https://lancedb.github.io/lancedb/)'s AVX2 wheels
 
 ## On older macOS
 
-The main Mac build needs macOS 14 on Apple silicon. On macOS 12 or 13, use `lilbee-compat-macos-arm64`. Homebrew and the npm launcher pick it for you. It bundles old-macOS builds of the crawler and the model client, which the compat index at `https://lilbee.sh/compat/` serves. Pip users on an old Mac add that index and pin the builds:
+The main Mac build needs macOS 14 on Apple silicon. On macOS 12.3 to 13, use `lilbee-compat-macos-arm64`. No build runs on an older macOS on Apple silicon. Homebrew and the npm launcher pick it for you. It bundles old-macOS builds of the crawler and the model client, which the compat index at `https://lilbee.sh/compat/` serves. Pip users on an old Mac add that index and pin the builds:
 
 ```bash
 pip install --only-binary crawlberg,liter-llm 'crawlberg==1.13.0+compat' 'liter-llm==2.7.0+compat' --extra-index-url https://lilbee.sh/compat/

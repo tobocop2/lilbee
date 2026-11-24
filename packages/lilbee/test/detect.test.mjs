@@ -134,13 +134,18 @@ test("intel macs without AVX2 get the compat build", async () => {
 });
 
 test("an arm64 Mac older than the main build's macOS gets the compat build", async () => {
+  assert.equal(await variant("darwin", "arm64", { macos: "12.3" }), "compat");
   assert.equal(await variant("darwin", "arm64", { macos: "12.7.6\n" }), "compat");
   assert.equal(await variant("darwin", "arm64", { macos: "13.0" }), "compat");
+  assert.equal(await variant("darwin", "arm64", { macos: "13.7.8" }), "compat");
+  assert.equal(await variant("darwin", "arm64", { macos: "14" }), "default");
   assert.equal(await variant("darwin", "arm64", { macos: "14.0" }), "default");
   assert.equal(await variant("darwin", "arm64", { macos: "15.2" }), "default");
 });
 
 test("a Mac below the compat build's macOS, or one that does not say, gets the default build", async () => {
+  assert.equal(await variant("darwin", "arm64", { macos: "12.2.1" }), "default");
+  assert.equal(await variant("darwin", "arm64", { macos: "12" }), "default");
   assert.equal(await variant("darwin", "arm64", { macos: "11.7" }), "default");
   assert.equal(await variant("darwin", "arm64", { macos: "not a version" }), "default");
   assert.equal(await variant("darwin", "arm64", { macos: null }), "default");

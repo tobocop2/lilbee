@@ -29,6 +29,12 @@ class Lilbee < Formula
   end
 
   def install
+    # The macOS blocks above match whole releases, and the oldest build for
+    # Apple silicon loads on 12.3 and newer only.
+    if OS.mac? && Hardware::CPU.arm? && MacOS.full_version < "12.3"
+      odie "lilbee needs macOS 12.3 or newer on Apple silicon."
+    end
+
     binary = Dir["lilbee-*"].first
     bin.install binary => "lilbee"
 
