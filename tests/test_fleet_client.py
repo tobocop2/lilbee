@@ -4916,7 +4916,7 @@ def test_the_loader_line_survives_the_log_tail_window(monkeypatch) -> None:
     assert "libgomp.so.1" in str(excinfo.value)
 
 
-def test_the_loader_line_is_the_only_missing_library_signal() -> None:
+def test_the_linux_loader_line_names_the_missing_library() -> None:
     from lilbee.providers.base import ProviderErrorKind
     from lilbee.providers.fleet.client import classify_upstream_death, missing_library
 
@@ -4925,6 +4925,35 @@ def test_the_loader_line_is_the_only_missing_library_signal() -> None:
     assert missing_library(tail) == "libgomp.so.1"
     assert classify_upstream_death("cannot open shared object file") is None
     assert missing_library("cannot open shared object file") is None
+
+
+_WINDOWS_DEATH_TAILS = (
+    "llama-swap: process [chat-0] exit status 0xc0000135",
+    "llama-swap: process [chat-0] exited with code 3221225781",
+)
+
+
+@pytest.mark.parametrize("tail", _WINDOWS_DEATH_TAILS)
+def test_windows_dll_not_found_death_is_a_missing_library(tail: str) -> None:
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import classify_upstream_death
+
+    assert classify_upstream_death(tail) is ProviderErrorKind.MISSING_LIBRARY
+    assert classify_upstream_death("exit status 0xc0000136") is None
+    assert classify_upstream_death("exit status 13221225781") is None
+
+
+@pytest.mark.parametrize("tail", _WINDOWS_DEATH_TAILS)
+def test_windows_dll_not_found_message_names_the_runtime(tail: str) -> None:
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import _upstream_death_message, classify_upstream_death
+
+    kind = classify_upstream_death(tail)
+    assert kind is ProviderErrorKind.MISSING_LIBRARY
+    text = _upstream_death_message(kind, 500, "m", None, tail)
+    assert "Visual C++" in text
+    assert "latest-supported-vc-redist" in text
+    assert "HTTP 500" not in text
 
 
 def test_a_missing_library_is_not_retried_or_rebuilt() -> None:

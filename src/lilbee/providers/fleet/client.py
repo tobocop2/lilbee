@@ -47,6 +47,7 @@ from lilbee.providers.reasoning import ThinkInliner, inline_reasoning
 from lilbee.providers.roles import RerankMode
 from lilbee.providers.truncation import note_cut_to_limit, note_truncated
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
+from lilbee.runtime.vc_runtime import VC_REDIST_URL, dll_not_found_status
 
 # Shown when a stream breaks after its first frame. The client cannot know why.
 _STREAM_INTERRUPTED_MESSAGE = (
@@ -261,6 +262,12 @@ def missing_library(tail: str) -> str | None:
     return found.group(1) if found else None
 
 
+_WINDOWS_RUNTIME_MISSING_MESSAGE = (
+    "The engine could not start because a DLL it needs is missing. The usual cause "
+    f"is a missing Microsoft Visual C++ runtime. Install it from {VC_REDIST_URL}."
+)
+
+
 def _missing_library_message(library: str) -> str:
     """The plain line that names a missing library and, when known, the package."""
     message = f"The engine needs the library {library}."
@@ -281,6 +288,8 @@ def _upstream_death_message(
         # No log path: the loader line reaches only llama-swap's per-model
         # stream, and lilbee keeps no file that holds it.
         return _missing_library_message(library)
+    if kind is ProviderErrorKind.MISSING_LIBRARY and dll_not_found_status(tail):
+        return _WINDOWS_RUNTIME_MISSING_MESSAGE
     subject = model if model is not None else "the model"
     if kind is ProviderErrorKind.MODEL_FILE_BROKEN:
         if model is None:
@@ -355,7 +364,7 @@ def classify_upstream_death(tail: str) -> ProviderErrorKind | None:
         return ProviderErrorKind.PORT_CONFLICT
     if any(_ILLEGAL_INSTRUCTION_MARKER in line for line in fatal):
         return ProviderErrorKind.CPU_UNSUPPORTED
-    if missing_library(tail) is not None:
+    if missing_library(tail) is not None or dll_not_found_status(tail):
         return ProviderErrorKind.MISSING_LIBRARY
     return None
 
