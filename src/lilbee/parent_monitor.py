@@ -126,6 +126,26 @@ def boot_identity() -> str | None:
     return None
 
 
+# macOS create time has one-second resolution and a clock step moves it by the step minus
+# up to two seconds. Measured on a macos-latest runner across a real +2 h step and the
+# restore: the derived start sat 0.9 s and 1.9 s from the spawn reading. A pid reused
+# later starts seconds or more after the record.
+MONO_START_TOLERANCE_S = 3.0
+
+
+def started_near_mono(create_time: float, started_mono: float, started_boot: str | None) -> bool:
+    """True when a process created at *create_time* started where *started_mono* says.
+
+    psutil's create time and the wall clock move together in a step, so the wall-clock
+    age taken from the create time gives a start on the monotonic clock that does not.
+    A reading from another boot, or with no boot identity, says nothing about the process.
+    """
+    if started_boot is None or started_boot != boot_identity():
+        return False
+    derived = time.monotonic() - (time.time() - create_time)
+    return abs(derived - started_mono) <= MONO_START_TOLERANCE_S
+
+
 def linux_start_stamp(pid: int) -> tuple[str, float] | None:
     """(boot id, start ticks) of *pid*, or None off Linux or when either cannot be read.
 
@@ -157,7 +177,8 @@ def linux_age_s(boot_id: str, start_ticks: float) -> float | None:
 def _start_identity(pid: int) -> float:
     """What tells *pid* apart from a process that later reuses the pid.
 
-    Linux: start ticks since boot. Elsewhere: psutil's create time, which is fixed there.
+    Linux: start ticks since boot. Elsewhere: psutil's create time, which a wall-clock step
+    moves on macOS; :func:`_same_process` also accepts a start that holds on the monotonic clock.
     Raises ``psutil.NoSuchProcess`` or ``psutil.AccessDenied``.
     """
     if _is_linux():
@@ -173,19 +194,41 @@ def _parent_start_time(pid: int) -> float | None:
         return None
 
 
-def _same_process(pid: int, start_time: float | None) -> bool:
-    """False when *pid* now belongs to a different process than *start_time*."""
+def _mono_stamp(start_time: float | None) -> tuple[float, str] | None:
+    """(start on the monotonic clock, boot identity) for a create-time identity, or None.
+
+    None on Linux, where the identity is start ticks, and when the boot cannot be named.
+    """
+    boot = None if _is_linux() or start_time is None else boot_identity()
+    if start_time is None or boot is None:
+        return None
+    return time.monotonic() - (time.time() - start_time), boot
+
+
+def _same_process(
+    pid: int, start_time: float | None, mono_stamp: tuple[float, str] | None = None
+) -> bool:
+    """False when *pid* now belongs to a different process than *start_time*.
+
+    A create time that differs still passes when the process's start on the monotonic
+    clock, from the same boot, matches *mono_stamp* within the tolerance.
+    """
     if start_time is None:
         return True
     try:
-        return _start_identity(pid) == start_time
+        identity = _start_identity(pid)
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
+    if identity == start_time:
+        return True
+    return mono_stamp is not None and started_near_mono(identity, *mono_stamp)
 
 
-def _parent_alive(pid: int, start_time: float | None) -> bool:
+def _parent_alive(
+    pid: int, start_time: float | None, mono_stamp: tuple[float, str] | None = None
+) -> bool:
     """True while *pid* still refers to the original parent process."""
-    return psutil.pid_exists(pid) and _same_process(pid, start_time)
+    return psutil.pid_exists(pid) and _same_process(pid, start_time, mono_stamp)
 
 
 def _started_after_us(start_time: float | None) -> bool:
@@ -207,8 +250,9 @@ def watch_parent_thread(
 
     def _loop() -> None:
         start_time = _parent_start_time(parent_pid)
+        mono_stamp = _mono_stamp(start_time)
         if not _started_after_us(start_time):
-            while _parent_alive(parent_pid, start_time):
+            while _parent_alive(parent_pid, start_time, mono_stamp):
                 time.sleep(poll_interval_secs)
         log.info("%s=%d is no longer alive; triggering shutdown", PARENT_PID_ENV, parent_pid)
         on_death()

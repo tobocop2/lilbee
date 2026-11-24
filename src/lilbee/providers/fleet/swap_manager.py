@@ -28,7 +28,7 @@ import httpx
 import psutil
 
 from lilbee.core.health_warnings import HealthWarning, WarningCode
-from lilbee.parent_monitor import boot_identity, linux_age_s, linux_start_stamp
+from lilbee.parent_monitor import boot_identity, linux_age_s, linux_start_stamp, started_near_mono
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import (
     ROUTER_GO_INSTALL,
@@ -112,11 +112,6 @@ _STATE_TMP_SUFFIX = ".tmp"
 # Pid reuse guard: a live process at a recorded pid whose create time differs
 # from the recorded one by more than this is a different process.
 _CREATE_TIME_TOLERANCE_S = 1.0
-# macOS create time has one-second resolution and a clock step moves it by the step minus
-# up to two seconds. Measured on a macos-latest runner across a real +2 h step and the
-# restore: the derived start sat 0.9 s and 1.9 s from the spawn reading. A pid reused
-# later starts seconds or more after the record.
-_MONO_START_TOLERANCE_S = 3.0
 _LLAMA_SWAP_PROCESS_NAME = "llama-swap"
 _EXE_SUFFIX = ".exe"
 # A script server shows the interpreter's name; this prefix finds python and python3.12.
@@ -1448,14 +1443,9 @@ def _started_at_recorded_mono(state: SwapState, create_time: float) -> bool:
     age taken from the create time gives a start on the monotonic clock that does not.
     A reading from another boot says nothing about this process.
     """
-    if (
-        state.started_mono is None
-        or state.started_boot is None
-        or state.started_boot != boot_identity()
-    ):
+    if state.started_mono is None:
         return False
-    started_mono = time.monotonic() - (time.time() - create_time)
-    return abs(started_mono - state.started_mono) <= _MONO_START_TOLERANCE_S
+    return started_near_mono(create_time, state.started_mono, state.started_boot)
 
 
 def _is_live_llama_swap(state: SwapState) -> bool:

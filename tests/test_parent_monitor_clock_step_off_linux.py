@@ -15,6 +15,7 @@ from unittest import mock
 import psutil
 import pytest
 
+from lilbee import parent_monitor
 from lilbee.parent_monitor import watch_parent_thread
 
 _STEP_S = 7200.0
@@ -43,7 +44,9 @@ def _watch_across_a_step(create_time_lag_s: float, *, boot_after: str) -> bool:
     with (
         mock.patch("lilbee.parent_monitor._is_linux", return_value=False),
         mock.patch("lilbee.parent_monitor.boot_identity", side_effect=lambda: boot[0]),
-        mock.patch("lilbee.parent_monitor.time.time", side_effect=lambda: _REAL_TIME() + wall_offset[0]),
+        mock.patch(
+            "lilbee.parent_monitor.time.time", side_effect=lambda: _REAL_TIME() + wall_offset[0]
+        ),
         mock.patch.object(psutil.Process, "create_time", create_time),
         mock.patch(
             "lilbee.parent_monitor.psutil.pid_exists", side_effect=lambda pid: not stop.is_set()
@@ -75,3 +78,22 @@ def test_a_step_alone_keeps_a_live_parent_live():
 
 def test_a_changed_boot_identity_falls_back_to_the_create_time():
     assert _watch_across_a_step(0.0, boot_after="boot-b") is True
+
+
+def test_no_boot_identity_records_no_monotonic_start():
+    with (
+        mock.patch("lilbee.parent_monitor._is_linux", return_value=False),
+        mock.patch("lilbee.parent_monitor.boot_identity", return_value=None),
+    ):
+        assert parent_monitor._mono_stamp(100.0) is None
+
+
+def test_linux_and_an_unknown_start_record_no_monotonic_start():
+    with mock.patch("lilbee.parent_monitor._is_linux", return_value=True):
+        assert parent_monitor._mono_stamp(100.0) is None
+    with mock.patch("lilbee.parent_monitor._is_linux", return_value=False):
+        assert parent_monitor._mono_stamp(None) is None
+
+
+def test_a_reading_without_a_boot_identity_matches_nothing():
+    assert parent_monitor.started_near_mono(100.0, 0.0, None) is False
