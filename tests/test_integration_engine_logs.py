@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import child_pythonpath
 from tests.integration import _engine_logs as engine_logs
 
 pytest_plugins = ["pytester"]
@@ -44,7 +45,7 @@ def _run_inner(
     _write_log(slot, "engine-reaper.log", ["reaper noise"])
     monkeypatch.setenv("LILBEE_ENGINE_DIR", str(slot))
     monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data"))
-    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(_REPO_ROOT), *sys.path]))
+    monkeypatch.setenv("PYTHONPATH", child_pythonpath(_REPO_ROOT, *sys.path))
     monkeypatch.setenv("EMIT_MARKER", str(tmp_path / "emitted"))
     pytester.makeconftest(
         "import os\n"
