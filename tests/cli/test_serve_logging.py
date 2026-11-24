@@ -492,7 +492,7 @@ def test_a_fault_log_that_cannot_open_leaves_the_alarm_unregistered(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no interval timer")
-def test_the_deadline_sets_the_kernel_timer_after_the_grace(
+def test_the_deadline_sets_the_kernel_timer_just_after_the_deadline(
     monkeypatch: pytest.MonkeyPatch, alarm_registrations: list[dict[str, Any]]
 ) -> None:
     import signal
@@ -503,5 +503,5 @@ def test_the_deadline_sets_the_kernel_timer_after_the_grace(
         serve_logging.signal, "setitimer", lambda which, seconds: timers.append((which, seconds))
     )
     serve_logging.arm_exit_deadline(60.0)
-    assert timers == [(signal.ITIMER_REAL, 60.0 + serve_logging._BACKSTOP_GRACE_S)]
-    assert serve_logging._BACKSTOP_GRACE_S == 5.0
+    assert timers == [(signal.ITIMER_REAL, 60.0 + serve_logging._BACKSTOP_LEAD_S)]
+    assert serve_logging._BACKSTOP_LEAD_S == 0.5

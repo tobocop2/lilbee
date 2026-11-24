@@ -24,7 +24,7 @@ _SERVER_LOG_FILE_NAME = "server.log"
 _FAULT_LOG_FILE_NAME = "server-fault.log"
 
 _DEADLINE_EXIT_STATUS = 1
-_BACKSTOP_GRACE_S = 5.0
+_BACKSTOP_LEAD_S = 0.5
 _MAX_BYTES = 2_097_152  # 2 MiB
 _BACKUP_COUNT = 3
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -139,13 +139,15 @@ _exit_deadline = _ExitDeadline()
 def arm_exit_deadline(seconds: float) -> None:
     """End the process with status 1 after *seconds*; the fault log names what held it.
 
-    A later call replaces the earlier deadline. A kernel timer kills the process
-    shortly after, for a hang in finalization, and writes every thread to the
-    fault log first.
+    A later call replaces the earlier deadline. A kernel timer fires 0.5 s after
+    it, so the Python timer thread wins when it can run. The kernel timer needs
+    no GIL: it writes every thread to the fault log, then kills the process. It
+    names a native call that holds the GIL across the deadline, and a hang in
+    finalization.
     """
     _exit_deadline.arm(seconds)
     if sys.platform != "win32":  # pragma: no cover - Windows has no interval timer
-        signal.setitimer(signal.ITIMER_REAL, seconds + _BACKSTOP_GRACE_S)
+        signal.setitimer(signal.ITIMER_REAL, seconds + _BACKSTOP_LEAD_S)
         _fault_log.dump_on_alarm()
 
 
