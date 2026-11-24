@@ -377,7 +377,7 @@ def _cached_repacked_bytes(_engine_id: str, path_str: str, _mtime_ns: int) -> in
         return total
     except (ValueError, KeyError, TypeError) as exc:
         raise ProviderError(
-            f"Could not size the model {path_str!r}: the estimator returned unreadable output.",
+            f"Could not size the model '{path_str}': the estimator returned unreadable output.",
             provider=_PROVIDER,
             kind=ProviderErrorKind.SERVER,
         ) from exc
@@ -426,7 +426,7 @@ def _cached_attention_shape(
         return _shape_from_entries(entries)
     except (ValueError, KeyError, TypeError) as exc:
         raise ProviderError(
-            f"Could not size the model {path_str!r}: the estimator returned unreadable output.",
+            f"Could not size the model '{path_str}': the estimator returned unreadable output.",
             provider=_PROVIDER,
             kind=ProviderErrorKind.SERVER,
         ) from exc
