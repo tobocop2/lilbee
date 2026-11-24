@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
@@ -1519,7 +1520,7 @@ class TestLoggedServicesBuildSignal:
     def test_a_system_exit_logs_the_stop_line_only_for_a_requested_stop(
         self, monkeypatch, caplog, requested, logged
     ):
-        monkeypatch.setattr(svc_mod._lifecycle, "stop_requested", requested)
+        monkeypatch.setattr(svc_mod, "_lifecycle", SimpleNamespace(stop_requested=requested))
         logger = logging.getLogger("test.logged_services_build")
         with (
             caplog.at_level(logging.INFO, logger=logger.name),
@@ -1532,11 +1533,12 @@ class TestLoggedServicesBuildSignal:
 
 _BUILD_DRIVER = """
 import sys, time
+MODE = sys.argv[1]
 from lilbee import mcp_server
 def build():
     sys.stderr.write("BUILD-STARTED\\n")
     sys.stderr.flush()
-    if sys.argv[1] == "fail":
+    if MODE == "fail":
         raise RuntimeError("no model installed")
     time.sleep(120)
 mcp_server.get_services = build
