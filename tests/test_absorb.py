@@ -955,45 +955,140 @@ class TestWhatIsNotAbsorbed:
         assert _keys(library) == ["notes/work/budget.md", "notes/work/plan.md"]
 
 
-class TestACancelledAdd:
-    async def test_a_cancelled_add_keeps_a_parent_that_absorbed(self, library, notes):
-        import asyncio
-        import threading
+def _snapshot(store: Store) -> dict[str, object]:
+    """Everything an add can change: the index, wiki and records, and every persisted setting."""
+    return {"everything": _everything(store), "settings": settings.load(cfg.data_root)}
 
-        await _add(notes / "work")
-        result = register_sources([notes])
-        cancel = threading.Event()
 
-        with (
-            pytest.raises(asyncio.CancelledError),
-            forget_unfinished_on_cancel([notes], result.revocable, cancel, lambda: True),
-        ):
-            cancel.set()
-            raise asyncio.CancelledError
+def _cancel_the_add(paths: list[Path], registration) -> None:
+    """Cancel the sync of an add whose registration is *registration*, as the TUI rollback does."""
+    import asyncio
+    import threading
 
-        assert result.registered == ["notes"] and result.revocable == []
-        assert _registry() == {"notes": str(notes.resolve())}
-        assert _keys(library) == ["notes/work/budget.md", "notes/work/plan.md"]
-
-    async def test_the_rollback_would_unregister_the_parent_if_it_were_handed_over(
-        self, library, notes
+    cancel = threading.Event()
+    with (
+        pytest.raises(asyncio.CancelledError),
+        forget_unfinished_on_cancel(paths, registration, cancel, lambda: True),
     ):
-        """The control for the test above: the same cancel with the parent's label."""
+        cancel.set()
+        raise asyncio.CancelledError
+
+
+class TestACancelledAdd:
+    async def test_a_cancelled_add_restores_the_source_the_parent_took_in(self, library, notes):
+        await _add(notes / "work")
+        before = _snapshot(library.store)
+
+        result = register_sources([notes])
+        assert result.absorbed == ["work"]
+        _cancel_the_add([notes], result)
+
+        assert _snapshot(library.store) == before
+        assert _registry() == {"work": str((notes / "work").resolve())}
+        assert _keys(library) == ["work/budget.md", "work/plan.md"]
+        assert library.store.get_chunks_by_source("work/plan.md")
+
+    async def test_the_restored_source_keeps_its_rows_records_and_wiki_pages(self, library, notes):
+        _seeded_child(library.store, notes)
+        before = _snapshot(library.store)
+
+        _cancel_the_add([notes], register_sources([notes]))
+
+        assert _snapshot(library.store) == before
+
+    async def test_every_source_the_parent_took_in_is_restored(self, library, notes):
+        _write(notes / "home" / "list.md", "# List\n\nThe list for the market.\n")
+        register_sources([notes / "work", notes / "home"])
+        await sync(quiet=True)
+        before = _snapshot(library.store)
+
+        result = register_sources([notes])
+        assert result.absorbed == ["home", "work"]
+        _cancel_the_add([notes], result)
+
+        assert _snapshot(library.store) == before
+
+    async def test_a_cancel_leaves_an_unrelated_registered_root_as_it_was(
+        self, library, notes, tmp_path
+    ):
+        other = _write(tmp_path / "src" / "other" / "o.md", "# O\n\nAnother page.\n").parent
+        register_sources([other])
+        await _add(notes / "work")
+        before = _snapshot(library.store)
+
+        _cancel_the_add([notes], register_sources([notes]))
+
+        assert _snapshot(library.store) == before
+        assert sorted(_registry()) == ["other", "work"]
+
+    async def test_a_cancel_after_the_parent_indexed_a_file_keeps_the_parent(self, library, notes):
+        await _add(notes / "work")
+        result = register_sources([notes])
+        await sync(quiet=True)
+
+        _cancel_the_add([notes], result)
+
+        assert _registry() == {"notes": str(notes.resolve())}
+        assert _keys(library) == ["notes/loose.md", "notes/work/budget.md", "notes/work/plan.md"]
+
+    async def test_the_cli_cancel_restores_the_source_the_parent_took_in(self, library, notes):
         import asyncio
         import threading
 
+        from lilbee.app.ingest import AddRollback, leave_as_cancel
+        from lilbee.cli.commands import ingest_sync
+
         await _add(notes / "work")
-        result = register_sources([notes])
+        before = _snapshot(library.store)
+        rollback = AddRollback(paths=[notes], at_sync=False)
         cancel = threading.Event()
 
-        with (
-            pytest.raises(asyncio.CancelledError),
-            forget_unfinished_on_cancel([notes], result.registered, cancel, lambda: True),
-        ):
+        def _cancelled(_cancel, before_sync, started_by):
+            before_sync()
             cancel.set()
-            raise asyncio.CancelledError
+            raise KeyboardInterrupt
 
-        assert _registry() == {}
+        with (
+            mock.patch.object(ingest_sync, "_run_sync", _cancelled),
+            pytest.raises(asyncio.CancelledError),
+            leave_as_cancel(rollback, cancel, lambda: True),
+        ):
+            ingest_sync._register_and_sync(
+                [notes],
+                [],
+                force=False,
+                cancel_event=cancel,
+                rollback=rollback,
+                sync_results=[],
+            )
+
+        assert _snapshot(library.store) == before
+        assert rollback.absorbed_into == {}
+
+    async def test_the_tui_cancel_restores_the_source_the_parent_took_in(self, library, notes):
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        await _add(notes / "work")
+        before = _snapshot(library.store)
+        screen = ChatScreen.__new__(ChatScreen)
+        reporter = MagicMock(spec=ProgressReporter)
+        reporter.is_set.return_value = True
+        reporter.cancelled_by_user.return_value = True
+
+        def _run(coro):
+            coro.close()
+            raise TaskCancelledError
+
+        with (
+            mock.patch("lilbee.cli.tui.screens.chat.call_from_thread"),
+            mock.patch("lilbee.runtime.asyncio_loop.run", side_effect=_run),
+            pytest.raises(TaskCancelledError),
+        ):
+            screen._do_add([notes], reporter)
+
+        assert _snapshot(library.store) == before
 
     def test_a_parent_that_absorbed_nothing_is_revocable(self, library, notes):
         assert register_sources([notes]).revocable == ["notes"]
