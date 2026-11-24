@@ -335,8 +335,12 @@ def test_gate_refuses_and_leaves_nothing(
         store.install_from_wheel(lock, path)
         assert len(store.installed()) == 1
         return
-    with pytest.raises((ChecksumError, LicenceRefusedError)):
+    permitted = licence == "MIT"
+    refusal = ChecksumError if permitted and not good else (ChecksumError, LicenceRefusedError)
+    with pytest.raises(refusal) as caught:
         store.install_from_wheel(lock, path)
+    if permitted and not good:
+        assert f"Copy {path.name} again from the lilbee release" in str(caught.value)
     assert_no_build_or_copy(store.root)
 
 
