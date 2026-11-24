@@ -313,16 +313,16 @@ def _clean_upload_name(name: str) -> str:
     """
     normalized = name.replace("\\", "/")
     if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
-        raise ValueError(f"upload filename must be relative: {name!r}")
+        raise ValueError(f"upload filename must be relative: '{name}'")
     parts = [part for part in normalized.split("/") if part not in ("", ".")]
     if not parts:
-        raise ValueError(f"invalid upload filename: {name!r}")
+        raise ValueError(f"invalid upload filename: '{name}'")
     if ".." in parts:
-        raise ValueError(f"upload filename may not contain '..': {name!r}")
+        raise ValueError(f"upload filename may not contain '..': '{name}'")
     relative = "/".join(parts)
     reason = excluded_extension_reasons().get(Path(relative).suffix.lower())
     if reason is not None:
-        raise ValueError(f"{name!r}: {reason}")
+        raise ValueError(f"'{name}': {reason}")
     validate_path_within(cfg.documents_dir / relative, cfg.documents_dir)
     return relative
 

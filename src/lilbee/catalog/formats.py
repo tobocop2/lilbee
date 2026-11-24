@@ -99,7 +99,7 @@ def _refuse_unsafe_names(selected: Iterable[str]) -> None:
     for name in selected:
         parts = name.replace("\\", "/").split("/")
         if name.startswith(("/", "\\")) or ".." in parts:
-            raise ValueError(f"Refusing model file {name!r}: its path leaves the model folder")
+            raise ValueError(f"Refusing model file '{name}': its path leaves the model folder")
 
 
 def _require_whole_shard_sets(names: list[str], shards: list[str]) -> None:
