@@ -1911,3 +1911,39 @@ class TestExitIfOpensRemain:
             named.removeHandler(handler)
 
         assert order == ["flush", "exit 143"]
+
+
+def _run_pending_handlers() -> None:
+    """Give the main thread bytecode to run, so a pending signal handler runs."""
+    for _ in range(20):
+        time.sleep(0.01)
+
+
+def test_a_parent_death_stops_the_process_as_one_terminate_does():
+    """The handler runs on the main thread and raises the terminate status."""
+    provider = _install_stub_services()
+    install_engine_lifecycle_hooks()
+
+    with pytest.raises(SystemExit) as raised:
+        services_mod.stop_for_parent_death()
+        _run_pending_handlers()
+    _join_teardown()
+
+    assert raised.value.code == 128 + signal.SIGTERM
+    provider.shutdown.assert_called_once()
+
+
+def test_a_parent_death_after_a_terminate_sends_no_second_stop(monkeypatch):
+    """A second run of the handler is the force quit, so the stop under way gets no other."""
+    forced: list[int] = []
+    monkeypatch.setattr(services_mod, "_force_quit_from_handler", forced.append)
+    _install_stub_services()
+    install_engine_lifecycle_hooks()
+    with pytest.raises(SystemExit):
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+    _join_teardown()
+
+    services_mod.stop_for_parent_death()
+    _run_pending_handlers()
+
+    assert forced == []

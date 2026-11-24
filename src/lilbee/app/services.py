@@ -16,6 +16,7 @@ on the global singleton) never see it.
 
 from __future__ import annotations
 
+import _thread
 import asyncio
 import atexit
 import concurrent.futures.thread
@@ -748,6 +749,14 @@ class _EngineLifecycle:
         """Run the handler of *signum* as a loop callback, with no interrupted frame."""
         self._on_hard_exit(signum, None)
 
+    def stop_for_parent_death(self) -> None:
+        """Run the SIGTERM handler on the main thread, unless a signal already started the stop.
+
+        A second run of the handler is the force quit, so a stop under way gets no other.
+        """
+        if not self._signalled:
+            _thread.interrupt_main(signal.SIGTERM)
+
     def reset(self) -> None:
         """Forget that handlers were installed and every stop request."""
         self._installed = False
@@ -969,6 +978,11 @@ def exit_if_opens_remain(status: int) -> None:
 def stop_on_interrupt() -> None:
     """Make Ctrl-C stop a serving process as SIGTERM does; a second press ends it at once."""
     _lifecycle.route_interrupt()
+
+
+def stop_for_parent_death() -> None:
+    """Stop a server whose parent died, as one SIGTERM does, in any phase of its run."""
+    _lifecycle.stop_for_parent_death()
 
 
 def exit_after_signal(status: int) -> None:
