@@ -204,6 +204,12 @@ class _ServicesState:
         # (the first, the one /reset makes, a lazy one) without each path telling it.
         self.stores: weakref.WeakSet[Store] = weakref.WeakSet()
         self.stores_lock = threading.Lock()
+        # Spawn watchers, kept here because each container's provider forgets its own
+        # when ``reset_services`` discards it. Taken before ``_reset_swap_lock``.
+        self.pool_watchers: list[
+            tuple[Callable[[WorkerRole], None] | None, Callable[[WorkerRole], None] | None]
+        ] = []
+        self.pool_watchers_lock = threading.Lock()
 
     def report_upgrade(self, event_type: EventType, event: ProgressEvent) -> None:
         """Pass a library upgrade event to the reporter the surface set last, if any."""
@@ -381,10 +387,12 @@ def get_services() -> Services:
         services = build_services(cfg, registry=registry, interactive=_state.interactive)
         # A stop asked for during the build may already have swapped the singleton
         # out, so this container is shut down here instead of outliving the stop.
-        with _reset_swap_lock:
+        with _state.pool_watchers_lock, _reset_swap_lock:
             stopping = _lifecycle.stop_requested
             if not stopping:
                 _state.singleton = services
+                for on_spawning, on_spawned in _state.pool_watchers:
+                    services.add_pool_listener(on_spawning=on_spawning, on_spawned=on_spawned)
         if stopping:
             services.provider.shutdown()
             services.store.close()
@@ -400,6 +408,25 @@ def get_services() -> Services:
             with suppress(Exception):
                 services.provider.warm_up_pool()
         return services
+
+
+def watch_pool(
+    *,
+    on_spawning: Callable[[WorkerRole], None] | None = None,
+    on_spawned: Callable[[WorkerRole], None] | None = None,
+) -> None:
+    """Hear server spawn events from the active container and every one built after it.
+
+    A watcher given twice (equal callbacks) is heard once. Never builds the container.
+    """
+    watcher = (on_spawning, on_spawned)
+    with _state.pool_watchers_lock:
+        if watcher in _state.pool_watchers:
+            return
+        _state.pool_watchers.append(watcher)
+        current = _state.singleton
+        if current is not None:
+            current.add_pool_listener(on_spawning=on_spawning, on_spawned=on_spawned)
 
 
 @contextmanager
