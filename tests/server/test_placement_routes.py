@@ -362,6 +362,25 @@ def test_a_read_only_config_is_not_reported_as_a_probe_failure(method, monkeypat
     assert r.json()["detail"] == f"{message}."
 
 
+@pytest.mark.parametrize("method", ["put", "delete"])
+def test_an_unreadable_config_answers_503_with_the_read_text(method, monkeypatch):
+    from lilbee.core.settings import ConfigReadFailedError
+
+    _enable_http_placement(monkeypatch)
+
+    async def _boom(*_args):
+        raise ConfigReadFailedError(13, "Permission denied", "/data/config.toml")
+
+    handler = "placement_set" if method == "put" else "placement_clear"
+    route = placement_set_route if method == "put" else placement_clear_route
+    kwargs = {"json": {"spec": {"chat": {"devices": [0]}}}} if method == "put" else {}
+    monkeypatch.setattr(handlers, handler, _boom)
+    with create_test_client([route]) as client:
+        r = getattr(client, method)("/api/placement", **kwargs)
+    assert r.status_code == 503
+    assert r.json()["detail"].startswith("Could not read config.toml")
+
+
 def test_get_gpus(monkeypatch):
     from lilbee.server.models import GpuInfoResponse, GpusResponse
 

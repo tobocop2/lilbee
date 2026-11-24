@@ -97,16 +97,25 @@ def load(data_root: Path) -> dict[str, Any]:
     path = _config_path(data_root)
     if not path.exists():
         return {}
-    harden_private_file(path)
-    before = _stamp_of(path)
-    with path.open("rb") as f:
-        values = dict(tomllib.load(f))
-    if _stamp_of(path) != before:
+    try:
+        harden_private_file(path)
+        before = _stamp_of(path)
+        with path.open("rb") as f:
+            values = dict(tomllib.load(f))
+        after = _stamp_of(path)
+    except OSError as exc:
+        # Name the read: a read-modify-write caller reports this as a failed write otherwise.
+        raise ConfigReadFailedError(exc.errno, exc.strerror, exc.filename) from exc
+    if after != before:
         raise ConfigChangedWhileReadError(f"{path} changed while it was read; try again")
     return values
 
 
-class ConfigChangedWhileReadError(OSError):
+class ConfigReadFailedError(OSError):
+    """config.toml exists and could not be read."""
+
+
+class ConfigChangedWhileReadError(ConfigReadFailedError):
     """config.toml changed while it was read, so the reading can hold half of a write."""
 
 

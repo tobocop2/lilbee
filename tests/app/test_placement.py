@@ -395,6 +395,17 @@ class TestAFailedConfigWriteIsNotAProbeFailure:
             app_placement.set_placement(spec)
         assert raised.value is error
 
+    @pytest.mark.parametrize("spec", [None, _EMBED_SPEC])
+    def test_an_unreadable_config_passes_through_as_a_read_failure(self, spec, monkeypatch):
+        from lilbee.core.settings import ConfigReadFailedError
+
+        error = ConfigReadFailedError(errno.EACCES, "Permission denied", "/data/config.toml")
+        self._host(monkeypatch)
+        self._fail_write(monkeypatch, spec, error)
+        with pytest.raises(ConfigReadFailedError) as raised:
+            app_placement.set_placement(spec)
+        assert raised.value is error
+
 
 def test_set_none_clears(monkeypatch):
     deletes = {}
