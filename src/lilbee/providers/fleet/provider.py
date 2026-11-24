@@ -336,7 +336,7 @@ def _healthy_states(engine_dir: Path, *, in_use: bool = False) -> dict[SwapGroup
     that never asked for a load leaves no proof of one.
     """
     found: dict[SwapGroup, SwapState] = {}
-    now = time.monotonic()
+    now = time.time()
     for group in SwapGroup:
         state = find_live_state(engine_dir, group)
         if state is None:

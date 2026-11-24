@@ -670,16 +670,6 @@ def _readiness_state(
 class TestEngineReadiness:
     _deadline = sm.health_check_timeout_s([_launch(WorkerRole.CHAT)]) + sm._BOOT_TIMEOUT_S
 
-    @pytest.fixture(autouse=True)
-    def _no_first_reads(self) -> None:
-        sm._first_seen_s.clear()
-
-    @staticmethod
-    def _after(state: sm.SwapState, seconds: float) -> sm.EngineReadiness | None:
-        """The verdict *seconds* of monotonic time after this process first read *state*."""
-        sm.engine_readiness(state, now=100.0)
-        return sm.engine_readiness(state, now=100.0 + seconds)
-
     def _listing(self, monkeypatch: pytest.MonkeyPatch, *states: str) -> None:
         running = {"running": [{"model": f"m{i}", "state": s} for i, s in enumerate(states)]}
         _patch_http(monkeypatch, lambda _url: _fake_response(payload=running))
@@ -711,56 +701,16 @@ class TestEngineReadiness:
     def test_nothing_loaded_and_young_is_idle(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._listing(monkeypatch)
         state = _readiness_state()
-        assert self._after(state, self._deadline - 1) is sm.EngineReadiness.IDLE
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline - 1) is (
+            sm.EngineReadiness.IDLE
+        )
 
     def test_nothing_loaded_and_old_is_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._listing(monkeypatch, "stopping")
         state = _readiness_state()
-        assert self._after(state, self._deadline) is sm.EngineReadiness.FAILED
-
-    def test_the_wall_clock_stamp_does_not_set_the_age(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._listing(monkeypatch)
-        state = _readiness_state(created_at=1.0)  # a create time far in the past
-        assert sm.engine_readiness(state, now=100.0) is sm.EngineReadiness.IDLE
-
-    def test_a_record_read_again_keeps_its_first_read(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._listing(monkeypatch)
-        state = _readiness_state()
-        sm.engine_readiness(state, now=100.0)
-        sm.engine_readiness(state, now=100.0 + self._deadline - 1)
-        assert sm.engine_readiness(state, now=100.0 + self._deadline) is (sm.EngineReadiness.FAILED)
-
-    def test_a_record_with_a_boot_stamp_ages_by_the_boot_clock(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._listing(monkeypatch)
-        ages = {"age": self._deadline - 1}
-        monkeypatch.setattr(sm, "linux_age_s", lambda _boot, _ticks: ages["age"])
-        state = dataclasses.replace(_readiness_state(), boot_id="boot-A", start_ticks=5000.0)
-        assert sm.engine_readiness(state, now=100.0) is sm.EngineReadiness.IDLE
-        ages["age"] = self._deadline
-        assert sm.engine_readiness(state, now=100.0) is sm.EngineReadiness.FAILED
-
-    def test_a_boot_stamp_needs_no_creation_time(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._listing(monkeypatch)
-        monkeypatch.setattr(sm, "linux_age_s", lambda _boot, _ticks: self._deadline)
-        state = dataclasses.replace(
-            _readiness_state(created_at=None), boot_id="boot-A", start_ticks=5000.0
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
+            sm.EngineReadiness.FAILED
         )
-        assert sm.engine_readiness(state, now=100.0) is sm.EngineReadiness.FAILED
-
-    def test_a_boot_stamp_from_another_boot_falls_back_to_the_first_read(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._listing(monkeypatch)
-        monkeypatch.setattr(sm, "linux_age_s", lambda _boot, _ticks: None)
-        state = dataclasses.replace(_readiness_state(), boot_id="boot-A", start_ticks=5000.0)
-        assert self._after(state, self._deadline - 1) is sm.EngineReadiness.IDLE
-        assert sm.engine_readiness(state, now=100.0 + self._deadline) is (sm.EngineReadiness.FAILED)
 
     def test_a_stamped_record_is_idle_at_any_age(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._listing(monkeypatch)
@@ -775,6 +725,49 @@ class TestEngineReadiness:
         self._listing(monkeypatch)
         state = _readiness_state(created_at=None)
         assert sm.engine_readiness(state, now=1e12) is sm.EngineReadiness.IDLE
+
+    def test_a_record_without_a_boot_stamp_keeps_the_wall_clock_age(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A process that reads an old record once still sees it fail (macOS, Windows)."""
+        self._listing(monkeypatch)
+        monkeypatch.setattr(sm, "linux_age_s", lambda _boot, _ticks: pytest.fail("no stamp"))
+        state = _readiness_state(created_at=1000.0)
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
+            sm.EngineReadiness.FAILED
+        )
+
+    def test_a_record_with_a_boot_stamp_ages_by_the_boot_clock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._listing(monkeypatch)
+        ages = {"age": self._deadline - 1}
+        monkeypatch.setattr(sm, "linux_age_s", lambda _boot, _ticks: ages["age"])
+        state = dataclasses.replace(_readiness_state(), boot_id="boot-A", start_ticks=5000.0)
+        assert sm.engine_readiness(state, now=1e12) is sm.EngineReadiness.IDLE
+        ages["age"] = self._deadline
+        assert sm.engine_readiness(state, now=1000.0) is sm.EngineReadiness.FAILED
+
+    def test_a_boot_stamp_needs_no_creation_time(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._listing(monkeypatch)
+        monkeypatch.setattr(sm, "linux_age_s", lambda _boot, _ticks: self._deadline)
+        state = dataclasses.replace(
+            _readiness_state(created_at=None), boot_id="boot-A", start_ticks=5000.0
+        )
+        assert sm.engine_readiness(state, now=1000.0) is sm.EngineReadiness.FAILED
+
+    def test_a_boot_stamp_from_another_boot_falls_back_to_the_wall_clock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._listing(monkeypatch)
+        monkeypatch.setattr(sm, "linux_age_s", lambda _boot, _ticks: None)
+        state = dataclasses.replace(_readiness_state(), boot_id="boot-A", start_ticks=5000.0)
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline - 1) is (
+            sm.EngineReadiness.IDLE
+        )
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
+            sm.EngineReadiness.FAILED
+        )
 
     def test_the_deadline_follows_the_slowest_recorded_member(
         self, monkeypatch: pytest.MonkeyPatch
@@ -792,8 +785,8 @@ class TestEngineReadiness:
         )
         slow = sm.health_check_timeout_s([heavy]) + sm._BOOT_TIMEOUT_S
         assert slow > self._deadline
-        assert self._after(state, slow - 1) is sm.EngineReadiness.IDLE
-        assert sm.engine_readiness(state, now=100.0 + slow) is sm.EngineReadiness.FAILED
+        assert sm.engine_readiness(state, now=slow - 1) is sm.EngineReadiness.IDLE
+        assert sm.engine_readiness(state, now=slow) is sm.EngineReadiness.FAILED
 
     def test_an_undecodable_contract_uses_the_default_ceiling(
         self, monkeypatch: pytest.MonkeyPatch
@@ -803,8 +796,8 @@ class TestEngineReadiness:
             pid=1, pgid=None, created_at=0.0, proxy_port=4100, launches=({"role": "chat"},)
         )
         ceiling = sm.health_check_timeout_s([]) + sm._BOOT_TIMEOUT_S
-        assert self._after(state, ceiling - 1) is sm.EngineReadiness.IDLE
-        assert sm.engine_readiness(state, now=100.0 + ceiling) is sm.EngineReadiness.FAILED
+        assert sm.engine_readiness(state, now=ceiling - 1) is sm.EngineReadiness.IDLE
+        assert sm.engine_readiness(state, now=ceiling) is sm.EngineReadiness.FAILED
 
     def test_a_silent_proxy_is_not_answering(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_http(monkeypatch, _raise_connect_error)

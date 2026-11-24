@@ -195,13 +195,18 @@ class TestLinuxAge:
 
     def test_age_is_the_boot_clock_minus_the_start_ticks(self, tmp_path):
         self._boot(tmp_path)
+        # These names exist only on Linux; create=True lets the test run on macOS and Windows.
         with (
             mock.patch("lilbee.parent_monitor._is_linux", return_value=True),
             mock.patch.object(parent_monitor, "_PROC_ROOT", tmp_path),
-            mock.patch.object(parent_monitor.time, "clock_gettime", return_value=1000.0),
-            mock.patch.object(parent_monitor.os, "sysconf", return_value=100),
+            mock.patch.object(parent_monitor.time, "CLOCK_BOOTTIME", 7, create=True),
+            mock.patch.object(
+                parent_monitor.time, "clock_gettime", return_value=1000.0, create=True
+            ) as clock,
+            mock.patch.object(parent_monitor.os, "sysconf", return_value=100, create=True),
         ):
             assert parent_monitor.linux_age_s("abc-123", 25000.0) == 750.0
+        clock.assert_called_once_with(7)
 
     def test_none_for_another_boot(self, tmp_path):
         self._boot(tmp_path, "boot-B")

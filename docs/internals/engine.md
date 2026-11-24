@@ -448,7 +448,9 @@ kept or must be corrected.
   later lilbee binds an answering engine only when `/running` lists a member ready or starting, or the record has
   `ready_at`, or the record is younger than the slowest member's cold-load ceiling plus 30 s, or another lilbee holds
   the engine (a holder that never warmed leaves no proof of a load); an older record that never loaded and has no
-  holder is rebuilt. Before the next build
+  holder is rebuilt. On Linux, a record that holds the boot id and start ticks is aged by the boot clock, so a
+  wall-clock step does not change its age. Any other record (macOS, Windows, a file written before the pair) is aged
+  by the wall clock against its create time, so a forward step there can mark a loading engine failed early. Before the next build
   launches the fleet (so the cards are actually free for it and the context sizer
   reads true free VRAM), every state file is
   scanned and each dead owner's surviving llama-swap and its servers are reaped
