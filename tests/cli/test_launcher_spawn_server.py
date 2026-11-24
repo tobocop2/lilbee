@@ -8,6 +8,7 @@ mode, a size-capped log file otherwise).
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import signal
 import subprocess
@@ -21,6 +22,7 @@ import pytest
 
 from lilbee.cli.launchers import server as server_mod
 from lilbee.core.config import cfg
+from lilbee.runtime.lock import SERVER_LOCK_TIMEOUT, acquire_server_lock
 from tests._mock_effects import repeat_last
 from tests.conftest import clean_env
 
@@ -141,6 +143,48 @@ while thread is not None and os.path.exists(f"/proc/self/task/{thread.native_id}
     time.sleep(0.01)
 print("spawner gone", flush=True)
 time.sleep(60)
+"""
+
+# A launcher that spawns a real serve and says its pid.
+_LAUNCHER_OF_A_REAL_SERVE = """\
+import sys
+import time
+
+from lilbee.cli.launchers.server import spawn_server
+
+print(spawn_server(int(sys.argv[1])).pid, flush=True)
+time.sleep(120)
+"""
+
+# Takes the orphans of its subtree (Linux), so it can read the exit status of the
+# serve whose launcher it kills. It kills the launcher once serve has set up its
+# logging, so serve is waiting on the server lock the test holds.
+_KILLS_THE_LAUNCHER_IN_STARTUP = """\
+import ctypes
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+PR_SET_CHILD_SUBREAPER = 36
+ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
+launcher_source, port, fault_log = sys.argv[1:]
+launcher = subprocess.Popen(
+    [sys.executable, "-c", launcher_source, port], stdout=subprocess.PIPE, encoding="utf-8"
+)
+serve_pid = int(launcher.stdout.readline())
+deadline = time.monotonic() + 120
+while not os.path.exists(fault_log) and time.monotonic() < deadline:
+    time.sleep(0.05)
+time.sleep(1)
+os.kill(launcher.pid, signal.SIGKILL)
+launcher.wait()
+killed = time.monotonic()
+_, status = os.waitpid(serve_pid, 0)
+seconds = time.monotonic() - killed
+print(json.dumps({"status": os.waitstatus_to_exitcode(status), "seconds": seconds}))
 """
 
 
@@ -914,3 +958,42 @@ def test_serve_gets_no_signal_when_the_launcher_threads_end_one_by_one(tmp_path:
         launcher.communicate(timeout=30)
 
     assert _stops_seen(tmp_path) == ["parent-gone"]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="reading an orphan's status needs a subreaper")
+def test_a_real_serve_stops_when_the_launcher_is_killed_during_startup(tmp_path: Path) -> None:
+    """Serve watches its launcher from the start, so a kill during its lock wait stops it."""
+    env = {
+        **clean_env(tmp_path),
+        "LILBEE_MODELS_DIR": str(tmp_path / "models"),
+        "LILBEE_NO_SPLASH": "1",
+        "PYTHONIOENCODING": "utf-8",
+    }
+    holder = acquire_server_lock(tmp_path / "data", timeout=1)
+    assert holder is not None
+    try:
+        harness = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                _KILLS_THE_LAUNCHER_IN_STARTUP,
+                _LAUNCHER_OF_A_REAL_SERVE,
+                str(server_mod.free_port()),
+                str(tmp_path / "logs" / "server-fault.log"),
+            ],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=180,
+            check=False,
+        )
+    finally:
+        holder.release()
+    serve_log = tmp_path / "data" / "logs" / "launcher-serve.log"
+    output = serve_log.read_text(encoding="utf-8") if serve_log.exists() else ""
+
+    assert harness.returncode == 0, harness.stderr
+    ended = json.loads(harness.stdout)
+    assert ended["status"] == 128 + signal.SIGTERM, output
+    assert ended["seconds"] < SERVER_LOCK_TIMEOUT / 2, output
+    assert "force quit" not in output

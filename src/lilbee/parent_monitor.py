@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import threading
@@ -57,18 +56,13 @@ def _parent_alive(pid: int, start_time: float | None) -> bool:
     return psutil.pid_exists(pid) and _same_process(pid, start_time)
 
 
-async def watch_parent_async(
-    parent_pid: int,
-    on_death: Callable[[], None],
-    *,
-    poll_interval_secs: float = POLL_INTERVAL_SECS,
-) -> None:
-    """Poll *parent_pid* until it exits or its PID is recycled, then call *on_death* once."""
-    start_time = _parent_start_time(parent_pid)
-    while _parent_alive(parent_pid, start_time):
-        await asyncio.sleep(poll_interval_secs)
-    log.info("%s=%d is no longer alive; triggering shutdown", PARENT_PID_ENV, parent_pid)
-    on_death()
+def _started_after_us(start_time: float | None) -> bool:
+    """Whether the process at the parent pid started after this one, so it is not the parent.
+
+    The parent pid can name a grandparent (an editor, or a console-script wrapper),
+    so the test is the create-time order, not ``os.getppid()``.
+    """
+    return start_time is not None and start_time > psutil.Process().create_time()
 
 
 def watch_parent_thread(
@@ -81,8 +75,9 @@ def watch_parent_thread(
 
     def _loop() -> None:
         start_time = _parent_start_time(parent_pid)
-        while _parent_alive(parent_pid, start_time):
-            time.sleep(poll_interval_secs)
+        if not _started_after_us(start_time):
+            while _parent_alive(parent_pid, start_time):
+                time.sleep(poll_interval_secs)
         log.info("%s=%d is no longer alive; triggering shutdown", PARENT_PID_ENV, parent_pid)
         on_death()
 
