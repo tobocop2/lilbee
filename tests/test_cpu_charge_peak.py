@@ -466,17 +466,11 @@ GRANITE_H_KV = [0] * 10 + [4, 0, 0, 4, 0, 0, 0, 4] + [0] * 9 + [4, 0, 0, 0, 0]
 """granite-4.0-h-350m's per-layer KV heads: four attention layers among 32."""
 
 PER_LAYER = {
-    "lfm2": (_arch_header(16, _array(LFM2_KV)), vram_mod.AttentionShape(16, 8, 65_536, True)),
-    "granite-h": (
-        _arch_header(12, _array(GRANITE_H_KV)),
-        vram_mod.AttentionShape(12, 4, 65_536, True),
-    ),
-    "query-head-array": (
-        _arch_header(_array([32, 16]), 8),
-        vram_mod.AttentionShape(32, 8, 65_536, True),
-    ),
+    "lfm2": (_arch_header(16, _array(LFM2_KV)), 16, 8),
+    "granite-h": (_arch_header(12, _array(GRANITE_H_KV)), 12, 4),
+    "query-head-array": (_arch_header(_array([32, 16]), 8), 32, 8),
 }
-"""Per-layer headers with the shape of their largest layer."""
+"""Per-layer headers with the query and key-value heads of their largest layer."""
 
 UNSCALED = {
     "no-kv-heads": _arch_header(32, None),
@@ -504,8 +498,9 @@ class TestAHeaderWithoutScalarHeads:
     def test_a_per_layer_header_has_the_shape_of_its_largest_layer(
         self, case: str, parser_for: ParserFor
     ) -> None:
-        header, expected = PER_LAYER[case]
-        assert self._shape(parser_for, header) == expected
+        header, heads, kv_heads = PER_LAYER[case]
+        shape = self._shape(parser_for, header)
+        assert shape == vram_mod.AttentionShape(heads, kv_heads, 65_536, per_layer=True)
 
     @pytest.mark.parametrize("case", sorted(UNSCALED))
     def test_it_has_no_shape(self, case: str, parser_for: ParserFor) -> None:
@@ -543,9 +538,9 @@ class TestAPerLayerHeaderOnTheCpu:
         self, case: str, parser_for: ParserFor
     ) -> None:
         path, fake = parser_for("llama-1b-q8")
-        fake.header, shape = PER_LAYER[case]
+        fake.header, heads, kv_heads = PER_LAYER[case]
         base = PARSER[("llama-1b-q8", 1, 4096, False, "f16")].uma + MODELS["llama-1b-q8"].file_bytes
-        scores = DEFAULT_UBATCH * 4096 * (4 * shape.heads + 6 * shape.kv_heads)
+        scores = DEFAULT_UBATCH * 4096 * (4 * heads + 6 * kv_heads)
         assert _charge(self._request(path, flash=False)) == base + scores
 
     def test_the_lfm2_charge_covers_the_measured_flash_off_rise(
