@@ -45,6 +45,10 @@ _FAILURE_TEXTS: dict[ProviderErrorKind, tuple[str, str]] = {
         "The reranker is still starting.",
         "Search again in a moment.",
     ),
+    ProviderErrorKind.ENGINE_MISSING: (
+        "The reranker engine is not installed.",
+        "Run lilbee status to see which engine is missing.",
+    ),
 }
 _UNKNOWN_TEXT = (
     "The reranker raised an error.",

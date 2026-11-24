@@ -43,7 +43,7 @@ from lilbee.server.chat_completions_api.errors import CompletionsErrorCode, comp
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.content_disposition import CONTENT_DISPOSITION
 from lilbee.server.mcp_mount import build_mcp_mount
-from lilbee.server.provider_status import CLIENT_FAULT_STATUSES, retry_after_headers
+from lilbee.server.provider_status import APP_ERROR_STATUSES, retry_after_headers
 from lilbee.server.routes import engines as engine_routes
 from lilbee.server.routes import presets as preset_routes
 from lilbee.server.routes.agent_config import (
@@ -433,15 +433,15 @@ def _unhandled_error_response(request: Request, exc: Exception) -> Response:
 
 
 def _provider_error_response(request: Request, exc: ProviderError) -> Response:
-    """Answer engines still starting as a 503 and a bad request as a 400, with their text."""
-    if exc.kind is ProviderErrorKind.STARTING:
+    """Answer a starting or missing engine as 503, a bad request as 400, a missing model as 404."""
+    if exc.kind in (ProviderErrorKind.STARTING, ProviderErrorKind.ENGINE_MISSING):
         unavailable = HTTPException(
             status_code=HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
             headers=retry_after_headers(exc.kind),
         )
         return _json_error_response(request, unavailable)
-    status = CLIENT_FAULT_STATUSES.get(exc.kind)
+    status = APP_ERROR_STATUSES.get(exc.kind)
     if status is not None:
         return _json_error_response(request, HTTPException(status_code=status, detail=str(exc)))
     return _unhandled_error_response(request, exc)

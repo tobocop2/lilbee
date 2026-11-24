@@ -47,7 +47,6 @@ def test_any_bad_request_provider_failure_answers_400_with_its_text() -> None:
         ProviderErrorKind.AUTH,
         ProviderErrorKind.RATE_LIMIT,
         ProviderErrorKind.CONTEXT_OVERFLOW,
-        ProviderErrorKind.NOT_FOUND,
         ProviderErrorKind.CONNECTION,
         ProviderErrorKind.SERVER,
         ProviderErrorKind.UNKNOWN,
@@ -58,6 +57,11 @@ def test_the_other_provider_kinds_keep_the_500_on_a_route_with_no_handler(
 ) -> None:
     status, _ = _app_status(ProviderError("boom", kind=kind))
     assert status == 500
+
+
+def test_a_model_that_is_not_found_answers_404_on_a_route_with_no_handler() -> None:
+    status, _ = _app_status(ProviderError("boom", kind=ProviderErrorKind.NOT_FOUND))
+    assert status == 404
 
 
 def test_an_unmapped_provider_kind_logs_its_traceback() -> None:

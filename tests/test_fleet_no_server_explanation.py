@@ -110,16 +110,16 @@ class TestTheExplanationInstallsNothing:
         assert no_server.installs == []
 
     @pytest.mark.parametrize("role", list(WorkerRole))
-    def test_the_error_of_a_role_with_no_server_is_not_found_for_the_http_caller(
+    def test_the_error_of_a_role_with_no_engine_binary_is_engine_missing_for_the_http_caller(
         self, no_server: _Calls, book: str, role: WorkerRole
     ) -> None:
         with pytest.raises(ProviderError) as error:
             FleetProvider()._raise_no_clients(role)
 
-        assert error.value.kind is ProviderErrorKind.NOT_FOUND
+        assert error.value.kind is ProviderErrorKind.ENGINE_MISSING
         classified = classify_provider_error(error.value)
         assert classified is not None
-        assert classified.http_status == 404
+        assert classified.http_status == 503
         assert "model server is running" in classified.message
 
     def test_the_path_is_scanned_once_for_the_server_the_reason_names(
