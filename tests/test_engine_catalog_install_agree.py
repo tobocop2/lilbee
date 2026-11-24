@@ -174,7 +174,7 @@ def test_the_list_logs_why_it_hides_engines_on_an_unreadable_host(
     assert len(messages) == 1
     names, _, cause = messages[0].removeprefix("The engine list hides ").partition(": ")
     assert set(names.split(", ")) == set(_NAMES)
-    assert cause == "the OS or CPU of this host could not be read."
+    assert cause == "the OS or CPU of this computer could not be read."
 
 
 def test_the_list_logs_the_hidden_engines_when_only_the_os_is_unreadable(
@@ -187,7 +187,7 @@ def test_the_list_logs_the_hidden_engines_when_only_the_os_is_unreadable(
         engine_service.not_installed()
     messages = [r.getMessage() for r in caplog.records if r.name == engine_service.log.name]
     assert len(messages) == 1
-    assert messages[0].endswith(": the OS or CPU of this host could not be read.")
+    assert messages[0].endswith(": the OS or CPU of this computer could not be read.")
 
 
 def test_a_readable_host_logs_nothing_about_hidden_engines(

@@ -99,7 +99,7 @@ def _said(cards: int, *, listed: bool) -> int | str:
 
 def _m3(model: str, gpus: int | str, engine: str) -> str:
     return (
-        f"{model} will not be served: this host has {gpus} GPUs and {engine} cannot be "
+        f"{model} will not be served: this computer has {gpus} GPUs and {engine} cannot be "
         "told which one to use. Use another engine for this role."
     )
 

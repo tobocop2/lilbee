@@ -209,7 +209,7 @@ def assert_rocm_devices_usable(binary: Path, devices: list[FleetDevice], probe_o
         # CPU serving worked, which is worse than the slow fallback this guard
         # exists to catch, so say so and let it start.
         log.warning(
-            "The engine links the ROCm/HIP runtime and this host has an AMD GPU, but it "
+            "The engine links the ROCm/HIP runtime and this computer has an AMD GPU, but it "
             "enumerated no device, so GPU work will fall back to CPU. No discrete AMD card "
             "was found, so this is most likely an APU whose gfx target this ROCm build does "
             "not support (check with 'rocminfo').%s The engine reported: %s",
@@ -218,7 +218,7 @@ def assert_rocm_devices_usable(binary: Path, devices: list[FleetDevice], probe_o
         )
         return
     raise ProviderError(
-        "The engine links the ROCm/HIP runtime and this host has an AMD GPU, but it "
+        "The engine links the ROCm/HIP runtime and this computer has an AMD GPU, but it "
         "enumerated no device, so GPU work would silently fall back to CPU.\n"
         f"The engine reported: {device_probe_diagnostic(probe_output)}\n"
         "Likely causes: the ROCm user-space version does not match the amdgpu kernel "
