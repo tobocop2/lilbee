@@ -19,8 +19,9 @@ _SMI_TIMEOUT_S = 5.0
 # Bounded wait for a timed-out smi tool to die before abandoning it: a driver-
 # wedged sampler must not hang the util-sampling thread (it holds a lock).
 _SMI_KILL_WAIT_S = 5.0
-# Last non-zero outcome per tool, so a sampler that polls every second logs a failure once.
-_warned: dict[str, tuple[int, bool]] = {}
+# Last non-zero outcome per call (tool and arguments, since xpu-smi runs once per device), so a
+# sampler that polls every second logs a failure once.
+_warned: dict[tuple[str, tuple[str, ...]], tuple[int, bool]] = {}
 
 
 @dataclass(frozen=True)
@@ -76,12 +77,13 @@ def run_smi(tool: str, args: Sequence[str], timeout: float = _SMI_TIMEOUT_S) -> 
     """
     stderr: list[str] = []
     stdout, returncode = run_tool(tool, args, timeout, stderr)
+    call = (tool, tuple(args))
     if returncode in (0, None):
-        _warned.pop(tool, None)
+        _warned.pop(call, None)
         return stdout
     outcome = (returncode, bool(stdout.strip()))
-    if _warned.get(tool) != outcome:
-        _warned[tool] = outcome
+    if _warned.get(call) != outcome:
+        _warned[call] = outcome
         log.warning(
             "%s exit code %d, %s; stderr: %s",
             tool,
