@@ -50,6 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Server for chat requests that carry an image, such as the proxy of the vision role.",
     )
+    parser.add_argument(
+        "--rerank-url",
+        default="",
+        help="Server for /v1/rerank when --url has no such route, such as the proxy of the rerank role.",
+    )
     parser.add_argument("--roles", required=True, help="Comma-separated roles of the server.")
     parser.add_argument("--models", required=True, help="Model ids by role: chat=ID,embed=ID.")
     parser.add_argument("--wire", default="v1")
@@ -318,6 +323,7 @@ def main() -> int:
             token=token,
             embed_url=args.embed_url or None,
             vision_url=args.vision_url or None,
+            rerank_url=args.rerank_url or None,
         ) as (
             proxy_url,
             tape,
