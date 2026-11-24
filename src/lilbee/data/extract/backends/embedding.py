@@ -7,15 +7,14 @@ without it xberg falls back to its bundled ONNX preset.
 
 from __future__ import annotations
 
-import itertools
 import threading
 import weakref
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING
 
 from lilbee.core.config import cfg
 from lilbee.data.types import EmbeddingBackendName
 
-from .released import ReleasedNames
+from .released import ReleasedNames, next_serial
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -66,9 +65,6 @@ class _ProviderEmbedders:
     fails.
     """
 
-    _serial: ClassVar[itertools.count[int]] = itertools.count(1)
-    """Numbers names across every table, as xberg's registry is one per process."""
-
     def __init__(self) -> None:
         self._names: weakref.WeakKeyDictionary[LLMProvider, str] = weakref.WeakKeyDictionary()
         self._released = ReleasedNames()
@@ -87,7 +83,7 @@ class _ProviderEmbedders:
             name = self._names.get(provider)
             if name is not None:
                 return name
-            name = f"{EmbeddingBackendName.LILBEE}-{next(self._serial)}"
+            name = f"{EmbeddingBackendName.LILBEE}-{next_serial()}"
         _register(
             LilbeeEmbeddingBackend(
                 name=name,
