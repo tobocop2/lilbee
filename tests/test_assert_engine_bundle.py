@@ -12,6 +12,8 @@ from types import ModuleType
 import pytest
 import yaml
 
+from tests._pe_fixture import pe_file as _pe
+
 _SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "qa" / "assert_engine_bundle.py"
 
 
@@ -704,67 +706,6 @@ def test_main_refuses_a_directory_without_a_backend(
     assert "needs --backend" in capsys.readouterr().err
 
 
-def _pe(imports: tuple[str, ...] = (), delayed: tuple[str, ...] = ()) -> bytes:
-    """A minimal 64-bit PE file whose import tables name *imports* and *delayed*.
-
-    One section holds the descriptors, one empty thunk list per DLL and the names.
-    The file has no code: it only has to be a PE that pefile reads.
-    """
-    dos = b"MZ" + bytes(58) + (0x40).to_bytes(4, "little")
-    section_rva, section_raw, headers = 0x1000, 0x200, 0x200
-    blob = bytearray()
-
-    def put(data: bytes) -> int:
-        offset = len(blob)
-        blob.extend(data)
-        return section_rva + offset
-
-    def u32(*values: int) -> bytes:
-        return b"".join(v.to_bytes(4, "little") for v in values)
-
-    # One thunk list serves every DLL: a single function "f" by name, then the null end.
-    hint_name = put(bytes(2) + b"f\0\0")
-    blob.extend(bytes(-len(blob) % 8))
-    thunks = put(hint_name.to_bytes(8, "little") + bytes(8))
-    names = [put(n.encode() + b"\0") for n in (*imports, *delayed)]
-    blob.extend(bytes(-len(blob) % 8))
-    import_rva = section_rva + len(blob)
-    for rva in names[: len(imports)]:
-        blob.extend(u32(thunks, 0, 0, rva, thunks))
-    blob.extend(bytes(20))
-    delay_rva = section_rva + len(blob)
-    for rva in names[len(imports) :]:
-        blob.extend(u32(1, rva, thunks, thunks, thunks, 0, 0, 0))
-    blob.extend(bytes(32))
-
-    directories = bytearray(16 * 8)
-    if imports:
-        directories[8:16] = u32(import_rva, 20 * (len(imports) + 1))
-    if delayed:
-        directories[13 * 8 : 14 * 8] = u32(delay_rva, 32 * (len(delayed) + 1))
-    optional = (
-        (0x20B).to_bytes(2, "little")
-        + bytes(22)
-        + (0x180000000).to_bytes(8, "little")
-        + u32(0x1000, 0x200)  # section and file alignment
-        + bytes(16)
-        + u32(section_rva + 0x1000, headers)  # size of image, size of headers
-        + bytes(4)
-        + (3).to_bytes(2, "little")  # console subsystem
-        + bytes(2)
-        + bytes(32)
-        + bytes(4)
-        + u32(16)  # data directory count
-        + bytes(directories)
-    )
-    assert len(optional) == 240
-    coff = (0x8664).to_bytes(2, "little") + (1).to_bytes(2, "little") + bytes(12)
-    coff += (240).to_bytes(2, "little") + (0x2022).to_bytes(2, "little")
-    section = b".idata\0\0" + u32(len(blob), section_rva, len(blob), section_raw) + bytes(16)
-    header = dos + b"PE\0\0" + coff + optional + section
-    return header + bytes(headers - len(header)) + bytes(blob)
-
-
 _WIN_WHEEL = "lilbee_engine_llama_cpp-1.0-1.cpu-py3-none-win_amd64.whl"
 _WIN_CPU = ("ggml-cpu-x64.dll", "ggml-cpu-haswell.dll")
 
@@ -847,6 +788,55 @@ def test_every_windows_bundle_is_checked_for_unbundled_imports(tmp_path: Path) -
     problems = acb.check(root, "cpu", "Windows")
     assert len(problems) == 1
     assert "llama-server.exe imports ggml-base.dll" in problems[0]
+
+
+def _mistral_bin(tmp_path: Path, files: dict[str, bytes]) -> Path:
+    """A mistral.rs bin folder that holds *files*."""
+    root = tmp_path / "lilbee_engine_mistral_rs" / "bin"
+    root.mkdir(parents=True)
+    for name, data in files.items():
+        (root / name).write_bytes(data)
+    return root
+
+
+def test_a_mistral_exe_that_imports_an_unbundled_runtime_dll_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _mistral_bin(tmp_path, {"mistralrs.exe": _pe(("kernel32.dll", "vcruntime140_1.dll"))})
+    assert acb.main(["--imports-only", str(root)]) == 1
+    err = capsys.readouterr().err
+    assert "mistralrs.exe imports vcruntime140_1.dll" in err
+    assert "lilbee_engine_llama_cpp" not in err
+
+
+def test_a_mistral_exe_whose_runtime_dll_is_bundled_passes(tmp_path: Path) -> None:
+    root = _mistral_bin(
+        tmp_path,
+        {
+            "mistralrs.exe": _pe(("kernel32.dll", "vcruntime140_1.dll")),
+            "vcruntime140_1.dll": b"x",
+        },
+    )
+    assert acb.main(["--imports-only", str(root)]) == 0
+
+
+def test_a_bundled_dll_of_a_mistral_bundle_is_read_too(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _mistral_bin(
+        tmp_path,
+        {"mistralrs.exe": _pe(("engine.dll",)), "engine.dll": _pe((), ("msvcp140.dll",))},
+    )
+    assert acb.main(["--imports-only", str(root)]) == 1
+    assert "engine.dll imports msvcp140.dll" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [["--imports-only"], ["--imports-only", "no-such-folder"]])
+def test_the_import_check_alone_needs_folders(
+    argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert acb.main(argv) == 2
+    assert "usage" in capsys.readouterr().err
 
 
 def test_a_non_windows_bundle_is_not_asked_for_imports(tmp_path: Path) -> None:

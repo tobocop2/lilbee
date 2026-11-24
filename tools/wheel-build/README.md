@@ -27,7 +27,9 @@ the same behavior, so a developer can reproduce a CI build off-runner.
   engine-packs repository runs it through its `scripts/pack.sh`, which sets the variables
   the script names at its top.
 - `check_mistralrs_wheel.sh` — checks a built mistral.rs pack: the tag, the macOS floor of
-  the Metal libraries (`metal_floor.py`), the licences, and that the tool starts.
+  the Metal libraries (`metal_floor.py`), the licences, that each DLL and exe of a Windows
+  wheel imports only a DLL that the wheel holds or Windows provides
+  (`tools/qa/assert_engine_bundle.py --imports-only`), and that the tool starts.
   `pack_mistralrs.sh` runs it before the pack leaves the build.
 - `pack_tei.sh` — builds and checks the text-embeddings-inference engine pack of one
   cell, in the same way. A Linux cell builds in the manylinux image (`tei_manylinux.sh`),

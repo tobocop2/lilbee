@@ -65,7 +65,7 @@ only_system_libraries() {
 }
 
 start_tool() {  # wheel
-  local os tools work py tool exe bindir dll libraries
+  local os tools work py tool exe bindir libraries
   os="$(host_os)"
   tools="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   work="$(mktemp -d "${PWD}/pack-check.XXXXXX")"
@@ -79,9 +79,8 @@ start_tool() {  # wheel
   bindir="$(dirname "${exe}")"
   ls -R "${bindir}"
   if [ "${os}" = Windows ]; then
-    for dll in msvcp140.dll vcruntime140.dll vcruntime140_1.dll; do
-      [ -f "${bindir}/${dll}" ] || refuse "wheel lacks ${dll}"
-    done
+    # Each DLL and exe of the wheel may import only a DLL that the wheel holds or Windows provides.
+    python "${tools}/qa/assert_engine_bundle.py" --imports-only "${bindir}" || refuse "a file of the wheel imports a DLL that nothing provides"
   fi
   if [ "${os}" = macOS ]; then
     libraries="$(otool -L "${exe}")"

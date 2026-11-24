@@ -297,7 +297,7 @@ MIT AND Apache-2.0 AND MPL-2.0 AND OpenSSL AND BSD-3-Clause" ]
   cp "${BATS_TEST_DIRNAME}/stubs/cargo-about-pack" "${BATS_TEST_TMPDIR}/make/${about}/cargo-about.exe"
   chmod +x "${BATS_TEST_TMPDIR}/make/${about}/cargo-about.exe"
   tar -czf "${GH_ASSETS}/${about}.tar.gz" -C "${BATS_TEST_TMPDIR}/make" "${about}"
-  echo VCOMP140.DLL > "${BATS_TEST_TMPDIR}/make/mistralrs.exe"
+  echo exe > "${BATS_TEST_TMPDIR}/make/mistralrs.exe"
   (cd "${BATS_TEST_TMPDIR}/make" && "${REAL_PYTHON}" -m zipfile -c "${GH_ASSETS}/m.zip" mistralrs.exe)
   printf '%s\n' 'set -e' '[ -f "$1/mistralrs.exe" ]' 'echo dll > "$1/vcruntime140.dll"' 'echo notice > "$2"' > "${ROOT}/tools/wheel-build/bundle_windows_runtime.sh"
   run bash "${SCRIPT}"
@@ -320,19 +320,15 @@ ${wheel}.sha256" ]
   [ ! -e "${PYTHON_LOG}.tree" ]
 }
 
-@test "vcomp140 stays only beside an exe that imports it" {
+@test "the Windows runtime stays in the wheel whatever the exe imports" {
   printf '%s\n' 'touch "$1/vcomp140.dll"' > "${ROOT}/tools/wheel-build/bundle_windows_runtime.sh"
   local bin="${TREE}/lilbee_engine_mistral_rs/bin"
   mkdir -p "${bin}"
   export RUNNER_OS=Windows
-  printf 'x\0VCOMP140.DLL\0' > "${bin}/mistralrs.exe"
-  run stage add_windows_runtime
-  [ "$status" -eq 0 ]
-  [ -e "${bin}/vcomp140.dll" ]
   printf 'x\0other.dll\0' > "${bin}/mistralrs.exe"
   run stage add_windows_runtime
   [ "$status" -eq 0 ]
-  [ ! -e "${bin}/vcomp140.dll" ]
+  [ -e "${bin}/vcomp140.dll" ]
 }
 
 @test "a runtime that cannot be bundled stops the build" {
