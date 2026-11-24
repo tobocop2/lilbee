@@ -909,13 +909,13 @@ def use_installed_models_for_this_run(
             continue
         apply_ephemeral_model_swap(field, canon.effective)
         chosen = (
-            f"installed {canon.effective!r}"
+            f"installed '{canon.effective}'"
             if parse_model_ref(canon.effective).is_local
-            else f"cloud model {canon.effective!r}"
+            else f"cloud model '{canon.effective}'"
         )
         if canon.original:
             notices.append(
-                f"{label} model {canon.original!r} is unavailable ({canon.reason}); "
+                f"{label} model '{canon.original}' is unavailable ({canon.reason}); "
                 f"using {chosen} for this run."
             )
         else:
