@@ -51,7 +51,7 @@ def _linux_start_ticks(pid: int) -> float:
     or unreadable process, as ``psutil.Process`` does.
     """
     try:
-        raw = (_PROC_ROOT / str(pid) / "stat").read_text()
+        raw = (_PROC_ROOT / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
     except (FileNotFoundError, ProcessLookupError):
         raise psutil.NoSuchProcess(pid) from None
     except PermissionError:
