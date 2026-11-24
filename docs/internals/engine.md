@@ -449,13 +449,13 @@ kept or must be corrected.
   `ready_at`, or the record is younger than the slowest member's cold-load ceiling plus 30 s, or another lilbee holds
   the engine (a holder that never warmed leaves no proof of a load); an older record that never loaded and has no
   holder is rebuilt. A record holds the system monotonic clock reading at spawn (`started_mono`) and the identity of the boot
-  (`started_boot`: the Linux boot id, else the boot time that psutil reports), on every platform. When the identity is
-  the current boot's, the record is aged by the clock, so a wall-clock step does not change its age. A record from
+  (`started_boot`: the Linux boot id, the macOS `kern.bootsessionuuid`, or the Windows boot counter), compared by
+  equality. A platform where the read fails stores no identity. When the identity is the current boot's, the record is
+  aged by the clock, so a wall-clock step does not change its age. A record from
   another boot is never aged by a clock reading, whether that reading is ahead of or behind the clock now. A Linux
   record without the pair but with the boot id and start ticks is aged by the boot clock. Any other record (a file
   written before both, or one from another boot) is aged by the wall clock against its create time, so a forward step
-  there can mark a loading engine failed early. Where there is no boot id, a wall-clock step larger than 60 s moves
-  the boot time and makes the record fall back to the wall clock. Before the next build
+  there can mark a loading engine failed early. Before the next build
   launches the fleet (so the cards are actually free for it and the context sizer
   reads true free VRAM), every state file is
   scanned and each dead owner's surviving llama-swap and its servers are reaped

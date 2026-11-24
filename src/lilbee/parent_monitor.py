@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import sys
@@ -73,6 +74,56 @@ def linux_boot_id() -> str | None:
         return boot_id_file.read_text(encoding="utf-8").strip() or None
     except OSError:
         return None
+
+
+# KUSER_SHARED_DATA is mapped read-only at this address in every Windows process. BootId is
+# the field after AlternativeArchitecture (offset 0x2c0, winsiderss/phnt ntexapi.h:8916), so
+# it sits at 0x2c4 (ntexapi.h:8397); the loader increments it on each boot.
+_WINDOWS_SHARED_USER_DATA = 0x7FFE0000
+_WINDOWS_BOOT_ID_OFFSET = 0x2C4
+_MACOS_BOOT_SESSION_KEY = b"kern.bootsessionuuid"
+_MACOS_BOOT_SESSION_BUFFER = 64
+
+
+def _read_u32(address: int) -> int:
+    """The 32-bit value at *address* of this process; only the Windows boot read calls it."""
+    return ctypes.c_uint32.from_address(address).value
+
+
+def _macos_boot_session() -> str | None:
+    """The kernel's per-boot UUID (``sysctl kern.bootsessionuuid``), or None when the read fails."""
+    try:
+        libc = ctypes.CDLL(None)
+        buffer = ctypes.create_string_buffer(_MACOS_BOOT_SESSION_BUFFER)
+        size = ctypes.c_size_t(_MACOS_BOOT_SESSION_BUFFER)
+        if libc.sysctlbyname(_MACOS_BOOT_SESSION_KEY, buffer, ctypes.byref(size), None, 0) != 0:
+            return None
+        return buffer.value.decode("ascii") or None
+    except (OSError, AttributeError, UnicodeDecodeError):
+        return None
+
+
+def _windows_boot_id() -> str | None:
+    """The loader's boot counter from the shared user data page, or None when it cannot be read."""
+    try:
+        return str(_read_u32(_WINDOWS_SHARED_USER_DATA + _WINDOWS_BOOT_ID_OFFSET))
+    except (OSError, ValueError):
+        return None
+
+
+def boot_identity() -> str | None:
+    """A value that is equal for every read in one boot and differs between boots.
+
+    A wall-clock step does not change it. None when the platform gives none or the read fails;
+    a caller then has no identity to compare and must not trust a monotonic clock reading.
+    """
+    if _is_linux():
+        return linux_boot_id()
+    if sys.platform == "darwin":
+        return _macos_boot_session()
+    if sys.platform == "win32":
+        return _windows_boot_id()
+    return None
 
 
 def linux_start_stamp(pid: int) -> tuple[str, float] | None:

@@ -28,7 +28,7 @@ import httpx
 import psutil
 
 from lilbee.core.health_warnings import HealthWarning, WarningCode
-from lilbee.parent_monitor import linux_age_s, linux_boot_id, linux_start_stamp
+from lilbee.parent_monitor import boot_identity, linux_age_s, linux_start_stamp
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import (
     ROUTER_GO_INSTALL,
@@ -123,10 +123,7 @@ _UNLOAD_PATH = "/api/models/unload"
 _HTTP_TIMEOUT_S = 10.0
 # llama-swap's own proxy answers within a second; upstream model loads have their
 # own (longer) budget inside llama-swap, so this only covers the proxy coming up.
-_BOOT_TIMEOUT_S = 30.0
-# Two reads of the boot time in one boot differ by the clock's drift, never by seconds.
-_BOOT_TIME_TOLERANCE_S = 60.0
-_BOOT_POLL_S = 0.25
+_BOOT_TIMEOUT_S = 30.0_BOOT_POLL_S = 0.25
 # Cap on the captured llama-swap output a boot-failure error carries.
 _BOOT_LOG_TAIL_CHARS = 2000
 # Per-group SIGTERM grace before SIGKILL on the manager shutdown/reload path. A
@@ -419,7 +416,7 @@ class SwapManager:
             creationflags=_CREATE_NEW_PROCESS_GROUP,
         )
         self._started_mono = time.monotonic()
-        self._started_boot = _boot_stamp()
+        self._started_boot = boot_identity()
         self._write_state()
         self._await_health()
         log_role_launches(launches, engines=engines)
@@ -1039,26 +1036,6 @@ def _bind_deadline_s(state: SwapState) -> float:
     return health_check_timeout_s(launches) + _BOOT_TIMEOUT_S
 
 
-def _boot_stamp() -> str:
-    """The identity of this boot: the Linux boot id, else the boot time psutil reports."""
-    return linux_boot_id() or str(psutil.boot_time())
-
-
-def _is_current_boot(stamp: str) -> bool:
-    """Whether *stamp* names this boot.
-
-    A boot id matches by equality. A boot time matches within ``_BOOT_TIME_TOLERANCE_S``,
-    because it is derived from the wall clock and the two reads differ a little.
-    """
-    current = _boot_stamp()
-    if stamp == current:
-        return True
-    try:
-        return abs(float(stamp) - float(current)) <= _BOOT_TIME_TOLERANCE_S
-    except ValueError:
-        return False
-
-
 def _engine_age_s(state: SwapState, now: float) -> float | None:
     """Seconds the engine behind *state* has run, or None when the record gives no start.
 
@@ -1072,7 +1049,7 @@ def _engine_age_s(state: SwapState, now: float) -> float | None:
     if (
         state.started_mono is not None
         and state.started_boot is not None
-        and _is_current_boot(state.started_boot)
+        and state.started_boot == boot_identity()
     ):
         return time.monotonic() - state.started_mono
     if state.boot_id is not None and state.start_ticks is not None:
