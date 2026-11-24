@@ -16,6 +16,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.data.store import SearchScope
@@ -66,7 +67,7 @@ class ScopePill(Static, can_focus=True):
             chip._set_scope(target)
 
 
-class ScopeChip(Widget):
+class ScopeChip(MountWhenAttached, Widget):
     """Three-pill search filter; visible when cfg.chat_mode=='search' and cfg.wiki.
 
     Scope is **session-only** state held on ``self._scope``; it is not
