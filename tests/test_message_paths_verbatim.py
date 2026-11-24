@@ -54,8 +54,11 @@ def _assert_verbatim(text: str, ref: str = WINDOWS_REF) -> None:
     assert ref.replace("\\", "\\\\") not in text
 
 
+_CHAT_ENGINES: dict[WorkerRole, Any] = {WorkerRole.CHAT: MagicMock()}
+
+
 def _plan_with(monkeypatch: pytest.MonkeyPatch, error: ProviderError) -> None:
-    def _estimate(role, ref, **_k):
+    def _estimate(role, ref, *, engine=None, **_k):
         raise error
 
     monkeypatch.setattr(planning_mod, "_estimate_role", _estimate)
@@ -71,7 +74,20 @@ def test_not_installed_warning_shows_the_path_as_typed(monkeypatch, caplog) -> N
         ProviderError("gone", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND),
     )
     with caplog.at_level(logging.WARNING):
-        planning_mod._server_model_inputs()
+        planning_mod._server_model_inputs(engines=_CHAT_ENGINES)
+    assert "is not installed" in caplog.text
+    _assert_verbatim(caplog.text)
+
+
+def test_cpu_role_not_installed_warning_shows_the_path_as_typed(monkeypatch, caplog) -> None:
+    _plan_with(
+        monkeypatch,
+        ProviderError("gone", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND),
+    )
+    with caplog.at_level(logging.WARNING):
+        planning_mod._server_model_inputs(
+            engines=_CHAT_ENGINES, cpu_roles=frozenset({WorkerRole.CHAT})
+        )
     assert "is not installed" in caplog.text
     _assert_verbatim(caplog.text)
 
@@ -82,7 +98,7 @@ def test_could_not_size_warning_shows_the_path_as_typed(monkeypatch, caplog) -> 
         ProviderError("bad", provider="llama-server", kind=ProviderErrorKind.SERVER),
     )
     with caplog.at_level(logging.WARNING):
-        planning_mod._server_model_inputs()
+        planning_mod._server_model_inputs(engines=_CHAT_ENGINES)
     assert "could not size model" in caplog.text
     _assert_verbatim(caplog.text)
 
@@ -111,6 +127,30 @@ def test_unexpected_estimator_output_shows_the_path_as_typed() -> None:
     with pytest.raises(ProviderError) as excinfo:
         vram_mod._parse_estimate("{}", WINDOWS_REF)
     _assert_verbatim(str(excinfo.value))
+
+
+def test_unreadable_tensor_output_shows_the_path_as_typed(monkeypatch) -> None:
+    monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: "gguf-parser")
+    monkeypatch.setattr(vram_mod, "_run_parser", lambda argv, path_str: "{}")
+    with pytest.raises(ProviderError) as excinfo:
+        vram_mod._cached_repacked_bytes("engine", WINDOWS_REF, 0)
+    _assert_verbatim(str(excinfo.value))
+
+
+def test_unreadable_header_output_shows_the_path_as_typed(monkeypatch) -> None:
+    monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: "gguf-parser")
+    monkeypatch.setattr(vram_mod, "_run_parser", lambda argv, path_str: "{}")
+    with pytest.raises(ProviderError) as excinfo:
+        vram_mod._cached_attention_shape("engine", WINDOWS_REF, 0)
+    _assert_verbatim(str(excinfo.value))
+
+
+def test_invalid_gguf_filename_shows_the_name_as_typed() -> None:
+    from lilbee.modelhub.registry import _validate_gguf_filename
+
+    with pytest.raises(ValueError) as excinfo:
+        _validate_gguf_filename(RELATIVE_REF)
+    _assert_verbatim(str(excinfo.value), RELATIVE_REF)
 
 
 def test_pull_refusal_shows_the_ref_as_typed() -> None:
