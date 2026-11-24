@@ -344,6 +344,14 @@ def test_gate_refuses_and_leaves_nothing(
     assert_no_build_or_copy(store.root)
 
 
+def test_an_upper_case_pin_accepts_the_lower_case_digest_of_the_same_file() -> None:
+    digest = hashlib.sha256(b"wheel").hexdigest()
+
+    engine_store.require_pinned_digest("engine x", digest, digest.upper(), None)
+    with pytest.raises(ChecksumError):
+        engine_store.require_pinned_digest("engine x", digest, "0" * 64, None)
+
+
 def test_checksum_error_for_a_copied_wheel_names_the_file_and_says_to_copy_it_again(
     store: EngineStore, wheel: tuple[Path, str]
 ) -> None:

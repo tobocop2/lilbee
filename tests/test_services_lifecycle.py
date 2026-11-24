@@ -1624,6 +1624,24 @@ class TestExitAfterSignal:
         assert "would not stop" in capsys.readouterr().err
         assert any("stopping the services" in rec.getMessage() for rec in caplog.records)
 
+    def test_a_signal_that_joined_a_cut_stop_sets_the_exit_status(self, monkeypatch) -> None:
+        provider = _install_stub_services()
+        release = threading.Event()
+        provider.shutdown.side_effect = lambda: release.wait(timeout=5)
+        exits: list[int] = []
+        monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+        monkeypatch.setattr(services_mod, "_STRAGGLER_BUDGET_S", 0.2)
+        monkeypatch.setattr(services_mod._lifecycle, "owed_status", 143)
+        monkeypatch.setattr(services_mod, "_all_threads", lambda: [threading.main_thread()])
+        install_engine_lifecycle_hooks()
+
+        try:
+            services_mod.exit_after_signal(0)
+        finally:
+            release.set()
+
+        assert exits == [143]
+
     def test_a_wedged_thread_cannot_hold_the_exit_status_back(self, monkeypatch) -> None:
         # The stop runs in place, so the zero budget cuts only the straggler wait.
         _without_a_stop_thread(monkeypatch)
@@ -1754,6 +1772,19 @@ class TestEndCommand:
         assert raised.value is stop
         bounded.assert_called_once_with(0)
 
+    def test_a_signal_during_the_pool_hook_gives_the_bounded_exit_its_status(
+        self, monkeypatch
+    ) -> None:
+        bounded = MagicMock()
+        monkeypatch.setattr(services_mod, "exit_after_signal", bounded)
+        self._threads(monkeypatch, [_Wedged()])
+        monkeypatch.setattr(services_mod, "_end_pool_workers", lambda status: 143)
+
+        with pytest.raises(SystemExit):
+            services_mod.end_command(SystemExit(0))
+
+        bounded.assert_called_once_with(143)
+
     def test_a_signal_during_the_bounded_exit_sets_the_status(self, monkeypatch) -> None:
         monkeypatch.setattr(services_mod, "exit_after_signal", MagicMock())
         monkeypatch.setattr(services_mod._lifecycle, "owed_status", 143)
@@ -1773,6 +1804,33 @@ class TestEndPoolWorkers:
 
         assert services_mod._end_pool_workers(3) == 3
         assert ran.is_set()
+
+    def test_the_hook_runs_on_a_daemon_thread_so_a_busy_worker_cannot_hold_the_exit(
+        self, monkeypatch
+    ) -> None:
+        seen: list[tuple[str, bool]] = []
+
+        def hook() -> None:
+            current = threading.current_thread()
+            seen.append((current.name, current.daemon))
+
+        monkeypatch.setattr(services_mod.concurrent.futures.thread, "_python_exit", hook)
+
+        services_mod._end_pool_workers(0)
+
+        assert seen == [("pool-exit", True)]
+
+    def test_the_wait_lasts_until_a_slow_hook_ends(self, monkeypatch) -> None:
+        ended = threading.Event()
+
+        def slow_hook() -> None:
+            time.sleep(0.3)
+            ended.set()
+
+        monkeypatch.setattr(services_mod.concurrent.futures.thread, "_python_exit", slow_hook)
+
+        assert services_mod._end_pool_workers(0) == 0
+        assert ended.is_set()
 
     def test_a_hook_held_by_a_busy_worker_ends_the_wait_at_the_budget(self, monkeypatch) -> None:
         release = threading.Event()
