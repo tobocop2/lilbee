@@ -7,6 +7,9 @@ keeps its 422 (see the last test).
 
 from __future__ import annotations
 
+import os
+import stat
+
 import pytest
 
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
@@ -79,3 +82,34 @@ def test_a_readable_but_invalid_config_keeps_its_422(client, tmp_path):
     res = client.post("/api/presets", json=ADD_BODY)
     assert res.status_code == 422
     assert not res.json()["detail"].startswith(READ_TEXT)
+
+
+WRITE_REQUESTS = [
+    pytest.param("patch", "/api/config", {"json": {"top_k": 3}}, id="config-update"),
+    pytest.param("post", "/api/config/reset", {"json": {"keys": ["top_k"]}}, id="config-reset"),
+    pytest.param("delete", "/api/placement", {}, id="placement-clear"),
+    pytest.param(
+        "post",
+        "/api/presets",
+        {"json": {**ADD_BODY, "name": "second"}},
+        id="preset-add",
+    ),
+    pytest.param("put", "/api/presets/omlx", {"json": {"url": ADD_BODY["url"]}}, id="preset-edit"),
+    pytest.param("delete", "/api/presets/omlx", {}, id="preset-remove"),
+]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes a read-only file")
+@pytest.mark.parametrize(("method", "url", "kwargs"), WRITE_REQUESTS)
+def test_a_read_only_config_answers_503_with_the_write_refusal(
+    client, tmp_path, method, url, kwargs
+):
+    assert client.post("/api/presets", json=ADD_BODY).status_code == 201
+    path = tmp_path / CONFIG_FILE_NAME
+    path.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    try:
+        res = getattr(client, method)(url, **kwargs)
+    finally:
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    assert res.status_code == 503, res.text
+    assert res.json()["detail"] == f"{path} is read-only; make it writable and try again.", res.text
