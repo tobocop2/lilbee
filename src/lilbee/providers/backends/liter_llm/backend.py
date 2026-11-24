@@ -67,6 +67,13 @@ _OWN_TOKENIZER = ("gpt-4o", "chatgpt-4o", "gpt-4.1", "gpt-4.5", "gpt-5", "o1", "
 class LiterLlmBackend:
     """``LlmSdkBackend`` adapter backed by the ``liter-llm`` SDK."""
 
+    def __init__(self) -> None:
+        # Model names whose token count raised a liter-llm error, almost always a
+        # tokenizer that did not load. liter-llm keeps no record of a failed load and
+        # holds a process-wide lock while it tries, so a retry on each count could
+        # wait for a network timeout every time.
+        self._failed_tokenizers: set[str] = set()
+
     @property
     def provider_name(self) -> str:
         """Stable identifier used when wrapping errors in ``ProviderError``."""
@@ -89,14 +96,19 @@ class LiterLlmBackend:
         """
         return True
 
-    def count_tokens(self, ref: ProviderModelRef, text: str) -> int:
+    def count_chat_tokens(self, ref: ProviderModelRef, text: str) -> int:
         """Count *text* with ``liter_llm.count_tokens`` for a model listed in ``_OWN_TOKENIZER``."""
         if ref.provider != _OWN_TOKENIZER_PROVIDER or not ref.name.startswith(_OWN_TOKENIZER):
             raise NotImplementedError(f"liter-llm has no tokenizer of {ref.for_display()}'s own")
+        if ref.name in self._failed_tokenizers:
+            raise ProviderError(
+                f"Token count for {ref.for_display()} failed earlier", provider=_PROVIDER_NAME
+            )
         liter_llm = _require_sdk()
         try:
             return int(liter_llm.count_tokens(ref.name, text))
         except liter_llm.LiterLlmError as exc:
+            self._failed_tokenizers.add(ref.name)
             raise ProviderError(
                 f"Token count for {ref.for_display()} failed: {exc}", provider=_PROVIDER_NAME
             ) from exc

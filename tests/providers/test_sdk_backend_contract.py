@@ -676,14 +676,14 @@ _FOREIGN_TOKENIZER_REFS = [
 ]
 
 
-class TestCountTokens:
+class TestCountChatTokens:
     @pytest.mark.parametrize("ref", _OWN_TOKENIZER_REFS)
     def test_counts_a_model_with_its_own_tokenizer(
         self, backend: LlmSdkBackend, sdk: fakes.FakeSdk, ref: str
     ) -> None:
         sdk.count_result = 5
         model_ref = parse_model_ref(ref)
-        assert backend.count_tokens(model_ref, "hello there") == 5
+        assert backend.count_chat_tokens(model_ref, "hello there") == 5
         assert sdk.last("count_tokens") == {"model": model_ref.name, "text": "hello there"}
 
     @pytest.mark.parametrize("ref", _FOREIGN_TOKENIZER_REFS)
@@ -691,7 +691,7 @@ class TestCountTokens:
         self, backend: LlmSdkBackend, sdk: fakes.FakeSdk, ref: str
     ) -> None:
         with pytest.raises(NotImplementedError):
-            backend.count_tokens(parse_model_ref(ref), "hello there")
+            backend.count_chat_tokens(parse_model_ref(ref), "hello there")
         assert not [name for name, _ in sdk.calls if name == "count_tokens"]
 
     def test_a_tokenizer_that_does_not_load_is_a_provider_error(
@@ -699,13 +699,34 @@ class TestCountTokens:
     ) -> None:
         sdk.count_error = sdk.error("BadRequestError", "failed to load tokenizer")
         with pytest.raises(ProviderError):
-            backend.count_tokens(parse_model_ref("openai/gpt-4o"), "hello there")
+            backend.count_chat_tokens(parse_model_ref("openai/gpt-4o"), "hello there")
+
+    def test_a_tokenizer_that_did_not_load_is_not_loaded_again(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        """A failed load can wait for a network timeout, so each model tries it once."""
+        sdk.count_error = sdk.error("BadRequestError", "failed to load tokenizer")
+        ref = parse_model_ref("openai/gpt-4o")
+        for _ in range(2):
+            with pytest.raises(ProviderError):
+                backend.count_chat_tokens(ref, "hello there")
+        assert len([name for name, _ in sdk.calls if name == "count_tokens"]) == 1
+
+    def test_a_failed_load_does_not_stop_another_model_from_loading(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.count_error = sdk.error("BadRequestError", "failed to load tokenizer")
+        with pytest.raises(ProviderError):
+            backend.count_chat_tokens(parse_model_ref("openai/gpt-4o"), "hello there")
+        sdk.count_error = None
+        sdk.count_result = 5
+        assert backend.count_chat_tokens(parse_model_ref("openai/o3-mini"), "hello there") == 5
 
     def test_a_missing_sdk_is_a_provider_error(self, backend: LlmSdkBackend) -> None:
         from tests._sys_modules import inject_modules
 
         with inject_modules({fakes.SDK_MODULE: None}), pytest.raises(ProviderError):
-            backend.count_tokens(parse_model_ref("openai/gpt-4o"), "hello there")
+            backend.count_chat_tokens(parse_model_ref("openai/gpt-4o"), "hello there")
 
 
 class TestListModels:

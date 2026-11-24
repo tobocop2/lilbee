@@ -368,10 +368,11 @@ class LLMProvider(Protocol):
 
         Called when :meth:`count_chat_prompt_tokens` raised ``NotImplementedError``,
         for the request text without the chat template. *model* defaults to the
-        configured chat model. A tokenizer failure is not raised: a backend that has
-        no tokenizer of the model's own answers with the default, the UTF-8 byte
-        count. A backend's first call for a model may load that model's tokenizer,
-        so it can block.
+        configured chat model. A backend that has no tokenizer of the model's own,
+        or whose tokenizer reports a load or count error, answers with the default,
+        the UTF-8 byte count. Any other exception from the tokenizer is raised. A
+        backend's first call for a model may load that model's tokenizer, so it can
+        block.
         """
         return byte_token_estimate(text)
 

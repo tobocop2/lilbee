@@ -63,9 +63,9 @@ class FakeBackend:
     list_models_calls: list[tuple[str, str, str]] = field(default_factory=list)
     list_chat_models_calls: list[str] = field(default_factory=list)
     supports_tools_calls: list[str] = field(default_factory=list)
-    count_tokens_result: int = 0
+    count_chat_tokens_result: int = 0
     raise_count: Exception | None = None
-    count_tokens_calls: list[tuple[ProviderModelRef, str]] = field(default_factory=list)
+    count_chat_tokens_calls: list[tuple[ProviderModelRef, str]] = field(default_factory=list)
 
     def available(self) -> bool:
         return True
@@ -130,11 +130,11 @@ class FakeBackend:
         self.supports_tools_calls.append(model_ref)
         return self.supports_tools_result
 
-    def count_tokens(self, ref: ProviderModelRef, text: str) -> int:
-        self.count_tokens_calls.append((ref, text))
+    def count_chat_tokens(self, ref: ProviderModelRef, text: str) -> int:
+        self.count_chat_tokens_calls.append((ref, text))
         if self.raise_count is not None:
             raise self.raise_count
-        return self.count_tokens_result
+        return self.count_chat_tokens_result
 
 
 @pytest.fixture(autouse=True)
@@ -517,17 +517,19 @@ class TestChatStream:
 
 class TestEstimateChatTokens:
     def test_counts_with_the_backend_tokenizer_for_the_named_model(self) -> None:
-        backend = FakeBackend(count_tokens_result=7)
+        backend = FakeBackend(count_chat_tokens_result=7)
         provider = SdkLLMProvider(backend)
         assert provider.estimate_chat_tokens("hello there", model="openai/gpt-4o") == 7
-        assert backend.count_tokens_calls == [(parse_model_ref("openai/gpt-4o"), "hello there")]
+        ref = parse_model_ref("openai/gpt-4o")
+        assert backend.count_chat_tokens_calls == [(ref, "hello there")]
 
     def test_counts_for_the_configured_chat_model_when_none_is_named(self) -> None:
-        backend = FakeBackend(count_tokens_result=7)
+        backend = FakeBackend(count_chat_tokens_result=7)
         cfg.chat_model = "openai/o3-mini"
         provider = SdkLLMProvider(backend)
         assert provider.estimate_chat_tokens("hello there") == 7
-        assert backend.count_tokens_calls == [(parse_model_ref("openai/o3-mini"), "hello there")]
+        ref = parse_model_ref("openai/o3-mini")
+        assert backend.count_chat_tokens_calls == [(ref, "hello there")]
 
     @pytest.mark.parametrize(
         "error",

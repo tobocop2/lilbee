@@ -136,7 +136,7 @@ class SdkLLMProvider(LLMProvider):
             require_role_ref(model or cfg.chat_model, WorkerRole.CHAT, provider="sdk")
         )
         try:
-            return self._backend.count_tokens(ref, text)
+            return self._backend.count_chat_tokens(ref, text)
         except (NotImplementedError, ProviderError):
             log.debug("No tokenizer count for %s; counting bytes", ref.for_display(), exc_info=True)
             return byte_token_estimate(text)
