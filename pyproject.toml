@@ -192,6 +192,9 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--ignore=tests/integration"
 timeout = 60
+# The signal method raises inside whatever callback the loop runs; a Textual task keeps that
+# exception and the test then waits on. The thread method ends the worker with every stack.
+timeout_method = "thread"
 markers = [
     "slow: integration tests that download models or take >10s",
     "real_model_classify: opt out of the global _classify_installed_models mock",

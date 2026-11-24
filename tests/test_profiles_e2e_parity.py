@@ -70,7 +70,7 @@ from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileSt
 from lilbee.mcp_server import ProfileAction as McpAction
 from lilbee.mcp_server import profile_apply as mcp_profile_apply
 from lilbee.server.routes.profiles import profiles_apply_route
-from tests._async_wait import wait_until
+from tests._async_wait import comes
 from tests._lilbee_app_test_host import await_chat, ready_services
 from tests._profiles_e2e import (
     COURT,
@@ -181,8 +181,6 @@ TEXT_REINDEX_MARK: dict[Scenario, str] = {
 _TUI_SIZE = (120, 40)
 _FIRST_TOAST = "first toast"
 _WARNING_TOAST = "warning toast"
-# An offer that is coming is pushed within a few message-loop ticks of the reset.
-_OFFER_PAUSES = 30
 _OTHER = "other"
 # The sources a Settings row pills; built-in and derived values show no pill.
 _PILLED_SOURCES = (
@@ -965,9 +963,7 @@ def _not_yours(key: str) -> bool:
 
 async def _rebuild_owed_on_leaving(app: LilbeeApp, pilot: Pilot) -> bool:
     """Whether leaving Settings offers a rebuild; no offer comes while it is open."""
-    assert not await wait_until(
-        pilot, lambda: isinstance(app.screen, ConfirmDialog), max_pauses=_OFFER_PAUSES
-    )
+    assert not await comes(pilot, lambda: isinstance(app.screen, ConfirmDialog))
     screen = app.screen
     assert isinstance(screen, SettingsScreen)
     return bool(screen.leave())
@@ -1246,13 +1242,17 @@ async def test_the_toast_wait_reads_a_warning_still_queued_behind_the_first_toas
         host = SettingsHost()
         async with host.run_test(size=_TUI_SIZE) as pilot:
             seen = _seen()
-            host.notify(_FIRST_TOAST)
-            host.notify(_WARNING_TOAST, severity="warning")
-            await first_shown.wait()
-            assert [n.message for n in _new_notices(seen)] == [_FIRST_TOAST]
-            asyncio.get_running_loop().call_soon(release_warning.set)
-            await _notified(pilot, seen)
-            assert _warnings(seen) == [_WARNING_TOAST]
+            try:
+                host.notify(_FIRST_TOAST)
+                host.notify(_WARNING_TOAST, severity="warning")
+                await first_shown.wait()
+                assert [n.message for n in _new_notices(seen)] == [_FIRST_TOAST]
+                asyncio.get_running_loop().call_soon(release_warning.set)
+                await _notified(pilot, seen)
+                assert _warnings(seen) == [_WARNING_TOAST]
+            finally:
+                # A failed assertion must not leave the handler held: run_test would wait on it.
+                release_warning.set()
 
 
 async def test_every_scenario_changes_or_answers_something(
