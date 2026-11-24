@@ -107,6 +107,8 @@ _TEMPLATE_MESSAGE_TOKENS = 8
 _TEMPLATE_TOOL_BLOCK_TOKENS = 110
 # The wrapper a template renders around one tool schema.
 _TEMPLATE_PER_TOOL_TOKENS = 32
+# Joins the request's text pieces for the estimate's one count (see _content_text).
+_PIECE_SEPARATOR = "\n"
 
 
 class _OpenBlockKind(StrEnum):
@@ -441,7 +443,9 @@ def count_request_tokens(req: CanonicalChatRequest, *, canonical_model: str) -> 
         tokens = get_services().provider.count_chat_prompt_tokens(**kwargs)
     except NotImplementedError:
         return PromptTokenCount(
-            tokens=_estimate_prompt_tokens(req, wire_messages=kwargs["messages"]),
+            tokens=_estimate_prompt_tokens(
+                req, wire_messages=kwargs["messages"], canonical_model=canonical_model
+            ),
             accuracy=TokenCountAccuracy.ESTIMATED,
         )
     return PromptTokenCount(tokens=tokens, accuracy=TokenCountAccuracy.EXACT)
@@ -520,13 +524,14 @@ def _provider_tools(
 
 
 def _estimate_prompt_tokens(
-    req: CanonicalChatRequest, *, wire_messages: list[dict[str, Any]]
+    req: CanonicalChatRequest, *, wire_messages: list[dict[str, Any]], canonical_model: str
 ) -> int:
-    """Estimate of *req*'s prompt tokens, for a backend with no tokenizer.
+    """Estimate of *req*'s prompt tokens, for a backend that cannot render the prompt.
 
-    The request's own text is counted in UTF-8 bytes, which no token encodes
-    fewer than one of. The template text the request does not carry gets the
-    fixed allowances above, which are measured rather than proved: four of the
+    The provider counts the request's own text for *canonical_model*: with the
+    model's own tokenizer where it has one, else in UTF-8 bytes, which no token
+    encodes fewer than one of. The template text the request does not carry gets
+    the fixed allowances above, which are measured rather than proved: four of the
     47 surveyed templates substitute more than they cover. A chars-per-token
     ratio fails differently, reading dense input short.
 
@@ -539,30 +544,32 @@ def _estimate_prompt_tokens(
     allowance = _TEMPLATE_PREAMBLE_TOKENS + _TEMPLATE_MESSAGE_TOKENS * len(wire_messages)
     if tools:
         allowance += _TEMPLATE_TOOL_BLOCK_TOKENS + _TEMPLATE_PER_TOOL_TOKENS * len(tools)
-    return _content_bytes(req) + allowance
+    content = get_services().provider.estimate_chat_tokens(
+        _content_text(req), model=canonical_model
+    )
+    return content + allowance
 
 
-def _content_bytes(req: CanonicalChatRequest) -> int:
-    """UTF-8 bytes of the text *req* itself puts into the rendered prompt."""
-    total = _utf8_len(req.system or "")
-    total += sum(_block_bytes(block) for msg in req.messages for block in msg.content)
+def _content_text(req: CanonicalChatRequest) -> str:
+    """The text *req* itself puts into the rendered prompt, joined for one count.
+
+    A newline separates the pieces, so a tokenizer cannot merge the end of one
+    piece with the start of the next into fewer tokens than the render holds.
+    """
+    parts = [req.system or ""]
+    parts.extend(_block_text(block) for msg in req.messages for block in msg.content)
     for tool in req.tools or []:
-        total += _utf8_len(tool.name) + _utf8_len(tool.description)
-        total += _utf8_len(json.dumps(tool.input_schema))
-    return total
+        parts.extend((tool.name, tool.description, json.dumps(tool.input_schema)))
+    return _PIECE_SEPARATOR.join(parts)
 
 
-def _block_bytes(block: ContentBlock) -> int:
-    """UTF-8 bytes *block* contributes to the rendered prompt."""
+def _block_text(block: ContentBlock) -> str:
+    """The text *block* contributes to the rendered prompt."""
     if block.type == "text":
-        return _utf8_len(block.text)
+        return block.text
     if block.type == "tool_use":
-        return _utf8_len(block.name) + _utf8_len(json.dumps(block.input))
-    return sum(_block_bytes(inner) for inner in block.content)
-
-
-def _utf8_len(text: str) -> int:
-    return len(text.encode("utf-8"))
+        return block.name + _PIECE_SEPARATOR + json.dumps(block.input)
+    return _PIECE_SEPARATOR.join(_block_text(inner) for inner in block.content)
 
 
 def _provider_tool_choice(

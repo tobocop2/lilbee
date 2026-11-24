@@ -42,6 +42,7 @@ from lilbee.providers.local_servers import (
     detect_local_server,
     openai_models_url,
 )
+from lilbee.providers.model_ref import ProviderModelRef
 from lilbee.providers.reasoning import ThinkInliner, inline_reasoning
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import (
@@ -64,6 +65,13 @@ _CHAT_MODE = "chat"
 # lilbee provider key -> catalog provider id, where the two differ. The routing key
 # ``gemini`` is the catalog's ``google``. Every other lilbee provider uses the same id.
 _CATALOG_PROVIDER = {"gemini": "google"}
+# The chat models liter-llm counts with their own tokenizer: OpenAI's o200k models, for
+# which it loads Xenova/gpt-4o. A count under another model's tokenizer can read below
+# the real count and make the provider refuse a request it was told fits, so every other
+# model (Claude gets the Claude 2 tokenizer, gemini and llama gated repos, gpt-4 and
+# gpt-3.5 are cl100k) keeps the byte estimate. Matched as name prefixes.
+_OWN_TOKENIZER_PROVIDER = "openai"
+_OWN_TOKENIZER = ("gpt-4o", "chatgpt-4o", "gpt-4.1", "gpt-4.5", "gpt-5", "o1", "o3", "o4")
 
 
 class LiterLlmBackend:
@@ -90,6 +98,18 @@ class LiterLlmBackend:
         end-of-turn.
         """
         return True
+
+    def count_tokens(self, ref: ProviderModelRef, text: str) -> int:
+        """Count *text* with ``liter_llm.count_tokens`` for a model listed in ``_OWN_TOKENIZER``."""
+        if ref.provider != _OWN_TOKENIZER_PROVIDER or not ref.name.startswith(_OWN_TOKENIZER):
+            raise NotImplementedError(f"liter-llm has no tokenizer of {ref.for_display()}'s own")
+        liter_llm = _require_sdk()
+        try:
+            return int(liter_llm.count_tokens(ref.name, text))
+        except liter_llm.LiterLlmError as exc:
+            raise ProviderError(
+                f"Token count for {ref.for_display()} failed: {exc}", provider=_PROVIDER_NAME
+            ) from exc
 
     def configure_logging(self, *, suppress_debug: bool) -> None:
         """Do nothing: liter-llm prints no debug banner, so there is nothing to suppress."""

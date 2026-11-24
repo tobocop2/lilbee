@@ -55,6 +55,11 @@ def prompt_token_budget(ctx: int, num_predict: int | None = None) -> int:
     return ctx - (num_predict or GENERATION_RESERVE_TOKENS) - CONTEXT_WINDOW_MARGIN_TOKENS
 
 
+def byte_token_estimate(text: str) -> int:
+    """UTF-8 bytes of *text*: no token encodes fewer than one byte, so this never reads low."""
+    return len(text.encode("utf-8"))
+
+
 def estimate_budget_tokens(text: str) -> int:
     """Conservative token cost of *text* for budgeting (see BUDGET_CHARS_PER_TOKEN)."""
     return max(1, math.ceil(len(text) / BUDGET_CHARS_PER_TOKEN))
@@ -409,9 +414,22 @@ class LLMProvider(Protocol):
         the first call against a fresh replica may issue the same one-token
         template probe :meth:`chat` issues, so this can block for a cold start.
         Raise ``NotImplementedError`` when the backend cannot render or
-        tokenize, and the caller estimates instead.
+        tokenize, and the caller estimates instead with
+        :meth:`estimate_chat_tokens`.
         """
         ...
+
+    def estimate_chat_tokens(self, text: str, *, model: str | None = None) -> int:
+        """Tokens *text* takes for the chat model *model*, never fewer than the real count.
+
+        Called when :meth:`count_chat_prompt_tokens` raised ``NotImplementedError``,
+        for the request text without the chat template. *model* defaults to the
+        configured chat model. A tokenizer failure is not raised: a backend that has
+        no tokenizer of the model's own answers with the default, the UTF-8 byte
+        count. A backend's first call for a model may load that model's tokenizer,
+        so it can block.
+        """
+        return byte_token_estimate(text)
 
     @overload
     def chat(
