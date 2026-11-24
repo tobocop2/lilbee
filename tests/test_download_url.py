@@ -123,6 +123,68 @@ def test_a_connection_closed_before_a_status_line_is_retried(tmp_path: Path) -> 
     slept.assert_called_once()
 
 
+@pytest.mark.parametrize("fault", ["silent_next", "stall_next"])
+def test_a_server_that_goes_quiet_is_reported_after_one_read_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    monkeypatch.setattr(hub_constants, "HF_HUB_DOWNLOAD_TIMEOUT", 0.3)
+    requests_at_notice: list[int] = []
+    causes: list[str] = []
+    with release_server() as server, mock.patch.object(dl.time, "sleep"):
+
+        def on_retry(_attempt: int, _attempts: int, cause: str) -> None:
+            requests_at_notice.append(len(server.requests))
+            causes.append(cause)
+
+        server.files["/f"] = BODY
+        setattr(server, fault, 1)
+        got = download_url(f"{server.url}/f", tmp_path, len(BODY), on_retry=on_retry)
+    assert got.read_bytes() == BODY
+    assert requests_at_notice == [1]
+    assert "timed out" in causes[0]
+
+
+def test_a_body_shorter_than_the_expected_size_is_retried(tmp_path: Path) -> None:
+    with (
+        release_server() as server,
+        mock.patch.object(dl.time, "sleep"),
+        pytest.raises(RuntimeError, match=r"should be 102401 bytes, but 102400 arrived"),
+    ):
+        server.files["/f"] = BODY
+        download_url(f"{server.url}/f", tmp_path, len(BODY) + 1)
+    assert len(server.requests) == 3
+
+
+def test_a_server_that_ignores_the_range_restarts_the_file(tmp_path: Path) -> None:
+    (tmp_path / "f").write_bytes(b"stale" * 200)
+    with release_server() as server:
+        server.files["/f"] = BODY
+        server.ignore_range = True
+        got = download_url(f"{server.url}/f", tmp_path, len(BODY))
+    assert got.read_bytes() == BODY
+
+
+def test_a_complete_file_is_kept_without_a_request(tmp_path: Path) -> None:
+    (tmp_path / "f").write_bytes(BODY)
+    with release_server() as server:
+        server.files["/f"] = BODY
+        got = download_url(f"{server.url}/f", tmp_path, len(BODY))
+    assert got.read_bytes() == BODY
+    assert server.requests == []
+
+
+def test_progress_counts_the_resumed_bytes_and_ends_at_the_size(tmp_path: Path) -> None:
+    (tmp_path / "f").write_bytes(BODY[:1000])
+    seen: list[tuple[int, int]] = []
+    with release_server() as server:
+        server.files["/f"] = BODY
+        download_url(
+            f"{server.url}/f", tmp_path, len(BODY), on_progress=lambda d, t: seen.append((d, t))
+        )
+    assert seen[0][0] > 1000
+    assert seen[-1] == (len(BODY), len(BODY))
+
+
 def test_a_server_that_keeps_resetting_ends_in_the_transfer_failed_text(tmp_path: Path) -> None:
     with release_server() as server, mock.patch.object(dl.time, "sleep"):
         server.files["/f"] = BODY
