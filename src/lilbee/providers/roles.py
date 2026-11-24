@@ -165,6 +165,6 @@ def configured_model_message(role: WorkerRole, configured: str, requested: str) 
     """User-facing rejection for a per-call model that differs from the configured one."""
     return (
         f"This engine serves the configured {role} model ({configured}). "
-        f"To use {requested!r}, set it as the {role} model in lilbee settings "
+        f"To use '{requested}', set it as the {role} model in lilbee settings "
         f"(TUI /settings), then retry; the engine reloads automatically."
     )

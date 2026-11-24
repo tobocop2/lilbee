@@ -153,7 +153,7 @@ def parse_model_ref(raw: str) -> ProviderModelRef:
     if "/" not in raw:
         known = ", ".join(f"{p}/" for p in sorted(PROVIDER_PREFIXES))
         raise ValueError(
-            f"Model ref {raw!r} must be a HuggingFace ref "
+            f"Model ref '{raw}' must be a HuggingFace ref "
             f"('<org>/<repo>/<filename>.gguf') or carry a known provider prefix ({known})."
         )
     prefix, rest = raw.split("/", 1)

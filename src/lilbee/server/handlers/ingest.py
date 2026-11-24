@@ -190,7 +190,7 @@ def validate_add_paths(
         # rejects an empty name ("/", "a/") that would name no root.
         name = Path(p_str).name
         if not name:
-            raise ValueError(f"{p_str!r} does not name a file")
+            raise ValueError(f"'{p_str}' does not name a file")
         validate_path_within(cfg.documents_dir / name, cfg.documents_dir)
 
     force = bool(data.get("force", False))

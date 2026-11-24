@@ -177,7 +177,7 @@ class SdkLLMProvider(LLMProvider):
         if tools and not self.supports_tools(model or cfg.chat_model):
             chosen = model or cfg.chat_model
             raise ProviderError(
-                f"Model {chosen!r} does not support tool calls. Pick a different "
+                f"Model '{chosen}' does not support tool calls. Pick a different "
                 f"chat model that advertises tool support, or remove tools from "
                 f"the request.",
                 provider=self._backend.provider_name,
@@ -357,14 +357,14 @@ class SdkLLMProvider(LLMProvider):
             self._backend.pull_model(model, base_url=base_url, on_progress=on_progress)
         except NotImplementedError as exc:
             raise ProviderError(
-                f"Cannot pull model {model!r}: backend does not support pulling",
+                f"Cannot pull model '{model}': backend does not support pulling",
                 provider=self._backend.provider_name,
             ) from exc
         except ProviderError:
             raise
         except Exception as exc:
             raise ProviderError(
-                f"Cannot pull model {model!r}: {exc}", provider=self._backend.provider_name
+                f"Cannot pull model '{model}': {exc}", provider=self._backend.provider_name
             ) from exc
 
     def show_model(self, model: str) -> dict[str, Any] | None:
@@ -378,7 +378,7 @@ class SdkLLMProvider(LLMProvider):
             raise
         except Exception as exc:
             raise ProviderError(
-                f"Showing model {model!r} failed: {exc}", provider=self._backend.provider_name
+                f"Showing model '{model}' failed: {exc}", provider=self._backend.provider_name
             ) from exc
 
     def get_capabilities(self, model: str) -> list[str]:

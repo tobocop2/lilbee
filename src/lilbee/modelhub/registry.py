@@ -81,7 +81,7 @@ def parse_hf_ref(ref: str) -> tuple[str, str]:
     quants under e.g. ``Q4_K_M/Model-...-00001-of-00003.gguf``).
     """
     if not ref.endswith(GGUF_SUFFIX) or ref.count("/") < NATIVE_GGUF_REF_MIN_SLASHES:
-        raise ValueError(f"Model ref {ref!r} is not a HuggingFace ref. {_REF_SHAPE_HINT}")
+        raise ValueError(f"Model ref '{ref}' is not a HuggingFace ref. {_REF_SHAPE_HINT}")
     parts = ref.split("/")
     hf_repo = "/".join(parts[:NATIVE_GGUF_REF_MIN_SLASHES])
     gguf_filename = "/".join(parts[NATIVE_GGUF_REF_MIN_SLASHES:])
