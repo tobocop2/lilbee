@@ -508,7 +508,7 @@ def not_installed() -> list[str]:
     host = runnable.session_host()
     if hidden and (host.os is None or host.arch is None):
         log.warning(
-            "The engine list hides %s: the OS or CPU of this host could not be read.",
+            "The engine list hides %s: the OS or CPU of this computer could not be read.",
             ", ".join(hidden),
         )
     return offered
@@ -792,7 +792,7 @@ def _install_adapter(
         if not gate.known:
             raise EngineRefusedError(gate.reason)
         raise EngineRefusedError(
-            f"Engine {name} cannot run on this host. {gate.reason} {LLAMA.name} stays in use."
+            f"Engine {name} cannot run on this computer. {gate.reason} {LLAMA.name} stays in use."
         )
     try:
         lock = choice.pin_lock(adapter.pin_record())
