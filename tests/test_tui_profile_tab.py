@@ -59,7 +59,7 @@ from lilbee.core.config.enums import OcrMode
 from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileStore
 from lilbee.core.system import default_data_dir
 from lilbee.data.store.types import HeldOut, HeldRecord
-from tests._async_wait import press_widget, wait_until
+from tests._async_wait import comes, press_widget, wait_until
 from tests._lilbee_app_test_host import (
     LilbeeAppHost,
     app_reads_queue,
@@ -927,9 +927,7 @@ async def test_discarding_a_reindex_setting_asks_nothing_until_the_user_leaves(
             screen = await _loaded(app, pilot, "legal-discovery")
             await _press(pilot, screen.query_one("#profile-discard", ConfirmPill))
             assert await _until(pilot, lambda: not screen.query_one("#profile-changes").display)
-            assert not await wait_until(
-                pilot, lambda: isinstance(app.screen, ConfirmDialog), max_pauses=30
-            )
+            assert not await comes(pilot, lambda: isinstance(app.screen, ConfirmDialog))
             assert screen.leave() == msg.SETTINGS_REINDEX_MESSAGE
     rebuild.assert_not_called()
     assert cfg.chunk_size == 512
@@ -963,9 +961,7 @@ async def test_discarding_a_limit_with_a_held_out_file_offers_the_retry_on_leavi
             screen = await _loaded(app, pilot, "legal-discovery")
             await _press(pilot, screen.query_one("#profile-discard", ConfirmPill))
             assert await _until(pilot, lambda: not screen.query_one("#profile-changes").display)
-            assert not await wait_until(
-                pilot, lambda: isinstance(app.screen, ConfirmDialog), max_pauses=30
-            )
+            assert not await comes(pilot, lambda: isinstance(app.screen, ConfirmDialog))
             assert screen.leave() == msg.PROFILE_APPLY_HELD_OUT
     rebuild.assert_not_called()
 
