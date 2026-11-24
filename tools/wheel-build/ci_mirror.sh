@@ -17,8 +17,11 @@
 # Usage:
 #   ci_mirror.sh asset-name <key>          print the asset name for a key
 #   ci_mirror.sh probe      <key>          exit 0 if the mirror carries it
-#   ci_mirror.sh fetch      <key> <dir>    extract it into <dir>, or exit 1
+#   ci_mirror.sh fetch      <key> <dir>    extract it into <dir>, or exit 1; with
+#                                          MIRROR_REFRESH_DAYS, exit 3 when only
+#                                          the previous age bucket was restored
 #   ci_mirror.sh publish    <key> <dir>    upload <dir> under <key>
+#   ci_mirror.sh check                     validate the environment, then exit 0
 #
 # Reads:
 #   GITHUB_REPOSITORY   owner/repo (set by Actions)
@@ -31,6 +34,8 @@
 set -euo pipefail
 
 readonly DEFAULT_RELEASE_TAG="engine-binaries"
+# fetch exit status: restored from the previous age bucket, not the current one.
+readonly STALE_RESTORE_STATUS=3
 # GitHub rejects release assets over 2 GiB.
 readonly MAX_ASSET_BYTES=$((2 * 1024 * 1024 * 1024))
 release_tag="${MIRROR_RELEASE_TAG:-${DEFAULT_RELEASE_TAG}}"
@@ -89,9 +94,11 @@ cmd_probe() {
 # Keys that carry no content hash of their own (the Nuitka object cache, keyed on
 # the dependency set) set MIRROR_REFRESH_DAYS so the blob cannot freeze. Time is
 # cut into buckets of that many days; a publish writes the current bucket and a
-# restore reads the current bucket, then the one before it. A build that restored
-# an old blob therefore publishes its fuller cache under the new bucket, and no
-# blob is older than two periods. MIRROR_NOW overrides the clock for tests.
+# restore reads the current bucket, then the one before it. A restore from the
+# previous bucket exits 3, and the workflow publishes whenever the current bucket
+# was not restored, so the first build of a new bucket starts warm and writes the
+# fuller cache under the new bucket. No blob is older than two periods.
+# MIRROR_NOW overrides the clock for tests.
 age_bucket() {
     printf '%s\n' "$(( ${MIRROR_NOW:-$(date -u +%s)} / (MIRROR_REFRESH_DAYS * 86400) ))"
 }
@@ -118,11 +125,15 @@ publish_key() {
 cmd_fetch() {
     local key="${1:?usage: ci_mirror.sh fetch <key> <dir>}"
     local dest="${2:?usage: ci_mirror.sh fetch <key> <dir>}"
-    local candidate
+    local candidate rank=0
     while IFS= read -r candidate; do
         if fetch_one "${candidate}" "${dest}"; then
+            # The first candidate is the current bucket: exit 0. A later one is a
+            # stale bucket: exit 3, so the caller restores it and still publishes.
+            [ "${rank}" -eq 0 ] || return "${STALE_RESTORE_STATUS}"
             return 0
         fi
+        rank=$((rank + 1))
     done < <(restore_keys "${key}")
     return 1
 }
@@ -212,6 +223,7 @@ main() {
         probe)      cmd_probe "$@" ;;
         fetch)      cmd_fetch "$@" ;;
         publish)    cmd_publish "$@" ;;
+        check)      ;;
         *) echo "unknown command: ${command}" >&2; exit 2 ;;
     esac
 }
