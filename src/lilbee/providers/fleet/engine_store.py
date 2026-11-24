@@ -1007,8 +1007,9 @@ class EngineStore:
         """Every build folder, damaged ones too: (engine, version, backend, path).
 
         A link in a build slot is damage and listed; a plain file is left to remove, as the
-        prune runs at every start. A complete build is listed once, as its record says. A name holds no mark between
-        version and backend, so a damaged build is listed once for each hyphen of its name.
+        prune runs at every start. A complete build is listed once, as its record says. A
+        name holds no mark between version and backend, so a damaged build is listed once for
+        each hyphen of its name.
         A folder that cannot be read is skipped, and *report* hears of the one of an engine.
         """
         dirs = []

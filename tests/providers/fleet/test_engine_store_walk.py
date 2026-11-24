@@ -105,8 +105,7 @@ def test_an_unreadable_root_names_the_root_and_the_fix(store: EngineStore) -> No
         assert listed is None, f"installed() raised {listed!r}"
         assert damage is None, f"damaged() raised {damage!r}"
         assert any(
-            str(store.root) in str(e) and "permission" in str(e).lower()
-            for e in store.damaged()
+            str(store.root) in str(e) and "permission" in str(e).lower() for e in store.damaged()
         )
         gone = raised(lambda: store.remove(ENGINE, "1", "cpu", in_use=idle))
         assert user_facing(gone, store.root, "permission"), repr(gone)
@@ -131,8 +130,7 @@ def test_the_sweep_skips_a_denied_engine_folder_and_goes_on(
         assert later in swept
         assert not later.exists()
         assert any(
-            str(denied) in r.getMessage() and r.levelno >= logging.WARNING
-            for r in caplog.records
+            str(denied) in r.getMessage() and r.levelno >= logging.WARNING for r in caplog.records
         )
     finally:
         denied.chmod(0o755)
