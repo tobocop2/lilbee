@@ -339,6 +339,8 @@ fails_without() {  # cell path failed-fragment [later fragment]
   cd "${W}"
   run --separate-stderr bash -x "${SCRIPT}" "${WHEEL}"
   stops "pip install -q" "llama-server:"
+  # The text of pip for a file that is not a wheel. Without pip, the install also fails, but with "No module named pip".
+  says "ERROR: Wheel 'lilbee-engine-llama-cpp' located at ${WHEEL} is invalid."
 }
 
 @test "a wheel without the module stops before the path of the server" {
