@@ -169,7 +169,7 @@ ${WHEEL}.sha256" ]
 @test "pip installs the pinned build tools by their digests, and the build installs nothing" {
   run bash "${SCRIPT}"
   [ "$status" -eq 0 ]
-  grep -q '^-m pip install --require-hashes --force-reinstall -r ../../tools/wheel-build/build-tools.constraints | .* cwd=engine-wheel-mistral-rs$' "${PYTHON_LOG}"
+  grep -q '^-m pip install --require-hashes --force-reinstall -r ../../tools/wheel-build/build-tools.constraints -r ../../tools/wheel-build/mistralrs-check-tools.constraints | .* cwd=engine-wheel-mistral-rs$' "${PYTHON_LOG}"
   grep -q '^-m build --wheel --no-isolation .* cwd=engine-wheel-mistral-rs$' "${PYTHON_LOG}"
   [ "$(grep -c '^-m pip ' "${PYTHON_LOG}")" -eq 1 ]
 }
@@ -199,6 +199,14 @@ ${WHEEL}.sha256" ]
   done
   [ "$(grep -cE '^[a-z_]+==' "${file}")" -eq 6 ]
   [ "$(grep -cE '^    --hash=sha256:[0-9a-f]{64}$' "${file}")" -eq 6 ]
+}
+
+@test "pefile for the wheel check is pinned in its own file, apart from the build tools" {
+  local check="${REPO_ROOT}/tools/wheel-build/mistralrs-check-tools.constraints"
+  grep -qE '^pefile==[0-9.]+ \\$' "${check}"
+  [ "$(grep -cE '^[a-z_]+==' "${check}")" -eq 1 ]
+  [ "$(grep -cE '^    --hash=sha256:[0-9a-f]{64}$' "${check}")" -eq 1 ]
+  ! grep -q '^pefile' "${REPO_ROOT}/tools/wheel-build/build-tools.constraints"
 }
 
 @test "the wheel project needs only the setuptools of the constraints" {

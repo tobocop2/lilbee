@@ -1,0 +1,6 @@
+# The Python tools that the wheel check of the mistral.rs pack needs, apart from the build tools. pack_mistralrs.sh installs
+# this file with build-tools.constraints in one `pip install --require-hashes --force-reinstall -r` call.
+# pefile reads the import tables of the Windows files in check_mistralrs_wheel.sh. It has no dependency and the build
+# does not use it, so it changes no byte of the wheel. The ik and TEI packs do not run that check and do not install it.
+pefile==2024.8.26 \
+    --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f
