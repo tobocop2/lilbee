@@ -547,7 +547,14 @@ def recording(
         thread.join()
 
 
+_SAMPLING_KNOBS = ("temperature", "max_tokens")
+"""Request fields that shape how a reply is sampled, not what is asked. A replay ignores them, so
+a recording made before the recorder sent them still answers the request that sends them."""
+
+
 def _queue_key(method: str, path: str, request: Any) -> tuple[str, str, str]:
+    if isinstance(request, dict):
+        request = {k: v for k, v in request.items() if k not in _SAMPLING_KNOBS}
     return method, path, json.dumps(request, sort_keys=True)
 
 
@@ -587,7 +594,7 @@ def _replay_handler(
 
 @contextmanager
 def replaying(exchanges: list[Exchange]) -> Iterator[str]:
-    """A server that answers each recorded request, matched on method, path and body, in order."""
+    """A server that answers each recorded request, matched on method, path and body (less its sampling knobs), in order."""
     queues: dict[tuple[str, str, str], deque[Exchange]] = defaultdict(deque)
     for exchange in exchanges:
         queues[_queue_key(exchange.method, exchange.path, exchange.request)].append(exchange)

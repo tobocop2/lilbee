@@ -260,11 +260,37 @@ class TestFixtureJson:
         assert doc["error_answers"] == [[401, '{"ok": false, "from": "lilbee"}']]
 
 
+class TestReplayMatching:
+    @pytest.mark.parametrize(
+        ("sent", "status"),
+        [
+            ({"messages": ["a"], "temperature": 0, "max_tokens": 1024}, 200),
+            ({"messages": ["a"]}, 200),
+            ({"messages": ["b"], "temperature": 0}, 599),
+        ],
+        ids=["knobs-added", "as-recorded", "other-question"],
+    )
+    def test_sampling_knobs_do_not_pick_the_exchange(self, sent: dict, status: int) -> None:
+        from tests.conformance.preset_check import Exchange, replaying
+
+        recorded = Exchange("POST", "/x", {"messages": ["a"]}, 200, "application/json", "{}")
+        with replaying([recorded]) as url:
+            request = urllib.request.Request(  # noqa: S310
+                url + "/x", data=json.dumps(sent).encode(), method="POST"
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=10) as resp:  # noqa: S310
+                    got = resp.status
+            except urllib.error.HTTPError as exc:
+                got = exc.code
+        assert got == status
+
+
 class TestOverflowStep:
     def test_a_served_window_refuses_the_prompt_before_any_request(self, tmp_path) -> None:
         from tests.conformance.preset_check import _overflow, configured, replaying
 
-        setup = Setup(("chat",), {"chat": "m"}, window=40960)
+        setup = Setup(("chat",), {"chat": "m"}, window=4096)
         with (
             replaying([]) as url,
             recording(url) as (proxy, tape),
