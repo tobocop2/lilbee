@@ -611,9 +611,9 @@ def test_sync_json_mode_prints_no_tip(project):
 
 def test_add_after_analyze_prints_no_tip(project, notes):
     _invoke(project, str(notes))
-    with mock.patch("lilbee.cli.commands.ingest_sync.add_paths", _fake_add_paths):
-        result = runner.invoke(app, ["add", str(notes), "--data-dir", str(project)])
-    assert "INGEST STARTED" in result.output
+    with _library_sync_patch():
+        result = _add(project, notes)
+    assert _FIRST_FILE_LINE in result.output
     assert "lilbee analyze" not in result.output
 
 
