@@ -400,7 +400,10 @@ def test_serve_gets_a_session_of_its_own_on_posix_with_or_without_env_overrides(
 
     server_mod.spawn_server(8080, env_overrides=overrides)
 
-    assert _capture_popen["popen_kwargs"] == {"start_new_session": os.name == "posix"}
+    assert _capture_popen["popen_kwargs"] == {
+        "start_new_session": os.name == "posix",
+        "bind_lifetime": False,
+    }
 
 
 def test_the_log_directory_is_created_with_its_parents(
