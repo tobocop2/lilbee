@@ -112,9 +112,11 @@ _STATE_TMP_SUFFIX = ".tmp"
 # Pid reuse guard: a live process at a recorded pid whose create time differs
 # from the recorded one by more than this is a different process.
 _CREATE_TIME_TOLERANCE_S = 1.0
-# The spawn reading is taken just after Popen returns, so it trails the process start by
-# the time the reading takes; a pid reused later starts seconds or more after the record.
-_MONO_START_TOLERANCE_S = 2.0
+# macOS create time has one-second resolution and a clock step moves it by the step minus
+# up to two seconds. Measured on a macos-latest runner across a real +2 h step and the
+# restore: the derived start sat 0.9 s and 1.9 s from the spawn reading. A pid reused
+# later starts seconds or more after the record.
+_MONO_START_TOLERANCE_S = 3.0
 _LLAMA_SWAP_PROCESS_NAME = "llama-swap"
 _EXE_SUFFIX = ".exe"
 # A script server shows the interpreter's name; this prefix finds python and python3.12.
