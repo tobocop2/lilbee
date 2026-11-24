@@ -30,7 +30,6 @@ _HELP_TIMEOUT_MEMORY_S = 60.0
 # llama-swap prints its release on this flag, as "version: v272 (802f1c4), built at ...".
 _ROUTER_VERSION_FLAG = "--version"
 _ROUTER_VERSION_LINE = re.compile(r"^version: v?(\d+)\b", re.MULTILINE)
-_ROUTER_RELEASES_URL = "https://github.com/mostlygeek/llama-swap/releases"
 
 
 class EngineTool(StrEnum):
@@ -357,21 +356,8 @@ def resolve_llama_server() -> Path:
 
 
 def resolve_llama_swap() -> Path:
-    """Resolve the ``llama-swap`` executable; raises for a release older than the config needs."""
-    # circular: swap_config -> binary via readback.engine_help
-    from lilbee.providers.fleet.swap_config import ROUTER_FLOOR
-
-    router = resolve_engine_tool(EngineTool.LLAMA_SWAP)
-    release = router_release(router)
-    if release is not None and release < ROUTER_FLOOR:
-        raise ProviderError(
-            f"The llama-swap router at {router} is v{release}, and lilbee needs "
-            f"v{ROUTER_FLOOR} or later. Install a newer llama-swap from "
-            f"{_ROUTER_RELEASES_URL}, or take this one off PATH so that lilbee "
-            "installs its own router.",
-            kind=ProviderErrorKind.UNKNOWN,
-        )
-    return router
+    """Resolve the ``llama-swap`` executable."""
+    return resolve_engine_tool(EngineTool.LLAMA_SWAP)
 
 
 def router_release(router: Path) -> int | None:
@@ -379,9 +365,8 @@ def router_release(router: Path) -> int | None:
 
     A release build prints its tag (``version: v272 (802f1c4), built at ...``). A
     ``go build`` from source, as the engine wheel and ``go install`` make, prints
-    ``version: 0``, so it has no number to compare and is let through. A router
-    that does not answer the probe has no number either; its own start then
-    reports what is wrong with it.
+    ``version: 0``, so it has no number to compare. A router that does not answer
+    the probe has no number either; its own start then reports what is wrong with it.
     """
     try:
         probe = subprocess.run(  # noqa: S603 - argv is the resolved router binary and a literal

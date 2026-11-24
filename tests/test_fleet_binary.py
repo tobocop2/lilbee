@@ -210,7 +210,7 @@ def test_aux_tools_ignore_llama_server_path_and_use_path(
 
 
 class TestRouterRelease:
-    """The router is refused only when it reports a release too old to read the config."""
+    """The router reports its release; an old one is still used."""
 
     @staticmethod
     def _router_says(monkeypatch: pytest.MonkeyPatch, stdout: str) -> list[list[str]]:
@@ -224,44 +224,31 @@ class TestRouterRelease:
         monkeypatch.setattr(binary_mod.subprocess, "run", run)
         return calls
 
-    def test_a_release_older_than_the_floor_is_refused_with_the_fix(
+    def test_a_router_older_than_the_floor_is_found_like_any_other(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._router_says(monkeypatch, "version: v223 (8c5e40e), built at 2025-07-26T00:00:00Z\n")
-        with pytest.raises(ProviderError) as err:
-            resolve_llama_swap()
-        assert str(err.value) == (
-            "The llama-swap router at /usr/bin/llama-swap is v223, and lilbee needs v259 "
-            "or later. Install a newer llama-swap from "
-            "https://github.com/mostlygeek/llama-swap/releases, or take this one off PATH "
-            "so that lilbee installs its own router."
-        )
-        assert err.value.kind is ProviderErrorKind.UNKNOWN
-
-    def test_the_last_release_before_the_floor_is_refused(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._router_says(monkeypatch, "version: v258 (abc1234), built at x\n")
-        with pytest.raises(ProviderError, match="is v258"):
-            resolve_llama_swap()
+        calls = self._router_says(monkeypatch, "version: 223 (8c5e40e), built at x\n")
+        assert resolve_llama_swap() == Path("/usr/bin/llama-swap")
+        assert calls == []
 
     @pytest.mark.parametrize(
-        "stdout",
+        ("stdout", "release"),
         [
-            "version: v259 (abc1234), built at x\n",
-            "version: v272 (802f1c4), built at x\n",
-            "version: 272 (802f1c4), built at x\n",
-            "version: 0 (unknown), built at unknown\n",
-            "llama-swap\n",
-            "",
+            ("version: 223 (8c5e40e), built at x\n", 223),
+            ("version: v258 (abc1234), built at x\n", 258),
+            ("version: v259 (abc1234), built at x\n", 259),
+            ("version: v272 (802f1c4), built at x\n", 272),
+            ("version: 0 (unknown), built at unknown\n", None),
+            ("llama-swap\n", None),
+            ("", None),
         ],
-        ids=["floor", "pin", "no-v", "source-build", "no-version-line", "silent"],
+        ids=["no-v", "last-before-floor", "floor", "pin", "source-build", "no-line", "silent"],
     )
-    def test_a_router_with_no_release_below_the_floor_is_used(
-        self, stdout: str, monkeypatch: pytest.MonkeyPatch
+    def test_the_release_is_read_from_the_version_line(
+        self, stdout: str, release: int | None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         calls = self._router_says(monkeypatch, stdout)
-        assert resolve_llama_swap() == Path("/usr/bin/llama-swap")
+        assert binary_mod.router_release(Path("/usr/bin/llama-swap")) == release
         assert calls == [["/usr/bin/llama-swap", "--version"]]
 
     @pytest.mark.parametrize(

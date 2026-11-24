@@ -727,8 +727,9 @@ the engines folder, so an install without llama.cpp can start its engine. To ins
 router with no network, copy the release archive into the `packs` folder
 (for example `llama-swap_272_linux_amd64.tar.gz`). The router also installs on first use.
 A `llama-swap` on PATH, or one inside the llama.cpp pack, is used when no router is installed.
-That router must be v259 or later. If it reports an older release, the engine does not start,
-and the error names the version found.
+A router older than v259 still starts the engine. It cannot copy the output of an engine
+that writes no log of its own (TEI, MLX, OVMS and others) into the router log, so lilbee
+shows a warning that names the version found and how to replace it.
 
 During the download, the command line shows a progress bar on stderr, and the
 chat screen shows the bytes in the task bar. Each failed attempt prints its

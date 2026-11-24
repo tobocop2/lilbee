@@ -25,6 +25,7 @@ from lilbee.providers.fleet.swap_manager import EngineLifetime, SwapManager
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from tests._engine_logs import enrol_launch
 from tests._fleet_engines import engines_for_all_roles
+from tests._router_release import router_reports
 
 # All lifecycle tests run one manager for the chat group unless stated otherwise.
 _GROUP = SwapGroup.CHAT
@@ -73,6 +74,19 @@ def _patch_spawn(monkeypatch: pytest.MonkeyPatch, proc: _FakeProc) -> None:
     monkeypatch.setattr(sm, "spawn_bound_child", lambda *a, **k: proc)
     # Isolate lifecycle tests from the real process-tree teardown.
     monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
+
+
+def _record_spawn(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Patch the spawn like :func:`_patch_spawn`; return the argv of each llama-swap spawned."""
+    spawned: list[list[str]] = []
+
+    def spawn(argv: list[str], *_a: object, **_k: object) -> _FakeProc:
+        spawned.append(argv)
+        return _FakeProc(poll_result=None)
+
+    _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+    monkeypatch.setattr(sm, "spawn_bound_child", spawn)
+    return spawned
 
 
 class _FakeProbeClient:
@@ -161,21 +175,86 @@ class TestStart:
             f"LLAMA_ARG_LOG_FILE={log_file}",
         ]
 
-    def test_a_router_too_old_for_the_config_stops_the_start_before_the_config_is_written(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    def test_an_old_router_starts_a_group_of_llama_members_with_the_proxy_stream(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        def too_old() -> Path:
-            raise ProviderError("The llama-swap router at /usr/bin/llama-swap is v223")
+        spawned = _record_spawn(monkeypatch)
+        probes = router_reports(monkeypatch, "version: 223 (8c5e40e), built at x\n")
+        stops: list[object] = []
+        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: stops.append(cfg))
+        monkeypatch.setattr(sm, "reap_stale", lambda data_dir, **_kw: stops.append(data_dir))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, SwapGroup.EMBED)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.swap_manager"):
+            mgr.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(LLAMA))
+        config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
+        assert config["logToStdout"] == "proxy"
+        assert [argv[0] for argv in spawned] == ["/usr/bin/llama-swap"]
+        assert stops == [tmp_path, mgr._config_path]
+        assert probes == [["/usr/bin/llama-swap", "--version"]]
+        assert caplog.text == ""
 
-        spawned: list[object] = []
-        monkeypatch.setattr(sm, "resolve_llama_swap", too_old)
-        monkeypatch.setattr(sm, "spawn_bound_child", lambda *a, **k: spawned.append(a))
-        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
-        mgr = SwapManager(tmp_path, _GROUP)
-        with pytest.raises(ProviderError, match="v223"):
-            mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
-        assert not mgr._config_path.exists()
-        assert spawned == []
+    def test_an_old_router_starts_a_member_that_writes_no_log_with_a_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        spawned = _record_spawn(monkeypatch)
+        router_reports(monkeypatch, "version: 223 (8c5e40e), built at x\n")
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, SwapGroup.EMBED)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.swap_manager"):
+            mgr.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(_NoOwnLogEngine()))
+        config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
+        assert config["logToStdout"] == "proxy"
+        assert [argv[0] for argv in spawned] == ["/usr/bin/llama-swap"]
+        assert [record.getMessage() for record in caplog.records] == [
+            "The llama-swap router at /usr/bin/llama-swap is v223, so the output of embed-0 "
+            f"is not in {mgr.log_path}. llama-swap v259 or later puts it there. Replace the "
+            "file at /usr/bin/llama-swap with llama-swap v259 or later, from "
+            "https://github.com/mostlygeek/llama-swap/releases or from "
+            "'go install github.com/mostlygeek/llama-swap@latest'."
+        ]
+
+    def test_an_old_router_keeps_a_co_tenant_chat_that_serves_its_memory_on_the_proxy_stream(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _record_spawn(monkeypatch)
+        router_reports(monkeypatch, "version: v258 (abc1234), built at x\n")
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        chat = _launch(WorkerRole.CHAT)
+        chat.argv = ["/bin/llama-server", "--memory"]
+        mgr = SwapManager(tmp_path, SwapGroup.CO_TENANT)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.swap_manager"):
+            mgr.start([chat, _launch(WorkerRole.EMBED)], engines=engines_for_all_roles(LLAMA))
+        config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
+        assert config["logToStdout"] == "proxy"
+        log_file = tmp_path / "logs" / "engine-chat-0.log"
+        assert config["models"]["chat-0"]["env"] == [
+            f"LLAMA_LOG_FILE={log_file}",
+            f"LLAMA_ARG_LOG_FILE={log_file}",
+        ]
+        assert caplog.text == ""
+
+    @pytest.mark.parametrize(
+        "stdout",
+        ["version: v272 (802f1c4), built at x\n", "version: 0 (unknown), built at unknown\n"],
+        ids=["pin", "source-build"],
+    )
+    def test_a_router_that_reads_the_stream_list_copies_a_member_that_writes_no_log(
+        self,
+        stdout: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        _record_spawn(monkeypatch)
+        router_reports(monkeypatch, stdout)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, SwapGroup.EMBED)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.swap_manager"):
+            mgr.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(_NoOwnLogEngine()))
+        config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
+        assert config["logToStdout"] == "proxy,upstream"
+        assert caplog.text == ""
 
     def test_writes_config_and_becomes_ready(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
