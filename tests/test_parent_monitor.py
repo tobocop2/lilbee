@@ -160,7 +160,7 @@ class TestLinuxStartStamp:
             mock.patch("lilbee.parent_monitor._is_linux", return_value=True),
             mock.patch.object(parent_monitor, "_PROC_ROOT", tmp_path),
         ):
-            assert parent_monitor.linux_start_stamp(42) ==("abc-123", 987654.0)
+            assert parent_monitor.linux_start_stamp(42) == ("abc-123", 987654.0)
 
     def test_none_off_linux(self):
         with mock.patch("lilbee.parent_monitor._is_linux", return_value=False):
