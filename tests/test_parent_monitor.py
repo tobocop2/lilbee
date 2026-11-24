@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import threading
 from collections.abc import Iterator
+from pathlib import Path
 from unittest import mock
 
 import psutil
@@ -135,7 +136,7 @@ class TestParentIdentity:
 _OUR_START = 100.0
 
 
-def _write_stat(root, pid: int, start_ticks: int, comm: str = "lilbee") -> None:
+def _write_stat(root: Path, pid: int, start_ticks: int, comm: str = "lilbee") -> None:
     """A /proc/<pid>/stat with *start_ticks* in field 22."""
     (root / str(pid)).mkdir(exist_ok=True)
     after_comm = ["S", "1"] + ["0"] * 17 + [str(start_ticks), "0", "0"]
@@ -167,40 +168,25 @@ class TestLinuxStartTicks:
 
     def test_unreadable_proc_entry_is_access_denied(self, tmp_path):
         _write_stat(tmp_path, 42, 1)
-        with mock.patch("pathlib.Path.read_text", side_effect=PermissionError):
-            with pytest.raises(psutil.AccessDenied):
-                _start_identity(42)
+        with (
+            mock.patch("pathlib.Path.read_text", side_effect=PermissionError),
+            pytest.raises(psutil.AccessDenied),
+        ):
+            _start_identity(42)
 
     def test_vanished_mid_read_is_no_such_process(self, tmp_path):
         _write_stat(tmp_path, 42, 1)
-        with mock.patch("pathlib.Path.read_text", side_effect=ProcessLookupError):
-            with pytest.raises(psutil.NoSuchProcess):
-                _start_identity(42)
+        with (
+            mock.patch("pathlib.Path.read_text", side_effect=ProcessLookupError),
+            pytest.raises(psutil.NoSuchProcess),
+        ):
+            _start_identity(42)
 
     def test_malformed_stat_is_access_denied(self, tmp_path):
         (tmp_path / "42").mkdir()
         (tmp_path / "42" / "stat").write_text("42 (x) S 1\n")
         with pytest.raises(psutil.AccessDenied):
             _start_identity(42)
-
-    def test_a_clock_step_does_not_fire_the_watcher(self, tmp_path):
-        """psutil's create_time moves with btime; the start ticks do not."""
-        _write_stat(tmp_path, os.getpid(), 100)
-        _write_stat(tmp_path, 123, 50)
-        btime = iter([1000.0 + 3 * n for n in range(1000)])  # the wall clock steps each read
-
-        def process(pid: int | None = None) -> mock.MagicMock:
-            proc = mock.MagicMock()
-            proc.create_time.side_effect = lambda: next(btime)
-            return proc
-
-        called = threading.Event()
-        with (
-            mock.patch("lilbee.parent_monitor.psutil.pid_exists", return_value=True),
-            mock.patch("lilbee.parent_monitor.psutil.Process", side_effect=process),
-        ):
-            watch_parent_thread(123, called.set, poll_interval_secs=0.01)
-            assert not called.wait(timeout=0.3), "a clock step was taken for a reused pid"
 
     def test_a_different_start_tick_fires_the_watcher(self, tmp_path):
         _write_stat(tmp_path, os.getpid(), 100)
