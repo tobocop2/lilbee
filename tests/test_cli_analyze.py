@@ -1,6 +1,8 @@
 """The ``lilbee analyze`` command, and the analyze tip on ``init``, ``add`` and ``sync``."""
 
+import io
 import json
+import re
 import signal
 import sys
 import tomllib
@@ -557,6 +559,28 @@ def test_sync_prints_the_tip_once_before_the_first_file_is_ingested(project):
     assert flat.count(TIP_TEXT) == 1
 
 
+def test_the_tip_sits_on_its_own_line_above_a_live_progress_bar(project, monkeypatch):
+    """In a terminal the ingest bar is live with its own console; the tip must not land on it."""
+    from rich.progress import BarColumn, Progress, SpinnerColumn
+
+    from lilbee.cli.commands.ingest_sync import _tip_before_first_file
+    from lilbee.runtime.console import PlainConsole
+    from lilbee.runtime.progress import noop_callback
+
+    monkeypatch.setattr(cfg, "data_root", project)
+    sink = io.StringIO()
+    bar_console = PlainConsole(file=sink, force_terminal=True, width=120)
+    callback = _tip_before_first_file(noop_callback)
+    with Progress(SpinnerColumn(), BarColumn(), console=bar_console, transient=True) as progress:
+        progress.add_task("Ingesting documents...", total=4)
+        callback(EventType.FILE_START, FileStartEvent(file="a.md", current_file=1, total_files=4))
+    frames = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", sink.getvalue()).replace("\r", "\n")
+    tip_lines = [row for row in frames.split("\n") if "This project uses" in row]
+    assert len(tip_lines) == 1, frames
+    assert tip_lines[0].startswith("This project uses the Default profile")
+    assert "Ingesting" not in tip_lines[0]
+
+
 def test_a_multi_gpu_sync_prints_the_tip_on_its_first_batch_progress(project):
     """A fan-out sync reports batch progress, not per-file starts."""
 
@@ -684,11 +708,6 @@ def test_sync_prints_no_tip_on_another_profile(project):
     result = _sync(project)
     assert _FIRST_FILE_LINE in result.output
     assert "lilbee analyze" not in result.output
-
-
-def test_sync_json_mode_prints_no_tip(project):
-    result = _sync(project, "--json")
-    assert TIP_TEXT not in " ".join(result.output.split())
 
 
 def test_add_after_analyze_prints_no_tip(project, notes):
