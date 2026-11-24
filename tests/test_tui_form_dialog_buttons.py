@@ -87,23 +87,33 @@ async def test_the_buttons_stay_on_screen_without_a_focus_change(
         ]
 
 
+@pytest.mark.parametrize("size", [(80, 24), (60, 20)])
 @pytest.mark.parametrize(
-    ("make", "scroll_id"),
+    ("make", "scroll_id", "last_id", "button_id"),
     [
-        (lambda: CrawlDialog(), "crawl-scroll"),
-        (lambda: PresetDialog(), "preset-scroll"),
-        (lambda: PresetDialog(_preset()), "preset-scroll"),
+        (lambda: CrawlDialog(), "crawl-scroll", "crawl-error", "crawl-submit"),
+        (lambda: PresetDialog(), "preset-scroll", "preset-error", "preset-save"),
+        (lambda: PresetDialog(_preset()), "preset-scroll", "preset-error", "preset-save"),
     ],
     ids=["crawl", "preset-add", "preset-edit"],
 )
-async def test_a_form_taller_than_the_terminal_scrolls_its_fields(make, scroll_id: str) -> None:
+async def test_a_form_taller_than_the_terminal_scrolls_above_its_buttons(
+    make, scroll_id: str, last_id: str, button_id: str, size: tuple[int, int]
+) -> None:
     app = _DialogApp(make())
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with app.run_test(size=size) as pilot:
 
         def scrolls() -> bool:
             found = app.screen.query(f"#{scroll_id}")
             return bool(found) and found.first().max_scroll_y > 0
 
         assert await wait_until(pilot, scrolls)
-        scroll = app.screen.query_one(f"#{scroll_id}")
-        assert scroll.region.bottom <= app.screen.size.height
+        screen = app.screen
+        scroll = screen.query_one(f"#{scroll_id}")
+        button = screen.query_one(f"#{button_id}")
+        assert scroll.region.bottom <= button.region.y
+        scroll.scroll_end(animate=False)
+        await pilot.pause()
+        last = screen.query_one(f"#{last_id}")
+        assert scroll.region.y <= last.region.y
+        assert last.region.bottom <= scroll.region.bottom
