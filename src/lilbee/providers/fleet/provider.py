@@ -3635,6 +3635,7 @@ class FleetProvider:
             restarted = self._restart_changed(reload_dir, running, old, force, drained, owned)
         except BaseException:
             self._give_back_clients(drained)
+            self._stop_lost_servers(owned)
             raise
         finally:
             with self._lock:
@@ -3852,6 +3853,18 @@ class FleetProvider:
             client.notify_when_idle(self._start_hold_sweep)
         self._retiring_clients = self._retiring_clients + taken
         return taken
+
+    def _stop_lost_servers(self, owned: dict[SwapGroup, SwapManager]) -> None:
+        """Stop each server in *owned* that the fleet no longer maps, after a pass that failed.
+
+        A failed pass gives its groups back, but a rediscover during the drain clears
+        the fleet's map, so a server the pass took has no owner left to stop it. A
+        server that the fleet still maps serves again and keeps running.
+        """
+        with self._lock:
+            lost = [swap for group, swap in owned.items() if self._swaps.get(group) is not swap]
+        for swap in lost:
+            swap.shutdown()
 
     def _give_back_clients(self, drained: dict[WorkerRole, list[LlamaServerClient]]) -> None:
         """Put *drained* clients back in dispatch after a pass that failed before its stop phase.
