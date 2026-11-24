@@ -3893,6 +3893,7 @@ def _with_auto_cpu_findings(
     load into the CPU backend when the engine has no card or no layer goes to one. The
     pool is admitted against total memory, so the free figure is read here, and only when
     such a role launches. Every role in the pool, on the CPU or not, holds its footprint.
+    A role whose engine build can run only on the CPU counts too, as the plan moves it there.
     """
     if unified_budget is None:
         return placed
