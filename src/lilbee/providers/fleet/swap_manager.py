@@ -28,7 +28,7 @@ import httpx
 import psutil
 
 from lilbee.core.health_warnings import HealthWarning, WarningCode
-from lilbee.parent_monitor import boot_identity, linux_age_s, linux_start_stamp, started_near_mono
+from lilbee.parent_monitor import boot_identity, linux_age_s, linux_start_stamp, macos_start_stamp
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import (
     ROUTER_GO_INSTALL,
@@ -94,6 +94,11 @@ _STATE_KEY_PGID = "pgid"
 _STATE_KEY_CREATED_AT = "created_at"
 _STATE_KEY_BOOT_ID = "boot_id"
 _STATE_KEY_START_TICKS = "start_ticks"
+# macOS only: {"boot": boot session, "abstime": start on the mach clock}. A new key, so a
+# lilbee from before it reads such a record by its create time.
+_STATE_KEY_MACH_START = "mach_start"
+_MACH_START_BOOT = "boot"
+_MACH_START_ABSTIME = "abstime"
 _STATE_KEY_NAME = "name"
 _STATE_KEY_MEMBER_PORTS = "member_ports"
 _STATE_KEY_PROXY_PORT = "proxy_port"
@@ -238,6 +243,7 @@ class SwapState:
     created_at: float | None = None
     boot_id: str | None = None  # with start_ticks, the Linux identity a clock step cannot move
     start_ticks: float | None = None
+    mach_start: tuple[str, int] | None = None  # (boot session, mach start), the macOS identity
     started_mono: float | None = None  # the system monotonic clock at spawn, on every platform
     started_boot: str | None = None  # the boot that clock reading belongs to
     member_ports: tuple[int, ...] = ()
@@ -512,9 +518,7 @@ class SwapManager:
             _STATE_KEY_ENGINE_PIN: engine_pin(),
             _STATE_KEY_SWAP_BINARY: self._swap_binary,
         }
-        stamp = linux_start_stamp(swap_pid)
-        if stamp is not None:
-            state[_STATE_KEY_BOOT_ID], state[_STATE_KEY_START_TICKS] = stamp
+        state.update(_start_stamp_fields(swap_pid))
         if self._origin is not None:
             state[_STATE_KEY_CONFIG_ROOT] = self._origin.config_root
             state[_STATE_KEY_FLEET_VIEW] = self._origin.fleet_view
@@ -1422,6 +1426,7 @@ def _load_state(path: Path) -> SwapState | None:
             created_at=float(raw_created) if raw_created is not None else None,
             boot_id=str(raw_boot_id) if raw_boot_id and raw_ticks is not None else None,
             start_ticks=float(raw_ticks) if raw_boot_id and raw_ticks is not None else None,
+            mach_start=_load_mach_start(payload.get(_STATE_KEY_MACH_START)),
             started_mono=float(raw_mono) if has_mono else None,
             started_boot=str(raw_started_boot) if has_mono else None,
             member_ports=tuple(int(port) for port in raw_ports),
@@ -1436,16 +1441,27 @@ def _load_state(path: Path) -> SwapState | None:
         return None
 
 
-def _started_at_recorded_mono(state: SwapState, create_time: float) -> bool:
-    """True when the process created at *create_time* started where the record's spawn reading says.
+def _start_stamp_fields(pid: int) -> dict[str, object]:
+    """The record keys that name *pid* across a wall-clock step, for this platform.
 
-    psutil's create time and the wall clock move together in a step, so the wall-clock
-    age taken from the create time gives a start on the monotonic clock that does not.
-    A reading from another boot says nothing about this process.
+    Linux: boot id and start ticks. macOS: the boot session and the mach start, under
+    their own key. Empty on Windows, where the create time is not moved by a step, and
+    when the read fails; the record then names the process by its create time alone.
     """
-    if state.started_mono is None:
-        return False
-    return started_near_mono(create_time, state.started_mono, state.started_boot)
+    linux = linux_start_stamp(pid)
+    if linux is not None:
+        return {_STATE_KEY_BOOT_ID: linux[0], _STATE_KEY_START_TICKS: linux[1]}
+    mach = macos_start_stamp(pid)
+    if mach is not None:
+        return {_STATE_KEY_MACH_START: {_MACH_START_BOOT: mach[0], _MACH_START_ABSTIME: mach[1]}}
+    return {}
+
+
+def _load_mach_start(raw: object) -> tuple[str, int] | None:
+    """The (boot session, mach start) of a ``mach_start`` value, or None when it is absent."""
+    if not isinstance(raw, dict):
+        return None
+    return str(raw[_MACH_START_BOOT]), int(raw[_MACH_START_ABSTIME])
 
 
 def _is_live_llama_swap(state: SwapState) -> bool:
@@ -1453,12 +1469,12 @@ def _is_live_llama_swap(state: SwapState) -> bool:
 
     A recorded identity that differs from the live process's is pid reuse,
     even when the recycled pid runs another instance's llama-swap. On Linux
-    the identity is the boot id plus start ticks, compared exactly: a wall-clock
-    step moves psutil's create time but not these. Elsewhere the create time is
-    compared with a tolerance; on macOS a clock step moves it, so a create time
-    that differs still passes when the process's start on the monotonic clock
-    equals the record's spawn reading from the same boot. A legacy state file
-    without a create time falls back to the cmdline match alone.
+    the identity is the boot id plus start ticks; on macOS it is the boot session
+    plus the start on the mach clock. Both are compared exactly: a wall-clock step
+    moves psutil's create time but not these. A record without either (Windows,
+    or a macOS record from before the mach start) compares the create time within
+    a tolerance. A legacy state file without a create time falls back to the
+    cmdline match alone.
     """
     try:
         proc = psutil.Process(state.pid)
@@ -1469,10 +1485,12 @@ def _is_live_llama_swap(state: SwapState) -> bool:
     if state.boot_id is not None and state.start_ticks is not None:
         if linux_start_stamp(state.pid) != (state.boot_id, state.start_ticks):
             return False
+    elif state.mach_start is not None:
+        if macos_start_stamp(state.pid) != state.mach_start:
+            return False
     elif (
         state.created_at is not None
         and abs(create_time - state.created_at) > _CREATE_TIME_TOLERANCE_S
-        and not _started_at_recorded_mono(state, create_time)
     ):
         return False
     binary = Path(next(iter(cmdline), "")).name
