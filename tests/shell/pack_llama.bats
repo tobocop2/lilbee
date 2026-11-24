@@ -87,6 +87,11 @@ windows_cuda() {
   cuda
   export BUILD="" RUNNER_OS=Windows PLATFORM=win_amd64 ASSET=server.zip EXTRA_ASSET=runtime.zip MANYLINUX_IMAGE=""
   wheel_of 4.cuda win_amd64
+  # The prune stand-in records its arguments and deletes vcomp140: tests/test_assert_engine_bundle.py tests the real one.
+  mkdir -p "${ROOT}/tools/qa"
+  printf '%s\n' 'import os, sys' \
+    "open('${BATS_TEST_TMPDIR}/prune.log', 'a').write(' '.join(sys.argv[1:]) + '\n')" \
+    'os.remove(os.path.join(sys.argv[2], "vcomp140.dll"))' > "${ROOT}/tools/qa/assert_engine_bundle.py"
   "${REAL_PYTHON}" -c '
 import sys, zipfile
 for name, members in (("server.zip", {"llama-server.exe": "server", "ggml.dll": "ggml"}), ("runtime.zip", {"cudart64_12.dll": "cudart"})):
@@ -485,12 +490,32 @@ gfx90a" ]
   [ ! -e "${DOCKER_LOG}" ]
 }
 
-@test "a Windows binary that imports vcomp140 stops the pack" {
+@test "the Windows cell prunes the runtime DLLs that nothing imports, after pefile is installed and before the build" {
   windows_cuda
-  "${REAL_PYTHON}" -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1], "a").writestr("ggml-cpu.dll", "x\0VCOMP140.dll\0")' "${GH_ASSETS}/server.zip"
   run bash "${SCRIPT}"
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"a binary imports vcomp140.dll"* ]]
+  [ "$status" -eq 0 ]
+  [ "$(cat "${BATS_TEST_TMPDIR}/prune.log")" = "--prune-runtime packaging/engine-wheel/${MODULE}/bin" ]
+  grep -qF -- "--require-hashes --force-reinstall -r tools/wheel-build/build-tools.constraints -r tools/wheel-build/windows-bundle-tools.constraints |" "${PYTHON_CALLS}"
+  local pip prune build
+  pip="$(grep -n 'windows-bundle-tools.constraints |' "${PYTHON_CALLS}" | cut -d: -f1)"
+  prune="$(grep -n 'assert_engine_bundle.py' "${PYTHON_CALLS}" | cut -d: -f1)"
+  build="$(grep -n -- '-m build ' "${PYTHON_CALLS}" | cut -d: -f1)"
+  [ "${pip}" -lt "${prune}" ]
+  [ "${prune}" -lt "${build}" ]
+}
+
+@test "a cell that is not for Windows prunes no runtime DLL" {
+  run bash "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  [ ! -e "${BATS_TEST_TMPDIR}/prune.log" ]
+  ! grep -q windows-bundle-tools "${PYTHON_CALLS}"
+}
+
+@test "a prune that fails stops the Windows pack before the wheel build" {
+  windows_cuda
+  printf '%s\n' 'raise SystemExit(3)' > "${ROOT}/tools/qa/assert_engine_bundle.py"
+  run bash "${SCRIPT}"
+  [ "$status" -eq 3 ]
   [ ! -e "${TREE}/dist" ]
   [ ! -e "${OUT}" ]
 }

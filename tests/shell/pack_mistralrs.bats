@@ -169,7 +169,7 @@ ${WHEEL}.sha256" ]
 @test "pip installs the pinned build tools by their digests, and the build installs nothing" {
   run bash "${SCRIPT}"
   [ "$status" -eq 0 ]
-  grep -q '^-m pip install --require-hashes --force-reinstall -r ../../tools/wheel-build/build-tools.constraints -r ../../tools/wheel-build/mistralrs-check-tools.constraints | .* cwd=engine-wheel-mistral-rs$' "${PYTHON_LOG}"
+  grep -q '^-m pip install --require-hashes --force-reinstall -r ../../tools/wheel-build/build-tools.constraints -r ../../tools/wheel-build/windows-bundle-tools.constraints | .* cwd=engine-wheel-mistral-rs$' "${PYTHON_LOG}"
   grep -q '^-m build --wheel --no-isolation .* cwd=engine-wheel-mistral-rs$' "${PYTHON_LOG}"
   [ "$(grep -c '^-m pip ' "${PYTHON_LOG}")" -eq 1 ]
 }
@@ -201,8 +201,8 @@ ${WHEEL}.sha256" ]
   [ "$(grep -cE '^    --hash=sha256:[0-9a-f]{64}$' "${file}")" -eq 6 ]
 }
 
-@test "pefile for the wheel check is pinned in its own file, apart from the build tools" {
-  local check="${REPO_ROOT}/tools/wheel-build/mistralrs-check-tools.constraints"
+@test "pefile for the Windows packs is pinned in its own file, apart from the build tools" {
+  local check="${REPO_ROOT}/tools/wheel-build/windows-bundle-tools.constraints"
   grep -qE '^pefile==[0-9.]+ \\$' "${check}"
   [ "$(grep -cE '^[a-z_]+==' "${check}")" -eq 1 ]
   [ "$(grep -cE '^    --hash=sha256:[0-9a-f]{64}$' "${check}")" -eq 1 ]
@@ -298,16 +298,25 @@ MIT AND Apache-2.0 AND MPL-2.0 AND OpenSSL AND BSD-3-Clause" ]
   [ "$output" = "License-Expression: MIT AND Apache-2.0 AND BSD-3-Clause AND LicenseRef-Microsoft-VC-Runtime" ]
 }
 
-@test "the Windows cell builds with the runtime and its notice in the wheel project" {
+# A Windows cell: the bundler stand-in adds two runtime DLLs, and the prune stand-in deletes vcomp140 and records its arguments.
+windows_cell() {
   export RUNNER_OS=Windows PLATFORM=win_amd64 ASSET=m.zip ABOUT_TARGET=x86_64-pc-windows-msvc
-  local about=cargo-about-0.9.3-x86_64-pc-windows-msvc wheel=lilbee_engine_mistral_rs-0.9.5-1.cpu-py3-none-win_amd64.whl
-  mkdir -p "${BATS_TEST_TMPDIR}/make/${about}"
+  local about=cargo-about-0.9.3-x86_64-pc-windows-msvc
+  mkdir -p "${BATS_TEST_TMPDIR}/make/${about}" "${ROOT}/tools/qa"
   cp "${BATS_TEST_DIRNAME}/stubs/cargo-about-pack" "${BATS_TEST_TMPDIR}/make/${about}/cargo-about.exe"
   chmod +x "${BATS_TEST_TMPDIR}/make/${about}/cargo-about.exe"
   tar -czf "${GH_ASSETS}/${about}.tar.gz" -C "${BATS_TEST_TMPDIR}/make" "${about}"
   echo exe > "${BATS_TEST_TMPDIR}/make/mistralrs.exe"
   (cd "${BATS_TEST_TMPDIR}/make" && "${REAL_PYTHON}" -m zipfile -c "${GH_ASSETS}/m.zip" mistralrs.exe)
-  printf '%s\n' 'set -e' '[ -f "$1/mistralrs.exe" ]' 'echo dll > "$1/vcruntime140.dll"' 'echo notice > "$2"' > "${ROOT}/tools/wheel-build/bundle_windows_runtime.sh"
+  printf '%s\n' 'set -e' '[ -f "$1/mistralrs.exe" ]' 'echo dll > "$1/vcruntime140.dll"' 'echo dll > "$1/vcomp140.dll"' 'echo notice > "$2"' > "${ROOT}/tools/wheel-build/bundle_windows_runtime.sh"
+  printf '%s\n' 'import os, sys' \
+    "open('${BATS_TEST_TMPDIR}/prune.log', 'a').write(' '.join(sys.argv[1:]) + '\n')" \
+    'os.remove(os.path.join(sys.argv[2], "vcomp140.dll"))' > "${ROOT}/tools/qa/assert_engine_bundle.py"
+}
+
+@test "the Windows cell builds with the runtime and its notice in the wheel project" {
+  local wheel=lilbee_engine_mistral_rs-0.9.5-1.cpu-py3-none-win_amd64.whl
+  windows_cell
   run bash "${SCRIPT}"
   [ "$status" -eq 0 ]
   grep -qx ./NOTICE-MICROSOFT-VC-RUNTIME "${PYTHON_LOG}.tree"
@@ -328,15 +337,30 @@ ${wheel}.sha256" ]
   [ ! -e "${PYTHON_LOG}.tree" ]
 }
 
-@test "the Windows runtime stays in the wheel whatever the exe imports" {
-  printf '%s\n' 'touch "$1/vcomp140.dll"' > "${ROOT}/tools/wheel-build/bundle_windows_runtime.sh"
-  local bin="${TREE}/lilbee_engine_mistral_rs/bin"
-  mkdir -p "${bin}"
-  export RUNNER_OS=Windows
-  printf 'x\0other.dll\0' > "${bin}/mistralrs.exe"
-  run stage add_windows_runtime
+@test "the Windows build prunes the runtime DLLs that nothing imports before it builds the wheel" {
+  windows_cell
+  run bash "${SCRIPT}"
   [ "$status" -eq 0 ]
-  [ -e "${bin}/vcomp140.dll" ]
+  [ "$(cat "${BATS_TEST_TMPDIR}/prune.log")" = "--prune-runtime lilbee_engine_mistral_rs/bin" ]
+  grep -qx ./lilbee_engine_mistral_rs/bin/vcruntime140.dll "${PYTHON_LOG}.tree"
+  ! grep -q vcomp140 "${PYTHON_LOG}.tree"
+}
+
+@test "a build that is not for Windows prunes nothing" {
+  mkdir -p "${ROOT}/tools/qa"
+  printf '%s\n' "open('${BATS_TEST_TMPDIR}/prune.log', 'w')" > "${ROOT}/tools/qa/assert_engine_bundle.py"
+  run bash "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  [ ! -e "${BATS_TEST_TMPDIR}/prune.log" ]
+}
+
+@test "a prune that fails stops the Windows build before the wheel is built" {
+  windows_cell
+  printf '%s\n' 'raise SystemExit(3)' > "${ROOT}/tools/qa/assert_engine_bundle.py"
+  run bash "${SCRIPT}"
+  [ "$status" -ne 0 ]
+  [ ! -e "${OUT}" ]
+  [ ! -e "${PYTHON_LOG}.tree" ]
 }
 
 @test "a runtime that cannot be bundled stops the build" {
