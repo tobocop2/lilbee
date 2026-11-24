@@ -218,9 +218,7 @@ def test_no_pack_and_no_network_gives_the_missing_pack_text(good: Path, root: Pa
     assert _builds() == []
 
 
-def test_a_damaged_pack_in_the_packs_folder_is_refused_with_the_text_to_copy_it_again(
-    good: Path, root: Path
-) -> None:
+def test_a_damaged_pack_in_the_packs_folder_is_refused_with_the_text_to_copy_it_again(good: Path, root: Path) -> None:
     damaged = good.read_bytes()[:-8]
     (root / "packs").mkdir(parents=True)
     pack = root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl"
@@ -423,9 +421,7 @@ def test_a_pin_with_no_cells_installs_a_wheel_on_a_host_the_manifest_cannot_name
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
 
 
-def test_a_pack_in_the_packs_folder_is_installed_without_a_wheel_argument(
-    good: Path, root: Path
-) -> None:
+def test_a_pack_in_the_packs_folder_is_installed_without_a_wheel_argument(good: Path, root: Path) -> None:
     (root / "packs").mkdir(parents=True)
     (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
     engine_service.install(ENGINE.value)
@@ -1573,9 +1569,7 @@ def test_install_refuses_a_damaged_build_that_a_launch_holds(
     assert _builds() == []
 
 
-def test_install_and_remove_refuse_a_held_build_in_the_same_words(
-    good: Path, root: Path
-) -> None:
+def test_install_and_remove_refuse_a_held_build_in_the_same_words(good: Path, root: Path) -> None:
     build = _damaged_build(good, root)
     hold = BuildHolds([build])
     try:
@@ -1587,18 +1581,14 @@ def test_install_and_remove_refuse_a_held_build_in_the_same_words(
     assert str(removed.value).replace("remove it", "install it") == installed
 
 
-def test_install_replaces_a_damaged_build_that_no_launch_holds(
-    good: Path, root: Path
-) -> None:
+def test_install_replaces_a_damaged_build_that_no_launch_holds(good: Path, root: Path) -> None:
     build = _damaged_build(good, root)
     engine_service.install(ENGINE.value)
     assert not (build / SURVIVOR).exists()
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
 
 
-def test_install_succeeds_once_the_launch_releases_the_build(
-    good: Path, root: Path
-) -> None:
+def test_install_succeeds_once_the_launch_releases_the_build(good: Path, root: Path) -> None:
     build = _damaged_build(good, root)
     hold = BuildHolds([build])
     assert _service_install() == HELD_REFUSAL
