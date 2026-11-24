@@ -1408,7 +1408,7 @@ def _require_embedding_model() -> None:
     if not get_services().embedder.validate_model():
         ref = active_config().embedding_model
         detail = (
-            f"{ref!r} is not available: pull it, or set a different embedding_model."
+            f"'{ref}' is not available: pull it, or set a different embedding_model."
             if ref
             else "None is configured: pull one and set embedding_model."
         )

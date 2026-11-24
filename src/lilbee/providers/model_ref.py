@@ -179,7 +179,7 @@ def _classify(raw: str, *, read_presets: bool) -> ProviderModelRef:
     if "/" not in raw:
         known = ", ".join(f"{p}/" for p in sorted(BUILTIN_PREFIXES))
         raise ValueError(
-            f"Model ref {raw!r} must be a HuggingFace ref "
+            f"Model ref '{raw}' must be a HuggingFace ref "
             f"('<org>/<repo>/<filename>.gguf') or carry a known provider prefix ({known}) "
             "or the name of a server preset."
         )
