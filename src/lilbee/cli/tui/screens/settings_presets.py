@@ -57,10 +57,23 @@ class PresetDialog(Dialog[str | None]):
         self._preset = preset
 
     def compose(self) -> ComposeResult:
+        # The form scrolls; the button row is docked, so it never leaves a short terminal.
+        with Vertical():
+            yield from self._compose_fields()
+            with Center(), Horizontal(id="preset-buttons"):
+                yield Button(msg.PRESET_DIALOG_SAVE, variant="primary", id="preset-save")
+                preset = self._preset
+                if preset is not None and preset.has_key:
+                    yield Button(
+                        msg.PRESET_DIALOG_CLEAR_KEY, name=preset.name, id="preset-clear-key"
+                    )
+                yield Button(msg.PRESET_DIALOG_CANCEL, id="preset-cancel")
+
+    def _compose_fields(self) -> ComposeResult:
         preset = self._preset
         roles = set(preset.roles) if preset else set()
         wire = preset.rerank_wire if preset and preset.rerank_wire else RerankWire.V1
-        with VerticalScroll():
+        with VerticalScroll(id="preset-scroll"):
             title = (
                 msg.PRESET_DIALOG_ADD_TITLE
                 if preset is None
@@ -107,13 +120,6 @@ class PresetDialog(Dialog[str | None]):
                     markup=False,
                 )
             yield Static("", id="preset-error", markup=False)
-            with Center(), Horizontal(id="preset-buttons"):
-                yield Button(msg.PRESET_DIALOG_SAVE, variant="primary", id="preset-save")
-                if preset is not None and preset.has_key:
-                    yield Button(
-                        msg.PRESET_DIALOG_CLEAR_KEY, name=preset.name, id="preset-clear-key"
-                    )
-                yield Button(msg.PRESET_DIALOG_CANCEL, id="preset-cancel")
 
     def on_mount(self) -> None:
         self._show_wire()

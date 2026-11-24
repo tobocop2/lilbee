@@ -2,13 +2,18 @@ CrawlDialog {
     align: center middle;
 }
 
-CrawlDialog > VerticalScroll {
+CrawlDialog > Vertical {
     width: 64;
     height: auto;
     max-height: 90%;
     border: $rail-heavy $primary;
     background: $surface;
     padding: 1 2;
+}
+
+CrawlDialog #crawl-scroll {
+    height: auto;
+    max-height: 100%;
 }
 
 CrawlDialog #crawl-title {
@@ -36,6 +41,7 @@ CrawlDialog #crawl-error {
 }
 
 CrawlDialog Center {
+    dock: bottom;
     width: 100%;
     height: auto;
     margin-top: 1;

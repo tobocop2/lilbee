@@ -7,7 +7,7 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Center, Horizontal, VerticalScroll
+from textual.containers import Center, Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Checkbox, Input, Label, Static
 
 from lilbee.cli.tui import messages as msg
@@ -54,9 +54,15 @@ class CrawlDialog(Dialog[CrawlParams | None]):
     ]
 
     def compose(self) -> ComposeResult:
-        # Scrollable body so the full form (incl. depth + the action buttons)
-        # stays reachable on short terminals rather than clipping at max-height.
-        with VerticalScroll():
+        # The form scrolls; the button row is docked, so it never leaves a short terminal.
+        with Vertical():
+            yield from self._compose_fields()
+            with Center(), Horizontal(id="crawl-buttons"):
+                yield Button(msg.CRAWL_DIALOG_SUBMIT, variant="primary", id="crawl-submit")
+                yield Button(msg.CRAWL_DIALOG_CANCEL, variant="default", id="crawl-cancel")
+
+    def _compose_fields(self) -> ComposeResult:
+        with VerticalScroll(id="crawl-scroll"):
             yield Static(msg.CRAWL_DIALOG_TITLE, id="crawl-title")
             yield Label(msg.CRAWL_DIALOG_URL_LABEL)
             yield Input(
@@ -101,9 +107,6 @@ class CrawlDialog(Dialog[CrawlParams | None]):
                     id=field_id,
                 )
             yield Static("", id="crawl-error", markup=False)
-            with Center(), Horizontal(id="crawl-buttons"):
-                yield Button(msg.CRAWL_DIALOG_SUBMIT, variant="primary", id="crawl-submit")
-                yield Button(msg.CRAWL_DIALOG_CANCEL, variant="default", id="crawl-cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "crawl-submit":
