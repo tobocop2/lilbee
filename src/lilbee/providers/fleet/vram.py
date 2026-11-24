@@ -55,6 +55,7 @@ _KEY_HEADER_KV = "metadataKV"
 _KEY_HEADER_KEY = "key"
 _KEY_HEADER_VALUE = "value"
 _KEY_ARRAY_LEN = "len"
+_KEY_ARRAY_ITEMS = "array"
 _GGUF_ARCH = "general.architecture"
 _GGUF_HEADS = "attention.head_count"
 _GGUF_KV_HEADS = "attention.head_count_kv"
@@ -385,31 +386,53 @@ def _cached_repacked_bytes(_engine_id: str, path_str: str, _mtime_ns: int) -> in
 
 @dataclass(frozen=True)
 class AttentionShape:
-    """The header fields the CPU score and logits terms read."""
+    """The header fields the CPU score and logits terms read.
+
+    A per-layer header (a hybrid recurrent model) gives the largest count of any layer, which is
+    what one layer's score matrix needs, and sets ``per_layer``.
+    """
 
     heads: int
     kv_heads: int
     vocab: int
+    per_layer: bool = False
 
 
 def attention_shape(model_path: Path) -> AttentionShape | None:
-    """Scalar head counts and vocabulary size of a GGUF file; None when the header has no such."""
+    """Head counts and vocabulary size of a GGUF file; None when the header lacks either."""
     return _cached_attention_shape(
         engine_build_identity(), str(model_path), model_path.stat().st_mtime_ns
     )
 
 
 def _shape_from_entries(entries: dict[str, object]) -> AttentionShape | None:
-    """The shape, or None when a head count is absent or per layer, or the vocabulary is absent."""
+    """The shape, or None when a head count or the vocabulary is absent or unreadable."""
     arch = entries.get(_GGUF_ARCH)
-    heads = entries.get(f"{arch}.{_GGUF_HEADS}")
-    kv_heads = entries.get(f"{arch}.{_GGUF_KV_HEADS}")
+    heads = _layer_maximum(entries.get(f"{arch}.{_GGUF_HEADS}"))
+    kv_heads = _layer_maximum(entries.get(f"{arch}.{_GGUF_KV_HEADS}"))
     tokens = entries.get(_GGUF_TOKENS)
-    # The raw header is untyped JSON: a scalar count is a number, a per-layer count and the
-    # token list are array objects.
-    if not (isinstance(heads, int) and isinstance(kv_heads, int) and isinstance(tokens, dict)):
+    if heads is None or kv_heads is None or not isinstance(tokens, dict):
         return None
-    return AttentionShape(heads=heads, kv_heads=kv_heads, vocab=int(tokens[_KEY_ARRAY_LEN]))
+    return AttentionShape(
+        heads=heads[0],
+        kv_heads=kv_heads[0],
+        vocab=int(tokens[_KEY_ARRAY_LEN]),
+        per_layer=heads[1] or kv_heads[1],
+    )
+
+
+def _layer_maximum(value: object) -> tuple[int, bool] | None:
+    """A head count and whether it was per layer; None when it is absent or unreadable.
+
+    The raw header is untyped JSON: a scalar count is a number, a per-layer count is an array
+    object that lists one count per layer (zero on a layer without attention).
+    """
+    if isinstance(value, int):
+        return value, False
+    layers = value.get(_KEY_ARRAY_ITEMS) if isinstance(value, dict) else None
+    if not (isinstance(layers, list) and layers and all(isinstance(n, int) for n in layers)):
+        return None
+    return max(layers), True
 
 
 @lru_cache(maxsize=_CACHE_SIZE)

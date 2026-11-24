@@ -465,16 +465,29 @@ def _arch_header(
 GRANITE_H_KV = [0] * 10 + [4, 0, 0, 4, 0, 0, 0, 4] + [0] * 9 + [4, 0, 0, 0, 0]
 """granite-4.0-h-350m's per-layer KV heads: four attention layers among 32."""
 
+PER_LAYER = {
+    "lfm2": (_arch_header(16, _array(LFM2_KV)), vram_mod.AttentionShape(16, 8, 65_536, True)),
+    "granite-h": (
+        _arch_header(12, _array(GRANITE_H_KV)),
+        vram_mod.AttentionShape(12, 4, 65_536, True),
+    ),
+    "query-head-array": (
+        _arch_header(_array([32, 16]), 8),
+        vram_mod.AttentionShape(32, 8, 65_536, True),
+    ),
+}
+"""Per-layer headers with the shape of their largest layer."""
+
 UNSCALED = {
-    "lfm2-kv-array": _arch_header(16, _array(LFM2_KV)),
-    "granite-h-kv-array": _arch_header(12, _array(GRANITE_H_KV)),
-    "query-head-array": _arch_header(_array([32, 16]), 8),
     "no-kv-heads": _arch_header(32, None),
     "no-heads": _arch_header(None, None),
     "no-vocabulary": _arch_header(32, 8, vocab=None),
     "text-heads": _arch_header("32", 8),
+    "array-without-items": _arch_header(32, {"type": 4, "len": 16}),
+    "empty-array": _arch_header(32, _array([])),
+    "text-array": _arch_header(32, _array(["8"])),
 }
-"""Headers the CPU rule has no measurement for: per-layer, absent or unreadable head counts."""
+"""Headers the CPU rule has no measurement for: absent or unreadable head counts."""
 
 
 class TestAHeaderWithoutScalarHeads:
@@ -487,13 +500,20 @@ class TestAHeaderWithoutScalarHeads:
         shape = self._shape(parser_for, _arch_header(32, 8))
         assert shape == vram_mod.AttentionShape(32, 8, 65_536)
 
+    @pytest.mark.parametrize("case", sorted(PER_LAYER))
+    def test_a_per_layer_header_has_the_shape_of_its_largest_layer(
+        self, case: str, parser_for: ParserFor
+    ) -> None:
+        header, expected = PER_LAYER[case]
+        assert self._shape(parser_for, header) == expected
+
     @pytest.mark.parametrize("case", sorted(UNSCALED))
     def test_it_has_no_shape(self, case: str, parser_for: ParserFor) -> None:
         assert self._shape(parser_for, UNSCALED[case]) is None
 
     @pytest.mark.parametrize("flash", [True, False])
     @pytest.mark.parametrize("case", sorted(UNSCALED))
-    def test_it_keeps_the_parsers_own_figure(
+    def test_it_keeps_the_parsers_own_figure_without_a_shape(
         self, case: str, flash: bool, parser_for: ParserFor
     ) -> None:
         path, fake = parser_for("llama-1b-q8")
@@ -505,3 +525,55 @@ class TestAHeaderWithoutScalarHeads:
         assert _charge(request) == (
             PARSER[("llama-1b-q8", 1, 4096, flash, "f16")].uma + MODELS["llama-1b-q8"].file_bytes
         )
+
+
+class TestAPerLayerHeaderOnTheCpu:
+    """A hybrid recurrent model pays one layer's flash-off scores and nothing else new."""
+
+    def _request(
+        self, path: Path, *, flash: bool, on_cpu: bool = True, slots: int = 1, ctx: int = 4096
+    ) -> MemoryRequest:
+        return MemoryRequest(
+            model_path=path, ctx=ctx, slots=slots, gpu_layers=0 if on_cpu else 99, flash_attn=flash,
+            kv_cache_type=KvCacheType.F16, on_cpu=on_cpu,
+        )  # fmt: skip
+
+    @pytest.mark.parametrize("case", sorted(PER_LAYER))
+    def test_flash_off_adds_the_scores_of_the_largest_layer(
+        self, case: str, parser_for: ParserFor
+    ) -> None:
+        path, fake = parser_for("llama-1b-q8")
+        fake.header, shape = PER_LAYER[case]
+        base = PARSER[("llama-1b-q8", 1, 4096, False, "f16")].uma + MODELS["llama-1b-q8"].file_bytes
+        scores = DEFAULT_UBATCH * 4096 * (4 * shape.heads + 6 * shape.kv_heads)
+        assert _charge(self._request(path, flash=False)) == base + scores
+
+    def test_the_lfm2_charge_covers_the_measured_flash_off_rise(
+        self, parser_for: ParserFor
+    ) -> None:
+        """LFM2-350M measured 194 MB more flash off than on at 1 slot and 4096 tokens."""
+        path, fake = parser_for("llama-1b-q8")
+        fake.header = PER_LAYER["lfm2"][0]
+        rise = _charge(self._request(path, flash=False)) - _charge(self._request(path, flash=True))
+        assert 194_000_000 <= rise <= 194_000_000 * 1.25
+
+    @pytest.mark.parametrize("case", sorted(PER_LAYER))
+    def test_flash_on_keeps_the_parsers_own_figure(
+        self, case: str, parser_for: ParserFor
+    ) -> None:
+        path, fake = parser_for("llama-1b-q8")
+        fake.header = PER_LAYER[case][0]
+        assert _charge(self._request(path, flash=True)) == (
+            PARSER[("llama-1b-q8", 1, 4096, True, "f16")].uma + MODELS["llama-1b-q8"].file_bytes
+        )
+
+    @pytest.mark.parametrize("flash", [True, False])
+    @pytest.mark.parametrize("case", sorted(PER_LAYER))
+    def test_the_gpu_price_does_not_move(
+        self, case: str, flash: bool, parser_for: ParserFor
+    ) -> None:
+        path, fake = parser_for("llama-1b-q8")
+        scalar = LLAMA.estimate_memory(self._request(path, flash=flash, on_cpu=False))
+        fake.header = PER_LAYER[case][0]
+        assert LLAMA.estimate_memory(self._request(path, flash=flash, on_cpu=False)) == scalar
+        assert scalar.device_bytes == PARSER[("llama-1b-q8", 1, 4096, flash, "f16")].vram
