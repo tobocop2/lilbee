@@ -16,7 +16,7 @@ without advancing focus.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 from unittest import mock
 
@@ -152,6 +152,15 @@ def _focusing(widget: Any) -> Callable[[], bool]:
     return holds_focus
 
 
+def _snapshot_landed(selects: Iterable[Any]) -> bool:
+    """Whether a profile dropdown holds what the snapshot load wrote.
+
+    A new Select reports ``Select.NULL`` until its own Mount event runs, and ``Select.NULL`` is
+    truthy. Only the load writes a profile name, or disables the dropdown when the scan fails.
+    """
+    return any((isinstance(s.value, str) and bool(s.value)) or s.disabled for s in selects)
+
+
 async def _await_profile_snapshot(pilot: Any, screen: Any) -> None:
     """Wait for the Profile pane's snapshot, so the focus stops are final.
 
@@ -163,8 +172,7 @@ async def _await_profile_snapshot(pilot: Any, screen: Any) -> None:
     from lilbee.cli.tui.screens.profile_tab import PROFILE_SELECT_ID
 
     def landed() -> bool:
-        selects = screen.query(f"#{PROFILE_SELECT_ID}").results(Select)
-        return any(bool(s.value) or s.disabled for s in selects)
+        return _snapshot_landed(screen.query(f"#{PROFILE_SELECT_ID}").results(Select))
 
     assert await _wait(pilot, landed), "the profile snapshot never landed"
 
@@ -233,6 +241,27 @@ async def test_settings_tab_chain_visits_group_tabs_widget() -> None:
         assert any(name in chain for name in ("ContentTabs", "Tabs")), (
             f"Tabs widget missing from {chain}"
         )
+
+
+def test_unmounted_profile_select_has_not_landed() -> None:
+    """A Select that has not run its Mount event holds ``Select.NULL``, which is no snapshot."""
+    from textual.widgets import Select
+
+    fresh: Select[str] = Select([("", "")], allow_blank=False)
+    assert fresh.value is Select.NULL
+    assert not _snapshot_landed([fresh])
+
+
+def test_loaded_or_failed_profile_select_has_landed() -> None:
+    """The load writes a profile name, or disables the dropdown when the scan fails."""
+    from textual.widgets import Select
+
+    loaded: Select[str] = Select([("", "")], allow_blank=False)
+    loaded.value = "default"
+    failed: Select[str] = Select([("", "")], allow_blank=False)
+    failed.disabled = True
+    assert _snapshot_landed([loaded])
+    assert _snapshot_landed([failed])
 
 
 async def test_settings_tab_rolls_over_to_next_pane() -> None:
