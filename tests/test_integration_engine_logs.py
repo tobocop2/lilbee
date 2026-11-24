@@ -103,7 +103,7 @@ def test_log_roots_name_the_machine_engine_slot(
     assert tmp_path / "data" in engine_logs.log_roots(None)
 
 
-def test_emit_writes_to_stderr_and_skips_nothing(capfd: pytest.CaptureFixture[str]) -> None:
+def test_emit_writes_text_to_stderr_and_ignores_none(capfd: pytest.CaptureFixture[str]) -> None:
     engine_logs.emit(None)
     engine_logs.emit("tail text")
     assert "tail text" in capfd.readouterr().err
