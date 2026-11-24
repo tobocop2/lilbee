@@ -56,7 +56,7 @@ assert_libraries_resolve() {  # binary [host-library-pattern]
   libs="$(ldd "$1" 2>&1)" || { echo "ldd failed on $1: ${libs}" >&2; return 1; }
   missing="$(grep 'not found' <<< "${libs}" || true)"
   if [ -n "${2:-}" ]; then missing="$(grep -v -- "$2" <<< "${missing}" || true)"; fi
-  [ -z "${missing}" ] || { echo "${1##*/} has an unresolved library" >&2; echo "${missing}" >&2; return 1; }
+  [ -z "${missing}" ] || { echo "${1##*/} has an unresolved library" >&2; echo "${missing}"; return 1; }
 }
 
 # Print one file of the dist-info folder of a wheel with LF line ends: a Windows build writes CRLF.
