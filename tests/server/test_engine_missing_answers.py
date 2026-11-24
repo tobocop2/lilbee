@@ -55,6 +55,18 @@ def test_a_missing_engine_binary_answers_503_with_its_own_code(client: TestClien
     assert "Retry-After" not in resp.headers
 
 
+def test_a_missing_engine_binary_is_an_api_error_in_the_completions_body(
+    client: TestClient,
+) -> None:
+    with _preflight_raises(_fleet_error(_NO_ENGINE)):
+        resp = client.post("/v1/chat/completions", json=_BODY)
+
+    assert resp.status_code == 503
+    error = resp.json()["error"]
+    assert error["type"] == "api_error"
+    assert error["code"] == "engine_missing"
+
+
 def test_a_model_that_is_not_installed_still_answers_404(client: TestClient) -> None:
     with _preflight_raises(_fleet_error(None)):
         resp = client.post("/v1/chat/completions", json=_BODY)
