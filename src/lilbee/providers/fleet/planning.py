@@ -59,7 +59,7 @@ from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import (
     UNKNOWN_SIZE_RESERVE_BYTES,
-    installed_safetensors_bytes,
+    installed_folder_weight_bytes,
     memory_size_text,
     tight_memory_text,
     unknown_size_text,
@@ -307,7 +307,7 @@ _NO_MMAP_NETWORK_RAM_FRACTION = 0.85
 def _weights_bytes(model_path: Path) -> int:
     """Total weights size on disk; a folder sums its shards, a split GGUF its sibling shards."""
     if model_path.is_dir():
-        return installed_safetensors_bytes(model_path)
+        return installed_folder_weight_bytes(model_path)
     match = SPLIT_GGUF_NAME.fullmatch(model_path.name)
     if match is None:
         return model_path.stat().st_size
