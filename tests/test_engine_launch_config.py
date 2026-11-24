@@ -33,7 +33,6 @@ from lilbee.providers.fleet.host_caps import HostCaps
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from tests._fleet_engines import ROLE_FIELDS, Role, cards_of, prepare_host
-from tests._mistral_cuda_pick import pick_cuda_on_gpu_hosts
 from tests._published import publish
 from tests.providers.fleet.test_mistral_adapter import caps
 
@@ -133,7 +132,6 @@ def _install_host(
     """*session* with the bundled llama-server and every store engine installed."""
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setattr(runnable, "session_host", lambda: session)
-    pick_cuda_on_gpu_hosts(monkeypatch)
     # The real read builds the process-wide services, and those start a warm-up thread.
     monkeypatch.setattr(swap_config, "_concurrency_limit", lambda *_a, **_k: 4)
     bundled = tmp_path / "lilbee_engine_llama_cpp" / "bin" / _BUNDLED
@@ -270,7 +268,7 @@ def _words(entry: dict[str, object]) -> list[str]:
 
 
 @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION])
-def test_a_cuda_launch_of_mistral_turns_paged_attention_off(
+def test_a_cuda_host_launches_mistral_on_the_cpu(
     role: WorkerRole,
     host: dict[EngineName, Path],
     tmp_path: Path,
@@ -278,9 +276,8 @@ def test_a_cuda_launch_of_mistral_turns_paged_attention_off(
 ) -> None:
     _configure(_MISTRAL_WITH_LLAMA_RERANK, tmp_path, monkeypatch)
     words = _words(_entries_by_role(_config_from_the_provider(tmp_path, monkeypatch))[role])
-    assert words[words.index("--paged-attn") + 1] == "off"
-    assert "--cpu" not in words
-    assert "--gpu-memory-utilization" not in words
+    assert "--cpu" in words
+    assert "--paged-attn" not in words
 
 
 def test_a_cpu_launch_of_mistral_forces_the_cpu(
@@ -393,8 +390,9 @@ def test_a_reload_with_a_low_card_read_keeps_each_engines_clean_figure(
     for name in set(fleet.engines.values()):
         probe = planning._plan_probe_store.get(name)
         assert probe is not None
-        # The ik server has no device listing, so it has no card figure to keep clean.
-        expected = [] if name is EngineName.IK_LLAMA else [_FREE]
+        # The ik server has no device listing, and the mistral.rs cpu build reads no card:
+        # neither has a card figure to keep clean.
+        expected = [] if name in (EngineName.IK_LLAMA, EngineName.MISTRAL) else [_FREE]
         assert [d.free_bytes for d in probe.devices] == expected
     for swap in provider._swaps.values():
         swap._close_log()
@@ -407,14 +405,14 @@ def test_one_plan_reads_each_engine_once_and_chooses_once(
     cards = _Cards(monkeypatch)
     engines = EngineBook(cfg).adapters()
     planning.capture_plan_probe(engines)
-    assert (cards.llama_reads, cards.driver_reads) == (1, 1)
+    assert (cards.llama_reads, cards.driver_reads) == (1, 0)
     chosen = planning.snapshot_engine(engines)
     with planning._one_engine_per_pass(engine=chosen):
         plan = planning.plan_all_launches(engines=engines)
         other = next(e for e in engines.values() if e.name != chosen.name)
         assert planning.snapshot_engine({WorkerRole.CHAT: other}) is chosen
     assert plan.launches
-    assert (cards.llama_reads, cards.driver_reads) == (1, 1)
+    assert (cards.llama_reads, cards.driver_reads) == (1, 0)
 
 
 def test_every_card_refused_keeps_the_cpu_pin_of_llama_beside_mistral(
@@ -439,7 +437,6 @@ def test_every_card_refused_keeps_the_cpu_pin_of_llama_beside_mistral(
 @pytest.mark.parametrize(
     ("fleet", "role"),
     [
-        pytest.param(_MISTRAL_ALONE, WorkerRole.CHAT, id="L7-mistral-alone"),
         pytest.param(
             _Fleet({WorkerRole.EMBED: EngineName.TEI, WorkerRole.RERANK: EngineName.TEI}),
             WorkerRole.EMBED,
@@ -460,14 +457,15 @@ def test_an_engine_alone_gets_a_card_pin(
     assert "CUDA_VISIBLE_DEVICES=0" in entry["env"]
 
 
-def test_each_role_of_a_mixed_fleet_pins_in_its_own_engines_read(
+def test_a_mixed_fleet_pins_llama_by_its_read_and_mistral_to_no_card(
     host: dict[EngineName, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _configure(_MISTRAL_WITH_LLAMA_RERANK, tmp_path, monkeypatch)
     _Cards(monkeypatch, backend="Vulkan")
     entries = _entries_by_role(_config_from_the_provider(tmp_path, monkeypatch))
     assert "--device Vulkan0" in entries[WorkerRole.RERANK]["cmd"]
-    assert "CUDA_VISIBLE_DEVICES=0" in entries[WorkerRole.CHAT]["env"]
+    assert "--cpu" in entries[WorkerRole.CHAT]["cmd"]
+    assert not [item for item in entries[WorkerRole.CHAT]["env"] if "CUDA_VISIBLE" in item]
 
 
 def test_an_engine_chosen_after_the_capture_keeps_the_clean_free_figure(
@@ -476,7 +474,7 @@ def test_an_engine_chosen_after_the_capture_keeps_the_clean_free_figure(
     cards = _Cards(monkeypatch, backend="Vulkan")
     planning.capture_plan_probe({WorkerRole.CHAT: llama.LLAMA})
     cards.free = _LOW
-    probe = planning._current_plan_probe(mistral.MISTRAL)
+    probe = planning._current_plan_probe(tei.TEI)
     assert probe is not None
     assert [(d.backend, d.free_bytes) for d in probe.devices] == [("CUDA", _FREE)]
     assert [d.backend for d in planning._current_plan_probe(llama.LLAMA).devices] == ["Vulkan"]
@@ -488,7 +486,7 @@ def test_a_second_engine_on_the_same_backend_keeps_the_clean_free_figure(
     cards = _Cards(monkeypatch)
     planning.capture_plan_probe({WorkerRole.CHAT: llama.LLAMA})
     cards.free = _LOW
-    probe = planning._current_plan_probe(mistral.MISTRAL)
+    probe = planning._current_plan_probe(tei.TEI)
     assert probe is not None
     assert [(d.backend, d.free_bytes) for d in probe.devices] == [("CUDA", _FREE)]
 
@@ -503,7 +501,7 @@ def test_a_smaller_card_at_the_same_index_reads_its_own_free_figure(
         "cards",
         lambda: [NvidiaCard(0, "GPU-b", "gpu0", _LOW, _LOW - (1 << 20))],
     )
-    probe = planning._current_plan_probe(mistral.MISTRAL)
+    probe = planning._current_plan_probe(tei.TEI)
     assert probe is not None
     assert [(d.total_bytes, d.free_bytes) for d in probe.devices] == [(_LOW, _LOW - (1 << 20))]
     assert cards.llama_reads == 1
@@ -614,7 +612,7 @@ def test_a_repeat_after_the_first_unnamed_entry_is_never_reached(
     assert [d.name for d in devices.visible_nvidia_cards()] == ["card1"]
 
 
-def test_both_card_engines_see_no_card_for_a_repeated_mask(
+def test_the_card_engine_sees_no_card_for_a_repeated_mask(
     host: dict[EngineName, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cards = [
@@ -624,13 +622,11 @@ def test_both_card_engines_see_no_card_for_a_repeated_mask(
     monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,1")
     assert tei.TEI.discover_devices(host[EngineName.TEI]).devices == []
-    assert mistral.MISTRAL.discover_devices(host[EngineName.MISTRAL]).devices == []
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
     assert len(tei.TEI.discover_devices(host[EngineName.TEI]).devices) == 2
-    assert len(mistral.MISTRAL.discover_devices(host[EngineName.MISTRAL]).devices) == 2
 
 
-def test_both_card_engines_keep_the_printed_index_across_a_gap(
+def test_the_card_engine_keeps_the_printed_index_across_a_gap(
     host: dict[EngineName, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cards = [
@@ -640,9 +636,7 @@ def test_both_card_engines_keep_the_printed_index_across_a_gap(
     monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     tei_found = tei.TEI.discover_devices(host[EngineName.TEI]).devices
-    mistral_found = mistral.MISTRAL.discover_devices(host[EngineName.MISTRAL]).devices
     assert [d.index for d in tei_found] == [0, 2]
-    assert [d.index for d in mistral_found] == [0, 2]
 
 
 def test_a_cpu_tei_build_reads_no_card(
@@ -657,16 +651,16 @@ def test_a_cpu_tei_build_reads_no_card(
 def test_a_start_keeps_the_figure_each_engine_read_itself(
     host: dict[EngineName, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _configure(_MISTRAL_WITH_LLAMA_RERANK, tmp_path, monkeypatch)
+    _configure(_TEI_WITH_LLAMA_CHAT, tmp_path, monkeypatch)
     cards = _Cards(monkeypatch)
     cards.driver_free = _LOW
     provider = _started_provider(tmp_path, monkeypatch)
     llama_read = planning._plan_probe_store.get(EngineName.LLAMA)
-    mistral_read = planning._plan_probe_store.get(EngineName.MISTRAL)
+    tei_read = planning._plan_probe_store.get(EngineName.TEI)
     assert llama_read is not None
-    assert mistral_read is not None
+    assert tei_read is not None
     assert [d.free_bytes for d in llama_read.devices] == [_FREE]
-    assert [d.free_bytes for d in mistral_read.devices] == [_LOW]
+    assert [d.free_bytes for d in tei_read.devices] == [_LOW]
     for swap in provider._swaps.values():
         swap._close_log()
 
@@ -683,10 +677,10 @@ def test_two_broken_engines_each_keep_their_failure_wait() -> None:
 def test_a_start_reads_each_engine_and_a_reload_reads_each_again(
     host: dict[EngineName, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _configure(_MISTRAL_WITH_LLAMA_RERANK, tmp_path, monkeypatch)
+    _configure(_TEI_WITH_LLAMA_CHAT, tmp_path, monkeypatch)
     cards = _Cards(monkeypatch)
     provider = _started_provider(tmp_path, monkeypatch)
-    for name in _MISTRAL_WITH_LLAMA_RERANK.engines.values():
+    for name in _TEI_WITH_LLAMA_CHAT.engines.values():
         assert planning._plan_probe_store.get(name) is not None
     before = (cards.llama_reads, cards.driver_reads)
     _plan_of_the_reload(provider, monkeypatch)
