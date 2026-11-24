@@ -123,7 +123,8 @@ _UNLOAD_PATH = "/api/models/unload"
 _HTTP_TIMEOUT_S = 10.0
 # llama-swap's own proxy answers within a second; upstream model loads have their
 # own (longer) budget inside llama-swap, so this only covers the proxy coming up.
-_BOOT_TIMEOUT_S = 30.0_BOOT_POLL_S = 0.25
+_BOOT_TIMEOUT_S = 30.0
+_BOOT_POLL_S = 0.25
 # Cap on the captured llama-swap output a boot-failure error carries.
 _BOOT_LOG_TAIL_CHARS = 2000
 # Per-group SIGTERM grace before SIGKILL on the manager shutdown/reload path. A
