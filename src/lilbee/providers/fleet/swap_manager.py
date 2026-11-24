@@ -1024,31 +1024,27 @@ def _bind_deadline_s(state: SwapState) -> float:
     return health_check_timeout_s(launches) + _BOOT_TIMEOUT_S
 
 
-# When this process first read each record, on its monotonic clock: the age of an engine
-# where the boot clock gives none. Keyed by pid and create time so a reused pid starts over.
-_first_seen_s: dict[tuple[int, float | None], float] = {}
+def _engine_age_s(state: SwapState, now: float) -> float | None:
+    """Seconds the engine behind *state* has run, or None when the record gives no start.
 
-
-def _engine_age_s(state: SwapState, now: float) -> float:
-    """Seconds the engine behind *state* has run, by a clock a wall-clock step cannot move.
-
-    With the Linux boot id and start ticks, the boot clock gives the exact age, for any
-    process that reads the record. Without them, the age counts from this process's first read
-    of the record on its monotonic clock *now*: it is never more than the true age, so the
-    deadline never passes early. It can pass late, by the time since the engine started.
+    A Linux record with the boot id and start ticks is aged by the boot clock, which a
+    wall-clock step does not move. Any other record (macOS, Windows, a Linux file written
+    before the pair) is aged by the wall clock *now* against its recorded create time, so
+    a forward step there can still pass the deadline early.
     """
     if state.boot_id is not None and state.start_ticks is not None:
         age = linux_age_s(state.boot_id, state.start_ticks)
         if age is not None:
             return age
-    return now - _first_seen_s.setdefault((state.pid, state.created_at), now)
+    return None if state.created_at is None else now - state.created_at
 
 
 def _unloaded_readiness(state: SwapState, now: float) -> EngineReadiness:
     """IDLE or FAILED for an answering engine with no member loading or ready."""
-    if state.ready_at is not None or (state.created_at is None and state.boot_id is None):
+    if state.ready_at is not None:
         return EngineReadiness.IDLE
-    if _engine_age_s(state, now) < _bind_deadline_s(state):
+    age = _engine_age_s(state, now)
+    if age is None or age < _bind_deadline_s(state):
         return EngineReadiness.IDLE
     return EngineReadiness.FAILED
 
@@ -1056,7 +1052,7 @@ def _unloaded_readiness(state: SwapState, now: float) -> EngineReadiness:
 def engine_readiness(state: SwapState, *, now: float) -> EngineReadiness | None:
     """The bind verdict from one ``/running`` read, ``None`` when the engine does not answer.
 
-    *now* is a ``time.monotonic`` value; no wall-clock time takes part in the verdict.
+    *now* is wall-clock time; it ages only a record without the Linux boot id and start ticks.
     """
     listing = (
         None if state.proxy_port is None else _running_listing(f"http://{_HOST}:{state.proxy_port}")
