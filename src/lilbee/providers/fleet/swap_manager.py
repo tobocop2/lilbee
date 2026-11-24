@@ -327,6 +327,9 @@ class SwapManager:
         *origin* goes into the state, so a peer can see a fleet planned before a config write.
         """
         self._origin = origin
+        # Found first, so a router too old to read the config fails here, before
+        # anything is stopped or written.
+        self._swap_binary = str(resolve_llama_swap())
         # Idempotent safety net; the provider reaps before planning so the GPU
         # probe already saw the real free memory.
         self.reap_stale()
@@ -372,7 +375,6 @@ class SwapManager:
         if lifetime is EngineLifetime.USERS and not ensure_engine_reaper(self._data_dir):
             log.warning("The engine at %s stops with this process.", self._data_dir)
             lifetime = EngineLifetime.BUILDER
-        self._swap_binary = str(resolve_llama_swap())
         self._proc = spawn_bound_child(
             [
                 self._swap_binary,

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from lilbee.data.offload import max_workers
 from lilbee.providers.fleet.engines.base import PORT_SLOT
-from lilbee.providers.fleet.readback import engine_log_env
+from lilbee.providers.fleet.readback import MEMORY_FLAG, engine_log_env
 from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
@@ -41,11 +41,21 @@ _COLD_LOAD_FLOOR_S: dict[WorkerRole, int] = {
 _COLD_LOAD_BYTES_PER_S = 150 * 1024 * 1024
 _LOG_LEVEL = "info"
 # The streams llama-swap copies to its stdout, which lilbee writes to the group
-# log. The upstream stream is the engines' own output: it goes in only when an
-# engine writes no log file of its own, because a llama-server at trace verbosity
-# would put every line in both files. The http stream (one line per request) never does.
+# log. The upstream stream is the engines' own output, and it is one setting for
+# the whole llama-swap process. It goes in only when a member's engine writes no
+# log file of its own (TEI, MLX, OVMS and the other engines that read no log
+# variables). A llama-server also prints every line of its own log to its console,
+# so in a group that also holds such an engine, each llama member's output is in
+# both files, at trace verbosity for a member that reports its load. A group of
+# llama-servers alone keeps upstream off. The http stream (one line per request)
+# never goes in.
 _STDOUT_PROXY = "proxy"
 _STDOUT_PROXY_AND_UPSTREAM = "proxy,upstream"
+# The first llama-swap release that reads a list of streams in logToStdout
+# (ParseLogToStdout in internal/config/config.go). v258 and older accept only
+# proxy, upstream, both or none and refuse the config at load. No single value
+# works on both sides: from v259 on, "both" also turns on the http stream.
+ROUTER_FLOOR = 259
 # Matches the --host every server argv binds (adapters); "localhost" would have
 # llama-swap dial [::1] first, where another process could hold the same port.
 _PROXY_URL_TEMPLATE = "http://127.0.0.1:{port}"
@@ -65,7 +75,8 @@ _CONCURRENCY_PROCESSES = 4
 # contract. Raise it when a launch rule changes. 1: every model carries
 # concurrencyLimit. 2: an equal split across cards runs tensor parallel. 3: a swap
 # process keeps a residency class loaded together. 4: the llama-swap log holds the
-# output of every engine that writes no log of its own.
+# output of every engine that writes no log of its own, and a --memory launch
+# writes its own log at the default verbosity.
 SWAP_CONFIG_REVISION = 4
 
 # llama-swap config keys.
@@ -105,14 +116,16 @@ def build_swap_config(
     llama-swap's fixed ``startPort`` range) so a previous instance's lingering
     server can't collide with the new fleet's bind.
 
-    ``engine_logs`` maps a model id to the file its engine writes its own log to,
-    at the verbosity that reports what it allocated
-    (:func:`lilbee.providers.fleet.readback.engine_log_of`). For an engine
-    without ``GET /memory`` that file is the only place those numbers exist, and
-    reading them back is what tells the planner whether its estimate held. A
-    member with no entry writes no file, so llama-swap copies its output into
-    the group log instead; without that copy the output of a member that fails
-    to start is lost when the group stops.
+    ``engine_logs`` maps a model id to the file its engine writes its own log to
+    (:func:`lilbee.providers.fleet.readback.engine_log_of`). A launch without
+    ``--memory`` logs at the verbosity that reports what it allocated: for an
+    engine without ``GET /memory`` that file is the only place those numbers
+    exist, and reading them back is what tells the planner whether its estimate
+    held. A ``--memory`` launch serves the numbers over HTTP and logs at the
+    default verbosity. A member with no entry writes no file, so llama-swap
+    copies its output into the group log instead; without that copy the output
+    of a member that fails to start is lost when the group stops. The config
+    needs llama-swap :data:`ROUTER_FLOOR` or later.
     """
     engine_logs = engine_logs or {}
     models: dict[str, object] = {}
@@ -127,7 +140,7 @@ def build_swap_config(
         env = dict(launch.env_overrides)
         log_path = engine_logs.get(launch.model_id)
         if log_path is not None:
-            env.update(engine_log_env(log_path))
+            env.update(engine_log_env(log_path, load_report=MEMORY_FLAG not in launch.argv))
         if env:
             entry[_KEY_ENV] = [f"{key}={value}" for key, value in env.items()]
         entry.update(launch.swap_extras)

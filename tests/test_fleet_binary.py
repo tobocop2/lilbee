@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet import swap_config as swap_config_mod
 from lilbee.providers.fleet.binary import (
@@ -188,8 +189,6 @@ def test_missing_llama_server_is_not_found_but_aux_tools_are_not(
     """Only the llama-server resolution carries NOT_FOUND (the quiet engine-less
     host path). A missing gguf-parser must not, or the sizing fallback would
     misreport it as a model that isn't installed."""
-    from lilbee.providers.base import ProviderErrorKind
-
     cfg.llama_server_path = ""
     monkeypatch.setattr(_WHICH, lambda _name: None)
     with pytest.raises(ProviderError) as server_exc:
@@ -208,6 +207,76 @@ def test_aux_tools_ignore_llama_server_path_and_use_path(
     monkeypatch.setattr(_WHICH, lambda name: f"/usr/local/bin/{name}")
     assert resolve_llama_swap() == Path("/usr/local/bin/llama-swap")
     assert resolve_gguf_parser() == Path("/usr/local/bin/gguf-parser")
+
+
+class TestRouterRelease:
+    """The router is refused only when it reports a release too old to read the config."""
+
+    @staticmethod
+    def _router_says(monkeypatch: pytest.MonkeyPatch, stdout: str) -> list[list[str]]:
+        calls: list[list[str]] = []
+
+        def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(_WHICH, lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(binary_mod.subprocess, "run", run)
+        return calls
+
+    def test_a_release_older_than_the_floor_is_refused_with_the_fix(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._router_says(monkeypatch, "version: v223 (8c5e40e), built at 2025-07-26T00:00:00Z\n")
+        with pytest.raises(ProviderError) as err:
+            resolve_llama_swap()
+        assert str(err.value) == (
+            "The llama-swap router at /usr/bin/llama-swap is v223, and lilbee needs v259 "
+            "or later. Install a newer llama-swap from "
+            "https://github.com/mostlygeek/llama-swap/releases, or take this one off PATH "
+            "so that lilbee installs its own router."
+        )
+        assert err.value.kind is ProviderErrorKind.UNKNOWN
+
+    def test_the_last_release_before_the_floor_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._router_says(monkeypatch, "version: v258 (abc1234), built at x\n")
+        with pytest.raises(ProviderError, match="is v258"):
+            resolve_llama_swap()
+
+    @pytest.mark.parametrize(
+        "stdout",
+        [
+            "version: v259 (abc1234), built at x\n",
+            "version: v272 (802f1c4), built at x\n",
+            "version: 272 (802f1c4), built at x\n",
+            "version: 0 (unknown), built at unknown\n",
+            "llama-swap\n",
+            "",
+        ],
+        ids=["floor", "pin", "no-v", "source-build", "no-version-line", "silent"],
+    )
+    def test_a_router_with_no_release_below_the_floor_is_used(
+        self, stdout: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._router_says(monkeypatch, stdout)
+        assert resolve_llama_swap() == Path("/usr/bin/llama-swap")
+        assert calls == [["/usr/bin/llama-swap", "--version"]]
+
+    @pytest.mark.parametrize(
+        "error",
+        [OSError("exec format error"), subprocess.TimeoutExpired(["llama-swap"], 15.0)],
+        ids=["cannot-run", "hangs"],
+    )
+    def test_a_router_that_does_not_answer_has_no_release(
+        self, error: Exception, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def run(*_a: object, **_k: object) -> subprocess.CompletedProcess[str]:
+            raise error
+
+        monkeypatch.setattr(binary_mod.subprocess, "run", run)
+        assert binary_mod.router_release(Path("/usr/bin/llama-swap")) is None
 
 
 def test_aux_tool_raises_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
