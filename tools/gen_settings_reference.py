@@ -68,7 +68,8 @@ GROUP_ORDER: tuple[SettingGroup, ...] = (
 
 # Commands that write a setting beyond `lilbee settings set`. A model role cannot go
 # through `settings set` (the CLI refuses it), so each role has its own command, read
-# from `role_command`. `placement` takes `settings set` too, and has a command that edits it as a whole.
+# from `role_command`. `placement` takes `settings set` too, and has a command that edits it as
+# a whole.
 # `linked_roots` is a table, so `settings set` refuses it; `add` and `remove` maintain it.
 CLI_COMMANDS: dict[str, str] = {
     "placement": "`lilbee placement set`",
