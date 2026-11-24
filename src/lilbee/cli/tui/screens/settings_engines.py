@@ -14,7 +14,11 @@ from textual.widgets import Checkbox, DataTable, Select, Static
 from lilbee.app import engine_service
 from lilbee.app.engine_service import EngineOption, EngineRow, EngineState
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.engine_commands import EngineCommandResult, announce
+from lilbee.cli.tui.engine_commands import (
+    EngineCommandResult,
+    announce,
+    publish_engines_changed,
+)
 from lilbee.cli.tui.engine_install_flow import confirm_and_install
 from lilbee.cli.tui.engine_mark import engine_mark, format_size
 from lilbee.cli.tui.mount_guard import MountWhenAttached
@@ -292,4 +296,5 @@ class EnginesPane(MountWhenAttached, VerticalScroll):
             call_from_thread(self.app, self.app.notify, str(exc), severity="error")
             return
         call_from_thread(self.app, self.app.notify, engine_service.REMOVE_DONE.format(build=label))
+        call_from_thread(self.app, publish_engines_changed, self.app)
         call_from_thread(self, self.reload)
