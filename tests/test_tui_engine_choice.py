@@ -1485,13 +1485,13 @@ async def _enter_keeps_the_saved_engine(app: LilbeeAppHost, pilot) -> None:
     assert await wait_until(pilot, lambda: _picker_list_has_focus(app))
     assert app.screen.query_one(OptionList).highlighted == _OPENVINO_ROW
     started: list[Worker[None]] = []
-    add_worker = WorkerManager._add_worker
+    add_worker = WorkerManager.add_worker
 
     def catch(manager: WorkerManager, worker: Worker[None], *args: Any, **kwargs: Any) -> None:
         started.append(worker)
         add_worker(manager, worker, *args, **kwargs)
 
-    with mock.patch.object(WorkerManager, "_add_worker", catch):
+    with mock.patch.object(WorkerManager, "add_worker", catch):
         await pilot.press("enter")
         assert await wait_until(pilot, lambda: bool(started))
     # The pauses of the pilot do not wait for a thread, so wait on the save worker itself.
