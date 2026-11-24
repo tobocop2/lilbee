@@ -1476,73 +1476,115 @@ class TestCrossRunReaping:
         assert [state.pid for state in stopped] == [4321]
 
     @staticmethod
-    def _mono_record(boot: str = "boot-A") -> sm.SwapState:
-        return sm.SwapState(
-            pid=7777,
-            pgid=None,
-            created_at=1000.0,
-            started_mono=500.0,
-            started_boot=boot,
-        )
-
-    @staticmethod
-    def _step_clock(
-        monkeypatch: pytest.MonkeyPatch, *, create_time: float, wall: float, mono: float
+    def _on_macos(
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        create_time: float,
+        boot: str | None = "boot-A",
+        mach_start: int | None = 55,
     ) -> None:
-        monkeypatch.setattr(parent_monitor, "boot_identity", lambda: "boot-A")
-        monkeypatch.setattr(sm.time, "time", lambda: wall)
-        monkeypatch.setattr(sm.time, "monotonic", lambda: mono)
+        """A macOS host whose live 7777 has *create_time* and the mach start *mach_start*."""
+        monkeypatch.setattr(parent_monitor.sys, "platform", "darwin")
+        monkeypatch.setattr(parent_monitor, "_macos_boot_session", lambda: boot)
+        monkeypatch.setattr(parent_monitor, "_macos_start_abstime", lambda _pid: mach_start)
         _patch_psutil_process(
             monkeypatch,
             {7777: _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=create_time)},
         )
 
-    def test_forward_clock_step_keeps_a_live_swap_live_off_linux(
-        self, monkeypatch: pytest.MonkeyPatch
+    @staticmethod
+    def _macos_record(tmp_path: Path, **mach_start: object) -> sm.SwapState:
+        """A record of 7777 created at 1000.0, loaded as a later lilbee reads it."""
+        payload: dict[str, object] = {"pid": 7777, "pgid": None, "created_at": 1000.0}
+        if mach_start:
+            payload["mach_start"] = mach_start
+        path = tmp_path / "llama-swap.state.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        state = sm._load_state(path)
+        assert state is not None
+        return state
+
+    def test_a_clock_step_keeps_the_recorded_mach_start_live(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Spawned at wall 1000 / monotonic 500; ten seconds later the wall clock steps
-        # +2 h and psutil's create time moves with it. Same process, same boot.
-        self._step_clock(monkeypatch, create_time=8200.0, wall=8210.0, mono=510.0)
-        assert sm._is_live_llama_swap(self._mono_record()) is True
+        # psutil's create time moved +2 h with the step; the mach start did not.
+        self._on_macos(monkeypatch, create_time=8200.0)
+        record = self._macos_record(tmp_path, boot="boot-A", abstime=55)
+        assert sm._is_live_llama_swap(record) is True
+
+    @pytest.mark.parametrize(
+        ("boot", "mach_start"),
+        [("boot-A", 56), ("boot-B", 55), (None, 55), ("boot-A", None)],
+        ids=["other-mach-start", "other-boot", "no-boot-session", "failed-read"],
+    )
+    def test_the_mach_start_is_compared_exactly(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        boot: str | None,
+        mach_start: int | None,
+    ) -> None:
+        # The create time equals the record, so only the mach start can say "reused pid".
+        self._on_macos(monkeypatch, create_time=1000.0, boot=boot, mach_start=mach_start)
+        record = self._macos_record(tmp_path, boot="boot-A", abstime=55)
+        assert sm._is_live_llama_swap(record) is False
+
+    @pytest.mark.parametrize(
+        ("create_time", "live"),
+        [(1000.5, True), (8200.0, False)],
+        ids=["no-step-since-the-write", "a-step-since-the-write"],
+    )
+    def test_an_old_macos_record_falls_back_to_the_create_time(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_time: float, live: bool
+    ) -> None:
+        self._on_macos(monkeypatch, create_time=create_time)
+        assert sm._is_live_llama_swap(self._macos_record(tmp_path)) is live
 
     def test_clock_step_that_leaves_the_create_time_alone_keeps_a_live_swap_live(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Windows: the wall clock steps +2 h and the process's create time stays put.
-        self._step_clock(monkeypatch, create_time=1000.0, wall=8210.0, mono=510.0)
-        assert sm._is_live_llama_swap(self._mono_record()) is True
+        _patch_psutil_process(
+            monkeypatch,
+            {7777: _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=1000.0)},
+        )
+        record = sm.SwapState(pid=7777, pgid=None, created_at=1000.0)
+        assert sm._is_live_llama_swap(record) is True
 
     @pytest.mark.parametrize(
-        ("offset_s", "live"),
+        ("boot", "mach_start", "written"),
         [
-            pytest.param(1.9, True, id="measured-macos-restore-offset"),
-            pytest.param(2.5, True, id="inside-the-tolerance"),
-            pytest.param(4.0, False, id="outside-the-tolerance"),
+            ("boot-A", 55, {"boot": "boot-A", "abstime": 55}),
+            (None, 55, None),
+            ("boot-A", None, None),
         ],
+        ids=["both-read", "no-boot-session", "failed-read"],
     )
-    def test_monotonic_start_offset_decides_when_the_create_time_moved(
-        self, monkeypatch: pytest.MonkeyPatch, offset_s: float, live: bool
+    def test_start_writes_the_mach_start_on_macos(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        boot: str | None,
+        mach_start: int | None,
+        written: dict | None,
     ) -> None:
-        # The create time moved with a step (7200 s from the record). The derived start
-        # sits offset_s after the spawn reading (500.0): 510 - (8210 - 8200) = 500.
-        self._step_clock(monkeypatch, create_time=8200.0, wall=8210.0, mono=510.0 + offset_s)
-        assert sm._is_live_llama_swap(self._mono_record()) is live
-
-    def test_a_swap_started_later_on_the_monotonic_clock_is_a_reused_pid(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Same boot, a process that started 300 s after the record: pid reuse.
-        self._step_clock(monkeypatch, create_time=1300.0, wall=1310.0, mono=810.0)
-        assert sm._is_live_llama_swap(self._mono_record()) is False
-
-    def test_a_reading_from_another_boot_falls_back_to_the_create_time(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._step_clock(monkeypatch, create_time=1000.5, wall=1010.0, mono=9.0)
-        assert sm._is_live_llama_swap(self._mono_record(boot="boot-B")) is True
-        # The numbers that match in the record's own boot do not match in another.
-        self._step_clock(monkeypatch, create_time=8200.0, wall=8210.0, mono=510.0)
-        assert sm._is_live_llama_swap(self._mono_record(boot="boot-B")) is False
+        monkeypatch.setattr(parent_monitor.sys, "platform", "darwin")
+        monkeypatch.setattr(parent_monitor, "_macos_boot_session", lambda: boot)
+        monkeypatch.setattr(parent_monitor, "_macos_start_abstime", lambda _pid: mach_start)
+        _patch_psutil_process(
+            monkeypatch, {4321: _FakePsProcess(4321, cmdline=["llama-swap"], create_time=777.0)}
+        )
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
+        record = json.loads(_own_state_path(tmp_path).read_text())
+        assert record.get("mach_start") == written
+        assert "boot_id" not in record and "start_ticks" not in record
+        loaded = sm._load_state(_own_state_path(tmp_path))
+        assert loaded is not None
+        assert loaded.mach_start == (None if written is None else ("boot-A", 55))
 
     def test_same_ticks_after_a_reboot_is_a_reused_pid(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
