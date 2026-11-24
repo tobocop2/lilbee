@@ -94,7 +94,8 @@ def test_the_shared_wording_says_when_the_host_count_is_a_floor() -> None:
 
 def test_a_floor_count_that_adds_no_card_is_not_stated() -> None:
     sentence = lost_card_reason(WorkerRole.CHAT, [1], [0], on_host=1, floor=True)
-    assert "on this computer" not in sentence
+    assert "(" not in sentence
+    assert "at least" not in sentence
 
 
 def test_a_role_without_an_entry_in_the_spec_is_not_refused() -> None:

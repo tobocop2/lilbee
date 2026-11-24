@@ -264,7 +264,7 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
         # a missing loader, a permission denial.
         log.warning(
             "Could not run the GPU device probe (%s --list-devices): %s. Continuing "
-            "as though this computer has no GPU; check that the engine binary is "
+            "as though this host has no GPU; check that the engine binary is "
             "executable and built for this machine.",
             binary.name,
             exc,
