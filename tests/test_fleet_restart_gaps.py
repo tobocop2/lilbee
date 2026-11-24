@@ -468,16 +468,24 @@ def test_a_drained_group_restarts_after_a_rediscover_cleared_the_role_map(
     assert swaps[-1] is not embed_swap
 
 
-def _plan_without_chat(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make every plan leave out the chat launches, so a reload drops the chat group."""
+def _plan_without_chat(monkeypatch: pytest.MonkeyPatch, *, then_fail: bool = False) -> list[int]:
+    """Make each plan leave out the chat launches, so a reload drops the chat group.
+
+    With *then_fail*, every plan after the first raises. Returns one entry per plan.
+    """
     real_plan = planning_mod.plan_all_launches
+    plans: list[int] = []
 
     def no_chat(**kwargs: object) -> object:
+        plans.append(1)
+        if then_fail and len(plans) > 1:
+            raise ProviderError("The engine binary is missing.")
         plan = real_plan(**kwargs)
         kept = tuple(launch for launch in plan.launches if launch.role is not CHAT)
         return dataclasses.replace(plan, launches=kept)
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", no_chat)
+    return plans
 
 
 def _rediscover_during_the_drain(
@@ -522,3 +530,74 @@ def test_a_rediscover_during_the_drain_still_stops_the_group_the_new_plan_drops(
     assert [getattr(answer, "text", answer) for answer in answers] == ["the answer"]
     assert old_chat.shutdowns == 1
     assert old_chat.engine.stopped.is_set()
+
+
+def test_a_rediscover_during_a_stalled_drain_still_stops_the_group_the_new_plan_drops(
+    engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stalled server drains before the plan; the pass stops it though a rediscover ran."""
+    provider, _swaps = engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", plan_tests._LONG_DRAIN_S)
+    old_chat = provider._swap_for(CHAT)
+    answers: list[object] = []
+    caller = plan_tests._held_chat(provider, answers)
+    calls = _rediscover_during_the_drain(provider, monkeypatch, old_chat.engine.release)
+    _plan_without_chat(monkeypatch)
+
+    provider._force_restart(CHAT, stopped_answering=True)
+    caller.join(_JOIN_S)
+    _join_fleet_threads()
+
+    assert calls == [1, 1]
+    assert old_chat.shutdowns == 1
+
+
+def test_a_failed_pass_after_a_rediscover_stops_the_server_it_took(
+    engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plan after the drain fails; no group maps the taken server, so the pass stops it."""
+    provider, _swaps = engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", plan_tests._LONG_DRAIN_S)
+    old_chat = provider._swap_for(CHAT)
+    answers: list[object] = []
+    caller = plan_tests._held_chat(provider, answers)
+    calls = _rediscover_during_the_drain(provider, monkeypatch, old_chat.engine.release)
+    plans = _plan_without_chat(monkeypatch, then_fail=True)
+
+    provider.reload_role(CHAT)
+    caller.join(_JOIN_S)
+    _join_fleet_threads()
+
+    assert calls == [1, 1]
+    assert len(plans) == 2
+    assert old_chat not in provider._swaps.values()
+    assert old_chat.shutdowns == 1
+
+
+def test_a_failed_pass_without_a_rediscover_gives_the_server_back_running(
+    engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plan after the drain fails; the fleet still maps the taken server, which keeps serving."""
+    provider, _swaps = engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", plan_tests._LONG_DRAIN_S)
+    old_chat = provider._swap_for(CHAT)
+    old_clients = list(provider._clients[CHAT])
+    answers: list[object] = []
+    caller = plan_tests._held_chat(provider, answers)
+    real_drain = provider._drain_clients
+
+    def drain(clients: list[object], until: float) -> None:
+        old_chat.engine.release.set()
+        real_drain(clients, until)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(provider, "_drain_clients", drain)
+    plans = _plan_without_chat(monkeypatch, then_fail=True)
+
+    provider.reload_role(CHAT)
+    caller.join(_JOIN_S)
+    _join_fleet_threads()
+
+    assert len(plans) == 2
+    assert provider._swap_for(CHAT) is old_chat
+    assert old_chat.shutdowns == 0
+    assert provider._clients[CHAT] == old_clients
