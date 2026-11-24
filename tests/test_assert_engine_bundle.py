@@ -702,3 +702,149 @@ def test_main_refuses_a_directory_without_a_backend(
     root = _bin_dir(tmp_path, ("llama-server", "libggml-vulkan.so"))
     assert acb.main(["--platform", "Linux", str(root)]) == 1
     assert "needs --backend" in capsys.readouterr().err
+
+
+def _pe(imports: tuple[str, ...] = (), delayed: tuple[str, ...] = ()) -> bytes:
+    """A minimal 64-bit PE file whose import tables name *imports* and *delayed*.
+
+    One section holds the descriptors, one empty thunk list per DLL and the names.
+    The file has no code: it only has to be a PE that pefile reads.
+    """
+    dos = b"MZ" + bytes(58) + (0x40).to_bytes(4, "little")
+    section_rva, section_raw, headers = 0x1000, 0x200, 0x200
+    blob = bytearray()
+
+    def put(data: bytes) -> int:
+        offset = len(blob)
+        blob.extend(data)
+        return section_rva + offset
+
+    def u32(*values: int) -> bytes:
+        return b"".join(v.to_bytes(4, "little") for v in values)
+
+    # One thunk list serves every DLL: a single function "f" by name, then the null end.
+    hint_name = put(bytes(2) + b"f\0\0")
+    blob.extend(bytes(-len(blob) % 8))
+    thunks = put(hint_name.to_bytes(8, "little") + bytes(8))
+    names = [put(n.encode() + b"\0") for n in (*imports, *delayed)]
+    blob.extend(bytes(-len(blob) % 8))
+    import_rva = section_rva + len(blob)
+    for rva in names[: len(imports)]:
+        blob.extend(u32(thunks, 0, 0, rva, thunks))
+    blob.extend(bytes(20))
+    delay_rva = section_rva + len(blob)
+    for rva in names[len(imports) :]:
+        blob.extend(u32(1, rva, thunks, thunks, thunks, 0, 0, 0))
+    blob.extend(bytes(32))
+
+    directories = bytearray(16 * 8)
+    if imports:
+        directories[8:16] = u32(import_rva, 20 * (len(imports) + 1))
+    if delayed:
+        directories[13 * 8 : 14 * 8] = u32(delay_rva, 32 * (len(delayed) + 1))
+    optional = (
+        (0x20B).to_bytes(2, "little")
+        + bytes(22)
+        + (0x180000000).to_bytes(8, "little")
+        + u32(0x1000, 0x200)  # section and file alignment
+        + bytes(16)
+        + u32(section_rva + 0x1000, headers)  # size of image, size of headers
+        + bytes(4)
+        + (3).to_bytes(2, "little")  # console subsystem
+        + bytes(2)
+        + bytes(32)
+        + bytes(4)
+        + u32(16)  # data directory count
+        + bytes(directories)
+    )
+    assert len(optional) == 240
+    coff = (0x8664).to_bytes(2, "little") + (1).to_bytes(2, "little") + bytes(12)
+    coff += (240).to_bytes(2, "little") + (0x2022).to_bytes(2, "little")
+    section = b".idata\0\0" + u32(len(blob), section_rva, len(blob), section_raw) + bytes(16)
+    header = dos + b"PE\0\0" + coff + optional + section
+    return header + bytes(headers - len(header)) + bytes(blob)
+
+
+_WIN_WHEEL = "lilbee_engine_llama_cpp-1.0-1.cpu-py3-none-win_amd64.whl"
+_WIN_CPU = ("ggml-cpu-x64.dll", "ggml-cpu-haswell.dll")
+
+
+def _windows_wheel(tmp_path: Path, files: dict[str, bytes]) -> Path:
+    path = tmp_path / _WIN_WHEEL
+    with zipfile.ZipFile(path, "w") as zf:
+        for entry, data in files.items():
+            zf.writestr(f"lilbee_engine_llama_cpp/bin/{entry}", data)
+    return path
+
+
+def _windows_files(**pe_files: bytes) -> dict[str, bytes]:
+    """Every file a windows cpu bundle must hold, plus *pe_files* (``_`` stands for ``-``)."""
+    plain = {name: b"x" for name in (*_WIN_CPU, *_WINDOWS_CRT, "LICENSE.txt")}
+    return {**plain, **{k.replace("_", "-") + ".dll": v for k, v in pe_files.items()}}
+
+
+def test_the_import_table_of_a_synthetic_pe_is_read() -> None:
+    assert acb._pe_imports(_pe(("KERNEL32.dll", "VCOMP140.DLL"))) == [
+        "kernel32.dll",
+        "vcomp140.dll",
+    ]
+
+
+def test_the_delay_load_table_of_a_synthetic_pe_is_read() -> None:
+    assert acb._pe_imports(_pe(("kernel32.dll",), ("nvcuda.dll",))) == [
+        "kernel32.dll",
+        "nvcuda.dll",
+    ]
+
+
+def test_a_file_that_is_not_a_pe_imports_nothing() -> None:
+    assert acb._pe_imports(b"x") == []
+
+
+def test_a_dll_imported_but_not_bundled_is_rejected(tmp_path: Path) -> None:
+    wheel = _windows_wheel(tmp_path, _windows_files(ggml_base=_pe(("kernel32.dll", "zlib1.dll"))))
+    problems = acb.check(wheel)
+    assert len(problems) == 1
+    assert "ggml-base.dll imports zlib1.dll" in problems[0]
+
+
+def test_a_dll_imported_by_a_delay_load_table_and_not_bundled_is_rejected(tmp_path: Path) -> None:
+    wheel = _windows_wheel(tmp_path, _windows_files(ggml_base=_pe((), ("zlib1.dll",))))
+    assert any("imports zlib1.dll" in p for p in acb.check(wheel))
+
+
+def test_a_windows_system_dll_import_needs_no_bundled_copy(tmp_path: Path) -> None:
+    system = ("KERNEL32.dll", "api-ms-win-crt-runtime-l1-1-0.dll", "ucrtbase.dll", "vulkan-1.dll")
+    wheel = _windows_wheel(tmp_path, _windows_files(ggml_base=_pe(system)))
+    assert acb.check(wheel) == []
+
+
+def test_a_bundled_dll_import_is_satisfied_whatever_its_case_or_folder(tmp_path: Path) -> None:
+    files = _windows_files(ggml_base=_pe(("MSVCP140.dll", "ggml-cpu-x64.dll")))
+    wheel = _windows_wheel(tmp_path, {**files, "sub/Vcomp140.DLL": b"x"})
+    assert acb.check(wheel) == []
+
+
+def test_a_ggml_cpu_import_of_vcomp140_is_rejected_when_the_bundle_lacks_it(
+    tmp_path: Path,
+) -> None:
+    # The file the bare-machine run found: ggml-cpu imports the OpenMP runtime.
+    files = _windows_files(ggml_cpu=_pe(("vcomp140.dll",)))
+    del files["vcomp140.dll"]
+    problems = acb.check(_windows_wheel(tmp_path, files))
+    assert any("ggml-cpu.dll imports vcomp140.dll" in p for p in problems)
+
+
+def test_every_windows_bundle_is_checked_for_unbundled_imports(tmp_path: Path) -> None:
+    # A directory bundle takes the same check as a wheel, and an exe counts like a dll.
+    root = _bin_dir(tmp_path, (*_WIN_CPU, *_WINDOWS_CRT))
+    (root / "llama-server.exe").write_bytes(_pe(("ggml-base.dll", "kernel32.dll")))
+    problems = acb.check(root, "cpu", "Windows")
+    assert len(problems) == 1
+    assert "llama-server.exe imports ggml-base.dll" in problems[0]
+
+
+def test_a_non_windows_bundle_is_not_asked_for_imports(tmp_path: Path) -> None:
+    root = _bin_dir(tmp_path, ("llama-server", "libggml-cpu-x64.so", "libggml-cpu-haswell.so"))
+    (root / "llama-server").write_bytes(_pe(("zlib1.dll",)))
+    assert acb.check(root, "cpu", "Linux") == []

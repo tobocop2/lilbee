@@ -164,6 +164,9 @@ dev = [
     "pytest-xdist>=3.8.0",
     "pytest-forked>=1.6.0",
     "pytest-timeout>=2.3",
+    # tools/qa/assert_engine_bundle.py reads the import tables of a Windows bundle.
+    # Its tests and the `uv run --no-sync` bundle checks in CI run in this group.
+    "pefile>=2024.8.26",
     "pre-commit>=4.0",
     "types-cachetools>=7.0.0.20260713",
 ]

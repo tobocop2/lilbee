@@ -28,5 +28,8 @@ pygments>=2.20.0
 pyte>=0.8.2
 pywinpty>=2.0.13 ; sys_platform == "win32"
 
+# Reads the import tables of the Windows engine bundle (assert_engine_bundle.py).
+pefile>=2024.8.26
+
 # Network-flake retries
 tenacity>=8.5
