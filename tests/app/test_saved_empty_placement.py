@@ -16,8 +16,11 @@ from typer.testing import CliRunner
 from lilbee.app import placement as app_placement
 from lilbee.app.engine_choice import BookReading
 from lilbee.cli.placement import placement_app
+from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.mcp_server import get_placement_tool
+from lilbee.providers import engine_params
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 from lilbee.providers.roles import WorkerRole
 from lilbee.server.routes.placement import placement_route
@@ -32,6 +35,10 @@ NO_ENTRY_FOR_CHAT = (
 CLI = CliRunner()
 
 
+def _not_installed(ref: str) -> Path:
+    raise ProviderError(f"model {ref} is not installed", kind=ProviderErrorKind.NOT_FOUND)
+
+
 @pytest.fixture
 def host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """A host with an engine, a card and a chat model, and ``{}`` saved as the placement."""
@@ -41,6 +48,8 @@ def host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     reading = BookReading(adapters=engines_for_all_roles(engine), notices={})
     monkeypatch.setattr(app_placement, "_planning_engines", lambda: reading)
     monkeypatch.setattr(app_placement, "peek_services", lambda: None)
+    monkeypatch.setattr(cfg, "data_root", tmp_path)
+    settings.update_values(tmp_path, {"placement": "{}"})
     monkeypatch.setattr(cfg, "placement", "{}")
     return tmp_path
 
@@ -60,6 +69,19 @@ def test_the_planner_gives_the_refusal_the_set_path_raises() -> None:
         app_placement.preview_placement(PlacementSpec.from_json("{}"))
     assert str(raised.value) == NO_ENTRY_FOR_CHAT
     _assert_refused(app_placement.get_placement())
+
+
+@pytest.mark.usefixtures("host")
+def test_with_no_model_installed_the_read_gives_the_text_the_preview_gives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine_params, "resolve_model_path", _not_installed)
+    previewed = app_placement.preview_placement(PlacementSpec.from_json("{}"))
+    view = app_placement.get_placement()
+    assert previewed.refusal == app_placement.SAVED_PLACEMENT_PLACES_NO_ROLE
+    assert view.refusal == previewed.refusal
+    assert view.refusal_kind is previewed.refusal_kind
+    assert view.manual is False
 
 
 def test_the_cli_shows_the_refusal_before_the_clear_hint(host: Path) -> None:
