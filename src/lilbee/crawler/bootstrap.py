@@ -85,8 +85,9 @@ def _browsers_cache_path() -> Path:
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Caches" / "ms-playwright"
     if sys.platform == "win32":
-        local = os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
-        return Path(local) / "ms-playwright"
+        local = os.environ.get("LOCALAPPDATA")
+        base = Path(local) if local else Path.home() / "AppData" / "Local"
+        return base / "ms-playwright"
     return Path.home() / ".cache" / "ms-playwright"
 
 
