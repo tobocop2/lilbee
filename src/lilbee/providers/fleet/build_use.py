@@ -11,6 +11,12 @@ On POSIX the file holds a shared ``flock`` that the engine inherits; the probe a
 exclusive one without waiting. On Windows the file is open without ``FILE_SHARE_DELETE``,
 inherited through the process handle list; the probe opens it with no sharing, and a
 sharing violation means in use.
+
+A remove holds the file for itself across the rename and the delete of the build, so a
+launch in that time fails at once and names the engine. On POSIX the remove keeps an
+exclusive ``flock``; a launch asks for its shared one without waiting. Windows refuses the
+rename of a folder while a file inside it is open, so there the remove only proves the
+file free.
 """
 
 from __future__ import annotations
@@ -18,15 +24,24 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
+
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 
 IN_USE_NAME = ".in-use"
 _OWNER_ONLY_MODE = 0o600
 _BUILD_PATH_PARTS = 3  # engine folder, build folder, a file inside the build
+_PROVIDER = "llama-server"
 
-if sys.platform == "win32":  # pragma: no cover - proved on windows-latest, not on the CI host
+
+class BuildInUseError(Exception):
+    """An engine holds the in-use file of the build a remove wants."""
+
+
+if sys.platform == "win32":  # pragma: windows only - the Windows CI lanes measure it
     import ctypes
     from ctypes import wintypes
 
@@ -56,20 +71,26 @@ if sys.platform == "win32":  # pragma: no cover - proved on windows-latest, not 
             ("bInheritHandle", wintypes.BOOL),
         ]
 
-    def _hold(path: Path) -> int:
-        attributes = _SecurityAttributes(ctypes.sizeof(_SecurityAttributes), None, True)
+    def _open(path: Path, share: int, attributes: Any) -> int:
+        """A handle of *path*, created when absent; a sharing violation is BlockingIOError."""
         handle = _k32.CreateFileW(
-            str(path),
-            _GENERIC_READ,
-            _SHARE_READ_WRITE,
-            ctypes.byref(attributes),
-            _OPEN_ALWAYS,
-            _FILE_ATTRIBUTE_NORMAL,
-            None,
+            str(path), _GENERIC_READ, share, attributes, _OPEN_ALWAYS, _FILE_ATTRIBUTE_NORMAL, None
         )
         if handle == _INVALID_HANDLE:
-            raise ctypes.WinError(ctypes.get_last_error())
+            error = ctypes.get_last_error()
+            if error == _ERROR_SHARING_VIOLATION:
+                raise BlockingIOError(error, "the file is open in another process", str(path))
+            raise ctypes.WinError(error)
         return int(handle)
+
+    def _hold(path: Path) -> int:
+        attributes = _SecurityAttributes(ctypes.sizeof(_SecurityAttributes), None, True)
+        return _open(path, _SHARE_READ_WRITE, ctypes.byref(attributes))
+
+    @contextmanager
+    def _claimed(path: Path) -> Iterator[None]:
+        _k32.CloseHandle(_open(path, 0, None))
+        yield
 
     def _release(handle: int) -> None:
         _k32.CloseHandle(handle)
@@ -87,18 +108,30 @@ if sys.platform == "win32":  # pragma: no cover - proved on windows-latest, not 
         _k32.CloseHandle(handle)
         return False
 
-else:
+else:  # pragma: posix only - Windows takes the branch above
     import fcntl
 
-    def _hold(path: Path) -> int:
+    def _locked(path: Path, operation: int) -> int:
         fd = os.open(path, os.O_RDWR | os.O_CREAT, _OWNER_ONLY_MODE)
         try:
-            fcntl.flock(fd, fcntl.LOCK_SH)
-            os.set_inheritable(fd, True)
+            fcntl.flock(fd, operation | fcntl.LOCK_NB)
         except OSError:
             os.close(fd)
             raise
         return fd
+
+    def _hold(path: Path) -> int:
+        fd = _locked(path, fcntl.LOCK_SH)
+        os.set_inheritable(fd, True)
+        return fd
+
+    @contextmanager
+    def _claimed(path: Path) -> Iterator[None]:
+        fd = _locked(path, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            os.close(fd)
 
     def _release(handle: int) -> None:
         os.close(handle)
@@ -129,6 +162,14 @@ class BuildHolds:
         try:
             for build in dict.fromkeys(builds):
                 self._handles.append(_hold(build / IN_USE_NAME))
+        except (BlockingIOError, FileNotFoundError) as exc:
+            self.close()
+            raise ProviderError(
+                f"Engine {build.parent.name} {build.name} is being removed. Install it again "
+                f"before you start it.",
+                provider=_PROVIDER,
+                kind=ProviderErrorKind.SERVER,
+            ) from exc
         except OSError:
             self.close()
             raise
@@ -143,6 +184,23 @@ class BuildHolds:
         handles, self._handles = self._handles, []
         for handle in handles:
             _release(handle)
+
+
+@contextmanager
+def removing(build: Path) -> Iterator[None]:
+    """Hold the in-use file of *build* for a remove; raise BuildInUseError while an engine
+    holds it. A launch in the hold fails at once (see ``BuildHolds``).
+
+    A build where the file cannot be made runs no launch: a launch must make it too.
+    """
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(_claimed(build / IN_USE_NAME))
+        except BlockingIOError as exc:
+            raise BuildInUseError(build) from exc
+        except PermissionError:  # pragma: posix only - a read-only folder; Windows ignores it
+            pass
+        yield
 
 
 def build_in_use(build: Path) -> bool:
