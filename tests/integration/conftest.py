@@ -14,6 +14,7 @@ from lilbee.catalog import CatalogModel
 from lilbee.core.config import cfg
 from lilbee.core.system import canonical_models_dir
 from lilbee.providers.fleet.engines import LLAMA
+from tests.integration._engine_logs import SECTION_TITLE, failure_section
 
 _DEFAULT_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _DEFAULT_CHAT_FILE = "Qwen3-0.6B-Q8_0.gguf"
@@ -81,6 +82,36 @@ def pytest_collection_modifyitems(items):
         # marker and silently overrides every per-test opt-in.
         if item.get_closest_marker("timeout") is None:
             item.add_marker(pytest.mark.timeout(_INTEGRATION_TIMEOUT_SECONDS))
+
+
+_BASETEMP_KEY = pytest.StashKey[Path]()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _remember_basetemp(request, tmp_path_factory):
+    """Record the pytest temp root: fixtures that start an engine log under it."""
+    request.config.stash[_BASETEMP_KEY] = tmp_path_factory.getbasetemp()
+    yield
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Add the engine log tails to a failed report, so a timeout shows its engine.
+
+    pytest-timeout fails the test body, so a timeout reaches this hook as an
+    ordinary failed report; the section prints in the job output.
+    """
+    outcome = yield
+    report = outcome.get_result()
+    if not report.failed:
+        return
+    roots = [cfg.data_dir]
+    if data_env := os.environ.get("LILBEE_DATA"):
+        roots.append(Path(data_env))
+    if basetemp := item.config.stash.get(_BASETEMP_KEY, None):
+        roots.append(basetemp)
+    if section := failure_section(roots):
+        report.sections.append((SECTION_TITLE, section))
 
 
 @pytest.fixture(scope="session", autouse=True)

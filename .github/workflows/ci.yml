@@ -560,6 +560,21 @@ jobs:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
           LILBEE_TEST_FULL_CRAWL: ${{ matrix.full-crawl && '1' || '' }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # The tests make their data folders under the pytest temp root. A fixed
+          # root lets the upload step below find the engine logs they write.
+          PYTEST_DEBUG_TEMPROOT: ${{ runner.temp }}/pytest-tmp
+
+      # GitHub deletes the log of a cancelled job. These files stay as an artifact.
+      - name: Upload the engine logs
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-engine-logs-${{ matrix.os }}-${{ matrix.python-version }}
+          path: |
+            ${{ runner.temp }}/lilbee/logs/*.log
+            ${{ runner.temp }}/pytest-tmp/**/logs/*.log
+          if-no-files-found: ignore
+          retention-days: 14
 
   # A pin that does not parse or a malformed hash fails here. The download
   # itself is checked by Flake Check.
