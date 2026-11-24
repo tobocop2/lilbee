@@ -98,10 +98,8 @@ def test_spec_branch_calls_placement_from_spec(monkeypatch):
         plan_auto,
         model_refs,
         lost_card,
-        equal_split_roles,
         outside,
     ):
-        captured["equal_split_roles"] = equal_split_roles
         captured["spec"] = spec
         captured["roles"] = active_roles
         captured["capacity"] = device_capacity
@@ -131,7 +129,6 @@ def test_spec_branch_calls_placement_from_spec(monkeypatch):
     )
 
     assert captured["spec"] is spec
-    assert captured["equal_split_roles"] == frozenset()
     assert captured["roles"] == (WorkerRole.CHAT,)
     assert captured["capacity"] == {0: 80 * GIB}  # total, not the 10 GiB free
     assert placement.instances[0].role is WorkerRole.CHAT

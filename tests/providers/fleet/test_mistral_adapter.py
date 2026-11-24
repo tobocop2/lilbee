@@ -10,7 +10,6 @@ import stat
 import subprocess
 import sys
 import zipfile
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -656,7 +655,7 @@ def _no_read() -> list[NvidiaCard]:
     raise AssertionError("a CPU build read the driver")
 
 
-def test_a_cpu_build_reads_no_card_and_runs_no_binary(
+def test_a_cpu_build_reads_no_card_and_lists_no_device(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64"))
@@ -665,7 +664,7 @@ def test_a_cpu_build_reads_no_card_and_runs_no_binary(
     assert (probe.devices, probe.spoke_protocol) == ([], False)
 
 
-def test_a_metal_build_reads_no_card_and_runs_no_binary(
+def test_a_metal_build_reads_no_card_and_lists_no_device(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(runnable, "session_host", lambda: caps("Darwin", "arm64"))
@@ -939,7 +938,9 @@ def test_a_cuda_host_runs_every_target_on_the_cpu_pack(
 # ---- a role across several cards ----
 
 
-def _cuda_host(monkeypatch: pytest.MonkeyPatch, system: str = "Linux", *, cards: int = 2) -> None:
+def _host_with_cards(
+    monkeypatch: pytest.MonkeyPatch, system: str = "Linux", *, cards: int = 2
+) -> None:
     gpus = [L4] * cards if system != "Darwin" else None
     machine = "arm64" if system == "Darwin" else "x86_64"
     monkeypatch.setattr(runnable, "session_host", lambda: caps(system, machine, gpus=gpus))
@@ -957,17 +958,6 @@ def _one_card_argv(tmp_path: Path, role: WorkerRole = WorkerRole.CHAT, **over: A
     return _split_argv(tmp_path, (1,), role, **over)
 
 
-def test_one_card_and_the_cpu_target_name_no_layer_map(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _cuda_host(monkeypatch)
-    assert "--device-layers" not in _split_argv(tmp_path, (1,))
-    assert "--device-layers" not in _split_argv(tmp_path, ())
-    spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
-    cpu = request(tmp_path, target=RoleTarget.CPU, tensor_split=(3, 1))
-    assert "--device-layers" not in MISTRAL.launch_argv(spec, cpu)
-
-
 @pytest.mark.parametrize(
     ("system", "cards", "label"),
     [("Darwin", 2, "Metal"), ("Windows", 2, "CPU"), ("Linux", 0, "CPU"), ("Linux", 2, "CPU")],
@@ -975,7 +965,7 @@ def test_one_card_and_the_cpu_target_name_no_layer_map(
 def test_a_build_that_cannot_split_refuses_a_split(
     system: str, cards: int, label: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _cuda_host(monkeypatch, system, cards=cards)
+    _host_with_cards(monkeypatch, system, cards=cards)
     with pytest.raises(
         ProviderError, match=rf"mistral\.rs cannot split m\.gguf.*{label}.*llama\.cpp engine"
     ):
@@ -987,7 +977,7 @@ def test_a_two_card_launch_on_a_cuda_host_is_refused_by_the_cpu_build(
 ) -> None:
     model = tmp_path / "m.gguf"
     model.write_bytes(b"x" * 1000)
-    _cuda_host(monkeypatch)
+    _host_with_cards(monkeypatch)
     monkeypatch.setattr(type(MISTRAL), "binary", lambda _self: tmp_path / "mistralrs")
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
     monkeypatch.setattr(planning, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
@@ -1004,9 +994,10 @@ def test_the_metal_pin_record_declares_the_mit_licence_only(
     assert MISTRAL.pin_record()["licenses"] == ["MIT"]
 
 
-@pytest.mark.parametrize("cards", [1, 2])
-def test_a_gpu_launch_sets_no_environment_variable(cards: int) -> None:
-    assert MISTRAL.target_env(RoleTarget.GPU, cards) == {}
+@pytest.mark.parametrize("cards", [0, 1, 2])
+@pytest.mark.parametrize("target", [RoleTarget.CPU, RoleTarget.GPU])
+def test_every_launch_sets_no_environment_variable(target: RoleTarget, cards: int) -> None:
+    assert MISTRAL.target_env(target, cards) == {}
     assert MISTRAL.runtime_env() == {}
 
 
@@ -1029,26 +1020,6 @@ def test_a_split_estimate_is_the_whole_file_with_no_per_card_share(
 _stated = pytest.mark.usefixtures("stated_sizes")
 
 
-class _EqualShareEngine(type(MISTRAL)):  # type: ignore[misc]
-    """A stand-in for an engine that launches only equal shares; no shipped engine is one."""
-
-    equal_split_only = True
-
-    def check_split(self, model_path: Path, ratio: tuple[int, ...]) -> None:
-        if len(set(ratio)) != 1:
-            raise SplitRefusedError(
-                f"The engine splits {model_path.name} only evenly across cards."
-            )
-
-    def estimate_memory(self, request: MemoryRequest) -> Any:
-        whole = super().estimate_memory(request)
-        cards = max(1, len(request.tensor_split))
-        return replace(whole, per_device=(whole.device_bytes // cards,) * cards)
-
-
-EQUAL_SHARE = _EqualShareEngine()
-
-
 def _staged_chat_peak(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1056,12 +1027,12 @@ def _staged_chat_peak(
     *,
     system: str = "Linux",
     model_gib: int = 30,
-    engine: Any = EQUAL_SHARE,
+    engine: Any = MISTRAL,
 ) -> Any:
     """Stage a chat model of *model_gib* on *engine* and return the planner's peak estimator."""
     model = tmp_path / "m.gguf"
     state_size(model, model_gib * GIB)
-    _cuda_host(monkeypatch, system, cards=len(card_gib))
+    _host_with_cards(monkeypatch, system, cards=len(card_gib))
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
     monkeypatch.setattr(planning, "_placement_estimate_ctx", lambda _r, _p, _m, *, engine: 4096)
     return planning._peak_estimator({WorkerRole.CHAT: "ref"}, {WorkerRole.CHAT: engine})
@@ -1074,7 +1045,7 @@ def _placed_on(
     *,
     system: str = "Linux",
     model_gib: int = 30,
-    engine: Any = EQUAL_SHARE,
+    engine: Any = MISTRAL,
 ) -> Any:
     """Place a chat model of *model_gib* on cards of *card_gib* with *engine*."""
     from lilbee.providers.fleet.placement import ModelPlacementInput, plan_placement
@@ -1087,229 +1058,11 @@ def _placed_on(
     return plan_placement([chat], devices, estimate_peak=peak, refuse_oversize=True)
 
 
-@_stated
-def test_placement_offers_an_equal_split(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    placed = _placed_on(tmp_path, monkeypatch, (24, 24))
-    (instance,) = placed.instances
-    assert len(instance.devices) == 2
-    assert len(set(instance.tensor_split)) == 1
-
-
-@_stated
-def test_placement_offers_no_uneven_split_to_an_engine_that_refuses_one(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    placed = _placed_on(tmp_path, monkeypatch, (24, 16))
-    assert placed.instances == ()
-    assert placed.unplaceable_roles == (WorkerRole.CHAT,)
-
-
-def _planner_chat_input(cards: int) -> Any:
-    """The chat input the planner sizes for the staged model, as production builds it."""
-    return planning._estimate_role(
-        WorkerRole.CHAT, "ref", engine=EQUAL_SHARE, device_count=cards, slots=1
-    )
-
-
-def _placed_as_planned(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    card_gib: tuple[int, ...],
-    model_gib: int,
-) -> Any:
-    """Place a *model_gib* chat model with the input the planner builds for the engine."""
-    from lilbee.providers.fleet.placement import plan_placement
-
-    peak = _staged_chat_peak(tmp_path, monkeypatch, card_gib, model_gib=model_gib)
-    chat = _planner_chat_input(len(card_gib))
-    devices = [(index, gib * GIB) for index, gib in enumerate(card_gib)]
-    return plan_placement([chat], devices, estimate_peak=peak, refuse_oversize=True)
-
-
-@_stated
-def test_placement_offers_an_equal_split_on_unequal_cards_when_the_small_card_holds_its_half(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # 26 GiB fits no card of (24, 16); half of it, 13 GiB, fits the 16 GiB card.
-    placed = _placed_as_planned(tmp_path, monkeypatch, (24, 16), 26)
-    (instance,) = placed.instances
-    assert instance.devices == (0, 1)
-    assert instance.tensor_split == (1, 1)
-    assert placed.unplaceable_roles == ()
-
-
-@_stated
-def test_placement_offers_no_split_when_half_the_model_exceeds_the_small_card(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    placed = _placed_as_planned(tmp_path, monkeypatch, (24, 16), 36)
-    assert placed.instances == ()
-    assert placed.unplaceable_roles == (WorkerRole.CHAT,)
-
-
-def test_no_shipped_engine_is_marked_equal_only() -> None:
-    from lilbee.providers.fleet.engines.llama import LLAMA
-
-    assert planning._equal_split_only(MISTRAL) is False
-    assert planning._equal_split_only(LLAMA) is False
-    assert planning._equal_split_only(EQUAL_SHARE) is True
-
-
-@pytest.mark.parametrize(
-    ("cards", "expected"),
-    [
-        ([(0, 24), (1, 16)], [(1, 1)]),
-        ([(0, 24), (1, 24)], [(24, 24)]),
-        ([(0, 24), (1, 24), (2, 16)], [(1, 1, 1)]),
-    ],
-)
-def test_the_ladder_of_an_equal_only_engine_holds_only_equal_ratios(
-    cards: list[tuple[int, int]], expected: list[tuple[int, ...]]
-) -> None:
-    from lilbee.providers.fleet.placement import _split_ratio_candidates
-
-    remaining = {idx: float(gib * GIB) for idx, gib in cards}
-    assert list(_split_ratio_candidates(list(remaining), remaining, equal_only=True)) == expected
-
-
-def test_the_ladder_of_an_engine_that_takes_any_ratio_is_unchanged_on_unequal_cards() -> None:
+def test_the_ladder_of_split_ratios_keeps_the_proportional_and_the_shifted_ratio() -> None:
     from lilbee.providers.fleet.placement import _split_ratio_candidates
 
     remaining = {0: float(24 * GIB), 1: float(16 * GIB)}
     assert _split_ratio_candidates([0, 1], remaining) == ((24, 16), (102, 58))
-
-
-@pytest.mark.parametrize(
-    ("equal_only", "recorded"),
-    [(False, True), (True, False)],
-    ids=["engine takes any ratio", "planner tried no split"],
-)
-def test_no_equal_split_refusal_is_worded_when_that_rule_did_not_refuse(
-    equal_only: bool, recorded: bool
-) -> None:
-    from lilbee.providers.fleet.placement import ModelPlacementInput, Placement, SplitMiss
-
-    chat = ModelPlacementInput(
-        role=WorkerRole.CHAT, est_vram_bytes=36 * GIB, equal_split_only=equal_only
-    )
-    misses = {WorkerRole.CHAT: SplitMiss(2, 1, 18.0 * GIB, 14.4 * GIB)} if recorded else {}
-    placement = Placement(instances=(), unplaceable_roles=(WorkerRole.CHAT,), split_misses=misses)
-    assert planning._equal_split_refusal(WorkerRole.CHAT, [chat], placement) is None
-
-
-def _refusal_text(
-    placement: Any,
-    card_gib: tuple[int, ...],
-    others: tuple[Any, ...] = (),
-) -> str:
-    """The reason that the planner gives for the refused chat role of *placement*."""
-    cards = [
-        FleetDevice("CUDA", i, f"gpu{i}", gib * GIB, gib * GIB) for i, gib in enumerate(card_gib)
-    ]
-    inputs = [_planner_chat_input(len(card_gib)), *others]
-    reasons = planning._unplaceable_reasons(
-        placement,
-        {inp.role: "ref" for inp in inputs},
-        {inp.role: EQUAL_SHARE for inp in inputs},
-        inputs,
-        cards,
-        planning.HostCards(cards),
-        unified_budget=None,
-        capacity={i: gib * GIB for i, gib in enumerate(card_gib)},
-    )
-    return reasons[WorkerRole.CHAT]
-
-
-@_stated
-def test_the_refusal_of_an_equal_split_names_the_card_the_planner_missed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from lilbee.providers.fleet.vram import usable_vram_fraction
-
-    placed = _placed_as_planned(tmp_path, monkeypatch, (24, 16), 36)
-    miss = placed.split_misses[WorkerRole.CHAT]
-    assert (miss.count, miss.device) == (2, 1)
-    assert miss.room_bytes == pytest.approx(16 * GIB * usable_vram_fraction())
-    said = _refusal_text(placed, (24, 16))
-    need, room = miss.need_bytes / GIB, miss.room_bytes / GIB
-    assert f"over 2 GPUs, device 1 would need {need:.1f} GiB but has {room:.1f} GiB left" in said
-    assert f"has {room:.1f} GiB left. It will not be served." in said
-    assert "beside the other models" not in said
-
-
-@_stated
-def test_the_refusal_of_an_equal_split_counts_the_room_other_roles_hold(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from lilbee.providers.fleet.placement import ModelPlacementInput, plan_placement
-    from lilbee.providers.fleet.vram import usable_vram_fraction
-
-    peak = _staged_chat_peak(tmp_path, monkeypatch, (24, 24), model_gib=44)
-    embed = ModelPlacementInput(role=WorkerRole.EMBED, est_vram_bytes=12 * GIB)
-    devices = [(0, 24 * GIB), (1, 24 * GIB)]
-    placed = plan_placement(
-        [embed, _planner_chat_input(2)], devices, estimate_peak=peak, refuse_oversize=True
-    )
-    assert placed.unplaceable_roles == (WorkerRole.CHAT,)
-    miss = placed.split_misses[WorkerRole.CHAT]
-    room = 24 * usable_vram_fraction() - 12
-    assert (miss.count, miss.device) == (2, 0)
-    assert miss.room_bytes / GIB == pytest.approx(room)
-    said = _refusal_text(placed, (24, 24), (embed,))
-    need = miss.need_bytes / GIB
-    assert f"device 0 would need {need:.1f} GiB but has {room:.1f} GiB left" in said
-    assert f"{room:.1f} GiB left beside the other models. It will not be served." in said
-
-
-def test_the_first_pack_that_tries_a_role_keeps_its_nearest_miss() -> None:
-    from lilbee.providers.fleet.placement import ModelPlacementInput, SplitMiss, _noting_miss
-
-    chat = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=44 * GIB)
-    first = SplitMiss(2, 0, 22.0 * GIB, 9.6 * GIB)
-    later = SplitMiss(2, 1, 22.0 * GIB, 21.6 * GIB)
-    misses: dict[WorkerRole, SplitMiss] = {}
-    assert _noting_miss(None, chat, first, misses) is None
-    assert _noting_miss(None, chat, later, misses) is None
-    assert misses == {WorkerRole.CHAT: first}
-
-
-@pytest.mark.parametrize(
-    ("card_gib", "model_gib", "count"),
-    [((24, 24, 8), 60, 2), ((16, 16, 16), 70, 3)],
-    ids=["two large cards and a small one", "three equal cards"],
-)
-@_stated
-def test_the_refusal_of_an_equal_split_names_the_count_the_planner_came_nearest_with(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    card_gib: tuple[int, ...],
-    model_gib: int,
-    count: int,
-) -> None:
-    placed = _placed_as_planned(tmp_path, monkeypatch, card_gib, model_gib)
-    assert placed.unplaceable_roles == (WorkerRole.CHAT,)
-    assert placed.split_misses[WorkerRole.CHAT].count == count
-    assert f"over {count} GPUs, device" in _refusal_text(placed, card_gib)
-
-
-@_stated
-def test_placement_offers_an_equal_split_over_the_two_larger_of_three_cards(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    placed = _placed_as_planned(tmp_path, monkeypatch, (24, 24, 8), 40)
-    (instance,) = placed.instances
-    assert instance.devices == (0, 1)
-    assert placed.unplaceable_roles == ()
-    assert placed.split_misses == {}
-
-
-@_stated
-def test_placement_names_the_launch_rule_when_a_split_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    caplog.set_level("INFO")
-    _placed_on(tmp_path, monkeypatch, (24, 16))
-    assert "The engine splits m.gguf only evenly across cards" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -1333,7 +1086,6 @@ def test_placement_offers_no_split_on_a_build_that_cannot_split(
 
 def _sweep_calls(refuse_every: int, message: str = "refused") -> tuple[int, int]:
     """Run the split sweep over 30 cards; return (estimates run, splits refused)."""
-    from lilbee.providers.fleet.engines.base import SplitRefusedError
     from lilbee.providers.fleet.placement import ModelPlacementInput, _place_split
 
     seen = {"asked": 0, "estimated": 0, "refused": 0}
@@ -1348,7 +1100,7 @@ def _sweep_calls(refuse_every: int, message: str = "refused") -> tuple[int, int]
 
     remaining = {idx: float((40 + idx) * GIB) for idx in range(30)}
     chat = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=30 * GIB)
-    assert _place_split(chat, remaining, estimate, misses={}) is None
+    assert _place_split(chat, remaining, estimate) is None
     return seen["estimated"], seen["refused"]
 
 
@@ -1371,7 +1123,6 @@ def test_a_refusal_is_logged_once_for_each_message(caplog: pytest.LogCaptureFixt
 
 
 def test_a_refused_ratio_leaves_the_other_ratios_of_that_card_count_to_try() -> None:
-    from lilbee.providers.fleet.engines.base import SplitRefusedError
     from lilbee.providers.fleet.placement import ModelPlacementInput, _place_split
 
     asked: list[tuple[int, ...]] = []
@@ -1384,7 +1135,7 @@ def test_a_refused_ratio_leaves_the_other_ratios_of_that_card_count_to_try() -> 
 
     remaining = {0: float(24 * GIB), 1: float(16 * GIB)}
     chat = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=30 * GIB)
-    placed = _place_split(chat, remaining, estimate, misses={})
+    placed = _place_split(chat, remaining, estimate)
     assert placed is not None
     assert placed.plan.devices == (0, 1)
     assert placed.plan.tensor_split == asked[1]
@@ -1403,41 +1154,16 @@ def _saved_chat_placement(
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
     _staged_chat_peak(tmp_path, monkeypatch, (24, 16), model_gib=model_gib)
+    chat = planning._estimate_role(WorkerRole.CHAT, "ref", engine=MISTRAL, device_count=2, slots=1)
     return planning._placement_or_auto(
         PlacementSpec.from_json(raw),
-        [_planner_chat_input(2)],
+        [chat],
         {WorkerRole.CHAT: "ref"},
         _unequal_cards(),
-        engines={WorkerRole.CHAT: EQUAL_SHARE},
+        engines={WorkerRole.CHAT: MISTRAL},
         unified_budget=None,
         host_cards=planning.HostCards(_unequal_cards()),
     )
-
-
-@_stated
-def test_a_saved_placement_without_a_split_gets_an_equal_split_on_unequal_cards(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    placed, applied, why = _saved_chat_placement(
-        tmp_path, monkeypatch, '{"chat": {"devices": [0, 1]}}', model_gib=26
-    )
-    assert applied is True
-    assert why == ""
-    (instance,) = placed.instances
-    assert instance.devices == (0, 1)
-    assert instance.tensor_split == (1, 1)
-
-
-@_stated
-def test_a_saved_placement_without_a_split_is_refused_when_half_exceeds_the_small_card(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    caplog.set_level("WARNING")
-    _placed, applied, _why = _saved_chat_placement(
-        tmp_path, monkeypatch, '{"chat": {"devices": [0, 1]}}', model_gib=36
-    )
-    assert applied is False
-    assert "device 1 has" in caplog.text
 
 
 @_stated
@@ -1448,9 +1174,9 @@ def test_a_saved_placement_the_split_rule_refuses_falls_back_to_automatic(
     raw = '{"chat": {"devices": [0, 1], "tensor_split": [3, 2]}}'
     placed, applied, why = _saved_chat_placement(tmp_path, monkeypatch, raw)
     assert applied is False
-    assert "The engine splits m.gguf only evenly across cards" in why
+    assert "mistral.rs cannot split m.gguf" in why
     assert all(instance.tensor_split == () for instance in placed.instances)
-    assert "The engine splits m.gguf only evenly across cards" in caplog.text
+    assert "mistral.rs cannot split m.gguf" in caplog.text
     assert "using automatic placement instead" in caplog.text
 
 
@@ -1461,7 +1187,7 @@ def test_a_saved_placement_with_a_role_off_the_cards_refuses_that_role_alone(
     from lilbee.providers.fleet.placement_spec import TargetRefusedError
 
     raw = '{"chat": {"devices": [0, 1], "tensor_split": [3, 2]}, "embed": {"target": "cpu"}}'
-    with pytest.raises(TargetRefusedError, match="only evenly across cards") as caught:
+    with pytest.raises(TargetRefusedError, match=r"mistral\.rs cannot split m\.gguf") as caught:
         _saved_chat_placement(tmp_path, monkeypatch, raw)
     assert list(caught.value.reasons) == [WorkerRole.CHAT]
 
@@ -1516,7 +1242,7 @@ def test_a_cpu_build_refusal_of_a_cached_gguf_names_the_snapshot_file(
 def test_a_one_card_launch_of_a_cache_blob_with_no_snapshot_file_is_refused_with_the_repair(
     role: WorkerRole, shard: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _cuda_host(monkeypatch)
+    _host_with_cards(monkeypatch)
     blobs = tmp_path / "models--Qwen--Qwen3-4B-GGUF" / "blobs"
     blob = (blobs / shard if shard else blobs) / "9375c1fd"
     blob.parent.mkdir(parents=True)
