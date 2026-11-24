@@ -1005,11 +1005,7 @@ def test_the_metal_pin_record_declares_the_mit_licence_only(
 
 
 @pytest.mark.parametrize("cards", [1, 2])
-def test_a_gpu_launch_sets_no_environment_variable(
-    monkeypatch: pytest.MonkeyPatch, cards: int
-) -> None:
-    monkeypatch.delenv("NCCL_P2P_LEVEL", raising=False)
-    monkeypatch.delenv("NCCL_P2P_DISABLE", raising=False)
+def test_a_gpu_launch_sets_no_environment_variable(cards: int) -> None:
     assert MISTRAL.target_env(RoleTarget.GPU, cards) == {}
     assert MISTRAL.runtime_env() == {}
 
