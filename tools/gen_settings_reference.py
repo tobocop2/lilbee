@@ -66,13 +66,14 @@ GROUP_ORDER: tuple[SettingGroup, ...] = (
     SettingGroup.SYSTEM,
 )
 
-# The CLI commands that write a setting to config.toml, besides the model
-# roles (those read their command from `role_command`). Everything else
-# reaches the CLI through the environment or the config file, so the column
-# stays honest rather than implying a `lilbee set` that does not exist.
+# Commands that write a setting beyond `lilbee settings set`. A model role cannot go
+# through `settings set` (the CLI refuses it), so each role has its own command, read
+# from `role_command`. `placement` takes `settings set` too, and has a command that
+# edits it as a whole.
 CLI_COMMANDS: dict[str, str] = {
     "placement": "`lilbee placement set`",
 }
+CLI_SET = "`lilbee settings set`"
 
 MAX_DEFAULT_CHARS = 48
 
@@ -243,9 +244,20 @@ def _http_cell(key: str) -> str:
 
 
 def _cli_cell(key: str) -> str:
+    """The commands that write *key*.
+
+    `lilbee settings set` calls ``apply_settings_update(..., allow_model_roles=False)``, which
+    accepts each writable key except the model roles. This is that rule, not a list. A model
+    role has its own command.
+    """
     if key in MODEL_FIELD_TO_ROLE:
         return f"`{role_command(MODEL_FIELD_TO_ROLE[key]).replace('<ref>', 'REF')}`"
-    return CLI_COMMANDS.get(key, "no")
+    commands = []
+    if key in WRITABLE_CONFIG_FIELDS:
+        commands.append(CLI_SET)
+    if key in CLI_COMMANDS:
+        commands.append(CLI_COMMANDS[key])
+    return " or ".join(commands) if commands else "no"
 
 
 def _advanced_cell(key: str) -> str:
