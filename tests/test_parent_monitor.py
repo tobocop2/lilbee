@@ -185,6 +185,37 @@ class TestLinuxStartStamp:
             assert parent_monitor.linux_start_stamp(42) is None
 
 
+class TestLinuxAge:
+    """The age of a stamped process comes from the boot clock, not the wall clock."""
+
+    @staticmethod
+    def _boot(tmp_path, boot_id="abc-123"):
+        (tmp_path / "sys/kernel/random").mkdir(parents=True)
+        (tmp_path / "sys/kernel/random/boot_id").write_text(boot_id + "\n", encoding="utf-8")
+
+    def test_age_is_the_boot_clock_minus_the_start_ticks(self, tmp_path):
+        self._boot(tmp_path)
+        with (
+            mock.patch("lilbee.parent_monitor._is_linux", return_value=True),
+            mock.patch.object(parent_monitor, "_PROC_ROOT", tmp_path),
+            mock.patch.object(parent_monitor.time, "clock_gettime", return_value=1000.0),
+            mock.patch.object(parent_monitor.os, "sysconf", return_value=100),
+        ):
+            assert parent_monitor.linux_age_s("abc-123", 25000.0) == 750.0
+
+    def test_none_for_another_boot(self, tmp_path):
+        self._boot(tmp_path, "boot-B")
+        with (
+            mock.patch("lilbee.parent_monitor._is_linux", return_value=True),
+            mock.patch.object(parent_monitor, "_PROC_ROOT", tmp_path),
+        ):
+            assert parent_monitor.linux_age_s("abc-123", 1.0) is None
+
+    def test_none_off_linux(self):
+        with mock.patch("lilbee.parent_monitor._is_linux", return_value=False):
+            assert parent_monitor.linux_age_s("abc-123", 1.0) is None
+
+
 class TestLinuxStartTicks:
     """On Linux the identity is the boot-relative start ticks, which a clock step cannot move."""
 
