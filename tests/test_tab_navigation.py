@@ -257,7 +257,7 @@ def test_loaded_or_failed_profile_select_has_landed() -> None:
     from textual.widgets import Select
 
     loaded: Select[str] = Select([("", "")], allow_blank=False)
-    loaded.value = "default"
+    loaded.set_options([("default", "default")])
     failed: Select[str] = Select([("", "")], allow_blank=False)
     failed.disabled = True
     assert _snapshot_landed([loaded])
