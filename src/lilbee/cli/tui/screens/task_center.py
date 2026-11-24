@@ -29,8 +29,8 @@ from textual.widgets import Footer, Label
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
-from lilbee.cli.tui.task_queue import Task, TaskStatus
 from lilbee.cli.tui.mount_guard import MountWhenAttached
+from lilbee.cli.tui.task_queue import Task, TaskStatus
 from lilbee.cli.tui.widgets.task_row import TaskRow
 
 if TYPE_CHECKING:

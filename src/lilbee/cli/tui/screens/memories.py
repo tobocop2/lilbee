@@ -23,6 +23,7 @@ from textual.widgets import DataTable, Input, Static
 from lilbee.app.memory import forget, list_memories, memory_enabled, set_memory_shared
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
+from lilbee.cli.tui.mount_guard import MountWhenAttached
 
 if TYPE_CHECKING:
     from lilbee.data.store import MemoryRow
@@ -35,7 +36,7 @@ def _flag_label(value: bool) -> str:
     return msg.MEMORIES_FLAG_YES if value else msg.MEMORIES_FLAG_NO
 
 
-class MemoriesScreen(Screen[None]):
+class MemoriesScreen(MountWhenAttached, Screen[None]):
     """Review-surface screen for the human's long-term memories."""
 
     CSS_PATH = "memories.tcss"
