@@ -198,26 +198,26 @@ def test_the_list_names_an_engine_folder_that_denies_a_read(root: Path, mode: in
 def test_the_list_names_an_engine_folder_that_cannot_be_listed_on_any_platform(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    real = os.listdir
+    real = os.scandir
 
-    def listdir(path: Any = ".") -> list[str]:
+    def scandir(path: Any = ".") -> Any:
         if not isinstance(path, int) and Path(path) == root / ENGINE:
             raise PermissionError(13, "Permission denied", str(path))
         return real(path)
 
-    monkeypatch.setattr(os, "listdir", listdir)
+    monkeypatch.setattr(os, "scandir", scandir)
     _assert_every_surface_names(root / ENGINE)
 
 
 def _fail_listing(monkeypatch: pytest.MonkeyPatch, folder: Path, code: int) -> None:
-    real = os.listdir
+    real = os.scandir
 
-    def listdir(path: Any = ".") -> list[str]:
+    def scandir(path: Any = ".") -> Any:
         if not isinstance(path, int) and Path(path) == folder:
             raise OSError(code, os.strerror(code), str(path))
         return real(path)
 
-    monkeypatch.setattr(os, "listdir", listdir)
+    monkeypatch.setattr(os, "scandir", scandir)
 
 
 def _fail_record_read(monkeypatch: pytest.MonkeyPatch, build: Path, code: int) -> None:

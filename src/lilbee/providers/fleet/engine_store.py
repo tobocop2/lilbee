@@ -159,6 +159,8 @@ _NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 # A version, a hyphen and a backend with no dot: a file with a suffix is no build.
 _BUILD_PATTERN = re.compile(r".+-[^.]+")
 _PRUNE_SKIPPED = "The engine prune cannot read %s. Run 'lilbee engine list' for the fix."
+_SWEEP_SKIPPED = "The engine sweep cannot clear %s: %s"
+_STAYS = "lilbee cannot delete %s. Correct its permissions; the next start removes it."
 _LICENCE_JOINER = re.compile(r"\s+(?:OR|AND)\s+")
 PACK_DIR = "packs"
 
@@ -228,12 +230,27 @@ class EngineFolderError(OSError):
                 f"A read of the engine folder {self.folder} failed: {self.fault.strerror}. "
                 f"lilbee leaves the folder as it is. Run the command again."
             )
+        if not self.engine:
+            return (
+                f"lilbee cannot read the engines folder {self.folder}. Correct its "
+                f"permissions and run the command again."
+            )
         offered = install_offered(self.engine, session_host())
         install = f" and run 'lilbee engine install {self.engine}'" if offered else ""
         return (
             f"The engine folder {self.folder} holds no build that lilbee can read. If its "
             f"permissions deny a read, correct them. lilbee cannot remove it until then. "
             f"If they do not, remove it{install}."
+        )
+
+
+class ReadOnlyFolderError(EngineFolderError):
+    """An engine folder refuses the rename or the delete of one of its entries."""
+
+    def __str__(self) -> str:
+        return (
+            f"lilbee cannot change the engine folder {self.folder}. "
+            f"Make it writable and run the command again."
         )
 
 
@@ -588,17 +605,88 @@ def _names_engine(name: str) -> bool:
     return name in set(EngineName)
 
 
-def _build_entries(engine: Path) -> list[Path]:
-    """The folders of one engine folder, and the files named as a build; none when it is absent."""
+def _reported(error: EngineFolderError) -> bool:
+    """True for the engines folder and an engine folder; the root also holds strays."""
+    return not error.engine or _names_engine(error.engine)
+
+
+def _entries(folder: Path, engine: str) -> list[os.DirEntry[str]]:
+    """The entries of *folder* by name, links not followed; none when it is absent.
+
+    Raises ``EngineFolderError`` for *engine* ("" for the engines folder) when the read fails.
+    """
     try:
         # The "." entry needs the right to enter the folder as well as the right to list it.
-        names = sorted(os.listdir(os.path.join(engine, os.curdir)))
+        with os.scandir(os.path.join(folder, os.curdir)) as listing:
+            return sorted(listing, key=lambda entry: entry.name)
     except FileNotFoundError:
         return []
     except OSError as exc:
-        raise EngineFolderError(engine, engine.name, exc) from exc
-    builds = [engine / name for name in names if not name.startswith(".")]
-    return [b for b in builds if b.is_dir() or _BUILD_PATTERN.fullmatch(b.name)]
+        raise EngineFolderError(folder, engine, exc) from exc
+
+
+_Slot = tuple[Path, InstalledEngine | EngineFolderError | None]
+
+
+def _builds(engine: Path) -> list[_Slot]:
+    """Each build slot of a real engine folder: its record, else None, else the read error.
+
+    A slot is a folder, or a file or link with a build name; a link is never followed,
+    so it is damage. A slot that goes after the listing is absent and left out.
+    """
+    slots: list[_Slot] = []
+    for entry in _entries(engine, engine.name):
+        folder = entry.is_dir(follow_symlinks=False)
+        if entry.name.startswith(".") or not (folder or _BUILD_PATTERN.fullmatch(entry.name)):
+            continue
+        build = engine / entry.name
+        found: InstalledEngine | EngineFolderError | None
+        try:
+            found = _read_record(build) if folder else None
+        except EngineFolderError as exc:
+            found = exc
+        if found is not None or os.path.lexists(build):
+            slots.append((build, found))
+    return slots
+
+
+def _retry_writable(function: Callable[..., object], path: str, _error: object) -> None:
+    """The rmtree error hook: add the owner write bit to the parent, then delete once more."""
+    if function not in (os.unlink, os.rmdir):
+        return
+    parent = os.path.dirname(path)
+    try:
+        os.chmod(parent, stat.S_IMODE(os.lstat(parent).st_mode) | stat.S_IWUSR)
+        function(path)
+    except OSError:
+        return  # _delete names what stays
+
+
+def _delete(path: Path) -> bool:
+    """Unlink a file or a link, never its target, or remove a folder; False when part stays."""
+    if not stat.S_ISDIR(os.lstat(path).st_mode):
+        path.unlink()
+        return True
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_retry_writable)  # pragma: no cover - Python 3.12 and later
+    else:
+        shutil.rmtree(path, onerror=_retry_writable)  # pragma: no cover - Python 3.11
+    if os.path.lexists(path):
+        log.warning(_STAYS, path)
+        return False
+    return True
+
+
+def _discard(build: Path) -> None:
+    """Delete one build slot; a folder goes to trash first, so no half build stays listed."""
+    try:
+        if stat.S_ISDIR(os.lstat(build).st_mode):
+            trash = build.with_name(f"{_TRASH_PREFIX}{uuid.uuid4().hex}")
+            build.rename(trash)
+            build = trash
+        _delete(build)
+    except PermissionError as exc:
+        raise ReadOnlyFolderError(build.parent, build.parent.name, exc) from exc
 
 
 def _read_record(directory: Path) -> InstalledEngine | None:
@@ -683,33 +771,33 @@ class EngineStore:
             for folder, found in self._walk()
             if not isinstance(found, InstalledEngine)
         ]
-        return [error for error in errors if _names_engine(error.engine)]
+        return [error for error in errors if _reported(error)]
 
-    def _walk(self) -> Iterator[tuple[Path, InstalledEngine | EngineFolderError | None]]:
-        """Each build folder with its record, else None, and each folder whose read failed."""
-        for engine in self._engine_entries():
+    def _walk(self) -> Iterator[_Slot]:
+        """Each build slot, and each folder whose read failed; an engine link is damage."""
+        try:
+            engines = _entries(self.root, "")
+        except EngineFolderError as exc:
+            yield self.root, exc
+            return
+        for entry in engines:
+            if entry.name == PACK_DIR or entry.name.startswith("."):
+                continue
+            engine = self.root / entry.name
+            if not entry.is_dir(follow_symlinks=False):
+                yield engine, EngineFolderError(engine, entry.name)
+                continue
             try:
-                builds = _build_entries(engine)
+                yield from _builds(engine)
             except EngineFolderError as exc:
                 yield engine, exc
-                continue
-            for build in builds:
-                found: InstalledEngine | EngineFolderError | None
-                try:
-                    found = _read_record(build)
-                except EngineFolderError as exc:
-                    found = exc
-                yield build, found
 
-    def _engine_entries(self) -> list[Path]:
-        """The entries of the root that can be an engine folder."""
-        if not self.root.is_dir():
-            return []
-        return [
-            entry
-            for entry in sorted(self.root.iterdir())
-            if entry.name != PACK_DIR and not entry.name.startswith(".")
-        ]
+    def _engine_builds(self, engine: str) -> dict[Path, InstalledEngine | EngineFolderError | None]:
+        """The build slots of one engine; none when its folder is absent or not a real folder."""
+        entry = next((e for e in _entries(self.root, "") if e.name == engine), None)
+        if entry is None or not entry.is_dir(follow_symlinks=False):
+            return {}
+        return dict(_builds(self.root / engine))
 
     def pack_path(self, lock: PinLock) -> Path:
         """Where a hand-copied wheel of *lock* is looked up."""
@@ -720,8 +808,9 @@ class EngineStore:
 
         Raises ``EngineFolderError`` when a read of the engine folder or the build fails.
         """
-        _build_entries(self.root / lock.engine)
-        existing = _read_record(self.build_dir(lock))
+        existing = self._engine_builds(lock.engine).get(self.build_dir(lock))
+        if isinstance(existing, EngineFolderError):
+            raise existing
         if existing is None:
             return None
         if existing.sha256.lower() != lock.sha256.lower():
@@ -761,7 +850,8 @@ class EngineStore:
             with file_lock(scratch_lock, _LOCK_TIMEOUT_S):
                 yield scratch
         finally:
-            shutil.rmtree(scratch, ignore_errors=True)
+            if os.path.lexists(scratch):
+                _delete(scratch)
             _unlink_lock_file(scratch_lock)
 
     def install_from_wheel(self, lock: PinLock, wheel: Path) -> Path:
@@ -777,7 +867,7 @@ class EngineStore:
 
     def _refuse_held_replace(self, lock: PinLock) -> None:
         """Refuse to replace a damaged build while a launch uses it, as remove does."""
-        if self.build_dir(lock).exists() and launch_uses_engine(
+        if os.path.lexists(self.build_dir(lock)) and launch_uses_engine(
             self.root, lock.engine, lock.version, lock.backend
         ):
             raise EngineInUseError(
@@ -807,15 +897,16 @@ class EngineStore:
                     binary = _binary_of(archive, lock.tool)
                 self._swap_in(lock, stage, binary)
             finally:
-                shutil.rmtree(stage, ignore_errors=True)
+                if os.path.lexists(stage):
+                    _delete(stage)
         return final
 
     def _swap_in(self, lock: PinLock, stage: Path, binary: str | None) -> None:
         """Write the record into *stage*, then rename it onto the final name."""
         final = self.build_dir(lock)
         self._write_record(stage, lock, binary)
-        if final.exists():
-            shutil.rmtree(final)
+        if os.path.lexists(final):
+            _discard(final)
         stage.rename(final)
 
     def _inside_root(self, path: Path) -> Path:
@@ -846,22 +937,24 @@ class EngineStore:
             if not _NAME_PATTERN.fullmatch(part):
                 raise StorePathError(f"{part!r} cannot name an engine build.")
         build = self.root / engine / f"{version}-{backend}"
+        absent = f"Engine {engine} {version} ({backend}) is not installed."
+        _entries(self.root, "")  # an unreadable root refuses before its lock folder is made
         with file_lock(self.root / LOCK_DIR / engine, wait_s):
-            _build_entries(build.parent)
-            if not build.is_dir():
-                raise EngineNotInstalledError(
-                    f"Engine {engine} {version} ({backend}) is not installed."
-                )
-            self._inside_root(build)
-            _read_record(build)
+            builds = self._engine_builds(engine)
+            if build not in builds:
+                raise EngineNotInstalledError(absent)
+            found = builds[build]
+            if isinstance(found, EngineFolderError):
+                raise found
             if in_use(engine, version, backend):
                 raise EngineInUseError(
                     f"Engine {engine} {version} ({backend}) is in use. Stop the engine "
                     f"with 'lilbee engine stop' and remove it again."
                 )
-            trash = build.parent / f"{_TRASH_PREFIX}{uuid.uuid4().hex}"
-            build.rename(trash)
-            shutil.rmtree(trash, ignore_errors=True)
+            try:
+                _discard(build)
+            except FileNotFoundError as exc:
+                raise EngineNotInstalledError(absent) from exc
         return RemoveResult(path=build, canary_warning=True)
 
     def prune(
@@ -915,11 +1008,11 @@ class EngineStore:
         for build, found in self._walk():
             engine = build.parent.name
             if isinstance(found, EngineFolderError):
-                if _names_engine(found.engine):
+                if _reported(found):
                     report(_PRUNE_SKIPPED, found.folder)
             elif found is not None:
                 dirs.append((engine, found.version, found.backend, build))
-            elif build.is_dir():
+            else:
                 dirs.extend(
                     (engine, build.name[:cut], build.name[cut + 1 :], build)
                     for cut in range(1, len(build.name) - 1)
@@ -936,51 +1029,47 @@ class EngineStore:
         """
         removed: list[Path] = []
         try:
-            for engine in sorted(self.root.iterdir()) if self.root.is_dir() else []:
-                if engine.name == PACK_DIR or not engine.is_dir():
-                    continue
-                if engine.name == LOCK_DIR:
-                    continue
-                if engine.name.startswith(_DOWNLOAD_PREFIX):
-                    removed.extend(self._sweep_download(engine))
-                elif not engine.name.startswith("."):
-                    removed.extend(self._sweep_engine(engine))
-        except OSError as exc:
-            log.debug("Skipped the engine sweep of %s: %s", self.root, exc)
+            entries = _entries(self.root, "")
+        except EngineFolderError as exc:
+            log.warning(_SWEEP_SKIPPED, self.root, exc)
+            return removed
+        for entry in entries:
+            path = self.root / entry.name
+            try:
+                if entry.name.startswith(_DOWNLOAD_PREFIX):
+                    removed.extend(self._sweep_download(path))
+                elif (
+                    entry.is_dir(follow_symlinks=False)
+                    and entry.name != PACK_DIR
+                    and not entry.name.startswith(".")
+                ):
+                    removed.extend(self._sweep_engine(path))
+            except OSError as exc:
+                log.warning(_SWEEP_SKIPPED, path, exc)
         return removed
 
     def _sweep_download(self, scratch: Path) -> list[Path]:
         lock_path = self.root / LOCK_DIR / scratch.name
         try:
             with file_lock(lock_path, _NO_WAIT_S):
-                self._inside_root(scratch)
-                shutil.rmtree(scratch, ignore_errors=True)
-        except (FileLockUnavailableError, StorePathError):
+                gone = _delete(scratch)
+        except FileLockUnavailableError:
             return []
         _unlink_lock_file(lock_path)
-        return [scratch]
+        return [scratch] if gone else []
 
     def _sweep_engine(self, engine: Path) -> list[Path]:
+        """Delete the stage and trash entries of one engine folder; a link is unlinked."""
         try:
             with file_lock(self.root / LOCK_DIR / engine.name, _NO_WAIT_S):
                 leftovers = [
-                    child
-                    for child in sorted(engine.iterdir())
-                    if child.name.startswith((STAGE_PREFIX, _TRASH_PREFIX))
+                    engine / entry.name
+                    for entry in _entries(engine, engine.name)
+                    if entry.name.startswith((STAGE_PREFIX, _TRASH_PREFIX))
                 ]
-                removed = [child for child in leftovers if self._remove_leftover(child)]
+                return [child for child in leftovers if _delete(child)]
         except FileLockUnavailableError:
             return []
-        return removed
-
-    def _remove_leftover(self, child: Path) -> bool:
-        """Delete one stage or trash folder; False when it is a link out of the root."""
-        try:
-            self._inside_root(child)
-        except StorePathError:
-            return False
-        shutil.rmtree(child, ignore_errors=True)
-        return not child.exists()
 
     @staticmethod
     def _write_record(stage: Path, lock: PinLock, binary: str | None = None) -> None:
