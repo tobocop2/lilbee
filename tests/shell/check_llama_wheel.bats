@@ -63,7 +63,7 @@ stand_ins() {
     '  if [ "${RUNNER_OS-}" = Windows ]; then mkdir "$3/Scripts" && ln -s ../bin/python "$3/Scripts/python.exe"; fi' '  exit' 'fi' \
     'case "$*" in *assert_engine_bundle.py*) [ -z "${IMPORTS_FAIL-}" ] || { echo "FAIL: an import nothing provides" >&2; exit 1; } ;; esac' \
     'exec "${REAL_PYTHON}" "$@"'
-  tool ldd 'dir="$(dirname "$1")"' '[ ! -e "${dir}/ldd-missing" ] || echo "	$(cat "${dir}/ldd-missing") => not found"' \
+  tool ldd 'dir="$(dirname "$1")"' '[ ! -e "${dir}/ldd-fails" ] || exit 1' '[ ! -e "${dir}/ldd-missing" ] || echo "	$(cat "${dir}/ldd-missing") => not found"' \
     'echo "	libc.so.6 => /lib64/libc.so.6"'
   tool objdump 'dir="$(dirname "${!#}")"' 'symbol=GLIBC_2.34' '[ ! -e "${dir}/glibc-symbol" ] || symbol="$(cat "${dir}/glibc-symbol")"' \
     'echo "0000000000000000      DF *UND*  0000000000000000  ${symbol}  memcpy"'
@@ -72,8 +72,8 @@ stand_ins() {
     '    for lib in libdrm.so.2 libdrm_amdgpu.so.1 libelf.so.1 libnuma.so.1 libz.so.1 libzstd.so.1; do echo "	${lib} => not found"; done' \
     '    [ ! -e "${dir}/host-library" ] || echo "	$(cat "${dir}/host-library") => not found" ;;' \
     '  *) cat > /dev/null' '    if [ -e "${dir}/bundle-open" ]; then echo "the ROCm bundle does not close" >&2; exit 1; fi ;;' 'esac'
-  tool file 'case "$1" in *.dylib | */llama-server) echo "$1: Mach-O 64-bit arm64" ;; *) echo "$1: ASCII text" ;; esac'
-  tool otool 'printf "%s:\n" "$2"' 'echo "	@rpath/libggml.0.dylib (compatibility version 0.0.0)"' \
+  tool file '[ ! -e "$(dirname "$1")/file-fails" ] || exit 1' 'case "$1" in *.dylib | */llama-server) echo "$1: Mach-O 64-bit arm64" ;; *) echo "$1: ASCII text" ;; esac'
+  tool otool '[ ! -e "$(dirname "$2")/otool-fails" ] || exit 1' 'printf "%s:\n" "$2"' 'echo "	@rpath/libggml.0.dylib (compatibility version 0.0.0)"' \
     '[ ! -e "$(dirname "$2")/rpath-library" ] || echo "	@rpath/$(cat "$(dirname "$2")/rpath-library") (compatibility version 0.0.0)"'
   # The host of a test may lack unzip.
   cat > "${BIN}/unzip" << 'STUB'
@@ -488,6 +488,51 @@ fails_without() {  # cell path failed-fragment [later fragment]
   stops "llama-server has an unresolved library" "check_glibc_floor"
   says "llama-server has an unresolved library"
   [[ "${output}" == *"libmissing.so.1 => not found"* ]]
+}
+
+@test "a Linux CPU wheel whose ldd fails is refused" {
+  cell linux-cpu
+  build
+  touch "${T}/${P}/ldd-fails"
+  check
+  stops "ldd failed on" "check_glibc_floor"
+  [[ "${stderr}" == *"ldd failed on "*"llama-server"* ]]
+}
+
+@test "a macOS wheel whose file command fails is refused" {
+  cell macos-metal
+  build
+  touch "${T}/${P}/file-fails"
+  check
+  stops "file failed on" "du -sk"
+  [[ "${stderr}" == *"file failed on "* ]]
+}
+
+@test "a macOS wheel whose otool fails is refused" {
+  cell macos-metal
+  build
+  touch "${T}/${P}/otool-fails"
+  check
+  stops "otool failed on" "du -sk"
+  [[ "${stderr}" == *"otool failed on "* ]]
+}
+
+@test "a licence expression in the description of the metadata does not count" {
+  cell linux-cpu
+  build
+  put "${I}/METADATA" 644 "$(printf '%s\n' 'Metadata-Version: 2.1' 'Name: lilbee-engine-llama-cpp' 'Version: 1.12032.1' '' "License-Expression: ${EXPRESSION}")"
+  check
+  stops "wheel lacks the licence expression" "unzip -l"
+  says "wheel lacks the licence expression ${EXPRESSION} in its METADATA header"
+}
+
+@test "an unknown backend is refused before the wheel is installed" {
+  cell linux-cpu
+  build
+  export BACKEND=bogus
+  check
+  stops "unknown BACKEND: bogus" "pip install"
+  says "unknown BACKEND: bogus"
 }
 
 @test "a Linux CPU wheel that needs a newer glibc than its tag is refused" {
