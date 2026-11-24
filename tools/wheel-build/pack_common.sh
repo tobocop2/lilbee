@@ -42,6 +42,12 @@ use_build_python() {
   export PATH
 }
 
+# Print the header block of a METADATA text on stdin: the lines before the first blank line. The description follows that
+# line and is free text. sed reads to the end, so a writer upstream gets no SIGPIPE.
+metadata_header() {
+  sed '/^$/,$d'
+}
+
 # Print one file of the dist-info folder of a wheel with LF line ends: a Windows build writes CRLF.
 dist_info() {  # wheel file
   python -c 'import pathlib, sys, zipfile

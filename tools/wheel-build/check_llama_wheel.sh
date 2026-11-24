@@ -56,7 +56,7 @@ check_licences() {  # wheel bindir
   expression="$(cat license-expression.txt)"
   # Only the header block of METADATA counts: its description follows the first blank line.
   metadata="$(unzip -p "${wheel}" '*.dist-info/METADATA')"
-  header="$(sed '/^$/q' <<< "${metadata}")"
+  header="$(metadata_header <<< "${metadata}")"
   grep -Fx "License-Expression: ${expression}" <<< "${header}" \
     || refuse "wheel lacks the licence expression ${expression} in its METADATA header"
   # The listing goes to a file: grep -q stops at its first match, and a pipe from unzip then fails with SIGPIPE under
