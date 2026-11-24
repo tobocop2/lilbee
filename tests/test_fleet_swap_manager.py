@@ -891,6 +891,32 @@ class TestEngineReadiness:
             sm.EngineReadiness.FAILED
         )
 
+    @pytest.mark.parametrize(("recorded", "current"), [("41", "42"), ("41", "100"), ("7", "7.5")])
+    def test_close_numeric_boot_identities_are_different_boots(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recorded: str, current: str
+    ) -> None:
+        # A Windows boot id is a counter, so the next boot's id is numerically close. Only an
+        # exact match is the same boot; a near one still falls back to the wall clock.
+        clock: dict[str, float | str] = {"mono": 5000.0, "boot": recorded}
+        state = self._spawned_record(tmp_path, monkeypatch, clock)
+        clock.update(mono=5010.0, boot=current)
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
+            sm.EngineReadiness.FAILED
+        )
+
+    def test_no_boot_identity_on_either_side_is_not_a_match(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock: dict[str, float | str] = {"mono": 5000.0}
+        state = dataclasses.replace(
+            self._spawned_record(tmp_path, monkeypatch, clock), started_boot=None
+        )
+        clock.update(mono=5010.0, fail=1.0)
+        assert state.started_mono == 5000.0
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
+            sm.EngineReadiness.FAILED
+        )
+
     def test_a_host_that_gives_no_boot_identity_stores_none_and_the_wall_clock_decides(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
