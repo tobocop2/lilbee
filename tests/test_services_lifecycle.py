@@ -1690,7 +1690,42 @@ class TestEndCommand:
         """Patch enumerate with a mutable list, cleared before teardown."""
         threads = [threading.main_thread(), *extra]
         monkeypatch.setattr(services_mod, "_all_threads", lambda: list(threads))
+        # The real hook sets the pools' global shutdown flag in this process.
+        monkeypatch.setattr(services_mod, "_end_pool_workers", lambda status: status)
         return threads
+
+    def test_idle_pool_workers_the_hook_ends_leave_the_normal_exit(self, monkeypatch) -> None:
+        bounded = MagicMock()
+        monkeypatch.setattr(services_mod, "exit_after_signal", bounded)
+        threads = self._threads(monkeypatch, [_Wedged()])
+
+        def hook_ends_them(status: int) -> int:
+            del threads[1:]
+            return status
+
+        monkeypatch.setattr(services_mod, "_end_pool_workers", hook_ends_them)
+        stop = SystemExit(0)
+
+        with pytest.raises(SystemExit) as raised:
+            services_mod.end_command(stop)
+
+        assert raised.value is stop
+        bounded.assert_not_called()
+
+    def test_a_signal_during_the_pool_hook_sets_the_status(self, monkeypatch) -> None:
+        monkeypatch.setattr(services_mod, "exit_after_signal", MagicMock())
+        threads = self._threads(monkeypatch, [_Wedged()])
+
+        def signalled(status: int) -> int:
+            del threads[1:]
+            return 143
+
+        monkeypatch.setattr(services_mod, "_end_pool_workers", signalled)
+
+        with pytest.raises(SystemExit) as raised:
+            services_mod.end_command(SystemExit(0))
+
+        assert raised.value.code == 143
 
     def test_with_no_thread_left_it_raises_the_command_exit(self, monkeypatch) -> None:
         bounded = MagicMock()
@@ -1729,6 +1764,37 @@ class TestEndCommand:
         del threads[1:]
 
         assert raised.value.code == 143
+
+
+class TestEndPoolWorkers:
+    def test_the_pools_exit_hook_runs_and_the_status_stays(self, monkeypatch) -> None:
+        ran = threading.Event()
+        monkeypatch.setattr(services_mod.concurrent.futures.thread, "_python_exit", ran.set)
+
+        assert services_mod._end_pool_workers(3) == 3
+        assert ran.is_set()
+
+    def test_a_hook_held_by_a_busy_worker_ends_the_wait_at_the_budget(self, monkeypatch) -> None:
+        release = threading.Event()
+        monkeypatch.setattr(services_mod.concurrent.futures.thread, "_python_exit", release.wait)
+        monkeypatch.setattr(services_mod, "_STRAGGLER_BUDGET_S", 0.05)
+
+        try:
+            assert services_mod._end_pool_workers(0) == 0
+        finally:
+            release.set()
+
+    def test_a_signal_during_the_wait_gives_its_status(self, monkeypatch) -> None:
+        monkeypatch.setattr(services_mod.concurrent.futures.thread, "_python_exit", lambda: None)
+
+        @contextlib.contextmanager
+        def signalled():
+            raise SystemExit(143)
+            yield
+
+        monkeypatch.setattr(services_mod, "_interrupt_force_quits", signalled)
+
+        assert services_mod._end_pool_workers(0) == 143
 
 
 class TestExitIfOpensRemain:

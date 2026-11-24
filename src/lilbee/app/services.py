@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import concurrent.futures.thread
 import logging
 import multiprocessing
 import os
@@ -996,17 +997,43 @@ def end_command(stop: SystemExit) -> NoReturn:
     """End a one-shot command with *stop*, past a leftover thread that would hang the exit.
 
     The interpreter joins every non-daemon thread before atexit, with no bound, and a
-    signal during that join loses its status. With such a thread left, the exit runs
-    the engine stop and gives the thread the straggler budget, then ends the process;
-    a signal meanwhile sets the status. With none left it raises *stop* as before.
+    signal during that join loses its status. With such a thread left, the pools' own
+    exit hook first ends their idle workers (``_end_pool_workers``). A thread still
+    busy after that takes the bounded exit: the engine stop, the straggler budget, then
+    the end of the process. A signal meanwhile sets the status. With no thread left, it
+    raises *stop*, so the interpreter's exit and atexit run as before.
     """
     if _straggler_threads():
-        status = exit_code_of(stop)
-        exit_after_signal(status)
+        code = exit_code_of(stop)
+        status = _end_pool_workers(code)
+        if _straggler_threads():
+            exit_after_signal(status)
         owed = exit_status_after_stop(status)
-        if owed != status:
+        if owed != code:
             raise SystemExit(owed) from None
     raise stop
+
+
+def _end_pool_workers(status: int) -> int:
+    """Run the thread pools' exit hook within the straggler budget; return the exit status.
+
+    concurrent.futures registers ``_python_exit`` through ``threading._register_atexit``,
+    and the interpreter runs it before it joins the other threads: it wakes every idle
+    pool worker so it ends, then joins the pool threads. It runs on a daemon thread
+    here, so a busy worker cannot hold the exit past the budget. It also runs at the
+    interpreter's exit, where it finds the workers gone. A signal during the wait
+    gives its status.
+    """
+    hook = threading.Thread(
+        target=concurrent.futures.thread._python_exit, name="pool-exit", daemon=True
+    )
+    hook.start()
+    try:
+        with _interrupt_force_quits():
+            hook.join(_STRAGGLER_BUDGET_S)
+    except SystemExit as signalled:
+        return exit_code_of(signalled)
+    return status
 
 
 _lifecycle = _EngineLifecycle()
