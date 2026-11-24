@@ -176,6 +176,28 @@ def test_self_check_with_a_named_target_keeps_it(
 AUTO_BOTH = '{"chat": {"target": "auto"}, "embed": {"target": "auto"}}'
 
 
+@pytest.mark.parametrize(
+    ("cards", "targets", "expected"),
+    [
+        pytest.param((), CPU_ONLY, RoleTarget.CPU, id="no-card"),
+        pytest.param((24,), BOTH, RoleTarget.GPU, id="one-card"),
+    ],
+)
+def test_self_check_of_an_auto_entry_matches_serving(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    cards: tuple[int, ...],
+    targets: frozenset[RoleTarget],
+    expected: RoleTarget,
+) -> None:
+    engine = _engine(monkeypatch, tmp_path, cards, targets)
+    monkeypatch.setattr(cfg, "placement", AUTO_BOTH)
+    serving = _targets(engine, PlacementSpec.from_json(AUTO_BOTH))["embed"]
+    assert serving == expected.value
+    engine.requested.clear()
+    assert _self_check_target(engine, tmp_path) is expected
+
+
 class TestMovedRoleKeepsItsLowFreeMemoryWarning:
     """A role the auto plan moves to the CPU still warns when the free memory is short."""
 

@@ -2376,7 +2376,8 @@ def build_single_role_launch(
 
     Placement is the planner's, on the devices the plan snapshot holds, so the
     check runs on the card the role would really land on. A role that the saved
-    placement puts on the CPU is checked on the CPU. A role with no entry in a
+    placement puts on the CPU is checked on the CPU. A role with no entry, or an
+    auto entry, gets the target that serving plans for it. A role with no entry in a
     placement that serving drops it for is refused with serving's error.
     """
     from lilbee.core.config import cfg
@@ -2388,7 +2389,9 @@ def build_single_role_launch(
     binary = engine.binary()
     with _one_engine_per_pass(engine=engine):
         target = (
-            entry.device_target if entry is not None else _runnable_target(engine, RoleTarget.GPU)
+            _runnable_target(engine, RoleTarget.GPU)
+            if entry is None or entry.target is RoleTarget.AUTO
+            else entry.device_target
         )
         devices = _plan_devices(binary, engine)
         if spec is not None:
