@@ -4132,7 +4132,7 @@ class TestSizeEstimateAgainstPublishedFiles:
     """The browse-list figure against the bytes HuggingFace publishes for the file."""
 
     @pytest.mark.parametrize(("filename", "params", "published_bytes"), _PUBLISHED_GGUF_FILES)
-    def test_the_estimate_reads_at_or_under_each_pinned_file(
+    def test_the_estimate_stays_within_the_cap_and_rounding_of_each_pinned_file(
         self, filename: str, params: int, published_bytes: int
     ) -> None:
         """Each pinned file's estimate lies within the under-read cap and the rounding allowance."""
