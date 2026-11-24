@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import threading
 from collections.abc import Iterator
@@ -16,15 +15,8 @@ from lilbee.parent_monitor import (
     _parent_start_time,
     _same_process,
     parse_parent_pid,
-    watch_parent_async,
     watch_parent_thread,
 )
-
-
-@pytest.fixture(autouse=True)
-def _no_exit_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stop an in-process server run from ending this process 60 s later."""
-    monkeypatch.setattr("lilbee.cli.commands.servers.arm_exit_deadline", lambda _seconds: None)
 
 
 @pytest.fixture(autouse=True)
@@ -119,48 +111,52 @@ class TestParentIdentity:
             assert _same_process(123, 100.0) is False
 
 
-class TestWatchParentAsync:
-    async def test_invokes_callback_when_pid_disappears(self):
-        events = [True, True, False]
+_OUR_START = 100.0
 
-        def fake_pid_exists(_: int) -> bool:
-            return events.pop(0)
 
-        called: list[bool] = []
-        with mock.patch("lilbee.parent_monitor.psutil.pid_exists", side_effect=fake_pid_exists):
-            await watch_parent_async(123, lambda: called.append(True), poll_interval_secs=0)
-        assert called == [True]
+def _processes(parent_starts: list[float]) -> mock.MagicMock:
+    """A psutil.Process stand-in: this process started at _OUR_START, the parent at each poll."""
+    starts = iter(parent_starts)
 
-    async def test_returns_immediately_when_pid_already_dead(self):
-        called: list[bool] = []
-        with mock.patch("lilbee.parent_monitor.psutil.pid_exists", return_value=False):
-            await watch_parent_async(456, lambda: called.append(True), poll_interval_secs=0)
-        assert called == [True]
-
-    async def test_can_be_cancelled_while_polling(self):
-        with mock.patch("lilbee.parent_monitor.psutil.pid_exists", return_value=True):
-            task = asyncio.create_task(
-                watch_parent_async(789, lambda: None, poll_interval_secs=0.05)
-            )
-            await asyncio.sleep(0.01)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-
-    async def test_fires_when_pid_is_recycled(self):
-        # PID stays alive, but create-time changes: a different process took it.
+    def process(pid: int | None = None) -> mock.MagicMock:
         proc = mock.MagicMock()
-        proc.create_time.side_effect = [100.0, 100.0, 200.0]
-        called: list[bool] = []
-        with (
-            mock.patch("lilbee.parent_monitor.psutil.pid_exists", return_value=True),
-            mock.patch("lilbee.parent_monitor.psutil.Process", return_value=proc),
-        ):
-            await watch_parent_async(123, lambda: called.append(True), poll_interval_secs=0)
-        assert called == [True]
+        proc.create_time.return_value = _OUR_START if pid is None else next(starts)
+        return proc
+
+    return mock.MagicMock(side_effect=process)
 
 
 class TestWatchParentThread:
+    def test_fires_at_once_when_the_pid_holds_a_process_started_after_us(self):
+        """The parent died and its pid was reused before the watch began."""
+        called = threading.Event()
+        with (
+            mock.patch("lilbee.parent_monitor.psutil.pid_exists", return_value=True),
+            mock.patch("lilbee.parent_monitor.psutil.Process", _processes([200.0, 200.0])),
+        ):
+            watch_parent_thread(123, called.set, poll_interval_secs=60)
+            assert called.wait(timeout=2.0), "a reused pid was taken for the parent"
+
+    def test_keeps_watching_a_grandparent_that_started_before_us(self):
+        """The parent pid may name an editor or a console-script wrapper, not the direct parent."""
+        called = threading.Event()
+        with (
+            mock.patch("lilbee.parent_monitor.psutil.pid_exists", return_value=True),
+            mock.patch("lilbee.parent_monitor.psutil.Process", _processes([50.0] * 1000)),
+        ):
+            watch_parent_thread(123, called.set, poll_interval_secs=0.01)
+            assert not called.wait(timeout=0.3)
+
+    def test_fires_when_pid_is_recycled_while_watched(self):
+        # PID stays alive, but create-time changes: a different process took it.
+        called = threading.Event()
+        with (
+            mock.patch("lilbee.parent_monitor.psutil.pid_exists", return_value=True),
+            mock.patch("lilbee.parent_monitor.psutil.Process", _processes([50.0, 50.0, 200.0])),
+        ):
+            watch_parent_thread(123, called.set, poll_interval_secs=0)
+            assert called.wait(timeout=2.0), "on_death callback never fired"
+
     def test_invokes_callback_when_pid_disappears(self):
         events = [True, True, False]
         lock = threading.Lock()
@@ -181,84 +177,6 @@ class TestWatchParentThread:
             thread = watch_parent_thread(111, lambda: None, poll_interval_secs=0)
             thread.join(timeout=1.0)
             assert thread.daemon
-
-
-class TestRunServerIntegration:
-    """Verify _run_server schedules a parent-death watcher when env var set."""
-
-    @pytest.fixture()
-    def fake_server(self):
-        srv = mock.MagicMock()
-        srv.servers = []
-        srv.should_exit = False
-
-        async def main_loop() -> None:
-            return None
-
-        async def startup() -> None:
-            return None
-
-        async def shutdown() -> None:
-            return None
-
-        srv.main_loop = main_loop
-        srv.startup = startup
-        srv.shutdown = shutdown
-        return srv
-
-    @pytest.fixture()
-    def fake_config(self):
-        cfg = mock.MagicMock()
-        cfg.loaded = True
-        return cfg
-
-    async def test_no_watcher_task_when_env_unset(self, fake_server, fake_config, monkeypatch):
-        from lilbee.cli.commands import servers as commands
-
-        monkeypatch.delenv(PARENT_PID_ENV, raising=False)
-        with (
-            mock.patch.object(
-                commands, "port_file", return_value=mock.MagicMock(exists=lambda: False)
-            ),
-            mock.patch("lilbee.parent_monitor.watch_parent_async") as watcher,
-        ):
-            await commands._run_server(fake_server, fake_config, "127.0.0.1")
-        watcher.assert_not_called()
-
-    async def test_schedules_watcher_when_env_set(
-        self, fake_server, fake_config, monkeypatch, tmp_path
-    ):
-        from lilbee.cli.commands import servers as commands
-
-        monkeypatch.setenv(PARENT_PID_ENV, "999999")
-        port_file = tmp_path / "server.port"
-        watcher = mock.AsyncMock()
-
-        with (
-            mock.patch.object(commands, "port_file", return_value=port_file),
-            mock.patch("lilbee.parent_monitor.watch_parent_async", new=watcher),
-        ):
-            await commands._run_server(fake_server, fake_config, "127.0.0.1")
-
-        watcher.assert_called_once()
-        assert watcher.call_args.args[0] == 999999
-
-        # Invoke the on_death callback to verify it flips should_exit.
-        on_death = watcher.call_args.args[1]
-        on_death()
-        assert fake_server.should_exit is True
-
-    async def test_loads_config_when_not_loaded(
-        self, fake_server, fake_config, monkeypatch, tmp_path
-    ):
-        from lilbee.cli.commands import servers as commands
-
-        fake_config.loaded = False
-        monkeypatch.delenv(PARENT_PID_ENV, raising=False)
-        port_file = tmp_path / "server.port"
-        with mock.patch.object(commands, "port_file", return_value=port_file):
-            await commands._run_server(fake_server, fake_config, "127.0.0.1")
-        fake_config.load.assert_called_once()
 
 
 class TestMcpMainIntegration:
