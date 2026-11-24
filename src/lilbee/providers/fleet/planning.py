@@ -1526,7 +1526,7 @@ def _estimate_cpu_role(
         sized = _estimate_role(role, ref, engine=engine, gpu_layers=0)
     except (ProviderError, OSError) as exc:
         if isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.NOT_FOUND:
-            log.warning("Skipping %s server: model %r is not installed.", role.value, ref)
+            log.warning("Skipping %s server: model '%s' is not installed.", role.value, ref)
             skipped_not_installed[role] = ref
             return None
         return ModelPlacementInput(
