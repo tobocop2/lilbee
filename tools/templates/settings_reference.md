@@ -30,7 +30,7 @@ An environment value that its setting refuses stops every command with one line 
 
 `token_sizing` is not a setting. A `token_sizing` key in `config.toml` or in a profile file, or a `LILBEE_TOKEN_SIZING` variable, prints a warning and is ignored: `chunk_size` always counts the embedding model's tokens.
 
-From a shell, `lilbee settings set <setting> <value>` writes a setting to `config.toml`, and `lilbee settings unset <setting>` removes your value. `lilbee settings list` shows every setting with its value and source, and `lilbee settings get <setting>` shows one. `lilbee settings set` refuses the model roles; the CLI column names the command for each one. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
+From a shell, `lilbee settings set <setting> <value>` writes a setting to `config.toml`, and `lilbee settings unset <setting>` removes your value. `lilbee settings list` shows each setting you can write with its value and source, and `--advanced` adds the advanced ones, and `lilbee settings get <setting>` shows one. `lilbee settings set` refuses the model roles, and refuses a setting whose value is a table. The CLI column names the command that does write each one, or `no`. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
 
 ## Reading the surface columns
 
@@ -42,7 +42,7 @@ From a shell, `lilbee settings set <setting> <value>` writes a setting to `confi
 
 **HTTP.** The same, with two exceptions. `role API` means `PUT /api/models/<role>` sets it, not `PATCH /api/config`. `refused` means the server rejects the write, because applying it rebuilds the model provider under concurrent requests.
 
-**CLI.** The command that writes this setting, or `no`. `lilbee settings set` writes every setting it names. The model roles have their own commands, or none.
+**CLI.** The command that writes this setting, or `no`. `lilbee settings set` writes every setting it names. A model role or a table setting has its own command, or none.
 
 **Advanced.** `yes` means the TUI folds this setting into the collapsed "Advanced" section at the bottom of its tab: a normal user never needs it to get good results. `no` means the setting stays with the tab's regular rows. Every setting is still reachable through every other surface either way.
 
