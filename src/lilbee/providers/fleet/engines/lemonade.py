@@ -7,12 +7,14 @@ import os
 import re
 import shutil
 from collections.abc import Mapping
+from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.types import ModelFormat
-from lilbee.catalog.xdna import read_checkpoint
+from lilbee.catalog.xdna import read_checkpoint, read_context_length
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.adapters import RoleServerSpec
@@ -25,6 +27,7 @@ from lilbee.providers.fleet.engines.base import (
     LaunchRequest,
     RequestProfile,
     ServerProcess,
+    UpstreamCheck,
 )
 from lilbee.providers.fleet.engines.host_gate import PLATFORM_UNREAD, HostGate, npu_gate
 from lilbee.providers.fleet.engines.lemonade_models import parse_models
@@ -81,6 +84,46 @@ _PROFILE = RequestProfile(
     unreadable_embedding_hint="Lemonade answers embeddings as lists of floats.",
     reasoning_field="reasoning_content",
 )
+_HEALTH_PATH = "/v1/health"
+_SYSTEM_INFO_PATH = "/v1/system-info"
+_DEVICE_NPU = "npu"
+_STATE_UNSUPPORTED = "unsupported"
+_NO_NPU = (
+    "Lemonade cannot run this model: this computer has no AMD XDNA2 NPU that Lemonade can use."
+)
+
+
+def npu_refusal(health: Any, name: str) -> str | None:
+    """None when the ``/v1/health`` reply *health* lists *name* loaded on the NPU.
+
+    Otherwise the error says what the reply shows instead: another device, or no such
+    model. ``device`` is a space-separated list, such as ``gpu npu``.
+    """
+    # isinstance: the reply is untyped JSON from the network
+    loaded = health.get("all_models_loaded") if isinstance(health, dict) else None
+    for entry in loaded if isinstance(loaded, list) else []:
+        if isinstance(entry, dict) and entry.get("model_name") == name:
+            device = entry.get("device")
+            if isinstance(device, str) and _DEVICE_NPU in device.split():
+                return None
+            return f"Lemonade runs the model on {device!r}, not on the NPU."
+    return "Lemonade does not list the model as loaded, so it is not known to run on the NPU."
+
+
+def no_npu_refusal(info: Any) -> str | None:
+    """The no-NPU error when the ``/v1/system-info`` reply *info* says flm cannot run here.
+
+    The error ends with Lemonade's own message. None when the reply does not say so.
+    """
+    try:
+        backend = info["recipes"][_RECIPE]["backends"][_BACKEND]
+        state, message = backend["state"], backend.get("message")
+    except (KeyError, TypeError, AttributeError):
+        return None
+    if state != _STATE_UNSUPPORTED:
+        return None
+    # isinstance: the reply is untyped JSON from the network
+    return f"{_NO_NPU} Lemonade reports: {message}" if isinstance(message, str) else _NO_NPU
 
 
 def data_root() -> Path:
@@ -101,6 +144,18 @@ def _entry_name(role: WorkerRole) -> str:
 def model_name(role: WorkerRole) -> str:
     """The name Lemonade gives the model of *role* in requests and in ``recipe_options.json``."""
     return f"{_USER_PREFIX}{_entry_name(role)}"
+
+
+def _role_profile(role: WorkerRole) -> RequestProfile:
+    """The profile of *role*: it reads the NPU claim back and explains a refused load."""
+    return replace(
+        _PROFILE,
+        device_check=UpstreamCheck(_HEALTH_PATH, partial(npu_refusal, name=model_name(role))),
+        load_failure_check=UpstreamCheck(_SYSTEM_INFO_PATH, no_npu_refusal),
+    )
+
+
+_PROFILES = {role: _role_profile(role) for role in _ENDPOINTS}
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -247,7 +302,13 @@ class LemonadeAdapter:
         return False
 
     def model_meta(self, path: Path) -> dict[str, str] | None:
-        return None
+        """The window the ticket records from the publisher's list, or ``None``.
+
+        A ticket from a release that recorded no window gives ``None``, so the default bound
+        holds.
+        """
+        window = read_context_length(path)
+        return None if window is None else {"context_length": str(window)}
 
     def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         return None
@@ -262,7 +323,7 @@ class LemonadeAdapter:
         return {"checkEndpoint": "/live", "useModelName": model_name(launch.role)}
 
     def request_profile(self, role: WorkerRole) -> RequestProfile:
-        return _PROFILE
+        return _PROFILES.get(role, _PROFILE)
 
 
 LEMONADE = LemonadeAdapter()

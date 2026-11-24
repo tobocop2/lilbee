@@ -79,6 +79,12 @@ def test_a_row_carries_the_published_fields() -> None:
     assert row.description == "Qwen3-4B-NPU2, qwen3 4b npu2, AMD NPU, 32k context"
 
 
+def test_c2_an_npu_row_carries_the_published_context_length() -> None:
+    rows = {m.hf_repo: m for m in parse_models(PINNED)}
+    assert rows["gemma4e-flash:e2b"].context_length == 1024
+    assert rows["embed-gemma:300m"].context_length == 2048
+
+
 def test_no_footprint_falls_back_to_the_catalog_estimate() -> None:
     entry = _entry(size=GIB)
     del entry["footprint"]

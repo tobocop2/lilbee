@@ -1,0 +1,1 @@
+{"error":{"code":"model_not_supported","message":"Model 'user.lilbee-chat' is not available on this system. Requires AMD XDNA 2 AMD NPU Detected processor: AMD EPYC 7B12. Detected operating system: Linux-7.0.0-1017-gcp (Ubuntu 24.04).","param":"model","requested_model":"user.lilbee-chat","type":"model_not_supported"}}

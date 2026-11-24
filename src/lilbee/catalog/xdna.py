@@ -16,6 +16,7 @@ _TICKET_SUFFIX = ".json"
 _TICKET_KEY = "checkpoint"
 _TICKET_TASK_KEY = "task"
 _TICKET_FOOTPRINT_KEY = "footprint_bytes"
+_TICKET_CONTEXT_KEY = "context_length"
 _TICKET_TAG_SEPARATOR = "@"
 _BYTES_PER_GIB = 1024**3
 
@@ -31,19 +32,36 @@ def ticket_paths(models_dir: Path) -> list[Path]:
     return sorted((models_dir / _TICKET_DIR).glob(f"*{_TICKET_SUFFIX}"))
 
 
-def write_ticket(models_dir: Path, tag: str, task: ModelTask, footprint_gb: float = 0.0) -> Path:
+def write_ticket(
+    models_dir: Path,
+    tag: str,
+    task: ModelTask,
+    footprint_gb: float = 0.0,
+    context_length: int = 0,
+) -> Path:
     """Record *tag* as installed for *task*. The ticket holds no weights.
 
     *footprint_gb* is the memory the publisher states for the model. The ticket records it
-    in bytes, and records none when the publisher states none.
+    in bytes, and records none when the publisher states none. *context_length* is the
+    window the publisher states, in tokens; the ticket records none when it is 0.
     """
     path = ticket_path(models_dir, tag)
     path.parent.mkdir(parents=True, exist_ok=True)
     fields: dict[str, object] = {_TICKET_KEY: tag, _TICKET_TASK_KEY: str(task)}
     if footprint_gb > 0:
         fields[_TICKET_FOOTPRINT_KEY] = round(footprint_gb * _BYTES_PER_GIB)
+    if context_length > 0:
+        fields[_TICKET_CONTEXT_KEY] = context_length
     path.write_text(json.dumps(fields), encoding="utf-8")
     return path
+
+
+def _positive_int(value: object) -> int | None:
+    """*value* when it is a positive int; ``None`` for anything else, a bool included."""
+    # isinstance: the value is untyped JSON from a file
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
 
 
 def read_footprint(ticket: Path) -> int | None:
@@ -51,11 +69,15 @@ def read_footprint(ticket: Path) -> int | None:
 
     A ticket from a release that recorded no footprint, and an unreadable ticket, give ``None``.
     """
-    footprint = _read_field(ticket, _TICKET_FOOTPRINT_KEY)
-    # isinstance: the value is untyped JSON from a file
-    if isinstance(footprint, int) and not isinstance(footprint, bool) and footprint > 0:
-        return footprint
-    return None
+    return _positive_int(_read_field(ticket, _TICKET_FOOTPRINT_KEY))
+
+
+def read_context_length(ticket: Path) -> int | None:
+    """The window in tokens that a ticket records for its model; ``None`` when it records none.
+
+    A ticket from a release that recorded no window, and an unreadable ticket, give ``None``.
+    """
+    return _positive_int(_read_field(ticket, _TICKET_CONTEXT_KEY))
 
 
 def _read_field(ticket: Path, key: str) -> object:

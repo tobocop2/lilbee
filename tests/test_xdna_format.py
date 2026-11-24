@@ -26,9 +26,16 @@ from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.lemonade import LEMONADE
+from lilbee.providers.fleet.engines.lemonade_models import parse_models
 from lilbee.providers.fleet.memory_types import MemoryRequest
 from lilbee.providers.model_ref import routes_to_native_model
 from lilbee.providers.roles import WorkerRole
+
+PINNED = json.loads(
+    (Path(__file__).parent / "fixtures" / "engine_model_lists" / "lemonade-pinned.json").read_text(
+        encoding="utf-8"
+    )
+)
 
 
 class TestRef:
@@ -67,6 +74,11 @@ class TestRef:
 class TestHubSide:
     def test_no_hub_tag_names_xdna(self) -> None:
         assert ModelFormat.XDNA not in formats_from_tags(["onnx", "ryzenai-hybrid", "xdna"])
+
+    def test_a3_onnx_hybrid_hub_tags_map_to_no_format_lemonade_loads(self) -> None:
+        # The Hub tags of amd/Qwen2.5-0.5B-Instruct-onnx-ryzenai-1.7-hybrid, read from the Hub API.
+        found = formats_from_tags(["onnx", "ryzenai-hybrid", "text-generation"])
+        assert not found & LEMONADE.formats
 
     def test_a_repo_has_no_files_to_select(self) -> None:
         assert select_files(ModelFormat.XDNA, ["model.q4nx", "config.json"]) == []
@@ -111,6 +123,20 @@ class TestTicket:
     def test_a_missing_ticket_is_refused(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="no NPU model tag"):
             xdna.read_checkpoint(tmp_path / "absent.json")
+
+    def test_c2_the_ticket_records_the_context_length(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        row = {m.hf_repo: m for m in parse_models(PINNED)}["gemma4e-flash:e2b"]
+        ticket = download_model(row, None)
+        assert xdna.read_context_length(ticket) == 1024
+
+    def test_a_ticket_without_a_context_length_reads_none(self, tmp_path: Path) -> None:
+        ticket = xdna.write_ticket(tmp_path, "qwen3:0.6b", ModelTask.CHAT)
+        assert "context_length" not in json.loads(ticket.read_text(encoding="utf-8"))
+        assert xdna.read_context_length(ticket) is None
+        assert xdna.read_context_length(tmp_path / "absent.json") is None
 
 
 class TestPullAndResolve:
