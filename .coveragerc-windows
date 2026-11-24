@@ -4,7 +4,9 @@
 # the pass_fds splash subprocess in runtime/splash.py). The Linux and macOS
 # lanes measure those files at 100%, Windows skips their tests wholesale.
 # A line marked "pragma: posix only" is excluded here alone: it cannot run on
-# Windows, and the Linux and macOS lanes still measure it.
+# Windows, and the Linux and macOS lanes still measure it. A line marked
+# "pragma: windows only" is the reverse: pyproject.toml excludes it, and this
+# file measures it.
 [run]
 source = lilbee
 concurrency = thread

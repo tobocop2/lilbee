@@ -22,6 +22,7 @@ file free.
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import sys
 from collections.abc import Iterable, Iterator
@@ -204,8 +205,13 @@ def removing(build: Path) -> Iterator[None]:
 
 
 def build_in_use(build: Path) -> bool:
-    """True while any engine process holds the in-use file of *build* open."""
+    """True while any engine process holds the in-use file of *build* open.
+
+    A slot that is not a real folder (a link, a file) is damage, and a remove only unlinks it.
+    """
     try:
+        if not stat.S_ISDIR(os.lstat(build).st_mode):
+            return False
         return _open_elsewhere(build / IN_USE_NAME)
     except FileNotFoundError:
         return False
