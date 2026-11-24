@@ -7117,11 +7117,77 @@ class TestRemovingHeldOutFiles:
     def test_removable_names_lists_indexed_then_failures(self, isolated_env, mock_svc):
         from lilbee.app.ingest import removable_names
 
+        hold_failed({"a.txt": "h0", "b.pdf": "h1"})
+        hold_removed({"gone.txt": "h2"})
+
+        assert removable_names(["a.txt"]) == ["a.txt", "b.pdf"]
+
+    def test_iter_removable_names_streams_indexed_then_failures(self, isolated_env, mock_svc):
+        from lilbee.app.ingest import iter_removable_names
+
         mock_svc.store.upsert_source("a.txt", "hash", 1)
         hold_failed({"a.txt": "h0", "b.pdf": "h1"})
         hold_removed({"gone.txt": "h2"})
 
-        assert removable_names() == ["a.txt", "b.pdf"]
+        assert list(iter_removable_names()) == ["a.txt", "b.pdf"]
+
+    def test_removable_among_keeps_indexed_and_failed_names_only(self, isolated_env, mock_svc):
+        from lilbee.app.ingest import removable_among
+
+        mock_svc.store.upsert_source("a.txt", "hash", 1)
+        hold_failed({"b.pdf": "h1"})
+        hold_removed({"gone.txt": "h2"})
+
+        names = ["a.txt", "b.pdf", "gone.txt", "nope.txt"]
+        assert removable_among(names) == {"a.txt", "b.pdf"}
+
+    def test_expand_remove_targets_reads_the_names_once_and_keeps_the_rules(self):
+        from lilbee.app.ingest import expand_remove_targets
+
+        known = iter(["docs/a.md", "docs/b.md", "docs-2/c.md", "top.md", "exact.md"])
+        targets = expand_remove_targets(
+            ["exact.md", "docs", "*.md", "docs/a.md", "nope.md"], known=known
+        )
+
+        assert targets == [
+            "exact.md",
+            "docs/a.md",
+            "docs/b.md",
+            "docs-2/c.md",
+            "top.md",
+            "nope.md",
+        ]
+
+    def test_expand_remove_targets_keeps_a_name_matching_a_folder_and_no_source(self):
+        from lilbee.app.ingest import expand_remove_targets
+
+        assert expand_remove_targets(["docs-2", "g*"], known=iter(["docs/a.md"])) == [
+            "docs-2",
+            "g*",
+        ]
+
+    def test_a_removal_by_glob_and_folder_never_loads_every_source(
+        self, isolated_env, mock_svc, monkeypatch
+    ):
+        """The names stream and the matches are checked by name: no full source read."""
+        from lilbee.app.ingest import remove_documents_durably
+
+        for name in ("docs/a.md", "docs/b.md", "keep.md", "other/c.md"):
+            mock_svc.store.upsert_source(name, "h", 1)
+        loaded: list[str] = []
+
+        def _counted(*args, **kwargs):
+            loaded.append("get_sources")
+            raise AssertionError("a removal must not load every source")
+
+        monkeypatch.setattr(mock_svc.store, "get_sources", _counted)
+
+        result = remove_documents_durably(["docs", "other/*", "nope.md"])
+
+        assert sorted(result.removed) == ["docs/a.md", "docs/b.md", "other/c.md"]
+        assert result.not_found == ["nope.md"]
+        assert loaded == []
+        assert [h["filename"] for h in mock_svc.store.iter_source_heads()] == ["keep.md"]
 
 
 class TestOcrConfigSelection:

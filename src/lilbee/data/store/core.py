@@ -3042,6 +3042,21 @@ class Store:
             query = query.offset(offset)
         return [_source_record(row, locations) for row in query.limit(limit).to_list()]
 
+    def source_names(self, term: str = "", *, limit: int) -> list[str]:
+        """Up to *limit* listed source names holding *term* (a name only, never a title).
+
+        Reads the name column alone, so a keystroke-driven caller pays for *limit* rows.
+        """
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return []
+        locations = self._locations()
+        where = _LISTED
+        if term:
+            where = f"{_LISTED} AND {locations.search_filter(term, _PATH)}"
+        rows = table.search().where(where).select([_PATH]).limit(limit).to_list()
+        return [locations.name(row[_PATH]) for row in rows]
+
     def source_summary(self, newest: int) -> SourceSummary:
         """Totals over every listed source and the *newest* most recently ingested, in one pass.
 

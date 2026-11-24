@@ -2602,7 +2602,7 @@ class TestChatSlashCommands:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             with mock.patch("lilbee.cli.tui.screens.chat.get_services") as mock_svc:
-                mock_svc.return_value.store.get_sources.return_value = []
+                mock_svc.return_value.store.count_sources.return_value = 0
                 app.screen._handle_slash("/delete")
                 await pilot.pause()
                 assert app.screen.is_current

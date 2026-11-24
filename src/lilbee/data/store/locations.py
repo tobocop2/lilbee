@@ -77,8 +77,10 @@ class SourceLocations:
         ]
         return " AND ".join([under_sql(column, root), *deeper])
 
-    def search_filter(self, term: str, path: str, title: str) -> str:
+    def search_filter(self, term: str, path: str, title: str | None = None) -> str:
         """The predicate for a shown name in *path*, or a title in *title*, holding *term*.
+
+        With no *title* column the predicate matches the shown name only.
 
         Case-insensitive. Each root's arm leaves out the roots below it, so a
         location matches by the one name it shows.
@@ -90,5 +92,6 @@ class SourceLocations:
             arms.append(f"{self.named_by_sql(path, root)} AND LOWER({shown}) {pattern}")
         outside = [f"NOT {under_sql(path, root)}" for root, _ in self._deepest_first]
         arms.append(" AND ".join([*outside, f"LOWER({path}) {pattern}"]))
-        arms.append(f"LOWER({title}) {pattern}")
+        if title is not None:
+            arms.append(f"LOWER({title}) {pattern}")
         return "(" + " OR ".join(f"({arm})" for arm in arms) + ")"

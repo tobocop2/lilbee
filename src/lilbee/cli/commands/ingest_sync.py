@@ -24,9 +24,10 @@ from lilbee.app.ingest import (
     AddRollback,
     RegisterResult,
     expand_remove_targets,
+    iter_removable_names,
     leave_as_cancel,
     register_sources,
-    removable_names,
+    removable_among,
     remove_documents_durably,
 )
 from lilbee.app.search import clean_results
@@ -967,12 +968,11 @@ def remove(
     # Remove only touches the store, never the engine; skip the eager fleet warm.
     cfg.worker_pool_eager_start = False
 
-    known = removable_names()
-    targets = expand_remove_targets(names, known=known)
+    targets = expand_remove_targets(names, known=iter_removable_names())
     expanded = sorted(set(targets)) != sorted(set(names))
     if expanded and not yes and not cfg.json_mode:
         # Count only what actually exists; not-found names are kept in targets.
-        removable = sum(1 for t in targets if t in set(known))
+        removable = len(removable_among(targets))
         typer.confirm(f"Remove {removable} document(s)? Source files on disk are kept.", abort=True)
 
     result = _remove_or_exit(names, targets)
