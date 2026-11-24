@@ -41,14 +41,14 @@ def _targets(monkeypatch: pytest.MonkeyPatch, host: HostCaps) -> frozenset[RoleT
     return OVMS.device_targets(BINARY)
 
 
-def _argv(role: WorkerRole, target: RoleTarget) -> list[str]:
+def _argv(role: WorkerRole, target: RoleTarget, ctx_per_slot: int = 512) -> list[str]:
     request = LaunchRequest(
         binary=BINARY,
         model_path=Path("/models/bge-reranker-base-int8-ov"),
         devices=(),
         n_gpu_layers=0,
         slots=1,
-        ctx_per_slot=512,
+        ctx_per_slot=ctx_per_slot,
         target=target,
     )
     return OVMS.launch_argv(OVMS.role_spec(role, None, None), request)
@@ -87,3 +87,22 @@ def test_the_npu_target_sets_the_npu_device(role: WorkerRole) -> None:
     argv = _argv(role, RoleTarget.NPU)
     assert argv[argv.index("--target_device") + 1] == "NPU"
     assert argv[argv.index("--task") + 1] == {"embed": "embeddings", "rerank": "rerank"}[role.value]
+
+
+def test_the_npu_embed_launch_bounds_the_input() -> None:
+    argv = _argv(WorkerRole.EMBED, RoleTarget.NPU)
+    assert argv[argv.index("--max_length") + 1] == "512"
+
+
+def test_the_npu_embed_bound_follows_the_window() -> None:
+    argv = _argv(WorkerRole.EMBED, RoleTarget.NPU, ctx_per_slot=256)
+    assert argv[argv.index("--max_length") + 1] == "256"
+
+
+@pytest.mark.parametrize("target", [RoleTarget.CPU, RoleTarget.GPU])
+def test_the_npu_bound_is_not_set_on_cpu_or_gpu(target: RoleTarget) -> None:
+    assert "--max_length" not in _argv(WorkerRole.EMBED, target)
+
+
+def test_the_npu_rerank_launch_has_no_bound() -> None:
+    assert "--max_length" not in _argv(WorkerRole.RERANK, RoleTarget.NPU)
