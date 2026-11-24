@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import struct
 from pathlib import Path
 
 import pytest
@@ -20,6 +19,9 @@ from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES
 from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import WorkerRole
 from tests._fleet_engines import GIB, engine_pair, one_machine
+from tests._stated_sizes import state_size
+
+pytestmark = pytest.mark.usefixtures("stated_sizes")
 
 _LOG = "lilbee.providers.fleet.planning"
 CHAT, EMBED = WorkerRole.CHAT, WorkerRole.EMBED
@@ -29,11 +31,7 @@ def _mlx_folder(root: Path, gib: float) -> Path:
     """A model folder whose one safetensors file holds *gib* GiB of weights (sparse on disk)."""
     folder = root / "mlx-chat"
     folder.mkdir()
-    size = int(gib * GIB)
-    header = json.dumps({"w": {"dtype": "U8", "shape": [size], "data_offsets": [0, size]}}).encode()
-    with (folder / "model.safetensors").open("wb") as handle:
-        handle.write(struct.pack("<Q", len(header)) + header)
-        handle.truncate(8 + len(header) + size)
+    state_size(folder / "model.safetensors", int(gib * GIB))
     (folder / "config.json").write_text(
         json.dumps(
             {
@@ -43,7 +41,8 @@ def _mlx_folder(root: Path, gib: float) -> Path:
                 "num_attention_heads": 4,
                 "max_position_embeddings": 4096,
             }
-        )
+        ),
+        encoding="utf-8",
     )
     return folder
 
@@ -61,7 +60,7 @@ def _host(monkeypatch, tmp_path, *, pool_gib, chat_gib, embed_gib):
     monkeypatch.setattr(cfg, "chat_model", "org/chat#mlx")
     mlx_bin = tmp_path / "mlx-lm-server"
     mlx_bin.write_bytes(b"m")
-    monkeypatch.setattr(MLX, "binary", lambda: mlx_bin)
+    monkeypatch.setattr(type(MLX), "binary", lambda _self: mlx_bin)
     _chat_unused, llama = engine_pair(tmp_path, device, 1, embed_gib)
     return {CHAT: MLX, EMBED: llama}, llama
 
