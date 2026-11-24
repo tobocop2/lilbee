@@ -48,6 +48,17 @@ metadata_header() {
   sed '/^$/,$d'
 }
 
+# Refuse when ldd cannot read a binary, or when a library that the binary needs is not found. A failed ldd (wrong
+# architecture, no file, no execute right) prints no "not found" line, so its status is read before its text. The
+# optional pattern names a library that the host supplies and the container lacks, such as the NVIDIA driver.
+assert_libraries_resolve() {  # binary [host-library-pattern]
+  local libs missing
+  libs="$(ldd "$1" 2>&1)" || { echo "ldd failed on $1: ${libs}" >&2; return 1; }
+  missing="$(grep 'not found' <<< "${libs}" || true)"
+  if [ -n "${2:-}" ]; then missing="$(grep -v -- "$2" <<< "${missing}" || true)"; fi
+  [ -z "${missing}" ] || { echo "${1##*/} has an unresolved library" >&2; echo "${missing}" >&2; return 1; }
+}
+
 # Print one file of the dist-info folder of a wheel with LF line ends: a Windows build writes CRLF.
 dist_info() {  # wheel file
   python -c 'import pathlib, sys, zipfile

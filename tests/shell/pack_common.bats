@@ -414,3 +414,68 @@ loose_requirements() {  # file
   [ "$status" -eq 1 ]
   [[ "$output" == *"Python 3.12 is not on PATH"* ]]
 }
+
+# assert_libraries_resolve: the check that the manylinux build scripts run on llama-server.
+ldd_stub() {  # text status
+  printf '#!/bin/sh\necho "%s"\nexit %s\n' "$1" "$2" > "${BIN}/ldd"
+  chmod +x "${BIN}/ldd"
+}
+
+real_ldd() {
+  command -v ldd > /dev/null || skip "ldd is a Linux tool"
+}
+
+@test "assert_libraries_resolve refuses a text file that ldd cannot read" {
+  real_ldd
+  echo "not a program" > "${BATS_TEST_TMPDIR}/text"
+  chmod +x "${BATS_TEST_TMPDIR}/text"
+  run strict assert_libraries_resolve "${BATS_TEST_TMPDIR}/text"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"ldd failed on ${BATS_TEST_TMPDIR}/text"* ]]
+}
+
+@test "assert_libraries_resolve refuses an ELF file of a machine that ldd cannot read" {
+  real_ldd
+  # An ELF header with a machine number that no host runs.
+  printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\002\000\377\377\001\000\000\000' > "${BATS_TEST_TMPDIR}/alien"
+  head -c 64 /dev/zero >> "${BATS_TEST_TMPDIR}/alien"
+  chmod +x "${BATS_TEST_TMPDIR}/alien"
+  run strict assert_libraries_resolve "${BATS_TEST_TMPDIR}/alien"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"ldd failed on ${BATS_TEST_TMPDIR}/alien"* ]]
+}
+
+@test "assert_libraries_resolve refuses a path that is not there" {
+  real_ldd
+  run strict assert_libraries_resolve "${BATS_TEST_TMPDIR}/missing"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"ldd failed on ${BATS_TEST_TMPDIR}/missing"* ]]
+}
+
+@test "assert_libraries_resolve passes a dynamic binary whose libraries resolve" {
+  real_ldd
+  run strict assert_libraries_resolve "$(command -v ls)"
+  [ "$status" -eq 0 ]
+}
+
+@test "assert_libraries_resolve refuses a library that is not found" {
+  ldd_stub "libggml.so => not found" 0
+  run strict assert_libraries_resolve /x/llama-server
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"llama-server has an unresolved library"* ]]
+  [[ "$output" == *"libggml.so => not found"* ]]
+}
+
+@test "assert_libraries_resolve passes a missing library that the host supplies" {
+  ldd_stub "libcuda.so.1 => not found" 0
+  run strict assert_libraries_resolve /x/llama-server 'libcuda\.so\.1'
+  [ "$status" -eq 0 ]
+}
+
+@test "assert_libraries_resolve refuses another missing library beside a host library" {
+  ldd_stub "libcuda.so.1 => not found
+libggml.so => not found" 0
+  run strict assert_libraries_resolve /x/llama-server 'libcuda\.so\.1'
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"libggml.so => not found"* ]]
+}
