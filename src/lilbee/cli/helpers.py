@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import Callable, Generator, Iterable
@@ -20,6 +19,7 @@ from lilbee.cli import theme
 from lilbee.core.config import cfg
 from lilbee.core.health_warnings import HealthWarning
 from lilbee.core.text import strip_control_characters
+from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.lock import LibraryUnlockableError
 
@@ -298,7 +298,7 @@ def add_paths(
     and this function returns immediately after registering. *run_sync*
     overrides the foreground sync call and receives the registration result
     (the CLI passes a Ctrl+C-cancellable runner); it defaults to a plain
-    ``asyncio.run(sync(started_by="lilbee add"))``. The sync runs when a path reached the corpus, or
+    ``run_main(sync(started_by="lilbee add"))``. The sync runs when a path reached the corpus, or
     when *sync_anyway* says the caller has other new content to index.
     """
     registration = register_paths(paths, con, force=force)
@@ -324,7 +324,7 @@ def _run_foreground_sync() -> object:
     """Run a blocking sync with no cancellation hook (default for non-CLI callers)."""
     from lilbee.data.ingest import sync
 
-    return asyncio.run(sync(started_by="lilbee add"))
+    return run_main(sync(started_by="lilbee add"))
 
 
 def sync_result_to_json(result: object) -> dict:

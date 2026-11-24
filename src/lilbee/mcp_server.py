@@ -124,6 +124,7 @@ from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.server_registry import ConfigReadError
+from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
 from lilbee.runtime.lock import ResetRefusedError
@@ -2537,4 +2538,4 @@ def main() -> None:
 
     server = build_mcp_server()
     server.follow_config_file()
-    asyncio.run(_serve_stdio(server))
+    run_main(_serve_stdio(server))

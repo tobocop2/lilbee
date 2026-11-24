@@ -13,7 +13,7 @@ from rich.text import Text
 from lilbee.cli import theme
 from lilbee.cli.helpers import print_prefixed
 from lilbee.data.ingest import sync
-from lilbee.runtime.asyncio_loop import is_executor_shutdown
+from lilbee.runtime.asyncio_loop import is_executor_shutdown, run_main
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.progress import (
     EventType,
@@ -224,7 +224,7 @@ def run_sync_background(
     def _run() -> object:
         if chat_mode:
             status.adjust_pending(-1)
-        return asyncio.run(sync(quiet=True, on_progress=callback, started_by="lilbee chat"))
+        return run_main(sync(quiet=True, on_progress=callback, started_by="lilbee chat"))
 
     if chat_mode:
         status.adjust_pending(1)

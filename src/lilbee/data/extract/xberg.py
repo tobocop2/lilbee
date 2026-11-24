@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from lilbee.core.config import active_config
+from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.cpu import cpu_quota
 
 from .backends.tokenizer import TOKENIZER_SIZING_TYPE, TokenCountError, provider_tokenizers
@@ -188,7 +189,7 @@ def extract_document(
 ) -> ExtractedDocument:
     """Extract one in-memory document from synchronous code.
 
-    Uses ``asyncio.run``; if a loop is already running on this thread, drives the
+    Uses ``run_main``; if a loop is already running on this thread, drives the
     coroutine on a fresh worker thread so it never re-enters that loop.
     """
     return _run(aextract_document(data, mime_type, filename=filename, config=config))
@@ -198,6 +199,6 @@ def _run(coro: Coroutine[None, None, ExtractedDocument]) -> ExtractedDocument:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
+        return run_main(coro)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
+        return pool.submit(contextvars.copy_context().run, run_main, coro).result()

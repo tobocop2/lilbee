@@ -24,7 +24,6 @@ it.
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,6 +45,7 @@ from lilbee.data.store import (
     SearchScope,
     scope_to_chunk_type,
 )
+from lilbee.runtime.asyncio_loop import run_main
 
 if TYPE_CHECKING:
     from lilbee.app.services import Services
@@ -146,7 +146,7 @@ class Lilbee:
         from lilbee.data.ingest import sync as _sync
 
         with config_scope(self._config), services_scope(self._services):
-            return asyncio.run(_sync(quiet=quiet, started_by=_SYNC_STARTER))
+            return run_main(_sync(quiet=quiet, started_by=_SYNC_STARTER))
 
     def search(
         self, query: str, *, top_k: int = 0, scope: SearchScope = SearchScope.BOTH
@@ -187,7 +187,7 @@ class Lilbee:
         with config_scope(self._config), services_scope(self._services):
             if not register_sources(resolved, force=True).reached_corpus:
                 return SyncResult()
-            return asyncio.run(_sync(quiet=True, started_by=_SYNC_STARTER))
+            return run_main(_sync(quiet=True, started_by=_SYNC_STARTER))
 
     def remove(self, name: str) -> None:
         """Remove a document from the index by source name (source bytes are kept).
@@ -237,7 +237,7 @@ class Lilbee:
         from lilbee.data.ingest import sync as _sync
 
         with config_scope(self._config), services_scope(self._services):
-            return asyncio.run(_sync(force_rebuild=True, quiet=True, started_by=_SYNC_STARTER))
+            return run_main(_sync(force_rebuild=True, quiet=True, started_by=_SYNC_STARTER))
 
     def remember(
         self,

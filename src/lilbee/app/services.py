@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, NoReturn
 
+from lilbee.runtime.asyncio_loop import hold_exit
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -769,6 +771,8 @@ class _EngineLifecycle:
         while the main thread holds one of threading's own locks. A second
         routed signal ends the process at once: the exit after the first one
         joins the executor threads, and a stuck worker never ends that join.
+        After the main task of a ``run_main`` finished, the exit waits for the
+        end of that run (``hold_exit``).
         """
         del frame
         status = _SIGNAL_EXIT_BASE + signum
@@ -781,8 +785,8 @@ class _EngineLifecycle:
             self.owed_status = status
         self._signalled = True
         self.request_stop(signum)
-        if not joining:
-            raise SystemExit(status)
+        if not joining and not hold_exit(stop := SystemExit(status)):
+            raise stop
 
 
 _FORCE_QUIT_EXIT_CODE = 130
