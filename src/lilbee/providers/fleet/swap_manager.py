@@ -1439,18 +1439,34 @@ def _load_state(path: Path) -> SwapState | None:
         return None
 
 
+def _started_at_recorded_mono(state: SwapState, create_time: float) -> bool:
+    """True when the process created at *create_time* started where the record's spawn reading says.
+
+    psutil's create time and the wall clock move together in a step, so the wall-clock
+    age taken from the create time gives a start on the monotonic clock that does not.
+    A reading from another boot says nothing about this process.
+    """
+    if (
+        state.started_mono is None
+        or state.started_boot is None
+        or state.started_boot != boot_identity()
+    ):
+        return False
+    started_mono = time.monotonic() - (time.time() - create_time)
+    return abs(started_mono - state.started_mono) <= _MONO_START_TOLERANCE_S
+
+
 def _is_live_llama_swap(state: SwapState) -> bool:
     """True when the recorded pid is alive and is the recorded llama-swap.
 
     A recorded identity that differs from the live process's is pid reuse,
     even when the recycled pid runs another instance's llama-swap. On Linux
     the identity is the boot id plus start ticks, compared exactly: a wall-clock
-    step moves psutil's create time but not these. Elsewhere a record with the
-    spawn reading of the monotonic clock, from the current boot, is compared by
-    the process's start on that clock: psutil's create time and the wall clock
-    move together in a step, so their difference does not. Any other record is
-    compared by create time with a tolerance, and a legacy state file without
-    one falls back to the cmdline match alone.
+    step moves psutil's create time but not these. Elsewhere the create time is
+    compared with a tolerance; on macOS a clock step moves it, so a create time
+    that differs still passes when the process's start on the monotonic clock
+    equals the record's spawn reading from the same boot. A legacy state file
+    without a create time falls back to the cmdline match alone.
     """
     try:
         proc = psutil.Process(state.pid)
@@ -1462,15 +1478,9 @@ def _is_live_llama_swap(state: SwapState) -> bool:
         if linux_start_stamp(state.pid) != (state.boot_id, state.start_ticks):
             return False
     elif (
-        state.started_mono is not None
-        and state.started_boot is not None
-        and state.started_boot == boot_identity()
-    ):
-        started_mono = time.monotonic() - (time.time() - create_time)
-        if abs(started_mono - state.started_mono) > _MONO_START_TOLERANCE_S:
-            return False
-    elif state.created_at is not None and abs(create_time - state.created_at) > (
-        _CREATE_TIME_TOLERANCE_S
+        state.created_at is not None
+        and abs(create_time - state.created_at) > _CREATE_TIME_TOLERANCE_S
+        and not _started_at_recorded_mono(state, create_time)
     ):
         return False
     binary = Path(next(iter(cmdline), "")).name
