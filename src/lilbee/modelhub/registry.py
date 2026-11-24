@@ -78,7 +78,7 @@ def _validate_gguf_filename(filename: str, fmt: ModelFormat = ModelFormat.GGUF) 
     """
     pattern = _FILENAME_RE if fmt == ModelFormat.GGUF else _ENTRY_FILENAME_RE
     if not filename or not pattern.match(filename) or ".." in filename or filename.startswith("/"):
-        raise ValueError(f"Invalid gguf_filename: {filename!r}")
+        raise ValueError(f"Invalid gguf_filename: '{filename}'")
     return filename
 
 
