@@ -548,6 +548,7 @@ def sync_cmd(
     if processes is not None:
         cfg.ingest_processes = processes
 
+    print_tip_if_shown(cfg.data_root)
     try:
         result = run_sync_with_signal_cancel(
             retry_skipped=retry_skipped, prune_ignored=prune_ignored, started_by="lilbee sync"
@@ -562,13 +563,6 @@ def sync_cmd(
         json_output(sync_result_to_json(result))
         return
     console.print(result)
-    if _changed_content(result):
-        print_tip_if_shown(cfg.data_root)
-
-
-def _changed_content(result: SyncResult) -> bool:
-    """True when the sync added, updated or removed a file: the tip is about new content."""
-    return bool(result.added or result.updated or result.removed)
 
 
 def rebuild_failure_message(failed: list[str]) -> str:
@@ -789,18 +783,15 @@ def _register_and_sync(
 ) -> dict | None:
     """Register the files and sync; returns the JSON result, or None after human output."""
 
-    synced = False
-
     def _sync(registration: RegisterResult) -> object:
-        nonlocal synced
         rollback.absorbed_into = registration.absorbed_into
-        result = _run_sync(
+        # Before ingest starts: a profile change after the ingest costs a reindex.
+        print_tip_if_shown(cfg.data_root)
+        return _run_sync(
             cancel_event,
             before_sync=lambda: rollback.registered(registration.revocable, cancel_event),
             started_by="lilbee add",
         )
-        synced = _changed_content(result)
-        return result
 
     if cfg.json_mode:
         return _add_json_mode(file_paths, crawled_paths, force=force, run_sync=_sync)
@@ -815,9 +806,6 @@ def _register_and_sync(
         )
     elif crawled_paths:
         console.print(_sync(RegisterResult()))
-    # After the result: a refused, cancelled or failed sync raises before this line.
-    if synced:
-        print_tip_if_shown(cfg.data_root)
     return None
 
 
