@@ -17,6 +17,7 @@ from textual.widget import Widget
 from textual.widgets import Label, Static
 
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.cli.tui.pill import DOT_SEP, pill
 from lilbee.core.config import cfg
 
@@ -74,7 +75,7 @@ class ViewTab(Label, can_focus=True):
         self.app.switch_view(self.view_name)
 
 
-class ViewTabs(Widget):
+class ViewTabs(MountWhenAttached, Widget):
     """View tab strip with mode and active-model indicator."""
 
     app: LilbeeApp  # type: ignore[assignment]

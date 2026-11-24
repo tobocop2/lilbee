@@ -1197,7 +1197,7 @@ class LilbeeApp(App[None]):
         screen = self.screen
         # switch_view drops the request while an earlier switch is still settling
         if isinstance(screen, SettingsScreen):
-            screen.call_after_refresh(screen.show_profile_tab)
+            screen.request_profile_tab()
 
     def start_analyze(self) -> None:
         """Queue analyze of the indexed documents; its report opens when it finishes."""

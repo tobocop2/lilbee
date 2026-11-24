@@ -24,6 +24,7 @@ from textual.widgets import Input, ListItem, ListView, Static
 from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS
+from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.core.text import strip_control_characters
 from lilbee.sessions import (
@@ -105,7 +106,7 @@ async def _caught_up(widget: Input) -> None:
         await asyncio.wait((done, widget.task), return_when=asyncio.FIRST_COMPLETED)
 
 
-class SessionListPanel(Vertical):
+class SessionListPanel(MountWhenAttached, Vertical):
     """Filterable session list with resume / rename / delete / new actions."""
 
     app: LilbeeApp  # type: ignore[assignment]

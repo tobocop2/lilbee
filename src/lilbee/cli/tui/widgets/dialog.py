@@ -8,6 +8,8 @@ from typing import Any
 from textual.await_complete import AwaitComplete
 from textual.screen import ModalScreen, Screen, ScreenResultType
 
+from lilbee.cli.tui.mount_guard import MountWhenAttached
+
 
 def pop_screens_above(screen: Screen[Any], retry: Callable[[], object]) -> bool:
     """Close each screen above *screen*, top first; return whether *screen* is now on top.
@@ -28,7 +30,7 @@ def pop_screens_above(screen: Screen[Any], retry: Callable[[], object]) -> bool:
     return screen in app.screen_stack
 
 
-class Dialog(ModalScreen[ScreenResultType]):
+class Dialog(MountWhenAttached, ModalScreen[ScreenResultType]):
     """A modal that closes once, and closes no screen but itself and those above it."""
 
     def dismiss(self, result: ScreenResultType | None = None) -> AwaitComplete:

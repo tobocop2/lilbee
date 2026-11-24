@@ -28,6 +28,7 @@ from lilbee.app.status import held_out_sources, serving_roles
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.engine_mark import engine_mark
+from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.cli.tui.pill import pill
 from lilbee.core.config import cfg
 from lilbee.core.text import strip_control_characters
@@ -162,7 +163,7 @@ def _build_arch_content(info: ModelArchInfo) -> Content:
     return Content("\n").join(lines)
 
 
-class StatusScreen(Screen[None]):
+class StatusScreen(MountWhenAttached, Screen[None]):
     """Knowledge base status view with collapsible sections."""
 
     app: LilbeeApp  # type: ignore[assignment]
