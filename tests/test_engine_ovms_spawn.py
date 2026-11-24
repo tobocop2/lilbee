@@ -87,7 +87,7 @@ def test_the_launch_argv_starts_a_fake_ovms_that_serves_ready(tmp_path: Path) ->
     entry = json.loads(build_swap_config([launch], {launch.model_id: port}))["models"][
         launch.model_id
     ]
-    server = subprocess.Popen(shlex.split(entry["cmd"]))  # noqa: S603
+    server = subprocess.Popen(shlex.split(entry["cmd"]))
     try:
         assert _ready(entry["proxy"] + entry["checkEndpoint"])
     finally:
