@@ -1101,7 +1101,6 @@ async def test_settings_first_pane_populate_is_deferred():
 
     screen = SettingsScreen.__new__(SettingsScreen)
     screen._eagerly_populate = "settings-tab-models"
-    screen._profile_on_mount = False
     with (
         patch.object(SettingsScreen, "_populate_pane") as mock_populate,
         patch.object(SettingsScreen, "call_after_refresh", MagicMock()) as mock_defer,

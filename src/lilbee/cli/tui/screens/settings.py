@@ -192,7 +192,6 @@ class SettingsScreen(MountWhenAttached, Screen[None]):
         self._pane_groups: dict[str, _PaneGroup] = {}
         self._pane_ids: list[str] = [PROFILE_PANE_ID]
         self._eagerly_populate = PROFILE_PANE_ID
-        self._profile_on_mount = False
         # What each editor showed when last built or refreshed; a save acts on a change from it.
         self._mount_display: dict[str, str] = {}
         # Keys whose field lost focus and whose save on blur has not run yet.
@@ -263,8 +262,6 @@ class SettingsScreen(MountWhenAttached, Screen[None]):
         # The first pane is the one TabbedContent activates by default; populate
         # it eagerly so Settings shows content on first paint.
         self.call_after_refresh(self._populate_pane, self._eagerly_populate)
-        if self._profile_on_mount:
-            self.call_after_refresh(self.show_profile_tab)
 
     def on_screen_resume(self) -> None:
         """Take setting changes and rescan the profiles: another shell may have changed both.
@@ -372,14 +369,19 @@ class SettingsScreen(MountWhenAttached, Screen[None]):
         """Load the profile state off the loop, then show it on the line and the Profile tab.
 
         Only the read runs on a thread. A newer load cancels this task at the await,
-        and a cancelled thread worker would still deliver its old snapshot.
+        and a cancelled thread worker would still deliver its old snapshot. A quit
+        during the read leaves the screen detached, so nothing is shown then.
         """
         try:
-            snapshot = await asyncio.to_thread(load_snapshot)
+            result: ProfileSnapshot | OSError = await asyncio.to_thread(load_snapshot)
         except OSError as exc:
-            self._show_profile_failure(str(exc))
+            result = exc
+        if not self.is_attached:
             return
-        self._show_profile(snapshot)
+        if isinstance(result, OSError):
+            self._show_profile_failure(str(result))
+        else:
+            self._show_profile(result)
 
     def _mounted_profile_tabs(self) -> list[ProfileTab]:
         """The tabs that can take a snapshot: filling one before it mounts raises."""
@@ -403,11 +405,16 @@ class SettingsScreen(MountWhenAttached, Screen[None]):
         self.show_profile_tab()
 
     def request_profile_tab(self) -> None:
-        """Show the Profile tab after the next refresh, or from Mount before the screen mounts."""
-        if self.is_mounted:
-            self.call_after_refresh(self.show_profile_tab)
-        else:
-            self._profile_on_mount = True
+        """Show the Profile tab after the next refresh, also when asked before the screen mounts.
+
+        The screen's queue holds the call until Compose and Mount have run.
+        """
+        self.call_after_refresh(self._show_requested_profile_tab)
+
+    def _show_requested_profile_tab(self) -> None:
+        # A quit after the request leaves the screen running but detached.
+        if self.is_attached:
+            self.show_profile_tab()
 
     def show_profile_tab(self) -> None:
         """Activate the Profile tab and put focus on its dropdown."""

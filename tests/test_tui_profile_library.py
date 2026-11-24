@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -14,6 +15,7 @@ from textual.widgets._toast import Toast
 
 from lilbee.app import profiles
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.screens import profile_library
 from lilbee.cli.tui.screens.profile_dialogs import (
     ApplyProfileDialog,
     ProfilePathDialog,
@@ -181,6 +183,45 @@ async def test_a_diff_that_fails_shows_no_changes() -> None:
             await app.workers.wait_for_complete()
             assert not library.query_one("#library-changes-title").display
             assert not library.query_one("#library-changes").display
+
+
+def _quit_as_the_read_returns(monkeypatch, app: LilbeeAppHost) -> None:
+    """Run the library's thread read inline, then quit: no await separates the quit and the fill."""
+
+    async def to_thread(fn, *args, **kwargs):
+        result = fn(*args, **kwargs)
+        app.exit()
+        return result
+
+    monkeypatch.setattr(profile_library, "asyncio", SimpleNamespace(to_thread=to_thread))
+
+
+async def test_a_quit_after_the_library_scan_fills_nothing(monkeypatch) -> None:
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        library = await _open(app, pilot)
+        await app.workers.wait_for_complete()
+        shown: list[bool] = []
+        monkeypatch.setattr(ProfileLibrary, "show", lambda self, _state: shown.append(True))
+        _quit_as_the_read_returns(monkeypatch, app)
+        await library.reload().wait()
+    assert shown == [], "the scan filled the list of a detached library"
+
+
+async def test_a_quit_after_the_diff_read_shows_no_diff(monkeypatch) -> None:
+    _write_global("legal-discovery", _LEGAL)
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        library = await _open(app, pilot)
+        await _highlight(pilot, library, "legal-discovery  global")
+        await app.workers.wait_for_complete()
+        entry = library._selected()
+        assert entry is not None
+        shown: list[bool] = []
+        monkeypatch.setattr(ProfileLibrary, "_show_diff", lambda self, *_args: shown.append(True))
+        _quit_as_the_read_returns(monkeypatch, app)
+        await library._load_diff(entry).wait()
+    assert shown == [], "the diff read filled a detached library"
 
 
 async def test_a_broken_entry_shows_its_reason_and_no_changes() -> None:
