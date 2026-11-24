@@ -6721,10 +6721,11 @@ class TestVisionOcrStopsOnCancel:
         assert len(calls) == self._PAGES
 
     async def test_a_set_cancel_sends_no_page_to_the_model(self, tmp_path):
+        """The extract fails on the cancel; the error type is xberg's and is not pinned."""
         cancel = threading.Event()
         cancel.set()
         calls: list[bytes] = []
-        with pytest.raises(RuntimeError, match="TaskCancelledError"):
+        with pytest.raises(Exception, match="TaskCancelledError"):
             await self._extract(tmp_path, cancel, calls)
         assert calls == []
 
