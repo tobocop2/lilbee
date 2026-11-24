@@ -15,6 +15,7 @@ from typing import Any, ClassVar
 import httpx
 import pytest
 
+from lilbee import parent_monitor
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import swap_manager as sm
 from lilbee.providers.fleet.engines import LLAMA
@@ -1070,6 +1071,17 @@ def _write_state(
     return state_path
 
 
+def _write_fake_proc(root: Path, *, pid: int, boot_id: str, start_ticks: int) -> None:
+    """A /proc with *pid*'s stat (start ticks in field 22) and the boot id."""
+    (root / str(pid)).mkdir(parents=True, exist_ok=True)
+    after_comm = ["S", "1"] + ["0"] * 17 + [str(start_ticks), "0", "0"]
+    stat_line = f"{pid} (llama-swap) " + " ".join(after_comm) + "\n"
+    (root / str(pid) / "stat").write_text(stat_line, encoding="utf-8")
+    boot_file = root / "sys" / "kernel" / "random" / "boot_id"
+    boot_file.parent.mkdir(parents=True, exist_ok=True)
+    boot_file.write_text(boot_id + "\n", encoding="utf-8")
+
+
 def _own_state_path(tmp_path: Path) -> Path:
     """The state file this process's SwapManager writes for itself."""
     return tmp_path / sm._state_filename(os.getpid(), _GROUP)
@@ -1241,6 +1253,105 @@ class TestCrossRunReaping:
             [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
         )
         assert json.loads(_own_state_path(tmp_path).read_text())["created_at"] == 777.0
+
+    def test_clock_step_does_not_hide_a_live_router_from_the_reaper(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # On Linux psutil's create_time moves with a wall-clock step; the router
+        # (same start ticks, same boot) is still the recorded one and must be reaped.
+        proc_root = tmp_path / "proc"
+        _write_fake_proc(proc_root, pid=4321, boot_id="boot-A", start_ticks=5000)
+        monkeypatch.setattr(parent_monitor, "_is_linux", lambda: True)
+        monkeypatch.setattr(parent_monitor, "_PROC_ROOT", proc_root)
+        router = _FakePsProcess(4321, cmdline=["/opt/llama-swap"], create_time=777.0)
+        _patch_psutil_process(monkeypatch, {4321: router})
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        data_dir = tmp_path / "engines"
+        data_dir.mkdir()
+        SwapManager(data_dir, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
+        router._create_time = 777.0 + 3600.0  # the clock stepped forward an hour
+        monkeypatch.setattr(sm, "state_is_healthy", lambda _state: False)
+        stopped: list[sm.SwapState] = []
+        monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
+        SwapManager(data_dir, _GROUP).reap_stale()
+        assert [state.pid for state in stopped] == [4321]
+
+    def test_same_ticks_after_a_reboot_is_a_reused_pid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc_root = tmp_path / "proc"
+        _write_fake_proc(proc_root, pid=7777, boot_id="boot-B", start_ticks=5000)
+        monkeypatch.setattr(parent_monitor, "_is_linux", lambda: True)
+        monkeypatch.setattr(parent_monitor, "_PROC_ROOT", proc_root)
+        _patch_psutil_process(
+            monkeypatch,
+            {7777: _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=42.0)},
+        )
+        recorded = sm.SwapState(
+            pid=7777, pgid=None, created_at=42.0, boot_id="boot-A", start_ticks=5000.0
+        )
+        assert sm._is_live_llama_swap(recorded) is False
+
+    def test_other_start_ticks_in_the_same_boot_is_a_reused_pid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc_root = tmp_path / "proc"
+        _write_fake_proc(proc_root, pid=7777, boot_id="boot-A", start_ticks=6000)
+        monkeypatch.setattr(parent_monitor, "_is_linux", lambda: True)
+        monkeypatch.setattr(parent_monitor, "_PROC_ROOT", proc_root)
+        _patch_psutil_process(
+            monkeypatch,
+            {7777: _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=42.0)},
+        )
+        recorded = sm.SwapState(
+            pid=7777, pgid=None, created_at=42.0, boot_id="boot-A", start_ticks=5000.0
+        )
+        assert sm._is_live_llama_swap(recorded) is False
+
+    def test_record_without_a_boot_id_keeps_the_create_time_comparison(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A state file written before the boot id existed still loads and is compared by
+        # create time, with its tolerance, even on Linux.
+        proc_root = tmp_path / "proc"
+        _write_fake_proc(proc_root, pid=7777, boot_id="boot-A", start_ticks=5000)
+        monkeypatch.setattr(parent_monitor, "_is_linux", lambda: True)
+        monkeypatch.setattr(parent_monitor, "_PROC_ROOT", proc_root)
+        _patch_psutil_process(
+            monkeypatch,
+            {7777: _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=42.5)},
+        )
+        state_path = _write_state(tmp_path, pid=7777, created_at=42.0)
+        legacy = sm._load_state(state_path)
+        assert legacy is not None
+        assert legacy.boot_id is None
+        assert sm._is_live_llama_swap(legacy) is True
+        _patch_psutil_process(
+            monkeypatch,
+            {7777: _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=5000.0)},
+        )
+        assert sm._is_live_llama_swap(legacy) is False
+
+    def test_start_records_the_boot_id_and_start_ticks_on_linux(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc_root = tmp_path / "proc"
+        _write_fake_proc(proc_root, pid=4321, boot_id="boot-A", start_ticks=5000)
+        monkeypatch.setattr(parent_monitor, "_is_linux", lambda: True)
+        monkeypatch.setattr(parent_monitor, "_PROC_ROOT", proc_root)
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        data_dir = tmp_path / "engines"
+        data_dir.mkdir()
+        SwapManager(data_dir, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
+        recorded = json.loads(_own_state_path(data_dir).read_text(encoding="utf-8"))
+        assert recorded["boot_id"] == "boot-A"
+        assert recorded["start_ticks"] == 5000.0
 
     def test_start_records_the_swap_pgid_on_posix(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
