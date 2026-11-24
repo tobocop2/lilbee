@@ -127,7 +127,7 @@ def _rocm_support_facts(binary: Path) -> str:
     if shipped:
         parts.append(f"This build ships GPU kernels for: {', '.join(sorted(shipped))}.")
     if host := _host_amd_gfx_targets():
-        parts.append(f"This host's AMD GPU targets: {', '.join(sorted(host))}.")
+        parts.append(f"The AMD GPU targets of this computer: {', '.join(sorted(host))}.")
     return " " + " ".join(parts) if parts else ""
 
 
@@ -175,7 +175,7 @@ def _assert_rocblas_covers_enumerated_devices(binary: Path, devices: list[FleetD
         )
         return
     raise ProviderError(
-        f"This host's AMD GPU is {', '.join(sorted(host))}, but this engine build ships "
+        f"The AMD GPU of this computer is {', '.join(sorted(host))}, but this engine build ships "
         f"GPU kernels only for: {', '.join(sorted(shipped))}. The engine would start and "
         "then abort at the first matrix multiplication, so it is refused up front.\n"
         f"If the card is a near miss of a shipped target, set {_HSA_OVERRIDE_VAR} to that "

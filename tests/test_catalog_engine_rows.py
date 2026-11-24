@@ -184,10 +184,10 @@ def test_a_host_without_the_npu_hides_the_rows_with_the_gate_reason(
     result = get_catalog(task=ModelTask.CHAT, search="qwen3:4b")
     assert _refs(result) == []
     assert [(h.hf_repo, h.reason, h.text) for h in result.hidden] == [
-        ("qwen3:4b", "host_unsupported", f"This host cannot run it. {reason}")
+        ("qwen3:4b", "host_unsupported", f"This computer cannot run it. {reason}")
     ]
     assert hidden_summary([h.text for h in result.hidden]) == (
-        f"1 hidden (This host cannot run it. {reason})"
+        f"1 hidden (This computer cannot run it. {reason})"
     )
 
 
