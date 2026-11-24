@@ -28,7 +28,7 @@ import httpx
 import psutil
 
 from lilbee.core.health_warnings import HealthWarning, WarningCode
-from lilbee.parent_monitor import linux_age_s, linux_start_stamp
+from lilbee.parent_monitor import linux_age_s, linux_boot_id, linux_start_stamp
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import (
     ROUTER_GO_INSTALL,
@@ -101,6 +101,7 @@ _STATE_KEY_CONFIG_ROOT = "config_root"
 _STATE_KEY_FLEET_VIEW = "fleet_view"
 _STATE_KEY_READY_AT = "ready_at"
 _STATE_KEY_STARTED_MONO = "started_mono"
+_STATE_KEY_STARTED_BOOT = "started_boot"
 _STATE_KEY_SWAP_BINARY = "swap_binary"
 # Atomic state writes: the dot prefix keeps half-written tmp files out of the
 # reap scan's glob.
@@ -123,6 +124,8 @@ _HTTP_TIMEOUT_S = 10.0
 # llama-swap's own proxy answers within a second; upstream model loads have their
 # own (longer) budget inside llama-swap, so this only covers the proxy coming up.
 _BOOT_TIMEOUT_S = 30.0
+# Two reads of the boot time in one boot differ by the clock's drift, never by seconds.
+_BOOT_TIME_TOLERANCE_S = 60.0
 _BOOT_POLL_S = 0.25
 # Cap on the captured llama-swap output a boot-failure error carries.
 _BOOT_LOG_TAIL_CHARS = 2000
@@ -235,6 +238,7 @@ class SwapState:
     boot_id: str | None = None  # with start_ticks, the Linux identity a clock step cannot move
     start_ticks: float | None = None
     started_mono: float | None = None  # the system monotonic clock at spawn, on every platform
+    started_boot: str | None = None  # the boot that clock reading belongs to
     member_ports: tuple[int, ...] = ()
     proxy_port: int | None = None
     launches: tuple[dict, ...] = ()
@@ -312,6 +316,7 @@ class SwapManager:
         # The system monotonic clock at spawn. Every process of one boot shares it, so a
         # binder ages the engine by it and a wall-clock step cannot move the age.
         self._started_mono: float | None = None
+        self._started_boot: str | None = None
 
     def start(
         self,
@@ -414,6 +419,7 @@ class SwapManager:
             creationflags=_CREATE_NEW_PROCESS_GROUP,
         )
         self._started_mono = time.monotonic()
+        self._started_boot = _boot_stamp()
         self._write_state()
         self._await_health()
         log_role_launches(launches, engines=engines)
@@ -498,8 +504,9 @@ class SwapManager:
             state[_STATE_KEY_FLEET_VIEW] = self._origin.fleet_view
         if self._ready_at is not None:
             state[_STATE_KEY_READY_AT] = self._ready_at
-        if self._started_mono is not None:
+        if self._started_mono is not None and self._started_boot is not None:
             state[_STATE_KEY_STARTED_MONO] = self._started_mono
+            state[_STATE_KEY_STARTED_BOOT] = self._started_boot
         _atomic_write(self._state_path, json.dumps(state))
 
     def restamp(self, origin: PlanOrigin) -> None:
@@ -1032,20 +1039,42 @@ def _bind_deadline_s(state: SwapState) -> float:
     return health_check_timeout_s(launches) + _BOOT_TIMEOUT_S
 
 
+def _boot_stamp() -> str:
+    """The identity of this boot: the Linux boot id, else the boot time psutil reports."""
+    return linux_boot_id() or str(psutil.boot_time())
+
+
+def _is_current_boot(stamp: str) -> bool:
+    """Whether *stamp* names this boot.
+
+    A boot id matches by equality. A boot time matches within ``_BOOT_TIME_TOLERANCE_S``,
+    because it is derived from the wall clock and the two reads differ a little.
+    """
+    current = _boot_stamp()
+    if stamp == current:
+        return True
+    try:
+        return abs(float(stamp) - float(current)) <= _BOOT_TIME_TOLERANCE_S
+    except ValueError:
+        return False
+
+
 def _engine_age_s(state: SwapState, now: float) -> float | None:
     """Seconds the engine behind *state* has run, or None when the record gives no start.
 
-    A record with the spawn reading of the system monotonic clock is aged by that clock on
-    every platform; a wall-clock step does not move it. A reading ahead of the clock came
-    from another boot and is ignored. A Linux record without it but with the boot id and
-    start ticks is aged by the boot clock. Any other record (a file written before both)
-    is aged by the wall clock *now* against its recorded create time, so a forward step
-    there can still pass the deadline early.
+    A record with the spawn reading of the system monotonic clock and the identity of the
+    boot it was read in is aged by that clock, on every platform, when the identity is the
+    current boot's; a wall-clock step does not move it. A Linux record without them but
+    with the boot id and start ticks is aged by the boot clock. Any other record (a file
+    written before both, or one from another boot) is aged by the wall clock *now* against
+    its recorded create time, so a forward step there can still pass the deadline early.
     """
-    if state.started_mono is not None:
-        mono_age = time.monotonic() - state.started_mono
-        if mono_age >= 0:
-            return mono_age
+    if (
+        state.started_mono is not None
+        and state.started_boot is not None
+        and _is_current_boot(state.started_boot)
+    ):
+        return time.monotonic() - state.started_mono
     if state.boot_id is not None and state.start_ticks is not None:
         age = linux_age_s(state.boot_id, state.start_ticks)
         if age is not None:
@@ -1378,13 +1407,16 @@ def _load_state(path: Path) -> SwapState | None:
         )
         raw_ready = payload.get(_STATE_KEY_READY_AT)
         raw_mono = payload.get(_STATE_KEY_STARTED_MONO)
+        raw_started_boot = payload.get(_STATE_KEY_STARTED_BOOT)
+        has_mono = raw_mono is not None and raw_started_boot is not None
         return SwapState(
             pid=int(payload[_STATE_KEY_PID]),
             pgid=int(raw_pgid) if raw_pgid is not None else None,
             created_at=float(raw_created) if raw_created is not None else None,
             boot_id=str(raw_boot_id) if raw_boot_id and raw_ticks is not None else None,
             start_ticks=float(raw_ticks) if raw_boot_id and raw_ticks is not None else None,
-            started_mono=float(raw_mono) if raw_mono is not None else None,
+            started_mono=float(raw_mono) if has_mono else None,
+            started_boot=str(raw_started_boot) if has_mono else None,
             member_ports=tuple(int(port) for port in raw_ports),
             proxy_port=int(raw_proxy) if raw_proxy is not None else None,
             launches=tuple(payload.get(_STATE_KEY_LAUNCHES) or ()),
