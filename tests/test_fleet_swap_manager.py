@@ -1489,7 +1489,7 @@ class TestCrossRunReaping:
     def _step_clock(
         monkeypatch: pytest.MonkeyPatch, *, create_time: float, wall: float, mono: float
     ) -> None:
-        monkeypatch.setattr(sm, "boot_identity", lambda: "boot-A")
+        monkeypatch.setattr(parent_monitor, "boot_identity", lambda: "boot-A")
         monkeypatch.setattr(sm.time, "time", lambda: wall)
         monkeypatch.setattr(sm.time, "monotonic", lambda: mono)
         _patch_psutil_process(
