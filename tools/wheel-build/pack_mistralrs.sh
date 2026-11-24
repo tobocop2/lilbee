@@ -78,8 +78,6 @@ add_windows_runtime() {
   local bin="${WHEEL_TREE}/lilbee_engine_mistral_rs/bin"
   [ "$(host_os)" = Windows ] || return 0
   bash tools/wheel-build/bundle_windows_runtime.sh "${bin}" "${WHEEL_TREE}/NOTICE-MICROSOFT-VC-RUNTIME"
-  # The OpenMP runtime stays only when the exe imports it.
-  if ! grep -qiaF vcomp140 "${bin}/mistralrs.exe"; then rm -f "${WHEEL_TREE}/lilbee_engine_mistral_rs/bin/vcomp140.dll"; fi
   ls "${bin}"
 }
 
