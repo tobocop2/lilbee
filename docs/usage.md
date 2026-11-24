@@ -1408,7 +1408,7 @@ Windows (CUDA), AMD and Intel GPUs on Linux and Windows (Vulkan), AMD GPUs on
 Linux (ROCm), and x86_64 Linux and Windows (CPU). lilbee picks the CUDA pack
 when it finds a usable NVIDIA driver. Next it picks the ROCm pack for a Linux
 computer with a supported AMD GPU, then the Vulkan pack for an AMD or Intel GPU.
-The ROCm pack needs the NUMA library on the host: install `numactl-libs` on
+The ROCm pack needs the NUMA library on the computer: install `numactl-libs` on
 Fedora and RHEL, or `libnuma1` on Debian and Ubuntu. Without it, the computer
 gets the Vulkan pack. The Vulkan pack needs the Vulkan loader on Linux:
 install `vulkan-loader` or `libvulkan1`. Without it, the computer gets the CPU
@@ -1796,7 +1796,7 @@ These rules keep the launch safe:
 - lilbee writes `--sse-ping-interval 30`, so the server sends a keep-alive comment every 30 seconds while it reads a long prompt. The chat client ends a stream that is silent for 120 seconds after the headers. A `LLAMA_ARG_SSE_PING_INTERVAL=-1` in the environment does not turn the comment off, because the flag wins. If the help text does not list the flag, the launch goes without it, and a prompt that takes more than 120 seconds to read ends the stream on that build.
 - The engine keeps idle prompts and context checkpoints in system memory: up to 8 GiB of prompts, and 32 checkpoints a slot, by default. lilbee bounds both. A chat, vision or LLM reranker launch keeps at most 4 checkpoints a slot (`--ctx-checkpoints`), and a prompt cache (`--cache-ram`) of half the system memory that the plan leaves free, shared among those launches, at most 8 GiB each. The room is installed memory less the system reserve and what the loaded models hold, so the same plan writes the same flags every time. An embedding model and a cross-encoder reranker get `--cache-ram 0`. If the plan leaves no room, the model still loads with `--cache-ram 0`, and lilbee logs one warning: a conversation that returns after another one then reprocesses its whole prompt. If the room holds no checkpoint for a model that makes them, lilbee logs one warning that each turn reprocesses the whole conversation, also when the prompt cache stays.
 
-An ik_llama.cpp build does not list `--list-devices`. lilbee then reads the GPU list from the Vulkan loader of the host. The ik_llama.cpp README lists ROCm, Vulkan and Metal as unsupported, so use a CPU or CUDA build. The CPU build of the commit below answered chat and embed requests from lilbee.
+An ik_llama.cpp build does not list `--list-devices`. lilbee then reads the GPU list from the Vulkan loader of the computer. The ik_llama.cpp README lists ROCm, Vulkan and Metal as unsupported, so use a CPU or CUDA build. The CPU build of the commit below answered chat and embed requests from lilbee.
 
 The help text of ik_llama.cpp commit 229c703c4c948382e634a0c563a049740ceac3ff (2026-11-03) lists `--flash-attn`, `--cache-type-k`, `--cache-type-v`, `--batch-size`, `--ubatch-size`, `--mmproj`, `--n-cpu-moe`, `--cpu-moe`, `--threads`, `--jinja`, `--reasoning-format`, `--no-prefill-assistant`, `--pooling`, `--memory` and `--no-context-shift`. It does not list `--device`, `--tensor-split`, `--kv-unified`, `--list-devices` or `--load-mode`. It lists the embedding flag as `--embedding(s)`.
 

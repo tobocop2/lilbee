@@ -125,7 +125,7 @@ def explain(
     if any(g.ok for g in gates):
         return None
     reasons = " ".join(dict.fromkeys(g.reason for g in gates if g.reason))
-    return Hidden(HiddenReason.HOST_UNSUPPORTED, f"This host cannot run it. {reasons}")
+    return Hidden(HiddenReason.HOST_UNSUPPORTED, f"This computer cannot run it. {reasons}")
 
 
 def hidden_reason(
