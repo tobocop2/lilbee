@@ -274,7 +274,11 @@ def _find_llama_server(pack: Callable[[EngineTool], Path | None]) -> Path | None
 
 
 def installed_llama_server() -> Path:
-    """The llama-server a launch finds with no install; raises the error that launch gives."""
+    """The llama-server a launch finds with no install; raises ENGINE_MISSING when there is none.
+
+    A launch itself raises NOT_FOUND for the same absence, the kind planning reads as "serve
+    nothing". This lookup serves error text, so it carries the kind that answers 503.
+    """
     server = _find_llama_server(_known_pack_tool)
     if server is None:
         raise ProviderError(
