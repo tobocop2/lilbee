@@ -24,7 +24,8 @@
 #   GITHUB_REPOSITORY   owner/repo (set by Actions)
 #   GH_TOKEN            token with contents: write; publish only
 #   MIRROR_RELEASE_TAG  mirror release tag (default engine-binaries)
-#   MIRROR_REFRESH_DAYS age bucket in days added to the key; unset for a
+#   MIRROR_REFRESH_DAYS age bucket in days added to the key (a whole number,
+#                       1 or more; anything else exits 2); unset for a
 #                       content-addressed key that never needs a refresh
 
 set -euo pipefail
@@ -202,6 +203,10 @@ cmd_publish() {
 main() {
     local command="${1:?usage: ci_mirror.sh <asset-name|probe|fetch|publish> ...}"
     shift
+    if [ -n "${MIRROR_REFRESH_DAYS:-}" ] && ! [[ "${MIRROR_REFRESH_DAYS}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "MIRROR_REFRESH_DAYS must be a whole number of days, 1 or more; got '${MIRROR_REFRESH_DAYS}'." >&2
+        exit 2
+    fi
     case "${command}" in
         asset-name) cmd_asset_name "$@" ;;
         probe)      cmd_probe "$@" ;;
