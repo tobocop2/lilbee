@@ -39,7 +39,12 @@ from lilbee.core import settings
 from lilbee.core.config import Config, active_config
 from lilbee.core.vectors import Vector
 from lilbee.core.web_names import is_web_source
-from lilbee.data.extract.chunk import ChunkLimitError, check_embed_window, count_embed_tokens
+from lilbee.data.extract.chunk import (
+    ChunkLimitError,
+    EmbedWarmError,
+    check_embed_window,
+    count_embed_tokens,
+)
 from lilbee.data.extract.document import (
     extract_batching,
     ingest_archive,
@@ -119,7 +124,7 @@ from lilbee.data.types import (
     SyncResult,
     _IngestResult,
 )
-from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.base import ProviderError, ProviderErrorKind, WarmTimeoutError
 from lilbee.providers.fleet.gpu_stats import DeviceLike
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.truncation import cut_inputs_in_scope, one_truncation_warning
@@ -1411,9 +1416,18 @@ def _require_embedding_model() -> None:
     # A count through the embedder starts its engine, as the first chunk would, so the
     # window read next is the one the engine serves (TEI's /info), not the launch plan.
     # When the count fails, the engine is not up: each file then fails on its own count
-    # and the next sync adds it, so the failure here does not stop the sync.
-    with contextlib.suppress(ProviderError):
+    # and the next sync adds it, so the failure here does not stop the sync. An engine
+    # that cannot finish starting at chunk_size stops the sync: every file would fail
+    # the same way. A known window smaller than one chunk is still the first refusal; that
+    # read sends no request, since any request starts the same slow launch again.
+    try:
         count_embed_tokens("\n")
+    except WarmTimeoutError as exc:
+        check_embed_window(known_only=True)
+        config = active_config()
+        raise EmbedWarmError(config.embedding_model, config.chunk_size, exc.wait_s) from exc
+    except ProviderError:
+        pass
     check_embed_window()
 
 

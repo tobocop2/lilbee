@@ -16,6 +16,7 @@ from lilbee.core import settings
 from lilbee.core.config import Config, active_config
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.system import DiskSpelling, disk_path
+from lilbee.data.extract.chunk import EmbedWindowError
 from lilbee.data.ingest.discovery import (
     excluded_extension_reasons,
     file_hash,
@@ -45,6 +46,9 @@ LIBRARY_REFUSALS = (
     LibraryUnlockableError,
     LockingUnsupportedError,
 )
+# What a sync adds to those: the embed engine cannot take a chunk (its window is
+# smaller, or it cannot finish starting at that size). Each message says what to do.
+SYNC_REFUSALS = (*LIBRARY_REFUSALS, EmbedWindowError)
 
 
 @dataclass

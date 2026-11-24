@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import multiprocessing
 import os
 import queue as queue_mod
 import subprocess
@@ -14,8 +15,10 @@ import pytest
 import rich.progress
 
 from lilbee.core.config import cfg
+from lilbee.data.extract.chunk import EmbedWarmError, EmbedWindowError
 from lilbee.data.ingest import fanout
 from lilbee.data.types import OcrReport, ShardId, SkippedSource, SyncResult
+from lilbee.runtime.lock import LibraryUnlockableError
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -499,6 +502,82 @@ class TestRunShard:
         verdict = messages.get_nowait()
         assert verdict.result is None
         assert verdict.error == "RuntimeError: no embedding model"
+        assert verdict.refusal is None
+
+    @pytest.mark.parametrize(
+        "refusal",
+        [
+            EmbedWarmError("nomic-ai/nomic-embed-text-v1.5#safetensors", 8064, 120.0),
+            EmbedWindowError("m: The embedding model accepts 400 tokens per input."),
+            LibraryUnlockableError("Cannot change the library: it is locked."),
+        ],
+        ids=["warm", "window", "library"],
+    )
+    def test_a_worker_that_refuses_reports_the_refusal_itself(self, monkeypatch, refusal):
+        """The parent raises the same class, so the refusal must cross a worker's queue."""
+
+        async def fake_sync(**_kwargs):
+            raise refusal
+
+        monkeypatch.setattr("lilbee.data.ingest.pipeline.sync", fake_sync)
+        monkeypatch.setattr(fanout, "_pin_shard", lambda spec: None)
+        # The queue a real fan-out uses: it pickles each message on put and unpickles it on get.
+        messages = multiprocessing.get_context("spawn").Queue()
+        fanout.run_shard(
+            _spec(0), fanout.ShardOptions(parent_pid=os.getppid()), messages, threading.Event()
+        )
+        verdict = messages.get(timeout=_CANCEL_BOUND_S)
+        assert verdict.result is None
+        assert verdict.error == str(refusal)
+        assert type(verdict.refusal) is type(refusal)
+        assert str(verdict.refusal) == str(refusal)
+
+
+_WARM_REFUSAL = EmbedWarmError("nomic-ai/nomic-embed-text-v1.5#safetensors", 8064, 120.0)
+
+
+class TestRunWorkersRefusal:
+    async def test_a_refusal_stops_the_other_workers_and_is_raised_once(
+        self, fake_context, monkeypatch
+    ):
+        """The other workers would each refuse the same way; they are stopped instead."""
+
+        def fake_shard(spec, options, messages, stop):
+            if spec.shard.index == 0:
+                messages.put(
+                    fanout.ShardDone(
+                        kind="done",
+                        index=0,
+                        result=None,
+                        error=str(_WARM_REFUSAL),
+                        refusal=_WARM_REFUSAL,
+                    )
+                )
+            else:
+                stop.wait(_CANCEL_BOUND_S)
+
+        monkeypatch.setattr(fanout, "run_shard", fake_shard)
+        with pytest.raises(EmbedWarmError) as raised:
+            await fanout.run_workers(
+                [_spec(0), _spec(1)],
+                options=fanout.ShardOptions(parent_pid=os.getpid()),
+                quiet=True,
+                on_progress=lambda kind, data: None,
+                cancel=None,
+            )
+        assert raised.value is _WARM_REFUSAL
+        assert fake_context.processes[1].terminated
+        assert not any(worker.is_alive() for worker in fake_context.processes)
+
+    def test_a_refusal_still_in_flight_after_every_worker_exited_is_raised(self, monkeypatch):
+        monkeypatch.setattr(fanout, "_FINAL_DRAIN_S", 0.0)
+        messages = queue_mod.Queue()
+        messages.put(
+            fanout.ShardDone(kind="done", index=0, result=None, error="x", refusal=_WARM_REFUSAL)
+        )
+        with pytest.raises(EmbedWarmError) as raised:
+            fanout._final_verdicts([FakeProcess(lambda: None, (), "w0")], messages, {})
+        assert raised.value is _WARM_REFUSAL
 
 
 class TestRunWorkers:

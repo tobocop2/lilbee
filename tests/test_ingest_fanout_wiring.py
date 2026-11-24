@@ -204,6 +204,33 @@ class TestSyncDispatch:
             )
         assert [worker.terminated for worker in context.processes] == [True, True]
 
+    async def test_a_worker_s_refusal_is_the_sync_s_own_error_with_no_wrapper(
+        self, corpus, monkeypatch, services
+    ):
+        """Every entry point catches the sync refusals, so a fan-out raises the same one."""
+        from lilbee.data.extract.chunk import EmbedWarmError
+
+        context = FakeContext()
+        monkeypatch.setattr(fanout.multiprocessing, "get_context", lambda _kind: context)
+        monkeypatch.setattr(pipeline_mod, "plan_fanout", lambda: fanout.shard_specs(cfg, 2, 1))
+        refusal = EmbedWarmError("nomic-ai/nomic-embed-text-v1.5#safetensors", 8064, 120.0)
+
+        def refusing_shard(spec, options, messages, stop):
+            if spec.shard.index == 0:
+                verdict = fanout.ShardDone(
+                    kind="done", index=0, result=None, error=str(refusal), refusal=refusal
+                )
+                messages.put(verdict)
+            else:
+                stop.wait(_CANCEL_BOUND_S)
+
+        monkeypatch.setattr(fanout, "run_shard", refusing_shard)
+        with pytest.raises(EmbedWarmError) as raised:
+            await asyncio.wait_for(pipeline_mod.sync(quiet=True), timeout=_CANCEL_BOUND_S)
+        assert str(raised.value) == str(refusal)
+        assert "worker(s) failed" not in str(raised.value)
+        assert context.processes[1].terminated
+
 
 class TestSyncAcrossWorkers:
     @pytest.fixture()

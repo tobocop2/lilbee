@@ -591,12 +591,69 @@ class TestSync:
         monkeypatch.setattr(cfg, "chunk_size", 512)
         monkeypatch.setattr(cfg, "embedding_model", "BAAI/bge-base-en-v1.5")
         mock_svc.provider.count_tokens.side_effect = _count
-        mock_svc.provider.embed_token_cap.side_effect = lambda: 512 if warm["up"] else 640
+        mock_svc.provider.embed_token_cap.side_effect = lambda *, known_only: (
+            512 if warm["up"] else 640
+        )
         (isolated_env / "doc.txt").write_text("A document. " * 40, encoding="utf-8")
 
         with pytest.raises(EmbedWindowError, match="accepts 512 tokens per input"):
             await sync()
 
+        mock_extract_file.assert_not_called()
+
+    @pytest.mark.parametrize(("wait_s", "within"), [(120.0, "within 120 s"), (None, "in time")])
+    async def test_a_sync_refuses_when_the_embed_engine_cannot_warm_at_the_chunk_size(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch, wait_s, within
+    ):
+        """The window holds the chunk, but the engine did not finish starting at that size:
+        one plain refusal that names the model, the chunk size and the fix."""
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import EmbedWarmError, EmbedWindowError
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import WarmTimeoutError
+
+        model = "nomic-ai/nomic-embed-text-v1.5#safetensors"
+        monkeypatch.setattr(cfg, "chunk_size", 8064)
+        monkeypatch.setattr(cfg, "embedding_model", model)
+        mock_svc.provider.count_tokens.side_effect = WarmTimeoutError("slow", wait_s=wait_s)
+        mock_svc.provider.embed_token_cap.return_value = None
+        # A safetensors model needs a TEI install to pick its engine; the fan-out
+        # plan is not under test, and the sync runs in this process.
+        monkeypatch.setattr("lilbee.data.ingest.pipeline.plan_fanout", list)
+        (isolated_env / "doc.txt").write_text("A document. " * 40, encoding="utf-8")
+
+        with pytest.raises(EmbedWindowError) as raised:
+            await sync()
+
+        assert isinstance(raised.value, EmbedWarmError)
+        assert str(raised.value) == (
+            f"{model} cannot embed chunks of 8064 tokens on this machine: its engine did not "
+            f"finish starting {within} at that size. Set chunk_size to a smaller value, "
+            "or run the embedding model on a GPU."
+        )
+        assert mock_svc.provider.count_tokens.call_count == 1
+        # The window read after the warm failure sends no request to the engine.
+        mock_svc.provider.embed_token_cap.assert_called_once_with(known_only=True)
+        mock_extract_file.assert_not_called()
+
+    async def test_a_window_below_one_chunk_refuses_first_when_the_warm_also_failed(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import EmbedWarmError, EmbedWindowError
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import WarmTimeoutError
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "embedding_model", "BAAI/bge-base-en-v1.5")
+        mock_svc.provider.count_tokens.side_effect = WarmTimeoutError("slow", wait_s=120.0)
+        mock_svc.provider.embed_token_cap.return_value = 400
+        (isolated_env / "doc.txt").write_text("A document. " * 40, encoding="utf-8")
+
+        with pytest.raises(EmbedWindowError, match="accepts 400 tokens per input") as raised:
+            await sync()
+
+        assert not isinstance(raised.value, EmbedWarmError)
         mock_extract_file.assert_not_called()
 
     async def test_the_sync_summary_counts_each_cut_of_the_run_once(

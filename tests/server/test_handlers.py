@@ -530,6 +530,36 @@ class TestIngestStreamTerminalEvent:
         assert names[-1] == "done", names
         assert events[-1][1]["added"] == ["indexed.txt"]
 
+    async def test_sync_stream_ends_on_the_plain_warm_refusal(
+        self, mock_extract_file, isolated_env, tmp_path
+    ):
+        """An embed engine that cannot finish starting at chunk_size ends the stream on
+        one error that names the model, the chunk size and the fix."""
+        from lilbee.app.services import get_services
+        from lilbee.providers.base import WarmTimeoutError
+        from lilbee.server.app import create_app
+
+        cfg.chunk_size = 8064
+        provider = get_services().provider
+        provider.count_tokens.side_effect = WarmTimeoutError("slow", wait_s=120.0)
+        provider.embed_token_cap.return_value = None
+        (isolated_env / "indexed.txt").write_text(
+            "Content the sync pass indexes.", encoding="utf-8"
+        )
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post("/api/sync", headers=_auth_headers())
+
+        name, payload = _parse_sse_events(resp.content)[-1]
+        assert name == "error"
+        assert payload == {
+            "message": f"{cfg.embedding_model} cannot embed chunks of 8064 tokens on this "
+            "machine: its engine did not finish starting within 120 s at that size. Set "
+            "chunk_size to a smaller value, or run the embedding model on a GPU."
+        }
+        assert provider.count_tokens.call_count == 1
+        mock_extract_file.assert_not_called()
+
     async def test_add_stream_closes_with_one_done(self, mock_extract_file, isolated_env, tmp_path):
         """POST /api/add ends on a single done carrying the add summary."""
         from lilbee.server.app import create_app

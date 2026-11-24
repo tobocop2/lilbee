@@ -45,6 +45,10 @@ _FAILURE_TEXTS: dict[ProviderErrorKind, tuple[str, str]] = {
         "The reranker is still starting.",
         "Search again in a moment.",
     ),
+    ProviderErrorKind.WARM_TIMEOUT: (
+        "The reranker did not finish starting in time.",
+        "Run the reranker on a GPU, or clear the reranker_model setting.",
+    ),
     ProviderErrorKind.ENGINE_MISSING: (
         "The reranker engine is not installed.",
         "Run lilbee status to see which engine is missing.",

@@ -57,6 +57,26 @@ def test_a_route_with_no_handler_of_its_own_answers_503_with_the_text() -> None:
     assert _route_status(_STARTING) == (503, _TEXT)
 
 
+def test_a_warm_timeout_is_503_with_the_text_and_no_retry_after() -> None:
+    """As chat completions answers it: another request starts the same slow launch."""
+    from lilbee.providers.base import WarmTimeoutError
+
+    text = "The engine for nomic-ai/nomic-embed-text-v1.5 did not finish starting in time."
+    error = WarmTimeoutError(text, wait_s=120.0)
+
+    @get("/read", sync_to_thread=False)
+    def read() -> None:
+        raise error
+
+    with create_test_client(
+        route_handlers=[read], exception_handlers={ProviderError: _provider_error_response}
+    ) as client:
+        answer = client.get("/read")
+    assert (answer.status_code, answer.json()["detail"]) == (503, text)
+    assert "retry-after" not in {key.lower() for key in answer.headers}
+    assert classify_provider_error(error).http_status == 503
+
+
 def test_any_other_provider_failure_on_such_a_route_stays_a_500() -> None:
     assert _route_status(ProviderError("boom"))[0] == 500
 

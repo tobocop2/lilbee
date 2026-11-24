@@ -71,6 +71,33 @@ _DENSE_LISTING = [
     "9_x/other.json",
 ]
 _MODULE_FILES = {"modules.json", "1_Pooling/config.json"}
+# The names TEI 1.9.4 tries, in order, for the Sentence Transformers config that sets
+# the input limit (core/src/download.rs, ST_CONFIG_NAMES).
+_TEI_SENTENCE_CONFIG_NAMES = (
+    "sentence_bert_config.json",
+    "sentence_roberta_config.json",
+    "sentence_distilbert_config.json",
+    "sentence_camembert_config.json",
+    "sentence_albert_config.json",
+    "sentence_xlm-roberta_config.json",
+    "sentence_xlnet_config.json",
+)
+_NOMIC_EMBED_LISTING = [
+    ".gitattributes",
+    "1_Pooling/config.json",
+    "README.md",
+    "config.json",
+    "config_sentence_transformers.json",
+    "model.safetensors",
+    "modules.json",
+    "onnx/model.onnx",
+    "onnx/model_int8.onnx",
+    "sentence_bert_config.json",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.txt",
+]
 
 
 class TestFormatsFromTags:
@@ -140,6 +167,20 @@ class TestSelectFiles:
         assert set(got) >= _MODULE_FILES
         assert "config_sentence_transformers.json" not in got
         assert "README.md" not in got
+
+    def test_an_embedding_repo_takes_the_config_that_sets_its_input_limit(self) -> None:
+        got = select_files(ModelFormat.SAFETENSORS, _NOMIC_EMBED_LISTING)
+        assert "sentence_bert_config.json" in got
+        assert not [name for name in got if name.startswith("onnx/")]
+
+    @pytest.mark.parametrize("name", _TEI_SENTENCE_CONFIG_NAMES)
+    def test_each_sentence_config_name_tei_reads_is_taken(self, name: str) -> None:
+        got = select_files(ModelFormat.SAFETENSORS, ["model.safetensors", "config.json", name])
+        assert got == ["model.safetensors", "config.json", name]
+
+    def test_an_mlx_pull_does_not_take_the_sentence_config(self) -> None:
+        got = select_files(ModelFormat.MLX, _NOMIC_EMBED_LISTING)
+        assert "sentence_bert_config.json" not in got
 
     def test_each_module_folder_gives_its_config_and_weights_and_no_other_format(self) -> None:
         got = set(select_files(ModelFormat.SAFETENSORS, _DENSE_LISTING))
