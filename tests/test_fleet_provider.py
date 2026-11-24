@@ -1664,6 +1664,41 @@ def test_vision_call_streams_every_page_under_its_deadline(
     client.chat.assert_not_called()
 
 
+def _page_cut_after_a_frame(cause: httpx.TransportError) -> Exception:
+    """The error of a vision page whose stream broke with *cause* after its first frame."""
+    from lilbee.providers.fleet.client import StreamInterruptedError
+
+    try:
+        raise StreamInterruptedError("llama.cpp") from cause
+    except StreamInterruptedError as exc:
+        return exc
+
+
+@pytest.mark.parametrize(
+    "cause", [httpx.ReadTimeout("silent"), httpx.RemoteProtocolError("closed")], ids=str
+)
+def test_a_vision_page_cut_after_a_frame_fails_with_the_transport_error(cause) -> None:
+    """A page cut after a frame is a connection failure, as at the base, not a cut answer."""
+    client = _fake_client()
+    client.chat_abortable.side_effect = _page_cut_after_a_frame(cause)
+    with pytest.raises(type(cause)) as caught:
+        prov_mod._vision_call(client, [{"role": "user", "content": "x"}], None)
+    assert caught.value is cause
+    assert prov_mod.is_connection_failure(caught.value)
+
+
+def test_a_vision_page_cut_after_a_frame_fails_over_to_another_replica() -> None:
+    cut, alive = _fake_client(), _fake_client()
+    cut.chat_abortable.side_effect = _page_cut_after_a_frame(httpx.ReadTimeout("silent"))
+    alive.chat_abortable.return_value = "ocr text"
+    pool = _pool(prov_mod._VisionReplica(cut, 2), prov_mod._VisionReplica(alive, 1))
+    page = [{"role": "user", "content": "x"}]
+    result = prov_mod._dispatch_vision(pool, lambda c: prov_mod._vision_call(c, page, None))
+    assert result == "ocr text"
+    cut.mark_unhealthy.assert_called_once()
+    alive.mark_healthy.assert_called_once()
+
+
 def test_vision_ocr_hands_the_cancel_to_the_streamed_page(monkeypatch) -> None:
     # The page in flight on the server stops streaming when the run is cancelled.
     import threading
@@ -2672,6 +2707,10 @@ def test_a_timeout_on_llama_cpp_keeps_the_one_retry_and_no_restart(
     assert getattr(client, method).call_count == 2
 
 
+# What the user reads after the retry: the model server and the wait.
+_SILENT_MESSAGE = r"^The model server sent no answer for 120 s, so the request stopped\.$"
+
+
 def _silent_stream() -> httpx.ReadTimeout:
     """The error of a chat stream that sent its headers and then no frame."""
     from lilbee.providers.fleet.client import StreamSilentError
@@ -2682,7 +2721,7 @@ def _silent_stream() -> httpx.ReadTimeout:
 def test_a_silent_stream_on_llama_cpp_takes_the_one_retry_and_no_restart(monkeypatch) -> None:
     silent = _silent_stream()
     p, client, restarted = _timing_out_chat(monkeypatch, LLAMA, "chat_stream_items", silent)
-    with pytest.raises(ProviderError, match="not responding") as caught:
+    with pytest.raises(ProviderError, match=_SILENT_MESSAGE) as caught:
         p.chat(_CHAT_MESSAGES, stream=True)
     assert caught.value.__cause__ is silent
     assert restarted == []
@@ -2694,7 +2733,7 @@ def test_a_silent_stream_on_mlx_restarts_the_chat_server_and_sends_no_retry(monk
 
     silent = _silent_stream()
     p, client, restarted = _timing_out_chat(monkeypatch, MLX, "chat_stream_items", silent)
-    with pytest.raises(ProviderError, match="not responding") as caught:
+    with pytest.raises(ProviderError, match=_SILENT_MESSAGE) as caught:
         p.chat(_CHAT_MESSAGES, stream=True)
     assert caught.value.__cause__ is silent
     assert restarted == [WorkerRole.CHAT]
