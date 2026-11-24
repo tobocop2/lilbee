@@ -414,8 +414,10 @@ class TestInstall:
         assert router_on_first_use() == folder / "llama-swap"
 
     def test_a_held_router_folder_is_a_refusal_on_every_install_surface(
-        self, release: list[str]
+        self, release: list[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # The suite stubs the install of the engine service; this test needs the real one.
+        monkeypatch.setattr(engine_service, "install_router", install_router)
         folder = install_router().parent
         (folder / "llama-swap").unlink()
         with closing(BuildHolds([folder])):
