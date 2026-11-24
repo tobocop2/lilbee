@@ -11,6 +11,8 @@ name: Build old-Mac executables
 # release when a tag is given.
 
 on:
+  push:
+    branches: [scratch/oldmac-fix1316]
   workflow_dispatch:
     inputs:
       tag:
@@ -114,6 +116,16 @@ jobs:
       # lists lancedb, with Intel wheels only, and the default strategy stops at
       # the first index that lists a package. Every fork wheel is an exact pin,
       # so the wider search cannot pick another version of it.
+      - name: Fetch the fork wheels (scratch run, registry not deployed yet)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          gh release download 'v1.13.0+compat' -R tobocop2/crawlberg -D forkwheels -p '*macosx*'
+          gh release download 'v2.7.0+compat' -R tobocop2/liter-llm -D forkwheels -p '*macosx*'
+          ls forkwheels
+
       - name: Install dependencies
         shell: bash
         env:
@@ -134,7 +146,7 @@ jobs:
           # shellcheck disable=SC2086
           uv pip install --python-platform "${PYTHON_PLATFORM}" \
             --constraint oldmac-constraints.txt \
-            --extra-index-url https://lilbee.sh/compat/ \
+            --find-links forkwheels --extra-index-url https://lilbee.sh/compat/ \
             --index-strategy unsafe-best-match ${binary} \
             -r "${pins}" ${LANCEDB_SPEC} '.[release]' 'nuitka[onefile]==4.3.1' pip
 
