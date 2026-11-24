@@ -309,6 +309,10 @@ def mcp_cmd(
     except SystemExit as exc:
         exit_after_signal(exit_code_of(exc))
         raise
+    except Exception as exc:
+        # The log holds the traceback; stderr gets one plain line, and stdout stays the protocol's.
+        typer.echo(f"lilbee: the MCP server failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
     # The teardown runs here, not at atexit, so a signal that lands during it sets the status.
     reset_services_on_exit()
     status = exit_status_after_stop(0)

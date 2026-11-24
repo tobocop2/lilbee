@@ -2603,7 +2603,7 @@ class TestLifespan:
         from lilbee.server.auth import server_json_path
 
         with (
-            caplog.at_level(logging.ERROR, logger="lilbee.app.services"),
+            caplog.at_level(logging.ERROR, logger="lilbee.server.app"),
             pytest.raises(RuntimeError, match="no provider"),
         ):
             async with _lifespan(mock.MagicMock()):
@@ -2619,7 +2619,7 @@ class TestLifespan:
 
         with (
             mock.patch("lilbee.server.app.get_services", side_effect=ServicesStoppingError),
-            caplog.at_level(logging.INFO, logger="lilbee.app.services"),
+            caplog.at_level(logging.INFO, logger="lilbee.server.app"),
             pytest.raises(ServicesStoppingError),
         ):
             async with _lifespan(mock.MagicMock()):
