@@ -102,7 +102,7 @@ done
 [ "${worst}" -eq 0 ] || { echo "a file needs glibc newer than 2.34" >&2; exit 1; }
 readelf -d "${BIN_DIR}/llama-server" | grep -E 'NEEDED|RUNPATH|RPATH'
 readelf -d "${BIN_DIR}/libggml-cuda.so" | grep -E 'NEEDED|RUNPATH|RPATH'
-if ldd "${BIN_DIR}/llama-server" | grep 'not found'; then echo "llama-server has an unresolved library" >&2; exit 1; fi
+assert_libraries_resolve "${BIN_DIR}/llama-server"
 find "${BIN_DIR}" -name "libggml-cpu-*.so" | wc -l
 
 chown -R "${OWNER}" "${BIN_DIR}" "${SHA_FILE}"
