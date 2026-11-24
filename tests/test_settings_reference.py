@@ -200,10 +200,42 @@ class TestSurfaceColumns:
             assert generator._mcp_cell(key) == "no"
             assert generator._http_cell(key) == "no"
 
-    def test_cli_column_names_only_commands_that_exist(self, generator):
-        # There is no general `lilbee set`; the column must not imply one.
-        assert generator._cli_cell("top_k") == "no"
+    def test_cli_column_lists_top_k_as_settable_from_the_cli(self, generator):
+        assert generator._cli_cell("top_k") == "`lilbee settings set`"
+        assert "| `top_k` |" in REFERENCE.read_text(encoding="utf-8")
+        row = next(
+            line
+            for line in REFERENCE.read_text(encoding="utf-8").splitlines()
+            if line.startswith("| `top_k` |")
+        )
+        assert "`lilbee settings set`" in row
+
+    def test_cli_column_follows_the_keys_the_cli_set_path_accepts(self, generator):
+        from lilbee.app.settings import apply_settings_update
+
+        for key in WRITABLE_CONFIG_FIELDS:
+            cell = generator._cli_cell(key)
+            if key in MODEL_ROLE_FIELDS:
+                with pytest.raises(ValueError, match="dedicated model route"):
+                    apply_settings_update({key: None}, allow_model_roles=False)
+                assert "settings set" not in cell
+            else:
+                assert "`lilbee settings set`" in cell
+
+    def test_cli_column_keeps_the_dedicated_commands(self, generator):
         assert "use-embedder" in generator._cli_cell("embedding_model")
+        assert "placement set" in generator._cli_cell("placement")
+        assert generator._cli_cell("chat_model") == "no"
+
+    def test_cli_column_says_no_for_a_key_the_cli_cannot_write(self, generator):
+        assert generator._cli_cell("server_port") == "no"
+
+    def test_the_prose_names_the_settings_commands_and_no_missing_set_command(self, generator):
+        text = generator.render()
+        assert "no general `lilbee set` command" not in text
+        assert "| CLI | `lilbee settings set <setting> <value>`" in text
+        for command in ("lilbee settings list", "lilbee settings unset"):
+            assert command in text
 
     def test_a_setting_on_a_dedicated_tab_names_that_tab_in_the_tui_column(self, generator):
         from lilbee.app.settings_map import SETTINGS_MAP
