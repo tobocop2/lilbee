@@ -319,7 +319,7 @@ def _by_default(
         )
     elif refused := _refused(fmt, installed, role, host):
         text = " ".join(
-            f"Engine {name} loads the {fmt} format{of_model} but cannot run on this host. "
+            f"Engine {name} loads the {fmt} format{of_model} but cannot run on this computer. "
             f"{answer.reason}"
             for name, answer in refused
         )
@@ -375,8 +375,8 @@ def choose_engine(
         reason = f"{role_subject} does not serve this role."
         left = "serves this role"
     else:
-        reason = f"{subject} cannot run on this host. {answer.reason}"
-        left = "that loads this model can run on this host"
+        reason = f"{subject} cannot run on this computer. {answer.reason}"
+        left = "that loads this model can run on this computer"
     default = _default(fmt, host, installed, role)
     if default is None:
         candidates = _candidates(fmt, installed, role, host)

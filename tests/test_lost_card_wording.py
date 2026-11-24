@@ -45,7 +45,7 @@ def test_two_lost_cards_and_a_host_count_are_named() -> None:
     sentence = lost_card_reason(WorkerRole.CHAT, [1, 2], [0], on_host=3, hint="Hint.")
     assert sentence == (
         "chat is pinned to devices 1 and 2, but this machine lists only device 0 "
-        "(3 cards on this host). Hint. "
+        "(3 cards on this computer). Hint. "
         "Set the chat devices to a card that exists, or set its target to cpu."
     )
 
@@ -59,7 +59,7 @@ def test_a_machine_that_lists_nothing_says_so() -> None:
 
 @pytest.mark.parametrize(
     ("on_host", "count"),
-    [(1, "(1 card on this host)"), (2, "(2 cards on this host)")],
+    [(1, "(1 card on this computer)"), (2, "(2 cards on this computer)")],
 )
 def test_the_host_count_agrees_with_its_noun(on_host: int, count: str) -> None:
     sentence = lost_card_reason(WorkerRole.CHAT, [0], [], on_host=on_host)
@@ -79,7 +79,7 @@ def test_the_shared_wording_counts_the_host_cards() -> None:
     wording = planning._lost_card_wording([CARD_ZERO], host_cards)
     assert wording(WorkerRole.CHAT, [1]) == (
         "chat is pinned to device 1, but this machine lists only device 0 "
-        "(3 cards on this host). Set the chat devices to a card that exists, "
+        "(3 cards on this computer). Set the chat devices to a card that exists, "
         "or set its target to cpu."
     )
 
@@ -89,12 +89,12 @@ def test_the_shared_wording_says_when_the_host_count_is_a_floor() -> None:
     host_cards.__dict__["total"] = 3
     host_cards.__dict__["floor"] = True
     wording = planning._lost_card_wording([CARD_ZERO], host_cards)
-    assert "(at least 3 cards on this host)" in wording(WorkerRole.CHAT, [1])
+    assert "(at least 3 cards on this computer)" in wording(WorkerRole.CHAT, [1])
 
 
 def test_a_floor_count_that_adds_no_card_is_not_stated() -> None:
     sentence = lost_card_reason(WorkerRole.CHAT, [1], [0], on_host=1, floor=True)
-    assert "on this host" not in sentence
+    assert "on this computer" not in sentence
 
 
 def test_a_role_without_an_entry_in_the_spec_is_not_refused() -> None:

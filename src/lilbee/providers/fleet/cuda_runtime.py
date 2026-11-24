@@ -156,7 +156,7 @@ def assert_cuda_devices_usable(binary: Path, devices: list[FleetDevice], probe_o
         return
     diagnostic = device_probe_diagnostic(probe_output)
     raise ProviderError(
-        "The engine links the CUDA runtime and this host has an NVIDIA GPU, but it "
+        "The engine links the CUDA runtime and this computer has an NVIDIA GPU, but it "
         "enumerated no CUDA-capable device, so GPU work would silently fall back to CPU.\n"
         f"The engine reported: {diagnostic}\n"
         "Likely causes: MIG is enabled on the card, whose parent device answers as an "

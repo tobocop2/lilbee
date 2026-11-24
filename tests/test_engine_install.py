@@ -438,7 +438,7 @@ def test_a_host_that_fails_the_gate_is_refused_before_the_store_is_touched(
     monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn("a" * 64, HostGate(False, NO_AVX2)))  # type: ignore[arg-type]
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install(ENGINE.value, good)
-    assert str(exc.value) == f"Engine {ENGINE} cannot run on this host. {NO_AVX2} {STAYS}"
+    assert str(exc.value) == f"Engine {ENGINE} cannot run on this computer. {NO_AVX2} {STAYS}"
     assert not root.exists()
 
 
@@ -1311,7 +1311,7 @@ def test_each_refusing_engine_gives_its_reason_and_the_install_sentence(
     monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install(name)
-    assert str(exc.value) == f"Engine {name} cannot run on this host. {reason} {STAYS}"
+    assert str(exc.value) == f"Engine {name} cannot run on this computer. {reason} {STAYS}"
 
 
 STALL_TIMEOUT = 0.3

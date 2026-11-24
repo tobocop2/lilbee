@@ -145,7 +145,7 @@ def test_the_engine_choice_refuses_an_mlx_chat_on_a_linux_host() -> None:
         role=CHAT,
     )
     assert picked.name is None
-    assert "cannot run on this host" in (picked.notice or "")
+    assert "cannot run on this computer" in (picked.notice or "")
 
 
 def test_the_mlx_estimate_is_read_through_the_adapter_not_the_planner(
