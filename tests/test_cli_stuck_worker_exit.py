@@ -32,7 +32,7 @@ _COMMANDS = ["sync", "analyze"]
 class _Command:
     """One run of a lilbee command in a fresh interpreter, its output read line by line."""
 
-    def __init__(self, tmp_path: Path, command: str, *, work: str, hold: bool) -> None:
+    def __init__(self, tmp_path: Path, command: str, *, work: str, hold: bool, pool: str) -> None:
         data = tmp_path / "data"
         data.mkdir()
         self.lines: list[str] = []
@@ -46,6 +46,7 @@ class _Command:
                 "HF_HUB_OFFLINE": "1",
                 "X_WORK_S": work,
                 "X_HOLD": "1" if hold else "0",
+                "X_POOL": pool,
             },
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -87,9 +88,20 @@ class _Command:
             self.process.stdout.close()
 
 
-def _run(tmp_path: Path, command: str, *, work: str, signal_after: str | None = None) -> _Command:
-    """Run *command* to its end; with *signal_after*, send SIGTERM once that line shows."""
-    run = _Command(tmp_path, command, work=work, hold=signal_after == "HOLDING")
+def _run(
+    tmp_path: Path,
+    command: str,
+    *,
+    work: str,
+    signal_after: str | None = None,
+    pool: str = "loop",
+) -> _Command:
+    """Run *command* to its end; with *signal_after*, send SIGTERM once that line shows.
+
+    The worker runs on the loop's default pool, or with *pool* "kept" on a pool the
+    process holds to its exit.
+    """
+    run = _Command(tmp_path, command, work=work, hold=signal_after == "HOLDING", pool=pool)
     try:
         if signal_after is not None:
             run.read_until(signal_after)
@@ -117,6 +129,17 @@ def test_a_worker_that_ends_within_the_budget_finishes_before_the_exit(
     run = _run(tmp_path, command, work="1.0")
     assert run.exit_status == 0, run.output
     assert any(line.strip() == "WORKER DONE" for line in run.lines), run.output
+    assert _STRAGGLER_NOTE.strip() not in run.output, run.output
+
+
+@pytest.mark.parametrize("command", _COMMANDS)
+def test_an_idle_worker_of_a_kept_pool_ends_with_the_interpreter_exit(
+    tmp_path: Path, command: str
+) -> None:
+    run = _run(tmp_path, command, work="0.5", pool="kept")
+    assert run.exit_status == 0, run.output
+    assert any(line.strip() == "WORKER DONE" for line in run.lines), run.output
+    assert any(line.strip() == "ATEXIT" for line in run.lines), run.output
     assert _STRAGGLER_NOTE.strip() not in run.output, run.output
 
 
