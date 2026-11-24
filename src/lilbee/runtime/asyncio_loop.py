@@ -173,12 +173,12 @@ def _cancel_all_tasks(loop: asyncio.AbstractEventLoop) -> None:
         task.cancel()
 
 
-def run_interruptible(coro: Coroutine[Any, Any, T], cancel: SignalFlag) -> T:
+def run_interruptible(coro: Awaitable[T], cancel: SignalFlag) -> T:
     """Run *coro* on its own loop on a worker thread; this thread only waits for the run.
 
     Python runs a signal handler only on the main thread, so a Ctrl-C never lands
-    in the loop's code: a raise there could drop a task's wakeup. Setting *cancel*
-    hands the cancel of the run's task to the loop. A handler that raises during
+    in the loop's code: a raise there could drop a task's wakeup. A stop of the run
+    through *cancel* hands the cancel of the run's task to the loop. A handler that raises during
     the run ends only the wait. The run's tasks then get a cancel, and the run is
     left to the process exit, so a run stuck in a sync step or a native call does
     not keep the command. Off the main thread, and on Windows, *coro* runs on this
@@ -188,7 +188,7 @@ def run_interruptible(coro: Coroutine[Any, Any, T], cancel: SignalFlag) -> T:
         return run_without_join(coro)
     loop = asyncio.new_event_loop()
     # The task takes this thread's context, as a run on this thread would.
-    task = loop.create_task(coro)
+    task = asyncio.ensure_future(coro, loop=loop)
     done: concurrent.futures.Future[T] = concurrent.futures.Future()
     cancel.bind_run(lambda: loop.call_soon_threadsafe(task.cancel))
     try:
