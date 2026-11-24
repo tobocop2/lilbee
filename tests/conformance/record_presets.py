@@ -53,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rerank-url",
         default="",
-        help="Server for /v1/rerank when --url has no such route, such as the proxy of the rerank role.",
+        help="Server for /v1/rerank when --url has no such route, such as a rerank proxy.",
     )
     parser.add_argument("--roles", required=True, help="Comma-separated roles of the server.")
     parser.add_argument("--models", required=True, help="Model ids by role: chat=ID,embed=ID.")

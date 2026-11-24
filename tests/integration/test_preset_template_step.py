@@ -27,7 +27,7 @@ def _template_outcome(
     seen: list[dict[str, Any]] | None = None,
     step: str = "template",
 ) -> preset_check.Outcome:
-    """Run a step (the template step by default) through the real provider against a server that sends *message*.
+    """Run a step (the template step by default) against a server that sends *message*.
 
     Each request body the server receives is appended to *seen*.
     """
