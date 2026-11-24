@@ -454,7 +454,8 @@ def _tip_before_first_file(chain: DetailedProgressCallback) -> DetailedProgressC
     """Wrap *chain* so the analyze tip prints once, as the first file starts to ingest.
 
     The sync has scanned the library by then, so a sync with nothing to ingest
-    never starts a file and prints no tip.
+    never starts a file and prints no tip. A multi-GPU sync reports batch progress
+    in place of per-file starts, so either event counts.
     """
     from lilbee.runtime.progress import EventType, ProgressEvent
 
@@ -462,7 +463,7 @@ def _tip_before_first_file(chain: DetailedProgressCallback) -> DetailedProgressC
 
     def _callback(event_type: EventType, data: ProgressEvent) -> None:
         nonlocal shown
-        if event_type == EventType.FILE_START and not shown:
+        if event_type in (EventType.FILE_START, EventType.BATCH_PROGRESS) and not shown:
             shown = True
             print_tip_if_shown(cfg.data_root)
         chain(event_type, data)
