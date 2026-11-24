@@ -75,7 +75,7 @@ def test_an_unreadable_config_answers_503_with_the_read_text(client, tmp_path, m
 
 
 def test_a_readable_but_invalid_config_keeps_its_422(client, tmp_path):
-    (tmp_path / CONFIG_FILE_NAME).write_text("this is = = not toml\n")
+    (tmp_path / CONFIG_FILE_NAME).write_text("this is = = not toml\n", encoding="utf-8")
     res = client.post("/api/presets", json=ADD_BODY)
     assert res.status_code == 422
     assert not res.json()["detail"].startswith(READ_TEXT)
