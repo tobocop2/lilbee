@@ -1579,7 +1579,7 @@ class TestCrossRunReaping:
         SwapManager(tmp_path, _GROUP).start(
             [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
         )
-        record = json.loads(_own_state_path(tmp_path).read_text())
+        record = json.loads(_own_state_path(tmp_path).read_text(encoding="utf-8"))
         assert record.get("mach_start") == written
         assert "boot_id" not in record and "start_ticks" not in record
         loaded = sm._load_state(_own_state_path(tmp_path))
