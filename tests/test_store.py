@@ -3024,6 +3024,29 @@ class TestGetSourcesPagination:
         assert matches == {"50%done.md"}
 
 
+class TestSourceNames:
+    def test_names_hold_the_term_and_ignore_titles(self, store):
+        from lilbee.data.store.types import SourceMeta
+
+        store.upsert_source("README.md", "h1", 1)
+        store.upsert_source("setup.py", "h2", 1, meta=SourceMeta(title="Readme first"))
+        assert store.source_names("readme", limit=10) == ["README.md"]
+        # The full search also matches the title, which is why a name search is separate.
+        assert {s["filename"] for s in store.get_sources(search="readme")} == {
+            "README.md",
+            "setup.py",
+        }
+
+    def test_limit_bounds_the_rows(self, store):
+        for i in range(20):
+            store.upsert_source(f"readme_{i}.md", f"h{i}", 1)
+        assert len(store.source_names("readme", limit=5)) == 5
+        assert len(store.source_names(limit=7)) == 7
+
+    def test_a_library_with_no_sources_reads_empty(self, store):
+        assert store.source_names("x", limit=3) == []
+
+
 class TestCountSources:
     def test_count_matches_row_count(self, store):
         for i in range(7):

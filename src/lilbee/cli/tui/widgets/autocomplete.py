@@ -47,6 +47,9 @@ def _option_prompt(value: str) -> Content:
 
 
 _MAX_VISIBLE = 8  # max dropdown items shown at once
+# Names read from the store per keystroke: more than the dropdown shows, so prefix matches
+# among them still sort first.
+_NAME_CANDIDATES = _MAX_VISIBLE * 4
 # Hard cap on path completions surfaced for path-argument commands so a deep
 # directory doesn't stall the dropdown rebuild.
 _MAX_PATH_COMPLETIONS = 20
@@ -90,6 +93,9 @@ def _get_arg_completions(cmd: str, partial: str) -> list[str]:
     fully-typed argument collapses the dropdown and lets Enter submit,
     mirroring the command-discovery rule for slash commands.
     """
+    search = ARG_SEARCHES.get(cmd)
+    if search is not None:
+        return _match_args(search(partial), partial)
     sources = ARG_SOURCES.get(cmd)
     if sources is None:
         return []
@@ -150,18 +156,22 @@ def _setting_options() -> list[str]:
     return [k for k in SETTINGS_MAP if _is_settable(k)]
 
 
-def _indexed_names() -> list[str]:
-    """Indexed-source names in store order; empty on any store error."""
+def _indexed_names(partial: str) -> list[str]:
+    """Up to a dropdown's worth of indexed names holding *partial*; empty on any store error."""
     try:
-        return [s.get("filename", s.get("source", "")) for s in get_services().store.get_sources()]
+        return get_services().store.source_names(partial, limit=_NAME_CANDIDATES)
     except Exception:
         log.debug("Failed to list documents for autocomplete", exc_info=True)
         return []
 
 
-def _document_options() -> list[str]:
-    """``/delete`` targets: indexed sources, then held-out sources not indexed."""
-    return removable_names(_indexed_names())
+def _document_options(partial: str) -> list[str]:
+    """``/delete`` targets for *partial*: a bounded read of indexed names, then held-out ones.
+
+    The store is asked for names holding *partial*, a few more than the dropdown
+    shows, so the cost of a keystroke does not grow with the library.
+    """
+    return removable_names(_indexed_names(partial))
 
 
 def _profile_options() -> list[str]:
@@ -248,7 +258,6 @@ def longest_common_prefix(values: list[str]) -> str:
 ARG_SOURCES: dict[str, Callable[[], list[str]]] = {
     "/model": list_model_options,
     "/set": _setting_options,
-    "/delete": _document_options,
     "/remove": list_model_options,
     "/theme": _theme_options,
     "/profile": _profile_options,
@@ -258,6 +267,10 @@ ARG_SOURCES: dict[str, Callable[[], list[str]]] = {
     "/export": _path_options,
     "/export-chat": _path_options,
 }
+
+
+# Commands whose completions the store searches for the typed text instead of listing all.
+ARG_SEARCHES: dict[str, Callable[[str], list[str]]] = {"/delete": _document_options}
 
 
 class CompletionOverlay(Vertical):
