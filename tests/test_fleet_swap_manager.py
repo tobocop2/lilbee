@@ -1475,6 +1475,51 @@ class TestCrossRunReaping:
         SwapManager(data_dir, _GROUP).reap_stale()
         assert [state.pid for state in stopped] == [4321]
 
+    @staticmethod
+    def _mono_record(boot: str = "boot-A") -> sm.SwapState:
+        return sm.SwapState(
+            pid=7777,
+            pgid=None,
+            created_at=1000.0,
+            started_mono=500.0,
+            started_boot=boot,
+        )
+
+    @staticmethod
+    def _step_clock(
+        monkeypatch: pytest.MonkeyPatch, *, create_time: float, wall: float, mono: float
+    ) -> None:
+        monkeypatch.setattr(sm, "boot_identity", lambda: "boot-A")
+        monkeypatch.setattr(sm.time, "time", lambda: wall)
+        monkeypatch.setattr(sm.time, "monotonic", lambda: mono)
+        _patch_psutil_process(
+            monkeypatch,
+            {7777: _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=create_time)},
+        )
+
+    def test_forward_clock_step_keeps_a_live_swap_live_off_linux(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Spawned at wall 1000 / monotonic 500; ten seconds later the wall clock steps
+        # +2 h and psutil's create time moves with it. Same process, same boot.
+        self._step_clock(monkeypatch, create_time=8200.0, wall=8210.0, mono=510.0)
+        assert sm._is_live_llama_swap(self._mono_record()) is True
+
+    def test_a_swap_started_later_on_the_monotonic_clock_is_a_reused_pid(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same boot, a process that started 300 s after the record: pid reuse.
+        self._step_clock(monkeypatch, create_time=1300.0, wall=1310.0, mono=810.0)
+        assert sm._is_live_llama_swap(self._mono_record()) is False
+
+    def test_a_reading_from_another_boot_falls_back_to_the_create_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._step_clock(monkeypatch, create_time=1000.5, wall=1010.0, mono=9.0)
+        assert sm._is_live_llama_swap(self._mono_record(boot="boot-B")) is True
+        self._step_clock(monkeypatch, create_time=8200.0, wall=8210.0, mono=9.0)
+        assert sm._is_live_llama_swap(self._mono_record(boot="boot-B")) is False
+
     def test_same_ticks_after_a_reboot_is_a_reused_pid(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
