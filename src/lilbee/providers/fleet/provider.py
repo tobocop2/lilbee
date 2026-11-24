@@ -49,6 +49,7 @@ from lilbee.providers.fleet.client import (
     ChatDeadlineError,
     LlamaServerClient,
     StreamInterruptedError,
+    StreamSilentError,
     is_connection_failure,
     is_load_capacity_failure,
     is_rebuildable_failure,
@@ -602,13 +603,15 @@ def _raise_no_healthy_replica(cause: Exception) -> NoReturn:
     """Raise the user-facing error for a call with no healthy replica left to retry on.
 
     A ``ProviderError`` cause is the client's own plain line for an engine that
-    died (model name, cause, engine log), so it surfaces unchanged. A transport
-    error has no such line and reads as an unresponsive server.
+    died (model name, cause, engine log), so it surfaces unchanged. A stream that
+    went silent after its headers keeps its own line, which names the wait. Any
+    other transport error has no such line and reads as an unresponsive server.
     """
     if isinstance(cause, ProviderError):
         raise cause
+    message = str(cause) if isinstance(cause, StreamSilentError) else _NOT_RESPONDING_MESSAGE
     raise ProviderError(
-        _NOT_RESPONDING_MESSAGE, provider=_PROVIDER_NAME, kind=ProviderErrorKind.CONNECTION
+        message, provider=_PROVIDER_NAME, kind=ProviderErrorKind.CONNECTION
     ) from cause
 
 
@@ -953,6 +956,11 @@ def _vision_call(
             f"Vision OCR timed out after {timeout:g}s.",
             provider=_PROVIDER_NAME,
         ) from None
+    except StreamInterruptedError as exc:
+        # No part of a page reaches the user, so a page cut after a frame fails over
+        # on the transport error that cut it, as one cut before a frame does.
+        cause = exc.__cause__
+        raise (cause if isinstance(cause, httpx.TransportError) else exc) from None
 
 
 def _ocr_dispatch(

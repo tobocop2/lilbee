@@ -70,6 +70,7 @@ class _Script:
     frames: int = 1
     gap_s: float = 0.0
     end: bool = False  # end the stream; otherwise go silent
+    close: bool = False  # close the connection after the frames, with the body not ended
     answer_wait_s: float = 0.0  # before the answer to a request that does not stream
 
 
@@ -139,7 +140,8 @@ class _ScriptedServer:
             conn.sendall(out)
             return True
         conn.sendall(out)
-        self._release.wait(60)
+        if not script.close:
+            self._release.wait(60)
         return False
 
     def close(self) -> None:
@@ -308,6 +310,17 @@ def test_the_abortable_chat_is_bounded_after_its_first_frame() -> None:
         waited = time.monotonic() - start
     assert isinstance(caught.value.__cause__, httpx.ReadTimeout)
     assert waited < _QUICK_S
+
+
+@pytest.mark.parametrize("site", sorted(_SITES))
+def test_a_stream_closed_after_its_first_frame_ends_with_the_cut_answer_error(site: str) -> None:
+    """Any transport error after a frame cuts the answer, at all three sites alike."""
+    with (
+        _serve(_Script(close=True)) as (_server, client),
+        pytest.raises(StreamInterruptedError) as caught,
+    ):
+        _SITES[site](client)
+    assert isinstance(caught.value.__cause__, httpx.RemoteProtocolError)
 
 
 def test_a_later_slow_request_on_the_same_connection_is_not_cut() -> None:
