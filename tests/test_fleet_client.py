@@ -4930,6 +4930,7 @@ def test_the_linux_loader_line_names_the_missing_library() -> None:
 _WINDOWS_DEATH_TAILS = (
     "llama-swap: process [chat-0] exit status 0xc0000135",
     "llama-swap: process [chat-0] exited with code 3221225781",
+    "llama-swap: process [chat-0] exit status 0XC0000135",
 )
 
 
@@ -4941,6 +4942,8 @@ def test_windows_dll_not_found_death_is_a_missing_library(tail: str) -> None:
     assert classify_upstream_death(tail) is ProviderErrorKind.MISSING_LIBRARY
     assert classify_upstream_death("exit status 0xc0000136") is None
     assert classify_upstream_death("exit status 13221225781") is None
+    assert classify_upstream_death("exit status 0xc00001350") is None
+    assert classify_upstream_death("exit status 32212257810") is None
 
 
 @pytest.mark.parametrize("tail", _WINDOWS_DEATH_TAILS)
@@ -4954,6 +4957,17 @@ def test_windows_dll_not_found_message_names_the_runtime(tail: str) -> None:
     assert "Visual C++" in text
     assert "latest-supported-vc-redist" in text
     assert "HTTP 500" not in text
+
+
+def test_a_memory_death_that_also_prints_the_status_is_not_a_missing_runtime() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import _upstream_death_message, classify_upstream_death
+
+    tail = "cudaMalloc failed: out of memory\nllama-swap: process [chat-0] exit status 0xc0000135"
+    kind = classify_upstream_death(tail)
+    assert kind is ProviderErrorKind.CAPACITY
+    text = _upstream_death_message(kind, 500, "m", None, tail)
+    assert "Visual C++" not in text
 
 
 def test_a_missing_library_is_not_retried_or_rebuilt() -> None:
