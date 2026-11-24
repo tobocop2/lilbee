@@ -33,7 +33,8 @@ _HTTP_UNPROCESSABLE = 422
 async def _call(action: Callable[[], _T]) -> _T:
     """Run a service call off the loop; a refusal becomes its status.
 
-    A held lock, an unreadable config.toml or a read-only config.toml is 503.
+    A held lock, an unreadable config.toml or a read-only config.toml is 503; the app's
+    handlers answer the lock and the read-only file.
     """
     try:
         return await asyncio.to_thread(action)
@@ -41,9 +42,9 @@ async def _call(action: Callable[[], _T]) -> _T:
         raise HTTPException(status_code=_HTTP_NOT_FOUND, detail=service.failure_text(exc)) from exc
     except service.PresetExistsError as exc:
         raise HTTPException(status_code=_HTTP_CONFLICT, detail=service.failure_text(exc)) from exc
-    except FileLockUnavailableError:
-        raise
-    except (ConfigReadFailedError, ReadOnlyConfigError) as exc:
+    except (FileLockUnavailableError, ReadOnlyConfigError):
+        raise  # the app's handlers answer these
+    except ConfigReadFailedError as exc:
         raise HTTPException(
             status_code=_HTTP_UNAVAILABLE, detail=service.failure_text(exc)
         ) from exc

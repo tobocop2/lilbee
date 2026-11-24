@@ -62,9 +62,9 @@ def _placement_errors() -> Iterator[None]:
         yield
     except ProviderError as exc:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
-    except FileLockUnavailableError:
-        raise  # the app's lock handler answers it; it is not a probe failure
-    except (ReadOnlyConfigError, ConfigReadFailedError, PlacementConfigWriteError) as exc:
+    except (FileLockUnavailableError, ReadOnlyConfigError):
+        raise  # the app's handlers answer these; they are not probe failures
+    except (ConfigReadFailedError, PlacementConfigWriteError) as exc:
         raise HTTPException(
             status_code=_HTTP_UNAVAILABLE, detail=config_write_failure_message(exc)
         ) from exc
