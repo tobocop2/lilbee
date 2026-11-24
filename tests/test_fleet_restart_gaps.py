@@ -568,7 +568,7 @@ def test_a_rediscover_during_a_stalled_drain_still_stops_the_group_the_new_plan_
 def test_a_rediscover_in_a_failed_pass_waits_until_the_pass_gave_the_server_back(
     engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The plan after the drain fails; the fleet still maps the server when the pass gives it back."""
+    """The plan after the drain fails; the fleet still maps the server at the give-back."""
     provider, _swaps = engine_fleet
     monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", plan_tests._LONG_DRAIN_S)
     old_chat = provider._swap_for(CHAT)
