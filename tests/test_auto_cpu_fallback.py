@@ -102,9 +102,7 @@ def test_auto_entry_in_a_spec_runs_on_cpu_without_gpu_target(
     assert _targets(engine, spec) == {"chat": "cpu", "embed": "cpu"}
 
 
-def test_named_gpu_target_is_not_rewritten(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_named_gpu_target_is_not_rewritten(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     engine = _engine(monkeypatch, tmp_path, (24,), CPU_ONLY)
     spec = PlacementSpec.from_json('{"chat": {"devices": [0], "target": "gpu"}}')
     with pytest.raises(TargetRefusedError):
