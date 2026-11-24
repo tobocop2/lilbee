@@ -22,6 +22,7 @@ from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.gpu_select import USABLE_VULKAN_TYPES, VkDeviceType
 from lilbee.providers.fleet.proc import run_bounded
 from lilbee.providers.roles import EngineBackend
+from lilbee.runtime.vc_runtime import STATUS_DLL_NOT_FOUND, VC_REDIST_URL
 
 log = logging.getLogger(__name__)
 
@@ -38,8 +39,6 @@ _GPU_LABEL_RE = re.compile(r"^GPU(\d+)$")
 # llama-server prints this before the device loop, so a run that lists no GPUs
 # still prints it. Its absence means the binary never got as far as enumerating.
 _DEVICE_LIST_HEADER = "Available devices:"
-# Windows status STATUS_DLL_NOT_FOUND: the loader stopped the process before main.
-_STATUS_DLL_NOT_FOUND = 0xC0000135
 DLL_MISSING_LEAD = "The engine could not start because a DLL it needs is missing"
 # Windows status STATUS_ILLEGAL_INSTRUCTION; POSIX reports the same death as SIGILL.
 _STATUS_ILLEGAL_INSTRUCTION = 0xC000001D
@@ -276,12 +275,11 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
     selected = _select_backend(parsed)
     offered = [d for d in parsed if d.backend in _BACKEND_RANK]
     answered = _DEVICE_LIST_HEADER in output
-    if returncode == _STATUS_DLL_NOT_FOUND and not answered:
+    if returncode == STATUS_DLL_NOT_FOUND and not answered:
         raise EngineDllMissingError(
             f"{DLL_MISSING_LEAD} (status "
-            f"0x{_STATUS_DLL_NOT_FOUND:X}). The usual cause is a missing Microsoft "
-            "Visual C++ runtime. Install it from "
-            "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist.",
+            f"0x{STATUS_DLL_NOT_FOUND:X}). The usual cause is a missing Microsoft "
+            f"Visual C++ runtime. Install it from {VC_REDIST_URL}.",
             provider=_PROVIDER,
             kind=ProviderErrorKind.SERVER,
         )
