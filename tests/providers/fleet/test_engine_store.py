@@ -37,6 +37,7 @@ from lilbee.providers.fleet.engine_store import (
 )
 from lilbee.providers.fleet.engines.choice import PinError, pin_lock
 from tests._pack_workflow import pack_workflow
+from tests._unreadable import POSIX_DENIES_READS, unreadable
 
 
 def make_wheel(path: Path, licence: str | None = "MIT", body: str = "#!/bin/sh\n") -> str:
@@ -1439,6 +1440,27 @@ def test_remove_leaves_a_locked_folder_in_trash_and_the_sweep_takes_it(
     assert names(store.root / "fx") == []
 
 
+@POSIX_DENIES_READS
+def test_remove_names_the_trash_that_stays_after_the_retry(
+    store: EngineStore, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    installed_store(store, tmp_path)
+    locked = store.root / "fx" / "1-cpu" / "locked"
+    (locked / "inner").mkdir(parents=True)
+    locked.chmod(0)
+    with caplog.at_level("WARNING"):
+        store.remove("fx", "1", "cpu", in_use=lambda *_: False)
+    left = names(store.root / "fx")
+    trash = store.root / "fx" / left[0]
+    (trash / "locked").chmod(0o755)
+    assert left[0].startswith(".trash-")
+    assert caplog.messages == [
+        f"lilbee cannot delete {trash}. Correct its permissions; the next start removes it."
+    ]
+    assert store.installed() == []
+    assert [p.name for p in store.sweep()] == left
+
+
 def test_remove_refuses_the_bundled_engine(store: EngineStore) -> None:
     with pytest.raises(engine_store.BundledEngineError, match="inside the executable"):
         store.remove("llama.cpp", "bundled", "bundled", in_use=lambda *_: False)
@@ -1462,7 +1484,7 @@ def test_remove_refuses_a_name_that_could_leave_the_root(
     assert victim.is_dir()
 
 
-def test_remove_refuses_a_build_folder_that_is_a_link_out_of_the_root(
+def test_remove_unlinks_a_build_folder_link_out_of_the_root_and_keeps_its_target(
     store: EngineStore, tmp_path: Path
 ) -> None:
     outside = tmp_path / "keep"
@@ -1470,8 +1492,9 @@ def test_remove_refuses_a_build_folder_that_is_a_link_out_of_the_root(
     (outside / "file.txt").write_text("data", encoding="utf-8")
     (store.root / "fx").mkdir(parents=True)
     (store.root / "fx" / "1-cpu").symlink_to(outside, target_is_directory=True)
-    with pytest.raises(engine_store.StorePathError, match="not inside"):
-        store.remove("fx", "1", "cpu", in_use=lambda *_: False)
+    store.remove("fx", "1", "cpu", in_use=lambda *_: False)
+    assert names(store.root / "fx") == []
+    assert names(outside) == ["file.txt"]
     assert (outside / "file.txt").read_text(encoding="utf-8") == "data"
 
 
@@ -1575,7 +1598,7 @@ def test_sweep_ignores_a_root_that_does_not_exist(store: EngineStore) -> None:
     assert store.sweep() == []
 
 
-def test_sweep_does_not_follow_a_stage_link_out_of_the_root(
+def test_sweep_unlinks_a_stage_link_out_of_the_root_and_keeps_its_target(
     store: EngineStore, tmp_path: Path
 ) -> None:
     outside = tmp_path / "keep"
@@ -1583,11 +1606,12 @@ def test_sweep_does_not_follow_a_stage_link_out_of_the_root(
     (outside / "file.txt").write_text("data", encoding="utf-8")
     (store.root / "fx").mkdir(parents=True)
     (store.root / "fx" / ".stage-link").symlink_to(outside, target_is_directory=True)
-    assert store.sweep() == []
+    assert store.sweep() == [store.root / "fx" / ".stage-link"]
+    assert names(store.root / "fx") == []
     assert (outside / "file.txt").read_text(encoding="utf-8") == "data"
 
 
-def test_sweep_does_not_follow_a_download_link_out_of_the_root(
+def test_sweep_unlinks_a_download_link_out_of_the_root_and_keeps_its_target(
     store: EngineStore, tmp_path: Path
 ) -> None:
     outside = tmp_path / "keep"
@@ -1595,7 +1619,8 @@ def test_sweep_does_not_follow_a_download_link_out_of_the_root(
     (outside / "file.txt").write_text("data", encoding="utf-8")
     store.root.mkdir()
     (store.root / ".download-link").symlink_to(outside, target_is_directory=True)
-    assert store.sweep() == []
+    assert store.sweep() == [store.root / ".download-link"]
+    assert not os.path.lexists(store.root / ".download-link")
     assert (outside / "file.txt").read_text(encoding="utf-8") == "data"
 
 
@@ -1613,7 +1638,7 @@ def test_sweep_does_not_follow_an_engine_link_out_of_the_root(
     assert (outside / ".trash-y").is_dir()
 
 
-def test_sweep_skips_one_bad_link_and_clears_the_other_leftovers(
+def test_sweep_unlinks_the_leftover_links_and_clears_the_leftover_folders(
     store: EngineStore, tmp_path: Path
 ) -> None:
     outside = tmp_path / "keep"
@@ -1625,8 +1650,14 @@ def test_sweep_skips_one_bad_link_and_clears_the_other_leftovers(
     (engine / ".stage-link").symlink_to(outside, target_is_directory=True)
     (engine / ".trash-link").symlink_to(outside, target_is_directory=True)
     gone = store.sweep()
-    assert sorted(p.name for p in gone) == [".stage-real", ".trash-real"]
-    assert names(engine) == [".stage-link", ".trash-link"]
+    assert sorted(p.name for p in gone) == [
+        ".stage-link",
+        ".stage-real",
+        ".trash-link",
+        ".trash-real",
+    ]
+    assert names(engine) == []
+    assert names(outside) == ["file.txt"]
     assert (outside / "file.txt").read_text(encoding="utf-8") == "data"
 
 
@@ -1862,21 +1893,26 @@ def test_prune_engines_keeps_the_running_build_and_removes_the_stale_one(
     assert names(store.root / "fx") == ["2-cpu", "3-cpu"]
 
 
-def test_sweep_never_raises_when_the_root_cannot_be_read(store: EngineStore) -> None:
-    store.root.mkdir()
-    with mock.patch.object(Path, "iterdir", side_effect=PermissionError("denied")):
+@POSIX_DENIES_READS
+def test_sweep_never_raises_when_the_root_cannot_be_read(
+    store: EngineStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    (store.root / "fx" / ".trash-a").mkdir(parents=True)
+    with unreadable(store.root), caplog.at_level("WARNING"):
         assert store.sweep() == []
+    assert (store.root / "fx" / ".trash-a").is_dir()
+    assert [str(store.root) in m and "permissions" in m for m in caplog.messages] == [True]
 
 
 def test_prune_also_clears_a_damaged_build(store: EngineStore, tmp_path: Path) -> None:
     installed_store(store, tmp_path, ("1", "2"))
     (store.root / "fx" / "1-cpu" / RECORD_NAME).unlink()
-    (store.root / "fx" / "stray-file").write_text("x", encoding="utf-8")
+    (store.root / "fx" / "notes.txt").write_text("x", encoding="utf-8")
     (store.root / "packs").mkdir()
     (store.root / "packs" / "fx-1-cpu.whl").write_text("pack", encoding="utf-8")
     gone = store.prune(keep={("fx", "2", "cpu")}, in_use=lambda *_: False)
     assert [p.name for p in gone] == ["1-cpu"]
-    assert names(store.root / "fx") == ["2-cpu", "stray-file"]
+    assert names(store.root / "fx") == ["2-cpu", "notes.txt"]
     assert (store.root / "packs" / "fx-1-cpu.whl").is_file()
 
 
