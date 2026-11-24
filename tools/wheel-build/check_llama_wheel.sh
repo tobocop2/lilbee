@@ -133,9 +133,9 @@ check_macos() {  # bindir
     kind="$(file "${f}")" || refuse "file failed on ${f}"
     case "${kind}" in *Mach-O*) ;; *) continue ;; esac
     libs="$(otool -L "${f}")" || refuse "otool failed on ${f}"
-    for name in $(awk 'NR > 1 && $1 ~ /^@(rpath|loader_path)\// {n = split($1, a, "/"); print a[n]}' <<< "${libs}"); do
+    while IFS= read -r name; do
       test -f "${bindir}/${name}" || { echo "${f##*/} loads ${name}: missing"; missing=1; }
-    done
+    done < <(awk 'NR > 1 && $1 ~ /^@(rpath|loader_path)\// {n = split($1, a, "/"); print a[n]}' <<< "${libs}")
   done
   test "${missing}" -eq 0
   find "${bindir}" -type l | grep . && refuse "unexpected symlink"
