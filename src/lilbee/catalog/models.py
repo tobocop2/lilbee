@@ -76,7 +76,8 @@ def estimate_min_ram_gb(size_gb: float) -> float:
 def estimate_size_gb(params: int, gguf_filename: str) -> float:
     """Approximate the on-disk GB of *gguf_filename* from a model's parameter count.
 
-    A lower bound, and the browse list renders it as approximate. llama.cpp
+    An approximation that usually reads at or under the file, and the browse
+    list renders it as approximate. llama.cpp
     promotes ``output.weight`` and an untied ``token_embd`` above the ftype and
     leaves the norms in F32, so a published file usually costs more per weight
     than the type its name carries. An ftype can also mix a cheaper type into

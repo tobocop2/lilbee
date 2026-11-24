@@ -4125,17 +4125,17 @@ class TestQuantBytesPerParam:
             for label, base in labels.items()
             if _quant_bytes_per_param(f"m-{label}.gguf") < rates[base]
         }
-        assert not below, f"estimates below their ggml floor: {below}"
+        assert not below, f"estimates under the rate of their ggml type: {below}"
 
 
 class TestSizeEstimateAgainstPublishedFiles:
     """The browse-list figure against the bytes HuggingFace publishes for the file."""
 
     @pytest.mark.parametrize(("filename", "params", "published_bytes"), _PUBLISHED_GGUF_FILES)
-    def test_the_estimate_is_a_lower_bound_on_the_real_file(
+    def test_the_estimate_reads_at_or_under_each_pinned_file(
         self, filename: str, params: int, published_bytes: int
     ) -> None:
-        """Approximate and stated as such, so it reads under a file and never over it."""
+        """Each pinned file's estimate lies within the under-read cap and the rounding allowance."""
         from lilbee.catalog.models import estimate_size_gb
 
         published_gb = published_bytes / 1024**3
