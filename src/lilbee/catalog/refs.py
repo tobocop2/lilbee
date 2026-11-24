@@ -269,16 +269,16 @@ def parse_model_ref(raw: str) -> ModelRef:
     except ValueError:
         formats = ", ".join(f.value for f in ModelFormat)
         raise ValueError(
-            f"Model ref {raw!r} names format {tail!r}. Use one of: {formats}."
+            f"Model ref '{raw}' names format {tail!r}. Use one of: {formats}."
         ) from None
     if fmt == ModelFormat.GGUF:
         return _gguf_ref(base)
     if fmt == ModelFormat.XDNA:
         if not XDNA_TAG_RE.fullmatch(base):
-            raise ValueError(f"Model ref {raw!r} must be '<name>:<tag>#{fmt}'.")
+            raise ValueError(f"Model ref '{raw}' must be '<name>:<tag>#{fmt}'.")
         return ModelRef(base, "", fmt)
     if base.count("/") != 1:
-        raise ValueError(f"Model ref {raw!r} must be '<org>/<repo>#{fmt}'.")
+        raise ValueError(f"Model ref '{raw}' must be '<org>/<repo>#{fmt}'.")
     return ModelRef(base, "", fmt)
 
 

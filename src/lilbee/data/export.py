@@ -64,7 +64,7 @@ def resolve_format(value: str, path: Path) -> DatasetFormat:
         return DatasetFormat(suffix)
     except ValueError:
         raise ValueError(
-            f"Could not infer format from {path.name!r}; use a .parquet or .jsonl path"
+            f"Could not infer format from '{path.name}'; use a .parquet or .jsonl path"
         ) from None
 
 
