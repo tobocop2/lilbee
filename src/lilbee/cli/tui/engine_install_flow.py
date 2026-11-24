@@ -18,6 +18,7 @@ from lilbee.cli.tui.engine_commands import (
     announce,
     choose_engine_for_model,
     choose_engine_for_role,
+    publish_engines_changed,
 )
 from lilbee.cli.tui.engine_mark import format_size
 from lilbee.cli.tui.task_queue import TaskType
@@ -62,8 +63,13 @@ def install_then(app: LilbeeApp, name: str, then: Callable[[], object]) -> None:
         msg.ENGINE_TASK_NAME.format(engine=name),
         TaskType.ENGINE,
         target,
-        on_success=lambda: call_from_thread(app, then),
+        on_success=lambda: call_from_thread(app, _installed, app, then),
     )
+
+
+def _installed(app: LilbeeApp, then: Callable[[], object]) -> None:
+    publish_engines_changed(app)
+    then()
 
 
 def choose_for_model(
