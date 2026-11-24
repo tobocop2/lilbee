@@ -310,7 +310,9 @@ def mcp_cmd(
         exit_after_signal(exit_code_of(exc))
         raise
     except Exception as exc:
-        # The log holds the traceback; stderr gets one plain line, and stdout stays the protocol's.
+        # A failed build logged its own error. Any other failure keeps its traceback in the
+        # debug log. Stderr gets one plain line, and stdout stays the protocol's.
+        logging.getLogger(__name__).debug("The MCP server failed.", exc_info=True)
         typer.echo(f"lilbee: the MCP server failed: {exc}", err=True)
         raise typer.Exit(1) from exc
     # The teardown runs here, not at atexit, so a signal that lands during it sets the status.
