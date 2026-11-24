@@ -256,7 +256,12 @@ class GpuFleetPanel(Static):
         """Probe GPU stats and the Intel util hint off the UI thread and push the result back."""
         try:
             stats = probe_gpu_stats(devices)
-            hint = intel_util_hint(devices, stats)
+            # The hint is an extra line: a failing hint probe loses the hint, never the stats.
+            try:
+                hint = intel_util_hint(devices, stats)
+            except Exception:
+                log.debug("gpu_fleet_panel: intel hint probe failed", exc_info=True)
+                hint = None
         except Exception:
             log.debug("gpu_fleet_panel: probe failed", exc_info=True)
             return
