@@ -36,7 +36,7 @@ REQUESTS = [
 ]
 # Writers that need more setup than a bare request, so the unreadable test does not send them.
 MODEL_REQUESTS = [
-    pytest.param("put", f"/api/models/{role}", {"json": {"model": "m"}}, id=f"model-{role}")
+    pytest.param("put", f"/api/models/{role}", {"json": {"model": "acme/model-GGUF/model-Q4_K_M.gguf"}}, id=f"model-{role}")
     for role in ("chat", "embedding", "vision", "reranker")
 ]
 WRITE_REQUESTS = [
@@ -120,12 +120,13 @@ def test_a_read_only_config_answers_503_with_the_write_refusal(
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root writes a read-only file")
-def test_add_with_a_read_only_config_answers_503_with_the_write_refusal(
+def test_add_with_a_read_only_config_streams_the_write_refusal_as_an_error_event(
     client, read_only_config, tmp_path
 ):
+    """The add route streams: the status goes out first, so the error event holds the text."""
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "note.txt").write_text("hello")
     res = client.post("/api/add", json={"paths": [str(outside)]})
-    assert res.status_code == 503, res.text
-    assert _refusal(read_only_config) in res.text
+    assert "event: error" in res.text, res.text
+    assert str(read_only_config) + " is read-only; make it writable and try again" in res.text
