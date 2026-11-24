@@ -1080,7 +1080,8 @@ def test_a_probe_killed_by_sigterm_names_the_signal_and_the_probe_output(
     assert (
         "before it listed any device, so the engine cannot start. Something ended the "
         "probe: a GPU driver fault, the out-of-memory killer or a service manager. lilbee "
-        "does not guess a GPU from the host's Vulkan loader here, because the engine would "
+        "does not guess a GPU from the Vulkan loader of this computer here, "
+        "because the engine would "
         "then fail the same way.\nThe probe reported: ggml_cuda_init: failed"
     ) in str(caught.value)
 
