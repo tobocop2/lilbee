@@ -95,7 +95,7 @@ def test_the_mlx_and_llama_charges_add_up_against_one_pool(monkeypatch, tmp_path
     engines, _ = _host(monkeypatch, tmp_path, pool_gib=10, chat_gib=9, embed_gib=3)
     with caplog.at_level(logging.WARNING, logger=_LOG):
         plan = planning.plan_all_launches(engines=engines)
-    assert len({launch.role for launch in plan.launches}) == 1
+    assert {launch.role for launch in plan.launches} == {EMBED}
     assert "does not fit" in _warnings(caplog)
 
 
@@ -148,7 +148,8 @@ def test_a_discrete_gpu_host_refuses_an_mlx_chat_in_a_mixed_plan(monkeypatch, tm
     assert picked.name is None
     assert "cannot run on this host" in (picked.notice or "")
     engines, _ = _host(monkeypatch, tmp_path, pool_gib=24, chat_gib=8, embed_gib=2)
-    engines.pop(CHAT)
+    if picked.name is None:
+        engines.pop(CHAT)
     plan = planning.plan_all_launches(engines=engines)
     assert {launch.role for launch in plan.launches} == {EMBED}
 
