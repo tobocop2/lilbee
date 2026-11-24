@@ -92,7 +92,8 @@ def load(data_root: Path) -> dict[str, Any]:
 
     A file that changes while it is read raises ConfigChangedWhileReadError: an editor
     that rewrites the file in place can leave it half written at that moment, and a
-    read-modify-write of that half would drop every key it does not hold yet.
+    read-modify-write of that half would drop every key it does not hold yet. Any other
+    failure to read the file raises ConfigReadFailedError.
     """
     path = _config_path(data_root)
     if not path.exists():
