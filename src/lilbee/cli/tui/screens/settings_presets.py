@@ -273,7 +273,7 @@ class PresetsPane(VerticalScroll):
     def on_mount(self) -> None:
         self.reload()
 
-    @work(thread=True, exclusive=True)
+    @work(thread=True, exclusive=True, group="presets-reload")
     def reload(self) -> None:
         """Read the stored presets off the event loop, then show them."""
         try:

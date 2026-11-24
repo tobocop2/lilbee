@@ -9,7 +9,7 @@ import pytest
 from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Button, Checkbox, Input, Label, Select, Static, TabbedContent
-from textual.worker import Worker
+from textual.worker import Worker, WorkerState
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.app.presets import add_preset, list_presets
@@ -798,6 +798,17 @@ class TestPane:
             for reload in [worker for worker in app.workers if worker.node is pane]:
                 await reload.wait()
             assert await wait_until(pilot, lambda: not pane.query(".preset-line"))
+
+    async def test_the_reload_after_a_remove_leaves_the_remove_to_finish(self):
+        """The remove starts a reload before it returns; that reload must not cancel it."""
+        _seed()
+        app = _ChatApp()
+        async with app.run_test(size=(120, 50)) as pilot:
+            pane = await _open_pane(pilot, app)
+            assert await wait_until(pilot, lambda: bool(pane.query(".preset-remove")))
+            removal = pane._remove("omlx")
+            await removal.wait()
+            assert removal.state is WorkerState.SUCCESS
 
     async def test_a_failed_remove_notifies_the_service_text(self):
         _seed()
