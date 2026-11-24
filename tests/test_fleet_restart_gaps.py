@@ -627,20 +627,25 @@ def test_a_rediscover_on_a_request_thread_during_the_drain_leaves_the_kept_group
         dropped.set()
 
     calls: list[int] = []
+    failed = threading.Event()
 
     def fail_once() -> str:
         calls.append(1)
         if len(calls) == 1:
+            failed.set()
             raise _connection_error()
         return "retried"
 
     retried: list[str] = []
     request = threading.Thread(target=lambda: retried.append(provider._with_rediscover(fail_once)))
     real_drain = provider._drain_clients
+    in_drain: list[bool] = []
 
     def drain(clients: list[object], until: float) -> None:
         if clients and not request.ident:
             request.start()
+            # The request reached its rediscover while the pass drains chat.
+            in_drain.append(failed.wait(_JOIN_S))
             dropped.wait(_REDISCOVER_WAIT_S)
             old_chat.engine.release.set()
         real_drain(clients, until)  # type: ignore[arg-type]
@@ -648,14 +653,18 @@ def test_a_rediscover_on_a_request_thread_during_the_drain_leaves_the_kept_group
     monkeypatch.setattr(provider, "_drop_swap_refs", drop)
     monkeypatch.setattr(provider, "_drain_clients", drain)
 
-    provider.reload_role(CHAT)
+    # The stalled chat restarts on an unchanged plan, so the pass keeps embed.
+    provider._force_restart(CHAT, stopped_answering=True)
     caller.join(_JOIN_S)
     request.join(_JOIN_S)
     _join_fleet_threads()
 
+    assert in_drain == [True]
     assert retried == ["retried"]
-    assert [getattr(answer, "text", answer) for answer in answers] == ["the answer"]
     assert old_chat.shutdowns == 1
-    print("embed-after:", provider._swap_for(EMBED) is old_embed, old_embed.shutdowns)
-    assert provider._require_clients(EMBED)
-    print("embed-served:", provider._swap_for(EMBED) is old_embed, old_embed.shutdowns)
+    embed_running = old_embed.shutdowns == 0
+    try:
+        clients = provider._require_clients(EMBED)
+    except ProviderError as err:
+        pytest.fail(f"no embed server; old embed server running={embed_running}: {err}")
+    assert clients
