@@ -242,22 +242,26 @@ def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> No
         BarColumn(),
         DownloadColumn(),
         TextColumn("{task.percentage:>3.0f}%"),
+        literal_text_column("{task.fields[detail]}"),
         transient=True,
         console=console,
     ) as progress:
         desc = f"Downloading model '{model}'..."
-        ptask = progress.add_task(desc, total=None)
+        ptask = progress.add_task(desc, total=None, detail="")
 
         def _on_bytes(downloaded: int, total: int) -> None:
             if total > 0:
-                progress.update(ptask, total=total, completed=downloaded)
+                progress.update(ptask, total=total, completed=downloaded, detail="")
+
+        def _on_retry(text: str) -> None:
+            progress.update(ptask, detail=text)
 
         manager.pull(
             model,
             ModelSource.NATIVE,
             on_bytes=_on_bytes,
             on_notice=notices.append,
-            on_retry=retry_reporter(progress.console.print),
+            on_retry=retry_reporter(_on_retry),
         )
     warning = join_warnings(*notices, ensure_vision_projector(model, warn_unreadable=True))
     if warning is not None:
