@@ -19,6 +19,7 @@ from filelock import FileLock
 from lilbee.core.config import cfg
 from lilbee.data.ingest import SyncResult
 from lilbee.data.ingest.pipeline import _marks_sync_running
+from lilbee.runtime.cancellation import SignalFlag
 from lilbee.runtime.lock import (
     LibraryUnlockableError,
     SyncTurnOwner,
@@ -275,7 +276,7 @@ def test_lilbee_add_prints_the_wait_on_stderr_naming_the_running_sync(
     try:
         with mock.patch("lilbee.data.ingest.sync", _sync(library)):
             ingest_sync._run_sync(
-                threading.Event(), on_progress=_free_the_turn, started_by="lilbee add"
+                SignalFlag(), on_progress=_free_the_turn, started_by="lilbee add"
             )
     finally:
         holder.release()
