@@ -468,14 +468,33 @@ real_ldd() {
 
 @test "assert_libraries_resolve passes a missing library that the host supplies" {
   ldd_stub "libcuda.so.1 => not found" 0
-  run strict assert_libraries_resolve /x/llama-server 'libcuda\.so\.1'
+  run strict assert_libraries_resolve /x/llama-server '^[[:space:]]*libcuda\.so\.1 '
   [ "$status" -eq 0 ]
+}
+
+@test "assert_libraries_resolve refuses a library whose name only starts like the host library" {
+  local name
+  for name in libcuda.so.10 libcuda.so.1.1; do
+    ldd_stub "	${name} => not found" 0
+    run strict assert_libraries_resolve /x/llama-server '^[[:space:]]*libcuda\.so\.1 '
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"${name} => not found"* ]]
+  done
+}
+
+@test "each manylinux script checks its libraries through the shared helper and never reads ldd itself" {
+  local script
+  for script in llama_cuda_manylinux.sh llama_gpu_manylinux.sh ik_llama_manylinux.sh; do
+    grep -q 'assert_libraries_resolve "${BIN_DIR}/llama-server"' "${REPO_ROOT}/tools/wheel-build/${script}"
+    run grep -n '\bldd\b' "${REPO_ROOT}/tools/wheel-build/${script}"
+    [ "$status" -eq 1 ]
+  done
 }
 
 @test "assert_libraries_resolve refuses another missing library beside a host library" {
   ldd_stub "libcuda.so.1 => not found
 libggml.so => not found" 0
-  run strict assert_libraries_resolve /x/llama-server 'libcuda\.so\.1'
+  run strict assert_libraries_resolve /x/llama-server '^[[:space:]]*libcuda\.so\.1 '
   [ "$status" -ne 0 ]
   [[ "$output" == *"libggml.so => not found"* ]]
 }
