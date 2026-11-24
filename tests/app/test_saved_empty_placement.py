@@ -2,8 +2,8 @@
 
 The planner is the real one, on an engine that has a card and a chat model. The set and
 preview paths refuse ``{}`` because it has no entry for the chat model; the read paths
-(the service, the CLI, the HTTP route, the MCP tool) say the same and do not offer the
-clear hint for a spec that is kept.
+(the service, the CLI, the HTTP route, the MCP tool) give the same refusal. The CLI
+follows it with the clear hint, as it does for every refusal.
 """
 
 from __future__ import annotations
