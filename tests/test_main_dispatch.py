@@ -411,12 +411,15 @@ class TestPrestartMpResourceTracker:
         from lilbee.cli import tui
         from lilbee.cli.tui.app import LilbeeApp
 
+        async def _run_async(_self: LilbeeApp) -> None:
+            return None
+
         straggler_exit = mock.Mock()
         raised: str | int | None = None
         with (
             mock.patch.object(tui, "_prestart_mp_resource_tracker"),
             mock.patch.object(tui, "_redirect_native_stderr_to"),
-            mock.patch.object(LilbeeApp, "run", lambda _self: None),
+            mock.patch.object(LilbeeApp, "run_async", _run_async),
             mock.patch.object(LilbeeApp, "__init__", lambda _self, **_kw: None),
             mock.patch.object(LilbeeApp, "task_bar", create=True),
             mock.patch.object(LilbeeApp, "return_code", return_code),
@@ -451,12 +454,16 @@ class TestPrestartMpResourceTracker:
         from lilbee.cli import tui
         from lilbee.cli.tui.app import LilbeeApp
 
+        # The Ctrl-C comes from inside the run, so it crosses the loop helper as a real one does.
+        async def _run_async(_self: LilbeeApp) -> None:
+            raise KeyboardInterrupt
+
         calls = mock.Mock()
         escaped: BaseException | None = None
         with (
             mock.patch.object(tui, "_prestart_mp_resource_tracker"),
             mock.patch.object(tui, "_redirect_native_stderr_to"),
-            mock.patch.object(LilbeeApp, "run", side_effect=KeyboardInterrupt),
+            mock.patch.object(LilbeeApp, "run_async", _run_async),
             mock.patch.object(LilbeeApp, "__init__", lambda _self, **_kw: None),
             mock.patch.object(LilbeeApp, "task_bar", calls.task_bar, create=True),
             mock.patch.object(LilbeeApp, "return_code", None),
