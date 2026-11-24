@@ -1019,3 +1019,69 @@ def test_the_prune_fails_and_deletes_nothing_when_pefile_is_missing(
     with pytest.raises(ImportError):
         acb.main(["--prune-runtime", str(root)])
     assert _names(root) == ["mistralrs.exe", "vcomp140.dll"]
+
+
+# The headers of the synthetic PE file end at 0x200; the tables are after them.
+_HEADERS = 0x200
+_TRUNCATED = {
+    "import": _pe(("kernel32.dll", "vcruntime140.dll"))[:_HEADERS],
+    "delay-import": _pe((), ("vcruntime140.dll",))[:_HEADERS],
+}
+
+
+@pytest.mark.parametrize(
+    ("table", "directory"), [("import", "ENTRY_IMPORT"), ("delay-import", "DELAY_IMPORT")]
+)
+def test_a_truncated_import_table_is_an_error_and_not_an_empty_list(
+    table: str, directory: str
+) -> None:
+    with pytest.raises(ValueError, match=f"{directory} table of a file is truncated or corrupt"):
+        acb._pe_imports(_TRUNCATED[table])
+
+
+@pytest.mark.parametrize("table", _TRUNCATED)
+def test_the_prune_stops_and_deletes_nothing_for_a_truncated_import_table(
+    tmp_path: Path, table: str
+) -> None:
+    root = _runtime_bundle(
+        tmp_path, {"mistralrs.exe": _TRUNCATED[table], "vcruntime140.dll": _KERNEL}
+    )
+    with pytest.raises(ValueError, match="truncated or corrupt"):
+        acb.main(["--prune-runtime", str(root)])
+    assert _names(root) == ["mistralrs.exe", "vcruntime140.dll"]
+
+
+def test_the_wheel_check_fails_for_a_truncated_import_table(tmp_path: Path) -> None:
+    files = _windows_files()
+    files["llama-server.exe"] = _TRUNCATED["import"]
+    with pytest.raises(ValueError, match="truncated or corrupt"):
+        acb.check(_windows_wheel(tmp_path, files))
+
+
+def test_a_pe_file_with_another_suffix_is_a_root(tmp_path: Path) -> None:
+    root = _runtime_bundle(
+        tmp_path,
+        {
+            "mistralrs.exe": _KERNEL,
+            "engine.pyd": _pe(("vcruntime140.dll",)),
+            "vcruntime140.dll": _KERNEL,
+            "vcomp140.dll": _KERNEL,
+        },
+    )
+    assert acb.main(["--prune-runtime", str(root)]) == 0
+    assert _names(root) == ["engine.pyd", "mistralrs.exe", "vcruntime140.dll"]
+
+
+def test_a_runtime_file_with_an_upper_case_name_is_matched_to_its_import(
+    tmp_path: Path,
+) -> None:
+    root = _runtime_bundle(
+        tmp_path,
+        {
+            "mistralrs.exe": _pe(("kernel32.dll", "vcruntime140.dll")),
+            "VCRUNTIME140.DLL": _KERNEL,
+            "VCOMP140.DLL": _KERNEL,
+        },
+    )
+    assert acb.main(["--prune-runtime", str(root)]) == 0
+    assert _names(root) == ["VCRUNTIME140.DLL", "mistralrs.exe"]

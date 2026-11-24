@@ -38,15 +38,14 @@ cpu_libraries() {  # bindir
 }
 
 check_files() {  # bindir
-  local bindir="$1" tool dll
+  local bindir="$1" tool
   ls "${bindir}"
   for tool in llama-swap gguf-parser; do
     test -e "${bindir}/${tool}" -o -e "${bindir}/${tool}.exe" || refuse "wheel lacks ${tool}"
   done
   if [ "${os}" = Windows ]; then
-    for dll in msvcp140.dll vcruntime140.dll vcruntime140_1.dll; do
-      test -f "${bindir}/${dll}" || refuse "wheel lacks ${dll}"
-    done
+    # The pack deletes each Visual C++ runtime DLL that no file imports, so a DLL is required only when a file imports it.
+    python "${tools}/qa/assert_engine_bundle.py" --imports-only "${bindir}" || refuse "a file of the wheel imports a DLL that nothing provides"
   fi
 }
 
