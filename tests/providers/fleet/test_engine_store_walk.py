@@ -20,8 +20,10 @@ from pathlib import Path
 
 import pytest
 
+from lilbee.providers.fleet import engine_store
 from lilbee.providers.fleet.engine_store import (
     RECORD_NAME,
+    ChecksumError,
     EngineNotInstalledError,
     EngineStore,
     PinLock,
@@ -306,3 +308,98 @@ def test_a_link_out_of_the_root_keeps_its_target(store: EngineStore, tmp_path: P
     raised(lambda: store.remove(ENGINE, "1", "cpu", in_use=idle))
     raised(lambda: store.prune({(ENGINE, "9", "cpu")}, in_use=idle))
     assert (outside / "file.txt").read_text(encoding="utf-8") == "data"
+
+
+# K ruling 3: a read-only engine folder keeps its mode; the sweep and the prune warn.
+@posix_only
+@needs_non_root
+def test_the_sweep_keeps_the_mode_of_a_read_only_engine_folder(
+    store: EngineStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    engine = store.root / ENGINE
+    (engine / ".trash-x" / "f").mkdir(parents=True)
+    engine.chmod(0o555)
+    try:
+        with caplog.at_level(logging.WARNING):
+            store.sweep()
+        mode = stat.S_IMODE(os.lstat(engine).st_mode)
+    finally:
+        engine.chmod(0o755)
+    assert mode == 0o555, oct(mode)
+    warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(str(engine) in text and "read-only" in text for text in warned), warned
+
+
+@posix_only
+@needs_non_root
+def test_the_prune_warns_when_it_cannot_delete(
+    store: EngineStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    build(store, "1")
+    build(store, "2")
+    engine = store.root / ENGINE
+    engine.chmod(0o555)
+    try:
+        with caplog.at_level(logging.WARNING):
+            gone = store.prune({(ENGINE, "2", "cpu")}, in_use=idle)
+    finally:
+        engine.chmod(0o755)
+    assert gone == []
+    warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(str(engine) in text for text in warned), warned
+
+
+def test_a_leftover_that_goes_mid_sweep_is_gone_and_the_sweep_goes_on(
+    store: EngineStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = store.root / ENGINE
+    (engine / ".stage-a").mkdir(parents=True)
+    (engine / ".trash-b" / "f").mkdir(parents=True)
+    listing = engine_store._entries
+
+    def listed_then_gone(folder: Path, name: str) -> list[os.DirEntry[str]]:
+        entries = listing(folder, name)
+        if folder == engine:
+            (engine / ".stage-a").rmdir()
+        return entries
+
+    monkeypatch.setattr(engine_store, "_entries", listed_then_gone)
+    assert sorted(p.name for p in store.sweep()) == [".stage-a", ".trash-b"]
+    assert names(engine) == []
+
+
+def test_a_cleanup_failure_never_hides_the_first_error(
+    store: EngineStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    wheel = tmp_path / "fx.whl"
+    make_wheel(wheel)
+    lock = PinLock(ENGINE, "1", "cpu", {}, ("MIT",), "0" * 64, "server", ())
+
+    def refuse(path: Path) -> bool:
+        raise PermissionError(13, "denied", str(path))
+
+    monkeypatch.setattr(engine_store, "_delete", refuse)
+    with caplog.at_level(logging.WARNING), pytest.raises(ChecksumError):
+        store.install_from_wheel(lock, wheel)
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+# K ruling 3: an engine folder that is a link inside the root is damage.
+@posix_only
+def test_an_engine_folder_link_is_damage_and_remove_unlinks_it(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    real = store.root / "tei-real" / "1-cpu"
+    real.mkdir(parents=True)
+    (real / "data.txt").write_text("x", encoding="utf-8")
+    (store.root / ENGINE).symlink_to(store.root / "tei-real")
+    assert [str(e.folder) for e in store.damaged()] == [str(store.root / ENGINE)]
+    wheel = tmp_path / "fx.whl"
+    lock = PinLock(ENGINE, "1", "cpu", {}, ("MIT",), make_wheel(wheel), "server", ())
+    assert raised(lambda: store.install_from_wheel(lock, wheel)) is not None
+    assert store.prune(set(), in_use=idle) == []
+    assert (store.root / ENGINE).is_symlink()
+    store.remove(ENGINE, "1", "cpu", in_use=idle)
+    assert not os.path.lexists(store.root / ENGINE)
+    assert (real / "data.txt").read_text(encoding="utf-8") == "x"
