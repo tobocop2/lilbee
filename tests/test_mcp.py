@@ -1380,7 +1380,7 @@ class TestMain:
     def test_main_stops_on_a_failed_services_build(self, mock_get_services, mock_build, caplog):
         """A failed startup build ends the start with the HTTP server's error; nothing serves."""
         with (
-            caplog.at_level(logging.ERROR, logger="lilbee.app.services"),
+            caplog.at_level(logging.ERROR, logger="lilbee.mcp_server"),
             pytest.raises(RuntimeError, match="boom"),
         ):
             main()
@@ -1392,7 +1392,7 @@ class TestMain:
     def test_main_stops_on_a_failed_chat_model_fill(self, mock_fill, mock_build, caplog):
         """The chat-model fill is part of the build, as in the HTTP server."""
         with (
-            caplog.at_level(logging.ERROR, logger="lilbee.app.services"),
+            caplog.at_level(logging.ERROR, logger="lilbee.mcp_server"),
             pytest.raises(OSError, match="registry"),
         ):
             main()
@@ -1404,7 +1404,7 @@ class TestMain:
     def test_main_stops_on_a_stop_during_the_build(self, mock_get_services, mock_build, caplog):
         """A stop during the build ends the start without a build error."""
         with (
-            caplog.at_level(logging.INFO, logger="lilbee.app.services"),
+            caplog.at_level(logging.INFO, logger="lilbee.mcp_server"),
             pytest.raises(svc_mod.ServicesStoppingError),
         ):
             main()
@@ -1510,6 +1510,89 @@ class TestMcpProcessSignals:
                 if stream is not None:
                     stream.close()
         assert status == 128 + sig
+
+
+class TestLoggedServicesBuildSignal:
+    """A stop signal ends the build with a system exit; only a requested stop gets the line."""
+
+    @pytest.mark.parametrize(("requested", "logged"), [(True, True), (False, False)])
+    def test_a_system_exit_logs_the_stop_line_only_for_a_requested_stop(
+        self, monkeypatch, caplog, requested, logged
+    ):
+        monkeypatch.setattr(svc_mod._lifecycle, "stop_requested", requested)
+        logger = logging.getLogger("test.logged_services_build")
+        with (
+            caplog.at_level(logging.INFO, logger=logger.name),
+            pytest.raises(SystemExit),
+            svc_mod.logged_services_build(logger),
+        ):
+            raise SystemExit(143)
+        assert ("A stop arrived during the services build" in caplog.text) is logged
+
+
+_BUILD_DRIVER = """
+import sys, time
+from lilbee import mcp_server
+def build():
+    sys.stderr.write("BUILD-STARTED\\n")
+    sys.stderr.flush()
+    if sys.argv[1] == "fail":
+        raise RuntimeError("no model installed")
+    time.sleep(120)
+mcp_server.get_services = build
+mcp_server.fill_empty_chat_model = lambda: []
+sys.argv = ["lilbee", "mcp"]
+from lilbee.runtime.launcher import main
+main()
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
+class TestMcpProcessBuild:
+    """A real ``lilbee mcp`` whose services build fails or is stopped mid-build."""
+
+    def _start(self, tmp_path, mode):
+        env = {
+            **clean_env(tmp_path),
+            "LILBEE_CONFIG_DIR": str(tmp_path / "config"),
+            "LILBEE_ENGINE_DIR": str(tmp_path / "engine"),
+            "LILBEE_NO_SPLASH": "1",
+            "LILBEE_LOG_LEVEL": "INFO",
+            "PYTHONIOENCODING": "utf-8",
+        }
+        return subprocess.Popen(
+            [sys.executable, "-c", _BUILD_DRIVER, mode],
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def test_a_failed_build_exits_one_with_one_plain_line(self, tmp_path):
+        server = self._start(tmp_path, "fail")
+        out, err = server.communicate(timeout=_STOP_TIMEOUT_S)
+        assert server.returncode == 1
+        assert out == b""
+        text = err.decode()
+        assert "lilbee: the MCP server failed: no model installed" in text
+        assert "╭" not in text
+
+    @pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM], ids=["sigint", "sigterm"])
+    def test_a_stop_during_the_build_logs_one_stop_line(self, tmp_path, sig):
+        server = self._start(tmp_path, "sleep")
+        try:
+            assert server.stderr is not None
+            for line in server.stderr:
+                if b"BUILD-STARTED" in line:
+                    break
+            server.send_signal(sig)
+            _, err = server.communicate(timeout=_STOP_TIMEOUT_S)
+        finally:
+            if server.poll() is None:
+                server.kill()
+                server.wait()
+        assert server.returncode == 128 + sig
+        assert err.decode().count("A stop arrived during the services build") == 1
 
 
 class TestAddWithUrls:
@@ -3805,6 +3888,17 @@ class TestMcpCommandExit:
             result = CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
         mock_exit.assert_called_once_with(143)
         assert result.exit_code == 143
+
+    def test_a_failed_start_prints_one_plain_line_and_exits_one(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        with mock.patch("lilbee.mcp_server.main", side_effect=RuntimeError("no model")):
+            result = CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "lilbee: the MCP server failed: no model" in result.output
+        assert "Traceback" not in result.output
 
     def test_ctrl_c_reaches_the_stop_before_the_loop_starts(self, tmp_path):
         """The Ctrl-C handler is the stop path's before the loop starts, so asyncio leaves it."""

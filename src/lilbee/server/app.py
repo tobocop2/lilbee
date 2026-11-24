@@ -337,7 +337,7 @@ def _start_services() -> None:
     the first installed local model. A chat model that is set stays as set, and the
     embedding model is never swapped.
     """
-    with logged_services_build():
+    with logged_services_build(log):
         for notice in fill_empty_chat_model():
             log.info("%s", notice)
         services = get_services()
