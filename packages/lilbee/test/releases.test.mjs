@@ -198,7 +198,23 @@ test("releaseByTag resolves one release the same way and names a missing tag or 
   assert.equal(r.dev, false);
   assert.match(gh.calls[0].url, /\/repos\/tobocop2\/lilbee\/releases\/tags\/v0\.6\.90b432$/);
   await assert.rejects(releaseByTag("v0.0.0", { host: CUDA, fetch: gh.fetch }), /Release v0\.0\.0 was not found/);
-  await assert.rejects(releaseByTag("v0.6.90b432.dev3", { host: CUDA, fetch: gh.fetch }), /no build for linux\/x64/);
+  await assert.rejects(releaseByTag("v0.6.90b432.dev3", { host: CUDA, fetch: gh.fetch }), /no build for linux\/x64\.$/);
+});
+
+const OLD_MAC = { platform: "darwin", arch: "arm64", variant: "compat", amdGfxTargets: [], detection: DETECTION };
+const OLD_MAC_REASON = " The main build needs macOS 14.0 or newer; an older macOS from 12.3 on needs lilbee-compat-macos-arm64";
+
+test("a Mac too old for the main build is told its macOS release is why no build was found", async () => {
+  const gh = github({ pages: [[release("v2", ["lilbee-macos-arm64"])]], tags: { v2: release("v2", ["lilbee-macos-arm64"]) } });
+  await assert.rejects(releaseByTag("v2", { host: OLD_MAC, fetch: gh.fetch }), {
+    message: `Release v2 has no build for darwin/arm64.${OLD_MAC_REASON}, which this release does not ship.`,
+  });
+  await assert.rejects(latestRelease({ host: OLD_MAC, fetch: gh.fetch }), {
+    message: `No installable lilbee release was found.${OLD_MAC_REASON}, which no release ships yet.`,
+  });
+  await assert.rejects(latestRelease({ host: { ...OLD_MAC, arch: "x64" }, fetch: gh.fetch }), {
+    message: "No installable lilbee release was found.",
+  });
 });
 
 test("the repo is configurable", async () => {

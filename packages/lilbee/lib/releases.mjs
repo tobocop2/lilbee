@@ -5,7 +5,7 @@
  */
 
 import { assetNameFor } from "./assets.mjs";
-import { detectHost } from "./detect.mjs";
+import { detectHost, MACOS_FLOORS } from "./detect.mjs";
 import { launcherFetch } from "./fetch.mjs";
 import { LauncherError } from "./errors.mjs";
 
@@ -87,6 +87,14 @@ function baselineAsset(data, host) {
     return null;
   }
   return (data.assets ?? []).find((a) => a.name === name) ?? null;
+}
+
+/** The macOS floors behind a Mac's compat build, as a sentence that ends in `missing`; "" for any other host. */
+function oldMacosReason(host, missing) {
+  const floors = MACOS_FLOORS[host.arch];
+  if (host.platform !== "darwin" || buildsFor(host).baseline !== "compat" || !floors || floors.compat === floors.main) return "";
+  const asset = assetNameFor(host.platform, host.arch, "compat");
+  return ` The main build needs macOS ${floors.main} or newer; an older macOS from ${floors.compat} on needs ${asset}, ${missing}.`;
 }
 
 /** The build of `data` this host should run: its GPU build when the release ships one it can run, else `fallback`. */
@@ -177,8 +185,9 @@ export async function listReleases(query = {}) {
 
 /** The newest installable release on the chosen channel. Throws when none exists. */
 export async function latestRelease(query = {}) {
-  const [newest] = await listReleases({ ...query, limit: 1 });
-  if (!newest) throw new LauncherError("no-release", "No installable lilbee release was found.");
+  const { host, fetchImpl } = await resolveQuery(query);
+  const [newest] = await listReleases({ ...query, host, fetch: fetchImpl, limit: 1 });
+  if (!newest) throw new LauncherError("no-release", `No installable lilbee release was found.${oldMacosReason(host, "which no release ships yet")}`);
   return newest;
 }
 
@@ -191,6 +200,9 @@ export async function releaseByTag(tag, query = {}) {
   if (!res.ok) throw new LauncherError("http", `GET ${url} -> HTTP ${res.status}`, { status: res.status });
   const data = await res.json();
   const fallback = baselineAsset(data, q.host);
-  if (!fallback) throw new LauncherError("no-release", `Release ${tag} has no build for ${q.host.platform}/${q.host.arch}.`);
+  if (!fallback) {
+    const reason = oldMacosReason(q.host, "which this release does not ship");
+    throw new LauncherError("no-release", `Release ${tag} has no build for ${q.host.platform}/${q.host.arch}.${reason}`);
+  }
   return resolveBuild(data, fallback, q.host, q.fetchImpl);
 }
