@@ -2385,9 +2385,11 @@ def build_single_role_launch(
     if spec is not None:
         refuse_role_without_entry(spec, role)
     entry = spec.roles.get(role) if spec is not None else None
-    target = entry.device_target if entry is not None else RoleTarget.GPU
     binary = engine.binary()
     with _one_engine_per_pass(engine=engine):
+        target = (
+            entry.device_target if entry is not None else _runnable_target(engine, RoleTarget.GPU)
+        )
         devices = _plan_devices(binary, engine)
         if spec is not None:
             refused = _unusable_targets(spec, {role: model_path.as_posix()}, {role: engine})
@@ -3021,6 +3023,7 @@ class _PlanPass:
 
     snapshot_engine: EngineAdapter
     identities: dict[str, str]
+    targets: dict[str, frozenset[RoleTarget]] = field(default_factory=dict)
 
 
 # A pass reads the snapshot half a dozen times; resolving the identity per read let
@@ -3047,6 +3050,31 @@ def _one_engine_per_pass(*, engine: EngineAdapter) -> Iterator[None]:
         yield
     finally:
         _plan_pass.reset(token)
+
+
+def _engine_targets(engine: EngineAdapter) -> frozenset[RoleTarget]:
+    """The targets the engine's installed build runs on, asked once in a planning pass.
+
+    The OpenVINO answer comes from a ``--list-devices`` run that can last a minute.
+    """
+    current = _plan_pass.get()
+    if current is None:
+        return engine.device_targets(engine.binary())
+    if engine.name not in current.targets:
+        current.targets[engine.name] = engine.device_targets(engine.binary())
+    return current.targets[engine.name]
+
+
+def _runnable_target(engine: EngineAdapter, planned: RoleTarget) -> RoleTarget:
+    """*planned* for a role with no named target, or the CPU when the build lists no GPU.
+
+    The plan default is the GPU. A build that lists the CPU and no GPU, such as OVMS without
+    an Intel display, cannot run it. A build that lists neither (NPU only) keeps its plan.
+    """
+    if planned is not RoleTarget.GPU:
+        return planned
+    listed = _engine_targets(engine)
+    return RoleTarget.CPU if RoleTarget.CPU in listed and RoleTarget.GPU not in listed else planned
 
 
 def _pass_engine_identity(engine: EngineAdapter) -> str:
@@ -3702,16 +3730,14 @@ def _resolve_placement(
             if past_memory:
                 raise TargetRefusedError(past_memory)
             placed = replace(placed, low_free_memory=low_free)
-        return _with_auto_cpu_findings(
-            _on_runnable_targets(placed, placement, engines),
-            inputs,
-            model_refs,
-            devices,
-            engines=engines,
-            unified_budget=unified_budget,
+        return _on_runnable_targets(
+            _with_auto_cpu_findings(
+                placed, inputs, model_refs, devices, engines=engines, unified_budget=unified_budget
+            ),
+            engines,
         )
-    return _with_auto_cpu_findings(
-        _on_runnable_targets(
+    return _on_runnable_targets(
+        _with_auto_cpu_findings(
             _auto_placement(
                 inputs,
                 auto_cards,
@@ -3723,14 +3749,13 @@ def _resolve_placement(
                 unpinnable=unpinnable,
                 refuse_oversize=_is_mixed(engines),
             ),
-            None,
-            engines,
+            inputs,
+            model_refs,
+            devices,
+            engines=engines,
+            unified_budget=unified_budget,
         ),
-        inputs,
-        model_refs,
-        devices,
-        engines=engines,
-        unified_budget=unified_budget,
+        engines,
     )
 
 
@@ -3835,45 +3860,19 @@ def _low_free(held: int, need: int, free: int) -> LowFreeMemory | None:
 
 
 def _on_runnable_targets(
-    placed: Placement,
-    placement: PlacementSpec | None,
-    engines: Mapping[WorkerRole, EngineAdapter],
+    placed: Placement, engines: Mapping[WorkerRole, EngineAdapter]
 ) -> Placement:
-    """*placed* with each auto GPU instance on the CPU when its engine build lists no GPU.
+    """*placed* with each auto instance on the target its engine build can run.
 
-    An instance is auto when it pins no device and its role names no target in *placement*.
-    The plan default is the GPU, and no auto path asks the engine, so a build such as OVMS
-    without an Intel display would get a target it cannot run. A named target keeps its
-    own refusal. An engine that lists no CPU target either (an NPU only build) keeps its plan,
-    because the CPU is no better there. Each engine is asked once.
+    An auto instance pins no device. A named GPU target pins one, and a named CPU or NPU
+    target is never the GPU, so only auto instances reach the rule in ``_runnable_target``.
     """
-    named = (
-        frozenset(
-            role
-            for role, entry in placement.roles.items()
-            if entry.target is not None and entry.target is not RoleTarget.AUTO
-        )
-        if placement is not None
-        else frozenset()
-    )
-    cpu_only: dict[int, bool] = {}
-
-    def runs_on_cpu_only(role: WorkerRole) -> bool:
-        engine = engines[role]
-        if id(engine) not in cpu_only:
-            listed = engine.device_targets(engine.binary())
-            cpu_only[id(engine)] = RoleTarget.CPU in listed and RoleTarget.GPU not in listed
-        return cpu_only[id(engine)]
-
     return replace(
         placed,
         instances=tuple(
-            replace(inst, target=RoleTarget.CPU)
-            if inst.target is RoleTarget.GPU
-            and not inst.devices
-            and inst.role not in named
-            and runs_on_cpu_only(inst.role)
-            else inst
+            inst
+            if inst.devices
+            else replace(inst, target=_runnable_target(engines[inst.role], inst.target))
             for inst in placed.instances
         ),
     )
@@ -3902,7 +3901,10 @@ def _with_auto_cpu_findings(
         for inst in placed.instances
         if inst.target is RoleTarget.GPU
         and not inst.devices
-        and _weights_on_cpu(engines[inst.role], _role_gpu_layers(inst.role))
+        and (
+            _weights_on_cpu(engines[inst.role], _role_gpu_layers(inst.role))
+            or _runnable_target(engines[inst.role], inst.target) is RoleTarget.CPU
+        )
     )
     if not cpu:
         return placed
@@ -4060,7 +4062,7 @@ def _unusable_targets(
         if entry is None or entry.target is None or entry.target is RoleTarget.AUTO:
             continue
         engine = engines[role]
-        if entry.target not in engine.device_targets(engine.binary()):
+        if entry.target not in _engine_targets(engine):
             refused[role] = f"{role.value}: {_TARGET_REFUSED[entry.target]}"
     return refused
 
@@ -4396,6 +4398,23 @@ class ResolvedPlacement:
 
 @_one_warning_per_plan()
 def resolve_placement_plan(
+    placement: PlacementSpec | None,
+    *,
+    engines: Mapping[WorkerRole, EngineAdapter],
+    no_engine_notices: Mapping[WorkerRole, str] | None = None,
+    fall_back_to_auto: bool = False,
+) -> ResolvedPlacement:
+    """Resolve the placement for the view, asking each engine for its targets once."""
+    with _one_engine_per_pass(engine=snapshot_engine(engines)):
+        return _resolved_placement_plan(
+            placement,
+            engines=engines,
+            no_engine_notices=no_engine_notices,
+            fall_back_to_auto=fall_back_to_auto,
+        )
+
+
+def _resolved_placement_plan(
     placement: PlacementSpec | None,
     *,
     engines: Mapping[WorkerRole, EngineAdapter],
