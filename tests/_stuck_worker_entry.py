@@ -12,9 +12,11 @@ test suite, so it runs outside pytest.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import os
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import lilbee.app.analyze as analyze
@@ -27,6 +29,8 @@ def mark(text: str) -> None:
 
 
 never = threading.Event()
+# With X_POOL=kept the worker runs on this pool, which the process holds to its exit.
+kept_pool = ThreadPoolExecutor(max_workers=1)
 
 
 def worker() -> None:
@@ -36,7 +40,10 @@ def worker() -> None:
 
 
 async def leave_a_worker() -> None:
-    asyncio.get_running_loop().run_in_executor(None, worker)
+    if os.environ.get("X_POOL") == "kept":
+        kept_pool.submit(worker)
+    else:
+        asyncio.get_running_loop().run_in_executor(None, worker)
     if os.environ["X_HOLD"] == "1":
         mark("HOLDING")
         await asyncio.sleep(3600)
@@ -59,6 +66,7 @@ async def wrapped_analysis(*args: Any, **kwargs: Any) -> Any:
 
 
 def main() -> None:
+    atexit.register(mark, "ATEXIT")
     ingest.sync = fake_sync  # type: ignore[assignment]
     analyze.run_analysis = wrapped_analysis  # type: ignore[assignment]
     sys.argv = ["lilbee", *sys.argv[1:]]
