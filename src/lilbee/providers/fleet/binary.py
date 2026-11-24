@@ -40,8 +40,11 @@ class EngineTool(StrEnum):
     GGUF_PARSER = "gguf-parser"
 
 
+ROUTER_GO_INSTALL = "go install github.com/mostlygeek/llama-swap@latest"
+"""The command that builds the newest llama-swap router from source."""
+
 _HELPER_INSTALL = {
-    EngineTool.LLAMA_SWAP: "go install github.com/mostlygeek/llama-swap@latest",
+    EngineTool.LLAMA_SWAP: ROUTER_GO_INSTALL,
     EngineTool.GGUF_PARSER: "go install github.com/gpustack/gguf-parser-go/cmd/gguf-parser@latest",
 }
 """The command that installs a helper tool next to a llama-server the user supplies."""
