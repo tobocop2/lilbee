@@ -54,6 +54,7 @@ _COPYLEFT = re.compile(r"(^|[^L])GPL|AGPL")
 _DEVICE_LINE = re.compile(r"^\s*[A-Za-z]+\d+:\s*.+?\s*\(\d+\s*MiB")
 _TERM_LIMIT_S = 4.0
 _READY_POLL_S = 0.1
+_LAUNCH_ATTEMPTS = 3
 
 
 class Verdict(StrEnum):
@@ -676,21 +677,29 @@ def free_port() -> int:
 def launch(
     binary: Path, pin: Mapping[str, Any], *, timeout: float
 ) -> tuple[subprocess.Popen[bytes], int] | None:
-    """Start the engine from the pin's launch template; None without ``{port}`` or an answer."""
+    """Start the engine from the pin's launch template; None without ``{port}`` or an answer.
+
+    A free port can be taken between ``free_port`` and the engine's bind, so an engine that exits
+    before it answers gets a new port, up to ``_LAUNCH_ATTEMPTS`` times.
+    """
     template = pin["launch"]
     if not any("{port}" in arg for arg in template):
         return None
-    port = free_port()
-    argv = [arg.format(binary=binary, port=port) for arg in template]
-    proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    probe = _Probe(f"http://127.0.0.1:{port}", {}, 1.0)
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline and proc.poll() is None:
-        if probe.call("GET", "/health")[0] == _HTTP_OK:
-            return proc, port
-        time.sleep(_READY_POLL_S)
-    proc.kill()
-    proc.wait()
+    for _ in range(_LAUNCH_ATTEMPTS):
+        port = free_port()
+        argv = [arg.format(binary=binary, port=port) for arg in template]
+        proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        probe = _Probe(f"http://127.0.0.1:{port}", {}, 1.0)
+        while time.monotonic() < deadline and proc.poll() is None:
+            if probe.call("GET", "/health")[0] == _HTTP_OK and proc.poll() is None:
+                return proc, port
+            time.sleep(_READY_POLL_S)
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        if time.monotonic() >= deadline:
+            break
     return None
 
 
