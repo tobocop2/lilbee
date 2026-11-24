@@ -615,6 +615,14 @@ def test_count_chat_text_tokens_is_none_when_the_chat_engine_has_no_route() -> N
     assert p.count_chat_text_tokens("hello") is None
 
 
+def test_estimate_chat_tokens_counts_utf8_bytes_without_a_server() -> None:
+    """The estimate answers when the engine cannot render, so it calls no server."""
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    assert p.estimate_chat_tokens("héllo", model="vendor/m") == len("héllo".encode())
+    assert client.method_calls == []
+
+
 _COUNT_MESSAGES = [{"role": "user", "content": "hello"}]
 
 

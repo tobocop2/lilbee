@@ -41,6 +41,7 @@ from lilbee.providers.base import (
     SERVER_STOPPING_MESSAGE,
     ProviderError,
     ProviderErrorKind,
+    byte_token_estimate,
     prompt_token_budget,
 )
 from lilbee.providers.fleet import planning
@@ -2909,6 +2910,10 @@ class FleetProvider:
         self._require_configured_model(model, str(cfg.chat_model), WorkerRole.CHAT)
         with self._lazy_warm_scope():
             return self._render_count(messages, tools, tool_choice, options)
+
+    def estimate_chat_tokens(self, text: str, *, model: str | None = None) -> int:
+        """UTF-8 bytes of *text*: an engine that cannot render a prompt is not asked again."""
+        return byte_token_estimate(text)
 
     def vision_ocr(
         self,

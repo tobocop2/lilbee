@@ -3,7 +3,7 @@
 It models the declared surface of liter-llm 2.5.0 (its type stub), never the adapter's
 reading of it: reply objects carry the documented accessors and nothing the stub omits.
 It has the async ``chat`` / ``chat_stream`` / ``embed`` / ``rerank`` functions, the
-request and options types, and the typed exception hierarchy. Each call
+sync ``count_tokens``, the request and options types, and the typed exception hierarchy. Each call
 records the fields it received so a test can assert what went on the wire.
 """
 
@@ -301,6 +301,8 @@ class FakeSdk:
     rerank_result: Any = None
     rerank_error: BaseException | None = None
     catalog: list[Any] = field(default_factory=list)
+    count_result: int = 0
+    count_error: BaseException | None = None
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     clients: list[dict[str, Any]] = field(default_factory=list)
     _module: types.ModuleType | None = field(default=None, repr=False)
@@ -327,6 +329,7 @@ class FakeSdk:
         mod.embed = self._embed  # type: ignore[attr-defined]
         mod.rerank = self._rerank  # type: ignore[attr-defined]
         mod.list_catalog_models = self._list_catalog_models  # type: ignore[attr-defined]
+        mod.count_tokens = self._count_tokens  # type: ignore[attr-defined]
         return mod
 
     def _create_client(self, options: Any) -> Any:
@@ -366,6 +369,12 @@ class FakeSdk:
         if self.rerank_error is not None:
             raise self.rerank_error
         return self.rerank_result
+
+    def _count_tokens(self, model: str, text: str) -> int:
+        self.calls.append(("count_tokens", {"model": model, "text": text}))
+        if self.count_error is not None:
+            raise self.count_error
+        return self.count_result
 
     def _list_catalog_models(self, provider: str | None = None) -> list[Any]:
         """Like the library: exact provider id, every provider when absent or empty."""

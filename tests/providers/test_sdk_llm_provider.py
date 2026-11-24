@@ -20,6 +20,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.local_servers import LocalServerSpec
+from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
@@ -63,6 +64,9 @@ class FakeBackend:
     list_models_calls: list[tuple[str, str, str]] = field(default_factory=list)
     list_chat_models_calls: list[str] = field(default_factory=list)
     supports_tools_calls: list[str] = field(default_factory=list)
+    count_tokens_result: int = 0
+    raise_count: Exception | None = None
+    count_tokens_calls: list[tuple[ProviderModelRef, str]] = field(default_factory=list)
 
     def available(self) -> bool:
         return True
@@ -126,6 +130,12 @@ class FakeBackend:
     def supports_tools(self, model_ref: str) -> bool:
         self.supports_tools_calls.append(model_ref)
         return self.supports_tools_result
+
+    def count_tokens(self, ref: ProviderModelRef, text: str) -> int:
+        self.count_tokens_calls.append((ref, text))
+        if self.raise_count is not None:
+            raise self.raise_count
+        return self.count_tokens_result
 
 
 @pytest.fixture(autouse=True)
@@ -519,6 +529,39 @@ class TestChatStream:
         stream = provider.chat([{"role": "user", "content": "hi"}], stream=True)
         with pytest.raises(ProviderError, match="Chat failed: stream died"):
             list(stream)
+
+
+class TestEstimateChatTokens:
+    def test_counts_with_the_backend_tokenizer_for_the_named_model(self) -> None:
+        backend = FakeBackend(count_tokens_result=7)
+        provider = SdkLLMProvider(backend)
+        assert provider.estimate_chat_tokens("hello there", model="openai/gpt-4o") == 7
+        assert backend.count_tokens_calls == [(parse_model_ref("openai/gpt-4o"), "hello there")]
+
+    def test_counts_for_the_configured_chat_model_when_none_is_named(self) -> None:
+        backend = FakeBackend(count_tokens_result=7)
+        cfg.chat_model = "openai/o3-mini"
+        provider = SdkLLMProvider(backend)
+        assert provider.estimate_chat_tokens("hello there") == 7
+        assert backend.count_tokens_calls == [(parse_model_ref("openai/o3-mini"), "hello there")]
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(NotImplementedError("no own tokenizer"), id="no-own-tokenizer"),
+            pytest.param(ProviderError("tokenizer did not load"), id="tokenizer-failed"),
+        ],
+    )
+    def test_falls_back_to_utf8_bytes_when_the_backend_cannot_count(
+        self, error: Exception
+    ) -> None:
+        """A failed or missing tokenizer must not fail the count route, nor read low."""
+        backend = FakeBackend(raise_count=error)
+        provider = SdkLLMProvider(backend)
+        text = "héllo there"
+        assert provider.estimate_chat_tokens(text, model="anthropic/claude-sonnet-4-5") == len(
+            text.encode()
+        )
 
 
 class TestEmbed:

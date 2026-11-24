@@ -34,6 +34,7 @@ from lilbee.providers.base import (
     StreamFinish,
     ToolCall,
     ToolCallDelta,
+    byte_token_estimate,
     require_role_ref,
 )
 from lilbee.providers.key_check import provider_api_key_in_use
@@ -154,6 +155,17 @@ class SdkLLMProvider(LLMProvider):
     ) -> int:
         """Cloud SDK backends render no prompt locally, so an exact count is unavailable."""
         raise NotImplementedError("SDK backends have no tokenizer for chat prompt counts")
+
+    def estimate_chat_tokens(self, text: str, *, model: str | None = None) -> int:
+        """Count *text* with the model's own tokenizer where the SDK has one, else in bytes."""
+        ref = parse_model_ref(
+            require_role_ref(model or cfg.chat_model, WorkerRole.CHAT, provider="sdk")
+        )
+        try:
+            return self._backend.count_tokens(ref, text)
+        except (NotImplementedError, ProviderError):
+            log.debug("No tokenizer count for %s; counting bytes", ref.for_display(), exc_info=True)
+            return byte_token_estimate(text)
 
     @overload
     def chat(
