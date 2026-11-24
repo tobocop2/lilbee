@@ -26,6 +26,7 @@ from rich.text import Text
 from typer.testing import CliRunner
 
 import lilbee.app.services as svc_mod
+from lilbee.app.analyze import TIP_TEXT
 from lilbee.app.search import clean_result
 from lilbee.app.version import get_version
 from lilbee.cli import app
@@ -8841,7 +8842,10 @@ class TestSyncCancelledExit:
             assert json.loads(result.output) == {"error": "Sync cancelled."}
         else:
             # A refusal behind the cancel adds its own sentence to this line.
-            assert result.output.strip() == "Sync cancelled."
+            expected = "Sync cancelled."
+            if command == ["sync"]:
+                expected = f"{TIP_TEXT} {expected}"  # the tip comes before the sync starts
+            assert " ".join(result.output.split()) == expected
         assert before == ["documents", "documents/doc.txt"]
         assert _library() == before
         assert mock_svc.store.method_calls == [], "the sync started under the held reset"
@@ -9005,7 +9009,8 @@ class TestSyncCancelledExit:
         if flags:
             assert json.loads(result.output) == {"error": "Sync cancelled."}
         else:
-            assert " ".join(result.output.split()).endswith("link.txt Sync cancelled.")
+            # The analyze tip comes before the sync starts, so it sits ahead of the cancel line.
+            assert " ".join(result.output.split()).endswith(f"link.txt {TIP_TEXT} Sync cancelled.")
         assert cfg.linked_roots == roots
 
     @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["plain", "json"])
