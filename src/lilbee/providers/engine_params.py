@@ -171,7 +171,7 @@ def resolve_model_path(model: str, registry: ModelRegistry | None = None) -> Pat
         )
 
     raise ProviderError(
-        f"Model {model!r} is not installed. Run 'lilbee model pull {model}' to download it.",
+        f"Model '{model}' is not installed. Run 'lilbee model pull {model}' to download it.",
         provider="llama-server",
         kind=ProviderErrorKind.NOT_FOUND,
     )

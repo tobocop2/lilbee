@@ -50,26 +50,26 @@ CMD_CRAWL_PAGE = "Crawling [{current}/{total}]: {url}"
 CMD_CRAWL_PAGE_INDETERMINATE = "Crawling... ({current} pages so far): {url}"
 MODEL_REASON_DEFAULT = "it could not be resolved"
 MODEL_FALLBACK_NOTICE = (
-    "{label} model {original!r} is unavailable ({reason}); using {effective!r} for this session. "
+    "{label} model '{original}' is unavailable ({reason}); using '{effective}' for this session. "
     "Pick a different model or restore the original to clear this notice."
 )
 MODEL_FALLBACK_FAILED = (
-    "{label} model {original!r} is unavailable ({reason}) and the fallback {effective!r} was "
-    "rejected; keeping {original!r}. Pick a working {label} model in settings."
+    "{label} model '{original}' is unavailable ({reason}) and the fallback '{effective}' was "
+    "rejected; keeping '{original}'. Pick a working {label} model in settings."
 )
 MODEL_ENV_PIN_UNUSABLE = (
-    "{label} model {original!r} is unavailable ({reason}). {env_var} sets it, so lilbee keeps it. "
-    "Unset {env_var} or point it at an installed model."
+    "{label} model '{original}' is unavailable ({reason}). {env_var} sets it, so lilbee keeps "
+    "it. Unset {env_var} or point it at an installed model."
 )
 MODEL_CLI_PIN_UNUSABLE = (
-    "{label} model {original!r} is unavailable ({reason}). The --model flag sets it, so lilbee "
+    "{label} model '{original}' is unavailable ({reason}). The --model flag sets it, so lilbee "
     "keeps it. Pass a different model to --model or drop the flag."
 )
 MODEL_UNUSABLE_NO_FALLBACK = (
-    "{label} model {original!r} is unavailable ({reason}) and nothing is installed to fall back "
+    "{label} model '{original}' is unavailable ({reason}) and nothing is installed to fall back "
     "to. Pick one from the catalog."
 )
-MODEL_ADOPTED_LOG = "{label} model: using installed {effective!r}."
+MODEL_ADOPTED_LOG = "{label} model: using installed '{effective}'."
 CMD_CRAWL_SUCCESS = "Crawled {count} page(s) from {url}"
 CMD_CRAWL_PAGES_FAILED = "{count} page(s) failed; last: {reason}"
 CMD_CRAWL_FAILED = "Crawl failed: {error}"
