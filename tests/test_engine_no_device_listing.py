@@ -8,7 +8,6 @@ from typing import Any
 
 import pytest
 
-from lilbee.providers.fleet.engines import mistral as mistral_module
 from lilbee.providers.fleet.engines import tei as tei_module
 from lilbee.providers.fleet.engines.lemonade import LEMONADE
 from lilbee.providers.fleet.engines.mistral import MISTRAL
@@ -28,16 +27,24 @@ def test_an_engine_with_no_probe_reports_no_device_listing(adapter: Any) -> None
 
 
 @pytest.mark.parametrize("backend", ["cpu", "cuda"])
-@pytest.mark.parametrize(
-    ("adapter", "module"), [(TEI, tei_module), (MISTRAL, mistral_module)], ids=["tei", "mistral"]
-)
 def test_an_engine_that_reads_cards_without_a_probe_reports_no_device_listing(
-    adapter: Any, module: Any, backend: str, monkeypatch: pytest.MonkeyPatch
+    backend: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        type(adapter), "pick_build", lambda _self, _host: SimpleNamespace(backend=backend)
+        type(TEI), "pick_build", lambda _self, _host: SimpleNamespace(backend=backend)
     )
-    monkeypatch.setattr(module, "visible_nvidia_cards", lambda: [_CARD])
-    probe = adapter.discover_devices(_BINARY)
+    monkeypatch.setattr(tei_module, "visible_nvidia_cards", lambda: [_CARD])
+    probe = TEI.discover_devices(_BINARY)
     assert probe.devices == ([_CARD] if backend == "cuda" else [])
     assert probe.has_listing is False
+
+
+@pytest.mark.parametrize("backend", ["cpu", "metal"])
+def test_mistral_reads_no_card_and_reports_no_device_listing(
+    backend: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        type(MISTRAL), "pick_build", lambda _self, _host: SimpleNamespace(backend=backend)
+    )
+    probe = MISTRAL.discover_devices(_BINARY)
+    assert (probe.devices, probe.has_listing) == ([], False)
