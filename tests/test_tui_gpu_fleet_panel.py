@@ -365,6 +365,70 @@ async def test_panel_stays_responsive_while_the_intel_hint_probe_blocks(
 
 
 @pytest.mark.asyncio
+async def test_panel_renders_stats_when_the_intel_hint_probe_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raising hint probe loses only the hint; the stats still render."""
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    stat = _make_stat(0, utilization_pct=None)
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {0: stat})
+
+    def _boom(devices: object, stats: object) -> None:
+        raise RuntimeError("hint probe exploded")
+
+    monkeypatch.setattr(panel_mod, "intel_util_hint", _boom)
+
+    app = _PanelHost()
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        panel.set_devices([_make_device(0, backend="SYCL")], labels={0: "SYCL0"})
+        panel._request_stats()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = str(panel.render())
+        assert "SYCL0" in rendered
+        assert "igt-gpu-tools" not in rendered
+        assert panel._probing is False
+
+
+@pytest.mark.asyncio
+async def test_panel_removed_while_the_probe_runs_gets_no_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A panel removed while its worker runs stays quiet: no repaint, no error."""
+    import threading
+
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    release = threading.Event()
+    stat = _make_stat(0, utilization_pct=None)
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {0: stat})
+
+    def _slow(devices: object, stats: object) -> None:
+        release.wait(timeout=3)
+
+    monkeypatch.setattr(panel_mod, "intel_util_hint", _slow)
+
+    app = _PanelHost()
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        panel.set_devices([_make_device(0, backend="SYCL")], labels={0: "SYCL0"})
+        panel._request_stats()
+        await panel.remove()
+        updates: list[object] = []
+        monkeypatch.setattr(panel, "update", updates.append)
+        release.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert updates == []
+
+
+@pytest.mark.asyncio
 async def test_panel_renders_utilization_percentage(monkeypatch: pytest.MonkeyPatch) -> None:
     """Utilization percentage appears in the rendered output for a CUDA GPU."""
     import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
