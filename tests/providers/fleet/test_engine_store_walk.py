@@ -408,10 +408,11 @@ def test_the_retry_adds_the_write_bit_only_inside_the_tree(tmp_path: Path) -> No
 def test_an_engine_folder_link_is_damage_and_remove_unlinks_it(
     store: EngineStore, tmp_path: Path
 ) -> None:
-    real = store.root / "tei-real" / "1-cpu"
+    # The target has a dot name, so the walk skips it and only the link is under test.
+    real = store.root / ".tei-real" / "1-cpu"
     real.mkdir(parents=True)
     (real / "data.txt").write_text("x", encoding="utf-8")
-    (store.root / ENGINE).symlink_to(store.root / "tei-real")
+    (store.root / ENGINE).symlink_to(store.root / ".tei-real")
     assert [str(e.folder) for e in store.damaged()] == [str(store.root / ENGINE)]
     wheel = tmp_path / "fx.whl"
     lock = PinLock(ENGINE, "1", "cpu", {}, ("MIT",), make_wheel(wheel), "server", ())

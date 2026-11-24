@@ -162,7 +162,7 @@ _PRUNE_SKIPPED = "The engine prune cannot read %s. Run 'lilbee engine list' for 
 _SWEEP_SKIPPED = "The engine sweep cannot clear %s: %s"
 _STAYS = "lilbee cannot delete %s. Correct its permissions; the next start removes it."
 _READ_ONLY = (
-    "The engine folder %s is read-only, so %s stays. Make it writable; the next start removes it."
+    "The folder %s is read-only, so %s stays. Make it writable; the next start removes it."
 )
 _LICENCE_JOINER = re.compile(r"\s+(?:OR|AND)\s+")
 PACK_DIR = "packs"
