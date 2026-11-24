@@ -30,7 +30,9 @@ listed() {  # pattern message
 }
 
 unresolved() {  # server
-  if ldd "$1" | grep 'not found'; then refuse "llama-server has an unresolved library"; fi
+  local libs
+  libs="$(ldd "$1")" || refuse "ldd failed on $1"
+  if grep 'not found' <<< "${libs}"; then refuse "llama-server has an unresolved library"; fi
 }
 
 cpu_libraries() {  # bindir
@@ -50,9 +52,13 @@ check_files() {  # bindir
 }
 
 check_licences() {  # wheel bindir
-  local wheel="$1" bindir="$2" expression lic third
+  local wheel="$1" bindir="$2" expression lic third metadata header
   expression="$(cat license-expression.txt)"
-  unzip -p "${wheel}" '*.dist-info/METADATA' | grep -x "License-Expression: ${expression}"
+  # Only the header block of METADATA counts: its description follows the first blank line.
+  metadata="$(unzip -p "${wheel}" '*.dist-info/METADATA')"
+  header="$(sed '/^$/q' <<< "${metadata}")"
+  grep -Fx "License-Expression: ${expression}" <<< "${header}" \
+    || refuse "wheel lacks the licence expression ${expression} in its METADATA header"
   # The listing goes to a file: grep -q stops at its first match, and a pipe from unzip then fails with SIGPIPE under
   # pipefail on a long listing.
   unzip -l "${wheel}" > wheel-listing.txt
@@ -122,10 +128,12 @@ check_backend() {  # bindir
 
 # Every library that a binary loads by @rpath or @loader_path must be a file beside it.
 check_macos() {  # bindir
-  local bindir="$1" missing=0 f name
+  local bindir="$1" missing=0 f name kind libs
   for f in "${bindir}"/*; do
-    file "${f}" | grep -q 'Mach-O' || continue
-    for name in $(otool -L "${f}" | awk 'NR > 1 && $1 ~ /^@(rpath|loader_path)\// {n = split($1, a, "/"); print a[n]}'); do
+    kind="$(file "${f}")" || refuse "file failed on ${f}"
+    case "${kind}" in *Mach-O*) ;; *) continue ;; esac
+    libs="$(otool -L "${f}")" || refuse "otool failed on ${f}"
+    for name in $(awk 'NR > 1 && $1 ~ /^@(rpath|loader_path)\// {n = split($1, a, "/"); print a[n]}' <<< "${libs}"); do
       test -f "${bindir}/${name}" || { echo "${f##*/} loads ${name}: missing"; missing=1; }
     done
   done
@@ -141,6 +149,7 @@ main() {
     return 2
   fi
   wheel="$1"
+  case "${BACKEND-}" in cpu | vulkan | rocm | cuda | metal) ;; *) refuse "unknown BACKEND: ${BACKEND-}" ;; esac
   # A venv of an earlier check keeps its installed copy of a wheel with the same version.
   [ ! -e check-venv ] || { echo "check_llama_wheel: an earlier check used this folder (check-venv exists). Use a fresh one." >&2; return 2; }
   python -m venv check-venv
