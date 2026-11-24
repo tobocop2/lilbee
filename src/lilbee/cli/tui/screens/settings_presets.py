@@ -25,6 +25,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.preset_commands import key_state_text, preset_line
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.cli.tui.widgets.dialog import Dialog
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.server_registry import RerankWire
@@ -258,7 +259,7 @@ class PresetDialog(Dialog[str | None]):
         )
 
 
-class PresetsPane(VerticalScroll):
+class PresetsPane(MountWhenAttached, VerticalScroll):
     """The list of stored presets with add, edit and remove buttons."""
 
     def __init__(self, *, id: str | None = None) -> None:

@@ -39,6 +39,7 @@ from lilbee.cli.tui.engine_commands import ENGINE_SETTING_KEYS, chips_text
 from lilbee.cli.tui.engine_install_flow import choose_for_model
 from lilbee.cli.tui.engine_mark import engine_dot, engine_mark
 from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.cli.tui.widgets.gpu_fleet_panel import Badge, GpuFleetPanel
 from lilbee.providers.fleet.groups import swap_summary
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
@@ -226,7 +227,7 @@ def _edit_from_entry(role: WorkerRole, model: str, entry: RolePlacement) -> _Rol
     )
 
 
-class FleetBody(Widget):
+class FleetBody(MountWhenAttached, Widget):
     """Live fleet GPU table and interactive placement editor."""
 
     app: LilbeeApp  # type: ignore[assignment]
