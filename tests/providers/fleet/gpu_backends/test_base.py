@@ -89,13 +89,13 @@ def test_run_smi_returns_stdout_on_success(monkeypatch: pytest.MonkeyPatch) -> N
     assert run_smi("nvidia-smi", ["--version"]) == "output\n"
 
 
-def test_run_smi_returns_empty_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_smi_keeps_the_output_of_a_non_zero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_run(*_a: object, **_k: object) -> tuple[str, int]:
         return "output\n", 1
 
     monkeypatch.setattr(base_mod, "run_bounded", _fake_run)
     monkeypatch.setattr(base_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-    assert run_smi("nvidia-smi", []) == ""
+    assert run_smi("nvidia-smi", []) == "output\n"
 
 
 def test_run_smi_returns_empty_on_oserror(monkeypatch: pytest.MonkeyPatch) -> None:
