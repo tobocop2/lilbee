@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import signal
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Protocol
 
@@ -29,16 +29,40 @@ class CancelSignal(Protocol):
 
 
 class SignalFlag:
-    """A cancel token a signal handler sets with one attribute write and no lock."""
+    """A cancel token a signal handler sets with attribute writes and no lock.
+
+    A run that the token stops binds its stop here while it runs: setting the token
+    then also calls that stop, which only hands a cancel to the run's own loop.
+    """
 
     def __init__(self) -> None:
         self._is_set = False
+        self._stop_run: Callable[[], object] | None = None
+        self._run_ended = False
 
     def set(self) -> None:
         self._is_set = True
+        stop = self._stop_run
+        if stop is not None:
+            stop()
 
     def is_set(self) -> bool:
         return self._is_set
+
+    def bind_run(self, stop: Callable[[], object]) -> None:
+        """Note that a run started; *stop* asks it to stop and takes no lock."""
+        self._stop_run = stop
+        self._run_ended = False
+
+    def unbind_run(self) -> None:
+        """Note that the run ended: what follows is the wind-down of the command."""
+        self._stop_run = None
+        self._run_ended = True
+
+    @property
+    def winding_down(self) -> bool:
+        """True once a run ended and no other run has started since."""
+        return self._run_ended
 
 
 @contextmanager
@@ -49,10 +73,13 @@ def sigint_cancel() -> Iterator[SignalFlag]:
     default KeyboardInterrupt drops it wherever the interpreter happened to be.
     Setting a token instead lets it stop at a boundary with what it wrote intact.
     The handler stays installed until the scope exits, where the previous handler
-    returns on the main thread. A second Ctrl-C raises KeyboardInterrupt, so the
-    command unwinds and its rollback and its message run on the main thread; the
-    scope's exit then ends the process, because a normal exit joins every worker
-    thread, also a stuck one. A further Ctrl-C ends the process from the handler.
+    returns on the main thread. A run bound to the token takes a cancel of its task
+    on the first Ctrl-C. A second Ctrl-C before or during a run raises
+    KeyboardInterrupt, so the command unwinds and its rollback and its message run on
+    the main thread. After a run, in the wind-down, it raises nothing, so the
+    rollback finishes. Either way the scope's exit then ends the process, because a
+    normal exit joins every worker thread, also a stuck one. A further Ctrl-C ends
+    the process from the handler.
 
     signal.signal only works on the main thread; off it (pytest-xdist workers)
     the token is simply never set and Ctrl-C keeps its default behaviour.
@@ -70,11 +97,12 @@ def sigint_cancel() -> Iterator[SignalFlag]:
         nonlocal unwinding
         if unwinding:
             force_quit_from_handler()
-        elif token.is_set():
-            unwinding = True
-            raise KeyboardInterrupt
-        else:
+        elif not token.is_set():
             token.set()
+        else:
+            unwinding = True
+            if not token.winding_down:
+                raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, _on_sigint)
     try:
