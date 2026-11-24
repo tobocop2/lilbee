@@ -2701,7 +2701,7 @@ class FleetProvider:
                 lambda: self._fleet_work is None, _FLEET_WAIT_S
             ):
                 raise _still_starting_error()
-            live =[client for pool in self._clients.values() for client in pool]
+            live = [client for pool in self._clients.values() for client in pool]
             self._swaps = {}
             self._launches = {}
             self._role_group = {}
