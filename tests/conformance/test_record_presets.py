@@ -152,6 +152,35 @@ class TestVisionUrl:
         assert args.vision_url == "http://v"
 
 
+class TestRerankUrl:
+    def test_the_rerank_route_goes_to_the_rerank_server(self) -> None:
+        seen: list[tuple[str, str, str]] = []
+        with (
+            _server("lilbee", seen) as upstream,
+            _server("rerank", seen) as rerank,
+            recording(upstream, token=_TOKEN, rerank_url=rerank) as (proxy, _),
+        ):
+            _post_body(proxy, "/v1/rerank", {"query": "q", "documents": ["a"]})
+            _post_body(proxy, "/v1/chat/completions", _TEXT_CHAT)
+        assert seen == [
+            ("rerank", "/v1/rerank", ""),
+            ("lilbee", "/v1/chat/completions", f"Bearer {_TOKEN}"),
+        ]
+
+    def test_without_a_rerank_server_the_rerank_route_stays_on_the_main_server(self) -> None:
+        seen: list[tuple[str, str, str]] = []
+        with _server("lilbee", seen) as upstream, recording(upstream, token=_TOKEN) as (proxy, _):
+            _post_body(proxy, "/v1/rerank", {"query": "q", "documents": ["a"]})
+        assert seen == [("lilbee", "/v1/rerank", f"Bearer {_TOKEN}")]
+
+    def test_the_option_reaches_the_parser(self) -> None:
+        base = ["--server", "s", "--version", "1", "--url", "u", "--roles", "chat"]
+        args = build_parser().parse_args(
+            [*base, "--models", "chat=m", "--out", "o.json", "--rerank-url", "http://r"]
+        )
+        assert args.rerank_url == "http://r"
+
+
 class TestTokenOption:
     @staticmethod
     def _args(*extra: str) -> argparse.Namespace:
