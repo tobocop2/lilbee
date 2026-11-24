@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import typer
@@ -13,6 +12,7 @@ from lilbee.cli.app import apply_overrides, console, data_dir_option, global_opt
 from lilbee.cli.commands._shared import fail
 from lilbee.cli.helpers import json_output
 from lilbee.core.config import cfg
+from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.cancellation import TaskCancelledError, sigint_cancel
 from lilbee.runtime.console import styled
 
@@ -83,7 +83,7 @@ def import_cmd(
     from lilbee.app.ingest import LIBRARY_REFUSALS
 
     try:
-        summary = asyncio.run(import_from_path(dataset, fmt))
+        summary = run_main(import_from_path(dataset, fmt))
     except (DatasetError, *LIBRARY_REFUSALS) as exc:
         fail(str(exc))
 
