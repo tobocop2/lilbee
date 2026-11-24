@@ -549,10 +549,16 @@ jobs:
           fi
           uv run python -c "import socket; assert {socket.gethostbyname(n) for n in ('site.test', 'docs.site.test')} == {'127.0.0.1'}"
 
+      # A step limit below the job limit: a stuck run fails this step while the job is
+      # alive, so the upload step below runs with a clean job budget left.
       - name: Run integration tests
         run: make test-integration
+        timeout-minutes: 100
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
+          # The fleet writes the llama-swap and engine logs to this folder. A fixed
+          # path lets the upload step below find them on every OS.
+          LILBEE_ENGINE_DIR: ${{ runner.temp }}/lilbee-engine
           LILBEE_LLM_PROVIDER: auto
           # The estimator and metadata tests run the gguf-parser built at the pin
           # above: a missing parser fails this job instead of skipping them.
@@ -571,6 +577,7 @@ jobs:
         with:
           name: integration-engine-logs-${{ matrix.os }}-${{ matrix.python-version }}
           path: |
+            ${{ runner.temp }}/lilbee-engine/logs/*.log
             ${{ runner.temp }}/lilbee/logs/*.log
             ${{ runner.temp }}/pytest-tmp/**/logs/*.log
           if-no-files-found: ignore
