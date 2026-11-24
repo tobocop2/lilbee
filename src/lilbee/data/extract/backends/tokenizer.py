@@ -8,7 +8,6 @@ lilbee's embedder is a GGUF model whose vocab isn't published that way. This let
 
 from __future__ import annotations
 
-import itertools
 import logging
 import threading
 import weakref
@@ -17,7 +16,7 @@ from typing import TYPE_CHECKING
 from lilbee.data.types import TokenizerBackendName
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-from .released import ReleasedNames
+from .released import ReleasedNames, next_serial
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -112,7 +111,6 @@ class _ProviderTokenizers:
 
     def __init__(self) -> None:
         self._names: weakref.WeakKeyDictionary[LLMProvider, str] = weakref.WeakKeyDictionary()
-        self._serial = itertools.count(1)
         self._failures: dict[str, int] = {}
         self._released = ReleasedNames()
         self._lock = threading.Lock()
@@ -127,7 +125,7 @@ class _ProviderTokenizers:
             name = self._names.get(provider)
             if name is not None:
                 return name
-            name = f"{TokenizerBackendName.LILBEE}-{next(self._serial)}"
+            name = f"{TokenizerBackendName.LILBEE}-{next_serial()}"
         backend = LilbeeTokenizerBackend(count_fn=self._counter(provider, name), name=name)
         backend.probe()
         _register(backend)

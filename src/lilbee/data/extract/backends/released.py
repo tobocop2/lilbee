@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 import collections
+import itertools
 import weakref
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+_serial = itertools.count(1)
+
+
+def next_serial() -> int:
+    """The next number for a backend name, counted across every table.
+
+    xberg's registries are one per process, so every table that registers a backend
+    takes its name number from this one counter.
+    """
+    return next(_serial)
 
 
 class ReleasedNames:
