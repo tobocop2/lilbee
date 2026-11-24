@@ -252,7 +252,15 @@ class TestSurfaceColumns:
                 project.mkdir()
                 result = CliRunner().invoke(
                     app,
-                    ["settings", "set", "--data-dir", str(project), "--", key, _sample_cli_value(key)],
+                    [
+                        "settings",
+                        "set",
+                        "--data-dir",
+                        str(project),
+                        "--",
+                        key,
+                        _sample_cli_value(key),
+                    ],
                 )
                 accepted = result.exit_code == 0
                 marked = "`lilbee settings set`" in generator._cli_cell(key)
