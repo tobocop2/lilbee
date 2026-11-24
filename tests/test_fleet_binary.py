@@ -248,8 +248,9 @@ class TestRouterRelease:
         self, stdout: str, release: int | None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         calls = self._router_says(monkeypatch, stdout)
-        assert binary_mod.router_release(Path("/usr/bin/llama-swap")) == release
-        assert calls == [["/usr/bin/llama-swap", "--version"]]
+        router = Path("/usr/bin/llama-swap")
+        assert binary_mod.router_release(router) == release
+        assert calls == [[str(router), "--version"]]  # the path in the form of this host
 
     @pytest.mark.parametrize(
         "error",
