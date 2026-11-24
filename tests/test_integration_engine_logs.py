@@ -27,13 +27,14 @@ def _run_inner(
     pytester: pytest.Pytester,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    timeout: int,
-    sleep: float,
+    source: str,
 ) -> pytest.RunResult:
-    """Run one sleeping test under the integration hooks, with logs where the fleet writes them.
+    """Run the tests in *source* under the integration hooks, logs where the fleet writes them.
 
     The fleet writes to the machine engine slot, which LILBEE_ENGINE_DIR moves; the
-    logs go there and nowhere else.
+    logs go there and nowhere else. The inner conftest touches the file named by
+    EMIT_MARKER each time the integration conftest prints, so a test can wait for
+    the print instead of racing it with a sleep.
     """
     if sys.platform == "win32":
         pytest.skip("pytest-timeout kills the process on Windows, so no report is written")
@@ -44,17 +45,30 @@ def _run_inner(
     monkeypatch.setenv("LILBEE_ENGINE_DIR", str(slot))
     monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data"))
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(_REPO_ROOT), *sys.path]))
+    monkeypatch.setenv("EMIT_MARKER", str(tmp_path / "emitted"))
     pytester.makeconftest(
+        "import os\n"
+        "from pathlib import Path\n"
+        "import tests.integration.conftest as integration\n"
         "from tests.integration.conftest import (\n"
         "    _print_engine_logs_when_stalled, _remember_basetemp, pytest_runtest_makereport,\n"
         ")\n"
+        "real_emit = integration.emit\n"
+        "def emit(text):\n"
+        "    real_emit(text)\n"
+        "    if text:\n"
+        "        Path(os.environ['EMIT_MARKER']).touch()\n"
+        "integration.emit = emit\n"
     )
     pytester.makepyfile(
-        "import time\n"
+        "import os, time\n"
+        "from pathlib import Path\n"
         "import pytest\n"
-        f"@pytest.mark.timeout({timeout})\n"
-        "def test_stalls():\n"
-        f"    time.sleep({sleep})\n"
+        "def wait_for_emit(seconds):\n"
+        "    end = time.monotonic() + seconds\n"
+        "    while time.monotonic() < end and not Path(os.environ['EMIT_MARKER']).exists():\n"
+        "        time.sleep(0.05)\n"
+        + source
     )
     return pytester.runpytest_subprocess("-p", "no:cacheprovider")
 
@@ -63,7 +77,12 @@ def test_timed_out_test_prints_the_engine_log_tails_at_once(
     pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A real pytest-timeout failure writes both engine logs to stderr when it fails."""
-    result = _run_inner(pytester, monkeypatch, tmp_path, timeout=1, sleep=30)
+    source = (
+        "@pytest.mark.timeout(1)\n"
+        "def test_stalls():\n"
+        "    time.sleep(30)\n"
+    )
+    result = _run_inner(pytester, monkeypatch, tmp_path, source)
 
     result.assert_outcomes(failed=1)
     result.stderr.fnmatch_lines(["*Engine logs*", "*engine says: model stalled*"])
@@ -72,22 +91,52 @@ def test_timed_out_test_prints_the_engine_log_tails_at_once(
     assert "reaper noise" not in result.stderr.str()
 
 
+def test_a_failing_test_prints_the_tails_from_the_failure_hook_alone(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The stall timer cannot fire in a test with a 60 s limit, so the hook prints these."""
+    source = (
+        "@pytest.mark.timeout(60)\n"
+        "def test_fails():\n"
+        "    assert False\n"
+    )
+    result = _run_inner(pytester, monkeypatch, tmp_path, source)
+
+    result.assert_outcomes(failed=1)
+    result.stderr.fnmatch_lines(["*Engine logs*", "*engine says: model stalled*"])
+
+
 def test_a_stalled_test_prints_the_engine_log_tails_before_it_ends(
     pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A test that passes after 75% of its timeout still printed the tails while it ran."""
-    result = _run_inner(pytester, monkeypatch, tmp_path, timeout=4, sleep=3.5)
+    """A test still running 75% into its timeout has printed the tails, and it passes."""
+    source = (
+        "@pytest.mark.timeout(8)\n"
+        "def test_waits_for_the_print():\n"
+        "    wait_for_emit(7)\n"
+        "    assert Path(os.environ['EMIT_MARKER']).exists()\n"
+    )
+    result = _run_inner(pytester, monkeypatch, tmp_path, source)
 
     result.assert_outcomes(passed=1)
     result.stderr.fnmatch_lines(["*Engine logs*", "*engine says: model stalled*"])
 
 
-def test_a_test_that_ends_early_prints_nothing(
+def test_a_test_that_ends_early_prints_nothing_after_its_stall_window(
     pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    result = _run_inner(pytester, monkeypatch, tmp_path, timeout=30, sleep=0)
+    """The first test ends at once; a timer it leaves behind would print inside the second."""
+    source = (
+        "@pytest.mark.timeout(2)\n"
+        "def test_ends_at_once():\n"
+        "    pass\n"
+        "@pytest.mark.timeout(30)\n"
+        "def test_outlives_the_first_window():\n"
+        "    time.sleep(2.5)\n"
+    )
+    result = _run_inner(pytester, monkeypatch, tmp_path, source)
 
-    result.assert_outcomes(passed=1)
+    result.assert_outcomes(passed=2)
     assert "Engine logs" not in result.stderr.str()
 
 
