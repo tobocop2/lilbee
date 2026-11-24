@@ -257,6 +257,18 @@ def _candidates(
     ]
 
 
+def _refused(
+    fmt: str, installed: InstalledEngines, role: WorkerRole | None, host: HostSource
+) -> list[tuple[EngineName, HostGate]]:
+    """The installed engines that load *fmt*, serve *role* and fail the host check, with answers."""
+    answers = [
+        (name, host_answer(name, host))
+        for name in engines_loading(fmt, installed)
+        if _accepts(name, role, fmt)
+    ]
+    return [(name, answer) for name, answer in answers if not answer.ok]
+
+
 def _choose_hint(names: list[EngineName], role: WorkerRole | None) -> str:
     """The commands that fix the choice; ``use`` works only once a role holds the model."""
     which = " or ".join(names)
@@ -304,6 +316,12 @@ def _by_default(
         text = (
             f"No installed engine serves the {fmt} format{of_model} for {role.value}. "
             f"{' or '.join(missing)} serves it. {install_advice(ADAPTERS[missing[0]], host())}"
+        )
+    elif refused := _refused(fmt, installed, role, host):
+        text = " ".join(
+            f"Engine {name} loads the {fmt} format{of_model} but cannot run on this host. "
+            f"{answer.reason}"
+            for name, answer in refused
         )
     else:
         text = f"No installed engine loads the {fmt} format{of_model}. {LIST_HINT}"
