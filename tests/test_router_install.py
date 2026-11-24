@@ -234,7 +234,7 @@ class TestInstall:
         stale.mkdir(parents=True)
         (stale / "stale.txt").write_text("old", encoding="utf-8")
         install_router()
-        assert sorted(p.name for p in stale.iterdir()) == [LICENCE_FILE, "llama-swap"]
+        assert sorted(p.name for p in stale.iterdir()) == [IN_USE_NAME, LICENCE_FILE, "llama-swap"]
 
     def test_the_install_holds_the_router_lock_for_the_whole_install(
         self, release: list[str], monkeypatch: pytest.MonkeyPatch
