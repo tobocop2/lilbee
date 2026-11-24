@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,7 @@ from lilbee.catalog import CatalogModel
 from lilbee.core.config import cfg
 from lilbee.core.system import canonical_models_dir
 from lilbee.providers.fleet.engines import LLAMA
-from tests.integration._engine_logs import SECTION_TITLE, failure_section
+from tests.integration._engine_logs import STALL_SHARE, emit, failure_section, log_roots
 
 _DEFAULT_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _DEFAULT_CHAT_FILE = "Qwen3-0.6B-Q8_0.gguf"
@@ -96,22 +97,37 @@ def _remember_basetemp(request, tmp_path_factory):
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    """Add the engine log tails to a failed report, so a timeout shows its engine.
+    """Print the engine log tails the moment a test fails, so a timeout shows its engine.
 
     pytest-timeout fails the test body, so a timeout reaches this hook as an
-    ordinary failed report; the section prints in the job output.
+    ordinary failed report. The tails go to stderr at once: report sections
+    print only at the end of the session, which a job that GitHub cancels never reaches.
     """
     outcome = yield
-    report = outcome.get_result()
-    if not report.failed:
-        return
-    roots = [cfg.data_dir]
-    if data_env := os.environ.get("LILBEE_DATA"):
-        roots.append(Path(data_env))
-    if basetemp := item.config.stash.get(_BASETEMP_KEY, None):
-        roots.append(basetemp)
-    if section := failure_section(roots):
-        report.sections.append((SECTION_TITLE, section))
+    if outcome.get_result().failed:
+        emit(failure_section(log_roots(item.config.stash.get(_BASETEMP_KEY, None))))
+
+
+def _timeout_seconds(item) -> float:
+    marker = item.get_closest_marker("timeout")
+    raw = marker.args[0] if marker and marker.args else None
+    return float(raw or 0)
+
+
+@pytest.fixture(autouse=True)
+def _print_engine_logs_when_stalled(request):
+    """Print the engine log tails while a test is still running, 75% into its timeout.
+
+    A test that wedges in a native call may never reach the timeout, so the
+    failure hook never runs. This timer prints while the test is stuck.
+    """
+    seconds = _timeout_seconds(request.node) * STALL_SHARE
+    basetemp = request.config.stash.get(_BASETEMP_KEY, None)
+    timer = threading.Timer(seconds, lambda: emit(failure_section(log_roots(basetemp))))
+    timer.daemon = True
+    timer.start()
+    yield
+    timer.cancel()
 
 
 @pytest.fixture(scope="session", autouse=True)

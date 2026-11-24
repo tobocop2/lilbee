@@ -23,34 +23,96 @@ def _write_log(directory: Path, name: str, lines: list[str]) -> Path:
     return path
 
 
-def test_timed_out_test_report_carries_the_engine_log_tails(
-    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A real pytest-timeout failure shows both engine logs in its report."""
+def _run_inner(
+    pytester: pytest.Pytester,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    timeout: int,
+    sleep: float,
+) -> pytest.RunResult:
+    """Run one sleeping test under the integration hooks, with logs where the fleet writes them.
+
+    The fleet writes to the machine engine slot, which LILBEE_ENGINE_DIR moves; the
+    logs go there and nowhere else.
+    """
     if sys.platform == "win32":
         pytest.skip("pytest-timeout kills the process on Windows, so no report is written")
-    data = tmp_path / "data"
-    _write_log(data, "llama-swap-chat.log", [f"swap line {n}" for n in range(300)])
-    _write_log(data, "engine-qwen.log", ["engine says: model stalled"])
-    monkeypatch.setenv("LILBEE_DATA", str(data))
+    slot = tmp_path / "engine-slot"
+    _write_log(slot, "llama-swap-chat.log", [f"swap line {n}" for n in range(300)])
+    _write_log(slot, "engine-qwen.log", ["engine says: model stalled"])
+    _write_log(slot, "engine-reaper.log", ["reaper noise"])
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(slot))
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data"))
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(_REPO_ROOT), *sys.path]))
     pytester.makeconftest(
-        "from tests.integration.conftest import _remember_basetemp, pytest_runtest_makereport\n"
+        "from tests.integration.conftest import (\n"
+        "    _print_engine_logs_when_stalled, _remember_basetemp, pytest_runtest_makereport,\n"
+        ")\n"
     )
     pytester.makepyfile(
         "import time\n"
         "import pytest\n"
-        "@pytest.mark.timeout(1)\n"
+        f"@pytest.mark.timeout({timeout})\n"
         "def test_stalls():\n"
-        "    time.sleep(30)\n"
+        f"    time.sleep({sleep})\n"
     )
+    return pytester.runpytest_subprocess("-p", "no:cacheprovider")
 
-    result = pytester.runpytest_subprocess("-p", "no:cacheprovider")
+
+def test_timed_out_test_prints_the_engine_log_tails_at_once(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A real pytest-timeout failure writes both engine logs to stderr when it fails."""
+    result = _run_inner(pytester, monkeypatch, tmp_path, timeout=1, sleep=30)
 
     result.assert_outcomes(failed=1)
-    result.stdout.fnmatch_lines(["*Timeout*", "*Engine logs*", "*engine says: model stalled*"])
-    result.stdout.fnmatch_lines(["*swap line 299*"])
-    assert "swap line 99\n" not in result.stdout.str()
+    result.stderr.fnmatch_lines(["*Engine logs*", "*engine says: model stalled*"])
+    result.stderr.fnmatch_lines(["*swap line 299*"])
+    assert "swap line 99\n" not in result.stderr.str()
+    assert "reaper noise" not in result.stderr.str()
+
+
+def test_a_stalled_test_prints_the_engine_log_tails_before_it_ends(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A test that passes after 75% of its timeout still printed the tails while it ran."""
+    result = _run_inner(pytester, monkeypatch, tmp_path, timeout=4, sleep=3.5)
+
+    result.assert_outcomes(passed=1)
+    result.stderr.fnmatch_lines(["*Engine logs*", "*engine says: model stalled*"])
+
+
+def test_a_test_that_ends_early_prints_nothing(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    result = _run_inner(pytester, monkeypatch, tmp_path, timeout=30, sleep=0)
+
+    result.assert_outcomes(passed=1)
+    assert "Engine logs" not in result.stderr.str()
+
+
+def test_log_roots_name_the_machine_engine_slot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    monkeypatch.delenv("LILBEE_DATA", raising=False)
+    roots = engine_logs.log_roots(None)
+    assert roots[0] == tmp_path / "slot"
+    assert engine_logs.log_roots(tmp_path / "base")[-1] == tmp_path / "base"
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data"))
+    assert tmp_path / "data" in engine_logs.log_roots(None)
+
+
+def test_emit_writes_to_stderr_and_skips_nothing(capfd: pytest.CaptureFixture[str]) -> None:
+    engine_logs.emit(None)
+    engine_logs.emit("tail text")
+    assert "tail text" in capfd.readouterr().err
+
+
+def test_find_logs_skips_the_reaper_log(tmp_path: Path) -> None:
+    _write_log(tmp_path, "engine-reaper.log", ["reaper"])
+    _write_log(tmp_path, "engine-chat-0.log", ["engine"])
+    assert [path.name for path in engine_logs.find_logs([tmp_path])] == ["engine-chat-0.log"]
 
 
 def test_find_logs_returns_nothing_without_logs(tmp_path: Path) -> None:
