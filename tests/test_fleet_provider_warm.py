@@ -1,11 +1,13 @@
-"""The warm of a role reads the engine's own report: the device after a load, the reason after a failure."""
+"""A warm reads the engine's own report: the device after a load, the reason after a failure."""
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Callable
 from pathlib import Path
 
 import httpx
+import numpy as np
 import pytest
 
 from lilbee.providers.base import ProviderError
@@ -21,7 +23,8 @@ REPLIES = Path(__file__).parent / "fixtures" / "lemonade"
 MODEL_ID = "chat-0"
 NOT_FOUND = 404
 """The status of the recorded load refusal; tests/fixtures/lemonade/sources.txt."""
-EMBEDDING = {"data": [{"index": 0, "embedding": [0.5, 0.5]}], "object": "list"}
+VECTOR = base64.b64encode(np.array([0.5, 0.5], dtype=np.float32).tobytes()).decode()
+EMBEDDING = {"data": [{"index": 0, "embedding": VECTOR}], "object": "list"}
 CHAT_DONE = b'data: {"choices": [{"index": 0, "delta": {"content": "hi"}}]}\n\ndata: [DONE]\n\n'
 ON_NPU = {"all_models_loaded": [{"model_name": "user.lilbee-embed", "device": "npu"}]}
 
@@ -40,7 +43,7 @@ def _client(
 
     def answer(request: httpx.Request) -> httpx.Response:
         asked.append(request.url.path)
-        reply = routes[request.url.path]
+        reply = routes.get(request.url.path, httpx.Response(NOT_FOUND, content=b"no route"))
         if isinstance(reply, httpx.Response):
             return reply
         if isinstance(reply, bytes):
@@ -64,9 +67,7 @@ def test_d1_engines_without_a_health_route_skip_the_check() -> None:
     for adapter in others:
         for role in adapter.served_roles:
             assert adapter.request_profile(role).device_check is None, adapter.name
-    client, asked = _client(
-        WorkerRole.EMBED, LLAMA.request_profile, {"/v1/embeddings": EMBEDDING}
-    )
+    client, asked = _client(WorkerRole.EMBED, LLAMA.request_profile, {"/v1/embeddings": EMBEDDING})
     provider_mod._warm_role(WorkerRole.EMBED, client)
     assert asked == ["/v1/embeddings"]
 
