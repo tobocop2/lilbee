@@ -221,6 +221,19 @@ class _TransientDownloadError(RuntimeError):
 RetryCallback = Callable[[int, int, str], None]
 """Receives (attempt, attempts, cause) when a failed attempt is about to repeat."""
 
+_RETRY_TEXT = "{cause}. Attempt {attempt} of {attempts} failed; trying again."
+
+
+def retry_reporter(on_retry: Callable[[str], None] | None) -> RetryCallback | None:
+    """Turn each failed attempt into the sentence *on_retry* shows; None when nobody listens."""
+    if on_retry is None:
+        return None
+
+    def report(attempt: int, attempts: int, cause: str) -> None:
+        on_retry(_RETRY_TEXT.format(cause=cause, attempt=attempt, attempts=attempts))
+
+    return report
+
 
 def _backoff(seconds: float, cancel: CancelSignal | None) -> None:
     """Wait *seconds*; a set *cancel* ends the wait at once with ``TaskCancelledError``."""
@@ -365,13 +378,18 @@ def _stream_into(
 
 
 def _download_with_retry(
-    entry: CatalogModel, config: DownloadConfig, cancel: CancelSignal | None = None
+    entry: CatalogModel,
+    config: DownloadConfig,
+    cancel: CancelSignal | None = None,
+    *,
+    on_retry: RetryCallback | None = None,
 ) -> Path:
     """Run one file's transfer, retrying the faults another attempt can clear.
 
-    A set *cancel* ends the wait between attempts with ``TaskCancelledError``.
+    *on_retry* hears each failed attempt that another attempt follows. A set
+    *cancel* ends the wait between attempts with ``TaskCancelledError``.
     """
-    return _retry_transient(lambda: _hf_download_or_translate(entry, config), cancel=cancel)
+    return _retry_transient(lambda: _hf_download_or_translate(entry, config), on_retry, cancel)
 
 
 def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:
@@ -417,12 +435,16 @@ def download_model(
     *,
     on_progress: ProgressCallback | None = None,
     on_complete: CompleteCallback | None = None,
+    on_retry: RetryCallback | None = None,
     cancel: CancelSignal | None = None,
 ) -> Path:
     """Download a GGUF model from HuggingFace to the models dir.
     Uses huggingface_hub for caching and auth; a stalled file starts again
     from the top, and files already finished are kept.
     The optional *on_progress(downloaded, total)* callback receives byte counts.
+    The optional *on_retry(attempt, attempts, cause)* callback hears each
+    failed attempt while the download runs: a resume the hub makes in place, a
+    transfer started again, and a stalled child process started again.
     The optional *on_complete(entry, file_path)* callback runs after every file
     is on disk; modelhub uses it to write a registry manifest. For vision
     models, also downloads the mmproj (CLIP projection) file.
@@ -456,6 +478,7 @@ def download_model(
         token,
         engine,
         on_progress=on_progress,
+        on_retry=on_retry,
         cancel=_NEVER_CANCELLED if cancel is None else cancel,
     )
     if on_complete is not None:
@@ -471,6 +494,7 @@ def fetch_model_files(
     *,
     on_progress: ProgressCallback | None = None,
     on_probe: ProbeCallback | None = None,
+    on_retry: RetryCallback | None = None,
 ) -> Path:
     """Fetch *entry*'s GGUF shards, plus its projector when the repo ships one.
 
@@ -478,11 +502,17 @@ def fetch_model_files(
     can run it without reading cfg. Writes no registry state. *on_probe* fires
     once per file resolved with the Hub, which is the only sign of life a
     caller gets before the first bytes, and it names the cache blob so the
-    caller can clear that file's leftovers.
+    caller can clear that file's leftovers. *on_retry* hears each failed
+    transfer that another attempt follows.
     """
     if entry.format != ModelFormat.GGUF:
         return fetch_format_files(
-            entry, models_dir, token, on_progress=on_progress, on_probe=on_probe
+            entry,
+            models_dir,
+            token,
+            on_progress=on_progress,
+            on_probe=on_probe,
+            on_retry=on_retry,
         )
     if engine is None:
         raise RuntimeError(f"A GGUF download needs an engine to pick the file: {entry.hf_repo}")
@@ -496,18 +526,32 @@ def fetch_model_files(
             size = sum(path.stat().st_size for path in paths)
             on_progress(size, size)  # Report 100% immediately (every shard)
         _ensure_projector(
-            entry, models_dir, token, dest, on_progress=on_progress, on_probe=on_probe
+            entry,
+            models_dir,
+            token,
+            dest,
+            on_progress=on_progress,
+            on_probe=on_probe,
+            on_retry=on_retry,
         )
         return dest
 
-    shard_paths = _fetch_files(entry, models_dir, token, shards, on_progress, on_probe)
+    shard_paths = _fetch_files(
+        entry, models_dir, token, shards, on_progress, on_probe, on_retry=on_retry
+    )
     first_shard_path = shard_paths[0]  # the 00001-of-N shard llama.cpp loads from
 
     if on_progress:
         total_size = sum(path.stat().st_size for path in shard_paths)
         on_progress(total_size, total_size)
     _ensure_projector(
-        entry, models_dir, token, first_shard_path, on_progress=on_progress, on_probe=on_probe
+        entry,
+        models_dir,
+        token,
+        first_shard_path,
+        on_progress=on_progress,
+        on_probe=on_probe,
+        on_retry=on_retry,
     )
     return first_shard_path
 
@@ -520,10 +564,13 @@ def _fetch_files(
     on_progress: ProgressCallback | None,
     on_probe: ProbeCallback | None,
     cached: frozenset[str] = frozenset(),
+    *,
+    on_retry: RetryCallback | None = None,
 ) -> list[Path]:
     """Download *files* in order with one 0 to 100 percent progress run; return their paths.
 
     The space check counts only the files outside *cached*, the ones still to fetch.
+    *on_retry* hears each failed transfer that another attempt follows.
     """
     remote = [_probed_shard(entry, shard, on_probe) for shard in files]
     shard_sizes = [file.size for file in remote]
@@ -552,7 +599,7 @@ def _fetch_files(
             cache_dir=str(models_dir),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         )
-        file_path = _download_with_retry(entry, config)
+        file_path = _download_with_retry(entry, config, on_retry=on_retry)
         file_paths.append(file_path)
         if tracker is not None:
             tracker.shard_done(file_path.stat().st_size)
@@ -576,6 +623,7 @@ def fetch_format_files(
     *,
     on_progress: ProgressCallback | None = None,
     on_probe: ProbeCallback | None = None,
+    on_retry: RetryCallback | None = None,
 ) -> Path:
     """Fetch a non-GGUF *entry*'s selected file set into the cache; return its entry file."""
     selected = select_files(entry.format, _repo_sibling_files(entry.hf_repo))
@@ -584,7 +632,9 @@ def fetch_format_files(
     if SAFETENSORS_INDEX in selected:
         index_path = (
             cached_file_path(entry.hf_repo, SAFETENSORS_INDEX, models_dir)
-            or _fetch_files(entry, models_dir, token, [SAFETENSORS_INDEX], None, on_probe)[0]
+            or _fetch_files(
+                entry, models_dir, token, [SAFETENSORS_INDEX], None, on_probe, on_retry=on_retry
+            )[0]
         )
         require_declared_shards(index_path.read_text(encoding="utf-8"), selected)
     cached = {
@@ -599,7 +649,14 @@ def fetch_format_files(
             on_progress(size, size)
         return cached[selected[0]]
     paths = _fetch_files(
-        entry, models_dir, token, selected, on_progress, on_probe, frozenset(cached)
+        entry,
+        models_dir,
+        token,
+        selected,
+        on_progress,
+        on_probe,
+        frozenset(cached),
+        on_retry=on_retry,
     )
     if on_progress:
         total_size = sum(path.stat().st_size for path in paths)
@@ -673,6 +730,7 @@ def _ensure_projector(
     *,
     on_progress: ProgressCallback | None = None,
     on_probe: ProbeCallback | None = None,
+    on_retry: RetryCallback | None = None,
 ) -> None:
     """Fetch the projector the Hub lists for the repo when none sits beside *model_path*.
 
@@ -684,7 +742,14 @@ def _ensure_projector(
     if _projector_on_disk(model_path):
         return
     try:
-        _fetch_mmproj(entry, models_dir, token, on_progress=on_progress, on_probe=on_probe)
+        _fetch_mmproj(
+            entry,
+            models_dir,
+            token,
+            on_progress=on_progress,
+            on_probe=on_probe,
+            on_retry=on_retry,
+        )
     except ProjectorListingError as exc:
         log.info("Could not check %s for a projector: %s", entry.hf_repo, exc)
 
@@ -712,6 +777,7 @@ def _fetch_mmproj(
     *,
     on_progress: ProgressCallback | None = None,
     on_probe: ProbeCallback | None = None,
+    on_retry: RetryCallback | None = None,
     cancel: CancelSignal | None = None,
 ) -> Path | None:
     """Fetch *entry*'s mmproj into *models_dir*, or None when the repo names none."""
@@ -736,6 +802,7 @@ def _fetch_mmproj(
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         ),
         cancel,
+        on_retry=on_retry,
     )
     if on_progress is not None and (not tracker or not tracker.was_used):
         # Cache hit: HF returned the cached path without invoking tqdm.

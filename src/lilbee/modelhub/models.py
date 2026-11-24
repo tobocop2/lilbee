@@ -229,6 +229,7 @@ def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> No
     """Pull a model via model_manager with a progress bar, then check its vision projector."""
     from lilbee.app.models import ensure_vision_projector, join_warnings
     from lilbee.app.services import get_services
+    from lilbee.catalog.download import retry_reporter
     from lilbee.catalog.types import ModelSource
 
     if console is None:
@@ -251,7 +252,13 @@ def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> No
             if total > 0:
                 progress.update(ptask, total=total, completed=downloaded)
 
-        manager.pull(model, ModelSource.NATIVE, on_bytes=_on_bytes, on_notice=notices.append)
+        manager.pull(
+            model,
+            ModelSource.NATIVE,
+            on_bytes=_on_bytes,
+            on_notice=notices.append,
+            on_retry=retry_reporter(progress.console.print),
+        )
     warning = join_warnings(*notices, ensure_vision_projector(model, warn_unreadable=True))
     if warning is not None:
         console.print(f"Warning: {warning}", soft_wrap=True)

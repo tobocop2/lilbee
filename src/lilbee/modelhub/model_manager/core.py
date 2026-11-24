@@ -23,6 +23,7 @@ from lilbee.providers.model_ref import parse_model_ref
 from lilbee.runtime.cancellation import CancelSignal
 
 if TYPE_CHECKING:
+    from lilbee.catalog.download import RetryCallback
     from lilbee.core.config import Config
     from lilbee.providers.fleet.engines.base import EngineAdapter
 
@@ -202,6 +203,7 @@ class ModelManager:
         *,
         on_bytes: Callable[[int, int], None] | None = None,
         on_notice: Callable[[str], None] | None = None,
+        on_retry: "RetryCallback | None" = None,
         allow_unsupported: bool = False,
         cancel: CancelSignal | None = None,
     ) -> Path | None:
@@ -217,7 +219,8 @@ class ModelManager:
         is True. *on_bytes* receives (downloaded_bytes, total_bytes) progress.
         *on_notice* receives the sentence that says the model's size is unknown,
         and after the download the sentence that says no engine loads the model.
-        A *cancel* signal makes the download cancellable mid-transfer; see
+        *on_retry* hears each failed attempt while the download runs. A *cancel*
+        signal makes the download cancellable mid-transfer; see
         :func:`~lilbee.catalog.download_model`.
         """
         if source is not ModelSource.NATIVE:
@@ -237,6 +240,7 @@ class ModelManager:
                 engine,
                 on_bytes=on_bytes,
                 on_notice=on_notice,
+                on_retry=on_retry,
                 cancel=cancel,
                 allow_unsupported=allow_unsupported,
             )
@@ -301,6 +305,7 @@ class ModelManager:
         *,
         on_bytes: Callable[[int, int], None] | None = None,
         on_notice: Callable[[str], None] | None = None,
+        on_retry: "RetryCallback | None" = None,
         cancel: CancelSignal | None = None,
         allow_unsupported: bool = False,
     ) -> Path:
@@ -321,6 +326,7 @@ class ModelManager:
             engine,
             on_progress=on_bytes,
             on_complete=register_downloaded_model,
+            on_retry=on_retry,
             cancel=cancel,
         )
         log.info("Downloaded %s to %s", model, path)

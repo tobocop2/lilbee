@@ -208,6 +208,7 @@ def _run_pull(
     src: ModelSource,
     on_update: Callable[[DownloadProgress], None],
     *,
+    on_retry: Callable[[str], None] | None = None,
     allow_unsupported: bool = False,
 ) -> PullResult:
     """Invoke ``pull_model_data`` and translate known errors to typer.Exit."""
@@ -215,7 +216,13 @@ def _run_pull(
     from lilbee.providers.fleet.engines.choice import NoEngineError
 
     try:
-        return pull_model_data(ref, src, on_update=on_update, allow_unsupported=allow_unsupported)
+        return pull_model_data(
+            ref,
+            src,
+            on_update=on_update,
+            on_retry=on_retry,
+            allow_unsupported=allow_unsupported,
+        )
     except UnsupportedArchError as exc:
         msg = (
             f"Architecture {exc.architecture!r} is not supported by this lilbee build.\n"
@@ -270,7 +277,12 @@ def _pull_interactive_progress(ref: str, src: ModelSource, *, allow_unsupported:
         def on_update(p: DownloadProgress) -> None:
             progress.update(task_id, completed=p.percent, detail=p.detail)
 
-        final = _run_pull(ref, src, on_update, allow_unsupported=allow_unsupported)
+        def on_retry(text: str) -> None:
+            progress.update(task_id, detail=text)
+
+        final = _run_pull(
+            ref, src, on_update, on_retry=on_retry, allow_unsupported=allow_unsupported
+        )
 
     if final.status == PullStatus.ALREADY_INSTALLED:
         console.print(Text(f"{ref} is already installed."), soft_wrap=True)

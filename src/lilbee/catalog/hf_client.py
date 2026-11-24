@@ -8,6 +8,9 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -46,10 +49,12 @@ _HF_TOKEN_ENV = ("LILBEE_HF_TOKEN", "HF_TOKEN")
 # logger re-warns on every retry the library schedules. The catalog surfaces
 # the final download failure with a clear message, so per-attempt warnings
 # are noise.
+_HUB_RESUME_TEXT = "Trying to resume download"
+
 _HF_SUPPRESS_SUBSTRINGS = (
     "unauthenticated requests to the HF Hub",
     "Error while downloading from",
-    "Trying to resume download",
+    _HUB_RESUME_TEXT,
 )
 
 _HF_FILTERED_LOGGER_NAMES = (
@@ -58,15 +63,51 @@ _HF_FILTERED_LOGGER_NAMES = (
 )
 
 
+_hub_resume_sink: ContextVar[Callable[[str], None] | None] = ContextVar(
+    "hub_resume_sink", default=None
+)
+
+
 class _HfSubstringFilter(logging.Filter):
-    """Drop huggingface_hub log records whose message contains a suppressed substring."""
+    """Drop huggingface_hub log records whose message contains a suppressed substring.
+
+    A resume record first goes to the sink that ``hub_resumes_to`` opened, if any.
+    """
 
     def __init__(self, needles: tuple[str, ...]) -> None:
         super().__init__()
         self._needles = needles
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return not any(n in record.getMessage() for n in self._needles)
+        message = record.getMessage()
+        sink = _hub_resume_sink.get()
+        if sink is not None and _HUB_RESUME_TEXT in message:
+            sink(_resume_cause(message))
+        return not any(n in message for n in self._needles)
+
+
+def _resume_cause(message: str) -> str:
+    """The network error in the hub's resume record, without the URL before it.
+
+    The record reads ``Error while downloading from <url>: <cause>``, then the
+    resume line.
+    """
+    first_line = message.split("\n", 1)[0]
+    return first_line.partition(": ")[2] or first_line
+
+
+@contextmanager
+def hub_resumes_to(sink: Callable[[str], None]) -> Iterator[None]:
+    """Give *sink* the cause of each in-place resume the hub logs while the block runs.
+
+    huggingface_hub resumes a stalled file transfer itself and says so only in
+    its log, which this module drops. The record stays dropped.
+    """
+    token = _hub_resume_sink.set(sink)
+    try:
+        yield
+    finally:
+        _hub_resume_sink.reset(token)
 
 
 def install_hf_log_filter() -> None:
