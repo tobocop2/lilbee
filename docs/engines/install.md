@@ -135,10 +135,11 @@ that writes no log of its own (TEI, MLX, OVMS and others) into the router log. I
 case lilbee writes one warning to the lilbee log and lists it in `warnings` (code
 `router_outdated`) in the `GET /api/health` answer. The warning names the version found.
 The terminal interface shows no notice for it. To clear it, replace the router file with
-llama-swap v259 or later. Download a release from the
+a newer release. Download a release from the
 [llama-swap releases](https://github.com/mostlygeek/llama-swap/releases), or run
 `go install github.com/mostlygeek/llama-swap@latest` and copy the `llama-swap` file from
-your Go bin folder to the path the warning names.
+your Go bin folder to the path the warning names. Then restart lilbee. The warning stays
+in the health answer until lilbee starts the engine again.
 
 ### Engines you install yourself
 

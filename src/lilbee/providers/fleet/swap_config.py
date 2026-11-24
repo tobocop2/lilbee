@@ -120,10 +120,10 @@ def build_swap_config(
 
     ``engine_logs`` maps a model id to the file its engine writes its own log to
     (:func:`lilbee.providers.fleet.readback.engine_log_of`); the caller passes it,
-    so a config never comes from a log map that production does not build. A launch without
-    ``--memory`` logs at the verbosity that reports what it allocated: for an
-    engine without ``GET /memory`` that file is the only place those numbers
-    exist, and reading them back is what tells the planner whether its estimate
+    so a config never comes from a log map that production does not build. A
+    launch without ``--memory`` logs at the verbosity that reports what it
+    allocated: for an engine without ``GET /memory`` that file is the only
+    place those numbers exist, and reading them back is what tells the planner whether its estimate
     held. A ``--memory`` launch serves the numbers over HTTP and logs at the
     default verbosity. A member with no entry writes no file, so llama-swap
     copies its output into the group log instead; without that copy the output
