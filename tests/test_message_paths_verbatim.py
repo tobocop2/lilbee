@@ -8,32 +8,45 @@ Windows paths, so each arm fails on every platform, not only on a Windows runner
 from __future__ import annotations
 
 import logging
+from pathlib import PureWindowsPath
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from lilbee.app import services as services_mod
+from lilbee.app.analyze import server_directory
 from lilbee.cli.commands.search_chat import _swap_stale_models_to_installed
 from lilbee.cli.tui import messages as tui_messages
 from lilbee.core.config import cfg
+from lilbee.data.ingest import pipeline as pipeline_mod
 from lilbee.modelhub.model_manager import CanonicalRef, ValidationResult
+from lilbee.modelhub.registry import parse_hf_ref
 from lilbee.providers import engine_params
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import vram as vram_mod
 from lilbee.providers.fleet.provider import FleetProvider
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.roles import WorkerRole, configured_model_message
+from lilbee.providers.routing_provider import RoutingProvider
+from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 from lilbee.retrieval.embedder import Embedder
 from lilbee.server.chat_dispatch.dispatch import (
     ModelDoesNotSupportToolsError,
     ModelNotFoundError,
 )
+from lilbee.server.handlers import ingest as ingest_handlers
+from lilbee.wiki.lint import _lint_model_changed
 from tests.conftest import make_mock_services
+from tests.providers.test_sdk_llm_provider import FakeBackend
 from tests.test_fleet_provider import _fake_client, _provider_with_clients
 
 WINDOWS_REF = "C:\\Users\\me\\models\\chat.gguf"
 OTHER_REF = "D:\\Models\\fallback.gguf"
 RELATIVE_REF = "models\\chat.gguf"
+HOSTED_REF = "ollama/models\\chat"
+UNSUFFIXED_REF = "C:\\Users\\me\\models\\chat"
 
 
 def _assert_verbatim(text: str, ref: str = WINDOWS_REF) -> None:
@@ -198,3 +211,113 @@ def test_chat_dispatch_not_found_shows_the_ref_as_typed() -> None:
 
 def test_chat_dispatch_no_tools_shows_the_ref_as_typed() -> None:
     _assert_verbatim(str(ModelDoesNotSupportToolsError(WINDOWS_REF)))
+
+
+def test_ingest_refusal_shows_the_embedding_ref_as_typed(monkeypatch) -> None:
+    services = MagicMock()
+    services.embedder.validate_model.return_value = False
+    monkeypatch.setattr(pipeline_mod, "get_services", lambda: services)
+    monkeypatch.setattr(cfg, "embedding_model", WINDOWS_REF)
+    with pytest.raises(RuntimeError) as excinfo:
+        pipeline_mod._require_embedding_model()
+    _assert_verbatim(str(excinfo.value))
+
+
+def test_configured_model_message_shows_the_requested_ref_as_typed() -> None:
+    _assert_verbatim(configured_model_message(WorkerRole.CHAT, "configured", WINDOWS_REF))
+
+
+def test_routing_pull_refusal_shows_the_ref_as_typed() -> None:
+    provider = RoutingProvider()
+    sdk = MagicMock()
+    sdk.available.return_value = False
+    provider._sdk_provider = sdk
+    with pytest.raises(ProviderError) as excinfo:
+        provider.pull_model(WINDOWS_REF)
+    _assert_verbatim(str(excinfo.value))
+
+
+def test_routing_rerank_refusal_shows_the_ref_as_typed(monkeypatch) -> None:
+    provider = RoutingProvider()
+    sdk = MagicMock()
+    sdk.supports_rerank.return_value = False
+    provider._sdk_provider = sdk
+    provider._local = MagicMock()
+    tagged = f"{HOSTED_REF}:latest"
+    monkeypatch.setattr(cfg, "reranker_model", tagged)
+    with pytest.raises(ProviderError) as excinfo:
+        provider.rerank("q", ["a"])
+    _assert_verbatim(str(excinfo.value), tagged)
+
+
+def test_sdk_tool_refusal_shows_the_ref_as_typed() -> None:
+    provider = SdkLLMProvider(FakeBackend(supports_tools_result=False))
+    with pytest.raises(ProviderError) as excinfo:
+        provider.chat(
+            [{"role": "user", "content": "x"}],
+            model=HOSTED_REF,
+            tools=[{"type": "function", "function": {"name": "f"}}],
+        )
+    _assert_verbatim(str(excinfo.value), HOSTED_REF)
+
+
+def test_sdk_pull_refusal_shows_the_ref_as_typed() -> None:
+    provider = SdkLLMProvider(FakeBackend(pull_not_supported=True))
+    with pytest.raises(ProviderError) as excinfo:
+        provider.pull_model(HOSTED_REF)
+    _assert_verbatim(str(excinfo.value), HOSTED_REF)
+
+
+def test_sdk_pull_failure_shows_the_ref_as_typed() -> None:
+    class _Failing(FakeBackend):
+        def pull_model(self, model: str, *, base_url: str, on_progress: Any = None) -> None:
+            raise RuntimeError("boom")
+
+    with pytest.raises(ProviderError) as excinfo:
+        SdkLLMProvider(_Failing()).pull_model(HOSTED_REF)
+    _assert_verbatim(str(excinfo.value), HOSTED_REF)
+
+
+def test_sdk_show_failure_shows_the_ref_as_typed() -> None:
+    class _Failing(FakeBackend):
+        def show_model(self, model: str, *, base_url: str) -> dict[str, Any] | None:
+            raise RuntimeError("boom")
+
+    with pytest.raises(ProviderError) as excinfo:
+        SdkLLMProvider(_Failing()).show_model(HOSTED_REF)
+    _assert_verbatim(str(excinfo.value), HOSTED_REF)
+
+
+def test_wiki_lint_model_change_shows_both_refs_as_typed(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "chat_model", WINDOWS_REF)
+    text = f"---\ngenerated_by: {OTHER_REF}\n---\n\n# Doc\n"
+    issue = _lint_model_changed("wiki/summaries/doc.md", text, cfg)
+    assert issue is not None
+    _assert_verbatim(issue.message)
+    _assert_verbatim(issue.message, OTHER_REF)
+
+
+def test_add_paths_refusal_shows_the_path_as_typed(monkeypatch) -> None:
+    # On Windows a bare drive root has no name; PureWindowsPath gives the same on every host.
+    monkeypatch.setattr(ingest_handlers, "Path", PureWindowsPath)
+    with pytest.raises(ValueError) as excinfo:
+        ingest_handlers.validate_add_paths({"paths": ["C:\\"]})
+    _assert_verbatim(str(excinfo.value), "C:\\")
+
+
+def test_analyze_directory_refusal_shows_the_path_as_typed() -> None:
+    with pytest.raises(ValueError) as excinfo:
+        server_directory(RELATIVE_REF)
+    _assert_verbatim(str(excinfo.value), RELATIVE_REF)
+
+
+def test_model_ref_shape_error_shows_the_ref_as_typed() -> None:
+    with pytest.raises(ValueError) as excinfo:
+        parse_model_ref(UNSUFFIXED_REF)
+    _assert_verbatim(str(excinfo.value), UNSUFFIXED_REF)
+
+
+def test_registry_ref_shape_error_shows_the_ref_as_typed() -> None:
+    with pytest.raises(ValueError) as excinfo:
+        parse_hf_ref(WINDOWS_REF)
+    _assert_verbatim(str(excinfo.value))
