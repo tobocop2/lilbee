@@ -10,6 +10,7 @@ import shutil
 import tarfile
 import threading
 import zipfile
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -241,9 +242,11 @@ class TestInstall:
         folder = install_router().parent
         # The binary is gone while the router runs from the folder: the install finds none.
         (folder / "llama-swap").unlink()
-        with BuildHolds([folder]):
-            with pytest.raises(EngineInUseError, match="router v272 is in use"):
-                install_router()
+        with (
+            closing(BuildHolds([folder])),
+            pytest.raises(EngineInUseError, match="router v272 is in use"),
+        ):
+            install_router()
         assert (folder / LICENCE_FILE).is_file()
         assert not (folder / "llama-swap").exists()
         assert [p.name for p in folder.parent.iterdir()] == [ROUTER_VERSION]
@@ -255,9 +258,8 @@ class TestInstall:
     ) -> None:
         folder = install_router().parent
         (folder / "llama-swap").unlink()
-        with BuildHolds([folder]):
-            with pytest.raises(EngineInUseError):
-                router_on_first_use()
+        with closing(BuildHolds([folder])), pytest.raises(EngineInUseError):
+            router_on_first_use()
         assert router_on_first_use() == folder / "llama-swap"
 
     def test_the_install_holds_the_router_lock_for_the_whole_install(
