@@ -14,6 +14,7 @@ from litestar.handlers.base import BaseRouteHandler
 import lilbee.app.presets as service
 from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError
+from lilbee.core.settings import ConfigReadFailedError
 from lilbee.server.models import (
     PresetAddBody,
     PresetEditBody,
@@ -25,11 +26,12 @@ from lilbee.server.models import (
 _T = TypeVar("_T")
 _HTTP_NOT_FOUND = 404
 _HTTP_CONFLICT = 409
+_HTTP_UNAVAILABLE = 503
 _HTTP_UNPROCESSABLE = 422
 
 
 async def _call(action: Callable[[], _T]) -> _T:
-    """Run a service call off the loop; a refusal becomes its status; a held lock stays 503."""
+    """Run a service call off the loop; a refusal becomes its status; a held lock or an unreadable config.toml is 503."""
     try:
         return await asyncio.to_thread(action)
     except service.PresetNotFoundError as exc:
@@ -38,6 +40,10 @@ async def _call(action: Callable[[], _T]) -> _T:
         raise HTTPException(status_code=_HTTP_CONFLICT, detail=service.failure_text(exc)) from exc
     except FileLockUnavailableError:
         raise
+    except ConfigReadFailedError as exc:
+        raise HTTPException(
+            status_code=_HTTP_UNAVAILABLE, detail=service.failure_text(exc)
+        ) from exc
     except (ValueError, OSError) as exc:
         raise HTTPException(
             status_code=_HTTP_UNPROCESSABLE, detail=service.failure_text(exc)
