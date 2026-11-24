@@ -49,7 +49,7 @@ lilbee takes the first engine of that order that obeys all these rules:
 | `xdna` | none |
 
 If a format has no default engine, the role has no engine until you choose one. lilbee
-shows one of three notices. `lilbee engine roles` starts each notice with
+shows one of four notices. `lilbee engine roles` starts each notice with
 `For <role>: `, for example `For chat: `.
 
 - If an installed engine loads the format, serves the role and can run on this computer,
@@ -61,6 +61,11 @@ shows one of three notices. `lilbee engine roles` starts each notice with
   `No installed engine serves the safetensors format of org/repo for rerank. tei serves it. Run lilbee engine install tei.`
   If the engine cannot be installed, the notice gives the reason in place of the install
   command.
+- If an installed engine loads the format and serves the role, but this computer fails the
+  check of that engine, the notice names the engine and gives the reason from the check. It
+  is, for example,
+  `Engine ik_llama.cpp loads the gguf format of org/repo but cannot run on this host. Xeon lacks AVX2. ik_llama.cpp needs a CPU with AVX2 or NEON.`
+  The notice names every such engine. It does not tell you to install an engine.
 - If no installed engine loads the format, the notice is, for example,
   `No installed engine loads the safetensors format of org/repo. Run lilbee engine list to see the installed engines.`
 
