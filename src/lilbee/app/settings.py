@@ -566,6 +566,8 @@ def _config_failure_message(exc: OSError, verb: str) -> str:
     if isinstance(exc, persistent_settings.ReadOnlyConfigError):
         # The error text already names the file by its full path.
         return f"{exc}."
+    if isinstance(exc, persistent_settings.ConfigReadFailedError):
+        verb = "read"
     detail = f"Could not {verb} {CONFIG_FILE_NAME}: {exc}."
     if isinstance(exc, FileLockUnavailableError):
         return f"{detail} Nothing was changed. Close any other lilbee process and try again."

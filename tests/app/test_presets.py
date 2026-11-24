@@ -600,6 +600,12 @@ class TestSurfaceHelpers:
         assert presets.failure_text(exc) == app_settings.config_write_failure_message(exc)
         assert "Could not write config.toml" in presets.failure_text(exc)
 
+    def test_an_unreadable_config_shows_the_read_text(self, tmp_path):
+        (tmp_path / "config.toml").mkdir()
+        with pytest.raises(OSError) as caught:
+            settings.update_values(tmp_path, {"top_k": 7})
+        assert presets.failure_text(caught.value).startswith("Could not read config.toml")
+
 
 class TestRemove:
     def test_the_last_remove_leaves_no_field_in_the_file(self):
