@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
-import time
 from types import SimpleNamespace
 
 import pytest
 
+import tests._async_wait as async_wait
 import tests.test_profiles_e2e_parity as parity
 from lilbee.cli.tui.screens.settings import SettingsScreen
-from tests._async_wait import ABSENCE_PAUSES, ABSENCE_SECONDS
-
-_PAUSE_SECONDS = 0.2
 
 
 def test_the_timeout_ends_the_worker_instead_of_raising_in_the_loop(
@@ -22,21 +18,33 @@ def test_the_timeout_ends_the_worker_instead_of_raising_in_the_loop(
     assert pytestconfig.getini("timeout_method") == "thread"
 
 
-async def test_the_wait_for_an_offer_that_does_not_come_has_a_floor_and_an_end() -> None:
-    """A pause lasts up to a second on a busy host: the wait keeps its pauses and its seconds."""
-    pauses = 0
+@pytest.mark.parametrize(
+    ("pause_seconds", "pauses"),
+    [
+        pytest.param(2.0, 5, id="a-slow-pause-leaves-only-the-pause-floor"),
+        pytest.param(0.125, 8, id="a-fast-pause-leaves-only-the-time-floor"),
+    ],
+)
+async def test_the_wait_for_an_offer_that_does_not_come_keeps_both_floors(
+    monkeypatch: pytest.MonkeyPatch, pause_seconds: float, pauses: int
+) -> None:
+    """A fake clock moves only in a pause: one floor at a time holds the wait.
 
-    async def _slow_pause() -> None:
-        nonlocal pauses
-        pauses += 1
-        await asyncio.sleep(_PAUSE_SECONDS)
+    The wait ends at the later of 5 pauses and 1 second. A slow pause passes the second at the
+    first pause, so 5 pauses hold the wait. A fast pause reaches 5 pauses before the second,
+    so the second holds it, at 8 pauses of 0.125 s.
+    """
+    now = 0.0
+    paused = 0
 
-    pilot = SimpleNamespace(pause=_slow_pause)
+    async def _pause() -> None:
+        nonlocal now, paused
+        paused += 1
+        now += pause_seconds
+
+    monkeypatch.setattr(async_wait, "time", SimpleNamespace(monotonic=lambda: now))
+    pilot = SimpleNamespace(pause=_pause)
     app = SimpleNamespace(screen=SettingsScreen())
-    start = time.monotonic()
     owed = await parity._rebuild_owed_on_leaving(app, pilot)  # type: ignore[arg-type]
-    elapsed = time.monotonic() - start
     assert owed is False
-    assert pauses >= ABSENCE_PAUSES
-    assert elapsed >= ABSENCE_SECONDS
-    assert elapsed < 3.0, pauses
+    assert paused == pauses

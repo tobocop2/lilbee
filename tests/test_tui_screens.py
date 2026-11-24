@@ -5661,6 +5661,9 @@ async def test_chat_log_follows_again_once_the_user_returns_to_the_bottom():
         assert log.scroll_y == log.max_scroll_y, "following did not resume at the bottom"
 
 
+# Took 56.6 s on a loaded build host (D5, 2026-11-24), 3.4 s under the 60 s limit. The thread
+# timeout method ends the whole run at the limit, so the test gets room.
+@pytest.mark.timeout(180)
 @pytest.mark.xdist_group("tui_pilot")
 async def test_chat_log_does_not_follow_again_from_part_way_back_down():
     """Scrolling part of the way back is still reading, not catching up.
