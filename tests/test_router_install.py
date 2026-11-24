@@ -7,6 +7,7 @@ import io
 import os
 import re
 import shutil
+import sys
 import tarfile
 import threading
 import zipfile
@@ -16,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from lilbee.app import engine_service
 from lilbee.catalog import runnable
 from lilbee.core.config import Config, cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
@@ -261,6 +263,37 @@ class TestInstall:
         with closing(BuildHolds([folder])), pytest.raises(EngineInUseError):
             router_on_first_use()
         assert router_on_first_use() == folder / "llama-swap"
+
+    def test_a_held_router_folder_is_a_refusal_on_every_install_surface(
+        self, release: list[str]
+    ) -> None:
+        folder = install_router().parent
+        (folder / "llama-swap").unlink()
+        with closing(BuildHolds([folder])):
+            with pytest.raises(engine_service.EngineRefusedError, match="router v272 is in use"):
+                engine_service._install_router("fx", None, None, None)
+            with pytest.raises(ProviderError, match="router v272 is in use"):
+                resolve_llama_swap()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32" or os.geteuid() == 0, reason="folder modes do not bind this user"
+    )
+    @pytest.mark.parametrize("with_in_use_file", [True, False])
+    def test_a_read_only_old_router_folder_is_replaced(
+        self, release: list[str], with_in_use_file: bool
+    ) -> None:
+        old = engines_root(cfg.models_dir) / "router" / ROUTER_VERSION
+        old.mkdir(parents=True)
+        (old / "stale.txt").write_text("old", encoding="utf-8")
+        if with_in_use_file:
+            (old / IN_USE_NAME).write_bytes(b"")
+        old.chmod(0o555)
+        try:
+            install_router()
+        finally:
+            old.chmod(0o755)
+        assert sorted(p.name for p in old.iterdir()) == [IN_USE_NAME, LICENCE_FILE, "llama-swap"]
+        assert [p.name for p in old.parent.iterdir()] == [ROUTER_VERSION]
 
     def test_the_install_holds_the_router_lock_for_the_whole_install(
         self, release: list[str], monkeypatch: pytest.MonkeyPatch
