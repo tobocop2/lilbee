@@ -15,6 +15,8 @@ from textual.app import ComposeResult
 from textual.widget import Widget
 from textual.widgets import KeyPanel, OptionList, Static
 from textual.widgets._key_panel import BindingsTable
+from textual.worker import Worker
+from textual.worker_manager import WorkerManager
 
 from lilbee.app import engine_service
 from lilbee.catalog.models import DownloadProgress
@@ -1482,9 +1484,19 @@ async def _enter_keeps_the_saved_engine(app: LilbeeAppHost, pilot) -> None:
     """Open on a saved engine: that row is highlighted, and Enter alone keeps the choice."""
     assert await wait_until(pilot, lambda: _picker_list_has_focus(app))
     assert app.screen.query_one(OptionList).highlighted == _OPENVINO_ROW
-    await pilot.press("enter")
-    assert await wait_until(pilot, lambda: not isinstance(app.screen, EnginePickerModal))
-    await pilot.pause()
+    started: list[Worker[None]] = []
+    add_worker = WorkerManager._add_worker
+
+    def catch(manager: WorkerManager, worker: Worker[None], *args: Any, **kwargs: Any) -> None:
+        started.append(worker)
+        add_worker(manager, worker, *args, **kwargs)
+
+    with mock.patch.object(WorkerManager, "_add_worker", catch):
+        await pilot.press("enter")
+        assert await wait_until(pilot, lambda: bool(started))
+    # The pauses of the pilot do not wait for a thread, so wait on the save worker itself.
+    for worker in started:
+        await worker.wait()
     assert _saved_choices() == {GGUF_REF: "openvino"}
 
 
