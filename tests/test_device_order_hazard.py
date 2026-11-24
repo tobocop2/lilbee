@@ -315,7 +315,7 @@ def _refusal_text(host, caplog, seen: int, cards: int) -> str:
 def test_the_refusal_states_the_count_of_cards_that_caused_it(
     host, caplog, seen: int, cards: int, count: int
 ) -> None:
-    assert f"this host has {count} GPUs" in _refusal_text(host, caplog, seen, cards)
+    assert f"this computer has {count} GPUs" in _refusal_text(host, caplog, seen, cards)
 
 
 def _hot_cards(host, fleet: list[FleetDevice]) -> Signals:

@@ -689,14 +689,14 @@ def test_a_linux_host_with_a_turing_or_newer_card_and_the_driver_gets_the_cuda_b
         ),
         pytest.param(
             _nvidia_host("Linux", "aarch64"),
-            "No CUDA build exists for this host.",
+            "No CUDA build exists for this computer.",
             id="linux-arm64",
         ),
         pytest.param(
-            _nvidia_host("Windows", "AMD64"), "No CUDA build exists for this host.", id="windows"
+            _nvidia_host("Windows", "AMD64"), "No CUDA build exists for this computer.", id="windows"
         ),
         pytest.param(
-            _nvidia_host("Darwin", "arm64"), "No CUDA build exists for this host.", id="macos"
+            _nvidia_host("Darwin", "arm64"), "No CUDA build exists for this computer.", id="macos"
         ),
     ],
 )
