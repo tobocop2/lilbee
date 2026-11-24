@@ -28,6 +28,12 @@ check_module() {
   [[ "$output" == *"ldd failed on"*"libggml-vulkan.so.0"* ]]
 }
 
+@test "an ldd that fails with any other output stops the build" {
+  check_module 'echo "ldd: error while loading"; exit 1'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"ldd failed on"*"libggml-vulkan.so.0"*"error while loading"* ]]
+}
+
 @test "a Vulkan module with a library not found stops the build" {
   check_module 'echo "	libvulkan.so.1 => not found"'
   [ "$status" -eq 1 ]
