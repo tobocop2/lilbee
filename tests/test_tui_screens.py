@@ -4133,10 +4133,10 @@ async def test_chat_slash_reset_refused_while_an_import_runs(tmp_path):
             app.screen._cmd_import(str(out))
             # The import body runs on the task worker thread after a slow first import and a
             # store open. The pauses of the pilot do not wait for a thread, so the test waits
-            # on the worker's own signal; the loop stays free for the worker. The hang guard
-            # only ends a wait on a worker that never signals, so its thread does not block
-            # the loop shutdown; it is not a start deadline.
-            assert await asyncio.to_thread(started.wait, _HANG_GUARD_S), (
+            # on the worker's own signal; the loop stays free for the worker. The entry wait
+            # ends below the test timeout, so a worker that never signals fails with a message
+            # and its thread does not block the loop shutdown.
+            assert await asyncio.to_thread(started.wait, _SYNC_ENTRY_WAIT_S), (
                 "the import worker never reached the import body"
             )
             app.screen._handle_slash("/reset")
