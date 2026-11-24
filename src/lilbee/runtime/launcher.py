@@ -43,13 +43,14 @@ def _warn_missing_vc_runtime() -> None:
         return
     import ctypes
 
+    from lilbee.runtime.vc_runtime import VC_REDIST_URL
+
     try:
         ctypes.WinDLL("msvcp140.dll")
     except OSError:
         sys.stderr.write(
             "Warning: the Microsoft Visual C++ runtime may be missing, so some "
-            "libraries can fail to load with 'DLL load failed'. Install it from "
-            "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist.\n"
+            f"libraries can fail to load with 'DLL load failed'. Install it from {VC_REDIST_URL}.\n"
         )
 
 
