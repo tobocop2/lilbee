@@ -45,6 +45,8 @@ class WarningCode(StrEnum):
     """A search ran without the cross-encoder re-rank because the reranker failed."""
     GPU_NOT_SERVED = "gpu_not_served"
     """The engine pack that installed on first use cannot use this computer's GPU."""
+    ROUTER_OUTDATED = "router_outdated"
+    """The llama-swap router is too old to copy the output of an engine that writes no log."""
 
 
 def warnings_payload(warnings: Iterable[HealthWarning]) -> list[dict[str, Any]]:

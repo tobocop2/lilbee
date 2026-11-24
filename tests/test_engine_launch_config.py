@@ -201,7 +201,11 @@ def _config_from_the_planner() -> list[str]:
     """The config rendered from a plan alone, with no snapshot of the clean box."""
     plan = planning.plan_all_launches(engines=EngineBook(cfg).adapters())
     ports = {launch.model_id: 40000 + i for i, launch in enumerate(plan.launches)}
-    return [swap_config.build_swap_config(list(plan.launches), ports, swap=False, ttl_seconds=0)]
+    return [
+        swap_config.build_swap_config(
+            list(plan.launches), ports, swap=False, ttl_seconds=0, engine_logs={}
+        )
+    ]
 
 
 def _started_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FleetProvider:

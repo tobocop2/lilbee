@@ -210,7 +210,7 @@ def test_r3_the_swap_entry_names_the_model_and_checks_live() -> None:
         extras = LEMONADE.swap_extras(launch)
         assert extras == {"checkEndpoint": "/live", "useModelName": f"user.lilbee-{role.value}"}
         launch = replace(launch, swap_extras=extras)
-        config = json.loads(build_swap_config([launch], {launch.model_id: 5800}))
+        config = json.loads(build_swap_config([launch], {launch.model_id: 5800}, engine_logs={}))
         entry = config["models"][launch.model_id]
         assert entry["useModelName"] == f"user.lilbee-{role.value}"
         assert entry["checkEndpoint"] == "/live"

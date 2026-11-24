@@ -881,7 +881,7 @@ class TestMixedCoTenantGroup:
             if group_for(launch.role, plan.co_tenants) is SwapGroup.CO_TENANT
         ]
         ports = {launch.model_id: 5900 + i for i, launch in enumerate(members)}
-        config = json.loads(build_swap_config(members, ports, swap=True))
+        config = json.loads(build_swap_config(members, ports, swap=True, engine_logs={}))
         groups = config["groups"].values()
         assert all(group["exclusive"] is True for group in groups)
         listed = [mid for group in groups for mid in group["members"]]

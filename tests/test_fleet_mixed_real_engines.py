@@ -122,7 +122,7 @@ def test_the_mlx_chat_and_the_llama_embed_share_one_swap_config(monkeypatch, tmp
     engines, llama = _host(monkeypatch, tmp_path, pool_gib=24, chat_gib=8, embed_gib=2)
     plan = planning.plan_all_launches(engines=engines)
     ports = {launch.model_id: 5900 + i for i, launch in enumerate(plan.launches)}
-    config = json.loads(build_swap_config(list(plan.launches), ports, swap=True))
+    config = json.loads(build_swap_config(list(plan.launches), ports, swap=True, engine_logs={}))
     command_of = {launch.role: config["models"][launch.model_id]["cmd"] for launch in plan.launches}
     assert set(command_of) == {CHAT, EMBED}
     assert str(llama.binary()) in command_of[EMBED]

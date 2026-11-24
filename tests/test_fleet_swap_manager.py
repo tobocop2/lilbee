@@ -15,6 +15,7 @@ from typing import Any, ClassVar
 import httpx
 import pytest
 
+from lilbee.core.health_warnings import WarningCode
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import swap_manager as sm
 from lilbee.providers.fleet.engines import LLAMA
@@ -206,13 +207,37 @@ class TestStart:
         config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
         assert config["logToStdout"] == "proxy"
         assert [argv[0] for argv in spawned] == ["/usr/bin/llama-swap"]
-        assert [record.getMessage() for record in caplog.records] == [
+        text = (
             "The llama-swap router at /usr/bin/llama-swap is v223, so the output of embed-0 "
-            f"is not in {mgr.log_path}. llama-swap v259 or later puts it there. Replace the "
-            "file at /usr/bin/llama-swap with llama-swap v259 or later, from "
-            "https://github.com/mostlygeek/llama-swap/releases or from "
-            "'go install github.com/mostlygeek/llama-swap@latest'."
-        ]
+            f"is not in {mgr.log_path}."
+        )
+        remedy = (
+            "Replace the file at /usr/bin/llama-swap with llama-swap v259 or later. "
+            "Download it from https://github.com/mostlygeek/llama-swap/releases, or run "
+            "'go install github.com/mostlygeek/llama-swap@latest' and copy the llama-swap "
+            "file from your Go bin folder to /usr/bin/llama-swap."
+        )
+        assert [record.getMessage() for record in caplog.records] == [f"{text} {remedy}"]
+        (warning,) = mgr.health_warnings()
+        assert (warning.code, warning.message, warning.remedy) == (
+            WarningCode.ROUTER_OUTDATED,
+            text,
+            remedy,
+        )
+
+    def test_the_old_router_warning_clears_when_the_router_is_current(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _record_spawn(monkeypatch)
+        router_reports(monkeypatch, "version: 223 (8c5e40e), built at x\n")
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, SwapGroup.EMBED)
+        engines = engines_for_all_roles(_NoOwnLogEngine())
+        mgr.start([_launch(WorkerRole.EMBED)], engines=engines)
+        assert [w.code for w in mgr.health_warnings()] == [WarningCode.ROUTER_OUTDATED]
+        router_reports(monkeypatch, "version: v272 (802f1c4), built at x\n")
+        mgr.start([_launch(WorkerRole.EMBED)], engines=engines)
+        assert mgr.health_warnings() == []
 
     def test_an_old_router_keeps_a_co_tenant_chat_that_serves_its_memory_on_the_proxy_stream(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
