@@ -1853,6 +1853,46 @@ def test_launch_uses_engine_names_the_build_a_launch_runs(tmp_path: Path, monkey
         hold.release_and_check_last()
 
 
+def test_launch_uses_engine_counts_a_build_a_private_slot_runs(tmp_path: Path, monkeypatch) -> None:
+    from lilbee.core.config import cfg
+    from lilbee.runtime.engine_lock import hold_user_lock, private_engine_dir
+
+    root = tmp_path / "engines"
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    monkeypatch.setattr(cfg, "data_root", tmp_path / "config")
+    private = private_engine_dir(cfg.data_root)
+    record_launch(tmp_path / "slot", root / "fx" / "1-cpu" / "bin" / "srv")
+    record_launch(private, root / "fx" / "2-cpu" / "bin" / "srv")
+    holds = [hold_user_lock(tmp_path / "slot"), hold_user_lock(private)]
+    try:
+        assert engine_store.launch_uses_engine(root, "fx", "1", "cpu") is True
+        assert engine_store.launch_uses_engine(root, "fx", "2", "cpu") is True
+        assert engine_store.launch_uses_engine(root, "fx", "3", "cpu") is False
+    finally:
+        for hold in holds:
+            hold.release_and_check_last()
+
+
+def test_launch_uses_engine_ignores_the_launch_record_of_a_slot_with_no_live_user(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from lilbee.core.config import cfg
+    from lilbee.runtime.engine_lock import hold_user_lock, private_engine_dir
+
+    root = tmp_path / "engines"
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    monkeypatch.setattr(cfg, "data_root", tmp_path / "config")
+    private = private_engine_dir(cfg.data_root)
+    record_launch(tmp_path / "slot", root / "fx" / "1-cpu" / "bin" / "srv")
+    record_launch(private, root / "fx" / "2-cpu" / "bin" / "srv")
+    hold = hold_user_lock(tmp_path / "slot")
+    try:
+        assert engine_store.launch_uses_engine(root, "fx", "1", "cpu") is True
+        assert engine_store.launch_uses_engine(root, "fx", "2", "cpu") is False
+    finally:
+        hold.release_and_check_last()
+
+
 def test_remove_keeps_the_running_build_and_deletes_another_of_the_engine(
     store: EngineStore, tmp_path: Path, monkeypatch
 ) -> None:

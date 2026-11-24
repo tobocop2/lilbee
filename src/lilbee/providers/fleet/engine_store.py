@@ -1124,21 +1124,30 @@ def engines_root(models_dir: Path) -> Path:
 def launch_uses_engine(root: Path, engine: str, version: str, backend: str) -> bool:
     """True while a launch of this machine runs a binary from this build folder.
 
-    A user whose launches cannot all be named may run any build, so it counts as a user.
-    The paths are compared as written: a link inside the build counts as the build.
+    The launches of the machine slot and of this config root's private slot both count. A
+    slot without a live user holds no launch. A user whose launches cannot all be named may
+    run any build, so it counts as a user. The paths are compared as written: a link inside
+    the build counts as the build.
     """
     # circular: swap_manager -> binary -> first_use -> engine_store
+    from lilbee.core.config import cfg
     from lilbee.providers.fleet.swap_manager import recorded_launch_binaries
-    from lilbee.runtime.engine_lock import live_users_exist, machine_engine_dir
+    from lilbee.runtime.engine_lock import (
+        live_users_exist,
+        machine_engine_dir,
+        private_engine_dir,
+    )
 
-    slot = machine_engine_dir()
-    if not live_users_exist(slot):
-        return False
-    binaries = recorded_launch_binaries(slot)
-    if binaries is None:
-        return True
     build = Path(os.path.abspath(root / engine / f"{version}-{backend}"))
-    return any(Path(os.path.abspath(binary)).is_relative_to(build) for binary in binaries)
+    for slot in dict.fromkeys((machine_engine_dir(), private_engine_dir(cfg.data_root))):
+        if not live_users_exist(slot):
+            continue
+        binaries = recorded_launch_binaries(slot)
+        if binaries is None or any(
+            Path(os.path.abspath(binary)).is_relative_to(build) for binary in binaries
+        ):
+            return True
+    return False
 
 
 def sweep_engines(models_dir: Path) -> list[Path]:
