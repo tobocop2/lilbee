@@ -21,12 +21,21 @@ from tests.conformance.request_set import JSON_ASK
 _TOKEN = "s3cret-token-value"  # pragma: allowlist secret
 
 
+def _drain(handler: BaseHTTPRequestHandler) -> None:
+    """Read the whole request body, so closing the socket after the answer sends no reset.
+
+    On Windows a close with unread request data resets the connection and drops the answer.
+    """
+    handler.rfile.read(int(handler.headers.get("Content-Length") or 0))
+
+
 @contextmanager
 def _server(name: str, seen: list[tuple[str, str, str]]) -> Iterator[str]:
     """A local server that logs (name, path, Authorization) and answers 401 without the token."""
 
     class Handler(BaseHTTPRequestHandler):
         def _answer(self) -> None:
+            _drain(self)
             auth = self.headers.get("Authorization", "")
             seen.append((name, self.path, auth))
             ok = name != "lilbee" or auth == f"Bearer {_TOKEN}"
@@ -177,6 +186,7 @@ def _redirector(target: str) -> Iterator[str]:
 
     class Handler(BaseHTTPRequestHandler):
         def _redirect(self) -> None:
+            _drain(self)
             self.send_response(302)
             self.send_header("Location", target + self.path)
             self.send_header("Content-Length", "0")
