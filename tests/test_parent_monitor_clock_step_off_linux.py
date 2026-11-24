@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import ctypes
 import os
-import sys
 import threading
 import time
 from collections.abc import Callable
@@ -86,6 +85,10 @@ def test_a_failed_read_of_our_own_start_does_not_stop_the_watch(
     assert _watch(monkeypatch, {_PARENT: _PARENT_ABS, os.getpid(): None}) is False
 
 
+def _no_libc(_name: object) -> object:
+    raise OSError("no libc")
+
+
 class _Libc:
     def __init__(self, *, result: int, start: int) -> None:
         self._result = result
@@ -106,9 +109,14 @@ class TestMachStart:
         monkeypatch.setattr(ctypes, "CDLL", lambda _name: _Libc(result=-1, start=7))
         assert pm._macos_start_abstime(42) is None
 
-    @pytest.mark.skipif(sys.platform == "darwin", reason="libc has proc_pid_rusage on macOS")
-    def test_a_libc_without_the_call_reads_none(self) -> None:
-        assert pm._macos_start_abstime(os.getpid()) is None
+    @pytest.mark.parametrize(
+        "load", [lambda _name: object(), _no_libc], ids=["no-such-call", "libc-does-not-load"]
+    )
+    def test_an_unusable_libc_reads_none(
+        self, monkeypatch: pytest.MonkeyPatch, load: Callable[[object], object]
+    ) -> None:
+        monkeypatch.setattr(ctypes, "CDLL", load)
+        assert pm._macos_start_abstime(42) is None
 
     def test_the_stamp_pairs_the_boot_session_with_the_start(
         self, monkeypatch: pytest.MonkeyPatch
