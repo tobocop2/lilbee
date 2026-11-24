@@ -290,7 +290,13 @@ if [ "${backend}" = "vulkan" ] && [ "$(uname -s)" = "Linux" ] && [ -z "${target_
     exit 1
   }
   for vk_module in "${pkg_bin_dir}"/libggml-vulkan.so*; do
-    unresolved=$(ldd "${vk_module}" | grep "not found" || true)
+    # ldd's own status is read first: a module it cannot read (not a dynamic file, another machine type) prints no
+    # "not found" line and would pass the check below.
+    libs=$(ldd "${vk_module}" 2>&1) || {
+      echo "ldd failed on ${vk_module}: ${libs}" >&2
+      exit 1
+    }
+    unresolved=$(grep "not found" <<< "${libs}" || true)
     if [ -n "${unresolved}" ]; then
       echo "$(basename "${vk_module}") does not resolve from the bundle:" >&2
       echo "${unresolved}" >&2
