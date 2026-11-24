@@ -128,6 +128,57 @@ def run_without_join(coro: Awaitable[T]) -> T:
         asyncio.set_event_loop(None)
 
 
+class _MainRun:
+    """The ``run_main`` on the main thread: its main task, and the exit held for the run's end."""
+
+    def __init__(self) -> None:
+        self.task: asyncio.Task[Any] | None = None
+        self.held: SystemExit | None = None
+
+    def run(self, main: Coroutine[Any, Any, T]) -> T:
+        if threading.current_thread() is not threading.main_thread():
+            return asyncio.run(main)
+        with asyncio.Runner() as runner:
+            try:
+                return runner.run(self._as_main(main))
+            finally:
+                # Cleared first: from here on a signal raises its exit at once, so
+                # one during the runner's close still cuts its join of the workers.
+                self.task = None
+                held, self.held = self.held, None
+                if held is not None:
+                    raise held
+
+    async def _as_main(self, main: Coroutine[Any, Any, T]) -> T:
+        self.task = asyncio.current_task()
+        return await main
+
+    def hold(self, stop: SystemExit) -> bool:
+        if self.task is None or not self.task.done():
+            return False
+        self.held = stop
+        return True
+
+
+_main_run = _MainRun()
+
+
+def run_main(main: Coroutine[Any, Any, T]) -> T:
+    """Run *main* as ``asyncio.run`` does; an exit that ``hold_exit`` kept is raised after it.
+
+    A finished *main* queues the stop of its run. An exit raised by a signal handler
+    before that stop runs leaves it queued, the shutdown of the runner ends on it, and
+    its RuntimeError replaces the exit. So on the main thread, the handler asks
+    ``hold_exit`` first, and the exit leaves once the run of *main* has returned.
+    """
+    return _main_run.run(main)
+
+
+def hold_exit(stop: SystemExit) -> bool:
+    """Keep *stop* for the end of the run when ``run_main``'s main task is done; True when kept."""
+    return _main_run.hold(stop)
+
+
 def shutdown(drain_budget_s: float = _DRAIN_BUDGET_S) -> None:
     """Cancel pending tasks and wait *drain_budget_s* for them, then stop the loop. Idempotent."""
     global _loop, _thread

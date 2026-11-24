@@ -25,6 +25,7 @@ from rich.progress import (
 from lilbee.core.config import active_config
 from lilbee.data.ingest.errors import error_reason
 from lilbee.data.types import ShardId, SyncResult
+from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
 from lilbee.runtime.progress import (
@@ -494,7 +495,7 @@ def run_shard(
     reporter = _ShardReporter(index, messages)
     try:
         with config_scope(spec.config), services_scope(build_services(spec.config)):
-            result = asyncio.run(
+            result = run_main(
                 sync(
                     quiet=True,
                     on_progress=reporter,

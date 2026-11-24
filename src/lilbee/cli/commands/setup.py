@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import importlib
 import json
@@ -33,6 +32,7 @@ from lilbee.providers.base import is_header_safe
 from lilbee.providers.factory import sdk_library
 from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.providers.roles import WorkerRole
+from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.console import styled
 from lilbee.runtime.progress import EventType, SetupProgressEvent
 
@@ -506,7 +506,7 @@ def setup_crawler_cmd() -> None:
             typer.echo(msg.SETUP_CHROMIUM_CLI_PROGRESS.format(pct=pct), err=True)
 
     try:
-        asyncio.run(bootstrap_chromium(on_progress=_on_progress))
+        run_main(bootstrap_chromium(on_progress=_on_progress))
     except CrawlerBrowserError as exc:
         if cfg.json_mode:
             typer.echo(json.dumps({"component": "chromium", "error": str(exc)}))

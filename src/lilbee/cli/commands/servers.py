@@ -38,6 +38,7 @@ from lilbee.cli.commands.serve_logging import (
 )
 from lilbee.cli.upgrade_line import UpgradeLine
 from lilbee.core.config import cfg
+from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.lock import (
     SERVER_LOCK_TIMEOUT,
@@ -263,7 +264,7 @@ def serve(
         # Keeps asyncio from installing its own handler, which only cancels the main task
         # through a loop callback. An inherited ignore of SIGINT stays ignored.
         stop_on_interrupt()
-        status = asyncio.run(_run_server(server, config, cfg.server_host))
+        status = run_main(_run_server(server, config, cfg.server_host))
     except Exception:
         # The exit in the finally can end the process before the traceback prints.
         logging.getLogger(__name__).error("The server run failed.", exc_info=True)
