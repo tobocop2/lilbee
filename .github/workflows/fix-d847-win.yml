@@ -1,0 +1,44 @@
+name: fix-d847 windows probe
+on:
+  push:
+    branches: [engines/d-847]
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+      - run: uv python install 3.13
+      - uses: ./.github/actions/checkout-engine-packs
+      - run: uv sync --locked --python 3.13
+      - name: The twelve tests at the head
+        shell: bash
+        run: >-
+          uv run python --version &&
+          uv run pytest -v -p no:xdist -p no:randomly
+          "tests/test_fleet_binary.py::TestRouterRelease::test_the_release_is_read_from_the_version_line"
+          "tests/test_fleet_provider.py::test_an_old_router_replaces_an_idle_incumbent_with_a_started_engine"
+          "tests/test_fleet_swap_manager.py::TestStart::test_an_old_router_starts_a_group_of_llama_members_with_the_proxy_stream"
+          "tests/test_fleet_swap_manager.py::TestStart::test_an_old_router_starts_a_member_that_writes_no_log_with_a_warning"
+          "tests/test_llama_pack_tools.py::test_a_server_archive_gives_the_server_and_its_libraries_only"
+          "tests/test_llama_pack_tools.py::test_the_notice_is_the_header_and_the_text_of_the_page"
+      - name: The same twelve tests with the base test files (arm, must fail)
+        shell: bash
+        run: >-
+          git checkout d02467f2046666e572b91be991e6d0310066773b --
+          tests/test_fleet_binary.py tests/test_fleet_provider.py
+          tests/test_fleet_swap_manager.py tests/test_llama_pack_tools.py &&
+          { uv run pytest -v -p no:xdist -p no:randomly
+          "tests/test_fleet_binary.py::TestRouterRelease::test_the_release_is_read_from_the_version_line"
+          "tests/test_fleet_provider.py::test_an_old_router_replaces_an_idle_incumbent_with_a_started_engine"
+          "tests/test_fleet_swap_manager.py::TestStart::test_an_old_router_starts_a_group_of_llama_members_with_the_proxy_stream"
+          "tests/test_fleet_swap_manager.py::TestStart::test_an_old_router_starts_a_member_that_writes_no_log_with_a_warning"
+          "tests/test_llama_pack_tools.py::test_a_server_archive_gives_the_server_and_its_libraries_only"
+          "tests/test_llama_pack_tools.py::test_the_notice_is_the_header_and_the_text_of_the_page";
+          rc=$?; echo "ARM_RC=$rc"; test "$rc" -ne 0; }
