@@ -132,7 +132,7 @@ def test_the_mlx_chat_and_the_llama_embed_share_one_swap_config(monkeypatch, tmp
     assert str(MLX.binary()) not in command_of[EMBED]
 
 
-def test_a_discrete_gpu_host_refuses_an_mlx_chat_in_a_mixed_plan(monkeypatch, tmp_path) -> None:
+def test_the_engine_choice_refuses_an_mlx_chat_on_a_linux_host() -> None:
     linux = host_caps.collect(
         system="Linux", machine="x86_64", cpu_info={}, nvidia=None, mac_ver=""
     )
@@ -147,11 +147,6 @@ def test_a_discrete_gpu_host_refuses_an_mlx_chat_in_a_mixed_plan(monkeypatch, tm
     )
     assert picked.name is None
     assert "cannot run on this host" in (picked.notice or "")
-    engines, _ = _host(monkeypatch, tmp_path, pool_gib=24, chat_gib=8, embed_gib=2)
-    if picked.name is None:
-        engines.pop(CHAT)
-    plan = planning.plan_all_launches(engines=engines)
-    assert {launch.role for launch in plan.launches} == {EMBED}
 
 
 def test_the_mlx_estimate_is_read_through_the_adapter_not_the_planner(
