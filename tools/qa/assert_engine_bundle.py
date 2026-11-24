@@ -264,6 +264,10 @@ def _pe_imports(data: bytes) -> list[str]:
 
     Both the load-time and the delay-load tables count: a delay-loaded DLL that is
     absent fails on the first call into it, which is as late and as bad as it sounds.
+
+    Raises ValueError when a table has an address and pefile parsed no entry from it. pefile
+    only warns about a truncated or corrupt table, and an empty answer would read as
+    "imports nothing".
     """
     if data[:2] != b"MZ":
         return []
@@ -272,17 +276,19 @@ def _pe_imports(data: bytes) -> list[str]:
 
     pe = pefile.PE(data=data, fast_load=True)
     try:
-        pe.parse_data_directories(
-            directories=[
-                pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"],
-                pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT"],
-            ]
-        )
         tables = (
-            *getattr(pe, "DIRECTORY_ENTRY_IMPORT", ()),
-            *getattr(pe, "DIRECTORY_ENTRY_DELAY_IMPORT", ()),
+            ("IMAGE_DIRECTORY_ENTRY_IMPORT", "DIRECTORY_ENTRY_IMPORT"),
+            ("IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT", "DIRECTORY_ENTRY_DELAY_IMPORT"),
         )
-        return sorted({t.dll.decode("ascii", "replace").lower() for t in tables})
+        indexes = [pefile.DIRECTORY_ENTRY[directory] for directory, _ in tables]
+        pe.parse_data_directories(directories=indexes)
+        names: set[str] = set()
+        for index, (directory, attribute) in zip(indexes, tables, strict=True):
+            entries = getattr(pe, attribute, ())
+            if not entries and pe.OPTIONAL_HEADER.DATA_DIRECTORY[index].VirtualAddress:
+                raise ValueError(f"the {directory} table of a file is truncated or corrupt")
+            names.update(t.dll.decode("ascii", "replace").lower() for t in entries)
+        return sorted(names)
     finally:
         pe.close()
 
@@ -449,15 +455,13 @@ def _refusal(bundle: Path, runner_os: str | None, backend: str | None, tool: str
 def _unused_runtime(folder: Path) -> list[Path]:
     """The bundled Visual C++ runtime DLLs of *folder* that no file of the bundle reaches.
 
-    Every file that is not a runtime DLL counts as a root: the loader may open any of them.
-    A runtime DLL is reached when a root imports it, or when a reached runtime DLL does.
+    Every PE file (a file that starts with MZ, whatever its suffix) that is not a runtime DLL
+    counts as a root: the loader may open any of them. A runtime DLL is reached when a root
+    imports it, or when a reached runtime DLL does. A file whose import table cannot be read
+    stops the prune with an error before it deletes anything.
     """
     paths = [folder / entry for entry in _bin_entries(folder)]
-    imports = {
-        path: _pe_imports(path.read_bytes())
-        for path in paths
-        if path.suffix.lower() in (".dll", ".exe")
-    }
+    imports = {path: _pe_imports(path.read_bytes()) for path in paths}
     runtime = {p.name.lower(): p for p in paths if p.name.lower() in WINDOWS_CRT}
     pending = [n for p, names in imports.items() if p.name.lower() not in runtime for n in names]
     reached: set[str] = set()
