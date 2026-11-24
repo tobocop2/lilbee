@@ -16,7 +16,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
-from lilbee.catalog.download import ListingFailedError, ListingOfflineError, RetryCallback
+from lilbee.catalog.download import (
+    ListingFailedError,
+    ListingOfflineError,
+    RetryCallback,
+    network_error_message,
+)
 from lilbee.catalog.download_progress import ProgressCallback
 from lilbee.catalog.hf_client import HfToken, hub_resumes_to
 from lilbee.catalog.models import CatalogModel
@@ -217,8 +222,9 @@ class _PipeRetry:
 class _HubResumes:
     """Turns each in-place resume huggingface_hub logs into a retry for *on_retry*.
 
-    The hub restarts its count once bytes arrive, so this count restarts when
-    *progress* moved since the last resume.
+    The hub restarts its count at each new download call and once bytes arrive,
+    so this count restarts at each call and when *progress* moved since the
+    last resume.
     """
 
     def __init__(self, hf_repo: str, progress: _PipeProgress, on_retry: RetryCallback) -> None:
@@ -228,14 +234,17 @@ class _HubResumes:
         self._at: int | None = None
         self._count = 0
 
-    def __call__(self, cause: str) -> None:
+    def call_started(self) -> None:
+        """Restart the count at the next resume."""
+        self._at = None
+
+    def resumed(self, cause: str) -> None:
+        """Tell *on_retry* about one more in-place resume after *cause*."""
         if self._progress.downloaded != self._at:
             self._at = self._progress.downloaded
             self._count = 0
         self._count += 1
-        self._on_retry(
-            self._count, _HUB_ATTEMPTS, f"Network error downloading {self._hf_repo}: {cause}"
-        )
+        self._on_retry(self._count, _HUB_ATTEMPTS, network_error_message(self._hf_repo, cause))
 
 
 def download_in_subprocess(

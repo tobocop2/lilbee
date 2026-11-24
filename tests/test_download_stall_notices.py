@@ -126,28 +126,54 @@ def stall_server() -> Any:
     server.close()
 
 
+@pytest.fixture
+def silent_server() -> Any:
+    server = _StallServer(half_first=False)
+    yield server
+    server.close()
+
+
+class _Causes:
+    """A resume sink that records each cause and each new hub call."""
+
+    def __init__(self) -> None:
+        self.causes: list[str] = []
+        self.calls = 0
+
+    def call_started(self) -> None:
+        self.calls += 1
+
+    def resumed(self, cause: str) -> None:
+        self.causes.append(cause)
+
+
+def _real_hub_fast(monkeypatch: pytest.MonkeyPatch) -> Any:
+    from huggingface_hub import constants
+    from huggingface_hub import file_download as hub
+
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", False)
+    monkeypatch.setattr(constants, "HF_HUB_DOWNLOAD_TIMEOUT", 0.3)
+    monkeypatch.setattr(hub.time, "sleep", lambda _s: None)
+    return hub
+
+
 class TestTheHubResumeRecord:
     """The hub's own log text is not a contract, so a real hub transfer pins it."""
 
     def test_every_resume_of_the_real_hub_reaches_the_sink_naming_the_timeout(
         self, stall_server: _StallServer, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from huggingface_hub import constants
-        from huggingface_hub import file_download as hub
-
-        monkeypatch.setattr(constants, "HF_HUB_OFFLINE", False)
-        monkeypatch.setattr(constants, "HF_HUB_DOWNLOAD_TIMEOUT", 0.3)
-        monkeypatch.setattr(hub.time, "sleep", lambda _s: None)
-        causes: list[str] = []
+        hub = _real_hub_fast(monkeypatch)
+        sink = _Causes()
 
         with (
-            hf_client.hub_resumes_to(causes.append),
+            hf_client.hub_resumes_to(sink),
             pytest.raises(httpx2.TimeoutException) as raised,
         ):
             hub.http_get(f"{stall_server.url}/f", io.BytesIO(), expected_size=_SIZE)
 
         # Half the body arrived, then the hub resumed in place until it gave up.
-        assert causes == ["timed out"] * (dp._HUB_ATTEMPTS - 1), raised.value
+        assert sink.causes == ["timed out"] * (dp._HUB_ATTEMPTS - 1), raised.value
         assert stall_server.gets == dp._HUB_ATTEMPTS
 
     def test_the_record_is_still_dropped_from_the_log(self) -> None:
@@ -161,12 +187,12 @@ class TestTheHubResumeRecord:
             ("http://127.0.0.1:1/f", "timed out"),
             None,
         )
-        causes: list[str] = []
+        sink = _Causes()
 
-        with hf_client.hub_resumes_to(causes.append):
+        with hf_client.hub_resumes_to(sink):
             kept = hub_logger.filter(record)
 
-        assert (kept, causes) == (False, ["timed out"])
+        assert (kept, sink.causes) == (False, ["timed out"])
 
     def test_with_no_sink_open_the_record_is_dropped_and_goes_nowhere(self) -> None:
         hub_logger = logging.getLogger("huggingface_hub.file_download")
@@ -187,15 +213,50 @@ class TestTheHubResumeRecord:
         record = logging.LogRecord(
             hub_logger.name, logging.WARNING, __file__, 0, "Downloaded f in 2s", (), None
         )
-        causes: list[str] = []
+        sink = _Causes()
 
-        with hf_client.hub_resumes_to(causes.append):
+        with hf_client.hub_resumes_to(sink):
             assert hub_logger.filter(record)
 
-        assert causes == []
+        assert sink.causes == []
 
-    def test_a_record_with_no_cause_hands_over_its_first_line(self) -> None:
-        assert hf_client._resume_cause("Trying to resume download") == ("Trying to resume download")
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Error while downloading from http://127.0.0.1:1/f: \nTrying to resume download...",
+            "Trying to resume download",
+        ],
+    )
+    def test_a_record_with_no_cause_keeps_the_url_out_of_the_notice(self, message: str) -> None:
+        assert hf_client._resume_cause(message) == "the connection broke"
+
+    def test_with_no_sink_open_a_hub_call_goes_nowhere(self) -> None:
+        hf_client.hub_call_started()
+
+    def test_each_hub_download_call_tells_the_sink_before_it_starts(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import huggingface_hub
+
+        import lilbee.catalog.download as dl
+
+        sink = _Causes()
+        seen: list[int] = []
+
+        def _hub_download(**_config: Any) -> str:
+            seen.append(sink.calls)
+            return str(tmp_path / _FILE)
+
+        monkeypatch.setattr(huggingface_hub, "hf_hub_download", _hub_download)
+        config = dl.DownloadConfig(
+            repo_id=_REPO, filename=_FILE, token=None, cache_dir=str(tmp_path)
+        )
+
+        with hf_client.hub_resumes_to(sink):
+            dl._hf_download_or_translate(_entry(), config)
+            dl._hf_download_or_translate(_entry(), config)
+
+        assert seen == [1, 2]
 
 
 class _Conn:
@@ -215,13 +276,32 @@ class TestTheChildCountsResumes:
         heard: list[tuple[int, int, str]] = []
         resumes = dp._HubResumes(_REPO, progress, lambda *notice: heard.append(notice))
 
-        resumes("timed out")
-        resumes("timed out")
+        resumes.resumed("timed out")
+        resumes.resumed("timed out")
         progress(10, 100)
-        resumes("timed out")
+        resumes.resumed("timed out")
 
         cause = f"Network error downloading {_REPO}: timed out"
         assert heard == [(1, 6, cause), (2, 6, cause), (1, 6, cause)]
+
+    def test_a_second_hub_call_with_no_bytes_counts_from_one_again(
+        self, silent_server: _StallServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two real hub calls in one child, no byte arrives: no notice reads past "of 6"."""
+        hub = _real_hub_fast(monkeypatch)
+        progress = dp._PipeProgress(_Conn())  # type: ignore[arg-type]
+        heard: list[tuple[int, int, str]] = []
+        resumes = dp._HubResumes(_REPO, progress, lambda *notice: heard.append(notice))
+
+        with hf_client.hub_resumes_to(resumes):
+            for _call in range(2):
+                hf_client.hub_call_started()
+                with pytest.raises(httpx2.TimeoutException):
+                    hub.http_get(f"{silent_server.url}/f", io.BytesIO(), expected_size=_SIZE)
+
+        one_call = list(range(1, dp._HUB_ATTEMPTS))
+        assert [attempt for attempt, _of, _cause in heard] == one_call + one_call
+        assert {of for _attempt, of, _cause in heard} == {dp._HUB_ATTEMPTS}
 
     def test_the_child_sends_each_resume_and_each_outer_retry_to_the_parent(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

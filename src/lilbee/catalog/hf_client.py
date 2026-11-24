@@ -8,11 +8,11 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import httpx
 import httpx2
@@ -63,9 +63,21 @@ _HF_FILTERED_LOGGER_NAMES = (
 )
 
 
-_hub_resume_sink: ContextVar[Callable[[str], None] | None] = ContextVar(
-    "hub_resume_sink", default=None
-)
+_NO_CAUSE = "the connection broke"
+"""The cause of a resume record whose error text is empty."""
+
+
+class HubResumeSink(Protocol):
+    """Hears the hub's in-place resumes while ``hub_resumes_to`` holds it open."""
+
+    def call_started(self) -> None:
+        """A new hub download call starts, so the hub's own resume count restarts."""
+
+    def resumed(self, cause: str) -> None:
+        """The hub resumes a stalled transfer in place after the network error *cause*."""
+
+
+_hub_resume_sink: ContextVar[HubResumeSink | None] = ContextVar("hub_resume_sink", default=None)
 
 
 class _HfSubstringFilter(logging.Filter):
@@ -82,7 +94,7 @@ class _HfSubstringFilter(logging.Filter):
         message = record.getMessage()
         sink = _hub_resume_sink.get()
         if sink is not None and _HUB_RESUME_TEXT in message:
-            sink(_resume_cause(message))
+            sink.resumed(_resume_cause(message))
         return not any(n in message for n in self._needles)
 
 
@@ -90,14 +102,14 @@ def _resume_cause(message: str) -> str:
     """The network error in the hub's resume record, without the URL before it.
 
     The record reads ``Error while downloading from <url>: <cause>``, then the
-    resume line.
+    resume line. An empty cause becomes ``_NO_CAUSE``, so the URL never shows.
     """
     first_line = message.split("\n", 1)[0]
-    return first_line.partition(": ")[2] or first_line
+    return first_line.partition(": ")[2].strip() or _NO_CAUSE
 
 
 @contextmanager
-def hub_resumes_to(sink: Callable[[str], None]) -> Iterator[None]:
+def hub_resumes_to(sink: HubResumeSink) -> Iterator[None]:
     """Give *sink* the cause of each in-place resume the hub logs while the block runs.
 
     huggingface_hub resumes a stalled file transfer itself and says so only in
@@ -108,6 +120,13 @@ def hub_resumes_to(sink: Callable[[str], None]) -> Iterator[None]:
         yield
     finally:
         _hub_resume_sink.reset(token)
+
+
+def hub_call_started() -> None:
+    """Tell the sink that ``hub_resumes_to`` opened, if any, that a hub download call starts."""
+    sink = _hub_resume_sink.get()
+    if sink is not None:
+        sink.call_started()
 
 
 def install_hf_log_filter() -> None:
