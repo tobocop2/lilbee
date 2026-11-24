@@ -3569,9 +3569,12 @@ class FleetProvider:
         reload_dir = self._reload_dir()
         # Every drain runs with the build lock free, so a peer can take the lock
         # during the wait. A server that stopped answering drains before the plan.
-        drained = self._drain_stuck_groups(force)
+        # The pass keeps each server it takes out of dispatch, so it stops that
+        # server even when a rediscover clears the fleet's own map during a drain.
+        owned: dict[SwapGroup, SwapManager] = {}
+        drained = self._drain_stuck_groups(force, owned)
         try:
-            restarted = self._restart_changed(reload_dir, running, old, force, drained)
+            restarted = self._restart_changed(reload_dir, running, old, force, drained, owned)
         except BaseException:
             self._give_back_clients(drained)
             raise
@@ -3587,6 +3590,7 @@ class FleetProvider:
         old: dict[SwapGroup, tuple[InstanceLaunch, ...]],
         force: frozenset[WorkerRole],
         drained: dict[WorkerRole, list[LlamaServerClient]],
+        owned: dict[SwapGroup, SwapManager],
     ) -> list[WorkerRole]:
         """Re-plan, drain the changed groups, stop them and start their replacements.
 
@@ -3596,9 +3600,11 @@ class FleetProvider:
         free, and the next hold plans again. Each group drains once, so a request
         still running at the drain limit ends when its server stops.
 
-        *drained* holds the clients that ``_drain_stuck_groups`` took out of dispatch;
-        their groups restart whatever the plan says. Returns the restarted roles, or
-        none when a shutdown lands during the drain.
+        *drained* holds the clients that ``_drain_stuck_groups`` took out of dispatch,
+        and *owned* the servers of their groups; those groups restart whatever the plan
+        says. Every group this pass takes out of dispatch adds its server to *owned*,
+        and the stop phase stops that server. Returns the restarted roles, or none when
+        a shutdown lands during the drain.
         """
         restarted: list[WorkerRole] = []
         stuck = frozenset(drained)
@@ -3642,11 +3648,10 @@ class FleetProvider:
                 # plan, so its requests get the reload line even when a later plan
                 # no longer differs.
                 taken_for_replan |= replanned
-                changed = replanned | {group_for(role, plan.co_tenants) for role in force}
+                changed = (
+                    replanned | {group_for(role, plan.co_tenants) for role in force} | set(owned)
+                )
                 with self._lock:
-                    changed |= {
-                        self._role_group[role] for role in drained if role in self._role_group
-                    }
                     self._reload_owed = frozenset(
                         role for group in changed & set(new) for role in _by_role(list(new[group]))
                     )
@@ -3655,14 +3660,14 @@ class FleetProvider:
                     self._failed_starts = {}
                     busy = [
                         client
-                        for client in self._take_out_of_dispatch(changed, drained)
+                        for client in self._take_out_of_dispatch(changed, drained, owned)
                         if client.in_flight
                     ]
                     self._reload_done.notify_all()
                 if busy:
                     continue
                 self._log_dropped_groups(changed, old, new)
-                self._stop_groups(changed, taken_for_replan, stuck, drained)
+                self._stop_groups(changed, taken_for_replan, stuck, drained, owned)
                 # Start phase: spawn the changed groups present in the new plan.
                 to_start = sorted(changed & set(new), key=lambda g: g.value)
                 for index, group in enumerate(to_start):
@@ -3701,6 +3706,7 @@ class FleetProvider:
         replanned: set[SwapGroup],
         stuck: frozenset[WorkerRole],
         drained: dict[WorkerRole, list[LlamaServerClient]],
+        owned: dict[SwapGroup, SwapManager],
     ) -> None:
         """Stop the *changed* groups, so their VRAM is free before a replacement spawns.
 
@@ -3708,6 +3714,7 @@ class FleetProvider:
         error line of its restart, so a request still running on one ends with that
         line when its server stops. A client stays open until its own group stops: if
         a stop raises, the pass gives the clients of the later groups back to dispatch.
+        The server stopped is the one in *owned*, which the pass took with the group.
         """
         for group in sorted(changed, key=lambda g: g.value):
             with self._lock:
@@ -3716,7 +3723,8 @@ class FleetProvider:
                     for client in drained.pop(role, []):
                         client.restart_message = message
                 later = [client for pool in drained.values() for client in pool]
-                swap = self._drop_group(group, keep_open=later)
+                self._drop_group(group, keep_open=later)
+                swap = owned.pop(group, None)
             if swap is not None:
                 swap.shutdown()
 
@@ -3736,7 +3744,7 @@ class FleetProvider:
                     self._failed_starts[role] = exc
 
     def _drain_stuck_groups(
-        self, force: frozenset[WorkerRole]
+        self, force: frozenset[WorkerRole], owned: dict[SwapGroup, SwapManager]
     ) -> dict[WorkerRole, list[LlamaServerClient]]:
         """Take the groups of the *force* roles that stopped answering out of dispatch, and drain.
 
@@ -3744,7 +3752,8 @@ class FleetProvider:
         wait on it too, so the drain ends at the drain limit, as for a dead-server
         rebuild. It runs before the pass takes the build lock. New requests wait for
         the new server. The clients are retired as a reload retires them, so a cancel
-        and a shutdown reach their requests during the drain. Returns the clients by role.
+        and a shutdown reach their requests during the drain. Returns the clients by
+        role; the servers of their groups go into *owned*.
         """
         drained: dict[WorkerRole, list[LlamaServerClient]] = {}
         with self._lock:
@@ -3753,13 +3762,16 @@ class FleetProvider:
                 for role in force
                 if self._forced_roles.get(role) and role in self._role_group
             }
-            taken = self._take_out_of_dispatch(groups, drained)
+            taken = self._take_out_of_dispatch(groups, drained, owned)
             self._stuck_roles = frozenset(drained)
         self._drain_clients(taken, time.monotonic() + _SHUTDOWN_WORK_WAIT_S)
         return drained
 
     def _take_out_of_dispatch(
-        self, groups: set[SwapGroup], drained: dict[WorkerRole, list[LlamaServerClient]]
+        self,
+        groups: set[SwapGroup],
+        drained: dict[WorkerRole, list[LlamaServerClient]],
+        owned: dict[SwapGroup, SwapManager],
     ) -> list[LlamaServerClient]:
         """Move the clients of *groups* from dispatch into *drained*; return the moved ones.
 
@@ -3769,7 +3781,11 @@ class FleetProvider:
         cancel and a shutdown reach them, and no earlier retired client is closed
         here: a pass that fails gives the clients of *drained* back to dispatch, so
         the stop phase keeps them open until their own group stops.
+
+        The server of each group goes into *owned*. A rediscover during the drain
+        clears the fleet's own map, and the pass still stops the server it took.
         """
+        owned.update((group, self._swaps[group]) for group in groups if group in self._swaps)
         taken: list[LlamaServerClient] = []
         for role in [r for r, g in self._role_group.items() if g in groups and r not in drained]:
             drained[role] = self._clients.pop(role, [])

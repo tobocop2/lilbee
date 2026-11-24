@@ -390,9 +390,11 @@ def test_a_stalled_role_with_no_clients_restarts_its_group(engine_fleet: FleetFi
 
 
 def _restart_with_drained(
-    provider: FleetProvider, drained: dict[WorkerRole, list[object]]
+    provider: FleetProvider,
+    drained: dict[WorkerRole, list[object]],
+    owned: dict[object, object] | None = None,
 ) -> list[WorkerRole]:
-    """Run the restart step with *drained* as the pass hands it over, and no forced role."""
+    """Run the restart step with *drained* and *owned* as the pass hands them over."""
     with provider._lock:
         running = set(provider._swaps)
         old = dict(provider._launches)
@@ -402,6 +404,7 @@ def _restart_with_drained(
         old,
         frozenset(),
         drained,  # type: ignore[arg-type]
+        {} if owned is None else owned,  # type: ignore[arg-type]
     )
 
 
@@ -414,8 +417,9 @@ def test_a_drained_role_restarts_its_group_and_its_clients_hear_the_restart(
     embed_client = provider._clients[EMBED][0]
     with provider._lock:
         drained = {EMBED: provider._clients.pop(EMBED)}
+        owned = {provider._role_group[EMBED]: embed_swap}
 
-    restarted = _restart_with_drained(provider, drained)
+    restarted = _restart_with_drained(provider, drained, owned)
 
     assert restarted == [EMBED]
     assert embed_swap.shutdowns == 1
@@ -434,3 +438,59 @@ def test_a_drained_role_that_left_the_fleet_restarts_nothing(engine_fleet: Fleet
     assert restarted == []
     assert provider._swap_for(CHAT) is chat_swap
     assert provider._swap_for(EMBED) is embed_swap
+
+
+def _plan_without_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every plan leave out the chat launches, so a reload drops the chat group."""
+    real_plan = planning_mod.plan_all_launches
+
+    def no_chat(**kwargs: object) -> object:
+        plan = real_plan(**kwargs)
+        kept = tuple(launch for launch in plan.launches if launch.role is not CHAT)
+        return dataclasses.replace(plan, launches=kept)
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", no_chat)
+
+
+def _rediscover_during_the_drain(
+    provider: FleetProvider, monkeypatch: pytest.MonkeyPatch, release: threading.Event
+) -> list[int]:
+    """Run a rediscover when the pass starts its drain, then let the held request answer."""
+    real_drain = provider._drain_clients
+    calls: list[int] = []
+
+    def fail_once() -> str:
+        calls.append(1)
+        if len(calls) == 1:
+            raise _connection_error()
+        return "retried"
+
+    def drain(clients: list[object], until: float) -> None:
+        if clients and not calls:
+            assert provider._with_rediscover(fail_once) == "retried"
+            release.set()
+        real_drain(clients, until)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(provider, "_drain_clients", drain)
+    return calls
+
+
+def test_a_rediscover_during_the_drain_still_stops_the_group_the_new_plan_drops(
+    engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider, _swaps = engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", plan_tests._LONG_DRAIN_S)
+    old_chat = provider._swap_for(CHAT)
+    answers: list[object] = []
+    caller = plan_tests._held_chat(provider, answers)
+    calls = _rediscover_during_the_drain(provider, monkeypatch, old_chat.engine.release)
+    _plan_without_chat(monkeypatch)
+
+    provider.reload_role(CHAT)
+    caller.join(_JOIN_S)
+    _join_fleet_threads()
+
+    assert calls == [1, 1]
+    assert [getattr(answer, "text", answer) for answer in answers] == ["the answer"]
+    assert old_chat.shutdowns == 1
+    assert old_chat.engine.stopped.is_set()
