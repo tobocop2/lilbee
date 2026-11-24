@@ -223,8 +223,11 @@ class ProfileLibrary(Dialog[None]):
         """Rescan the profile folders off the loop, then show the list.
 
         Only the scan runs on a thread, so a newer rescan cancels this task at the await.
+        A quit during the scan leaves the library detached, so nothing is shown then.
         """
-        self.show(await asyncio.to_thread(load_library))
+        state = await asyncio.to_thread(load_library)
+        if self.is_attached:
+            self.show(state)
 
     def show(self, state: LibraryState) -> None:
         """Fill the list from *state*, keeping the highlighted file when it is still there."""
@@ -308,7 +311,8 @@ class ProfileLibrary(Dialog[None]):
             diff = await asyncio.to_thread(profiles.diff, ProfileStore(), entry.name)
         except (ValueError, OSError):
             return
-        self._show_diff(entry.path, diff)
+        if self.is_attached:
+            self._show_diff(entry.path, diff)
 
     def _show_diff(self, path: Path, diff: ProfileDiff | None) -> None:
         """Show *diff* for the file at *path*; None, or a file no longer highlighted, hides it."""
