@@ -9,9 +9,9 @@ environment variable is `LILBEE_` plus its name in upper case, except for the
 [environment-only variables](#environment-only-variables) at the end, which are
 not settings and are named individually.
 
-## The five surfaces
+## The six surfaces
 
-A setting is one field of lilbee's configuration. Five surfaces read or write it, and they do not all expose the same set, so each table below carries one column per surface.
+A setting is one field of lilbee's configuration. Six surfaces read or write it, and they do not all expose the same set, so each table below carries one column per surface.
 
 | Surface | How you set a value | Scope |
 |---|---|---|
@@ -20,6 +20,7 @@ A setting is one field of lilbee's configuration. Five surfaces read or write it
 | TUI | the `/settings` screen, or `/set <setting> <value>` | See the TUI column. Persists |
 | MCP | `lilbee_settings_set({"setting": value})` | See the MCP column. Persists |
 | HTTP | `PATCH /api/config` with `{"setting": value}` | See the HTTP column. Persists |
+| CLI | `lilbee settings set <setting> <value>` | See the CLI column. Persists |
 
 An empty environment value counts as unset, so the next surface decides. The exception is `vision_model` and `reranker_model`: an empty `LILBEE_VISION_MODEL` or `LILBEE_RERANKER_MODEL` clears that model for the process.
 
@@ -29,7 +30,7 @@ An environment value that its setting refuses stops every command with one line 
 
 `token_sizing` is not a setting. A `token_sizing` key in `config.toml` or in a profile file, or a `LILBEE_TOKEN_SIZING` variable, prints a warning and is ignored: `chunk_size` always counts the embedding model's tokens.
 
-There is no general `lilbee set` command. From a shell, set the environment variable or edit `config.toml`. The CLI commands that do write a setting are named in the CLI column. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
+From a shell, `lilbee settings set <setting> <value>` writes a setting to `config.toml`, and `lilbee settings unset <setting>` removes your value. `lilbee settings list` shows every setting with its value and source, and `lilbee settings get <setting>` shows one. `lilbee settings set` refuses the model roles; the CLI column names the command for each one. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
 
 ## Reading the surface columns
 
@@ -41,7 +42,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 
 **HTTP.** The same, with two exceptions. `role API` means `PUT /api/models/<role>` sets it, not `PATCH /api/config`. `refused` means the server rejects the write, because applying it rebuilds the model provider under concurrent requests.
 
-**CLI.** The command that writes this setting, or `no`.
+**CLI.** The command that writes this setting, or `no`. `lilbee settings set` writes every setting it names. The model roles have their own commands, or none.
 
 **Advanced.** `yes` means the TUI folds this setting into the collapsed "Advanced" section at the bottom of its tab: a normal user never needs it to get good results. `no` means the setting stays with the tab's regular rows. Every setting is still reachable through every other surface either way.
 
@@ -49,7 +50,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 
 Each setting takes its value from the first source that sets it: a non-empty environment variable (`env`), then `config.toml` (`user`), then the project's profile (`profile`), then lilbee's default. A default that lilbee computes at runtime is `auto`; any other default is `built_in`. An empty `LILBEE_<SETTING>=` sets nothing.
 
-The TUI marks an override with a pill on the setting's row: `set by you` for a `config.toml` value, and the variable's name for an environment value. Resetting a setting removes its `config.toml` value, so its pill goes away. MCP returns the source in the `source` field of `lilbee_settings_list` and `lilbee_settings_get`. HTTP returns it from `GET /api/config/sources`, as `{"sources": {"<setting>": "<source>"}}` over the same settings as `GET /api/config`.
+The TUI marks an override with a pill on the setting's row: `set by you` for a `config.toml` value, and the variable's name for an environment value. Resetting a setting removes its `config.toml` value, so its pill goes away. `lilbee settings list` and `lilbee settings get` print the source, and `lilbee settings unset` removes your `config.toml` value. MCP returns the source in the `source` field of `lilbee_settings_list` and `lilbee_settings_get`. HTTP returns it from `GET /api/config/sources`, as `{"sources": {"<setting>": "<source>"}}` over the same settings as `GET /api/config`.
 
 ## Three rules that apply only over MCP
 
