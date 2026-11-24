@@ -11,8 +11,13 @@ import pytest
 
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
 from lilbee.server.routes.general import config_reset_route, config_update_route
-from lilbee.server.routes.placement import placement_clear_route, placement_set_route
-from lilbee.server.routes.presets import presets_add_route, presets_remove_route
+from lilbee.server.routes.placement import placement_clear_route
+from lilbee.server.routes.presets import (
+    presets_add_route,
+    presets_edit_route,
+    presets_list_route,
+    presets_remove_route,
+)
 from tests._litestar_test_client import create_test_client
 
 READ_TEXT = f"Could not read {CONFIG_FILE_NAME}"
@@ -21,19 +26,14 @@ ALL_ROUTES = [
     config_reset_route,
     config_update_route,
     placement_clear_route,
-    placement_set_route,
     presets_add_route,
+    presets_edit_route,
+    presets_list_route,
     presets_remove_route,
 ]
 REQUESTS = [
     pytest.param("patch", "/api/config", {"json": {"top_k": 3}}, id="config-update"),
     pytest.param("post", "/api/config/reset", {"json": {"keys": ["top_k"]}}, id="config-reset"),
-    pytest.param(
-        "put",
-        "/api/placement",
-        {"json": {"spec": {"chat": {"devices": [0]}}}},
-        id="placement-set",
-    ),
     pytest.param("delete", "/api/placement", {}, id="placement-clear"),
     pytest.param(
         "post",
@@ -41,6 +41,8 @@ REQUESTS = [
         {"json": ADD_BODY},
         id="preset-add",
     ),
+    pytest.param("get", "/api/presets", {}, id="preset-list"),
+    pytest.param("put", "/api/presets/omlx", {"json": {"url": ADD_BODY["url"]}}, id="preset-edit"),
     pytest.param("delete", "/api/presets/omlx", {}, id="preset-remove"),
 ]
 
