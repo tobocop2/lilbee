@@ -144,7 +144,9 @@ def _ref(setup: Setup, role: str) -> str:
 
 def _template(setup: Setup) -> Outcome:
     result = create_sdk_provider().chat(
-        CONVERSATION, model=_ref(setup, "chat"), options={"max_tokens": 1024}
+        CONVERSATION,
+        model=_ref(setup, "chat"),
+        options={"num_predict": 1024, "temperature": 0},
     )
     assert isinstance(result, ChatResult)
     answer = split_reasoning(result.text).answer
@@ -157,7 +159,7 @@ def _tool(setup: Setup) -> Outcome:
         model=_ref(setup, "chat"),
         tools=[WEATHER],
         tool_choice="auto",
-        options={"max_tokens": 1024},
+        options={"num_predict": 1024},
     )
     assert isinstance(result, ChatResult)
     names = [call.name for call in result.tool_calls]
@@ -236,7 +238,7 @@ def _json_step(
     result = create_sdk_provider().chat(
         [{"role": "user", "content": JSON_ASK}],
         model=_ref(setup, "chat"),
-        options={"max_tokens": 256, "response_format": response_format},
+        options={"num_predict": 256, "response_format": response_format},
     )
     assert isinstance(result, ChatResult)
     return Outcome(not json_fault(result.text, schema), f"finish={result.finish_reason}")
@@ -340,7 +342,7 @@ def _named(setup: Setup) -> Outcome:
     try:
         if role == "chat":
             cfg.chat_model = model
-            routing.chat(CONVERSATION, options={"max_tokens": 1024})
+            routing.chat(CONVERSATION, options={"num_predict": 1024})
         elif role == "embed":
             cfg.embedding_model = model
             routing.embed(["alpha"])
