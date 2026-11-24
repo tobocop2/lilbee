@@ -8,6 +8,7 @@ loopback server that sends headers and frames on a script.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import socket
 import threading
@@ -38,7 +39,7 @@ def _frame(text: str, *, finish: bool = False) -> bytes:
 
 
 class _ScriptedServer:
-    """A one-connection loopback server: headers, a wait, frames at a gap, then silence or an end."""
+    """A one-connection loopback server: headers, a wait, frames at a gap, then silence or end."""
 
     def __init__(
         self, *, wait_s: float = 0.0, frames: int = 1, gap_s: float = 0.0, end: bool = False
@@ -70,6 +71,13 @@ class _ScriptedServer:
                 conn.sendall(_frame(f"w{number}"))
             if self._end:
                 conn.sendall(_frame("", finish=True) + b"0\r\n\r\n")
+                # Read to the client's close: a close with unread request bytes resets the
+                # connection, and the reset would discard the frames the client has not read.
+                conn.shutdown(socket.SHUT_WR)
+                conn.settimeout(5)
+                with contextlib.suppress(OSError):
+                    while conn.recv(65536):
+                        pass
                 return
             self._release.wait(timeout=60)
 

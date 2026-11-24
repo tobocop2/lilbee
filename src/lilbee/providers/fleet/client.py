@@ -508,6 +508,8 @@ _DEFAULT_TIMEOUT_S = 300.0
 # frame. The client timeout stays the wait before that frame: a cold load, or a long
 # prompt evaluation, sends no frame.
 _STREAM_IDLE_TIMEOUT_S = 120.0
+# The response extension that marks a response whose reads the idle bound already covers.
+_IDLE_BOUND_KEY = "idle_bound"
 # How often an abortable chat checks its cancel signal.
 _CANCEL_POLL_S = 0.1
 # Short, separate timeout for /health: a server can wedge under heavy prompt
@@ -916,13 +918,10 @@ class LlamaServerClient:
         ):
             self._raise_for_status(resp)
             self._abortable(resp)
-            bounded = False
             for line in resp.iter_lines():
                 delta = inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
                 if delta:
-                    if not bounded:
-                        _bound_idle_reads(resp)
-                        bounded = True
+                    _bound_idle_reads(resp)
                     yield delta
             tail = inliner.finish()
             if tail:
@@ -986,12 +985,10 @@ class LlamaServerClient:
             if not resp.is_success:
                 await resp.aread()
             self._raise_for_status(resp)
-            bounded = False
             async for line in resp.aiter_lines():
                 text = inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
-                if text and not bounded:
-                    await _bound_idle_reads_async(resp)
-                    bounded = True
+                if text:
+                    _bound_idle_reads(resp)
                 parts.append(text)
         parts.append(inliner.finish())
         return "".join(parts)
@@ -1146,8 +1143,7 @@ class LlamaServerClient:
                             # The first real frame proves prefill is over.
                             prefilling = False
                             on_prefill(None)
-                        if not started:
-                            _bound_idle_reads(resp)
+                        _bound_idle_reads(resp)
                         started = True
                         ended |= isinstance(item, StreamFinish)
                         yield item
@@ -2201,29 +2197,19 @@ def _bound_idle_reads(resp: httpx.Response) -> None:
     frame, because the engine sends its headers before it ends prompt evaluation.
     httpcore takes the read timeout once, when the body starts, so the request timeout
     cannot change in the middle of a body. The network stream of the response takes a
-    timeout at each read. A shorter read timeout stays as it is. Call this once for each
-    response. A response with no network stream (an in-memory transport) is left as it is.
+    timeout at each read. A shorter read timeout stays as it is. A second call for the same
+    response changes nothing. A response with no network stream (an in-memory transport) is
+    left as it is. The wrapper returns what the stream's read returns, so it serves the
+    sync stream and the async stream, whose read returns an awaitable.
     """
     stream = resp.extensions.get("network_stream")
-    if stream is None:
+    if stream is None or resp.extensions.get(_IDLE_BOUND_KEY):
         return
+    resp.extensions[_IDLE_BOUND_KEY] = True
     read = stream.read
 
-    def read_bounded(max_bytes: int, timeout: float | None = None) -> bytes:
+    def read_bounded(max_bytes: int, timeout: float | None = None) -> Any:
         return read(max_bytes, _idle_bounded(timeout))
-
-    stream.read = read_bounded
-
-
-async def _bound_idle_reads_async(resp: httpx.Response) -> None:
-    """The async twin of :func:`_bound_idle_reads`, for a response of an async client."""
-    stream = resp.extensions.get("network_stream")
-    if stream is None:
-        return
-    read = stream.read
-
-    async def read_bounded(max_bytes: int, timeout: float | None = None) -> bytes:
-        return await read(max_bytes, _idle_bounded(timeout))
 
     stream.read = read_bounded
 
