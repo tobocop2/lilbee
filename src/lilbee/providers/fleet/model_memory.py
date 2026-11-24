@@ -362,6 +362,12 @@ def installed_safetensors_bytes(model_path: Path) -> int:
     return _sum_suffix(_installed_sizes(model_path), _SAFETENSORS_SUFFIX)
 
 
+def installed_folder_weight_bytes(model_path: Path) -> int:
+    """Weight bytes of an installed model folder: safetensors, else the OpenVINO IR pair; 0 for none."""
+    sizes = _installed_sizes(model_path)
+    return _sum_suffix(sizes, _SAFETENSORS_SUFFIX) or _ir_pair_bytes(sizes)
+
+
 def _is_whole_safetensors(path: Path, size: int) -> bool:
     """Whether the file of *size* bytes is a whole safetensors file, not cut short.
 
