@@ -106,5 +106,7 @@ def members() -> list[Member]:
 # The keyword arguments of each config written for the model set.
 CONFIGS: dict[str, dict[str, Any]] = {
     "default": {},
-    "swap-ttl-logs": {"swap": True, "ttl_seconds": TTL_SECONDS, "engine_log_dir": LOG_DIR},
+    "swap-ttl-logs": {"swap": True, "ttl_seconds": TTL_SECONDS},
 }
+# The folder each config puts the engine logs in; a config not listed writes none.
+LOG_DIRS: dict[str, PurePosixPath] = {"swap-ttl-logs": LOG_DIR}
