@@ -2,13 +2,18 @@ PresetDialog {
     align: center middle;
 }
 
-PresetDialog > VerticalScroll {
+PresetDialog > Vertical {
     width: 64;
     height: auto;
     max-height: 90%;
     border: $rail-heavy $primary;
     background: $surface;
     padding: 1 2;
+}
+
+PresetDialog #preset-scroll {
+    height: auto;
+    max-height: 100%;
 }
 
 PresetDialog #preset-title {
@@ -29,6 +34,7 @@ PresetDialog #preset-error {
 }
 
 PresetDialog Center {
+    dock: bottom;
     width: 100%;
     height: auto;
     margin-top: 1;
