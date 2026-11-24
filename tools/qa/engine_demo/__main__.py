@@ -55,6 +55,7 @@ ENGINE_MODELS: dict[str, dict[WorkerRole, str]] = {
         WorkerRole.CHAT: "OpenVINO/Qwen3-0.6B-int4-ov#openvino",
         WorkerRole.EMBED: "OpenVINO/bge-base-en-v1.5-int8-ov#openvino",
         WorkerRole.RERANK: "OpenVINO/bge-reranker-base-int8-ov#openvino",
+        WorkerRole.VISION: "OpenVINO/InternVL2-1B-int4-ov#openvino",
     },
     EngineName.LEMONADE: {
         WorkerRole.CHAT: "qwen3:0.6b#xdna",
