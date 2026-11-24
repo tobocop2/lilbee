@@ -345,6 +345,7 @@ def test_delete_input_error_returns_422_when_enabled(monkeypatch):
 def test_a_read_only_config_is_not_reported_as_a_probe_failure(method, monkeypatch):
     """A config.toml the owner made read-only answers 503 with the file's own message."""
     from lilbee.core.settings import ReadOnlyConfigError
+    from lilbee.server.app import _config_read_only_response
 
     _enable_http_placement(monkeypatch)
     message = "/data/config.toml is read-only; make it writable and try again"
@@ -356,7 +357,8 @@ def test_a_read_only_config_is_not_reported_as_a_probe_failure(method, monkeypat
     route = placement_set_route if method == "put" else placement_clear_route
     kwargs = {"json": {"spec": {"chat": {"devices": [0]}}}} if method == "put" else {}
     monkeypatch.setattr(handlers, handler, _boom)
-    with create_test_client([route]) as client:
+    handlers_by_error = {ReadOnlyConfigError: _config_read_only_response}
+    with create_test_client([route], exception_handlers=handlers_by_error) as client:
         r = getattr(client, method)("/api/placement", **kwargs)
     assert r.status_code == 503
     assert r.json()["detail"] == f"{message}."

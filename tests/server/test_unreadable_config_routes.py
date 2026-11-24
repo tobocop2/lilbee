@@ -11,7 +11,6 @@ import os
 import stat
 
 import pytest
-
 from litestar.testing import TestClient
 
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
@@ -35,8 +34,9 @@ REQUESTS = [
     pytest.param("delete", "/api/presets/seeded", {}, id="preset-remove"),
 ]
 # Writers that need more setup than a bare request, so the unreadable test does not send them.
+MODEL_REF = "acme/model-GGUF/model-Q4_K_M.gguf"
 MODEL_REQUESTS = [
-    pytest.param("put", f"/api/models/{role}", {"json": {"model": "acme/model-GGUF/model-Q4_K_M.gguf"}}, id=f"model-{role}")
+    pytest.param("put", f"/api/models/{role}", {"json": {"model": MODEL_REF}}, id=f"model-{role}")
     for role in ("chat", "embedding", "vision", "reranker")
 ]
 WRITE_REQUESTS = [
