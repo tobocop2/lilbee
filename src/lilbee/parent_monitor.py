@@ -91,6 +91,18 @@ def linux_start_stamp(pid: int) -> tuple[str, float] | None:
         return None
 
 
+def linux_age_s(boot_id: str, start_ticks: float) -> float | None:
+    """Seconds since a process started, or None when the stamp is not from this boot.
+
+    *boot_id* and *start_ticks* come from :func:`linux_start_stamp`. The age is the boot clock
+    minus the start ticks, so a wall-clock step does not move it. None off Linux, on another
+    boot, and when the boot id cannot be read.
+    """
+    if not _is_linux() or linux_boot_id() != boot_id:
+        return None
+    return time.clock_gettime(time.CLOCK_BOOTTIME) - start_ticks / os.sysconf("SC_CLK_TCK")
+
+
 def _start_identity(pid: int) -> float:
     """What tells *pid* apart from a process that later reuses the pid.
 

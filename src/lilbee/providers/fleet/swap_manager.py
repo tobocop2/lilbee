@@ -28,7 +28,7 @@ import httpx
 import psutil
 
 from lilbee.core.health_warnings import HealthWarning, WarningCode
-from lilbee.parent_monitor import linux_start_stamp
+from lilbee.parent_monitor import linux_age_s, linux_start_stamp
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import (
     ROUTER_GO_INSTALL,
@@ -1024,17 +1024,40 @@ def _bind_deadline_s(state: SwapState) -> float:
     return health_check_timeout_s(launches) + _BOOT_TIMEOUT_S
 
 
+# When this process first read each record, on its monotonic clock: the age of an engine
+# where the boot clock gives none. Keyed by pid and create time so a reused pid starts over.
+_first_seen_s: dict[tuple[int, float | None], float] = {}
+
+
+def _engine_age_s(state: SwapState, now: float) -> float:
+    """Seconds the engine behind *state* has run, by a clock a wall-clock step cannot move.
+
+    With the Linux boot id and start ticks, the boot clock gives the exact age, for any
+    process that reads the record. Without them, the age counts from this process's first read
+    of the record on its monotonic clock *now*: it is never more than the true age, so the
+    deadline never passes early. It can pass late, by the time since the engine started.
+    """
+    if state.boot_id is not None and state.start_ticks is not None:
+        age = linux_age_s(state.boot_id, state.start_ticks)
+        if age is not None:
+            return age
+    return now - _first_seen_s.setdefault((state.pid, state.created_at), now)
+
+
 def _unloaded_readiness(state: SwapState, now: float) -> EngineReadiness:
     """IDLE or FAILED for an answering engine with no member loading or ready."""
-    if state.ready_at is not None or state.created_at is None:
+    if state.ready_at is not None or (state.created_at is None and state.boot_id is None):
         return EngineReadiness.IDLE
-    if now - state.created_at < _bind_deadline_s(state):
+    if _engine_age_s(state, now) < _bind_deadline_s(state):
         return EngineReadiness.IDLE
     return EngineReadiness.FAILED
 
 
 def engine_readiness(state: SwapState, *, now: float) -> EngineReadiness | None:
-    """The bind verdict from one ``/running`` read, ``None`` when the engine does not answer."""
+    """The bind verdict from one ``/running`` read, ``None`` when the engine does not answer.
+
+    *now* is a ``time.monotonic`` value; no wall-clock time takes part in the verdict.
+    """
     listing = (
         None if state.proxy_port is None else _running_listing(f"http://{_HOST}:{state.proxy_port}")
     )
