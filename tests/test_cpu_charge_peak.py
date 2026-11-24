@@ -553,9 +553,7 @@ class TestAPerLayerHeaderOnTheCpu:
         assert 194_000_000 <= rise <= 194_000_000 * 1.25
 
     @pytest.mark.parametrize("case", sorted(PER_LAYER))
-    def test_flash_on_keeps_the_parsers_own_figure(
-        self, case: str, parser_for: ParserFor
-    ) -> None:
+    def test_flash_on_keeps_the_parsers_own_figure(self, case: str, parser_for: ParserFor) -> None:
         path, fake = parser_for("llama-1b-q8")
         fake.header = PER_LAYER[case][0]
         assert _charge(self._request(path, flash=True)) == (
