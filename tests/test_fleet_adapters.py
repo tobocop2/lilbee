@@ -725,9 +725,37 @@ _ARGV_WITHOUT = {
     ),
 }
 
+# The stream heartbeat is the last flag of every argv. A build that does not list it gets the
+# argv the rows above spell out; a build that lists it gets the same tokens and the two below.
+_PING = ["--sse-ping-interval", "30"]
+_ARGV_WITHOUT = {flag: argv + _PING for flag, argv in _ARGV_WITHOUT.items()}
+_ARGV_WITHOUT["--sse-ping-interval"] = _FULL_ARGV
+_FULL_ARGV = _FULL_ARGV + _PING
+_FULL_ARGV_CPU_MOE = _FULL_ARGV_CPU_MOE + _PING
+
 
 def test_the_optional_flag_table_is_not_empty() -> None:
-    assert len(_OPTIONAL) == 17
+    assert len(_OPTIONAL) == 18
+
+
+def test_the_stream_heartbeat_is_written_every_thirty_seconds_when_the_help_lists_it(
+    monkeypatch,
+) -> None:
+    """Without the flag, a user's LLAMA_ARG_SSE_PING_INTERVAL=-1 silences a long prefill."""
+    argv = _every_optional_flag_argv(monkeypatch, _help_listing(_OPTIONAL + _ALWAYS_WRITTEN))
+    assert argv[-2:] == ["--sse-ping-interval", "30"]
+    assert argv.count("--sse-ping-interval") == 1
+
+
+def test_a_build_without_the_stream_heartbeat_flag_launches_without_it_and_warns(
+    monkeypatch, caplog
+) -> None:
+    listed = [f for f in _OPTIONAL + _ALWAYS_WRITTEN if f != "--sse-ping-interval"]
+    with caplog.at_level("WARNING"):
+        argv = _every_optional_flag_argv(monkeypatch, _help_listing(listed))
+    assert "--sse-ping-interval" not in argv
+    assert "30" not in argv
+    assert any("does not list --sse-ping-interval" in r.getMessage() for r in caplog.records)
 
 
 def test_a_build_whose_help_lacks_the_context_shift_flag_gets_the_argv_it_had_before(

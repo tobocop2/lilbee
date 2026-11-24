@@ -2930,6 +2930,7 @@ _NON_SIZING_LAUNCH_FLAGS = {
     "--embeddings",
     "--pooling",
     "--threads",
+    "--sse-ping-interval",
 }
 # Sizing-relevant launch flag -> the gguf-parser flag that must carry the same value.
 _SIZING_FLAG_TO_ESTIMATOR_FLAG = {
