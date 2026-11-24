@@ -123,8 +123,8 @@ def test_refused_host_hides_with_the_gate_reason() -> None:
     hidden = explain({ModelFormat.SAFETENSORS}, _host(avx2=ABSENT, gpus=GPU), [_fake_offer()])
     assert hidden is not None
     assert hidden.reason is HiddenReason.HOST_UNSUPPORTED
-    assert hidden.text.startswith("This host cannot run it. ")
-    assert hidden.text == "This host cannot run it. The host lacks it."
+    assert hidden.text.startswith("This computer cannot run it. ")
+    assert hidden.text == "This computer cannot run it. The host lacks it."
     assert not re.search(r"\. [a-z]", hidden.text)
 
 
@@ -142,7 +142,7 @@ def test_every_engine_refusal_reason_shows_once_in_order() -> None:
     hidden = explain({ModelFormat.SAFETENSORS}, _host(avx2=ABSENT, gpus=GPU), offers)
     assert hidden is not None
     assert hidden.text == (
-        "This host cannot run it. The host lacks it. The host lacks a second thing."
+        "This computer cannot run it. The host lacks it. The host lacks a second thing."
     )
 
 
