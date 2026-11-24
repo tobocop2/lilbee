@@ -48,7 +48,7 @@ def test_timed_out_test_report_carries_the_engine_log_tails(
     result = pytester.runpytest_subprocess("-p", "no:cacheprovider")
 
     result.assert_outcomes(failed=1)
-    result.stdout.fnmatch_lines(["*Engine logs*", "*Timeout*", "*engine says: model stalled*"])
+    result.stdout.fnmatch_lines(["*Timeout*", "*Engine logs*", "*engine says: model stalled*"])
     result.stdout.fnmatch_lines(["*swap line 299*"])
     assert "swap line 99\n" not in result.stdout.str()
 
