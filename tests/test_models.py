@@ -314,18 +314,34 @@ class TestPullWithProgressProjector:
             "no projector" in out
         )
 
-    def test_prints_each_failed_attempt_while_the_download_runs(self):
+    def test_shows_a_failed_attempt_in_the_progress_line_until_bytes_arrive(self):
         services = self._services()
-        services.model_manager.pull.side_effect = lambda *a, on_retry=None, **k: on_retry(
-            1, 6, "Network error downloading acme/vl-GGUF: timed out"
-        )
+
+        def _pull(*_a, on_bytes, on_retry, **_k):
+            on_retry(1, 6, "Network error downloading acme/vl-GGUF: timed out")
+            on_bytes(10, 100)
+
+        services.model_manager.pull.side_effect = _pull
+        details: list[str] = []
+
+        class _Recording(models.Progress):
+            def update(self, task_id, **fields):
+                if "detail" in fields:
+                    details.append(fields["detail"])
+                super().update(task_id, **fields)
+
         console = models.PlainConsole(file=io.StringIO(), width=300)
-        with mock.patch("lilbee.app.models.ensure_vision_projector", return_value=None):
+        with (
+            mock.patch("lilbee.app.models.ensure_vision_projector", return_value=None),
+            mock.patch.object(models, "Progress", _Recording),
+        ):
             models.pull_with_progress("acme/vl-GGUF", console=console)
-        assert (
+        notice = (
             "Network error downloading acme/vl-GGUF: timed out. "
-            "Attempt 1 of 6 failed; trying again." in console.file.getvalue()
+            "Attempt 1 of 6 failed; trying again."
         )
+        assert details == [notice, ""]
+        assert notice not in console.file.getvalue()
 
     def test_prints_no_warning_when_nothing_is_wrong(self):
         self._services()

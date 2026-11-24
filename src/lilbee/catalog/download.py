@@ -25,6 +25,7 @@ from lilbee.catalog.hf_client import (
     DEFAULT_TIMEOUT,
     HfToken,
     hf_token,
+    hub_call_started,
 )
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.refs import (
@@ -68,6 +69,11 @@ def gated_repo_message(hf_repo: str) -> str:
         "A running TUI must restart to read HF_TOKEN. "
         "Then request access on the repo page."
     )
+
+
+def network_error_message(hf_repo: str, cause: object) -> str:
+    """The one text a failed or resumed transfer of *hf_repo* shows for a network error."""
+    return f"Network error downloading {hf_repo}: {cause}"
 
 
 class RemoteFile(NamedTuple):
@@ -361,6 +367,7 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, RepositoryNotFoundError
 
+    hub_call_started()
     try:
         return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
     except TaskCancelledError:
@@ -372,7 +379,7 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
     except EntryNotFoundError:
         raise RuntimeError(_missing_file_message(entry.hf_repo, config.filename)) from None
     except httpx2.TransportError as exc:
-        raise _TransientDownloadError(f"Network error downloading {entry.hf_repo}: {exc}") from None
+        raise _TransientDownloadError(network_error_message(entry.hf_repo, exc)) from None
     except OSError as exc:
         raise _TransientDownloadError(f"I/O error downloading {entry.hf_repo}: {exc}") from None
     except Exception as exc:
