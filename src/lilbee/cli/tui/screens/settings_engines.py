@@ -74,9 +74,7 @@ def _size_text(row: EngineRow) -> str:
 
 
 def _action_text(row: EngineRow) -> str:
-    """The action of a row; a build that remove refuses says why instead of Remove."""
-    if row.outside_store:
-        return msg.ENGINES_ACTION_OUTSIDE_STORE
+    """The action of a row."""
     return _ACTION_TEXT[row.state]
 
 
@@ -237,11 +235,6 @@ class EnginesPane(MountWhenAttached, VerticalScroll):
                 download_bytes=row.download_bytes,
             )
             confirm_and_install(self.app, option, self.reload, use_for_model=False)
-        elif row.state in _ON_DISK and row.outside_store:
-            text = msg.ENGINE_REMOVE_OUTSIDE_STORE.format(
-                build=_build_label(row), folder=engine_service.engines_folder()
-            )
-            self.app.notify(text, severity="warning")
         elif row.state in _ON_DISK:
             self._ask_remove(row)
 

@@ -500,7 +500,6 @@ def test_the_engines_tab_row_of_a_build_of_another_wheel_removes_it_so_install_w
     ]
     stale = rows[1]
     assert stale.size_bytes is not None and stale.size_bytes > 0
-    assert not stale.outside_store
     # The row names the build that `lilbee engine list` names on its line.
     listing = " ".join(CliRunner().invoke(cli_app, ["engine", "list"]).output.split())
     assert (

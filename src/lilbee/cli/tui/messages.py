@@ -921,10 +921,6 @@ ENGINE_DOWNLOAD_ONLY_MESSAGE_NO_SIZE = "Download {engine}?"
 ENGINE_REMOVE_TITLE = "Remove {build}?"
 ENGINE_REMOVE_MESSAGE = "Remove {build} from this computer?"
 ENGINE_REMOVE_IN_USE_MESSAGE = "{build} is used by {roles}. Remove it anyway?"
-ENGINE_REMOVE_OUTSIDE_STORE = (
-    "The folder of {build} is a link to a place outside the engines folder {folder}. "
-    "lilbee does not remove it. Delete the link yourself."
-)
 ENGINE_REMOVE_EMBED_MESSAGE = (
     "Library {library} holds {documents} documents. {build} runs the embedding model. "
     "Without it the vectors can become unusable by the index. Continue?"
@@ -943,7 +939,6 @@ ENGINES_COL_ACTION = "Action"
 ENGINES_USED_BY = "used by {roles}"
 ENGINES_ACTION_INSTALL = "Install"
 ENGINES_ACTION_REMOVE = "Remove"
-ENGINES_ACTION_OUTSIDE_STORE = "linked, not removable"
 ENGINES_NO_VALUE = "-"
 ENGINES_LOAD_FAILED = "The engine list could not be read: {error}"
 ENGINES_CHOOSE_ON_PICK_LABEL = "Choose the engine when picking a model"
