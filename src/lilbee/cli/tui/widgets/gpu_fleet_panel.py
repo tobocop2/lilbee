@@ -277,6 +277,9 @@ class GpuFleetPanel(Static):
         hint: IntelUtilHint | None,
     ) -> None:
         """Update the rendered content with fresh stat data (main thread)."""
+        if not self.is_attached:
+            # The panel was removed after the worker queued this callback.
+            return
         if self._probe_error is not None:
             # A stats worker already in flight when the probe failure landed
             # must not repaint the empty state over the failure message.
