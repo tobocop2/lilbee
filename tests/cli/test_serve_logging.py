@@ -104,7 +104,7 @@ def test_a_serve_start_writes_each_load_warning_to_the_file_once(
         handlers_at_run.append(len(_server_log_handlers(log_path)))
         logging.getLogger("lilbee.test").warning("control line")
 
-    monkeypatch.setattr(servers.asyncio, "run", no_server)
+    monkeypatch.setattr(servers, "run_main", no_server)
     result = CliRunner().invoke(app, ["serve", "-d", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert handlers_at_run == [1]

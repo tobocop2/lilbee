@@ -105,6 +105,70 @@ def test_run_without_join_cancels_the_tasks_a_run_leaves_so_their_cleanup_runs()
     assert cleaned == ["held"]
 
 
+def test_run_main_returns_the_result() -> None:
+    async def echo(value: int) -> int:
+        return value * 2
+
+    assert asyncio_loop.run_main(echo(7)) == 14
+
+
+def test_no_exit_is_held_while_the_main_task_runs() -> None:
+    """A signal before the main task is done leaves no stop queued, so its exit raises at once."""
+
+    async def asks() -> bool:
+        return asyncio_loop.hold_exit(SystemExit(143))
+
+    assert asyncio_loop.run_main(asks()) is False
+
+
+def _asks_once_done(kept: list[bool], status: int) -> asyncio.Task[object]:
+    """The running task, asking for an exit in a done callback queued after the run's stop."""
+    task = asyncio.current_task()
+    assert task is not None
+    task.add_done_callback(lambda _: kept.append(asyncio_loop.hold_exit(SystemExit(status))))
+    return task
+
+
+def test_an_exit_asked_for_after_the_main_task_finished_leaves_when_the_run_returns() -> None:
+    """The run's stop is still queued, so the exit waits; in the close it raises at once."""
+    in_run: list[bool] = []
+    in_close: list[bool] = []
+
+    async def left() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            in_close.append(asyncio_loop.hold_exit(SystemExit(129)))
+
+    async def finishes() -> str:
+        _asks_once_done(in_run, 143)
+        asyncio.get_running_loop().create_task(left())
+        await asyncio.sleep(0)
+        return "done"
+
+    with pytest.raises(SystemExit) as raised:
+        asyncio_loop.run_main(finishes())
+    assert raised.value.code == 143
+    assert in_run == [True]
+    assert in_close == [False]
+
+
+def test_run_main_off_the_main_thread_holds_no_exit() -> None:
+    """A signal runs on the main thread only, so a run on another thread is a plain asyncio.run."""
+    kept: list[bool] = []
+    results: list[str] = []
+
+    async def finishes() -> str:
+        _asks_once_done(kept, 143)
+        return "done"
+
+    worker = threading.Thread(target=lambda: results.append(asyncio_loop.run_main(finishes())))
+    worker.start()
+    worker.join(timeout=10)
+    assert kept == [False]
+    assert results == ["done"]
+
+
 class _PressBeforeTheSleep(selectors.DefaultSelector):
     """A selector that takes a Ctrl-C after the loop's last step and before its sleep."""
 

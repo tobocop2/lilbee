@@ -47,6 +47,7 @@ from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
 from lilbee.providers.reasoning import ThinkInliner, inline_reasoning
 from lilbee.providers.roles import RerankMode
 from lilbee.providers.truncation import note_cut_to_limit, note_truncated
+from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.vc_runtime import VC_REDIST_URL, dll_not_found_status
 
@@ -1026,7 +1027,7 @@ class LlamaServerClient:
             "stream": True,
         }
         with self._track():
-            return asyncio.run(self._chat_until_stopped(payload, deadline_s, cancel))
+            return run_main(self._chat_until_stopped(payload, deadline_s, cancel))
 
     async def _chat_until_stopped(
         self, payload: dict[str, Any], deadline_s: float | None, cancel: CancelSignal | None

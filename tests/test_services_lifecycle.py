@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextlib
 import logging
 import os
+import selectors
 import signal
 import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -31,6 +34,7 @@ from lilbee.app.services import (
     stop_on_interrupt,
     wait_for_hard_exit_teardown,
 )
+from lilbee.cli.helpers import _run_foreground_sync
 
 # The exact signals production installs: (SIGTERM, SIGHUP) on POSIX, SIGTERM alone
 # on Windows, which has no SIGHUP. Deriving from the helper keeps this file
@@ -1446,6 +1450,72 @@ def test_a_signal_in_a_running_loop_stops_the_fleet_and_exits_with_its_status(
 
     assert raised.value.code == 128 + sig
     provider.shutdown.assert_called_once()
+
+
+class _TerminateInTheNextSleep(selectors.DefaultSelector):
+    """A selector whose next sleep runs the hard-exit handler, as a SIGTERM landing there does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.armed = False
+
+    def select(self, timeout: float | None = None):
+        if self.armed:
+            self.armed = False
+            services_mod._lifecycle._on_hard_exit(signal.SIGTERM, None)
+        return super().select(timeout)
+
+
+def test_a_terminate_after_the_add_sync_finished_exits_with_its_status(monkeypatch):
+    """The finished run's stop is still queued when the signal lands; the exit keeps 143.
+
+    The sync leaves a task, so the runner's close runs the loop for more than one
+    step, and a stale stop would end that run before the cancelled task finished.
+    """
+    provider = _install_stub_services()
+    install_engine_lifecycle_hooks()
+    selector = _TerminateInTheNextSleep()
+    monkeypatch.setattr(
+        asyncio.events, "new_event_loop", lambda: asyncio.SelectorEventLoop(selector)
+    )
+    cleaned: list[str] = []
+
+    async def left() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned.append("left")
+
+    async def finishes(**_kwargs: object) -> str:
+        asyncio.get_running_loop().create_task(left())
+        await asyncio.sleep(0)
+        selector.armed = True
+        return "synced"
+
+    monkeypatch.setattr("lilbee.data.ingest.sync", finishes)
+    with pytest.raises(SystemExit) as raised:
+        _run_foreground_sync()
+    _join_teardown()
+
+    assert raised.value.code == 128 + signal.SIGTERM
+    assert cleaned == ["left"]
+    provider.shutdown.assert_called_once()
+
+
+def test_no_module_runs_a_loop_past_the_exit_hold():
+    """Every loop run on the main thread goes through run_main, so a late exit keeps its status."""
+    src = Path(services_mod.__file__).resolve().parents[1]
+    calls = [
+        f"{path.relative_to(src)}:{node.lineno}"
+        for path in sorted(src.rglob("*.py"))
+        if path.name != "asyncio_loop.py"
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Attribute)
+        and node.attr == "run"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "asyncio"
+    ]
+    assert calls == []
 
 
 def _signal_once_the_loop_runs(ready: threading.Event) -> None:

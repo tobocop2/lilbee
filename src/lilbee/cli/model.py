@@ -7,7 +7,6 @@ the Rich renderers below adapt them for human-readable terminal output.
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -41,6 +40,7 @@ from lilbee.cli.commands._shared import emit, run_or_fail
 from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
+from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.progress.columns import literal_text_column
 
@@ -393,7 +393,7 @@ def use_cmd(
 
     def _set() -> SetModelResponse:
         try:
-            return asyncio.run(setter(ref))
+            return run_main(setter(ref))
         except TaskMismatchError as exc:
             raise ValueError(
                 f"{exc} Set it with '{task_command(exc.entry_task)}' instead."
