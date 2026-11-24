@@ -85,3 +85,25 @@ async def test_the_buttons_stay_on_screen_without_a_focus_change(
         assert await wait_until(pilot, visible), [
             (b.id, b.region) for b in _buttons(app.screen, ids)
         ]
+
+
+@pytest.mark.parametrize(
+    ("make", "scroll_id"),
+    [
+        (lambda: CrawlDialog(), "crawl-scroll"),
+        (lambda: PresetDialog(), "preset-scroll"),
+        (lambda: PresetDialog(_preset()), "preset-scroll"),
+    ],
+    ids=["crawl", "preset-add", "preset-edit"],
+)
+async def test_a_form_taller_than_the_terminal_scrolls_its_fields(make, scroll_id: str) -> None:
+    app = _DialogApp(make())
+    async with app.run_test(size=(80, 24)) as pilot:
+
+        def scrolls() -> bool:
+            found = app.screen.query(f"#{scroll_id}")
+            return bool(found) and found.first().max_scroll_y > 0
+
+        assert await wait_until(pilot, scrolls)
+        scroll = app.screen.query_one(f"#{scroll_id}")
+        assert scroll.region.bottom <= app.screen.size.height
