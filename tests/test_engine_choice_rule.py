@@ -318,7 +318,9 @@ def test_a_refused_engine_with_no_default_gives_no_engine_and_the_reason() -> No
     got = _ask(host=lambda: NO_AVX2, installed={IK: {G}}, override=IK)
     assert got.name is None
     assert "AVX2" in (got.notice or "")
-    assert "No installed engine that loads this model can run on this computer." in (got.notice or "")
+    assert "No installed engine that loads this model can run on this computer." in (
+        got.notice or ""
+    )
 
 
 def test_a_refused_engine_is_not_offered_in_the_hint() -> None:
@@ -346,7 +348,8 @@ def test_auto_with_a_role_keeps_the_role_prefix_on_the_host_refusal() -> None:
     got = _ask(host=lambda: NO_AVX2, installed={IK: {G}}, role=WorkerRole.CHAT, model="org/m")
     assert got.name is None
     assert got.notice == (
-        "For chat: Engine ik_llama.cpp loads the gguf format of org/m but cannot run on this computer. "
+        "For chat: Engine ik_llama.cpp loads the gguf format of org/m "
+        "but cannot run on this computer. "
         "Xeon lacks AVX2. ik_llama.cpp needs a CPU with AVX2 or NEON."
     )
 
