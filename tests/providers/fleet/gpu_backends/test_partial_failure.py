@@ -108,7 +108,7 @@ def test_a_repeated_failure_logs_once_and_a_clean_run_rearms_it(
 def test_one_failing_device_among_working_ones_logs_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """xpu-smi runs once per device: a device that keeps failing is one warning, not one per poll."""
+    """xpu-smi runs once per device: a device that keeps failing warns once, not per poll."""
     monkeypatch.setenv("PATH", str(tmp_path))
     script = tmp_path / "xpu-smi"
     script.write_text(
