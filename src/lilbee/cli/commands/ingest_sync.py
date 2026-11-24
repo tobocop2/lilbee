@@ -438,8 +438,12 @@ def run_sync_with_signal_cancel(
     prune_ignored: bool = False,
     on_progress: DetailedProgressCallback | None = None,
     started_by: str = "lilbee sync",
+    analyze_tip: bool = False,
 ) -> SyncResult:
-    """Run ``sync`` under Ctrl+C; a sync it stops ends the command with exit status 130."""
+    """Run ``sync`` under Ctrl+C; a sync it stops ends the command with exit status 130.
+
+    *analyze_tip* prints the analyze tip before the first file is ingested.
+    """
     cancel_event = threading.Event()
     with _ctrl_c_stops(cancel_event, AddRollback()):
         return _run_sync(
@@ -449,6 +453,7 @@ def run_sync_with_signal_cancel(
             prune_ignored=prune_ignored,
             on_progress=on_progress,
             started_by=started_by,
+            analyze_tip=analyze_tip,
         )
 
 
@@ -465,6 +470,26 @@ def _wait_shown_on_stderr(chain: DetailedProgressCallback) -> DetailedProgressCa
     def _callback(event_type: EventType, data: ProgressEvent) -> None:
         if event_type == EventType.SYNC_WAIT and isinstance(data, SyncWaitEvent):
             err.print(data.message, style=theme.MUTED, soft_wrap=True)
+        chain(event_type, data)
+
+    return _callback
+
+
+def _tip_before_first_file(chain: DetailedProgressCallback) -> DetailedProgressCallback:
+    """Wrap *chain* so the analyze tip prints once, as the first file starts to ingest.
+
+    The sync has scanned the library by then, so a sync with nothing to ingest
+    never starts a file and prints no tip.
+    """
+    from lilbee.runtime.progress import EventType, ProgressEvent
+
+    shown = False
+
+    def _callback(event_type: EventType, data: ProgressEvent) -> None:
+        nonlocal shown
+        if event_type == EventType.FILE_START and not shown:
+            shown = True
+            print_tip_if_shown(cfg.data_root)
         chain(event_type, data)
 
     return _callback
@@ -492,11 +517,14 @@ def _run_sync(
     on_progress: DetailedProgressCallback | None = None,
     before_sync: Callable[[], None] | None = None,
     started_by: str,
+    analyze_tip: bool = False,
 ) -> SyncResult:
     """Run ``sync`` on its own event loop; it polls *cancel_event* between files and pages.
 
     *before_sync* runs once the eager warm is off, before the sync starts. *started_by*
-    names the command for the notice of a sync that waits for this one.
+    names the command for the notice of a sync that waits for this one. *analyze_tip*
+    prints the analyze tip as the first file starts to ingest, and never for a sync
+    with nothing to ingest.
     """
     from lilbee.data.ingest import sync
 
@@ -508,9 +536,10 @@ def _run_sync(
     if before_sync is not None:
         before_sync()
 
-    callback = _cancellable_progress(
-        cancel_event, _wait_shown_on_stderr(on_progress or _default_progress())
-    )
+    chain = on_progress or _default_progress()
+    if analyze_tip:
+        chain = _tip_before_first_file(chain)
+    callback = _cancellable_progress(cancel_event, _wait_shown_on_stderr(chain))
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
@@ -548,10 +577,12 @@ def sync_cmd(
     if processes is not None:
         cfg.ingest_processes = processes
 
-    print_tip_if_shown(cfg.data_root)
     try:
         result = run_sync_with_signal_cancel(
-            retry_skipped=retry_skipped, prune_ignored=prune_ignored, started_by="lilbee sync"
+            retry_skipped=retry_skipped,
+            prune_ignored=prune_ignored,
+            started_by="lilbee sync",
+            analyze_tip=True,
         )
     except RuntimeError as exc:
         if cfg.json_mode:
@@ -785,12 +816,11 @@ def _register_and_sync(
 
     def _sync(registration: RegisterResult) -> object:
         rollback.absorbed_into = registration.absorbed_into
-        # Before ingest starts: a profile change after the ingest costs a reindex.
-        print_tip_if_shown(cfg.data_root)
         return _run_sync(
             cancel_event,
             before_sync=lambda: rollback.registered(registration.revocable, cancel_event),
             started_by="lilbee add",
+            analyze_tip=True,
         )
 
     if cfg.json_mode:

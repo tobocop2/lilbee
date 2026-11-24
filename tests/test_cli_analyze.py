@@ -23,6 +23,7 @@ from lilbee.core.profile_files import PROFILES_DIRNAME
 from lilbee.core.project_state import STATE_FILE_NAME, read_state
 from lilbee.data.types import SyncResult
 from lilbee.runtime.cancellation import TaskCancelledError
+from lilbee.runtime.progress import EventType, FileStartEvent
 from tests._unreadable import deny_listing
 from tests.conftest import make_mock_services, make_pdf
 
@@ -388,82 +389,94 @@ class _Shown(SyncResult):
         return Text("SYNC RESULT")
 
 
-_NEW_CONTENT = {"added": ["a.md"]}
+_NEW_CONTENT = {"added": ["a.md", "b.md"]}
+_FIRST_FILE_LINE = "Syncing [1/"
 
 
-def _fake_ingest(cancel_event, *, before_sync, **kwargs):
-    from lilbee.cli.commands import ingest_sync
+def _library_sync(counts=None, *, fail=None):
+    """A stand-in for the library sync: it starts one file per added or updated name.
 
-    before_sync()
-    ingest_sync.console.print("INGEST STARTED")
-    return _Shown(**_NEW_CONTENT)
+    It reaches the real progress callback, as the library does once its scan finds work. A
+    sync with nothing to add or update starts no file. *fail* raises after the files started.
+    """
+
+    async def _sync(*, on_progress, **kwargs):
+        content = _NEW_CONTENT if counts is None else counts
+        names = [*content.get("added", []), *content.get("updated", [])]
+        for index, name in enumerate(names, 1):
+            event = FileStartEvent(file=name, current_file=index, total_files=len(names))
+            on_progress(EventType.FILE_START, event)
+        if fail is not None:
+            raise fail
+        return _Shown(**content)
+
+    return _sync
+
+
+def _library_sync_patch(counts=None, *, fail=None):
+    return mock.patch("lilbee.data.ingest.sync", _library_sync(counts, fail=fail))
 
 
 def _fake_add_paths(paths, console, *, run_sync, **kwargs):
-    """Register nothing, then run the add's own sync over a fake ingest and print its result."""
+    """Register nothing, then run the add's own sync and print its result."""
     from lilbee.cli.commands import ingest_sync
 
-    with mock.patch("lilbee.cli.commands.ingest_sync._run_sync", _fake_ingest):
-        console.print(run_sync(ingest_sync.RegisterResult()))
+    console.print(run_sync(ingest_sync.RegisterResult()))
 
 
-def _refused_ingest(cancel_event, *, before_sync, **kwargs):
-    before_sync()
-    raise RuntimeError("refused")
+def _fake_failing_add_paths(paths, console, *, run_sync, **kwargs):
+    from lilbee.cli.commands import ingest_sync
+
+    run_sync(ingest_sync.RegisterResult())
 
 
-def _cancelled_ingest(cancel_event, *, before_sync, **kwargs):
-    before_sync()
-    raise SystemExit(130)
-
-
-def _fake_refused_add_paths(ingest):
-    def _add_paths(paths, console, *, run_sync, **kwargs):
-        from lilbee.cli.commands import ingest_sync
-
-        with mock.patch("lilbee.cli.commands.ingest_sync._run_sync", ingest):
-            run_sync(ingest_sync.RegisterResult())
-
-    return _add_paths
-
-
-def test_add_prints_the_tip_before_ingest_starts(project, notes):
+def _add(project, notes, *flags):
     with mock.patch("lilbee.cli.commands.ingest_sync.add_paths", _fake_add_paths):
-        result = runner.invoke(app, ["add", str(notes), "--data-dir", str(project)])
+        return runner.invoke(app, [*flags, "add", str(notes), "--data-dir", str(project)])
+
+
+def test_add_prints_the_tip_before_the_first_file_is_ingested(project, notes):
+    with _library_sync_patch():
+        result = _add(project, notes)
     assert result.exit_code == 0, result.output
     flat = " ".join(result.output.split())
-    assert flat.index(TIP_TEXT) < flat.index("INGEST STARTED") < flat.index("SYNC RESULT")
+    assert flat.index(TIP_TEXT) < flat.index(_FIRST_FILE_LINE) < flat.index("SYNC RESULT")
     assert flat.count(TIP_TEXT) == 1
 
 
-@pytest.mark.parametrize("ingest", [_refused_ingest, _cancelled_ingest])
-def test_an_add_that_fails_or_cancels_has_already_shown_the_tip(project, notes, ingest):
-    with mock.patch("lilbee.cli.commands.ingest_sync.add_paths", _fake_refused_add_paths(ingest)):
+@pytest.mark.parametrize("failure", [RuntimeError("refused"), SystemExit(130)])
+def test_an_add_that_fails_or_cancels_after_a_file_started_has_shown_the_tip(
+    project, notes, failure
+):
+    with (
+        _library_sync_patch(fail=failure),
+        mock.patch("lilbee.cli.commands.ingest_sync.add_paths", _fake_failing_add_paths),
+    ):
         result = runner.invoke(app, ["add", str(notes), "--data-dir", str(project)])
     assert result.exit_code != 0
     assert " ".join(result.output.split()).count(TIP_TEXT) == 1
 
 
 def test_add_in_json_mode_prints_no_tip(project, notes):
-    with mock.patch("lilbee.cli.commands.ingest_sync.add_paths", _fake_add_paths):
-        result = runner.invoke(app, ["--json", "add", str(notes), "--data-dir", str(project)])
+    with _library_sync_patch():
+        result = _add(project, notes, "--json")
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["command"] == "add"
     assert "lilbee analyze" not in result.output
 
 
 def test_a_second_add_prints_the_tip_again_until_it_is_hidden(project, notes, tmp_path):
-    with mock.patch("lilbee.cli.commands.ingest_sync.add_paths", _fake_add_paths):
-        first = runner.invoke(app, ["add", str(notes), "--data-dir", str(project)])
+    with _library_sync_patch():
+        first = _add(project, notes)
     assert TIP_TEXT in " ".join(first.output.split())
     more = tmp_path / "more"
     more.mkdir()
     (more / "c.md").write_text("# C\n", encoding="utf-8")
     settings.set_value(project, "linked_roots", {"notes": str(notes)})
-    with mock.patch("lilbee.cli.commands.ingest_sync.add_paths", _fake_add_paths):
-        second = runner.invoke(app, ["add", str(more), "--data-dir", str(project)])
+    with _library_sync_patch():
+        second = _add(project, more)
     assert second.exit_code == 0, second.output
-    assert "INGEST STARTED" in second.output
+    assert _FIRST_FILE_LINE in second.output
     assert TIP_TEXT in " ".join(second.output.split())
 
 
@@ -477,114 +490,103 @@ def test_init_of_a_project_with_documents_prints_the_tip(tmp_path):
     assert TIP_TEXT in " ".join(result.output.split())
 
 
-def _fake_sync(**kwargs):
-    from lilbee.cli.commands import ingest_sync
-
-    ingest_sync.console.print("SYNC STARTED")
-    return _Shown(**_NEW_CONTENT)
+def _sync(project, *flags, counts=None, fail=None):
+    with _library_sync_patch(counts, fail=fail):
+        return runner.invoke(app, [*flags, "sync", "--data-dir", str(project)])
 
 
 @pytest.mark.parametrize("failure", [RuntimeError("refused"), SystemExit(130)])
-def test_a_sync_that_fails_or_cancels_has_already_shown_the_tip(project, failure):
-    with mock.patch(
-        "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel", side_effect=failure
-    ):
-        result = runner.invoke(app, ["sync", "--data-dir", str(project)])
+def test_a_sync_that_fails_or_cancels_after_a_file_started_has_shown_the_tip(project, failure):
+    result = _sync(project, fail=failure)
     assert result.exit_code == getattr(failure, "code", 1)
     assert " ".join(result.output.split()).count(TIP_TEXT) == 1
 
 
-def test_sync_prints_the_tip_once_before_the_sync_starts(project):
-    with mock.patch(
-        "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel", side_effect=_fake_sync
-    ):
-        result = runner.invoke(app, ["sync", "--data-dir", str(project)])
+def test_sync_prints_the_tip_once_before_the_first_file_is_ingested(project):
+    result = _sync(project)
     assert result.exit_code == 0, result.output
     flat = " ".join(result.output.split())
-    assert flat.index(TIP_TEXT) < flat.index("SYNC STARTED") < flat.index("SYNC RESULT")
+    assert flat.index(TIP_TEXT) < flat.index(_FIRST_FILE_LINE) < flat.index("SYNC RESULT")
     assert flat.count(TIP_TEXT) == 1
 
 
 def test_sync_in_json_mode_prints_no_tip(project):
-    with mock.patch(
-        "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel",
-        return_value=_Shown(**_NEW_CONTENT),
-    ):
-        result = runner.invoke(app, ["--json", "sync", "--data-dir", str(project)])
+    result = _sync(project, "--json")
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["command"] == "sync"
     assert "lilbee analyze" not in result.output
 
 
-_CHANGES = ("added", "updated", "removed")
-_NOTHING_CHANGED = [
+# Syncs that start no file: nothing new or changed to ingest (a removal ingests nothing).
+_NOTHING_TO_INGEST = [
     {},
     {"unchanged": 5},
     {"unchanged": 2, "relocated": ["moved.md"]},
     {"failed": ["bad.md"], "skipped": ["scan.pdf"]},
+    {"removed": ["gone.md"]},
+]
+_WORK_FOUND = [
+    {"added": ["a.md"]},
+    {"updated": ["a.md"]},
+    {"added": ["a.md"], "removed": ["b.md"]},
 ]
 
 
-@pytest.mark.parametrize("counts", [*_NOTHING_CHANGED, *({k: ["a.md"]} for k in _CHANGES)])
-def test_sync_shows_the_tip_whatever_it_changes(project, counts):
-    """The tip comes before the sync, when nothing says yet what the sync will change."""
-    with mock.patch(
-        "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel",
-        return_value=_Shown(**counts),
-    ):
-        result = runner.invoke(app, ["sync", "--data-dir", str(project)])
+@pytest.mark.parametrize("counts", _NOTHING_TO_INGEST)
+def test_sync_with_nothing_to_ingest_prints_no_tip(project, counts):
+    result = _sync(project, counts=counts)
     assert result.exit_code == 0, result.output
-    flat = " ".join(result.output.split())
-    assert flat.index(TIP_TEXT) < flat.index("SYNC RESULT")
+    assert "SYNC RESULT" in result.output
+    assert "lilbee analyze" not in result.output
 
 
-@pytest.mark.parametrize("counts", _NOTHING_CHANGED)
-def test_add_whose_sync_changed_nothing_still_shows_the_tip_first(
-    project, notes, counts, monkeypatch
-):
-    monkeypatch.setattr(sys.modules[__name__], "_NEW_CONTENT", counts)
-    with mock.patch("lilbee.cli.commands.ingest_sync.add_paths", _fake_add_paths):
-        result = runner.invoke(app, ["add", str(notes), "--data-dir", str(project)])
-    assert result.exit_code == 0, result.output
+@pytest.mark.parametrize("counts", _WORK_FOUND)
+def test_sync_that_found_work_prints_the_tip_before_the_first_file(project, counts):
+    result = _sync(project, counts=counts)
     flat = " ".join(result.output.split())
-    assert flat.index(TIP_TEXT) < flat.index("INGEST STARTED")
+    assert flat.index(TIP_TEXT) < flat.index(_FIRST_FILE_LINE)
+
+
+@pytest.mark.parametrize("counts", _NOTHING_TO_INGEST)
+def test_add_with_nothing_to_ingest_prints_no_tip(project, notes, counts):
+    with _library_sync_patch(counts):
+        result = _add(project, notes)
+    assert result.exit_code == 0, result.output
+    assert "SYNC RESULT" in result.output
+    assert "lilbee analyze" not in result.output
+
+
+@pytest.mark.parametrize("counts", _WORK_FOUND)
+def test_add_that_found_work_prints_the_tip_before_the_first_file(project, notes, counts):
+    with _library_sync_patch(counts):
+        result = _add(project, notes)
+    flat = " ".join(result.output.split())
+    assert flat.index(TIP_TEXT) < flat.index(_FIRST_FILE_LINE)
 
 
 def test_sync_prints_no_tip_after_the_tip_is_hidden(project):
     analyze.hide_tip(project)
-    with mock.patch(
-        "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel", side_effect=_fake_sync
-    ):
-        result = runner.invoke(app, ["sync", "--data-dir", str(project)])
-    assert "SYNC STARTED" in result.output
+    result = _sync(project)
+    assert _FIRST_FILE_LINE in result.output
     assert "lilbee analyze" not in result.output
 
 
 def test_sync_prints_no_tip_after_analyze(project, notes):
     _invoke(project, str(notes))
-    with mock.patch(
-        "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel", side_effect=_fake_sync
-    ):
-        result = runner.invoke(app, ["sync", "--data-dir", str(project)])
-    assert "SYNC STARTED" in result.output
+    result = _sync(project)
+    assert _FIRST_FILE_LINE in result.output
     assert "lilbee analyze" not in result.output
 
 
 def test_sync_prints_no_tip_on_another_profile(project):
     (project / "config.toml").write_text('[profile]\nname = "Research papers"\n', encoding="utf-8")
-    with mock.patch(
-        "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel", side_effect=_fake_sync
-    ):
-        result = runner.invoke(app, ["sync", "--data-dir", str(project)])
-    assert "SYNC STARTED" in result.output
+    result = _sync(project)
+    assert _FIRST_FILE_LINE in result.output
     assert "lilbee analyze" not in result.output
 
 
 def test_sync_json_mode_prints_no_tip(project):
-    with mock.patch(
-        "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel", side_effect=_fake_sync
-    ):
-        result = runner.invoke(app, ["--json", "sync", "--data-dir", str(project)])
+    result = _sync(project, "--json")
     assert TIP_TEXT not in " ".join(result.output.split())
 
 
