@@ -1765,6 +1765,26 @@ def test_holds_for_no_build_hand_nothing_to_the_child() -> None:
     holds.close()
 
 
+def test_a_build_slot_that_is_a_file_is_not_in_use(tmp_path: Path) -> None:
+    slot = tmp_path / "fx" / "2-cpu"
+    slot.parent.mkdir()
+    slot.write_text("damage", encoding="utf-8")
+    assert engine_store.build_in_use(slot) is False
+
+
+def test_a_hold_the_system_refuses_raises_and_closes_the_holds_it_took(tmp_path: Path) -> None:
+    taken, refused = tmp_path / "fx" / "1-cpu", tmp_path / "fx" / "2-cpu"
+    taken.mkdir(parents=True)
+    refused.mkdir()
+    first = build_use._hold(taken / build_use.IN_USE_NAME)
+    with (
+        mock.patch.object(build_use, "_hold", side_effect=[first, OSError("no")]),
+        pytest.raises(OSError, match="no"),
+    ):
+        BuildHolds([taken, refused])
+    assert engine_store.build_in_use(taken) is False
+
+
 def test_a_launch_of_a_removed_build_names_the_engine_and_closes_the_holds_it_took(
     tmp_path: Path,
 ) -> None:
