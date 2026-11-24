@@ -545,6 +545,43 @@ async def test_discover_rail_fills_when_the_probe_failed() -> None:
         assert [r.name for r in grid.rows] == ["Llama 8B"]
 
 
+async def test_switching_to_discover_after_activation_settles_fills_the_rails() -> None:
+    """A tab switch that lands after activation settled paints the Discover rails.
+
+    The tab-activated handler drops every switch that arrives before the
+    initial-tab step has flipped the settled flag, so the switch below waits
+    on that flag itself. Without the wait, whether the handler reaches the
+    Discover branch depends on how fast the host runs the mount callbacks.
+    """
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+    from tests._async_wait import wait_until
+
+    variant = ModelVariant(
+        hf_repo="a/Llama-GGUF",
+        filename="llama.gguf",
+        param_count="8B",
+        quant="Q4_K_M",
+        size_mb=4600,
+        compat=ModelCompat.SUPPORTED,
+    )
+    family = ModelFamily(
+        slug="llama", name="Llama", task=ModelTask.CHAT, description="x", variants=(variant,)
+    )
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        screen = pilot.app.query_one(CatalogScreen)
+        settled = await wait_until(pilot, lambda: screen._activation_settled, timeout=30.0)
+        assert settled, "activation never settled"
+        screen._available_memory_bytes = None
+        screen._families = [family]
+        screen._family_rows_cache = None
+        grid = screen.query_one("#discover-grid-for-you", ModelGrid)
+        assert grid.rows == []
+        tabs = screen.query_one("#catalog-tabs", TabbedContent)
+        tabs.active = "discover"
+        assert await wait_until(pilot, lambda: bool(grid.rows)), "the rails stayed empty"
+        assert [r.name for r in grid.rows] == ["Llama 8B"]
+
+
 async def test_discover_fresh_rail_drops_cards_for_you_already_took() -> None:
     """A For You backfill pick leaves Fresh, which backfills the slot."""
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
