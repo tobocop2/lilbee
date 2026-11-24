@@ -98,6 +98,7 @@ log = logging.getLogger(__name__)
 _STREAM_KIND_CODES: dict[ProviderErrorKind, CompletionsErrorCode] = {
     ProviderErrorKind.CONTEXT_OVERFLOW: CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED,
     ProviderErrorKind.NOT_FOUND: CompletionsErrorCode.MODEL_NOT_FOUND,
+    ProviderErrorKind.ENGINE_MISSING: CompletionsErrorCode.ENGINE_MISSING,
 }
 
 

@@ -28,6 +28,7 @@ class CompletionsErrorCode(StrEnum):
     INVALID_API_KEY = "invalid_api_key"
     RATE_LIMIT_EXCEEDED = "rate_limit_exceeded"
     INTERNAL_ERROR = "internal_error"
+    ENGINE_MISSING = "engine_missing"
 
 
 _FALLBACK_ERROR_TYPE = "invalid_request_error"
@@ -40,6 +41,7 @@ COMPLETIONS_ERROR_TYPES: dict[CompletionsErrorCode, str] = {
     CompletionsErrorCode.INVALID_API_KEY: "authentication_error",
     CompletionsErrorCode.RATE_LIMIT_EXCEEDED: "rate_limit_error",
     CompletionsErrorCode.INTERNAL_ERROR: "api_error",
+    CompletionsErrorCode.ENGINE_MISSING: "api_error",
 }
 
 
@@ -83,6 +85,9 @@ _PROVIDER_KIND_CLASSIFICATIONS: dict[ProviderErrorKind, tuple[int, CompletionsEr
     ProviderErrorKind.CPU_UNSUPPORTED: (503, CompletionsErrorCode.INTERNAL_ERROR),
     ProviderErrorKind.MISSING_LIBRARY: (503, CompletionsErrorCode.INTERNAL_ERROR),
     ProviderErrorKind.STARTING: (503, CompletionsErrorCode.INTERNAL_ERROR),
+    # The text names the missing engine and how to install it. No retry hint: the
+    # user has to install it.
+    ProviderErrorKind.ENGINE_MISSING: (503, CompletionsErrorCode.ENGINE_MISSING),
 }
 
 
