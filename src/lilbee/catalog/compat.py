@@ -94,7 +94,7 @@ class UnsupportedArchError(Exception):
         self.ref = ref
         self.architecture = architecture
         super().__init__(
-            f"Model {ref!r} uses architecture {architecture!r}, not supported by this lilbee build."
+            f"Model '{ref}' uses architecture {architecture!r}, not supported by this lilbee build."
         )
 
 
@@ -111,6 +111,6 @@ class UnsupportedQuantError(RuntimeError):
         self.ref = ref
         self.quant = quant
         super().__init__(
-            f"Model {ref!r} is quantized as {quant}, which this lilbee build cannot load. "
+            f"Model '{ref}' is quantized as {quant}, which this lilbee build cannot load. "
             "Pass --allow-unsupported to download it anyway."
         )
