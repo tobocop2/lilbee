@@ -317,6 +317,53 @@ def _manifest_for(entry: CatalogModel) -> ModelManifest:
     )
 
 
+_VISION_NAMES = [
+    "openvino_language_model.xml",
+    "openvino_language_model.bin",
+    "openvino_vision_embeddings_model.xml",
+    "openvino_vision_embeddings_model.bin",
+    "openvino_tokenizer.xml",
+    "openvino_tokenizer.bin",
+    "config.json",
+]
+
+
+def _vision_cache(models_dir: Path, names: list[str]) -> Path:
+    """A symlink-less repo cache holding *names*, each a distinct file; return the entry file."""
+    snapshot = models_dir / "models--org--repo" / "snapshots" / _REV
+    snapshot.mkdir(parents=True)
+    for name in names:
+        (snapshot / name).write_bytes(name.encode())
+    return snapshot / "openvino_language_model.xml"
+
+
+def _register_vision(models_dir: Path, entry_file: Path) -> None:
+    with mock.patch.object(cfg, "models_dir", models_dir):
+        register_downloaded_model(_entry(ModelFormat.OPENVINO, entry_file.name), entry_file)
+
+
+class TestAVisionIrFolder:
+    def test_registering_it_counts_every_part_in_the_total(self, tmp_path: Path) -> None:
+        _register_vision(tmp_path, _vision_cache(tmp_path, _VISION_NAMES))
+        manifest = ModelRegistry(tmp_path).get_manifest("org/repo#openvino")
+        assert manifest is not None
+        assert manifest.total_size_bytes == sum(len(n) for n in _VISION_NAMES)
+        assert len(manifest.shard_blobs) == len(_VISION_NAMES) - 1
+
+    def test_registering_a_folder_with_a_part_missing_its_bin_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        names = [n for n in _VISION_NAMES if n != "openvino_vision_embeddings_model.bin"]
+        entry_file = _vision_cache(tmp_path, names)
+        with pytest.raises(ValueError, match=r"openvino_vision_embeddings_model\.bin"):
+            _register_vision(tmp_path, entry_file)
+
+    def test_removing_it_frees_every_part(self, tmp_path: Path) -> None:
+        _register_vision(tmp_path, _vision_cache(tmp_path, _VISION_NAMES))
+        assert ModelRegistry(tmp_path).remove("org/repo#openvino") is True
+        assert not list(tmp_path.rglob("openvino_*"))
+
+
 class TestThroughTheModelManager:
     def test_install_list_find_and_remove_by_ref(self, repo: Path) -> None:
         _install(repo, ModelFormat.GGUF)
