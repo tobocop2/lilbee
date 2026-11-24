@@ -1818,6 +1818,12 @@ def test_a_remove_cannot_hold_a_build_an_engine_holds(tmp_path: Path) -> None:
         holds.close()
 
 
+def test_a_launch_of_a_removed_router_build_names_it_with_no_backend(tmp_path: Path) -> None:
+    (tmp_path / "router").mkdir()
+    with pytest.raises(ProviderError, match=r"^Engine router v272 is being removed\."):
+        BuildHolds([tmp_path / "router" / "v272"])
+
+
 def test_install_makes_the_in_use_file_of_the_build(store: EngineStore, tmp_path: Path) -> None:
     installed_store(store, tmp_path)
     assert (store.root / "fx" / "1-cpu" / build_use.IN_USE_NAME).is_file()

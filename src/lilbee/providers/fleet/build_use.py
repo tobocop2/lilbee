@@ -54,9 +54,12 @@ def engine_label(engine: str, version: str, backend: str) -> str:
 def build_label(build: Path) -> str:
     """The ``engine_label`` of a build folder ``<engine>/<version>-<backend>``.
 
-    Versions are release tags with no hyphen, so the first hyphen ends the version.
+    Versions are release tags with no hyphen, so the first hyphen ends the version. A
+    router build (``router/<version>``) has no backend.
     """
     version, _, backend = build.name.partition("-")
+    if not backend:
+        return f"{build.parent.name} {version}"
     return engine_label(build.parent.name, version, backend)
 
 
