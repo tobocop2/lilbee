@@ -24,6 +24,8 @@
 #   GITHUB_REPOSITORY   owner/repo (set by Actions)
 #   GH_TOKEN            token with contents: write; publish only
 #   MIRROR_RELEASE_TAG  mirror release tag (default engine-binaries)
+#   MIRROR_REFRESH_DAYS age bucket in days added to the key; unset for a
+#                       content-addressed key that never needs a refresh
 
 set -euo pipefail
 
@@ -83,9 +85,50 @@ cmd_probe() {
     curl -fsI --retry 2 "$(download_url "${key}")" >/dev/null 2>&1
 }
 
+# Keys that carry no content hash of their own (the Nuitka object cache, keyed on
+# the dependency set) set MIRROR_REFRESH_DAYS so the blob cannot freeze. Time is
+# cut into buckets of that many days; a publish writes the current bucket and a
+# restore reads the current bucket, then the one before it. A build that restored
+# an old blob therefore publishes its fuller cache under the new bucket, and no
+# blob is older than two periods. MIRROR_NOW overrides the clock for tests.
+age_bucket() {
+    printf '%s\n' "$(( ${MIRROR_NOW:-$(date -u +%s)} / (MIRROR_REFRESH_DAYS * 86400) ))"
+}
+
+# Candidate keys for a restore, newest first.
+restore_keys() {
+    local key="${1}" bucket
+    if [ -z "${MIRROR_REFRESH_DAYS:-}" ]; then
+        printf '%s\n' "${key}"
+        return 0
+    fi
+    bucket="$(age_bucket)"
+    printf '%s.b%s\n%s.b%s\n' "${key}" "${bucket}" "${key}" "$((bucket - 1))"
+}
+
+publish_key() {
+    if [ -z "${MIRROR_REFRESH_DAYS:-}" ]; then
+        printf '%s\n' "${1}"
+    else
+        printf '%s.b%s\n' "${1}" "$(age_bucket)"
+    fi
+}
+
 cmd_fetch() {
     local key="${1:?usage: ci_mirror.sh fetch <key> <dir>}"
     local dest="${2:?usage: ci_mirror.sh fetch <key> <dir>}"
+    local candidate
+    while IFS= read -r candidate; do
+        if fetch_one "${candidate}" "${dest}"; then
+            return 0
+        fi
+    done < <(restore_keys "${key}")
+    return 1
+}
+
+fetch_one() {
+    local key="${1}"
+    local dest="${2}"
     local asset tmp
     asset="$(asset_name "${key}")"
     tmp="$(mktemp -d)"
@@ -112,7 +155,7 @@ cmd_publish() {
     local key="${1:?usage: ci_mirror.sh publish <key> <dir>}"
     local src="${2:?usage: ci_mirror.sh publish <key> <dir>}"
     local asset release_id tmp
-    asset="$(asset_name "${key}")"
+    asset="$(asset_name "$(publish_key "${key}")")"
 
     if [ ! -d "${src}" ] || [ -z "$(ls -A "${src}" 2>/dev/null)" ]; then
         echo "No engine at ${src}; nothing to mirror." >&2

@@ -76,6 +76,8 @@ Two properties do the work:
 
 A built engine is written to the mirror and nowhere else. Storing it in the Actions cache too would spend the cap duplicating what the mirror already holds durably, and that cap is exactly what the Nuitka object caches need: object caches want per-file granularity and must be a cache, engines are a single immutable blob and need not be. Restores still fall through mirror, then cache, then a source build, so engines cached before the mirror existed are still read. `asset_name()` in `tools/wheel-build/ci_mirror.sh` maps key to asset name for both the reader and the writer, because a mismatch there would not fail, it would silently never hit. Fetched with `curl`, not `gh`: the manylinux container the Linux legs build in ships no `gh`.
 
+The Nuitka object cache is keyed on the dependency set, so the key does not move when only lilbee code changes. To stop the blob from freezing, the mirror adds a 30-day age bucket to that key (`MIRROR_REFRESH_DAYS`, input `refresh-days` of the `nuitka-object-cache` action). A publish writes the current bucket. A restore reads the current bucket, then the one before it, so the first build of a new bucket starts warm and publishes a refreshed blob. No blob is older than two buckets. Superseded blobs stay on the release until someone deletes them.
+
 **Nothing here can change a shipped binary.** Every mechanism either serves bytes that are already identical or misses:
 
 - ccache and clcache key each entry on the preprocessed source plus the compiler and its flags, so a hit is by definition the same object file and a mismatch misses. ccache's correctness sloppiness is left at its conservative default, so translation units using `__DATE__` / `__TIME__` are not cached at all.
