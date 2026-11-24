@@ -30,6 +30,8 @@ _HELP_TIMEOUT_MEMORY_S = 60.0
 # llama-swap prints its release on this flag, as "version: v272 (802f1c4), built at ...".
 _ROUTER_VERSION_FLAG = "--version"
 _ROUTER_VERSION_LINE = re.compile(r"^version: v?(\d+)\b", re.MULTILINE)
+# What _binary_signature returns for a path it cannot stat.
+_UNSTATABLE = "unstatable"
 
 
 class EngineTool(StrEnum):
@@ -157,7 +159,7 @@ def _binary_signature(path: Path) -> str:
     try:
         st = path.stat()
     except OSError:
-        return "unstatable"
+        return _UNSTATABLE
     return f"{st.st_size}-{st.st_mtime_ns}"
 
 
@@ -374,7 +376,23 @@ def router_release(router: Path) -> int | None:
     ``go build`` from source, as the engine wheel and ``go install`` make, prints
     ``version: 0``, so it has no number to compare. A router that does not answer
     the probe has no number either; its own start then reports what is wrong with it.
+    The probe runs once per router file: a new size or mtime reads again, and a file
+    that cannot be statted is read each time.
     """
+    signature = _binary_signature(router)
+    if signature == _UNSTATABLE:
+        return _probe_router_release(router)
+    return _router_release_of(router, signature)
+
+
+@functools.lru_cache(maxsize=8)
+def _router_release_of(router: Path, _signature: str) -> int | None:
+    """:func:`_probe_router_release`, kept per router file; a new size or mtime reads again."""
+    return _probe_router_release(router)
+
+
+def _probe_router_release(router: Path) -> int | None:
+    """Run the router's version probe once."""
     try:
         probe = subprocess.run(  # noqa: S603 - argv is the resolved router binary and a literal
             [str(router), _ROUTER_VERSION_FLAG],

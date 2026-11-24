@@ -45,7 +45,7 @@ _BASE_PORT = 5900
 
 def _config(launches: list[InstanceLaunch]) -> dict:
     ports = {launch.model_id: _BASE_PORT + i for i, launch in enumerate(launches)}
-    return json.loads(build_swap_config(launches, ports))
+    return json.loads(build_swap_config(launches, ports, engine_logs={}))
 
 
 def test_instance_launch_rerank_mode_defaults_none() -> None:
@@ -113,6 +113,7 @@ class TestBuildSwapConfig:
                 ],
                 {_mid(WorkerRole.CHAT): 1, _mid(WorkerRole.VISION): 2},
                 swap=True,
+                engine_logs={},
             )
         )
         assert {name: group["members"] for name, group in cfg["groups"].items()} == {
@@ -132,6 +133,7 @@ class TestBuildSwapConfig:
                 ],
                 {_mid(WorkerRole.CHAT): 1, _mid(WorkerRole.RERANK): 2, _mid(WorkerRole.VISION): 3},
                 swap=True,
+                engine_logs={},
             )
         )
         assert {name: group["members"] for name, group in cfg["groups"].items()} == {
@@ -146,7 +148,7 @@ class TestBuildSwapConfig:
             _launch(WorkerRole.VISION, ["/bin/llama-server"], swap_class="1"),
         ]
         ports = {_mid(WorkerRole.CHAT): 1, _mid(WorkerRole.VISION): 2}
-        cfg = json.loads(build_swap_config(launches, ports))
+        cfg = json.loads(build_swap_config(launches, ports, engine_logs={}))
         (group,) = cfg["groups"].values()
         assert set(group["members"]) == {_mid(WorkerRole.CHAT), _mid(WorkerRole.VISION)}
 
@@ -229,9 +231,14 @@ class TestBuildSwapConfig:
     def test_a_router_that_reads_no_stream_list_gets_the_proxy_stream_alone(self) -> None:
         launch = _launch(WorkerRole.EMBED, ["/bin/text-embeddings-router"])
         rendered = build_swap_config(
-            [launch], {launch.model_id: _BASE_PORT}, router_reads_streams=False
+            [launch], {launch.model_id: _BASE_PORT}, engine_logs={}, router_reads_streams=False
         )
         assert json.loads(rendered)["logToStdout"] == "proxy"
+
+    def test_the_engine_logs_are_required(self) -> None:
+        launch = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
+        with pytest.raises(TypeError, match="engine_logs"):
+            build_swap_config([launch], {launch.model_id: _BASE_PORT})  # type: ignore[call-arg]
 
     def test_member_never_times_out(self) -> None:
         cfg = _config([_launch(WorkerRole.CHAT, ["/bin/llama-server"])])
@@ -241,7 +248,7 @@ class TestBuildSwapConfig:
         """llama-swap's ttl is in seconds; a warm fleet unloads idle weights after it."""
         launches = [_launch(WorkerRole.CHAT, ["/bin/llama-server"])]
         ports = {launch.model_id: _BASE_PORT + i for i, launch in enumerate(launches)}
-        cfg = json.loads(build_swap_config(launches, ports, ttl_seconds=900))
+        cfg = json.loads(build_swap_config(launches, ports, ttl_seconds=900, engine_logs={}))
         assert cfg["models"][_mid(WorkerRole.CHAT)]["ttl"] == 900
 
 

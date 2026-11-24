@@ -131,8 +131,14 @@ engine. To install the router with no network, copy the release archive into the
 installs on first use. A `llama-swap` on PATH, or one inside the llama.cpp pack, is
 used when no router is installed.
 A router older than v259 still starts the engine. It cannot copy the output of an engine
-that writes no log of its own (TEI, MLX, OVMS and others) into the router log, so lilbee
-shows a warning that names the version found and how to replace it.
+that writes no log of its own (TEI, MLX, OVMS and others) into the router log. In that
+case lilbee writes one warning to the lilbee log and lists it in `warnings` (code
+`router_outdated`) in the `GET /api/health` answer. The warning names the version found.
+The terminal interface shows no notice for it. To clear it, replace the router file with
+llama-swap v259 or later. Download a release from the
+[llama-swap releases](https://github.com/mostlygeek/llama-swap/releases), or run
+`go install github.com/mostlygeek/llama-swap@latest` and copy the `llama-swap` file from
+your Go bin folder to the path the warning names.
 
 ### Engines you install yourself
 

@@ -265,6 +265,39 @@ class TestRouterRelease:
         monkeypatch.setattr(binary_mod.subprocess, "run", run)
         assert binary_mod.router_release(Path("/usr/bin/llama-swap")) is None
 
+    def test_the_release_of_one_router_file_is_read_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        router = tmp_path / "llama-swap"
+        router.write_bytes(b"one")
+        calls = self._router_says(monkeypatch, "version: v272 (802f1c4), built at x\n")
+        assert [binary_mod.router_release(router) for _ in range(3)] == [272, 272, 272]
+        assert len(calls) == 1
+
+    def test_a_replaced_router_file_is_read_again(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        router = tmp_path / "llama-swap"
+        router.write_bytes(b"one")
+        says = ["version: 223 (8c5e40e), built at x\n"]
+
+        def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(argv, 0, stdout=says[-1], stderr="")
+
+        monkeypatch.setattr(binary_mod.subprocess, "run", run)
+        assert binary_mod.router_release(router) == 223
+        router.write_bytes(b"a longer file")
+        says.append("version: v272 (802f1c4), built at x\n")
+        assert binary_mod.router_release(router) == 272
+
+    def test_the_release_of_a_router_that_cannot_be_statted_is_not_kept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._router_says(monkeypatch, "version: v272 (802f1c4), built at x\n")
+        missing = tmp_path / "missing"
+        assert [binary_mod.router_release(missing) for _ in range(2)] == [272, 272]
+        assert len(calls) == 2
+
 
 def test_aux_tool_raises_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_WHICH, lambda _name: None)

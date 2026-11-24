@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, BinaryIO
 import httpx
 import psutil
 
-from lilbee.core.health_warnings import HealthWarning
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.parent_monitor import linux_start_stamp
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import (
@@ -281,6 +281,8 @@ class SwapManager:
         # Placement divergences by model id, surfaced on health. Guarded because
         # role_ready probes off the provider lock while health reads anytime.
         self._placement_warnings: dict[str, HealthWarning] = {}
+        # Set by a start that finds a router too old to copy a member's output.
+        self._router_warning: HealthWarning | None = None
         self._warnings_lock = threading.Lock()
         self._state_path = data_dir / _state_filename(os.getpid(), group.value)
         self._proc: subprocess.Popen[bytes] | None = None
@@ -414,27 +416,32 @@ class SwapManager:
         """Whether *router* reads a list of streams; warns when a member's output is lost.
 
         A release with no number (a source build, or a router that does not answer
-        the probe) counts as current. Call after ``_engine_logs`` is filled.
+        the probe) counts as current. Call after ``_engine_logs`` is filled. The
+        warning goes to the log and to :meth:`health_warnings`, and each start
+        replaces the one before it.
         """
+        with self._warnings_lock:
+            self._router_warning = None
         release = router_release(router)
         if release is None or release >= ROUTER_FLOOR:
             return True
         lost = [launch.model_id for launch in launches if launch.model_id not in self._engine_logs]
         if lost:
-            log.warning(
-                "The llama-swap router at %s is v%d, so the output of %s is not in %s. "
-                "llama-swap v%d or later puts it there. Replace the file at %s with "
-                "llama-swap v%d or later, from %s or from '%s'.",
-                router,
-                release,
-                ", ".join(lost),
-                self._log_path,
-                ROUTER_FLOOR,
-                router,
-                ROUTER_FLOOR,
-                _ROUTER_RELEASES_URL,
-                ROUTER_GO_INSTALL,
+            warning = HealthWarning(
+                code=WarningCode.ROUTER_OUTDATED,
+                message=(
+                    f"The llama-swap router at {router} is v{release}, so the output of "
+                    f"{', '.join(lost)} is not in {self._log_path}."
+                ),
+                remedy=(
+                    f"Replace the file at {router} with llama-swap v{ROUTER_FLOOR} or later. "
+                    f"Download it from {_ROUTER_RELEASES_URL}, or run '{ROUTER_GO_INSTALL}' "
+                    f"and copy the llama-swap file from your Go bin folder to {router}."
+                ),
             )
+            log.warning("%s", warning.line)
+            with self._warnings_lock:
+                self._router_warning = warning
         return False
 
     def reap_stale(self) -> None:
@@ -607,9 +614,12 @@ class SwapManager:
                 self._placement_warnings[model_id] = warning
 
     def health_warnings(self) -> list[HealthWarning]:
-        """Placement divergences recorded from ready engines in this group."""
+        """Placement divergences from ready engines in this group, and an outdated router."""
         with self._warnings_lock:
-            return list(self._placement_warnings.values())
+            warnings = list(self._placement_warnings.values())
+            if self._router_warning is not None:
+                warnings.append(self._router_warning)
+            return warnings
 
     def is_live(self) -> bool:
         """Whether the swap process is up and its proxy answers ``/running``."""

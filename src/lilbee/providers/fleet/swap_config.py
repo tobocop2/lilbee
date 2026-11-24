@@ -103,7 +103,7 @@ def build_swap_config(
     *,
     swap: bool = False,
     ttl_seconds: int = 0,
-    engine_logs: Mapping[str, Path] | None = None,
+    engine_logs: Mapping[str, Path],
     router_reads_streams: bool = True,
 ) -> str:
     """Render a llama-swap config (JSON, which is valid YAML) for *launches*.
@@ -119,7 +119,8 @@ def build_swap_config(
     server can't collide with the new fleet's bind.
 
     ``engine_logs`` maps a model id to the file its engine writes its own log to
-    (:func:`lilbee.providers.fleet.readback.engine_log_of`). A launch without
+    (:func:`lilbee.providers.fleet.readback.engine_log_of`); the caller passes it,
+    so a config never comes from a log map that production does not build. A launch without
     ``--memory`` logs at the verbosity that reports what it allocated: for an
     engine without ``GET /memory`` that file is the only place those numbers
     exist, and reading them back is what tells the planner whether its estimate
@@ -131,7 +132,6 @@ def build_swap_config(
     says the router is that release or later; when it is false, the config
     writes the proxy stream alone, which every release reads.
     """
-    engine_logs = engine_logs or {}
     models: dict[str, object] = {}
     for launch in launches:
         port = member_ports[launch.model_id]
