@@ -27,6 +27,10 @@ Usage:
     assert_engine_bundle.py [--backend <flavor>] [--tool <server> [--library <name> ...]]
         <wheel> [<wheel> ...]
     assert_engine_bundle.py [--backend <flavor>] --platform <runner OS> <bin dir>
+    assert_engine_bundle.py --imports-only <folder> [<folder> ...]
+
+``--imports-only`` runs the import check of a Windows bundle alone, on any folder of
+Windows files. The mistral.rs wheel check uses it on the folder its wheel installs.
 """
 
 from __future__ import annotations
@@ -315,7 +319,7 @@ def _import_problems(bundle: Path, name: str, entries: list[str], kind: str) -> 
         if archive is not None:
             archive.close()
     return [
-        f"{name}: windows {kind} {file} imports {', '.join(missing)}, which {BIN_DIR} does not "
+        f"{name}: windows {kind} {file} imports {', '.join(missing)}, which the bundle does not "
         "carry and Windows does not provide (a machine without it cannot start the engine)"
         for file, missing in _unbundled_imports(imports, entries).items()
     ]
@@ -436,7 +440,27 @@ def _refusal(bundle: Path, runner_os: str | None, backend: str | None, tool: str
     return ""
 
 
+def _imports_only(folders: list[str]) -> int:
+    """Check each folder of Windows files for an import that neither it nor Windows holds."""
+    paths = [Path(f) for f in folders]
+    if not paths or not all(p.is_dir() for p in paths):
+        print(
+            "usage: assert_engine_bundle.py --imports-only <folder> [<folder> ...]", file=sys.stderr
+        )
+        return 2
+    problems = [
+        problem
+        for path in paths
+        for problem in _import_problems(path, str(path), _bin_entries(path), "executable")
+    ]
+    for problem in problems:
+        print(f"FAIL: {problem}", file=sys.stderr)
+    return 1 if problems else 0
+
+
 def main(argv: list[str]) -> int:
+    if argv[:1] == ["--imports-only"]:
+        return _imports_only(argv[1:])
     values, libraries, argv = _parse(argv)
     backend = values.get("--backend")
     runner_os = values.get("--platform")
