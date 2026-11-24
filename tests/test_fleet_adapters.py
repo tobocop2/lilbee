@@ -902,7 +902,7 @@ def test_a_reranker_starts_on_a_build_that_lists_the_pooling_flag(monkeypatch) -
 
 def test_a_reranker_on_a_build_with_no_help_text_is_not_judged(monkeypatch) -> None:
     argv = _role_argv(monkeypatch, "", ROLE_SPECS[WorkerRole.RERANK])
-    assert argv[-2:] == ["--pooling", "rank"]
+    assert argv[-4:] == ["--pooling", "rank", "--sse-ping-interval", "30"]
 
 
 @pytest.mark.parametrize(
