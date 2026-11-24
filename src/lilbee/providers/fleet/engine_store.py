@@ -821,7 +821,7 @@ class EngineStore:
     def _inside_root(self, path: Path) -> Path:
         """*path* when it is a real entry under the engines root, else StorePathError."""
         if path.is_symlink() or not path.resolve().is_relative_to(self.root.resolve()):
-            raise StorePathError(f"{path.name!r} is not inside the engines folder {self.root}.")
+            raise StorePathError(f"'{path.name}' is not inside the engines folder {self.root}.")
         return path
 
     def remove(
