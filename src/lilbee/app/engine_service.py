@@ -21,7 +21,7 @@ from lilbee.app.engine_choice import (
 )
 from lilbee.app.services import Services, peek_services
 from lilbee.catalog import runnable
-from lilbee.catalog.download import RetryCallback
+from lilbee.catalog.download import retry_reporter
 from lilbee.catalog.download_progress import make_download_callback
 from lilbee.catalog.models import DownloadProgress
 from lilbee.catalog.refs import canonical_ref, model_format
@@ -698,20 +698,6 @@ def prefer(name: str, confirmed: bool = False) -> str:
     return setting.value
 
 
-_RETRY_TEXT = "{cause}. Attempt {attempt} of {attempts} failed; trying again."
-
-
-def _retry_reporter(on_retry: Callable[[str], None] | None) -> RetryCallback | None:
-    """Turn each failed attempt into the sentence *on_retry* shows; None when nobody listens."""
-    if on_retry is None:
-        return None
-
-    def report(attempt: int, attempts: int, cause: str) -> None:
-        on_retry(_RETRY_TEXT.format(cause=cause, attempt=attempt, attempts=attempts))
-
-    return report
-
-
 def _installable(name: str) -> EngineAdapter:
     """The adapter of the engine named *name*; refuses a name with no adapter."""
     try:
@@ -791,7 +777,7 @@ def _install_adapter(
                     cell,
                     dest=scratch,
                     on_progress=on_bytes,
-                    on_retry=_retry_reporter(on_retry),
+                    on_retry=retry_reporter(on_retry),
                     cancel=cancel,
                 ),
             )
@@ -815,7 +801,7 @@ def _install_router(
     try:
         install_router(
             on_progress=make_download_callback(on_update) if on_update is not None else None,
-            on_retry=_retry_reporter(on_retry),
+            on_retry=retry_reporter(on_retry),
             cancel=cancel,
         )
     except ROUTER_REFUSALS as exc:
@@ -849,7 +835,7 @@ def _install_llama_pack(
         lock = first_use.install_pack(
             wheel,
             on_progress=make_download_callback(on_update) if on_update is not None else None,
-            on_retry=_retry_reporter(on_retry),
+            on_retry=retry_reporter(on_retry),
             cancel=cancel,
         )
     except first_use.INSTALL_REFUSALS as exc:

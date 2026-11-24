@@ -26,7 +26,7 @@ def test_pull_with_override_proceeds() -> None:
     runner = CliRunner()
     seen: dict[str, object] = {}
 
-    def _capture(ref, src, *, on_update, allow_unsupported):
+    def _capture(ref, src, *, on_update, on_retry, allow_unsupported):
         seen["ref"] = ref
         seen["allow_unsupported"] = allow_unsupported
         from lilbee.app.models import PullResult, PullStatus
@@ -79,7 +79,7 @@ def test_pull_of_a_safetensors_repo_names_the_working_command(monkeypatch) -> No
         ),
     )
 
-    def _pull(ref, src, *, on_update, allow_unsupported):
+    def _pull(ref, src, *, on_update, on_retry, allow_unsupported):
         resolve_filename(build_adhoc_entry(ref), LLAMA)
 
     with patch("lilbee.cli.model.pull_model_data", side_effect=_pull):

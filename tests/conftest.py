@@ -253,12 +253,14 @@ def _download_without_a_child_process(request, monkeypatch):
     from lilbee.catalog import download_process
     from lilbee.runtime.cancellation import TaskCancelledError
 
-    def _in_process(entry, models_dir, token, engine, *, on_progress, cancel):
+    def _in_process(entry, models_dir, token, engine, *, on_progress, on_retry=None, cancel):
         from lilbee.catalog.download import fetch_model_files
 
         if cancel.is_set():
             raise TaskCancelledError
-        return fetch_model_files(entry, models_dir, token, on_progress=on_progress, engine=engine)
+        return fetch_model_files(
+            entry, models_dir, token, on_progress=on_progress, engine=engine, on_retry=on_retry
+        )
 
     monkeypatch.setattr(download_process, "download_in_subprocess", _in_process)
 

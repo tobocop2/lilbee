@@ -486,6 +486,7 @@ def pull_model_data(
     source: ModelSource,
     *,
     on_update: Callable[[DownloadProgress], None] | None = None,
+    on_retry: Callable[[str], None] | None = None,
     allow_unsupported: bool = False,
     cancel: CancelSignal | None = None,
 ) -> PullResult:
@@ -494,11 +495,13 @@ def pull_model_data(
     Only native models are downloadable; a non-native *source* is refused by
     :meth:`ModelManager.pull`. Progress updates are throttled by
     :func:`~lilbee.catalog.make_download_callback`, so callers see at most
-    roughly 10 Hz of progress events. A *cancel* signal makes the download
-    cancellable mid-transfer; see :func:`~lilbee.catalog.download_model`.
+    roughly 10 Hz of progress events. *on_retry* hears the sentence for each
+    failed attempt while the download runs. A *cancel* signal makes the
+    download cancellable mid-transfer; see :func:`~lilbee.catalog.download_model`.
     """
     # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
     from lilbee.catalog import make_download_callback
+    from lilbee.catalog.download import retry_reporter
 
     ref = canonical_ref(ref)
     manager = get_services().model_manager
@@ -514,6 +517,7 @@ def pull_model_data(
         source,
         on_bytes=bytes_cb,
         on_notice=notices.append,
+        on_retry=retry_reporter(on_retry),
         allow_unsupported=allow_unsupported,
         cancel=cancel,
     )
