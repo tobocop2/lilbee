@@ -433,9 +433,15 @@ class TestArgvAndSwapConfig:
         rendered = build_swap_config([launch], {launch.model_id: 5900}, engine_logs=engine_logs)
         return json.loads(rendered)["models"][launch.model_id]
 
-    def test_memory_mode_launch_gets_no_trace_log_env(self, tmp_path: Path) -> None:
+    def test_memory_mode_launch_gets_its_own_log_at_the_default_verbosity(
+        self, tmp_path: Path
+    ) -> None:
         entry = self._config(["/bin/llama-server", MEMORY_FLAG], tmp_path)
-        assert not any("LLAMA" in var for var in entry.get("env", []))
+        log_file = tmp_path / "engine-chat-0.log"
+        assert entry["env"] == [
+            f"{readback.ENV_LOG_FILE}={log_file}",
+            f"{readback.ENV_ARG_LOG_FILE}={log_file}",
+        ]
 
     def test_log_mode_launch_keeps_the_trace_log_env(self, tmp_path: Path) -> None:
         entry = self._config(["/bin/llama-server"], tmp_path)

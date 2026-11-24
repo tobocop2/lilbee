@@ -4430,10 +4430,10 @@ def test_a_chat_request_into_a_model_that_cannot_load_names_the_model_and_its_en
     assert snap.error == line
 
 
-def test_a_chat_request_names_the_group_log_for_a_launch_that_serves_its_memory(
+def test_a_chat_request_names_the_engine_log_for_a_launch_that_serves_its_memory(
     monkeypatch, tmp_path
 ) -> None:
-    """A launch that serves its numbers over HTTP writes no log: the group log is named."""
+    """A launch that serves its numbers over HTTP still writes its own log, and it is named."""
     from lilbee.providers.base import ProviderError
 
     p = _chat_that_cannot_load(monkeypatch, tmp_path, ["llama-server", "--memory"])
@@ -4441,7 +4441,7 @@ def test_a_chat_request_names_the_group_log_for_a_launch_that_serves_its_memory(
         p.chat([{"role": "user", "content": "hi"}])
     assert str(info.value) == (
         "The engine for acme/bort-GGUF/unk-arch.gguf stopped before it could answer (HTTP 500). "
-        f"The full engine output is in {tmp_path / 'logs' / 'llama-swap-chat.log'}."
+        f"The full engine output is in {tmp_path / 'logs' / 'engine-chat-0.log'}."
     )
 
 
