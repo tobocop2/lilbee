@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import os
 import subprocess
 import tarfile
 import tempfile
@@ -77,7 +78,9 @@ def test_a_server_archive_gives_the_server_and_its_libraries_only(
     repack.main(bin_dir, [archive])
     assert _names(bin_dir) == ["libggml.so.0.1", "llama-server"]
     assert (bin_dir / "llama-server").read_bytes() == b"a.tar.gz:top/llama-server"
-    assert (bin_dir / "llama-server").stat().st_mode & 0o777 == 0o755
+    # The archive mode is kept. Windows has no exec bit: it reports any writable file as 0o666.
+    mode = 0o666 if os.name == "nt" else 0o755
+    assert (bin_dir / "llama-server").stat().st_mode & 0o777 == mode
 
 
 def test_a_runtime_archive_adds_its_libraries(tmp_path: Path, bin_dir: Path) -> None:
@@ -180,7 +183,7 @@ def test_the_notice_is_the_header_and_the_text_of_the_page(
     calls = _page(monkeypatch, page)
     target = tmp_path / "NOTICE"
     notice.main(target)
-    text = target.read_bytes().decode("utf-8")
+    text = target.read_text(encoding="utf-8")  # a text file: Windows writes CRLF line ends
     assert calls == [("https://docs.nvidia.com/cuda/archive/12.4.1/eula/index.html", 60)]
     assert text.startswith("This wheel carries NVIDIA CUDA 12.4 runtime files: the CUDA Runtime")
     head, body = text.split(f"from {calls[0][0]}\n\n")

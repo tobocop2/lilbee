@@ -28,7 +28,7 @@ from lilbee.providers.fleet.swap_manager import EngineLifetime, SwapManager
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from tests._engine_logs import enrol_launch
 from tests._fleet_engines import engines_for_all_roles
-from tests._router_release import router_reports
+from tests._router_release import ROUTER, router_reports
 
 # All lifecycle tests run one manager for the chat group unless stated otherwise.
 _GROUP = SwapGroup.CHAT
@@ -192,9 +192,9 @@ class TestStart:
             mgr.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(LLAMA))
         config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
         assert config["logToStdout"] == "proxy"
-        assert [argv[0] for argv in spawned] == ["/usr/bin/llama-swap"]
+        assert [argv[0] for argv in spawned] == [str(ROUTER)]
         assert stops == [tmp_path, mgr._config_path]
-        assert probes == [["/usr/bin/llama-swap", "--version"]]
+        assert probes == [[str(ROUTER), "--version"]]
         assert caplog.text == ""
 
     def test_an_old_router_starts_a_member_that_writes_no_log_with_a_warning(
@@ -208,16 +208,16 @@ class TestStart:
             mgr.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(_NoOwnLogEngine()))
         config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
         assert config["logToStdout"] == "proxy"
-        assert [argv[0] for argv in spawned] == ["/usr/bin/llama-swap"]
+        assert [argv[0] for argv in spawned] == [str(ROUTER)]
         text = (
-            "The llama-swap router at /usr/bin/llama-swap is v223, so the output of embed-0 "
+            f"The llama-swap router at {ROUTER} is v223, so the output of embed-0 "
             f"is not in {mgr.log_path}."
         )
         remedy = (
-            "Replace the file at /usr/bin/llama-swap with llama-swap v259 or later. "
+            f"Replace the file at {ROUTER} with llama-swap v259 or later. "
             "Download it from https://github.com/mostlygeek/llama-swap/releases, or run "
             "'go install github.com/mostlygeek/llama-swap@latest' and copy the llama-swap "
-            "file from your Go bin folder to /usr/bin/llama-swap. Then restart lilbee."
+            f"file from your Go bin folder to {ROUTER}. Then restart lilbee."
         )
         assert [record.getMessage() for record in caplog.records] == [f"{text} {remedy}"]
         (warning,) = mgr.health_warnings()
