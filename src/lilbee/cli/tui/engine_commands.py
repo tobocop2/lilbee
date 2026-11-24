@@ -90,7 +90,8 @@ def _store_verb(
     if verb == _REMOVE and len(words) == _REMOVE_ARGS:
         name, version, backend = words
         label = engine_service.remove_build(name, version, backend, confirmed=confirmed)
-        return EngineCommandResult(True, engine_service.REMOVE_DONE.format(build=label))
+        text = engine_service.REMOVE_DONE.format(build=label)
+        return EngineCommandResult(True, text, CHOICES_KEY)
     if verb == _INSTALL and len(words) == _INSTALL_ARGS:
         built = engine_service.install(
             words[0], on_update=on_update, on_retry=on_retry, cancel=cancel
@@ -98,7 +99,7 @@ def _store_verb(
         done = msg.ENGINE_INSTALL_DONE.format(build=built.label)
         folder = engine_service.FOLDER_LINE.format(folder=engine_service.engines_folder())
         lines = [done, folder, built.note] if built.note else [done, folder]
-        return EngineCommandResult(True, "\n".join(lines))
+        return EngineCommandResult(True, "\n".join(lines), CHOICES_KEY)
     return None
 
 
@@ -248,3 +249,8 @@ def announce(app: LilbeeApp, result: EngineCommandResult) -> None:
     app.notify(result.text, severity="information" if result.ok else "error")
     if result.changed is not None:
         app.settings_changed_signal.publish((result.changed, getattr(cfg, result.changed)))
+
+
+def publish_engines_changed(app: LilbeeApp) -> None:
+    """Tell the subscribers that the engines on disk changed, so they repaint the roles."""
+    app.settings_changed_signal.publish((CHOICES_KEY, getattr(cfg, CHOICES_KEY)))
