@@ -504,6 +504,10 @@ _TRANSIENT_KINDS = _RETRY_KINDS | {ProviderErrorKind.RATE_LIMIT}
 _DONE_SENTINEL = "[DONE]"
 _DATA_PREFIX = "data:"
 _DEFAULT_TIMEOUT_S = 300.0
+# The longest silence, in seconds, between two reads of a chat stream after its first
+# frame. The client timeout stays the wait before that frame: a cold load, or a long
+# prompt evaluation, sends no frame.
+_STREAM_IDLE_TIMEOUT_S = 120.0
 # How often an abortable chat checks its cancel signal.
 _CANCEL_POLL_S = 0.1
 # Short, separate timeout for /health: a server can wedge under heavy prompt
@@ -915,6 +919,7 @@ class LlamaServerClient:
             for line in resp.iter_lines():
                 delta = inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
                 if delta:
+                    _bound_idle_reads(resp)
                     yield delta
             tail = inliner.finish()
             if tail:
@@ -979,7 +984,10 @@ class LlamaServerClient:
                 await resp.aread()
             self._raise_for_status(resp)
             async for line in resp.aiter_lines():
-                parts.append(inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field)))
+                text = inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
+                if text:
+                    _bound_idle_reads(resp)
+                parts.append(text)
         parts.append(inliner.finish())
         return "".join(parts)
 
@@ -1133,6 +1141,8 @@ class LlamaServerClient:
                             # The first real frame proves prefill is over.
                             prefilling = False
                             on_prefill(None)
+                        if not started:
+                            _bound_idle_reads(resp)
                         started = True
                         ended |= isinstance(item, StreamFinish)
                         yield item
@@ -2172,6 +2182,20 @@ def _prefill_progress(line: str) -> tuple[int, int] | None:
         return int(progress["processed"]), int(progress["total"])
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _bound_idle_reads(resp: httpx.Response) -> None:
+    """Cut the read wait of *resp* to ``_STREAM_IDLE_TIMEOUT_S`` for the reads that follow.
+
+    The client's own read timeout is the cold-load budget. It holds until the first
+    frame, because the engine sends its headers before it ends prompt evaluation.
+    httpcore reads the ``timeout`` request extension again at each body read, so this
+    change applies to the next read. A shorter read timeout stays as it is.
+    """
+    timeout = resp.request.extensions["timeout"]
+    read = timeout.get("read")
+    if read is None or read > _STREAM_IDLE_TIMEOUT_S:
+        timeout["read"] = _STREAM_IDLE_TIMEOUT_S
 
 
 def _raise_if_cut(*, started: bool, ended: bool, provider: str) -> None:
