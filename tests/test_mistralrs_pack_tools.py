@@ -316,6 +316,7 @@ def _wheel(
     expression: str = _EXPRESSION,
     newline: str = "\n",
     more: dict[str, bytes] | None = None,
+    description: str = "",
 ) -> Path:
     """An installable mistral.rs wheel that a check passes, unless an argument breaks it."""
     files: dict[str, bytes] = {
@@ -323,7 +324,7 @@ def _wheel(
         "lilbee_engine_mistral_rs/bin/mistralrs": tool,
         f"{_INFO}/METADATA": (
             "Metadata-Version: 2.4\nName: lilbee-engine-mistral-rs\nVersion: 0.9.5\n"
-            f"License-Expression: {expression}\n"
+            f"License-Expression: {expression}\n" + (f"\n{description}\n" if description else "")
         )
         .replace("\n", newline)
         .encode(),
@@ -437,6 +438,13 @@ def test_the_whole_check_stops_at_a_wheel_that_lacks_a_licence(tmp_path: Path) -
 
 def test_the_check_fails_a_wheel_with_another_licence_expression(tmp_path: Path) -> None:
     bad = _check(tmp_path, _wheel(tmp_path, expression="MIT"), "check_licences")
+    assert bad.returncode == 1
+    assert f"wheel lacks the licence expression {_EXPRESSION}" in bad.stderr
+
+
+def test_the_check_ignores_a_licence_expression_in_the_description(tmp_path: Path) -> None:
+    wheel = _wheel(tmp_path, expression="MIT", description=f"License-Expression: {_EXPRESSION}")
+    bad = _check(tmp_path, wheel, "check_licences")
     assert bad.returncode == 1
     assert f"wheel lacks the licence expression {_EXPRESSION}" in bad.stderr
 
@@ -742,6 +750,18 @@ def test_the_check_fails_a_macos_tool_that_loads_a_library_outside_the_system(
     done = _check(tmp_path, _wheel(tmp_path), "start_tool", RUNNER_OS="macOS", BACKEND="metal")
     assert done.returncode == status, done.stderr
     assert ("loads a library outside the system" in done.stderr) == bool(status)
+
+
+def test_the_check_fails_a_macos_tool_whose_otool_fails(tmp_path: Path) -> None:
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    otool = stubs / "otool"
+    otool.write_text('#!/bin/sh\necho "$2:"\nexit 1\n', encoding="utf-8")
+    otool.chmod(0o755)
+    done = _check(tmp_path, _wheel(tmp_path), "start_tool", RUNNER_OS="macOS", BACKEND="metal")
+    assert done.returncode == 1
+    assert "otool failed on" in done.stderr
+    assert "loads a library outside the system" not in done.stderr
 
 
 _RUNTIME = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
