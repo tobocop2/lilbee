@@ -283,8 +283,91 @@ class TestInstall:
             install_router()
         assert any(str(stale) in r.getMessage() for r in caplog.records)
 
-    def test_removing_a_folder_that_is_already_gone_does_nothing(self, tmp_path: Path) -> None:
-        router_install._remove_folder(tmp_path / "absent")
+    def test_removing_a_folder_that_is_already_gone_logs_nothing(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level("WARNING", logger=router_install.log.name):
+            router_install._remove_folder(tmp_path / "absent")
+        assert caplog.records == []
+
+    def test_a_link_that_cannot_be_unlinked_is_logged_with_its_path(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        link = tmp_path / "link"
+        link.symlink_to(tmp_path, target_is_directory=True)
+
+        def refuse(self: Path, missing_ok: bool = False) -> None:
+            raise PermissionError(13, "Permission denied", str(self))
+
+        monkeypatch.setattr(Path, "unlink", refuse)
+        with caplog.at_level("WARNING", logger=router_install.log.name):
+            router_install._remove_folder(link)
+        assert any(str(link) in r.getMessage() for r in caplog.records)
+
+    def test_a_folder_that_goes_after_the_walk_listed_it_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        folder = tmp_path / "router"
+        (folder / "inner").mkdir(parents=True)
+
+        def gone(path: str | Path) -> os.stat_result:
+            raise FileNotFoundError(2, "No such file", str(path))
+
+        monkeypatch.setattr(os, "access", lambda *_a, **_k: False)
+        monkeypatch.setattr(os, "stat", gone)
+        with caplog.at_level("WARNING", logger=router_install.log.name):
+            router_install._remove_folder(folder)
+        monkeypatch.undo()
+        assert not folder.exists()
+        assert caplog.records == []
+
+    @pytest.mark.skipif(
+        os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+        reason="needs a user the file mode binds",
+    )
+    def test_the_write_bit_is_added_inside_the_tree_and_never_to_its_parent(
+        self, release: list[str]
+    ) -> None:
+        stale = engines_root(cfg.models_dir) / "router" / ROUTER_VERSION
+        (stale / "old").mkdir(parents=True)
+        stale.chmod(0o555)
+        parent_mode = stale.parent.stat().st_mode
+        install_router()
+        assert stale.parent.stat().st_mode == parent_mode
+
+    @pytest.mark.skipif(
+        os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+        reason="needs a user the file mode binds",
+    )
+    def test_a_chmod_that_fails_does_not_hide_the_install_error(
+        self,
+        release: list[str],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        stale = engines_root(cfg.models_dir) / "router" / ROUTER_VERSION
+        (stale / "old").mkdir(parents=True)
+        (stale / "old" / "stale.txt").write_text("old", encoding="utf-8")
+        stale.chmod(0o555)
+
+        def refuse(path: str | Path, mode: int) -> None:
+            raise PermissionError(1, "Operation not permitted", str(path))
+
+        monkeypatch.setattr(os, "chmod", refuse)
+        try:
+            with (
+                caplog.at_level("WARNING", logger=router_install.log.name),
+                pytest.raises(OSError) as raised,
+            ):
+                install_router()
+        finally:
+            monkeypatch.undo()
+            stale.chmod(0o755)
+        assert not isinstance(raised.value, PermissionError)
+        assert any(str(stale) in r.getMessage() for r in caplog.records)
 
     def test_the_install_holds_the_router_lock_for_the_whole_install(
         self, release: list[str], monkeypatch: pytest.MonkeyPatch

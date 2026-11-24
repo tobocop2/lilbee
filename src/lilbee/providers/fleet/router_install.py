@@ -242,16 +242,20 @@ def _remove_folder(path: Path) -> None:
     itself only, then is deleted. A delete that leaves something behind is logged as a warning
     that names the path; the caller then meets the leftover on its own next step.
     """
-    if path.is_symlink():
-        path.unlink()
-        return
-    if not path.exists():
-        return
     try:
+        if path.is_symlink():
+            path.unlink(missing_ok=True)
+            return
         for folder, _names, _files in os.walk(path):
-            if not os.access(folder, os.W_OK):
+            if os.access(folder, os.W_OK):
+                continue
+            try:
                 os.chmod(folder, os.stat(folder).st_mode | stat.S_IWUSR)
+            except FileNotFoundError:
+                continue  # the folder went after the walk listed it
         shutil.rmtree(path)
+    except FileNotFoundError:
+        return
     except OSError as exc:
         log.warning("%s stays after the delete: %s. Correct its permissions.", path, exc)
 
