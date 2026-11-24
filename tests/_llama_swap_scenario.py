@@ -108,5 +108,6 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "default": {},
     "swap-ttl-logs": {"swap": True, "ttl_seconds": TTL_SECONDS},
 }
-# The folder each config puts the engine logs in; a config not listed writes none.
-LOG_DIRS: dict[str, PurePosixPath] = {"swap-ttl-logs": LOG_DIR}
+# The folder each config puts the engine logs in. Production gives every llama-server
+# member its own log, so each config here does.
+LOG_DIRS: dict[str, PurePosixPath] = {"default": LOG_DIR, "swap-ttl-logs": LOG_DIR}
