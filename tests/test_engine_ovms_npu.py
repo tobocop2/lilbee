@@ -41,10 +41,15 @@ def _targets(monkeypatch: pytest.MonkeyPatch, host: HostCaps) -> frozenset[RoleT
     return OVMS.device_targets(BINARY)
 
 
-def _argv(role: WorkerRole, target: RoleTarget, ctx_per_slot: int = 512) -> list[str]:
+def _argv(
+    role: WorkerRole,
+    target: RoleTarget,
+    ctx_per_slot: int = 512,
+    model_path: Path = Path("/models/bge-reranker-base-int8-ov"),
+) -> list[str]:
     request = LaunchRequest(
         binary=BINARY,
-        model_path=Path("/models/bge-reranker-base-int8-ov"),
+        model_path=model_path,
         devices=(),
         n_gpu_layers=0,
         slots=1,
@@ -90,8 +95,8 @@ def test_the_npu_target_sets_the_npu_device(role: WorkerRole) -> None:
 
 
 def test_the_npu_embed_launch_bounds_the_input() -> None:
-    argv = _argv(WorkerRole.EMBED, RoleTarget.NPU)
-    assert argv[argv.index("--max_length") + 1] == "512"
+    argv = _argv(WorkerRole.EMBED, RoleTarget.NPU, ctx_per_slot=648)
+    assert argv[argv.index("--max_length") + 1] == "648"
 
 
 def test_the_npu_embed_bound_follows_the_window() -> None:
@@ -106,3 +111,61 @@ def test_the_npu_bound_is_not_set_on_cpu_or_gpu(target: RoleTarget) -> None:
 
 def test_the_npu_rerank_launch_has_no_bound() -> None:
     assert "--max_length" not in _argv(WorkerRole.RERANK, RoleTarget.NPU)
+
+
+def _model_folder(tmp_path: Path, config: str | None) -> Path:
+    if config is not None:
+        (tmp_path / "config.json").write_text(config, encoding="utf-8")
+    return tmp_path
+
+
+def test_the_npu_embed_bound_stops_at_the_position_limit_of_the_model(tmp_path: Path) -> None:
+    folder = _model_folder(tmp_path, json.dumps({"max_position_embeddings": 512}))
+    argv = _argv(WorkerRole.EMBED, RoleTarget.NPU, ctx_per_slot=648, model_path=folder)
+    assert argv[argv.index("--max_length") + 1] == "512"
+
+
+def test_the_npu_embed_bound_keeps_a_window_below_the_position_limit(tmp_path: Path) -> None:
+    folder = _model_folder(tmp_path, json.dumps({"max_position_embeddings": 8192}))
+    argv = _argv(WorkerRole.EMBED, RoleTarget.NPU, ctx_per_slot=648, model_path=folder)
+    assert argv[argv.index("--max_length") + 1] == "648"
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        None,
+        "not json",
+        "[]",
+        json.dumps({"hidden_size": 384}),
+        json.dumps({"max_position_embeddings": "512"}),
+        json.dumps({"max_position_embeddings": True}),
+        json.dumps({"max_position_embeddings": 0}),
+    ],
+    ids=["no-file", "bad-json", "not-an-object", "no-key", "string", "bool", "zero"],
+)
+def test_the_npu_embed_bound_keeps_the_window_when_the_model_names_no_limit(
+    tmp_path: Path, config: str | None
+) -> None:
+    folder = _model_folder(tmp_path, config)
+    argv = _argv(WorkerRole.EMBED, RoleTarget.NPU, ctx_per_slot=648, model_path=folder)
+    assert argv[argv.index("--max_length") + 1] == "648"
+
+
+def test_the_npu_embed_launch_cuts_an_over_long_input() -> None:
+    argv = _argv(WorkerRole.EMBED, RoleTarget.NPU)
+    assert argv[argv.index("--truncate") + 1] == "true"
+
+
+@pytest.mark.parametrize(
+    ("role", "target"),
+    [
+        (WorkerRole.EMBED, RoleTarget.CPU),
+        (WorkerRole.EMBED, RoleTarget.GPU),
+        (WorkerRole.RERANK, RoleTarget.NPU),
+    ],
+)
+def test_the_truncation_is_set_on_the_npu_embed_launch_only(
+    role: WorkerRole, target: RoleTarget
+) -> None:
+    assert "--truncate" not in _argv(role, target)
