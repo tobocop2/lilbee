@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import devices as devices_mod
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines import llama as llama_mod
@@ -316,3 +316,17 @@ class TestAMissingRuntimeDllIsNamed:
         monkeypatch.setattr(devices_mod, "_run_list_devices", lambda _b, _t: ("", 0xC0000135))
         with pytest.raises(ProviderError, match="Visual C"):
             planning.resolve_devices(Path("/bin/llama-server"), LLAMA)
+
+
+def test_the_probe_and_the_death_message_share_one_install_link(monkeypatch) -> None:
+    from lilbee.providers.fleet.client import _upstream_death_message
+    from lilbee.runtime.vc_runtime import VC_REDIST_URL
+
+    monkeypatch.setattr(devices_mod, "_run_list_devices", lambda _b, _t: ("", 0xC0000135))
+    with pytest.raises(ProviderError) as probe:
+        devices_mod.probe_devices(Path("/bin/llama-server"))
+    death = _upstream_death_message(
+        ProviderErrorKind.MISSING_LIBRARY, 500, "m", None, "exit status 0xc0000135"
+    )
+    assert VC_REDIST_URL in str(probe.value)
+    assert VC_REDIST_URL in death
