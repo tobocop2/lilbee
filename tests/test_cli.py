@@ -43,6 +43,7 @@ from lilbee.data.store import IndexMismatch, SearchChunk, SourceSummary
 from lilbee.modelhub.models import ensure_chat_model as _real_ensure_chat_model
 from lilbee.modelhub.models import list_installed_models
 from lilbee.retrieval.query.searcher import SearchReport
+from lilbee.runtime.cancellation import SignalFlag
 from lilbee.runtime.lock import _no_sync_running
 from lilbee.runtime.progress import (
     CrawlDoneEvent,
@@ -83,8 +84,6 @@ runner = CliRunner()
 
 def _assert_signal_token(token: object) -> None:
     """Assert *token* is the lock-free flag a Ctrl-C handler sets, and not a threading.Event."""
-    from lilbee.runtime.cancellation import SignalFlag
-
     assert not isinstance(token, threading.Event)
     assert isinstance(token, SignalFlag)
     token.set()
@@ -5496,7 +5495,7 @@ class TestCrawlUrlsBlocking:
             crawl=False,
             depth=None,
             max_pages=None,
-            cancel_event=threading.Event(),
+            cancel_event=SignalFlag(),
         )
         assert len(result.saved) == 1
         mock_crawl.assert_called_once()
@@ -5511,7 +5510,7 @@ class TestCrawlUrlsBlocking:
             crawl=True,
             depth=None,
             max_pages=None,
-            cancel_event=threading.Event(),
+            cancel_event=SignalFlag(),
         )
         call_kwargs = mock_crawl.call_args[1]
         assert call_kwargs["depth"] == cfg.crawl_max_depth
@@ -5526,7 +5525,7 @@ class TestCrawlUrlsBlocking:
             crawl=True,
             depth=5,
             max_pages=20,
-            cancel_event=threading.Event(),
+            cancel_event=SignalFlag(),
         )
         call_kwargs = mock_crawl.call_args[1]
         assert call_kwargs["depth"] == 5
@@ -5554,7 +5553,7 @@ class TestCrawlUrlsBlocking:
 
         from lilbee.cli.commands.ingest_sync import _run_crawl_with_signal_cancel
 
-        cancel_event = threading.Event()
+        cancel_event = SignalFlag()
         loops: list[asyncio.AbstractEventLoop] = []
 
         async def fake_crawl(*_args, cancel, **_kwargs):
@@ -6238,6 +6237,47 @@ class TestSigintCancel:
                 signal.raise_signal(signal.SIGINT)
             # A raise here would end the test worker.
             with contextlib.suppress(KeyboardInterrupt):
+                signal.raise_signal(signal.SIGINT)
+            assert quits == ["handler"]
+
+    def test_the_first_sigint_stops_the_bound_run(self) -> None:
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        stops: list[str] = []
+        with sigint_cancel() as token:
+            token.bind_run(lambda: stops.append("stop"))
+            signal.raise_signal(signal.SIGINT)
+        assert stops == ["stop"]
+
+    def test_a_second_sigint_during_a_run_interrupts(self, quits) -> None:
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        with pytest.raises(KeyboardInterrupt), sigint_cancel() as token:
+            token.bind_run(lambda: None)
+            signal.raise_signal(signal.SIGINT)
+            signal.raise_signal(signal.SIGINT)
+        assert quits == ["scope"]
+
+    def test_a_second_sigint_after_the_run_lets_the_wind_down_finish(self, quits) -> None:
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        wound_down: list[str] = []
+        with sigint_cancel() as token:
+            token.bind_run(lambda: None)
+            signal.raise_signal(signal.SIGINT)
+            token.unbind_run()
+            signal.raise_signal(signal.SIGINT)
+            wound_down.append("rollback")
+            assert quits == []
+        assert wound_down == ["rollback"]
+        assert quits == ["scope"]
+
+    def test_a_third_sigint_in_the_wind_down_force_quits_from_the_handler(self, quits) -> None:
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        with sigint_cancel() as token:
+            token.unbind_run()
+            for _ in range(3):
                 signal.raise_signal(signal.SIGINT)
             assert quits == ["handler"]
 
@@ -7386,7 +7426,7 @@ class TestCrawlProgressCallback:
                 crawl=False,
                 depth=None,
                 max_pages=None,
-                cancel_event=threading.Event(),
+                cancel_event=SignalFlag(),
             )
 
 
@@ -8671,7 +8711,7 @@ class TestCrawlDefaultCapNotice:
             crawl=True,
             depth=None,
             max_pages=None,
-            cancel_event=threading.Event(),
+            cancel_event=SignalFlag(),
         )
         out = capsys.readouterr().err
         assert "--max-pages 0" in out and "5-page" in out
@@ -8696,7 +8736,7 @@ class TestCrawlDefaultCapNotice:
             crawl=True,
             depth=None,
             max_pages=None,
-            cancel_event=threading.Event(),
+            cancel_event=SignalFlag(),
         )
         assert "--max-pages 0" not in capsys.readouterr().err
 
@@ -8719,7 +8759,7 @@ class TestCrawlDefaultCapNotice:
             crawl=True,
             depth=None,
             max_pages=9,
-            cancel_event=threading.Event(),
+            cancel_event=SignalFlag(),
         )
         assert "--max-pages 0" not in capsys.readouterr().err
 
