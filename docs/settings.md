@@ -28,7 +28,7 @@ An environment value that its setting refuses stops every command with one line 
 
 `main_gpu` is not a setting. A `main_gpu` key in `config.toml` or a `LILBEE_MAIN_GPU` variable prints a warning and is ignored: choose the cards with `gpu_devices` or `placement`.
 
-From a shell, `lilbee settings set <setting> <value>` writes a setting to `config.toml`, and `lilbee settings unset <setting>` removes your value. `lilbee settings list` shows every setting with its value and source, and `lilbee settings get <setting>` shows one. `lilbee settings set` refuses the model roles; the CLI column names the command for each one. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
+From a shell, `lilbee settings set <setting> <value>` writes a setting to `config.toml`, and `lilbee settings unset <setting>` removes your value. `lilbee settings list` shows each setting you can write with its value and source, and `--advanced` adds the advanced ones, and `lilbee settings get <setting>` shows one. `lilbee settings set` refuses the model roles, and refuses a setting whose value is a table. The CLI column names the command that does write each one, or `no`. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
 
 ## Reading the surface columns
 
@@ -40,7 +40,7 @@ From a shell, `lilbee settings set <setting> <value>` writes a setting to `confi
 
 **HTTP.** The same, with two exceptions. `role API` means `PUT /api/models/<role>` sets it, not `PATCH /api/config`. `refused` means the server rejects the write, because applying it rebuilds the model provider under concurrent requests.
 
-**CLI.** The command that writes this setting, or `no`. `lilbee settings set` writes every setting it names. The model roles have their own commands, or none.
+**CLI.** The command that writes this setting, or `no`. `lilbee settings set` writes every setting it names. A model role or a table setting has its own command, or none.
 
 **Advanced.** `yes` means the TUI folds this setting into the collapsed "Advanced" section at the bottom of its tab: a normal user never needs it to get good results. `no` means the setting stays with the tab's regular rows. Every setting is still reachable through every other surface either way.
 
@@ -317,7 +317,7 @@ These settings have no row on the `/settings` screen, so they belong to no group
 | `ingest_max_inflight` | `LILBEE_INGEST_MAX_INFLIGHT` | `int` | `0` | no | yes | yes | `lilbee settings set` | no | Files allowed in their compute phase at once during ingest. 0 = auto, scaled to the detected embed fleet. Sizes the extract and embed fan-out, not the planning pass. |
 | `json_mode` | `LILBEE_JSON_MODE` | `bool` | `false` | no | no | no | no | no | Emit structured JSON from CLI commands. The --json flag sets it for one invocation. |
 | `lancedb_dir` | `LILBEE_LANCEDB_DIR` | `str` | *(computed)* | no | no | no | no | no | Directory holding the LanceDB vector tables. Defaults to data_root/data/lancedb. |
-| `linked_roots` | no | `dict` | *(empty)* | no | write-only | write-only | `lilbee settings set` | no | External source roots that `add` registered, as label -> absolute path. `add` and `remove` maintain it; do not edit it by hand. |
+| `linked_roots` | no | `dict` | *(empty)* | no | write-only | write-only | `lilbee add`, `lilbee remove` | no | External source roots that `add` registered, as label -> absolute path. `add` and `remove` maintain it; do not edit it by hand. |
 | `markdown_rendering` | `LILBEE_MARKDOWN_RENDERING` | `bool` | `true` | no | no | no | no | no | Render chat replies as Markdown in the TUI. Off draws plain text, which is faster. |
 | `max_embed_chars` | `LILBEE_MAX_EMBED_CHARS` | `int` | `2000` | no | no | no | no | no | Maximum characters sent to the embedding model per chunk. Longer text is cut. |
 | `models_dir` | `LILBEE_MODELS_DIR` | `str` | *(computed)* | no | no | no | no | no | Directory holding downloaded model files. Shared across libraries, so a model pulled for one is available to all. |
