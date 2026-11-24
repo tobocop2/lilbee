@@ -67,8 +67,7 @@ def _run_inner(
         "def wait_for_emit(seconds):\n"
         "    end = time.monotonic() + seconds\n"
         "    while time.monotonic() < end and not Path(os.environ['EMIT_MARKER']).exists():\n"
-        "        time.sleep(0.05)\n"
-        + source
+        "        time.sleep(0.05)\n" + source
     )
     return pytester.runpytest_subprocess("-p", "no:cacheprovider")
 
@@ -77,11 +76,7 @@ def test_timed_out_test_prints_the_engine_log_tails_at_once(
     pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A real pytest-timeout failure writes both engine logs to stderr when it fails."""
-    source = (
-        "@pytest.mark.timeout(1)\n"
-        "def test_stalls():\n"
-        "    time.sleep(30)\n"
-    )
+    source = "@pytest.mark.timeout(5)\ndef test_stalls():\n    time.sleep(60)\n"
     result = _run_inner(pytester, monkeypatch, tmp_path, source)
 
     result.assert_outcomes(failed=1)
@@ -95,11 +90,7 @@ def test_a_failing_test_prints_the_tails_from_the_failure_hook_alone(
     pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The stall timer cannot fire in a test with a 60 s limit, so the hook prints these."""
-    source = (
-        "@pytest.mark.timeout(60)\n"
-        "def test_fails():\n"
-        "    assert False\n"
-    )
+    source = "@pytest.mark.timeout(60)\ndef test_fails():\n    assert False\n"
     result = _run_inner(pytester, monkeypatch, tmp_path, source)
 
     result.assert_outcomes(failed=1)
