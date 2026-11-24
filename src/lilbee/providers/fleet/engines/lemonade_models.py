@@ -80,6 +80,7 @@ def _row(ref: str, entry: Mapping[str, Any]) -> CatalogModel:
         downloads=0,
         task=ModelTask.EMBEDDING if is_embedding else ModelTask.CHAT,
         params=_parameters(entry),
+        context_length=int(context),
         format=ModelFormat.XDNA,
         formats=frozenset({ModelFormat.XDNA}),
     )

@@ -1,0 +1,27 @@
+Replies of Lemonade v2026.44.1 (lemonade-embeddable-2026.44.1-ubuntu-x64.tar.gz,
+sha256 16f156a7f44a32b20936e76019b24dbccc7b82e60a3acea12e8614da8bca8e90).
+Each file is the reply body, byte for byte, apart from the placeholders named below.
+
+system-info-no-npu-v2026.44.1.json
+load-refused-no-npu-v2026.44.1.json
+health-after-refused-load-v2026.44.1.json
+  Recorded 2026-11-24T23:42Z on a GCP e2-standard-16 host (AMD EPYC 7B12, Ubuntu 24.04,
+  no NPU). The role folder held the files lilbee writes for the chat role: user_models.json
+  {"lilbee-chat": {"checkpoint": "qwen3:0.6b", "recipe": "flm"}}, recipe_options.json and
+  config.json. Command:
+    lemond --port 18150 --host 127.0.0.1 --no-broadcast <role>/cache <role>/config
+  Requests, in order:
+    GET  /v1/system-info                         200  system-info-no-npu
+    POST /v1/load {"model_name": "user.lilbee-chat"}   404  load-refused-no-npu
+    POST /v1/chat/completions (model user.lilbee-chat)  404  the same body as the load
+    GET  /v1/health                              200  health-after-refused-load
+  Placeholder: model_storage.path is "<model storage>".
+
+health-cpu-v2026.44.1.json
+  Recorded 2026-11-03 on a Linux laptop with no NPU, a llamacpp model loaded on the CPU
+  (round report run-f3, file r2-health-chat.json). GET /v1/health, 200.
+  Placeholders: "<lemonade data>" and "<model storage>" in launch_command.
+
+health-docs-v2026.44.1.json
+  The GET /v1/health response example of docs/api/lemonade.md at tag v2026.44.1
+  (lines 1502-1572), verbatim. It is documented, not recorded.

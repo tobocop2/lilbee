@@ -12,13 +12,16 @@ import pytest
 
 from lilbee.app import engine_service
 from lilbee.catalog import xdna
+from lilbee.catalog.download import download_model
 from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.engine_params import resolve_chat_ctx
 from lilbee.providers.fleet import host_caps
 from lilbee.providers.fleet.engines import choice, lemonade, proof
 from lilbee.providers.fleet.engines.base import PORT_SLOT, EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.lemonade import LEMONADE
+from lilbee.providers.fleet.engines.lemonade_models import parse_models
 from lilbee.providers.fleet.host_caps import HostCaps
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryKind
@@ -26,6 +29,12 @@ from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import RoleTarget, WorkerRole
 
 FIXTURES = Path(__file__).parent / "fixtures" / "host_caps"
+LEMONADE_REPLIES = Path(__file__).parent / "fixtures" / "lemonade"
+PINNED = json.loads(
+    (Path(__file__).parent / "fixtures" / "engine_model_lists" / "lemonade-pinned.json").read_text(
+        encoding="utf-8"
+    )
+)
 BINARY = Path("/engines/bin/lemond")
 
 
@@ -370,3 +379,110 @@ def test_g3_install_refuses_with_the_user_install_steps(monkeypatch: pytest.Monk
     text = str(exc.value)
     assert "No pack of lemonade is published yet." in text
     assert INSTALL_GUIDE in text
+
+
+def test_b3_vision_is_refused_until_a_run_records_an_npu_image_reply() -> None:
+    with pytest.raises(ProviderError, match="does not serve"):
+        LEMONADE.role_spec(WorkerRole.VISION, None, None)
+
+
+def _planned_launch(ticket: Path) -> dict[str, object]:
+    """The ``recipe_options.json`` of a one-slot chat launch at the context lilbee plans."""
+    ctx = resolve_chat_ctx(ticket, LEMONADE.model_meta(ticket), engine=LEMONADE)
+    LEMONADE.launch_argv(LEMONADE.role_spec(WorkerRole.CHAT, None, None), _request(ticket, ctx=ctx))
+    return _config_file(WorkerRole.CHAT, "recipe_options.json")
+
+
+@pytest.fixture
+def _chat_target_8192(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 8192)
+    monkeypatch.setattr(cfg, "num_ctx_max", None)
+
+
+@pytest.mark.usefixtures("_chat_target_8192")
+def test_c2_a_chat_launch_caps_ctx_size_at_the_published_window() -> None:
+    row = {m.hf_repo: m for m in parse_models(PINNED)}["gemma4e-flash:e2b"]
+    ticket = download_model(row, None)
+    assert _planned_launch(ticket) == {"user.lilbee-chat": {"ctx_size": 1024}}
+
+
+@pytest.mark.usefixtures("_chat_target_8192")
+def test_c2_a_ticket_without_a_context_length_keeps_the_default_bound() -> None:
+    ticket = xdna.write_ticket(cfg.models_dir, "gemma4e-flash:e2b", ModelTask.CHAT, 6.0)
+    assert LEMONADE.model_meta(ticket) is None
+    assert _planned_launch(ticket) == {"user.lilbee-chat": {"ctx_size": 8192}}
+
+
+def _reply(name: str) -> object:
+    """A Lemonade reply from tests/fixtures/lemonade; sources.txt says where each came from."""
+    return json.loads((LEMONADE_REPLIES / name).read_text(encoding="utf-8"))
+
+
+def test_d1_a_role_model_lemond_lists_on_the_cpu_fails_the_warm() -> None:
+    refusal = lemonade.npu_refusal(_reply("health-cpu-v2026.44.1.json"), "Qwen3-0.6B-GGUF")
+    assert refusal == "Lemonade runs the model on 'cpu', not on the NPU."
+
+
+def test_d1_a_model_lemond_lists_on_the_npu_confirms_the_claim() -> None:
+    health = _reply("health-docs-v2026.44.1.json")
+    assert lemonade.npu_refusal(health, "Llama-3.2-1B-Instruct-Hybrid") is None
+
+
+@pytest.mark.parametrize(
+    "reply", ["health-docs-v2026.44.1.json", "health-after-refused-load-v2026.44.1.json"]
+)
+def test_d1_a_model_absent_from_the_reply_is_not_confirmed(reply: str) -> None:
+    refusal = lemonade.npu_refusal(_reply(reply), lemonade.model_name(WorkerRole.CHAT))
+    assert refusal is not None
+    assert "does not list the model as loaded" in refusal
+
+
+@pytest.mark.parametrize("reply", [None, [], {"all_models_loaded": "x"}, {}])
+def test_d1_a_reply_with_no_model_list_is_not_confirmed(reply: object) -> None:
+    assert lemonade.npu_refusal(reply, "user.lilbee-chat") is not None
+
+
+def test_d1_a_listed_model_with_no_device_text_is_not_confirmed() -> None:
+    reply = {"all_models_loaded": ["x", {"model_name": "user.lilbee-chat", "device": None}]}
+    assert lemonade.npu_refusal(reply, "user.lilbee-chat") == (
+        "Lemonade runs the model on None, not on the NPU."
+    )
+
+
+@pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED])
+def test_d1_each_role_checks_its_own_model_on_the_health_route(role: WorkerRole) -> None:
+    check = LEMONADE.request_profile(role).device_check
+    assert check is not None
+    assert check.path == "/v1/health"
+    listed = {"all_models_loaded": [{"model_name": lemonade.model_name(role), "device": "npu"}]}
+    assert check.refusal(listed) is None
+
+
+def test_e2_an_unsupported_flm_backend_gives_the_no_npu_error() -> None:
+    check = LEMONADE.request_profile(WorkerRole.CHAT).load_failure_check
+    assert check is not None
+    assert check.path == "/v1/system-info"
+    assert check.refusal(_reply("system-info-no-npu-v2026.44.1.json")) == (
+        "Lemonade cannot run this model: this computer has no AMD XDNA2 NPU that Lemonade "
+        "can use. Lemonade reports: Requires AMD XDNA 2 AMD NPU"
+    )
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        None,
+        {},
+        {"recipes": {"flm": {"backends": {"npu": "x"}}}},
+        {"recipes": {"flm": {"backends": {"npu": {"state": "installed"}}}}},
+    ],
+)
+def test_e2_a_reply_that_does_not_say_unsupported_gives_no_reason(info: object) -> None:
+    assert lemonade.no_npu_refusal(info) is None
+
+
+def test_e2_an_unsupported_backend_without_a_message_gives_the_sentence_alone() -> None:
+    info = {"recipes": {"flm": {"backends": {"npu": {"state": "unsupported"}}}}}
+    assert lemonade.no_npu_refusal(info) == (
+        "Lemonade cannot run this model: this computer has no AMD XDNA2 NPU that Lemonade can use."
+    )
