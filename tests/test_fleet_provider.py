@@ -43,7 +43,7 @@ from tests._async_wait import poll_until
 from tests._exit_probe import assert_probe_exits
 from tests._fleet_engines import engines_for_all_roles
 from tests._prior_run import request_keep_warm_in_prior_run
-from tests._router_release import router_reports
+from tests._router_release import ROUTER, router_reports
 from tests.conformance.fake_adapter import FAKE
 
 _GB = 1024**3
@@ -8893,8 +8893,8 @@ def test_an_old_router_replaces_an_idle_incumbent_with_a_started_engine(
     try:
         assert p._ensure_fleet() is True
         assert stopped == [machine]  # the idle incumbent was replaced...
-        assert [argv[0] for argv in spawned] == ["/usr/bin/llama-swap"]  # ...by a started engine
-        assert probes == [["/usr/bin/llama-swap", "--version"]]
+        assert [argv[0] for argv in spawned] == [str(ROUTER)]  # ...by a started engine
+        assert probes == [[str(ROUTER), "--version"]]
         (config,) = machine.glob(sm._CONFIG_FILE_GLOB)
         assert json.loads(config.read_text(encoding="utf-8"))["logToStdout"] == "proxy"
     finally:
