@@ -1005,6 +1005,20 @@ class TestAskStream:
         # The kind reaches the client as a machine-readable code to branch on.
         assert parsed["code"] == "rate_limit"
 
+    async def test_a_missing_engine_reaches_the_stream_client_with_its_own_code(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        text = "llama-server binary not found. Install it with lilbee engine install."
+        mock_svc.provider.chat.side_effect = ProviderError(
+            text, provider="fleet", kind=ProviderErrorKind.ENGINE_MISSING
+        )
+        events = [e async for e in handlers.ask_stream("question")]
+
+        error_events = [e for e in events if e and e.startswith("event: error")]
+        assert len(error_events) == 1
+        parsed = json.loads(error_events[0].split("data: ")[1].strip())
+        assert parsed["code"] == "engine_missing"
+        assert parsed["message"] == text
+
     async def test_unclassified_provider_error_has_message_but_no_code(self, mock_svc):
         # An UNKNOWN-kind ProviderError still surfaces its message, with no code.
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
