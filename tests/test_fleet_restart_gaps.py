@@ -603,3 +603,59 @@ def test_a_failed_pass_without_a_rediscover_gives_the_server_back_running(
     assert provider._swap_for(CHAT) is old_chat
     assert old_chat.shutdowns == 0
     assert provider._clients[CHAT] == old_clients
+
+
+# How long the drain waits for a request thread's rediscover to clear the fleet's map.
+_REDISCOVER_WAIT_S = 2.0
+
+
+def test_a_rediscover_on_a_request_thread_during_the_drain_leaves_the_kept_group_serving(
+    engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A request thread rediscovers while the pass drains chat; embed, which the pass keeps, serves."""
+    provider, _swaps = engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", plan_tests._LONG_DRAIN_S)
+    old_chat = provider._swap_for(CHAT)
+    old_embed = provider._swap_for(EMBED)
+    answers: list[object] = []
+    caller = plan_tests._held_chat(provider, answers)
+    dropped = threading.Event()
+    real_drop = provider._drop_swap_refs
+
+    def drop(**kwargs: bool) -> None:
+        real_drop(**kwargs)
+        dropped.set()
+
+    calls: list[int] = []
+
+    def fail_once() -> str:
+        calls.append(1)
+        if len(calls) == 1:
+            raise _connection_error()
+        return "retried"
+
+    retried: list[str] = []
+    request = threading.Thread(target=lambda: retried.append(provider._with_rediscover(fail_once)))
+    real_drain = provider._drain_clients
+
+    def drain(clients: list[object], until: float) -> None:
+        if clients and not request.ident:
+            request.start()
+            dropped.wait(_REDISCOVER_WAIT_S)
+            old_chat.engine.release.set()
+        real_drain(clients, until)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(provider, "_drop_swap_refs", drop)
+    monkeypatch.setattr(provider, "_drain_clients", drain)
+
+    provider.reload_role(CHAT)
+    caller.join(_JOIN_S)
+    request.join(_JOIN_S)
+    _join_fleet_threads()
+
+    assert retried == ["retried"]
+    assert [getattr(answer, "text", answer) for answer in answers] == ["the answer"]
+    assert old_chat.shutdowns == 1
+    print("embed-after:", provider._swap_for(EMBED) is old_embed, old_embed.shutdowns)
+    assert provider._require_clients(EMBED)
+    print("embed-served:", provider._swap_for(EMBED) is old_embed, old_embed.shutdowns)
