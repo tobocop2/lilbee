@@ -26,6 +26,26 @@ from lilbee.modelhub.registry import ModelRegistry, register_downloaded_model
 _TOKENIZER = ["merges.txt", "tokenizer.json", "tokenizer_config.json", "vocab.json"]
 _JUNK = [".gitattributes", "README.md", "LICENSE"]
 _REV = "0" * 40
+_VISION_IR = [
+    ".gitattributes",
+    "README.md",
+    "config.json",
+    "generation_config.json",
+    "preprocessor_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "openvino_config.json",
+    "openvino_detokenizer.bin",
+    "openvino_detokenizer.xml",
+    "openvino_tokenizer.bin",
+    "openvino_tokenizer.xml",
+    "openvino_language_model.bin",
+    "openvino_language_model.xml",
+    "openvino_text_embeddings_model.bin",
+    "openvino_text_embeddings_model.xml",
+    "openvino_vision_embeddings_model.bin",
+    "openvino_vision_embeddings_model.xml",
+]
 _QWEN3_EMBEDDING_LISTING = [
     ".gitattributes",
     "1_Pooling/config.json",
@@ -183,6 +203,46 @@ class TestSelectFiles:
     def test_openvino_prefers_the_shallowest_folder(self) -> None:
         names = ["a/b/openvino_model.xml", "a/b/openvino_model.bin", "openvino_model.xml"]
         assert select_files(ModelFormat.OPENVINO, names) == ["openvino_model.xml"]
+
+    def test_a_vision_ir_is_pulled_whole_language_model_first(self) -> None:
+        assert select_files(ModelFormat.OPENVINO, _VISION_IR) == [
+            "openvino_language_model.xml",
+            "openvino_language_model.bin",
+            "openvino_text_embeddings_model.xml",
+            "openvino_text_embeddings_model.bin",
+            "openvino_vision_embeddings_model.xml",
+            "openvino_vision_embeddings_model.bin",
+            "openvino_tokenizer.xml",
+            "openvino_tokenizer.bin",
+            "openvino_detokenizer.xml",
+            "openvino_detokenizer.bin",
+            "openvino_config.json",
+            "preprocessor_config.json",
+            "config.json",
+            "generation_config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+        ]
+
+    def test_a_vision_ir_part_without_its_bin_is_refused_naming_the_file(self) -> None:
+        names = [n for n in _VISION_IR if n != "openvino_vision_embeddings_model.bin"]
+        with pytest.raises(ValueError, match=r"openvino_vision_embeddings_model\.bin is missing"):
+            select_files(ModelFormat.OPENVINO, names)
+
+    def test_a_vision_ir_in_a_subfolder_is_pulled_from_that_folder(self) -> None:
+        names = [f"ov/{n}" for n in _VISION_IR if n.startswith("openvino_")] + ["README.md"]
+        got = select_files(ModelFormat.OPENVINO, names)
+        assert got[0] == "ov/openvino_language_model.xml"
+        assert "ov/openvino_vision_embeddings_model.bin" in got
+        assert "ov/openvino_tokenizer.xml" in got
+        assert "ov/openvino_config.json" in got
+
+    def test_a_single_file_ir_beats_a_vision_ir_in_the_same_listing(self) -> None:
+        names = [*_VISION_IR, "openvino_model.xml", "openvino_model.bin"]
+        assert select_files(ModelFormat.OPENVINO, names)[:2] == [
+            "openvino_model.xml",
+            "openvino_model.bin",
+        ]
 
     @pytest.mark.parametrize("fmt", list(ModelFormat))
     def test_a_repo_of_another_format_selects_nothing(self, fmt: ModelFormat) -> None:

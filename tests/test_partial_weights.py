@@ -562,6 +562,20 @@ def _openvino_folder(folder: Path, *, bin_bytes: int, xml: str = _IR_XML) -> Mem
     return _request(folder)
 
 
+_VISION_PARTS = (
+    "openvino_language_model",
+    "openvino_text_embeddings_model",
+    "openvino_vision_embeddings_model",
+)
+
+
+def _vision_folder(folder: Path, *, cut_part: str | None) -> MemoryRequest:
+    for part in _VISION_PARTS:
+        (folder / f"{part}.xml").write_text(_IR_XML, encoding="utf-8")
+        (folder / f"{part}.bin").write_bytes(b"\0" * (99 if part == cut_part else 100))
+    return _request(folder)
+
+
 class TestACutOpenvinoWeightsFile:
     def test_a_whole_bin_is_charged_its_size(self, tmp_path: Path) -> None:
         request = _openvino_folder(tmp_path, bin_bytes=100)
@@ -596,6 +610,13 @@ class TestACutOpenvinoWeightsFile:
         request = _openvino_folder(tmp_path, bin_bytes=7)
         (tmp_path / "openvino_model.xml").write_bytes(b"\xff\xfe" * 4)
         assert mm.estimate_memory(ModelFormat.OPENVINO, request).device_bytes == 8 + 7
+
+    def test_a_vision_ir_with_one_cut_part_is_charged_the_reserve(self, tmp_path: Path) -> None:
+        whole = _vision_folder(tmp_path, cut_part=None)
+        est = mm.estimate_memory(ModelFormat.OPENVINO, whole)
+        assert (est.device_bytes, est.size_known) == (3 * (len(_IR_XML) + 100), True)
+        cut = _vision_folder(tmp_path, cut_part="openvino_vision_embeddings_model")
+        assert _is_unknown(mm.estimate_memory(ModelFormat.OPENVINO, cut))
 
     def test_a_folder_with_no_ir_pair_has_no_bound(self, tmp_path: Path) -> None:
         (tmp_path / "openvino_model.bin").write_bytes(b"\0" * 5)

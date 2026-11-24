@@ -14,13 +14,15 @@ SAFETENSORS_INDEX = "model.safetensors.index.json"
 _SHARD_RE = re.compile(r"-\d+-of-\d+\.safetensors$")
 _SHARD_PARTS_RE = re.compile(r"(.*)-(\d+)-of-(\d+)\.safetensors")
 _IR_MODEL = "openvino_model.xml"
-_IR_COMPANIONS = (
-    "openvino_model.bin",
+_IR_LANGUAGE_MODEL = "openvino_language_model.xml"
+_IR_PART_RE = re.compile(r"openvino_\w+_model\.xml")
+_IR_TOKENIZER_FILES = (
     "openvino_tokenizer.xml",
     "openvino_tokenizer.bin",
     "openvino_detokenizer.xml",
     "openvino_detokenizer.bin",
 )
+_IR_COMPANIONS = ("openvino_model.bin", *_IR_TOKENIZER_FILES)
 _PROCESSOR_FILES = ("preprocessor_config.json", "processor_config.json")
 _TOKENIZER_FILES = (
     "added_tokens.json",
@@ -142,14 +144,61 @@ def _module_files(names: list[str]) -> list[str]:
     return [_MODULES_FILE, *(name for name in names if _MODULE_FILE_RE.fullmatch(name))]
 
 
+def ir_parts(names: Iterable[str]) -> list[str]:
+    """The ``.xml`` files of the IR in the shallowest IR folder of *names*, entry file first.
+
+    A single-file IR is ``openvino_model.xml``. A vision pipeline IR has no such file: its parts
+    are ``openvino_language_model.xml`` and every other ``openvino_<name>_model.xml`` beside
+    it. A quantized variant such as ``openvino_model_qint8_quantized.xml`` is never a part.
+    The pull picker, the weight count and the cut-off check all read this one rule.
+    """
+    listed = set(names)
+    for entry in (_IR_MODEL, _IR_LANGUAGE_MODEL):
+        folders = sorted(
+            (posixpath.dirname(name) for name in listed if posixpath.basename(name) == entry),
+            key=lambda folder: (folder.count("/"), folder),
+        )
+        if not folders:
+            continue
+        folder = folders[0]
+        first = posixpath.join(folder, entry)
+        if entry == _IR_MODEL:
+            return [first]
+        rest = sorted(
+            name
+            for name in listed
+            if posixpath.dirname(name) == folder
+            and name != first
+            and _IR_PART_RE.fullmatch(posixpath.basename(name))
+        )
+        return [first, *rest]
+    return []
+
+
+def ir_weights_file(part: str) -> str:
+    """The ``.bin`` file that holds the weights of the IR part whose ``.xml`` is *part*."""
+    return part.removesuffix(".xml") + ".bin"
+
+
 def _select_openvino(names: list[str]) -> list[str]:
-    folders = sorted(
-        (posixpath.dirname(name) for name in names if posixpath.basename(name) == _IR_MODEL),
-        key=lambda folder: (folder.count("/"), folder),
-    )
-    if not folders:
+    parts = ir_parts(names)
+    if not parts:
         return []
-    folder = folders[0]
-    ir = [posixpath.join(folder, name) for name in (_IR_MODEL, *_IR_COMPANIONS)]
+    folder = posixpath.dirname(parts[0])
     extras = ["config.json", "generation_config.json", *_TOKENIZER_FILES, *_POOLING_FILES]
-    return [*_present(names, ir), *_present(names, extras)]
+    if posixpath.basename(parts[0]) == _IR_MODEL:
+        ir = [posixpath.join(folder, name) for name in (_IR_MODEL, *_IR_COMPANIONS)]
+        return [*_present(names, ir), *_present(names, extras)]
+    for part in parts:
+        if ir_weights_file(part) not in names:
+            raise ValueError(
+                f"Incomplete model: {ir_weights_file(part)} is missing from the file list"
+            )
+    pairs = [name for part in parts for name in (part, ir_weights_file(part))]
+    tokenizers = [posixpath.join(folder, name) for name in _IR_TOKENIZER_FILES]
+    config = [posixpath.join(folder, "openvino_config.json")]
+    return [
+        *pairs,
+        *_present(names, [*tokenizers, *config, *_PROCESSOR_FILES]),
+        *_present(names, extras),
+    ]
