@@ -7,6 +7,7 @@ import io
 import os
 import re
 import shutil
+import sys
 import tarfile
 import threading
 import zipfile
@@ -21,13 +22,15 @@ from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet import first_use, router_install
 from lilbee.providers.fleet.binary import EngineTool, resolve_llama_swap
-from lilbee.providers.fleet.build_use import IN_USE_NAME
+from lilbee.providers.fleet.build_use import IN_USE_NAME, BuildHolds
 from lilbee.providers.fleet.engine_store import (
     PACK_DIR,
     STAGE_PREFIX,
     ChecksumError,
     EngineDiskError,
+    EngineInUseError,
     EngineStore,
+    ReadOnlyFolderError,
     engines_root,
 )
 from lilbee.providers.fleet.host_caps import HostCaps, collect
@@ -235,6 +238,43 @@ class TestInstall:
         (stale / "stale.txt").write_text("old", encoding="utf-8")
         install_router()
         assert sorted(p.name for p in stale.iterdir()) == [IN_USE_NAME, LICENCE_FILE, "llama-swap"]
+
+    def test_a_folder_a_running_router_holds_is_not_replaced(self, release: list[str]) -> None:
+        folder = install_router().parent
+        # The binary is gone while the router runs from the folder: the install finds none.
+        (folder / "llama-swap").unlink()
+        with BuildHolds([folder]):
+            with pytest.raises(EngineInUseError, match="router v272 is in use"):
+                install_router()
+        assert (folder / LICENCE_FILE).is_file()
+        assert not (folder / "llama-swap").exists()
+        assert [p.name for p in folder.parent.iterdir()] == [ROUTER_VERSION]
+        # The router stops: the same install replaces the folder.
+        assert install_router() == folder / "llama-swap"
+
+    def test_a_first_use_lookup_does_not_remember_an_in_use_refusal(
+        self, release: list[str]
+    ) -> None:
+        folder = install_router().parent
+        (folder / "llama-swap").unlink()
+        with BuildHolds([folder]):
+            with pytest.raises(EngineInUseError):
+                router_on_first_use()
+        assert router_on_first_use() == folder / "llama-swap"
+
+    @pytest.mark.skipif(
+        sys.platform == "win32" or os.geteuid() == 0, reason="folder modes do not bind this user"
+    )
+    def test_a_read_only_router_folder_is_refused_and_left_alone(self, release: list[str]) -> None:
+        folder = install_router().parent
+        (folder / "llama-swap").unlink()
+        folder.parent.chmod(0o555)
+        try:
+            with pytest.raises(ReadOnlyFolderError):
+                install_router()
+        finally:
+            folder.parent.chmod(0o755)
+        assert (folder / LICENCE_FILE).is_file()
 
     def test_the_install_holds_the_router_lock_for_the_whole_install(
         self, release: list[str], monkeypatch: pytest.MonkeyPatch
