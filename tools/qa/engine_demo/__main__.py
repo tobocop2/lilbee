@@ -47,7 +47,9 @@ ENGINE_MODELS: dict[str, dict[WorkerRole, str]] = {
         WorkerRole.VISION: "HuggingFaceTB/SmolVLM-256M-Instruct#safetensors",
     },
     EngineName.MLX: {
-        WorkerRole.CHAT: "mlx-community/Qwen3-0.6B-4bit#mlx",
+        # 4B, the size the GGUF default uses: the 0.6B model drops the [1] marker on some runs.
+        # A runner with about 7 GB refuses 4B at the default context: set LILBEE_NUM_CTX=4096.
+        WorkerRole.CHAT: "mlx-community/Qwen3-4B-4bit#mlx",
         WorkerRole.EMBED: "mlx-community/Qwen3-Embedding-0.6B-8bit#mlx",
         WorkerRole.RERANK: "mlx-community/Qwen3-Reranker-0.6B-4bit#mlx",
     },
