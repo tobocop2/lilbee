@@ -210,11 +210,12 @@ class TestTheMessageNamesTheEngineToInstall:
             role=WorkerRole.EMBED,
             model="org/folder",
         )
-        assert choice.notice is not None
-        assert "No installed engine serves" not in choice.notice
-        assert "No installed engine loads the safetensors format of org/folder." in choice.notice
+        assert choice.notice == (
+            "For embed: Engine tei loads the safetensors format of org/folder "
+            "but cannot run on this host. No build exists for Windows."
+        )
 
-    def test_no_role_keeps_the_load_message(self) -> None:
+    def test_no_role_names_the_refused_engine_without_a_role_prefix(self) -> None:
         # Only TEI is installed, and the host refuses it. Without a role no server is named.
         windows = collect(
             system="Windows", machine="AMD64", cpu_info={"flags": ["avx2"]}, nvidia=None
@@ -227,8 +228,10 @@ class TestTheMessageNamesTheEngineToInstall:
             override=None,
             model="org/folder",
         )
-        assert choice.notice is not None
-        assert choice.notice.startswith("No installed engine loads the gguf format")
+        assert choice.notice == (
+            "Engine tei loads the gguf format of org/folder "
+            "but cannot run on this host. No build exists for Windows."
+        )
 
     def test_a_format_no_installed_engine_loads_keeps_the_load_message(self) -> None:
         choice = _vision_choice({}, _no_host)
