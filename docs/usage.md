@@ -1264,29 +1264,24 @@ Every persisted lilbee setting lives in a single TOML file at
 next to your code. Same file, same shape, regardless of which data dir you're
 on; the path just follows wherever the data dir is resolved to.
 
-Sections mirror the setting groups in the
-[settings reference](settings.md): `[general]`, `[retrieval]`, `[chunking]`,
-`[generation]`, `[server]`, etc. Example:
+Every setting is a top-level key, named as in the
+[settings reference](settings.md). The file has no section tables for settings.
+The only table is `[profile]`, which the `lilbee profile` commands write. Example:
 
 ```toml
 # .lilbee/config.toml
 
-[general]
 chat_model = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
 theme = "rose-pine"
-
-[retrieval]
 top_k = 12
 max_distance = 0.6
 reranker_model = "Qwen/Qwen3-Reranker-0.6B-GGUF/qwen3-reranker-0.6b.Q8_0.gguf"
-
-[generation]
 temperature = 0.2
 num_ctx_max = 32768
 ```
 
-You don't have to write the file by hand: the TUI's `/settings` screen and the
-`/set <key> <value>` slash command both persist to it, and the equivalent
+You don't have to write the file by hand: the TUI's `/settings` screen, the
+`/set <key> <value>` slash command and `lilbee settings set <key> <value>` all persist to it, and the equivalent
 `LILBEE_<KEY>=...` env vars override individual values at runtime without
 touching the file.
 
@@ -1755,7 +1750,6 @@ export LILBEE_SEMANTIC_CHUNKING=true
 /set semantic_chunking true
 
 # config.toml in your .lilbee/ vault
-[general]
 semantic_chunking = true
 ```
 

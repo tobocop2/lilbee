@@ -65,13 +65,14 @@ GROUP_ORDER: tuple[SettingGroup, ...] = (
     SettingGroup.SYSTEM,
 )
 
-# The only CLI commands that write a setting to config.toml. Everything else
-# reaches the CLI through the environment or the config file, so the column
-# stays honest rather than implying a `lilbee set` that does not exist.
+# Commands that write a setting beyond `lilbee settings set`. A model role cannot go
+# through `settings set` (the CLI refuses it), so the embedder has its own command.
+# `placement` takes `settings set` too, and has a command that edits it as a whole.
 CLI_COMMANDS: dict[str, str] = {
     "embedding_model": "`lilbee use-embedder REF`",
     "placement": "`lilbee placement set`",
 }
+CLI_SET = "`lilbee settings set`"
 
 MAX_DEFAULT_CHARS = 48
 
@@ -231,7 +232,17 @@ def _http_cell(key: str) -> str:
 
 
 def _cli_cell(key: str) -> str:
-    return CLI_COMMANDS.get(key, "no")
+    """The commands that write *key*.
+
+    `lilbee settings set` calls ``apply_settings_update(..., allow_model_roles=False)``, which
+    accepts each writable key except the model roles. This is that rule, not a list.
+    """
+    commands = []
+    if key in WRITABLE_CONFIG_FIELDS and key not in MODEL_ROLE_FIELDS:
+        commands.append(CLI_SET)
+    if key in CLI_COMMANDS:
+        commands.append(CLI_COMMANDS[key])
+    return " or ".join(commands) if commands else "no"
 
 
 def _advanced_cell(key: str) -> str:

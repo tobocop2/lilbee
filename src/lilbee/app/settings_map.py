@@ -52,7 +52,7 @@ class SettingDef:
     outside that type declares one.
 
     ``hidden`` keeps the setting out of the TUI settings screen while
-    leaving it reachable via ``lilbee set`` and the ``LILBEE_*`` env
+    leaving it reachable via ``lilbee settings set`` and the ``LILBEE_*`` env
     var: use it for transport/server knobs that aren't relevant to a
     typical TUI session.
 
