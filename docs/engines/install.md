@@ -112,6 +112,8 @@ folder. Name the file `<engine>-<version>-<backend>.whl`. Then run:
 lilbee engine install <engine>
 ```
 
+If the pack file does not match the pin of this lilbee version, lilbee installs nothing and names the file. Copy the pack file again from the lilbee release that matches this version, or remove it from the `packs` folder to download it. A router archive in the `packs` folder and a pack file given with `--wheel` follow the same rule.
+
 To install from a pack file in another place, add `--wheel`. This works only with a
 pack file whose digest matches the pin of the engine:
 
