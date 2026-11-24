@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from lilbee.catalog.types import ModelFormat
+from lilbee.providers.fleet.engines import proof
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import (
     ADAPTERS,
@@ -26,7 +27,6 @@ from lilbee.providers.fleet.engines.choice import (
     host_answer,
     serving_engines,
 )
-from lilbee.providers.fleet.engines import proof
 from lilbee.providers.fleet.engines.proof import coverage
 from lilbee.providers.fleet.host_caps import HostCaps, collect
 from lilbee.providers.roles import WorkerRole
