@@ -290,6 +290,24 @@ class TestRouterRelease:
         says.append("version: v272 (802f1c4), built at x\n")
         assert binary_mod.router_release(router) == 272
 
+    def test_a_router_file_of_the_same_size_with_a_new_mtime_is_read_again(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        router = tmp_path / "llama-swap"
+        router.write_bytes(b"old")
+        os.utime(router, ns=(1_000_000_000, 1_000_000_000))
+        says = ["version: 223 (8c5e40e), built at x\n"]
+
+        def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(argv, 0, stdout=says[-1], stderr="")
+
+        monkeypatch.setattr(binary_mod.subprocess, "run", run)
+        assert binary_mod.router_release(router) == 223
+        router.write_bytes(b"new")
+        os.utime(router, ns=(2_000_000_000, 2_000_000_000))
+        says.append("version: v272 (802f1c4), built at x\n")
+        assert binary_mod.router_release(router) == 272
+
     def test_the_release_of_a_router_that_cannot_be_statted_is_not_kept(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

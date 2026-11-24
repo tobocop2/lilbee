@@ -436,7 +436,8 @@ class SwapManager:
                 remedy=(
                     f"Replace the file at {router} with llama-swap v{ROUTER_FLOOR} or later. "
                     f"Download it from {_ROUTER_RELEASES_URL}, or run '{ROUTER_GO_INSTALL}' "
-                    f"and copy the llama-swap file from your Go bin folder to {router}."
+                    f"and copy the llama-swap file from your Go bin folder to {router}. "
+                    "Then restart lilbee."
                 ),
             )
             log.warning("%s", warning.line)
