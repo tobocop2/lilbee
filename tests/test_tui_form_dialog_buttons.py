@@ -82,4 +82,6 @@ async def test_the_buttons_stay_on_screen_without_a_focus_change(
             buttons = _buttons(app.screen, ids)
             return len(buttons) == len(ids) and all(_shown(app.screen, b) for b in buttons)
 
-        assert await wait_until(pilot, visible), [(b.id, b.region) for b in _buttons(app.screen, ids)]
+        assert await wait_until(pilot, visible), [
+            (b.id, b.region) for b in _buttons(app.screen, ids)
+        ]
