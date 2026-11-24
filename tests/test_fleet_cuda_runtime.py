@@ -116,6 +116,7 @@ def test_assert_devices_raises_with_engine_diagnostic(monkeypatch: pytest.Monkey
     message = str(exc.value)
     assert "failed to initialize CUDA" in message  # the engine's own diagnostic, surfaced
     assert "nvidia-smi" in message
+    assert "this computer has an NVIDIA GPU" in message
     assert "MIG" in message  # the one host shape that reliably produces this symptom
     assert "nvidia-cuda-runtime" in message  # the wheels to match, major-agnostic
     assert "CUDA_VISIBLE_DEVICES" in message  # causes listed, not one asserted
