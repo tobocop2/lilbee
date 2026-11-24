@@ -41,6 +41,7 @@ from tests._async_wait import poll_until
 from tests._exit_probe import assert_probe_exits
 from tests._fleet_engines import engines_for_all_roles
 from tests._prior_run import request_keep_warm_in_prior_run
+from tests._router_release import router_reports
 from tests.conformance.fake_adapter import FAKE
 
 _GB = 1024**3
@@ -8650,6 +8651,49 @@ def test_ladder_clears_an_unprobeable_incumbent_before_build(monkeypatch, tmp_pa
     assert p._ensure_fleet() is True
     assert stopped == [machine]  # cleared the recorded incumbent...
     assert built and built[0] == machine  # ...then built fresh in the same slot
+
+
+def test_an_old_router_replaces_an_idle_incumbent_with_a_started_engine(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A llama-swap older than v259 still starts the fleet that replaces a warm engine.
+
+    The incumbent is idle and cannot be bound, so the ladder stops it. The new
+    fleet then starts on the old router with the proxy stream alone, which every
+    release reads, so the user is never left with no engine.
+    """
+    from lilbee.providers.fleet import swap_manager as sm
+
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(prov_mod, "SwapManager", sm.SwapManager)  # the real start
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: None)  # no bind
+    monkeypatch.setattr(prov_mod, "_watch_bound_engine", lambda _dir: None)
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    probes = router_reports(monkeypatch, "version: 223 (8c5e40e), built at x\n")
+    spawned: list[list[str]] = []
+    monkeypatch.setattr(
+        sm, "spawn_bound_child", lambda argv, *_a, **_k: spawned.append(argv) or MagicMock(pid=1)
+    )
+    monkeypatch.setattr(sm.SwapManager, "_await_health", lambda _self: None)
+    monkeypatch.setattr(sm, "ensure_engine_reaper", lambda _dir: True)
+    monkeypatch.setattr(sm, "reap_stale", lambda _dir, **_kw: None)
+    monkeypatch.setattr(sm, "_stop_own_fleet", lambda _cfg, _ports: None)
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    p = FleetProvider()
+    try:
+        assert p._ensure_fleet() is True
+        assert stopped == [machine]  # the idle incumbent was replaced...
+        assert [argv[0] for argv in spawned] == ["/usr/bin/llama-swap"]  # ...by a started engine
+        assert probes == [["/usr/bin/llama-swap", "--version"]]
+        (config,) = machine.glob(sm._CONFIG_FILE_GLOB)
+        assert json.loads(config.read_text(encoding="utf-8"))["logToStdout"] == "proxy"
+    finally:
+        for swap in p._swaps.values():
+            swap._close_log()
 
 
 class _FakeWork:
