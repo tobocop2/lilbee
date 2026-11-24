@@ -1776,9 +1776,11 @@ def test_a_hold_that_cannot_open_closes_the_ones_it_took(tmp_path: Path) -> None
 def test_a_lock_the_system_refuses_closes_the_file_and_raises(tmp_path: Path) -> None:
     build = tmp_path / "fx" / "2-cpu"
     build.mkdir(parents=True)
-    with mock.patch("fcntl.flock", side_effect=OSError("no locks here")):
-        with pytest.raises(OSError, match="no locks here"):
-            BuildHolds([build])
+    with (
+        mock.patch("fcntl.flock", side_effect=OSError("no locks here")),
+        pytest.raises(OSError, match="no locks here"),
+    ):
+        BuildHolds([build])
     assert engine_store.build_in_use(build) is False
 
 
