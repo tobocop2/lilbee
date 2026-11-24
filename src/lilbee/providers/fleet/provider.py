@@ -743,16 +743,25 @@ def _warm_role(role: WorkerRole, client: LlamaServerClient) -> None:
     Vision is skipped (its load is heavy and it warms on the first OCR); chat,
     embed, and rerank each issue a minimal call to trigger the upstream start.
     The chat warm ends when its client closes, so a shutdown never waits out a load.
+    A failed load raises the reason the engine reports for it, when it reports one. A
+    load that returns is checked against the engine's report of its device.
     """
-    if role is WorkerRole.CHAT:
-        client.chat_abortable(
-            [{"role": "user", "content": _WARM_PROMPT}],
-            options={"max_tokens": _WARM_MAX_TOKENS},
-        )
-    elif role is WorkerRole.EMBED:
-        client.embed([_WARM_PROMPT])
-    elif role is WorkerRole.RERANK:
-        client.rerank(_WARM_PROMPT, [_WARM_PROMPT])
+    if role is WorkerRole.VISION:
+        return
+    try:
+        if role is WorkerRole.CHAT:
+            client.chat_abortable(
+                [{"role": "user", "content": _WARM_PROMPT}],
+                options={"max_tokens": _WARM_MAX_TOKENS},
+            )
+        elif role is WorkerRole.EMBED:
+            client.embed([_WARM_PROMPT])
+        else:
+            client.rerank(_WARM_PROMPT, [_WARM_PROMPT])
+    except ProviderError as exc:
+        client.explain_load_failure(exc)
+        raise
+    client.confirm_device()
 
 
 def _tell_listeners(listeners: tuple[Callable[[WorkerRole], None], ...], role: WorkerRole) -> None:
