@@ -25,7 +25,7 @@ from textual.screen import Screen
 from textual.signal import Signal
 from textual.widgets import Input, TextArea
 
-from lilbee.app.services import get_services, peek_services, set_config_refresh
+from lilbee.app.services import get_services, peek_services, set_config_refresh, watch_pool
 from lilbee.app.settings import (
     SettingsUpdateResult,
     adopt_external_changes,
@@ -65,7 +65,6 @@ from lilbee.providers.roles import WorkerRole
 from lilbee.providers.server_registry import ConfigReadError
 
 if TYPE_CHECKING:
-    from lilbee.app.services import Services
     from lilbee.cli.tui.screens.analyze_report import FinishedAnalysis
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.cli.tui.screens.settings import SettingsScreen
@@ -456,9 +455,10 @@ class LilbeeApp(App[None]):
 
         Never call from the UI thread: building spawns the role servers. Two
         workers can reach here at once during boot; the listeners only add to
-        and discard from a set, so a double subscription changes nothing.
+        and discard from a set, and a second subscription is ignored.
         """
-        self._wire_worker_pool_notifications(get_services())
+        get_services()
+        self._wire_worker_pool_notifications()
 
     def _apply_readiness(self, chat: bool, embedding: bool) -> None:
         """Record the per-role readiness answers."""
@@ -475,7 +475,7 @@ class LilbeeApp(App[None]):
         if key in MODEL_ROLE_FIELDS:
             self.refresh_readiness()
 
-    def _wire_worker_pool_notifications(self, services: Services) -> None:
+    def _wire_worker_pool_notifications(self) -> None:
         """Surface worker spawn lifecycle in the bottom TaskBar.
 
         Worker spawns happen on the pool runtime thread, not the TUI's main
@@ -484,17 +484,15 @@ class LilbeeApp(App[None]):
         in-flight roles instead of one toast per role; the chat surface is
         for user content, not implementation detail.
 
-        Takes the container instead of reaching for one: reaching for it builds
-        it, which is ``adopt_services``' job and never the UI thread's.
+        The watch outlives a services reset, which builds a new provider.
         """
+        watch_pool(on_spawning=self._on_worker_spawning, on_spawned=self._on_worker_spawned)
 
-        def _on_spawning(role: WorkerRole) -> None:
-            self.call_from_thread(self.task_bar.mark_role_spawning, role.value)
+    def _on_worker_spawning(self, role: WorkerRole) -> None:
+        self.call_from_thread(self.task_bar.mark_role_spawning, role.value)
 
-        def _on_spawned(role: WorkerRole) -> None:
-            self.call_from_thread(self.task_bar.mark_role_spawned, role.value)
-
-        services.add_pool_listener(on_spawning=_on_spawning, on_spawned=_on_spawned)
+    def _on_worker_spawned(self, role: WorkerRole) -> None:
+        self.call_from_thread(self.task_bar.mark_role_spawned, role.value)
 
     def canonicalize_persisted_models(self) -> None:
         """Swap stale persisted refs to a working fallback, persist, and log once.
