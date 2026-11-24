@@ -28,9 +28,13 @@ Usage:
         <wheel> [<wheel> ...]
     assert_engine_bundle.py [--backend <flavor>] --platform <runner OS> <bin dir>
     assert_engine_bundle.py --imports-only <folder> [<folder> ...]
+    assert_engine_bundle.py --prune-runtime <folder> [<folder> ...]
 
 ``--imports-only`` runs the import check of a Windows bundle alone, on any folder of
 Windows files. The mistral.rs wheel check uses it on the folder its wheel installs.
+
+``--prune-runtime`` deletes each Visual C++ runtime DLL of a folder that no file of the
+folder imports, read from the same import tables. The Windows packs run it before the build.
 """
 
 from __future__ import annotations
@@ -382,11 +386,13 @@ def check(
         )
 
     if platform == "win_amd64":
+        # A wheel ships only the runtime DLLs its files import (--prune-runtime), so the
+        # import check below finds a missing one. An executable folder ships all of them.
         problems.extend(
             f"{name}: windows {kind} is missing {crt} from {BIN_DIR} "
             "(the engine links the MSVC runtime; a fresh Windows image ships an older copy)"
             for crt in WINDOWS_CRT
-            if crt not in entries
+            if crt not in entries and kind == "executable"
         )
         problems.extend(_import_problems(bundle, name, entries, kind))
 
@@ -440,6 +446,45 @@ def _refusal(bundle: Path, runner_os: str | None, backend: str | None, tool: str
     return ""
 
 
+def _unused_runtime(folder: Path) -> list[Path]:
+    """The bundled Visual C++ runtime DLLs of *folder* that no file of the bundle reaches.
+
+    Every file that is not a runtime DLL counts as a root: the loader may open any of them.
+    A runtime DLL is reached when a root imports it, or when a reached runtime DLL does.
+    """
+    paths = [folder / entry for entry in _bin_entries(folder)]
+    imports = {
+        path: _pe_imports(path.read_bytes())
+        for path in paths
+        if path.suffix.lower() in (".dll", ".exe")
+    }
+    runtime = {p.name.lower(): p for p in paths if p.name.lower() in WINDOWS_CRT}
+    pending = [n for p, names in imports.items() if p.name.lower() not in runtime for n in names]
+    reached: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in runtime and name not in reached:
+            reached.add(name)
+            pending.extend(imports.get(runtime[name], ()))
+    return [path for name, path in sorted(runtime.items()) if name not in reached]
+
+
+def _prune_runtime(folders: list[str]) -> int:
+    """Delete each runtime DLL that nothing in a folder imports."""
+    paths = [Path(f) for f in folders]
+    if not paths or not all(p.is_dir() for p in paths):
+        print(
+            "usage: assert_engine_bundle.py --prune-runtime <folder> [<folder> ...]",
+            file=sys.stderr,
+        )
+        return 2
+    for path in paths:
+        for unused in _unused_runtime(path):
+            print(f"pruned {unused.name}: nothing in {path} imports it")
+            unused.unlink()
+    return 0
+
+
 def _imports_only(folders: list[str]) -> int:
     """Check each folder of Windows files for an import that neither it nor Windows holds."""
     paths = [Path(f) for f in folders]
@@ -461,6 +506,8 @@ def _imports_only(folders: list[str]) -> int:
 def main(argv: list[str]) -> int:
     if argv[:1] == ["--imports-only"]:
         return _imports_only(argv[1:])
+    if argv[:1] == ["--prune-runtime"]:
+        return _prune_runtime(argv[1:])
     values, libraries, argv = _parse(argv)
     backend = values.get("--backend")
     runner_os = values.get("--platform")

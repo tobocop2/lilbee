@@ -843,3 +843,127 @@ def test_a_non_windows_bundle_is_not_asked_for_imports(tmp_path: Path) -> None:
     root = _bin_dir(tmp_path, ("llama-server", "libggml-cpu-x64.so", "libggml-cpu-haswell.so"))
     (root / "llama-server").write_bytes(_pe(("zlib1.dll",)))
     assert acb.check(root, "cpu", "Linux") == []
+
+
+def _runtime_bundle(tmp_path: Path, files: dict[str, bytes]) -> Path:
+    """A bin folder of Windows files; each runtime DLL imports kernel32 only unless *files* says."""
+    root = tmp_path / "bin"
+    root.mkdir()
+    for name, data in files.items():
+        (root / name).write_bytes(data)
+    return root
+
+
+def _names(root: Path) -> list[str]:
+    return sorted(p.name for p in root.iterdir())
+
+
+_KERNEL = _pe(("kernel32.dll",))
+
+
+def test_a_runtime_dll_that_nothing_imports_is_pruned_and_an_imported_one_is_kept(
+    tmp_path: Path,
+) -> None:
+    root = _runtime_bundle(
+        tmp_path,
+        {
+            "mistralrs.exe": _pe(("kernel32.dll", "VCRUNTIME140.dll")),
+            "vcruntime140.dll": _KERNEL,
+            "vcomp140.dll": _KERNEL,
+        },
+    )
+    assert acb.main(["--prune-runtime", str(root)]) == 0
+    assert _names(root) == ["mistralrs.exe", "vcruntime140.dll"]
+
+
+def test_a_runtime_dll_that_only_a_bundled_dll_imports_is_kept(tmp_path: Path) -> None:
+    root = _runtime_bundle(
+        tmp_path,
+        {
+            "mistralrs.exe": _pe(("engine.dll",)),
+            "engine.dll": _pe(("vcomp140.dll",)),
+            "vcomp140.dll": _KERNEL,
+            "msvcp140.dll": _KERNEL,
+        },
+    )
+    assert acb.main(["--prune-runtime", str(root)]) == 0
+    assert _names(root) == ["engine.dll", "mistralrs.exe", "vcomp140.dll"]
+
+
+def test_a_runtime_dll_that_only_a_kept_runtime_dll_imports_is_kept(tmp_path: Path) -> None:
+    root = _runtime_bundle(
+        tmp_path,
+        {
+            "llama-server.exe": _pe(("msvcp140.dll",)),
+            "msvcp140.dll": _pe(("vcruntime140.dll",)),
+            "vcruntime140.dll": _pe(("vcruntime140_1.dll",)),
+            "vcruntime140_1.dll": _KERNEL,
+            "vcomp140.dll": _KERNEL,
+        },
+    )
+    assert acb.main(["--prune-runtime", str(root)]) == 0
+    assert _names(root) == [
+        "llama-server.exe",
+        "msvcp140.dll",
+        "vcruntime140.dll",
+        "vcruntime140_1.dll",
+    ]
+
+
+def test_a_delay_import_keeps_a_runtime_dll(tmp_path: Path) -> None:
+    root = _runtime_bundle(
+        tmp_path,
+        {
+            "ggml-cpu.dll": _pe(("kernel32.dll",), ("vcomp140.dll",)),
+            "vcomp140.dll": _KERNEL,
+        },
+    )
+    assert acb.main(["--prune-runtime", str(root)]) == 0
+    assert _names(root) == ["ggml-cpu.dll", "vcomp140.dll"]
+
+
+def test_runtime_dlls_that_only_each_other_import_are_pruned(tmp_path: Path) -> None:
+    root = _runtime_bundle(
+        tmp_path,
+        {
+            "mistralrs.exe": _KERNEL,
+            "msvcp140.dll": _pe(("vcruntime140.dll",)),
+            "vcruntime140.dll": _pe(("msvcp140.dll",)),
+        },
+    )
+    assert acb.main(["--prune-runtime", str(root)]) == 0
+    assert _names(root) == ["mistralrs.exe"]
+
+
+def test_a_file_that_is_not_a_runtime_dll_is_never_pruned(tmp_path: Path) -> None:
+    root = _runtime_bundle(
+        tmp_path,
+        {"mistralrs.exe": _KERNEL, "unused.dll": _KERNEL, "LICENSE.txt": b"x"},
+    )
+    assert acb.main(["--prune-runtime", str(root)]) == 0
+    assert _names(root) == ["LICENSE.txt", "mistralrs.exe", "unused.dll"]
+
+
+def test_a_pruned_bundle_passes_the_import_check(tmp_path: Path) -> None:
+    root = _runtime_bundle(
+        tmp_path,
+        {"mistralrs.exe": _pe(("kernel32.dll", "msvcp140.dll")), "msvcp140.dll": _KERNEL},
+    )
+    (root / "vcomp140.dll").write_bytes(_KERNEL)
+    assert acb.main(["--prune-runtime", str(root)]) == 0
+    assert acb.main(["--imports-only", str(root)]) == 0
+
+
+@pytest.mark.parametrize("argv", [["--prune-runtime"], ["--prune-runtime", "no-such-folder"]])
+def test_the_prune_needs_folders(argv: list[str], capsys: pytest.CaptureFixture[str]) -> None:
+    assert acb.main(argv) == 2
+    assert "usage" in capsys.readouterr().err
+
+
+def test_a_windows_wheel_without_a_runtime_dll_that_nothing_imports_passes(
+    tmp_path: Path,
+) -> None:
+    files = _windows_files()
+    del files["vcomp140.dll"]
+    assert acb.check(_windows_wheel(tmp_path, files)) == []
+
