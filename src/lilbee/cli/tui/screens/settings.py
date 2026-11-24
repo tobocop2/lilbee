@@ -38,6 +38,7 @@ from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
 from lilbee.app.status import held_out_sources
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
+from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.cli.tui.screens.profile_tab import ProfileSnapshot, ProfileTab, load_snapshot
 from lilbee.cli.tui.screens.settings_engines import ENGINES_PANE_ID, EnginesPane
 from lilbee.cli.tui.screens.settings_presets import PRESETS_PANE_ID, PresetsPane
@@ -78,7 +79,6 @@ from lilbee.cli.tui.screens.settings_widgets import (
 )
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.cli.tui.widgets.model_pick import STORE_ERRORS, apply_model_pick
-from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.cli.tui.widgets.profile_line import ProfileLine, ProfileLinePill
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import SettingSource

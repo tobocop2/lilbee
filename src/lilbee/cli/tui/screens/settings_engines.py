@@ -17,8 +17,8 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_commands import EngineCommandResult, announce
 from lilbee.cli.tui.engine_install_flow import confirm_and_install
 from lilbee.cli.tui.engine_mark import engine_mark, format_size
-from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.mount_guard import MountWhenAttached
+from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import EngineSetting

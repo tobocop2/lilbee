@@ -25,6 +25,7 @@ from textual.widgets import DataTable, Input, Static
 from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
+from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.cli.tui.task_queue import TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -114,7 +115,7 @@ def _kind_label(pending_kind: str | None) -> str:
     return pending_kind or msg.WIKI_DRAFTS_KIND_DRIFT
 
 
-class WikiDraftsScreen(Screen[None]):
+class WikiDraftsScreen(MountWhenAttached, Screen[None]):
     """Review-surface screen for pending wiki drafts."""
 
     app: LilbeeApp  # type: ignore[assignment]
