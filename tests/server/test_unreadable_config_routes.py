@@ -67,9 +67,7 @@ def client():
 
 
 @pytest.mark.parametrize(("method", "url", "kwargs"), REQUESTS)
-def test_an_unreadable_config_answers_503_with_the_read_text(
-    client, tmp_path, method, url, kwargs
-):
+def test_an_unreadable_config_answers_503_with_the_read_text(client, tmp_path, method, url, kwargs):
     (tmp_path / CONFIG_FILE_NAME).mkdir()
     res = getattr(client, method)(url, **kwargs)
     assert res.status_code == 503, res.text
