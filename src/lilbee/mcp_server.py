@@ -484,7 +484,7 @@ async def sync(
     ``force_rebuild`` re-ingests everything. ``retry_skipped`` retries failed
     files. ``prune_ignored`` drops sources ``.lilbeeignore`` excludes.
     """
-    from lilbee.app.ingest import LIBRARY_REFUSALS, temporary_ocr_config
+    from lilbee.app.ingest import SYNC_REFUSALS, temporary_ocr_config
     from lilbee.data.ingest import sync as run_sync
 
     try:
@@ -501,7 +501,7 @@ async def sync(
                 cancel=cancel,
                 started_by=_SYNC_STARTER,
             )
-        except (*LIBRARY_REFUSALS, ProviderError) as exc:
+        except (*SYNC_REFUSALS, ProviderError) as exc:
             return _error(str(exc))
     return result.model_dump()
 
@@ -576,7 +576,7 @@ async def add(
     Paths are absolute and resolve on the machine running lilbee, not the
     caller's when the server is remote. URLs are fetched as single pages; use
     ``crawl`` for sites."""
-    from lilbee.app.ingest import LIBRARY_REFUSALS, register_sources
+    from lilbee.app.ingest import SYNC_REFUSALS, register_sources
 
     try:
         validate_ocr_timeout(ocr_timeout)
@@ -620,7 +620,7 @@ async def add(
         errors.extend(reg_result.refused)
         reached = reg_result.reached_corpus or bool(crawled_count)
         sync_result = await _sync_after_add(reached, ocr, ocr_timeout)
-    except (*LIBRARY_REFUSALS, ProviderError) as exc:
+    except (*SYNC_REFUSALS, ProviderError) as exc:
         return _error(str(exc))
     result: dict[str, Any] = {
         "command": "add",
@@ -957,7 +957,7 @@ async def import_dataset(dataset: str, fmt: str = "", ctx: Context | None = None
     Replaces existing copies; imported sources are detached so sync won't delete them.
     """
     from lilbee.app.dataset import DatasetError, import_from_path
-    from lilbee.app.ingest import LIBRARY_REFUSALS
+    from lilbee.app.ingest import SYNC_REFUSALS
 
     loop = asyncio.get_running_loop()
 
@@ -983,7 +983,7 @@ async def import_dataset(dataset: str, fmt: str = "", ctx: Context | None = None
 
         try:
             summary = await import_from_path(Path(dataset), fmt, on_progress=on_progress)
-        except (DatasetError, *LIBRARY_REFUSALS, ProviderError) as exc:
+        except (DatasetError, *SYNC_REFUSALS, ProviderError) as exc:
             return _error(str(exc))
     return summary.model_dump()
 
@@ -1521,7 +1521,7 @@ async def _rebuild_after_discard(discarded: dict[str, Any]) -> dict[str, Any]:
 
 async def _rebuild_when(needed: bool) -> dict[str, Any]:
     """A forced sync's ``rebuild`` result when *needed*, else null; ``rebuild_error`` if refused."""
-    from lilbee.app.ingest import LIBRARY_REFUSALS
+    from lilbee.app.ingest import SYNC_REFUSALS
     from lilbee.data.ingest import sync as run_sync
 
     if not needed:
@@ -1531,7 +1531,7 @@ async def _rebuild_when(needed: bool) -> dict[str, Any]:
             result = await run_sync(
                 quiet=True, force_rebuild=True, cancel=cancel, started_by=_SYNC_STARTER
             )
-        except (*LIBRARY_REFUSALS, ProviderError) as exc:
+        except (*SYNC_REFUSALS, ProviderError) as exc:
             return {"rebuild": None, "rebuild_error": str(exc)}
     return {"rebuild": result.model_dump()}
 

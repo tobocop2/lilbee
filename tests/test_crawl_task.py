@@ -267,6 +267,30 @@ class TestRunCrawl:
         assert [r.exc_info for r in warnings] == [None]
         assert task.status == TaskStatus.DONE
 
+    @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
+    async def test_a_sync_the_embed_engine_refuses_is_one_warning_with_no_traceback(
+        self, mock_crawl, caplog
+    ):
+        from pathlib import Path
+
+        from lilbee.data.extract.chunk import EmbedWarmError
+
+        mock_crawl.return_value = [Path("a.md")]
+        task = CrawlTask(task_id="t1", url="https://example.com", depth=0, max_pages=10)
+        refusal = EmbedWarmError("nomic-ai/nomic-embed-text-v1.5#safetensors", 8064, 120.0)
+        with (
+            patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refusal),
+            caplog.at_level(logging.WARNING, logger="lilbee.crawler.task"),
+        ):
+            await run_crawl(task)
+
+        warnings = [r for r in caplog.records if r.name == "lilbee.crawler.task"]
+        assert [r.getMessage() for r in warnings] == [
+            f"Post-crawl sync failed for https://example.com: {refusal}"
+        ]
+        assert [r.exc_info for r in warnings] == [None]
+        assert task.status == TaskStatus.DONE
+
     @patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=RuntimeError("sync boom"))
     @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
     async def test_a_sync_failure_of_another_kind_keeps_its_traceback(

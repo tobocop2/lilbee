@@ -1123,6 +1123,30 @@ class TestAdd:
         assert result.is_error
         assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
 
+    @pytest.mark.parametrize("tool", ["sync", "add"])
+    @pytest.mark.parametrize("window_only", [False, True])
+    async def test_an_embed_engine_that_cannot_warm_ends_on_the_plain_refusal(
+        self, tmp_path, tool, window_only
+    ):
+        """The sync and add tools return the one message that names the model, the
+        chunk size and the fix, for a warm that fails and for a window below one chunk."""
+        from lilbee.data.extract.chunk import EmbedWarmError, EmbedWindowError
+
+        refusal = (
+            EmbedWindowError("m: The embedding model accepts 2040 tokens. Set chunk_size to 1912.")
+            if window_only
+            else EmbedWarmError("nomic-ai/nomic-embed-text-v1.5#safetensors", 8064, 120.0)
+        )
+        src = tmp_path / "scan.txt"
+        src.write_text("hello world", encoding="utf-8")
+        arguments = {"paths": [str(src)]} if tool == "add" else {}
+
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refusal):
+            async with mcp_client() as (session, _init, _drop):
+                result = await session.call_tool(tool, arguments)
+
+        assert json.loads(result.content[0].text) == {"error": str(refusal)}
+
     @pytest.mark.parametrize(
         ("tool", "arguments", "detail"),
         [

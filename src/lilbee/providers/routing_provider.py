@@ -431,10 +431,10 @@ class RoutingProvider(LLMProvider):
             return None
         return self._get_local()
 
-    def embed_token_cap(self) -> int | None:
+    def embed_token_cap(self, *, known_only: bool = False) -> int | None:
         """Embed token cap of the local engine; None for a remote or unset embedder."""
         local = self._local_embedder()
-        return None if local is None else local.embed_token_cap()
+        return None if local is None else local.embed_token_cap(known_only=known_only)
 
     def health_warnings(self) -> list[HealthWarning]:
         """Engine fallbacks plus the serving degradations of the local engine."""

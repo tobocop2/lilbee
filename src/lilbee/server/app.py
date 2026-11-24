@@ -433,8 +433,16 @@ def _unhandled_error_response(request: Request, exc: Exception) -> Response:
 
 
 def _provider_error_response(request: Request, exc: ProviderError) -> Response:
-    """Answer a starting or missing engine as 503, a bad request as 400, a missing model as 404."""
-    if exc.kind in (ProviderErrorKind.STARTING, ProviderErrorKind.ENGINE_MISSING):
+    """Answer an engine that is starting, missing or slow to start as 503.
+
+    A bad request is 400 and a missing model is 404. Only a starting engine gets a
+    Retry-After: another request to a slow engine starts the same launch again.
+    """
+    if exc.kind in (
+        ProviderErrorKind.STARTING,
+        ProviderErrorKind.WARM_TIMEOUT,
+        ProviderErrorKind.ENGINE_MISSING,
+    ):
         unavailable = HTTPException(
             status_code=HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),

@@ -285,6 +285,27 @@ class TestSync:
         assert result.exit_code == 0
         assert "Added: 1" in result.output
 
+    @pytest.mark.parametrize("command", ["sync", "add", "rebuild"])
+    @pytest.mark.parametrize("flags", [[], ["--json"]])
+    def test_an_embed_engine_that_cannot_warm_stops_with_the_plain_refusal(
+        self, isolated_env, tmp_path, command, flags
+    ):
+        from lilbee.data.extract.chunk import EmbedWarmError
+
+        refusal = EmbedWarmError("nomic-ai/nomic-embed-text-v1.5#safetensors", 8064, 120.0)
+        src = tmp_path / "scan.txt"
+        src.write_text("content", encoding="utf-8")
+        args = [*flags, command, *([str(src)] if command == "add" else [])]
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refusal):
+            result = runner.invoke(app, args)
+        assert result.exit_code == 1, result.output
+        if flags:
+            assert json.loads(result.output) == {"error": str(refusal)}
+        else:
+            # An add registers the source first, then the sync refuses: the one refusal follows.
+            registered = "Registered 1 source(s) " if command == "add" else ""
+            assert " ".join(result.output.split()) == f"{registered}Error: {refusal}"
+
     @mock.patch(
         "lilbee.data.ingest.sync",
         new_callable=AsyncMock,

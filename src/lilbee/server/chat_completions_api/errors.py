@@ -85,6 +85,8 @@ _PROVIDER_KIND_CLASSIFICATIONS: dict[ProviderErrorKind, tuple[int, CompletionsEr
     ProviderErrorKind.CPU_UNSUPPORTED: (503, CompletionsErrorCode.INTERNAL_ERROR),
     ProviderErrorKind.MISSING_LIBRARY: (503, CompletionsErrorCode.INTERNAL_ERROR),
     ProviderErrorKind.STARTING: (503, CompletionsErrorCode.INTERNAL_ERROR),
+    # Passes through: the text names the model and says it did not finish starting.
+    ProviderErrorKind.WARM_TIMEOUT: (503, CompletionsErrorCode.INTERNAL_ERROR),
     # The text names the missing engine and how to install it. No retry hint: the
     # user has to install it.
     ProviderErrorKind.ENGINE_MISSING: (503, CompletionsErrorCode.ENGINE_MISSING),

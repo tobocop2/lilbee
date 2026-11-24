@@ -26,12 +26,12 @@ _HEADING_MARK = "#"
 _BREADCRUMB_SEPARATOR = " > "
 
 
-def _embed_token_cap() -> int | None:
+def _embed_token_cap(*, known_only: bool = False) -> int | None:
     """Tokens the embedder truncates one input to; None when it has no fixed cap."""
     # circular: chunk -> app.services -> retrieval.embedder -> chunk via CHARS_PER_TOKEN
     from lilbee.app.services import get_services
 
-    return get_services().provider.embed_token_cap()
+    return get_services().provider.embed_token_cap(known_only=known_only)
 
 
 def count_embed_tokens(text: str) -> int:
@@ -47,14 +47,32 @@ class EmbedWindowError(RuntimeError):
     """The embedder's window cannot hold one chunk beside the document prefix."""
 
 
-def check_embed_window() -> None:
+class EmbedWarmError(EmbedWindowError):
+    """The embed engine cannot finish starting at ``chunk_size`` within the waits."""
+
+    def __init__(self, model: str, chunk_size: int, wait_s: float | None) -> None:
+        self.model, self.chunk_size, self.wait_s = model, chunk_size, wait_s
+        within = "in time" if wait_s is None else f"within {wait_s:.0f} s"
+        super().__init__(
+            f"{model} cannot embed chunks of {chunk_size} tokens on this machine: "
+            f"its engine did not finish starting {within} at that size. "
+            "Set chunk_size to a smaller value, or run the embedding model on a GPU."
+        )
+
+    def __reduce__(self) -> tuple[type[EmbedWarmError], tuple[str, int, float | None]]:
+        # A fan-out worker sends the refusal to its parent, which pickles it.
+        return (type(self), (self.model, self.chunk_size, self.wait_s))
+
+
+def check_embed_window(*, known_only: bool = False) -> None:
     """Refuse a known embed window smaller than one chunk plus the prefix and newline.
 
-    The refusal is the health route's own warning, so the two never disagree.
+    The refusal is the health route's own warning, so the two never disagree. With
+    *known_only* the window read sends no request to the engine.
     """
     from lilbee.providers.engine_params import embed_window_warning
 
-    cap = _embed_token_cap()
+    cap = _embed_token_cap(known_only=known_only)
     warning = None if cap is None else embed_window_warning(cap)
     if warning is not None:
         model = active_config().embedding_model

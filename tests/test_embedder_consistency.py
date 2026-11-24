@@ -20,7 +20,7 @@ class _RecordingProvider:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
 
-    def embed_token_cap(self) -> int | None:
+    def embed_token_cap(self, *, known_only: bool = False) -> int | None:
         return None
 
     def embed(self, texts: list[str]) -> list[list[float]]:

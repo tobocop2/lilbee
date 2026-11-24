@@ -112,12 +112,17 @@ class ShardProgress:
 
 @dataclass(frozen=True)
 class ShardDone:
-    """A worker's verdict; *error* set means it did not finish its slice."""
+    """A worker's verdict; *error* set means it did not finish its slice.
+
+    *refusal* is the sync refusal the worker stopped on (one of ``SYNC_REFUSALS``):
+    the parent stops the other workers and raises it as it is.
+    """
 
     kind: Literal["done"]
     index: int
     result: SyncResult | None
     error: str | None
+    refusal: Exception | None = None
 
 
 ShardMessage = ShardProgress | ShardDone
@@ -335,7 +340,8 @@ async def _supervise(
     """Drain worker messages until every worker has reported, keeping one bar current.
 
     Raises ``asyncio.CancelledError`` within one drain interval of a set *cancel*,
-    whether or not a worker reports.
+    whether or not a worker reports. Raises the first refusal a worker reports, so
+    the caller stops the other workers instead of waiting for each to refuse too.
     """
     verdicts: dict[int, ShardDone] = {}
     aggregate = _Aggregate(on_progress)
@@ -344,6 +350,8 @@ async def _supervise(
         while len(verdicts) < len(workers):
             for message in _drain(messages):
                 if message.kind == "done":
+                    if message.refusal is not None:
+                        raise message.refusal
                     verdicts[message.index] = message
                 else:
                     done, planned = aggregate.update(message)
@@ -366,9 +374,13 @@ def _final_verdicts(
 
     A worker the kernel killed (out of memory is the usual reason) reports
     nothing, so it is recorded as failed and the sync does not end as a success.
+    A refusal still in flight is raised, as :func:`_supervise` raises one it drains.
     """
     time.sleep(_FINAL_DRAIN_S)
     late = {m.index: m for m in _drain(messages) if m.kind == "done"}
+    for message in late.values():
+        if message.refusal is not None:
+            raise message.refusal
     for index, worker in enumerate(workers):
         if index in verdicts or index in late:
             continue
@@ -465,7 +477,12 @@ def aggregate_results(verdicts: list[ShardDone]) -> SyncResult:
 def run_shard(
     spec: ShardSpec, options: ShardOptions, messages: Queue[ShardMessage], stop: Event
 ) -> None:
-    """Ingest this worker's slice in a fresh process, reporting onto *messages*."""
+    """Ingest this worker's slice in a fresh process, reporting onto *messages*.
+
+    A sync refusal goes to the parent as the error itself, so the parent raises the
+    same class and every entry point that shows a sync refusal shows this one.
+    """
+    from lilbee.app.ingest import SYNC_REFUSALS
     from lilbee.app.services import build_services, services_scope
     from lilbee.core.config.context import config_scope
     from lilbee.data.ingest.pipeline import sync
@@ -488,5 +505,7 @@ def run_shard(
             )
         reporter.flush()
         messages.put(ShardDone(kind="done", index=index, result=result, error=None))
+    except SYNC_REFUSALS as exc:
+        messages.put(ShardDone(kind="done", index=index, result=None, error=str(exc), refusal=exc))
     except (Exception, asyncio.CancelledError) as exc:
         messages.put(ShardDone(kind="done", index=index, result=None, error=error_reason(exc)))

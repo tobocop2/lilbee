@@ -176,6 +176,8 @@ class ProviderErrorKind(StrEnum):
     CPU_UNSUPPORTED = "cpu_unsupported"
     MISSING_LIBRARY = "missing_library"
     STARTING = "starting"
+    # The engine did not finish starting within the waits: not retried, not rebuilt.
+    WARM_TIMEOUT = "warm_timeout"
     ENGINE_MISSING = "engine_missing"
     UNKNOWN = "unknown"
 
@@ -206,6 +208,14 @@ class ProviderError(Exception):
 
 class EmbeddingOverflowError(ProviderError):
     """A context overflow raised by the embedding call."""
+
+
+class WarmTimeoutError(ProviderError):
+    """An engine that did not finish starting within *wait_s* seconds (None: not known)."""
+
+    def __init__(self, message: str, *, provider: str = "", wait_s: float | None = None) -> None:
+        super().__init__(message, provider=provider, kind=ProviderErrorKind.WARM_TIMEOUT)
+        self.wait_s = wait_s
 
 
 # The 400 message of a server that refuses a prompt longer than its window.
@@ -649,14 +659,15 @@ class LLMProvider(Protocol):
         """
         return None
 
-    def embed_token_cap(self) -> int | None:
+    def embed_token_cap(self, *, known_only: bool = False) -> int | None:
         """Tokens the embedder truncates one input to, or None when it has no fixed cap.
 
         The chunker bounds its budget to this so no chunk loses text at embedding
         time. Default ``None``: a remote embedder advertises no window, and the
         embedder cuts its inputs to ``max_embed_chars`` instead. A provider that
         returns a cap bounds every input by that token count itself and reports
-        each cut input through ``providers.truncation.note_cut_to_limit``.
+        each cut input through ``providers.truncation.note_cut_to_limit``. With
+        *known_only* the provider sends no request and reports only a cap it knows.
         """
         return None
 

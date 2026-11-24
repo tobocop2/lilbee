@@ -38,6 +38,7 @@ from lilbee.providers.base import (
     TokenUsage,
     ToolCall,
     ToolCallDelta,
+    WarmTimeoutError,
     is_prompt_length_overflow,
 )
 from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
@@ -104,6 +105,11 @@ _EMBED_PAYLOAD_LIMIT = 2_000_000
 _EMBED_BODY_MARGIN = 4096
 # llama-swap's error body when the spawned llama-server exited before serving.
 _UPSTREAM_DIED_MARKER = "exited prematurely"
+# llama-swap's error body when a launch did not pass its health wait, and the wait in
+# Go's duration form ("2m0s").
+_WARM_TIMEOUT_MARKER = "health check timed out"
+_WARM_WAIT_PATTERN = re.compile(r"health check timed out after (?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?")
+_WARM_TIMEOUT_MESSAGE = "The engine for {model} did not finish starting in time."
 # llama-server's exit line when the port lilbee picked was taken by the time
 # the server bound it (the pick-then-bind gap spans the whole lazy-spawn wait,
 # so a passing ephemeral connection can occupy it). The occupation is
@@ -399,15 +405,28 @@ def _classify_error(status_code: int, body: str, profile: RequestProfile) -> Pro
     ``_raise_for_status`` upgrades to SERVER once the upstream tail proves it).
     A bare gateway error (502/503/504) is a
     momentarily-unreachable upstream -- restarting, OOM-killed, mid-swap -- so
-    it is SERVER, which the gateway retry treats as transient.
+    it is SERVER, which the gateway retry treats as transient. A launch that did not
+    pass llama-swap's health wait is WARM_TIMEOUT: another request only starts the
+    same slow launch again, so nothing retries or rebuilds it.
     """
     if profile.batch_overflow is not None and profile.batch_overflow.search(body):
         return ProviderErrorKind.CONTEXT_OVERFLOW
+    if _WARM_TIMEOUT_MARKER in body:
+        return ProviderErrorKind.WARM_TIMEOUT
     if _UPSTREAM_DIED_MARKER in body:
         return ProviderErrorKind.CONNECTION
     if status_code in _TRANSIENT_GATEWAY_STATUSES:
         return ProviderErrorKind.SERVER
     return ProviderErrorKind.UNKNOWN
+
+
+def _health_wait_s(body: str) -> float | None:
+    """The health wait a llama-swap warm-timeout body names, in seconds, or None."""
+    found = _WARM_WAIT_PATTERN.search(body)
+    if found is None or not any(found.groups()):
+        return None
+    hours, minutes, seconds = (int(part or 0) for part in found.groups())
+    return float(hours * 3600 + minutes * 60 + seconds)
 
 
 def is_connection_failure(exc: Exception) -> bool:
@@ -684,6 +703,8 @@ class LlamaServerClient:
         self._flights: dict[tuple[Any, ...], Future[Any]] = {}
         # Whether the count route has answered once; until then one probe runs for the route.
         self._count_route_answered = False
+        # Whether an embed or a token count has answered once on this launch.
+        self._answered = False
         self._in_flight_lock = threading.Lock()
         # Signalled under the count lock each time a request takes in_flight to zero.
         self._idle = threading.Condition(self._in_flight_lock)
@@ -776,6 +797,8 @@ class LlamaServerClient:
                 kind=ProviderErrorKind.BAD_REQUEST,
             )
         kind = _classify_error(resp.status_code, body, self._profile)
+        if kind is ProviderErrorKind.WARM_TIMEOUT:
+            raise self._warm_timeout_error(_health_wait_s(body))
         # llama-swap masks a dead server as "exited prematurely". The server's own
         # captured output goes to the log (in _upstream_failure_tail) and decides the
         # kind; the message the user sees stays one plain line.
@@ -797,6 +820,30 @@ class LlamaServerClient:
             provider=self._profile.label,
             kind=kind,
         )
+
+    def _warm_timeout_error(self, wait_s: float | None) -> WarmTimeoutError:
+        """The error for a launch that did not finish starting within *wait_s* seconds."""
+        subject = self.model_ref if self.model_ref is not None else "the model"
+        return WarmTimeoutError(
+            _WARM_TIMEOUT_MESSAGE.format(model=subject),
+            provider=self._profile.label,
+            wait_s=wait_s,
+        )
+
+    def _first_answer(self, call: Callable[[], _T]) -> _T:
+        """Run *call*; a timeout before this launch's first answer is a warm timeout.
+
+        The first request of a launch waits for the engine to start, so a request
+        that passes the client budget there means the engine did not finish starting.
+        """
+        if self._answered:
+            return call()
+        try:
+            result = call()
+        except httpx.TimeoutException as exc:
+            raise self._warm_timeout_error(self._timeout) from exc
+        self._answered = True
+        return result
 
     def mark_unhealthy(self) -> None:
         """Record a connection-level failure so the router skips this replica."""
@@ -1335,6 +1382,9 @@ class LlamaServerClient:
         if not texts:
             # Match the in-process embedder; the server rejects an empty input.
             return []
+        return self._first_answer(lambda: self._embed_texts(texts))
+
+    def _embed_texts(self, texts: list[str]) -> list[Vector]:
         vectors: list[Vector] = []
         sub_batches = self._truncate_and_subbatch(texts, estimate=True)
         for sub_batch in sub_batches:
@@ -1469,6 +1519,15 @@ class LlamaServerClient:
             return self._input_limit()
         except _TRUNCATION_CHECK_FAILURES:
             return None
+
+    @property
+    def known_input_limit(self) -> int | None:
+        """The ``max_input_length`` this client has already read; it never sends a request.
+
+        After a launch did not finish starting, any request starts that launch again, so
+        a window read then uses only this.
+        """
+        return self._max_input
 
     def _input_limit(self) -> int | None:
         """The server's ``max_input_length``, read once per client."""
@@ -1857,7 +1916,7 @@ class LlamaServerClient:
 
     def count_tokens(self, text: str) -> int:
         """Tokens in *text* under the server's tokenizer, or a character estimate with no route."""
-        tokens = self.count_text_tokens(text)
+        tokens = self._first_answer(lambda: self.count_text_tokens(text))
         return _estimate_tokens(text) if tokens is None else tokens
 
     def count_text_tokens(self, text: str) -> int | None:

@@ -145,7 +145,7 @@ class _Provider:
     def __init__(self) -> None:
         self.calls = 0
 
-    def embed_token_cap(self) -> int | None:
+    def embed_token_cap(self, *, known_only: bool = False) -> int | None:
         return None
 
     def count_tokens(self, text: str) -> int:
