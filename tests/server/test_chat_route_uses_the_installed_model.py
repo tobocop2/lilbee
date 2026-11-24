@@ -145,7 +145,7 @@ async def test_a_raise_in_the_swap_is_reported_as_a_failed_start(caplog) -> None
             side_effect=OSError("registry unreadable"),
         ),
         mock.patch("lilbee.server.app.get_services") as get_services,
-        caplog.at_level(logging.ERROR, logger="lilbee.server.app"),
+        caplog.at_level(logging.ERROR, logger="lilbee.app.services"),
         pytest.raises(OSError, match="registry unreadable"),
     ):
         async with _lifespan(mock.MagicMock()):

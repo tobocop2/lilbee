@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import errno
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -1376,11 +1377,34 @@ class TestMain:
 
     @mock.patch("lilbee.mcp_server.build_mcp_server")
     @mock.patch("lilbee.mcp_server.get_services", side_effect=RuntimeError("boom"))
-    def test_main_preload_failure_does_not_block_server(self, mock_get_services, mock_build):
-        """A crash in the pre-warm path falls through to serving instead of aborting."""
-        mock_build.return_value.run_stdio_async = AsyncMock()
-        main()
-        mock_build.return_value.run_stdio_async.assert_awaited_once()
+    def test_main_stops_on_a_failed_services_build(self, mock_get_services, mock_build, caplog):
+        """A failed startup build ends the start with the HTTP server's error; nothing serves."""
+        with caplog.at_level(logging.ERROR, logger="lilbee.app.services"):
+            with pytest.raises(RuntimeError, match="boom"):
+                main()
+        assert "The services build failed" in caplog.text
+        mock_build.assert_not_called()
+
+    @mock.patch("lilbee.mcp_server.build_mcp_server")
+    @mock.patch("lilbee.mcp_server.fill_empty_chat_model", side_effect=OSError("registry"))
+    def test_main_stops_on_a_failed_chat_model_fill(self, mock_fill, mock_build, caplog):
+        """The chat-model fill is part of the build, as in the HTTP server."""
+        with caplog.at_level(logging.ERROR, logger="lilbee.app.services"):
+            with pytest.raises(OSError, match="registry"):
+                main()
+        assert "The services build failed" in caplog.text
+        mock_build.assert_not_called()
+
+    @mock.patch("lilbee.mcp_server.build_mcp_server")
+    @mock.patch("lilbee.mcp_server.get_services", side_effect=svc_mod.ServicesStoppingError)
+    def test_main_stops_on_a_stop_during_the_build(self, mock_get_services, mock_build, caplog):
+        """A stop during the build ends the start without a build error."""
+        with caplog.at_level(logging.INFO, logger="lilbee.app.services"):
+            with pytest.raises(svc_mod.ServicesStoppingError):
+                main()
+        assert "A stop arrived during the services build" in caplog.text
+        assert "The services build failed" not in caplog.text
+        mock_build.assert_not_called()
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SIGTERM handler to keep")
     @mock.patch("lilbee.mcp_server.build_mcp_server")

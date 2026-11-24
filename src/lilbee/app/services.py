@@ -76,6 +76,27 @@ class ServicesStoppingError(RuntimeError):
         super().__init__(SERVICES_STOPPING_MESSAGE)
 
 
+@contextmanager
+def logged_services_build() -> Iterator[None]:
+    """Log why a server does not start when the services build raises, then re-raise.
+
+    Both the HTTP server and the stdio MCP server run their startup build inside this
+    block, so a failed build ends the start with the same plain error.
+    """
+    try:
+        yield
+    except ServicesStoppingError:
+        log.info("A stop arrived during the services build, so the server does not start")
+        raise
+    except Exception:
+        log.error(
+            "The services build failed (the chat-model fill or the build), "
+            "so the server does not start",
+            exc_info=True,
+        )
+        raise
+
+
 def _default_session_store() -> SessionStore:
     """Build the file-backed session store, importing it lazily.
 

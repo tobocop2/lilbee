@@ -24,6 +24,7 @@ from lilbee.app.endpoints import MCP_PATH
 from lilbee.app.services import (
     ServicesStoppingError,
     get_services,
+    logged_services_build,
     peek_services,
     reset_services,
     set_config_refresh,
@@ -336,20 +337,10 @@ def _start_services() -> None:
     the first installed local model. A chat model that is set stays as set, and the
     embedding model is never swapped.
     """
-    try:
+    with logged_services_build():
         for notice in fill_empty_chat_model():
             log.info("%s", notice)
         services = get_services()
-    except ServicesStoppingError:
-        log.info("A stop arrived during the services build, so the server does not start")
-        raise
-    except Exception:
-        log.error(
-            "The services build failed (the chat-model fill or the build), "
-            "so the server does not start",
-            exc_info=True,
-        )
-        raise
     log.info("LLM provider pre-loaded")
     _log_embedding_model_state(services.embedder)
     services.store.open_in_background()
