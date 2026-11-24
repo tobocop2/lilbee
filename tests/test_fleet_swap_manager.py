@@ -1512,6 +1512,22 @@ class TestCrossRunReaping:
         self._step_clock(monkeypatch, create_time=1000.0, wall=8210.0, mono=510.0)
         assert sm._is_live_llama_swap(self._mono_record()) is True
 
+    @pytest.mark.parametrize(
+        ("offset_s", "live"),
+        [
+            pytest.param(1.9, True, id="measured-macos-restore-offset"),
+            pytest.param(2.5, True, id="inside-the-tolerance"),
+            pytest.param(4.0, False, id="outside-the-tolerance"),
+        ],
+    )
+    def test_monotonic_start_offset_decides_when_the_create_time_moved(
+        self, monkeypatch: pytest.MonkeyPatch, offset_s: float, live: bool
+    ) -> None:
+        # The create time moved with a step (7200 s from the record). The derived start
+        # sits offset_s after the spawn reading (500.0): 510 - (8210 - 8200) = 500.
+        self._step_clock(monkeypatch, create_time=8200.0, wall=8210.0, mono=510.0 + offset_s)
+        assert sm._is_live_llama_swap(self._mono_record()) is live
+
     def test_a_swap_started_later_on_the_monotonic_clock_is_a_reused_pid(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
