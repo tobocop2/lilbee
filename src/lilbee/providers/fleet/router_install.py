@@ -247,10 +247,10 @@ def _remove_folder(path: Path) -> None:
         return
     if not path.exists():
         return
-    for folder, _names, _files in os.walk(path):
-        if not os.access(folder, os.W_OK):
-            os.chmod(folder, os.stat(folder).st_mode | stat.S_IWUSR)
     try:
+        for folder, _names, _files in os.walk(path):
+            if not os.access(folder, os.W_OK):
+                os.chmod(folder, os.stat(folder).st_mode | stat.S_IWUSR)
         shutil.rmtree(path)
     except OSError as exc:
         log.warning("%s stays after the delete: %s. Correct its permissions.", path, exc)
