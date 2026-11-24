@@ -33,6 +33,7 @@ from lilbee.app.settings import config_write_failure_message, fill_empty_chat_mo
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError
+from lilbee.core.settings import ReadOnlyConfigError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.server_registry import ConfigReadError
 from lilbee.runtime.progress import LibraryUpgradeEvent
@@ -465,6 +466,17 @@ def _config_locked_response(request: Request, exc: FileLockUnavailableError) -> 
     return _json_error_response(request, unavailable)
 
 
+def _config_read_only_response(request: Request, exc: ReadOnlyConfigError) -> Response:
+    """Answer a write to a read-only config.toml as a 503 with the shared refusal text.
+
+    One handler for every route, so a route that writes config.toml cannot forget the arm.
+    """
+    unavailable = HTTPException(
+        status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=config_write_failure_message(exc)
+    )
+    return _json_error_response(request, unavailable)
+
+
 def _services_stopping_response(request: Request, exc: ServicesStoppingError) -> Response:
     """Answer a request that lands after the engine stop began as a 503."""
     unavailable = HTTPException(status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
@@ -497,6 +509,7 @@ def create_app() -> Litestar:
             ValidationException: _validation_error_response,
             FileLockUnavailableError: _config_locked_response,
             ConfigReadError: _config_unreadable_response,
+            ReadOnlyConfigError: _config_read_only_response,
             ServicesStoppingError: _services_stopping_response,
             ProviderError: _provider_error_response,
             Exception: _unhandled_error_response,
