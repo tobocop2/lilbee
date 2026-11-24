@@ -17,6 +17,7 @@ without advancing focus.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -252,16 +253,15 @@ def test_unmounted_profile_select_has_not_landed() -> None:
     assert not _snapshot_landed([fresh])
 
 
-def test_loaded_or_failed_profile_select_has_landed() -> None:
+@pytest.mark.parametrize(
+    ("value", "disabled"),
+    [("default", False), ("", True)],
+    ids=["loaded", "failed-scan"],
+)
+def test_loaded_or_failed_profile_select_has_landed(value: str, disabled: bool) -> None:
     """The load writes a profile name, or disables the dropdown when the scan fails."""
-    from textual.widgets import Select
-
-    loaded: Select[str] = Select([("", "")], allow_blank=False)
-    loaded.set_options([("default", "default")])
-    failed: Select[str] = Select([("", "")], allow_blank=False)
-    failed.disabled = True
-    assert _snapshot_landed([loaded])
-    assert _snapshot_landed([failed])
+    stand_in = SimpleNamespace(value=value, disabled=disabled)
+    assert _snapshot_landed([stand_in])
 
 
 async def test_settings_tab_rolls_over_to_next_pane() -> None:
