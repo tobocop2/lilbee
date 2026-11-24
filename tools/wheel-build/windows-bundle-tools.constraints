@@ -1,8 +1,9 @@
 # The Python tool that the Windows packs of mistral.rs and llama.cpp use to read the import tables of their DLL and exe files,
 # apart from the build tools. Each pack installs this file with build-tools.constraints in one
 # `pip install --require-hashes --force-reinstall -r` call.
-# pefile prunes the runtime DLLs that nothing imports (assert_engine_bundle.py --prune-runtime) and, in the mistral.rs pack,
-# runs the import check of check_mistralrs_wheel.sh. It has no dependency and the build does not use it, so it changes no
-# byte of the wheel. The ik and TEI packs do not read import tables and do not install it.
+# pefile prunes the runtime DLLs that nothing imports (assert_engine_bundle.py --prune-runtime) and runs the import check of
+# check_mistralrs_wheel.sh and check_llama_wheel.sh. It has no dependency and the build does not use it, so the wheel holds
+# no code of it. The files that the prune deletes are the only change that it makes to the wheel. The ik and TEI packs do not
+# read import tables and do not install it.
 pefile==2024.8.26 \
     --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f

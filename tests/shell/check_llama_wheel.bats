@@ -61,6 +61,7 @@ stand_ins() {
   tool python 'if [ "$1 $2" = "-m venv" ]; then' '  "${REAL_PYTHON}" -m venv --without-pip "$3" || exit' \
     '  for site in "$3"/lib/python*/site-packages; do echo "${SHARED_SITE}" > "${site}/shared.pth"; done' \
     '  if [ "${RUNNER_OS-}" = Windows ]; then mkdir "$3/Scripts" && ln -s ../bin/python "$3/Scripts/python.exe"; fi' '  exit' 'fi' \
+    'case "$*" in *assert_engine_bundle.py*) [ -z "${IMPORTS_FAIL-}" ] || { echo "FAIL: an import nothing provides" >&2; exit 1; } ;; esac' \
     'exec "${REAL_PYTHON}" "$@"'
   tool ldd 'dir="$(dirname "$1")"' '[ ! -e "${dir}/ldd-missing" ] || echo "	$(cat "${dir}/ldd-missing") => not found"' \
     'echo "	libc.so.6 => /lib64/libc.so.6"'
@@ -352,12 +353,29 @@ fails_without() {  # cell path failed-fragment [later fragment]
   fails_without linux-cpu "${P}/gguf-parser" "wheel lacks gguf-parser" "cat license-expression.txt"
 }
 
-@test "a Windows wheel without a Visual C++ runtime library is refused" {
-  local dll
-  for dll in msvcp140.dll vcruntime140.dll vcruntime140_1.dll; do
-    echo "dll: ${dll}"
-    fails_without windows-cpu "${P}/${dll}" "wheel lacks ${dll}" "cat license-expression.txt"
-  done
+@test "a Windows wheel needs a Visual C++ runtime library only when a file imports it" {
+  cell windows-cpu
+  SKIP="|${P}/msvcp140.dll||${P}/vcruntime140.dll||${P}/vcruntime140_1.dll|"
+  build
+  check
+  passes
+  [[ "$(seen)" == *"assert_engine_bundle.py --imports-only"* ]]
+}
+
+@test "a Windows wheel with a file that imports a DLL that nothing provides is refused" {
+  cell windows-cpu
+  build
+  IMPORTS_FAIL=1 check
+  stops "a file of the wheel imports a DLL that nothing provides" "cat license-expression.txt"
+  says "a file of the wheel imports a DLL that nothing provides"
+}
+
+@test "a Linux wheel is not asked for the import tables" {
+  cell linux-cpu
+  build
+  check
+  passes
+  [[ "$(seen)" != *"assert_engine_bundle.py"* ]]
 }
 
 @test "a second check in the same folder is refused, so that it cannot pass a wheel on the venv of the first" {
