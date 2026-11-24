@@ -967,3 +967,36 @@ def test_a_windows_wheel_without_a_runtime_dll_that_nothing_imports_passes(
     del files["vcomp140.dll"]
     assert acb.check(_windows_wheel(tmp_path, files)) == []
 
+
+@pytest.mark.parametrize("dll", _WINDOWS_CRT)
+def test_a_windows_wheel_whose_exe_imports_an_absent_runtime_dll_fails(
+    tmp_path: Path, dll: str
+) -> None:
+    # The wheel no longer needs every runtime DLL by name; the import check must still catch a miss.
+    files = _windows_files()
+    files["llama-server.exe"] = _pe(("kernel32.dll", dll))
+    del files[dll]
+    problems = acb.check(_windows_wheel(tmp_path, files))
+    assert len(problems) == 1
+    assert f"llama-server.exe imports {dll}" in problems[0]
+
+
+@pytest.mark.parametrize("dll", _WINDOWS_CRT)
+def test_a_windows_wheel_whose_exe_imports_a_bundled_runtime_dll_passes(
+    tmp_path: Path, dll: str
+) -> None:
+    files = _windows_files()
+    files["llama-server.exe"] = _pe(("kernel32.dll", dll))
+    assert acb.check(_windows_wheel(tmp_path, files)) == []
+
+
+def test_the_prune_fails_and_deletes_nothing_when_pefile_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _runtime_bundle(
+        tmp_path, {"mistralrs.exe": _pe(("kernel32.dll",)), "vcomp140.dll": _KERNEL}
+    )
+    monkeypatch.setitem(sys.modules, "pefile", None)
+    with pytest.raises(ImportError):
+        acb.main(["--prune-runtime", str(root)])
+    assert _names(root) == ["mistralrs.exe", "vcomp140.dll"]
