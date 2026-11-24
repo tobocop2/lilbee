@@ -255,7 +255,7 @@ def test_a_read_that_fails_for_no_permission_keeps_the_build_and_names_the_fault
     assert (listed, body["damaged"]) == (0, [{"folder": str(root / named), "error": error}])
     removed, answer = _cli_json("remove", ENGINE, "1", "cpu")
     assert (removed, answer.get("error")) == (1, error)
-    assert [entry.name for entry in os.scandir(root / ENGINE)] == ["1-cpu"]
+    assert os.listdir(root / ENGINE) == ["1-cpu"]
 
 
 def test_the_folders_that_hold_no_engine_are_not_named(root: Path) -> None:

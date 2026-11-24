@@ -793,10 +793,16 @@ class EngineStore:
                 yield engine, exc
 
     def _engine_builds(self, engine: str) -> dict[Path, InstalledEngine | EngineFolderError | None]:
-        """The build slots of one engine; none when its folder is absent or not a real folder."""
+        """The build slots of one engine; none when its folder is absent.
+
+        Raises ``EngineFolderError`` when the engines folder or the engine folder cannot be
+        read, or when the engine folder is a file or a link: that is damage, as the list says.
+        """
         entry = next((e for e in _entries(self.root, "") if e.name == engine), None)
-        if entry is None or not entry.is_dir(follow_symlinks=False):
+        if entry is None:
             return {}
+        if not entry.is_dir(follow_symlinks=False):
+            raise EngineFolderError(self.root / engine, engine)
         return dict(_builds(self.root / engine))
 
     def pack_path(self, lock: PinLock) -> Path:
@@ -1000,7 +1006,8 @@ class EngineStore:
     ) -> list[tuple[str, str, str, Path]]:
         """Every build folder, damaged ones too: (engine, version, backend, path).
 
-        A complete build is listed once, as its record says. A name holds no mark between
+        A link in a build slot is damage and listed; a plain file is left to remove, as the
+        prune runs at every start. A complete build is listed once, as its record says. A name holds no mark between
         version and backend, so a damaged build is listed once for each hyphen of its name.
         A folder that cannot be read is skipped, and *report* hears of the one of an engine.
         """
@@ -1012,7 +1019,7 @@ class EngineStore:
                     report(_PRUNE_SKIPPED, found.folder)
             elif found is not None:
                 dirs.append((engine, found.version, found.backend, build))
-            else:
+            elif build.is_symlink() or build.is_dir():
                 dirs.extend(
                     (engine, build.name[:cut], build.name[cut + 1 :], build)
                     for cut in range(1, len(build.name) - 1)
