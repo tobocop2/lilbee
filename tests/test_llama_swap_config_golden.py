@@ -13,7 +13,15 @@ from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.readback import engine_log_of
 from lilbee.providers.fleet.swap_config import build_swap_config
-from tests._llama_swap_scenario import BASE_PORT, BINARY, CONFIGS, LOG_DIR, THREADS, members
+from tests._llama_swap_scenario import (
+    BASE_PORT,
+    BINARY,
+    CONFIGS,
+    LOG_DIR,
+    LOG_DIRS,
+    THREADS,
+    members,
+)
 
 # The text recorded for the same model set, one string per config. The default entry
 # is what origin/main writes; the swap entry has one group per launch. The scenario binary
@@ -74,12 +82,13 @@ def test_the_config_is_byte_identical_to_the_golden(name: str) -> None:
     launches = _launches()
     ports = {launch.model_id: BASE_PORT + i for i, launch in enumerate(launches)}
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
-    kwargs = dict(CONFIGS[name])
-    log_dir = kwargs.pop("engine_log_dir", None)
+    log_dir = LOG_DIRS.get(name)
+    engine_logs = {}
     if log_dir is not None:
-        kwargs["engine_logs"] = {
+        engine_logs = {
             launch.model_id: path
             for launch in launches
             if (path := engine_log_of(LLAMA, launch, log_dir)) is not None
         }
-    assert build_swap_config(launches, ports, **kwargs) == golden[name]
+    rendered = build_swap_config(launches, ports, engine_logs=engine_logs, **CONFIGS[name])
+    assert rendered == golden[name]
