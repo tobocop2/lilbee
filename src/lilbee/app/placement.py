@@ -517,7 +517,7 @@ def _persist(spec_json: str | None) -> None:
             settings.delete_values(cfg.data_root, [_PLACEMENT_KEY])
         else:
             settings.update_values(cfg.data_root, {_PLACEMENT_KEY: spec_json})
-    except (FileLockUnavailableError, settings.ReadOnlyConfigError):
+    except (FileLockUnavailableError, settings.ReadOnlyConfigError, settings.ConfigReadFailedError):
         raise  # each has its own answer on every surface
     except OSError as exc:
         raise PlacementConfigWriteError(exc.errno, exc.strerror or str(exc), exc.filename) from exc

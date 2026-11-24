@@ -25,7 +25,7 @@ from lilbee.app.placement import PLACEMENT_READ_ERRORS, PlacementConfigWriteErro
 from lilbee.app.settings import config_write_failure_message
 from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError
-from lilbee.core.settings import ReadOnlyConfigError
+from lilbee.core.settings import ConfigReadFailedError, ReadOnlyConfigError
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.server import handlers
@@ -64,7 +64,7 @@ def _placement_errors() -> Iterator[None]:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
     except FileLockUnavailableError:
         raise  # the app's lock handler answers it; it is not a probe failure
-    except (ReadOnlyConfigError, PlacementConfigWriteError) as exc:
+    except (ReadOnlyConfigError, ConfigReadFailedError, PlacementConfigWriteError) as exc:
         raise HTTPException(
             status_code=_HTTP_UNAVAILABLE, detail=config_write_failure_message(exc)
         ) from exc
