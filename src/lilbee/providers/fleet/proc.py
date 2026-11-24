@@ -21,7 +21,7 @@ from lilbee.providers.fleet.child_guard import spawn_bound_child
 
 log = logging.getLogger(__name__)
 
-# How much of a child's stderr a ``stderr_sink`` receives: the end, where a tool prints why it failed.
+# How much of a child's stderr a ``stderr_sink`` receives: the end, where a tool says why it failed.
 STDERR_TAIL_BYTES = 4096
 
 
