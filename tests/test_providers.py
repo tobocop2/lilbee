@@ -530,6 +530,37 @@ class TestRoutingProvider:
         cfg.chat_model = "ollama/qwen3:8b"
         assert rp.count_chat_text_tokens("some text") is None
 
+    def test_routes_estimate_chat_tokens_to_sdk_for_remote_ref(self) -> None:
+        rp = self._make_provider()
+        mock_sdk = mock.MagicMock()
+        mock_sdk.estimate_chat_tokens.return_value = 2
+        rp._sdk_provider = mock_sdk
+        mock_llama = mock.MagicMock()
+        rp._local = mock_llama
+
+        cfg.chat_model = "vendor/Model-GGUF/model-Q4_K_M.gguf"
+        assert rp.estimate_chat_tokens("some text", model="openai/gpt-4o") == 2
+        mock_sdk.estimate_chat_tokens.assert_called_once_with("some text", model="openai/gpt-4o")
+        mock_llama.estimate_chat_tokens.assert_not_called()
+
+    def test_routes_estimate_chat_tokens_to_local_engine_for_local_ref(self) -> None:
+        rp = self._make_provider()
+        mock_llama = mock.MagicMock()
+        mock_llama.estimate_chat_tokens.return_value = 9
+        rp._local = mock_llama
+
+        cfg.chat_model = "vendor/Model-GGUF/model-Q4_K_M.gguf"
+        assert rp.estimate_chat_tokens("some text") == 9
+        mock_llama.estimate_chat_tokens.assert_called_once_with("some text", model=None)
+
+    def test_the_default_estimate_counts_utf8_bytes(self) -> None:
+        """No token encodes fewer than one byte, so the default never reads low."""
+        from lilbee.providers.base import LLMProvider
+
+        class _Bare(LLMProvider): ...
+
+        assert _Bare().estimate_chat_tokens("héllo", model="any/model") == len("héllo".encode())
+
     def test_local_ref_never_falls_through_to_sdk(self) -> None:
         """Local HF refs stay on the local engine even when the providers extra is installed.
 

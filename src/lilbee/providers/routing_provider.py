@@ -162,6 +162,11 @@ class RoutingProvider(LLMProvider):
             messages, options=options, model=model, tools=tools, tool_choice=tool_choice
         )
 
+    def estimate_chat_tokens(self, text: str, *, model: str | None = None) -> int:
+        """Estimate on the backend the chat ref routes to, same rules as :meth:`chat`."""
+        ref = parse_model_ref(require_role_ref(model or cfg.chat_model, WorkerRole.CHAT))
+        return self._pick_backend(ref).estimate_chat_tokens(text, model=model)
+
     @overload
     def chat(
         self,
