@@ -142,6 +142,31 @@ _ENV_CANDIDATES = (
 )  # fmt: skip
 
 
+_SAMPLE_OVERRIDES = {
+    # A valid value for each key whose built-in value is empty or None and needs a real shape.
+    "placement": '{"chat": {"devices": [0]}}',
+    "gpu_devices": "0",
+    "crawl_login_host": "",
+    "num_ctx_max": "4096",
+}
+
+
+def _sample_cli_value(key: str) -> str:
+    """A value for `lilbee settings set <key>`, taken from the field's built-in value."""
+    from lilbee.core.config.resolve import builtin_value
+    from lilbee.core.config.schema import field_type_name
+
+    if key in _SAMPLE_OVERRIDES:
+        return _SAMPLE_OVERRIDES[key]
+    value = builtin_value(key)
+    kind = field_type_name(key)
+    if kind == "list":
+        return "\n".join(str(item) for item in value)
+    if value is None:
+        return {"int|null": "1", "float|null": "0.5", "bool|null": "true"}.get(kind, "x")
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
 class TestSurfaceColumns:
     """Each column is derived, so check the derivation against the boundary itself."""
 
@@ -201,31 +226,49 @@ class TestSurfaceColumns:
             assert generator._http_cell(key) == "no"
 
     def test_cli_column_lists_top_k_as_settable_from_the_cli(self, generator):
-        assert generator._cli_cell("top_k") == "`lilbee settings set`"
-        assert "| `top_k` |" in REFERENCE.read_text(encoding="utf-8")
         row = next(
             line
             for line in REFERENCE.read_text(encoding="utf-8").splitlines()
             if line.startswith("| `top_k` |")
         )
         assert "`lilbee settings set`" in row
+        assert generator._cli_cell("top_k") == "`lilbee settings set`"
 
-    def test_cli_column_follows_the_keys_the_cli_set_path_accepts(self, generator):
-        from lilbee.app.settings import apply_settings_update
+    def test_cli_column_matches_what_the_set_path_does(self, generator, tmp_path, monkeypatch):
+        """Run `lilbee settings set` for every key that can be set and compare with the cell."""
+        from typer.testing import CliRunner
 
-        for key in WRITABLE_CONFIG_FIELDS:
-            cell = generator._cli_cell(key)
-            if key in MODEL_ROLE_FIELDS:
-                with pytest.raises(ValueError, match="dedicated model route"):
-                    apply_settings_update({key: None}, allow_model_roles=False)
-                assert "settings set" not in cell
-            else:
-                assert "`lilbee settings set`" in cell
+        from lilbee.app import services as svc_mod
+        from lilbee.cli.app import app
+        from tests.conftest import make_mock_services
+
+        monkeypatch.delenv("LILBEE_DATA", raising=False)
+        snapshot = cfg.model_copy()
+        svc_mod.set_services(make_mock_services())
+        try:
+            wrong = []
+            for key in sorted(set(WRITABLE_CONFIG_FIELDS) | MODEL_ROLE_FIELDS):
+                project = tmp_path / key
+                project.mkdir()
+                result = CliRunner().invoke(
+                    app,
+                    ["settings", "set", "--data-dir", str(project), "--", key, _sample_cli_value(key)],
+                )
+                accepted = result.exit_code == 0
+                marked = "`lilbee settings set`" in generator._cli_cell(key)
+                if accepted != marked:
+                    wrong.append((key, "accepted" if accepted else "refused", result.output[-90:]))
+        finally:
+            svc_mod.set_services(None)
+            for name in type(cfg).model_fields:
+                setattr(cfg, name, getattr(snapshot, name))
+        assert not wrong, f"the CLI column disagrees with `lilbee settings set`: {wrong}"
 
     def test_cli_column_keeps_the_dedicated_commands(self, generator):
         assert "use-embedder" in generator._cli_cell("embedding_model")
         assert "placement set" in generator._cli_cell("placement")
         assert generator._cli_cell("chat_model") == "no"
+        assert generator._cli_cell("linked_roots") == "`lilbee add`, `lilbee remove`"
 
     def test_cli_column_says_no_for_a_key_the_cli_cannot_write(self, generator):
         assert generator._cli_cell("server_port") == "no"
