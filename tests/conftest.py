@@ -278,10 +278,12 @@ def _restore_interactive_intent():
     before = services_mod._state.interactive
     reporter = services_mod._state.on_upgrade
     config_refresh = services_mod._state.config_refresh
+    watchers = list(services_mod._state.pool_watchers)
     yield
     services_mod._state.interactive = before
     services_mod._state.on_upgrade = reporter
     services_mod._state.config_refresh = config_refresh
+    services_mod._state.pool_watchers[:] = watchers
 
 
 @pytest.fixture(autouse=True)

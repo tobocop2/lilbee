@@ -340,6 +340,8 @@ async def test_the_container_is_built_behind_the_gate(monkeypatch):
     set_services(None)
     container = mock.MagicMock()
     monkeypatch.setattr("lilbee.cli.tui.app.get_services", lambda: container)
+    watched: list[object] = []
+    monkeypatch.setattr("lilbee.cli.tui.app.watch_pool", lambda **kw: watched.append(kw))
     # An app with nothing to set up, so the gate runs its whole boot.
     monkeypatch.setattr("lilbee.cli.tui.app.chat_ready", lambda: True)
     monkeypatch.setattr("lilbee.cli.tui.app.embedding_ready", lambda: True)
@@ -364,14 +366,14 @@ async def test_the_container_is_built_behind_the_gate(monkeypatch):
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(
             pilot,
-            lambda: bool(canonicalized) and container.add_pool_listener.called,
+            lambda: bool(canonicalized) and bool(watched),
             max_pauses=200,
         )
 
     assert at_start_boot == [None], "the mount path built the container ahead of the gate"
     assert canonicalized, "the gate's boot worker never ran, so the refs were never settled"
     assert canonicalized[0] != threading.main_thread().name, "boot work ran on the UI thread"
-    assert container.add_pool_listener.called, "the app subscribed to some other container"
+    assert watched, "the app never watched the pool, so a services reset would drop its hints"
 
 
 async def test_the_gate_opens_the_library_on_a_thread_the_interpreter_joins(monkeypatch):

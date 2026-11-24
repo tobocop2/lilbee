@@ -209,6 +209,64 @@ class TestAddPoolListener:
         )
 
 
+class TestWatchPool:
+    """A pool watcher outlives the container it was first given, so a reset loses no hint."""
+
+    @pytest.fixture()
+    def builds(self, monkeypatch):
+        """Make ``get_services`` build a container on a fresh recording provider each time."""
+        from lilbee.app import services as services_mod
+        from tests.conftest import make_mock_services
+
+        providers: list[MagicMock] = []
+
+        def build(config, provider=None, registry=None, interactive=False):
+            providers.append(MagicMock())
+            return make_mock_services(provider=providers[-1])
+
+        monkeypatch.setattr(services_mod, "build_services", build)
+        monkeypatch.setattr("lilbee.app.settings.reconcile_embedding_dim", lambda registry: None)
+        monkeypatch.setattr(cfg, "worker_pool_eager_start", False)
+        services_mod.set_services(None)
+        return providers
+
+    def test_a_watcher_hears_the_container_built_after_a_reset(self, builds):
+        from lilbee.app.services import get_services, reset_services, watch_pool
+
+        def on_spawning(_role: WorkerRole) -> None: ...
+
+        def on_spawned(_role: WorkerRole) -> None: ...
+
+        get_services()
+        watch_pool(on_spawning=on_spawning, on_spawned=on_spawned)
+        reset_services()
+        get_services()
+
+        builds[1].add_spawn_listener.assert_called_once_with(
+            on_spawning=on_spawning, on_spawned=on_spawned
+        )
+
+    def test_a_watcher_set_before_the_first_build_hears_it(self, builds):
+        from lilbee.app.services import get_services, watch_pool
+
+        def on_spawned(_role: WorkerRole) -> None: ...
+
+        watch_pool(on_spawned=on_spawned)
+        get_services()
+
+        builds[0].add_spawn_listener.assert_called_once_with(on_spawning=None, on_spawned=on_spawned)
+
+    def test_the_same_watcher_twice_is_heard_once(self, builds):
+        from lilbee.app.services import get_services, watch_pool
+
+        def on_spawned(_role: WorkerRole) -> None: ...
+
+        get_services()
+        watch_pool(on_spawned=on_spawned)
+        watch_pool(on_spawned=on_spawned)
+
+        builds[0].add_spawn_listener.assert_called_once_with(on_spawning=None, on_spawned=on_spawned)
+
 class TestEagerStartBranch:
     """``get_services`` warms the fleet when ``cfg.worker_pool_eager_start`` is set."""
 
