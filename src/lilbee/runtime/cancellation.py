@@ -29,10 +29,10 @@ class CancelSignal(Protocol):
 
 
 class SignalFlag:
-    """A cancel token a signal handler sets with attribute writes and no lock.
+    """A cancel token a signal handler sets with one attribute write and no lock.
 
-    A run that the token stops binds its stop here while it runs: setting the token
-    then also calls that stop, which only hands a cancel to the run's own loop.
+    A run that the token stops binds its stop here while it runs; the stop only
+    hands a cancel to the run's own loop.
     """
 
     def __init__(self) -> None:
@@ -42,12 +42,15 @@ class SignalFlag:
 
     def set(self) -> None:
         self._is_set = True
-        stop = self._stop_run
-        if stop is not None:
-            stop()
 
     def is_set(self) -> bool:
         return self._is_set
+
+    def stop_run(self) -> None:
+        """Ask the bound run, if one runs, to stop."""
+        stop = self._stop_run
+        if stop is not None:
+            stop()
 
     def bind_run(self, stop: Callable[[], object]) -> None:
         """Note that a run started; *stop* asks it to stop and takes no lock."""
@@ -99,6 +102,7 @@ def sigint_cancel() -> Iterator[SignalFlag]:
             force_quit_from_handler()
         elif not token.is_set():
             token.set()
+            token.stop_run()
         else:
             unwinding = True
             if not token.winding_down:
