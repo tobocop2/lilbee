@@ -161,6 +161,9 @@ _BUILD_PATTERN = re.compile(r".+-[^.]+")
 _PRUNE_SKIPPED = "The engine prune cannot read %s. Run 'lilbee engine list' for the fix."
 _SWEEP_SKIPPED = "The engine sweep cannot clear %s: %s"
 _STAYS = "lilbee cannot delete %s. Correct its permissions; the next start removes it."
+_READ_ONLY = (
+    "The engine folder %s is read-only, so %s stays. Make it writable; the next start removes it."
+)
 _LICENCE_JOINER = re.compile(r"\s+(?:OR|AND)\s+")
 PACK_DIR = "packs"
 
@@ -650,11 +653,14 @@ def _builds(engine: Path) -> list[_Slot]:
     return slots
 
 
-def _retry_writable(function: Callable[..., object], path: str, _error: object) -> None:
-    """The rmtree error hook: add the owner write bit to the parent, then delete once more."""
-    if function not in (os.unlink, os.rmdir):
-        return
+def _retry_writable(top: str, function: Callable[..., object], path: str, _error: object) -> None:
+    """The rmtree error hook: add the owner write bit to the parent, then delete once more.
+
+    Only a parent inside the tree *top* gets the bit; the engine folder keeps its mode.
+    """
     parent = os.path.dirname(path)
+    if function not in (os.unlink, os.rmdir) or os.path.commonpath((top, parent)) != top:
+        return
     try:
         os.chmod(parent, stat.S_IMODE(os.lstat(parent).st_mode) | stat.S_IWUSR)
         function(path)
@@ -663,18 +669,38 @@ def _retry_writable(function: Callable[..., object], path: str, _error: object) 
 
 
 def _delete(path: Path) -> bool:
-    """Unlink a file or a link, never its target, or remove a folder; False when part stays."""
-    if not stat.S_ISDIR(os.lstat(path).st_mode):
-        path.unlink()
+    """Unlink a file or a link, never its target, or remove a folder; False when part stays.
+
+    An entry that is already gone counts as deleted.
+    """
+    try:
+        folder = stat.S_ISDIR(os.lstat(path).st_mode)
+    except FileNotFoundError:
         return True
+    if not folder:
+        path.unlink(missing_ok=True)
+        return True
+    hook = partial(_retry_writable, str(path))
     if sys.version_info >= (3, 12):
-        shutil.rmtree(path, onexc=_retry_writable)  # pragma: no cover - Python 3.12 and later
+        shutil.rmtree(path, onexc=hook)  # pragma: no cover - Python 3.12 and later
     else:
-        shutil.rmtree(path, onerror=_retry_writable)  # pragma: no cover - Python 3.11
+        shutil.rmtree(path, onerror=hook)  # pragma: no cover - Python 3.11
     if os.path.lexists(path):
-        log.warning(_STAYS, path)
+        if os.access(path.parent, os.W_OK):
+            log.warning(_STAYS, path)
+        else:
+            log.warning(_READ_ONLY, path.parent, path)
         return False
     return True
+
+
+def _clean_up(folder: Path) -> None:
+    """Delete the scratch or stage folder of a step; a failure is logged, so the step's own
+    error is the one raised."""
+    try:
+        _delete(folder)
+    except OSError as exc:
+        log.warning(_STAYS, folder, exc_info=exc)
 
 
 def _discard(build: Path) -> None:
@@ -848,8 +874,7 @@ class EngineStore:
             with file_lock(scratch_lock, _LOCK_TIMEOUT_S):
                 yield scratch
         finally:
-            if os.path.lexists(scratch):
-                _delete(scratch)
+            _clean_up(scratch)
             _unlink_lock_file(scratch_lock)
 
     def install_from_wheel(self, lock: PinLock, wheel: Path) -> Path:
@@ -895,8 +920,7 @@ class EngineStore:
                     binary = _binary_of(archive, lock.tool)
                 self._swap_in(lock, stage, binary)
             finally:
-                if os.path.lexists(stage):
-                    _delete(stage)
+                _clean_up(stage)
         return final
 
     def _swap_in(self, lock: PinLock, stage: Path, binary: str | None) -> None:
@@ -938,22 +962,25 @@ class EngineStore:
         absent = f"Engine {engine} {version} ({backend}) is not installed."
         _entries(self.root, "")  # an unreadable root refuses before its lock folder is made
         with file_lock(self.root / LOCK_DIR / engine, wait_s):
-            builds = self._engine_builds(engine)
-            if build not in builds:
-                raise EngineNotInstalledError(absent)
-            found = builds[build]
-            if isinstance(found, EngineFolderError):
-                raise found
+            # An engine folder that is a link is damage: remove unlinks it, never its target.
+            target = build.parent if os.path.islink(build.parent) else build
+            if target == build:
+                builds = self._engine_builds(engine)
+                if build not in builds:
+                    raise EngineNotInstalledError(absent)
+                found = builds[build]
+                if isinstance(found, EngineFolderError):
+                    raise found
             if in_use(engine, version, backend):
                 raise EngineInUseError(
                     f"Engine {engine} {version} ({backend}) is in use. Stop the engine "
                     f"with 'lilbee engine stop' and remove it again."
                 )
             try:
-                _discard(build)
+                _discard(target)
             except FileNotFoundError as exc:
                 raise EngineNotInstalledError(absent) from exc
-        return RemoveResult(path=build, canary_warning=True)
+        return RemoveResult(path=target, canary_warning=True)
 
     def prune(
         self, keep: set[tuple[str, str, str]], in_use: Callable[[str, str, str], bool]
@@ -986,9 +1013,11 @@ class EngineStore:
                 StorePathError,
                 EngineNotInstalledError,
                 FileLockUnavailableError,
-                OSError,
             ) as exc:
                 log.debug("Kept the engine build %s: %s", path, exc)
+                continue
+            except OSError as exc:
+                log.warning("The engine prune kept %s: %s", path, exc)
                 continue
             gone.append(path)
         return gone
