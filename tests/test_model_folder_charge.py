@@ -326,9 +326,7 @@ def test_a_breakdown_of_the_wrong_length_keeps_the_count_text() -> None:
 
 def test_the_refusal_of_a_two_card_pin_names_the_role_alone(tmp_path, monkeypatch) -> None:
     with pytest.raises(TargetRefusedError) as refused:
-        _pin(
-            _SplitsAnywhere(), WorkerRole.CHAT, _folder(tmp_path, GIB), (0, 1), monkeypatch, True
-        )
+        _pin(_SplitsAnywhere(), WorkerRole.CHAT, _folder(tmp_path, GIB), (0, 1), monkeypatch, True)
     assert set(refused.value.reasons) == {WorkerRole.CHAT}
 
 
