@@ -95,7 +95,7 @@ from lilbee.core.config.enums import CrawlRenderMode, OcrMode
 from lilbee.core.health_warnings import HealthWarning, warnings_payload
 from lilbee.core.profile_files import ProfileFolder, ProfileStore, ProfileValidation
 from lilbee.core.security import FileLockUnavailableError
-from lilbee.core.settings import overlay_persisted_settings
+from lilbee.core.settings import ReadOnlyConfigError, overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
 from lilbee.crawler import (
     CRAWLER_MISSING_MESSAGE,
@@ -1005,7 +1005,7 @@ def reset(confirm: bool = False) -> dict[str, Any]:
         result = perform_reset().model_dump()
     except ResetRefusedError as exc:
         return _error(str(exc))
-    except FileLockUnavailableError as exc:
+    except (FileLockUnavailableError, ReadOnlyConfigError) as exc:
         return _error(config_write_failure_message(exc))
     # Reopen LanceDB against the empty data dir; keep providers loaded.
     reset_store()
