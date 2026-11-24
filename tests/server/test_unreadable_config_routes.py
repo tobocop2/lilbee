@@ -1,8 +1,8 @@
-"""An unreadable config.toml answers 503 with the read text on every route that reads it.
+"""An unreadable or read-only config.toml answers 503 on every route that reads or writes it.
 
-Each test puts a directory where config.toml belongs, so the open fails for real,
-and sends the request through the HTTP client. A config that is readable but invalid
-keeps its 422 (see the last test).
+The unreadable tests put a directory where config.toml belongs, so the open fails for real.
+The read-only tests chmod the file to 0444. Both send the request through the HTTP client.
+A config that is readable but invalid keeps its 422 (see the invalid-config test).
 """
 
 from __future__ import annotations
@@ -13,8 +13,15 @@ import stat
 import pytest
 
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
+from lilbee.server.routes.documents import add_route
 from lilbee.server.routes.general import config_reset_route, config_update_route
-from lilbee.server.routes.placement import placement_clear_route
+from lilbee.server.routes.models import (
+    models_set_chat_route,
+    models_set_embedding_route,
+    models_set_reranker_route,
+    models_set_vision_route,
+)
+from lilbee.server.routes.placement import placement_clear_route, placement_set_route
 from lilbee.server.routes.presets import (
     presets_add_route,
     presets_edit_route,
@@ -26,9 +33,15 @@ from tests._litestar_test_client import create_test_client
 READ_TEXT = f"Could not read {CONFIG_FILE_NAME}"
 ADD_BODY = {"name": "omlx", "url": "http://127.0.0.1:8000/v1", "roles": ["chat"]}
 ALL_ROUTES = [
+    add_route,
     config_reset_route,
     config_update_route,
+    models_set_chat_route,
+    models_set_embedding_route,
+    models_set_reranker_route,
+    models_set_vision_route,
     placement_clear_route,
+    placement_set_route,
     presets_add_route,
     presets_edit_route,
     presets_list_route,
@@ -45,8 +58,20 @@ REQUESTS = [
         id="preset-add",
     ),
     pytest.param("get", "/api/presets", {}, id="preset-list"),
-    pytest.param("put", "/api/presets/omlx", {"json": {"url": ADD_BODY["url"]}}, id="preset-edit"),
-    pytest.param("delete", "/api/presets/omlx", {}, id="preset-remove"),
+    pytest.param(
+        "put", "/api/presets/seeded", {"json": {"url": ADD_BODY["url"]}}, id="preset-edit"
+    ),
+    pytest.param("delete", "/api/presets/seeded", {}, id="preset-remove"),
+]
+# Writers that need more setup than a bare request, so the unreadable test does not send them.
+MODEL_REQUESTS = [
+    pytest.param("put", f"/api/models/{role}", {"json": {"model": "m"}}, id=f"model-{role}")
+    for role in ("chat", "embedding", "vision", "reranker")
+]
+WRITE_REQUESTS = [
+    *(p for p in REQUESTS if p.id != "preset-list"),
+    *MODEL_REQUESTS,
+    pytest.param("put", "/api/placement", {"json": {"spec": {}}}, id="placement-set"),
 ]
 
 
@@ -84,34 +109,47 @@ def test_a_readable_but_invalid_config_keeps_its_422(client, tmp_path):
     assert not res.json()["detail"].startswith(READ_TEXT)
 
 
-WRITE_REQUESTS = [
-    pytest.param("patch", "/api/config", {"json": {"top_k": 3}}, id="config-update"),
-    pytest.param("post", "/api/config/reset", {"json": {"keys": ["top_k"]}}, id="config-reset"),
-    pytest.param("delete", "/api/placement", {}, id="placement-clear"),
-    pytest.param(
-        "post",
-        "/api/presets",
-        {"json": {**ADD_BODY, "name": "second"}},
-        id="preset-add",
-    ),
-    pytest.param("put", "/api/presets/omlx", {"json": {"url": ADD_BODY["url"]}}, id="preset-edit"),
-    pytest.param("delete", "/api/presets/omlx", {}, id="preset-remove"),
-]
+@pytest.fixture
+def read_only_config(client, tmp_path, monkeypatch):
+    """Store a preset, a top_k and a placement, then make config.toml 0444; undo at teardown."""
+    # A model switch checks that the model is installed; this test is about the write.
+    monkeypatch.setattr(
+        "lilbee.server.handlers.models._require_model_for_task",
+        lambda model, expected, allow_empty=False: model,
+    )
+    # A placement set plans against the hardware first; the plan is not what is tested.
+    monkeypatch.setattr("lilbee.app.placement._plan_for_write", lambda spec, reading: None)
+    seed = {**ADD_BODY, "name": "seeded"}
+    assert client.post("/api/presets", json=seed).status_code == 201
+    path = tmp_path / CONFIG_FILE_NAME
+    # A reset and a clear write only when the key is stored, so store both.
+    path.write_text('top_k = 7\nplacement = "{}"\n' + path.read_text())
+    path.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    yield path
+    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+def _refusal(path):
+    return f"{path} is read-only; make it writable and try again."
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root writes a read-only file")
 @pytest.mark.parametrize(("method", "url", "kwargs"), WRITE_REQUESTS)
 def test_a_read_only_config_answers_503_with_the_write_refusal(
-    client, tmp_path, method, url, kwargs
+    client, read_only_config, method, url, kwargs
 ):
-    assert client.post("/api/presets", json=ADD_BODY).status_code == 201
-    path = tmp_path / CONFIG_FILE_NAME
-    # A reset and a clear write only when the key is stored, so store both.
-    path.write_text('top_k = 7\nplacement = "{}"\n' + path.read_text())
-    path.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
-    try:
-        res = getattr(client, method)(url, **kwargs)
-    finally:
-        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    res = getattr(client, method)(url, **kwargs)
     assert res.status_code == 503, res.text
-    assert res.json()["detail"] == f"{path} is read-only; make it writable and try again.", res.text
+    assert res.json()["detail"] == _refusal(read_only_config), res.text
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes a read-only file")
+def test_add_with_a_read_only_config_answers_503_with_the_write_refusal(
+    client, read_only_config, tmp_path
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "note.txt").write_text("hello")
+    res = client.post("/api/add", json={"paths": [str(outside)]})
+    assert res.status_code == 503, res.text
+    assert _refusal(read_only_config) in res.text
