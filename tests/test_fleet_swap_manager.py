@@ -17,6 +17,7 @@ import pytest
 
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import swap_manager as sm
+from lilbee.providers.fleet.build_use import build_in_use, removing
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.llama import LlamaCppAdapter
 from lilbee.providers.fleet.groups import SwapGroup
@@ -2475,3 +2476,80 @@ class TestKillRecordedEngine:
         monkeypatch.setattr(sm, "_await_killed", lambda _procs: None)
         assert sm._kill_recorded_engine(state) is False
         assert killed == []
+
+
+_SLEEP = [sys.executable, "-c", "import time; time.sleep(60)"]
+
+
+class TestRouterHoldsItsBuilds:
+    """The router started by the manager keeps its store builds in use, not the launcher."""
+
+    @pytest.fixture
+    def builds(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+        root = tmp_path / "engines"
+        router, server = root / "llama-swap" / "1-cpu", root / "llama-cpp" / "2-cpu"
+        router.mkdir(parents=True)
+        server.mkdir(parents=True)
+        real_spawn = sm.spawn_bound_child
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        monkeypatch.setattr(sm, "resolve_llama_swap", lambda: router / "llama-swap")
+        # The router is a real child that sleeps, started with the manager's own arguments.
+        monkeypatch.setattr(sm, "spawn_bound_child", lambda _argv, **kw: real_spawn(_SLEEP, **kw))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        return router, server
+
+    def _start(self, tmp_path: Path, server: Path) -> SwapManager:
+        launch = InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=[str(server / "llama-server")],
+            env_overrides={},
+            model="chat-model",
+            server_binary=str(server / "llama-server"),
+        )
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([launch], engines=engines_for_all_roles(LLAMA))
+        return mgr
+
+    def _stop_router(self, mgr: SwapManager) -> None:
+        proc = mgr._proc
+        assert proc is not None
+        proc.kill()
+        proc.wait()
+
+    def test_the_router_holds_its_own_build_and_the_server_build(
+        self, tmp_path: Path, builds: tuple[Path, Path]
+    ) -> None:
+        router, server = builds
+        mgr = self._start(tmp_path, server)
+        try:
+            assert build_in_use(router) is True
+            assert build_in_use(server) is True
+        finally:
+            self._stop_router(mgr)
+
+    def test_the_builds_are_free_once_the_router_exits(
+        self, tmp_path: Path, builds: tuple[Path, Path]
+    ) -> None:
+        router, server = builds
+        mgr = self._start(tmp_path, server)
+        self._stop_router(mgr)
+        assert build_in_use(router) is False
+        assert build_in_use(server) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows refuses the rename instead")
+    def test_a_start_from_a_build_being_removed_fails_and_starts_nothing(
+        self, tmp_path: Path, builds: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _router, server = builds
+        spawned: list[object] = []
+        monkeypatch.setattr(sm, "spawn_bound_child", lambda *a, **k: spawned.append(a))
+        with (
+            removing(server),
+            pytest.raises(ProviderError, match="Engine llama-cpp 2-cpu is being removed"),
+        ):
+            self._start(tmp_path, server)
+        assert spawned == []
+        assert build_in_use(server) is False
