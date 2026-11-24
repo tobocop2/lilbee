@@ -60,7 +60,7 @@ class ModelNotFoundError(Exception):
     def __init__(self, model: str) -> None:
         self.model = model
         super().__init__(
-            f"Model {model!r} is not installed. Run 'lilbee model list' to see "
+            f"Model '{model}' is not installed. Run 'lilbee model list' to see "
             f"installed models, or 'lilbee model pull {model}' to download it."
         )
 
@@ -71,7 +71,7 @@ class ModelDoesNotSupportToolsError(Exception):
     def __init__(self, model: str) -> None:
         self.model = model
         super().__init__(
-            f"Model {model!r} does not support tool calls. Pick a chat model "
+            f"Model '{model}' does not support tool calls. Pick a chat model "
             f"with a tool-aware chat template, or remove tools from the request."
         )
 

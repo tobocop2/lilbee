@@ -118,11 +118,11 @@ def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
         apply_ephemeral_model_swap(field, canon.effective)
         if canon.original:
             notice = (
-                f"{label} model {canon.original!r} is unavailable ({canon.reason}); "
-                f"using installed {canon.effective!r} for this run."
+                f"{label} model '{canon.original}' is unavailable ({canon.reason}); "
+                f"using installed '{canon.effective}' for this run."
             )
         else:
-            notice = f"No {label.lower()} model configured; using installed {canon.effective!r}."
+            notice = f"No {label.lower()} model configured; using installed '{canon.effective}'."
         err.print(notice, style=theme.WARNING, soft_wrap=True)
 
 
