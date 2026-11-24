@@ -70,8 +70,8 @@ def test_an_unreadable_config_answers_503_with_the_read_text(
 ):
     (tmp_path / CONFIG_FILE_NAME).mkdir()
     res = getattr(client, method)(url, **kwargs)
-    assert res.status_code == 503
-    assert res.json()["detail"].startswith(READ_TEXT)
+    assert res.status_code == 503, res.text
+    assert res.json()["detail"].startswith(READ_TEXT), res.text
 
 
 def test_a_readable_but_invalid_config_keeps_its_422(client, tmp_path):
