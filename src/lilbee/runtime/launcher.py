@@ -84,7 +84,13 @@ def main() -> None:
     if not is_interactive:
         from lilbee.cli import app
 
-        _run_cli(app)
+        try:
+            _run_cli(app)
+        except SystemExit as ended:
+            # A worker the command left would hang the interpreter's exit.
+            from lilbee.app.services import end_command
+
+            end_command(ended)
         return
 
     from lilbee.app.services import mark_interactive_session
