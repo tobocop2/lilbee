@@ -916,10 +916,13 @@ class LlamaServerClient:
         ):
             self._raise_for_status(resp)
             self._abortable(resp)
+            bounded = False
             for line in resp.iter_lines():
                 delta = inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
                 if delta:
-                    _bound_idle_reads(resp)
+                    if not bounded:
+                        _bound_idle_reads(resp)
+                        bounded = True
                     yield delta
             tail = inliner.finish()
             if tail:
@@ -983,10 +986,12 @@ class LlamaServerClient:
             if not resp.is_success:
                 await resp.aread()
             self._raise_for_status(resp)
+            bounded = False
             async for line in resp.aiter_lines():
                 text = inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
-                if text:
-                    _bound_idle_reads(resp)
+                if text and not bounded:
+                    await _bound_idle_reads_async(resp)
+                    bounded = True
                 parts.append(text)
         parts.append(inliner.finish())
         return "".join(parts)
@@ -2184,18 +2189,43 @@ def _prefill_progress(line: str) -> tuple[int, int] | None:
         return None
 
 
+def _idle_bounded(timeout: float | None) -> float:
+    """*timeout*, cut to ``_STREAM_IDLE_TIMEOUT_S`` when it is longer or not set."""
+    return _STREAM_IDLE_TIMEOUT_S if timeout is None else min(timeout, _STREAM_IDLE_TIMEOUT_S)
+
+
 def _bound_idle_reads(resp: httpx.Response) -> None:
     """Cut the read wait of *resp* to ``_STREAM_IDLE_TIMEOUT_S`` for the reads that follow.
 
     The client's own read timeout is the cold-load budget. It holds until the first
     frame, because the engine sends its headers before it ends prompt evaluation.
-    httpcore reads the ``timeout`` request extension again at each body read, so this
-    change applies to the next read. A shorter read timeout stays as it is.
+    httpcore takes the read timeout once, when the body starts, so the request timeout
+    cannot change in the middle of a body. The network stream of the response takes a
+    timeout at each read. A shorter read timeout stays as it is. Call this once for each
+    response. A response with no network stream (an in-memory transport) is left as it is.
     """
-    timeout = resp.request.extensions["timeout"]
-    read = timeout.get("read")
-    if read is None or read > _STREAM_IDLE_TIMEOUT_S:
-        timeout["read"] = _STREAM_IDLE_TIMEOUT_S
+    stream = resp.extensions.get("network_stream")
+    if stream is None:
+        return
+    read = stream.read
+
+    def read_bounded(max_bytes: int, timeout: float | None = None) -> bytes:
+        return read(max_bytes, _idle_bounded(timeout))
+
+    stream.read = read_bounded
+
+
+async def _bound_idle_reads_async(resp: httpx.Response) -> None:
+    """The async twin of :func:`_bound_idle_reads`, for a response of an async client."""
+    stream = resp.extensions.get("network_stream")
+    if stream is None:
+        return
+    read = stream.read
+
+    async def read_bounded(max_bytes: int, timeout: float | None = None) -> bytes:
+        return await read(max_bytes, _idle_bounded(timeout))
+
+    stream.read = read_bounded
 
 
 def _raise_if_cut(*, started: bool, ended: bool, provider: str) -> None:
