@@ -77,19 +77,21 @@ class ServicesStoppingError(RuntimeError):
 
 
 @contextmanager
-def logged_services_build() -> Iterator[None]:
-    """Log why a server does not start when the services build raises, then re-raise.
+def logged_services_build(logger: logging.Logger) -> Iterator[None]:
+    """Log, on *logger*, why a server does not start when the services build raises.
 
     Both the HTTP server and the stdio MCP server run their startup build inside this
-    block, so a failed build ends the start with the same plain error.
+    block, so a failed build ends the start with the same plain error. A stop signal
+    that ends the build with a system exit gets the same stop line as a raised stop.
     """
     try:
         yield
-    except ServicesStoppingError:
-        log.info("A stop arrived during the services build, so the server does not start")
+    except (ServicesStoppingError, SystemExit) as exc:
+        if isinstance(exc, ServicesStoppingError) or _lifecycle.stop_requested:
+            logger.info("A stop arrived during the services build, so the server does not start")
         raise
     except Exception:
-        log.error(
+        logger.error(
             "The services build failed (the chat-model fill or the build), "
             "so the server does not start",
             exc_info=True,

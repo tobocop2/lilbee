@@ -2512,7 +2512,7 @@ def main() -> None:
     The services build runs first, as in the HTTP server. A failed build ends the start
     with the logged error and a non-zero exit, so no tool call retries it.
     """
-    with logged_services_build():
+    with logged_services_build(log):
         for notice in fill_empty_chat_model():
             log.info("%s", notice)
         get_services()
