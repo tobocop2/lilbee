@@ -13,12 +13,13 @@ from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.engines.base import LaunchRequest
 from lilbee.providers.fleet.engines.ovms import OVMS
 from lilbee.providers.fleet.placement_spec import PlacementSpec, TargetRefusedError
-from lilbee.providers.roles import RoleTarget, WorkerRole
+from lilbee.providers.roles import EngineBackend, RoleTarget, WorkerRole
 from tests._fleet_engines import (
     CardEngine,
     Role,
     cards_of,
     engines_for_all_roles,
+    model_file,
     prepare_host,
 )
 
@@ -33,10 +34,15 @@ class TargetsEngine(CardEngine):
         super().__init__(*args, **kwargs)
         self._targets = targets
         self.asked = 0
+        self.requested: list[RoleTarget] = []
 
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
         self.asked += 1
         return self._targets
+
+    def launch_argv(self, spec, request) -> list[str]:
+        self.requested.append(request.target)
+        return super().launch_argv(spec, request)
 
 
 CPU_ONLY = frozenset({RoleTarget.CPU})
@@ -102,7 +108,9 @@ def test_auto_entry_in_a_spec_runs_on_cpu_without_gpu_target(
     assert _targets(engine, spec) == {"chat": "cpu", "embed": "cpu"}
 
 
-def test_named_gpu_target_is_not_rewritten(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_named_gpu_target_on_a_build_without_gpu_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     engine = _engine(monkeypatch, tmp_path, (24,), CPU_ONLY)
     spec = PlacementSpec.from_json('{"chat": {"devices": [0], "target": "gpu"}}')
     with pytest.raises(TargetRefusedError):
@@ -113,6 +121,94 @@ def test_pinned_device_is_not_rewritten(monkeypatch: pytest.MonkeyPatch, tmp_pat
     engine = _engine(monkeypatch, tmp_path, (24,), CPU_ONLY)
     spec = PlacementSpec.from_json('{"chat": {"devices": [0]}, "embed": {"target": "cpu"}}')
     assert _targets(engine, spec)["chat"] == "gpu"
+
+
+def test_engine_is_asked_once_when_a_spec_falls_back_to_auto(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    engine = _engine(monkeypatch, tmp_path, (), CPU_ONLY)
+    spec = PlacementSpec.from_json('{"chat": {"devices": [3]}, "embed": {"devices": [3]}}')
+    planning.resolve_placement_plan(
+        spec, engines=engines_for_all_roles(engine), fall_back_to_auto=True
+    )
+    assert engine.asked == 1
+
+
+def test_engine_is_asked_once_for_a_named_target_and_the_auto_step(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    engine = _engine(monkeypatch, tmp_path, (), CPU_ONLY)
+    spec = PlacementSpec.from_json('{"chat": {"target": "cpu"}, "embed": {"target": "auto"}}')
+    planning.resolve_placement_plan(spec, engines=engines_for_all_roles(engine))
+    assert engine.asked == 1
+
+
+def _self_check_target(engine: TargetsEngine, tmp_path: Path) -> RoleTarget:
+    planning.build_single_role_launch(
+        WorkerRole.EMBED, tmp_path / model_file(WorkerRole.EMBED), engine=engine
+    )
+    assert len(engine.requested) == 1
+    return engine.requested[0]
+
+
+def test_self_check_without_gpu_target_launches_on_cpu(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    engine = _engine(monkeypatch, tmp_path, (), CPU_ONLY)
+    assert _self_check_target(engine, tmp_path) is RoleTarget.CPU
+
+
+def test_self_check_with_card_launches_on_gpu(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    engine = _engine(monkeypatch, tmp_path, (24,), BOTH)
+    assert _self_check_target(engine, tmp_path) is RoleTarget.GPU
+
+
+def test_self_check_with_a_named_target_keeps_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    engine = _engine(monkeypatch, tmp_path, (24,), BOTH)
+    monkeypatch.setattr(cfg, "placement", '{"embed": {"target": "cpu"}}')
+    assert _self_check_target(engine, tmp_path) is RoleTarget.CPU
+
+
+AUTO_BOTH = '{"chat": {"target": "auto"}, "embed": {"target": "auto"}}'
+
+
+class TestMovedRoleKeepsItsLowFreeMemoryWarning:
+    """A role the auto plan moves to the CPU still warns when the free memory is short."""
+
+    @pytest.mark.parametrize("backend", [EngineBackend.CPU, EngineBackend.CUDA])
+    @pytest.mark.parametrize("spec", [None, AUTO_BOTH])
+    def test_the_launch_warns_once_that_the_plan_passes_the_free_memory(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        spec: str | None,
+        backend: EngineBackend,
+    ) -> None:
+        small = (Role(WorkerRole.CHAT, 1), Role(WorkerRole.EMBED, 1))
+        prepare_host(monkeypatch, tmp_path, small, 64 * GIB)
+        monkeypatch.setattr(cfg, "placement", spec)
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        monkeypatch.setattr(planning, "_plan_free_system_memory", lambda _e: int(1.5 * GIB))
+        engine = TargetsEngine(
+            "engine-a",
+            tmp_path / "engine-server",
+            small,
+            [],
+            targets=CPU_ONLY,
+            backend=backend,
+            cpu_only=backend is EngineBackend.CPU,
+        )
+        with caplog.at_level("WARNING"):
+            plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert {launch.role for launch in plan.launches} == {WorkerRole.CHAT, WorkerRole.EMBED}
+        warned = [r.getMessage() for r in caplog.records if "is free" in r.getMessage()]
+        assert len(warned) == 1
+        assert "only 1.5 GiB is free" in warned[0]
 
 
 def test_ovms_argv_for_auto_plan_without_gpu_names_cpu(
