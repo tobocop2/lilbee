@@ -26,6 +26,25 @@ def test_default_discards_stderr_but_merge_folds_it() -> None:
     assert "err" in merged and "out" in merged
 
 
+def test_stderr_sink_receives_stderr_and_stdout_stays_clean() -> None:
+    argv = [sys.executable, "-c", "import sys; sys.stderr.write('err'); print('out')"]
+    sink: list[str] = []
+    out, _ = proc.run_bounded(argv, timeout_s=10, kill_wait_s=2, stderr_sink=sink)
+    assert out == "out\n"
+    assert sink == ["err"]
+
+
+@pytest.mark.timeout(10)
+def test_stderr_sink_is_filled_when_the_child_times_out() -> None:
+    code = "import sys,time; sys.stderr.write('slow'); sys.stderr.flush(); time.sleep(30)"
+    sink: list[str] = []
+    with pytest.raises(subprocess.TimeoutExpired):
+        proc.run_bounded(
+            [sys.executable, "-c", code], timeout_s=1, kill_wait_s=3, stderr_sink=sink
+        )
+    assert sink == ["slow"]
+
+
 @pytest.mark.timeout(10)
 def test_a_timed_out_child_is_killed_and_raises() -> None:
     """A sleeping child is killed on timeout, so the call returns instead of hanging.
