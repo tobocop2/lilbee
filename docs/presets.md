@@ -37,18 +37,18 @@ The default is `v1`. A wire on a preset without the rerank role is stored. It ap
 
 ## The memory reserve
 
-The `memory_reserve_gb` field tells lilbee how much RAM a server on this host keeps. lilbee cannot read the memory of a server it did not start. The field is optional, from 0 to 64 GiB, and unset by default.
+The `memory_reserve_gb` field tells lilbee how much RAM a server on this computer keeps. lilbee cannot read the memory of a server it did not start. The field is optional, from 0 to 64 GiB, and unset by default.
 
 The memory plan subtracts the reserve from the budget that admits models. It does not change the budget that sizes the context, because a running server is already missing from the free RAM that lilbee reads.
 
-Only a preset whose URL host is on this host counts. These host forms count:
+Only a preset whose URL host is on this computer counts. These host forms count:
 
 - `localhost` and `localhost.`
 - Any address in `127.0.0.0/8`: the dotted form (`127.0.0.1`), the short form (`127.1`), the decimal form (`2130706433`) and the hex form (`0x7f000001`)
 - `::1`
 - `::` and `0.0.0.0`
 
-lilbee treats a private LAN address as remote, even when it is an address of this host. A reserve on a remote preset is stored. Every surface shows a note that it has no effect. A preset on a host with a dedicated GPU does not change the plan. The reserves of all loopback presets add up, and the budget stops at zero.
+lilbee treats a private LAN address as remote, even when it is an address of this computer. A reserve on a remote preset is stored. Every surface shows a note that it has no effect. A preset on a host with a dedicated GPU does not change the plan. The reserves of all loopback presets add up, and the budget stops at zero.
 
 To unset a stored reserve, clear it with `--clear-reserve` on the CLI and the slash command, with `clear_reserve` in the REST body and the MCP tool, or with a blank field in the dialog. An edit without a reserve keeps the stored one. A clear and a new reserve in the same edit are refused.
 

@@ -40,7 +40,7 @@ _T = TypeVar("_T")
 _NO_VALUE = "-"
 _roles_help = "Comma-separated roles: embed, rerank, chat, vision."
 _wire_help = "Rerank request shape: v1 or tei."
-_reserve_help = "GiB of RAM a server on this host keeps; the memory plan leaves it free (0 to 64)."
+_reserve_help = "GiB of RAM a server on this computer keeps; the memory plan leaves it free (0 to 64)."
 _key_stdin_help = "Read the API key from one line of stdin, or ask for it on a terminal."
 
 

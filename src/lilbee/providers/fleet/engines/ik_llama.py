@@ -103,7 +103,7 @@ class IkLlamaAdapter:
     def pick_build(self, host: HostCaps) -> BuildPick:
         """The CUDA build on a Linux x86_64 host with a card and driver that it serves, else CPU."""
         if (host.os, host.arch) != (HostOS.LINUX, HostArch.X86_64):
-            return BuildPick(IkBackend.CPU, "No CUDA build exists for this host.")
+            return BuildPick(IkBackend.CPU, "No CUDA build exists for this computer.")
         if has_usable_cuda(host, _CUDA_DRIVER_FLOOR, _CUDA_MIN_COMPUTE):
             return BuildPick(IkBackend.CUDA)
         if not host.gpus:

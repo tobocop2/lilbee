@@ -46,7 +46,7 @@ _NOTHING_TO_CHANGE = (
 )
 _CLEAR_KEY_ALONE = "Clear the key in its own edit. Do not give other changes with it."
 _RESERVE_CLEAR_OR_SET = "Clear the memory reserve or give a new one, not both."
-RESERVE_REMOTE_NOTE = "The memory reserve has no effect: the server is not on this host."
+RESERVE_REMOTE_NOTE = "The memory reserve has no effect: the server is not on this computer."
 
 _ListChange = Callable[[list[Entry]], list[Entry]]
 

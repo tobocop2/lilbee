@@ -212,7 +212,7 @@ class TestTheMessageNamesTheEngineToInstall:
         )
         assert choice.notice == (
             "For embed: Engine tei loads the safetensors format of org/folder "
-            "but cannot run on this host. No build exists for Windows."
+            "but cannot run on this computer. No build exists for Windows."
         )
 
     def test_no_role_names_the_refused_engine_without_a_role_prefix(self) -> None:
@@ -230,7 +230,7 @@ class TestTheMessageNamesTheEngineToInstall:
         )
         assert choice.notice == (
             "Engine tei loads the gguf format of org/folder "
-            "but cannot run on this host. No build exists for Windows."
+            "but cannot run on this computer. No build exists for Windows."
         )
 
     def test_a_format_no_installed_engine_loads_keeps_the_load_message(self) -> None:

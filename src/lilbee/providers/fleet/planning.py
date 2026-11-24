@@ -2440,7 +2440,7 @@ def _warn_gpu_present_but_unenumerated(binary: Path, engine: EngineAdapter) -> N
         idle = sorted(v.label for v in PCIVendorID if v in undriven)
         if idle:
             log.warning(
-                "The %s GPU on this host has no kernel driver loaded, so the engine "
+                "The %s GPU on this computer has no kernel driver loaded, so the engine "
                 "cannot use it. Placement falls back to shared-memory mode. Load the "
                 "GPU's kernel driver and start lilbee again.",
                 " and ".join(idle),
@@ -4630,7 +4630,7 @@ def _unplaceable_reasons(
             )
         elif role in unpinnable:
             reasons[role] = (
-                f"{role.value} model {model} will not be served: this host has "
+                f"{role.value} model {model} will not be served: this computer has "
                 f"{host_cards.said} GPUs and {engine} cannot be told which one to use. "
                 "Use another engine for this role."
             )
