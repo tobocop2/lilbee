@@ -23,7 +23,7 @@ from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
 from lilbee.core.config import cfg
 from lilbee.data.store.types import HeldOut, HeldRecord
 from tests import test_tui_embed_swap as embed_swap
-from tests._async_wait import press_widget, wait_until
+from tests._async_wait import ABSENCE_SECONDS, press_widget, wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost
 from tests._profile_fixtures import (
     gate_releases_at_once,  # noqa: F401 -- autouse fixture, applied by import
@@ -136,7 +136,10 @@ class _Visit:
     async def no_dialog(self, shown: int = 0) -> bool:
         """True when no ConfirmDialog past the *shown* ones comes within the wait."""
         return not await wait_until(
-            self.pilot, lambda: len(self.dialogs) > shown, max_pauses=_ABSENT_PAUSES
+            self.pilot,
+            lambda: len(self.dialogs) > shown,
+            max_pauses=_ABSENT_PAUSES,
+            timeout=ABSENCE_SECONDS,
         )
 
     async def answer_offer(self, pill_id: str, text: str = msg.SETTINGS_REINDEX_MESSAGE) -> None:
