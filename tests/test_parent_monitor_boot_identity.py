@@ -37,7 +37,9 @@ class TestBootIdentity:
         assert pm.boot_identity() == "UUID-1"
 
     @pytest.mark.parametrize(
-        ("result", "text"), [(-1, b"UUID-1"), (0, b""), (0, b"\xff\xfe")], ids=["rc", "empty", "bytes"]
+        ("result", "text"),
+        [(-1, b"UUID-1"), (0, b""), (0, b"\xff\xfe")],
+        ids=["rc", "empty", "bytes"],
     )
     def test_macos_read_that_fails_gives_none(
         self, monkeypatch: pytest.MonkeyPatch, result: int, text: bytes
