@@ -106,6 +106,8 @@ def test_a_read_only_config_answers_503_with_the_write_refusal(
 ):
     assert client.post("/api/presets", json=ADD_BODY).status_code == 201
     path = tmp_path / CONFIG_FILE_NAME
+    # A reset and a clear write only when the key is stored, so store both.
+    path.write_text('top_k = 7\nplacement = "{}"\n' + path.read_text())
     path.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
     try:
         res = getattr(client, method)(url, **kwargs)
