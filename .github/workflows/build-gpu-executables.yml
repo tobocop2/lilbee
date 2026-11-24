@@ -253,7 +253,7 @@ jobs:
       # own errors, but mktemp and wc run under set -euo pipefail and can still
       # hard-exit; on a soft cell that would go green with the asset missing.
       - name: Publish the Nuitka cache to the mirror
-        if: success() && runner.os == 'Windows' && steps.nuitka-mirror.outputs.restored != 'true'
+        if: success() && runner.os == 'Windows' && steps.nuitka-mirror.outputs.current != 'true'
         continue-on-error: true
         uses: ./.github/actions/nuitka-object-cache
         with:
