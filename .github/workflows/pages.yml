@@ -138,7 +138,10 @@ jobs:
       - name: Build compat (fork wheels) index
         # Serves lilbee.sh/compat/: the +compat wheels built by the owner's forks
         # and hosted as release assets there. lancedb must exist; the other forks
-        # may have no release yet. Independent of the lilbee wheel set above.
+        # may have no release yet, and one that cannot be read is skipped. List
+        # only the forks that tools/wheel-build/oldmac-wheels.in pins: pip ranks
+        # a fork's local version above PyPI's for every user of this index.
+        # Independent of the lilbee wheel set above.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -146,8 +149,7 @@ jobs:
           python3 tools/build_compat_index.py wheel-indexes \
             --repo tobocop2/lancedb \
             --optional-repo tobocop2/crawlberg \
-            --optional-repo tobocop2/liter-llm \
-            --optional-repo tobocop2/xberg
+            --optional-repo tobocop2/liter-llm
 
       - name: Upload wheel-indexes artifact
         uses: actions/upload-artifact@v7

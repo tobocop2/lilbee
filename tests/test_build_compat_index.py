@@ -119,7 +119,7 @@ def test_fetch_wheels_reads_the_api_digest(monkeypatch):
     assert bci.fetch_wheels("o/r") == [("w.whl", "https://x/w.whl", _SHA)]
 
 
-def test_the_release_filter_takes_compat_and_lilbee_tags_and_nothing_else():
+def test_the_release_filter_takes_compat_tags_and_nothing_else():
     tags = (
         "v1.13.0+compat",
         "lancedb-v0.40.0+compat",
@@ -140,11 +140,53 @@ def test_the_release_filter_takes_compat_and_lilbee_tags_and_nothing_else():
         check=True,
     ).stdout
     picked = [json.loads(line)["name"] for line in out.splitlines()]
-    assert picked == ["v1.13.0+compat.whl", "lancedb-v0.40.0+compat.whl", "v1.4.0+lilbee.whl"]
+    assert picked == ["v1.13.0+compat.whl", "lancedb-v0.40.0+compat.whl"]
 
 
 def test_fetch_wheels_refuses_an_asset_with_no_digest(monkeypatch):
     line = '{"name": "w.whl", "url": "https://x/w.whl", "digest": null}'
     monkeypatch.setattr(bci.subprocess, "check_output", _Run(line))
-    with pytest.raises(SystemExit, match=r"w\.whl has no sha256 digest"):
+    with pytest.raises(bci.FetchError, match=r"w\.whl has no sha256 digest"):
         bci.fetch_wheels("o/r")
+
+
+def _gh_fails(*_a, **_k):
+    raise subprocess.CalledProcessError(1, ["gh", "api"])
+
+
+def test_fetch_wheels_names_the_repo_whose_releases_cannot_be_read(monkeypatch):
+    monkeypatch.setattr(bci.subprocess, "check_output", _gh_fails)
+    with pytest.raises(bci.FetchError, match=r"cannot read the releases of o/r"):
+        bci.fetch_wheels("o/r")
+
+
+def _fetch_failing_for(repo: str, by_repo: dict[str, list[str]]):
+    def fetch(name: str):
+        if name == repo:
+            raise bci.FetchError(f"cannot read the releases of {name}")
+        return [_wheel(n) for n in by_repo[name]]
+
+    return fetch
+
+
+def test_an_optional_fork_that_cannot_be_read_is_skipped_with_a_warning(
+    monkeypatch, tmp_path, capsys
+):
+    by_repo = {"o/lancedb": [_LANCEDB]}
+    monkeypatch.setattr(bci, "fetch_wheels", _fetch_failing_for("o/crawlberg", by_repo))
+    argv = ["--repo", "o/lancedb", "--optional-repo", "o/crawlberg"]
+    monkeypatch.setattr("sys.argv", ["build_compat_index.py", str(tmp_path), *argv])
+
+    assert bci.main() == 0
+    assert "warning: cannot read the releases of o/crawlberg; skipped" in capsys.readouterr().err
+    assert (tmp_path / "compat" / "lancedb" / "index.html").exists()
+    assert not (tmp_path / "compat" / "crawlberg").exists()
+
+
+def test_a_required_fork_that_cannot_be_read_fails(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(bci, "fetch_wheels", _fetch_failing_for("o/lancedb", {}))
+    monkeypatch.setattr("sys.argv", ["build_compat_index.py", str(tmp_path), "--repo", "o/lancedb"])
+
+    assert bci.main() == 1
+    assert "cannot read the releases of o/lancedb" in capsys.readouterr().err
+    assert not (tmp_path / "compat").exists()
