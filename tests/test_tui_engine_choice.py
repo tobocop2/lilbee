@@ -570,7 +570,7 @@ async def test_a_refused_slash_install_marks_its_task_failed() -> None:
     app = _ChatApp()
 
     def install(_name: str, _wheel: object = None, **_kw: Any) -> engine_service.InstalledBuild:
-        raise engine_service.EngineRefusedError("Engine openvino cannot run on this host.")
+        raise engine_service.EngineRefusedError("Engine openvino cannot run on this computer.")
 
     async with app.run_test(size=(120, 40)) as pilot:
         chat = await await_chat(app, pilot)
@@ -581,7 +581,7 @@ async def test_a_refused_slash_install_marks_its_task_failed() -> None:
                 pilot,
                 lambda: [t.status for t in app.task_bar.queue.history] == [TaskStatus.FAILED],
             )
-        assert any("cannot run on this host" in t for t in _toasts())
+        assert any("cannot run on this computer" in t for t in _toasts())
 
 
 def test_only_an_install_with_an_engine_name_is_an_install_command() -> None:

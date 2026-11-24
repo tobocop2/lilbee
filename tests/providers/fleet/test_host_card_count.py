@@ -180,7 +180,7 @@ class TestHostCardsTotal:
 
 def _refusal(model: str, gpus: int | str, engine: str) -> str:
     return (
-        f"{model} will not be served: this host has {gpus} GPUs and {engine} cannot be "
+        f"{model} will not be served: this computer has {gpus} GPUs and {engine} cannot be "
         "told which one to use. Use another engine for this role."
     )
 
@@ -277,7 +277,7 @@ class TestPinRefusal:
     ) -> None:
         host.driver_answers = [2]
         refusal = self._refusals(monkeypatch, tmp_path, [_card(0, _NV_NAME, "CUDA")])
-        assert refusal == self._text(" (2 cards on this host)")
+        assert refusal == self._text(" (2 cards on this computer)")
 
     def test_a_hidden_card_of_another_vendor_is_counted(
         self, host: _Host, monkeypatch, tmp_path
@@ -285,14 +285,14 @@ class TestPinRefusal:
         host.driver_answers = [1]
         host.tree = Counter({_NVIDIA_ID: 1, _AMD_ID: 1})
         refusal = self._refusals(monkeypatch, tmp_path, [_card(0, _NV_NAME, "CUDA")])
-        assert refusal == self._text(" (2 cards on this host)")
+        assert refusal == self._text(" (2 cards on this computer)")
 
     def test_a_count_with_an_unread_vendor_table_is_stated_as_a_floor(
         self, host: _Host, monkeypatch, tmp_path
     ) -> None:
         host.tree = Counter({_AMD_ID: 2})
         refusal = self._refusals(monkeypatch, tmp_path, [_card(0, _NV_NAME, "CUDA")])
-        assert refusal == self._text(" (at least 3 cards on this host)")
+        assert refusal == self._text(" (at least 3 cards on this computer)")
 
     def test_a_host_with_no_readable_table_keeps_the_visible_count(
         self, host: _Host, monkeypatch, tmp_path

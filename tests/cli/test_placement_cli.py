@@ -70,7 +70,7 @@ def _view_with_rejected_spec() -> PlacementView:
         manual=False,
         spec_json=None,
         rejected_spec_json='{"embed": {"devices": [1]}}',
-        refusal="embed is pinned to device 1, and this host has no device 1.",
+        refusal="embed is pinned to device 1, and this computer has no device 1.",
         refusal_kind=PlacementRefusal.REFUSED,
     )
 
@@ -80,7 +80,7 @@ def test_show_reports_a_saved_placement_that_is_being_ignored(monkeypatch: objec
     monkeypatch.setattr(cli_placement, "get_placement", _view_with_rejected_spec)
     result = runner.invoke(placement_app, ["show"])
     assert result.exit_code == 0
-    assert "this host has no device 1" in plain_cli_text(result.stdout)
+    assert "this computer has no device 1" in plain_cli_text(result.stdout)
     assert "placement clear" in result.stdout
 
 

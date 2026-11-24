@@ -1154,7 +1154,7 @@ def lost_card_reason(
     present = f"only {_device_phrase(listed)}" if listed else "no devices"
     noun = "card" if on_host == 1 else "cards"
     bound = "at least " if floor else ""
-    count = f" ({bound}{on_host} {noun} on this host)" if on_host > len(listed) else ""
+    count = f" ({bound}{on_host} {noun} on this computer)" if on_host > len(listed) else ""
     fix = f"Set the {role.value} devices to a card that exists, or set its target to cpu."
     found = f"{role.value} is pinned to {_device_phrase(lost)}, but this machine lists {present}"
     return " ".join(part for part in (f"{found}{count}.", hint, fix) if part)
