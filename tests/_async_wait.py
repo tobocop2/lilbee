@@ -51,6 +51,18 @@ async def wait_until(
     return True
 
 
+# The wait for something that must not come. Each pause drains one message cascade of the
+# screen, so the pauses are the floor: a slow host cannot end the wait after one cascade.
+# The seconds are the second floor: a fast host does not end it before the delay of a timer.
+ABSENCE_PAUSES = 5
+ABSENCE_SECONDS = 1.0
+
+
+async def comes(pilot: Pilot, predicate: Callable[[], bool]) -> bool:
+    """Whether *predicate* turns true within the absence budget; use it as ``assert not``."""
+    return await wait_until(pilot, predicate, max_pauses=ABSENCE_PAUSES, timeout=ABSENCE_SECONDS)
+
+
 def subtree_mounted(root: Widget) -> bool:
     """Whether *root* and every widget below it has finished mounting.
 
