@@ -2135,7 +2135,7 @@ class FleetProvider:
         if not result.fits:
             raise ProviderError(
                 f"Prompt of about {result.prompt_tokens} tokens exceeds the "
-                f"{budget}-token prompt budget for {model!r} "
+                f"{budget}-token prompt budget for '{model}' "
                 f"({self._chat_ctx}-token window minus reserve and margin). "
                 "Shorten the conversation or the system prompt.",
                 provider=_PROVIDER_NAME,
@@ -2304,7 +2304,7 @@ class FleetProvider:
         """Not supported directly: ``lilbee.catalog`` handles GGUF downloads."""
         del on_progress
         raise NotImplementedError(
-            f"The local engine cannot pull model {model!r}. "
+            f"The local engine cannot pull model '{model}'. "
             "Download GGUF files through the catalog or 'lilbee model pull'."
         )
 
