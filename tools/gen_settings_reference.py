@@ -257,7 +257,11 @@ def _cli_cell(key: str) -> str:
     if key in MODEL_FIELD_TO_ROLE:
         return f"`{role_command(MODEL_FIELD_TO_ROLE[key]).replace('<ref>', 'REF')}`"
     commands = []
-    if key in WRITABLE_CONFIG_FIELDS and field_type_name(key) != TABLE_TYPE:
+    if (
+        key in WRITABLE_CONFIG_FIELDS
+        and key not in SERVICE_ONLY_FIELDS
+        and field_type_name(key) != TABLE_TYPE
+    ):
         commands.append(CLI_SET)
     if key in CLI_COMMANDS:
         commands.append(CLI_COMMANDS[key])
