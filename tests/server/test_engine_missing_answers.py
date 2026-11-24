@@ -11,6 +11,7 @@ import pytest
 from litestar.testing import TestClient
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.fleet.binary import installed_llama_server
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import WorkerRole
 from lilbee.server import auth as auth_mod
@@ -76,6 +77,33 @@ def test_the_api_chat_route_answers_a_missing_engine_as_503(client: TestClient) 
     with mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock, side_effect=error):
         resp = client.post("/api/chat", json={"question": "q"})
 
+    assert resp.status_code == 503
+    assert "llama-server binary not found" in resp.text
+
+
+def test_search_answers_a_missing_engine_with_its_text(client: TestClient) -> None:
+    error = _fleet_error(_NO_ENGINE)
+    with mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, side_effect=error):
+        resp = client.get("/api/search", params={"q": "q"})
+
+    assert resp.status_code == 503
+    assert "llama-server binary not found" in resp.text
+    assert "Search is temporarily unavailable" not in resp.text
+    assert "Retry-After" not in resp.headers
+
+
+def test_the_installed_server_lookup_gives_the_same_503_over_search(client: TestClient) -> None:
+    with (
+        mock.patch("lilbee.providers.fleet.binary._find_llama_server", return_value=None),
+        pytest.raises(ProviderError) as raised,
+    ):
+        installed_llama_server()
+    with mock.patch(
+        "lilbee.server.handlers.search", new_callable=AsyncMock, side_effect=raised.value
+    ):
+        resp = client.get("/api/search", params={"q": "q"})
+
+    assert raised.value.kind is ProviderErrorKind.ENGINE_MISSING
     assert resp.status_code == 503
     assert "llama-server binary not found" in resp.text
 

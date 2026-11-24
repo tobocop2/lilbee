@@ -201,8 +201,11 @@ async def search_route(
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     except Exception as exc:
-        if isinstance(exc, ProviderError) and exc.kind in CLIENT_FAULT_STATUSES:
-            # The app's provider-error handler answers it as a 400 with the reason.
+        if isinstance(exc, ProviderError) and (
+            exc.kind in CLIENT_FAULT_STATUSES or exc.kind is ProviderErrorKind.ENGINE_MISSING
+        ):
+            # The app's provider-error handler answers it: a 400 with the reason, or the
+            # 503 whose text names the missing engine and the install step.
             raise
         # str(exc) here routinely carries data-root paths, LanceDB table names,
         # and model ids. Log the real cause for the operator; return a generic
