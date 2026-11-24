@@ -112,6 +112,9 @@ _STATE_TMP_SUFFIX = ".tmp"
 # Pid reuse guard: a live process at a recorded pid whose create time differs
 # from the recorded one by more than this is a different process.
 _CREATE_TIME_TOLERANCE_S = 1.0
+# The spawn reading is taken just after Popen returns, so it trails the process start by
+# the time the reading takes; a pid reused later starts seconds or more after the record.
+_MONO_START_TOLERANCE_S = 2.0
 _LLAMA_SWAP_PROCESS_NAME = "llama-swap"
 _EXE_SUFFIX = ".exe"
 # A script server shows the interpreter's name; this prefix finds python and python3.12.
@@ -1442,9 +1445,12 @@ def _is_live_llama_swap(state: SwapState) -> bool:
     A recorded identity that differs from the live process's is pid reuse,
     even when the recycled pid runs another instance's llama-swap. On Linux
     the identity is the boot id plus start ticks, compared exactly: a wall-clock
-    step moves psutil's create time but not these. A record without them (an
-    older file, or another platform) is compared by create time with a tolerance,
-    and a legacy state file without one falls back to the cmdline match alone.
+    step moves psutil's create time but not these. Elsewhere a record with the
+    spawn reading of the monotonic clock, from the current boot, is compared by
+    the process's start on that clock: psutil's create time and the wall clock
+    move together in a step, so their difference does not. Any other record is
+    compared by create time with a tolerance, and a legacy state file without
+    one falls back to the cmdline match alone.
     """
     try:
         proc = psutil.Process(state.pid)
@@ -1454,6 +1460,14 @@ def _is_live_llama_swap(state: SwapState) -> bool:
         return False
     if state.boot_id is not None and state.start_ticks is not None:
         if linux_start_stamp(state.pid) != (state.boot_id, state.start_ticks):
+            return False
+    elif (
+        state.started_mono is not None
+        and state.started_boot is not None
+        and state.started_boot == boot_identity()
+    ):
+        started_mono = time.monotonic() - (time.time() - create_time)
+        if abs(started_mono - state.started_mono) > _MONO_START_TOLERANCE_S:
             return False
     elif state.created_at is not None and abs(create_time - state.created_at) > (
         _CREATE_TIME_TOLERANCE_S
