@@ -507,7 +507,7 @@ class SwapManager:
         if identity is None:
             return
         swap_pid, pgid, created_at = identity
-        state = {
+        state: dict[str, object] = {
             _STATE_KEY_PID: swap_pid,
             _STATE_KEY_PGID: pgid,
             _STATE_KEY_CREATED_AT: created_at,
