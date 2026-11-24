@@ -4100,6 +4100,24 @@ async def test_chat_slash_reset_refused_while_a_sync_runs():
         mock_notify.assert_any_call(_RESET_REFUSED_MID_SYNC, severity="warning")
 
 
+async def _wait_for_the_import_body(pilot, app, started) -> bool:
+    """Wait on the import's task worker until the import body runs; False if the worker ends first.
+
+    The pauses of the pilot do not wait for a thread, and the worker needs a slow first import and
+    a store open before the body runs, so no fixed bound fits every runner. The wait ends when the
+    body has begun or when the worker is gone, so it has no deadline of its own.
+    """
+    workers = list(app.task_bar._workers.values())
+    assert len(workers) == 1
+    worker = workers[0]
+    while not started.is_set():
+        if not worker.is_alive():
+            return started.is_set()
+        await pilot.pause()
+        await asyncio.sleep(0.02)
+    return True
+
+
 async def test_chat_slash_reset_refused_while_an_import_runs(tmp_path):
     """A reset confirmed mid-import is refused, so the import cannot write into a wiped store."""
     import asyncio
@@ -4131,7 +4149,7 @@ async def test_chat_slash_reset_refused_while_an_import_runs(tmp_path):
             patch.object(app.screen, "notify") as mock_notify,
         ):
             app.screen._cmd_import(str(out))
-            assert await pump_until(_pilot, started.is_set)
+            assert await _wait_for_the_import_body(_pilot, app, started)
             app.screen._handle_slash("/reset")
             await _pilot.pause()
             await _pilot.press("y")
