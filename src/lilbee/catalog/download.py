@@ -277,6 +277,7 @@ def url_filename(url: str) -> str:
 _PERMANENT_STATUSES = frozenset(
     {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND, HTTPStatus.GONE}
 )
+_BUSY_STATUSES = (HTTPStatus.REQUEST_TIMEOUT, HTTPStatus.TOO_MANY_REQUESTS)
 
 
 def download_url(
@@ -295,8 +296,8 @@ def download_url(
     *on_progress* receives byte counts and *on_retry* each failed attempt. A set
     *cancel* ends the wait between attempts with ``TaskCancelledError``.
 
-    Each attempt is one request, so a server that goes quiet is reported after one
-    read timeout.
+    A network error ends an attempt at once, so a server that goes quiet is
+    reported after one read timeout.
     """
     from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
 
@@ -331,14 +332,23 @@ def download_url(
 def _stream_into(
     url: str, target: Path, done: int, size: int, on_progress: ProgressCallback | None
 ) -> int:
-    """Append *url* to *target* from byte *done* in one request; return the bytes on disk."""
+    """Append *url* to *target* from byte *done*; return the bytes on disk.
+
+    Only a busy answer (408, 429) is retried here, after the wait the server asks
+    for; every network error ends the call at once.
+    """
     from huggingface_hub import constants as hub_constants
-    from huggingface_hub.utils import get_session, hf_raise_for_status
+    from huggingface_hub.utils import hf_raise_for_status, http_stream_backoff
 
     headers = {"Range": f"bytes={done}-"} if done else {}
     with (
-        get_session().stream(
-            "GET", url, headers=headers, timeout=hub_constants.HF_HUB_DOWNLOAD_TIMEOUT
+        http_stream_backoff(
+            "GET",
+            url,
+            headers=headers,
+            timeout=hub_constants.HF_HUB_DOWNLOAD_TIMEOUT,
+            retry_on_exceptions=(),
+            retry_on_status_codes=_BUSY_STATUSES,
         ) as response,
         target.open("ab") as handle,
     ):
