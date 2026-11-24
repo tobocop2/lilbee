@@ -819,9 +819,14 @@ def test_a_windows_system_dll_import_needs_no_bundled_copy(tmp_path: Path) -> No
     assert acb.check(wheel) == []
 
 
-def test_a_bundled_dll_import_is_satisfied_whatever_its_case_or_folder(tmp_path: Path) -> None:
-    files = _windows_files(ggml_base=_pe(("MSVCP140.dll", "ggml-cpu-x64.dll")))
-    wheel = _windows_wheel(tmp_path, {**files, "sub/Vcomp140.DLL": b"x"})
+@pytest.mark.parametrize("bundled", ["Zlib1.DLL", "sub/zlib1.dll"], ids=["case", "folder"])
+def test_a_bundled_dll_import_is_satisfied_whatever_its_case_or_folder(
+    tmp_path: Path, bundled: str
+) -> None:
+    # The import is lower case and the only bundled copy differs in case or folder,
+    # so only a lowered, folder-blind match finds it.
+    files = _windows_files(ggml_base=_pe(("zlib1.dll",)))
+    wheel = _windows_wheel(tmp_path, {**files, bundled: b"x"})
     assert acb.check(wheel) == []
 
 
