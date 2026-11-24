@@ -42,7 +42,7 @@ _VENDORS = {
 
 @pytest.fixture(autouse=True)
 def _fresh_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(base_mod, "_warned", {})
+    monkeypatch.setattr(base_mod, "_warned", {}, raising=False)
 
 
 @pytest.fixture
@@ -57,7 +57,8 @@ def tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             "import sys\n"
             f"sys.stdout.write({printed!r})\n"
             f"sys.stderr.write({err!r})\n"
-            f"sys.exit({code})\n"
+            f"sys.exit({code})\n",
+            encoding="utf-8",
         )
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
 
@@ -70,7 +71,7 @@ def test_rows_printed_before_a_non_zero_exit_are_kept(
 ) -> None:
     backend, rows = _VENDORS[name]
     tools(name, rows, 1, _STDERR)
-    with caplog.at_level(logging.WARNING, logger=base_mod.log.name):
+    with caplog.at_level(logging.WARNING):
         samples = backend().sample(_INDICES)
     assert set(samples) == _INDICES
     assert any(name in r.message and _STDERR in r.message for r in caplog.records)
@@ -82,7 +83,7 @@ def test_a_non_zero_exit_with_no_rows_gives_none_and_a_warning(
 ) -> None:
     backend, _ = _VENDORS[name]
     tools(name, "", 1, _STDERR)
-    with caplog.at_level(logging.WARNING, logger=base_mod.log.name):
+    with caplog.at_level(logging.WARNING):
         samples = backend().sample(_INDICES)
     assert samples == {}
     assert any("printed no rows" in r.message and _STDERR in r.message for r in caplog.records)
@@ -91,7 +92,7 @@ def test_a_non_zero_exit_with_no_rows_gives_none_and_a_warning(
 def test_a_repeated_failure_logs_once_and_a_clean_run_rearms_it(
     tools, caplog: pytest.LogCaptureFixture
 ) -> None:
-    with caplog.at_level(logging.WARNING, logger=base_mod.log.name):
+    with caplog.at_level(logging.WARNING):
         tools("ioreg", _IOREG_ROWS, 1)
         run_smi("ioreg", [])
         run_smi("ioreg", [])
@@ -105,6 +106,6 @@ def test_a_repeated_failure_logs_once_and_a_clean_run_rearms_it(
 
 
 def test_a_tool_that_cannot_start_logs_nothing(tools, caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level(logging.WARNING, logger=base_mod.log.name):
+    with caplog.at_level(logging.WARNING):
         assert run_smi("ioreg", []) == ""
     assert caplog.records == []
