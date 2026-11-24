@@ -3759,6 +3759,18 @@ class TestMcpCommandExit:
             CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
         mock_exit.assert_called_once_with(1)
 
+    def test_an_exit_without_a_code_reports_success(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        with (
+            mock.patch("lilbee.mcp_server.main", side_effect=SystemExit(None)),
+            mock.patch("lilbee.cli.commands.servers.exit_after_signal") as mock_exit,
+        ):
+            CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        mock_exit.assert_called_once_with(0)
+
     def test_a_clean_exit_stops_the_engine_before_it_returns(self, tmp_path):
         """stdin closing runs the teardown in the command, where a signal can set the status."""
         from typer.testing import CliRunner

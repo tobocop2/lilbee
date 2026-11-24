@@ -15,6 +15,7 @@ import typer
 from lilbee.app.services import (
     answer_provider_waiters,
     exit_after_signal,
+    exit_code_of,
     exit_if_opens_remain,
     exit_status_after_stop,
     report_library_upgrade,
@@ -303,7 +304,7 @@ def mcp_cmd(
     try:
         main()
     except SystemExit as exc:
-        exit_after_signal(exc.code if isinstance(exc.code, int) else 1)
+        exit_after_signal(exit_code_of(exc))
         raise
     # The teardown runs here, not at atexit, so a signal that lands during it sets the status.
     reset_services_on_exit()
