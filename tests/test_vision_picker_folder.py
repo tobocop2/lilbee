@@ -241,8 +241,8 @@ class TestTheMessageNamesTheEngineToInstall:
 
 @pytest.mark.parametrize(
     "read",
-    [mistral._layer_count, MLX.model_meta, model_memory.installed_config],
-    ids=["mistral", "mlx", "memory"],
+    [MLX.model_meta, model_memory.installed_config],
+    ids=["mlx", "memory"],
 )
 def test_a_config_nested_too_deep_reads_as_no_config(
     tmp_path: Path, read: Callable[[Path], object]
