@@ -223,6 +223,17 @@ jobs:
           engine-key: ${{ steps.engine-key.outputs.key }}
           token: ${{ github.token }}
 
+      # After the mirror, so the mirror keeps the whole engine and the executable folder
+      # keeps all four runtime DLLs. The wheel drops the ones no file imports, as the
+      # pack scripts do. `python`, not `python3`: setup-python leaves no python3 on Windows.
+      - name: Prune the runtime DLLs that nothing imports (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python -m pip install "pefile>=2024.8.26"
+          python tools/qa/assert_engine_bundle.py --prune-runtime "${PKG_DIR}/lilbee_engine_llama_cpp/bin"
+          python tools/qa/assert_engine_bundle.py --imports-only "${PKG_DIR}/lilbee_engine_llama_cpp/bin"
+
       - name: Set wheel version to the lilbee version
         shell: bash
         run: |

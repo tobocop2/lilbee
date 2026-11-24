@@ -13,6 +13,7 @@ import pytest
 import yaml
 
 from tests._pe_fixture import pe_file as _pe
+from tests._workflow_steps import commands, steps
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "qa" / "assert_engine_bundle.py"
 
@@ -584,8 +585,12 @@ def _flag_values(args: list[str], flag: str) -> list[str]:
     return [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == flag]
 
 
+_FOLDER_MODES = ("--prune-runtime", "--imports-only")
+
+
 def _assert_asks_for_ggml_base(workflow: Path) -> None:
-    calls = _bundle_check_calls(workflow)
+    """Every wheel check asks for ggml-base; the folder modes read import tables only."""
+    calls = [args for args in _bundle_check_calls(workflow) if args[0] not in _FOLDER_MODES]
     assert calls
     for args in calls:
         assert _flag_values(args, "--tool") == ["llama-server"]
@@ -626,6 +631,28 @@ def test_a_flag_in_another_command_does_not_count_as_the_call(tmp_path: Path) ->
     )
     with pytest.raises(AssertionError):
         _assert_asks_for_ggml_base(workflow)
+
+
+def _multigpu_step_index(name: str) -> int:
+    names = [step.get("name") for step in steps("build-multigpu.yml", "build-multigpu")]
+    return names.index(name)
+
+
+def test_the_release_candidate_windows_wheel_prunes_then_checks_imports_after_the_mirror() -> None:
+    prune_name = "Prune the runtime DLLs that nothing imports (Windows)"
+    step = steps("build-multigpu.yml", "build-multigpu")[_multigpu_step_index(prune_name)]
+    assert step["if"] == "runner.os == 'Windows'"
+    run = commands(step["run"])
+    bin_dir = "${PKG_DIR}/lilbee_engine_llama_cpp/bin"
+    prune = f"tools/qa/assert_engine_bundle.py --prune-runtime {bin_dir}"
+    check = f"tools/qa/assert_engine_bundle.py --imports-only {bin_dir}"
+    assert "pip install pefile" in run
+    assert run.index("pip install") < run.index(prune) < run.index(check)
+    # The mirror keeps the whole engine, so the prune runs after it and before the wheel is built.
+    assert _multigpu_step_index("Mirror the built engine") < _multigpu_step_index(prune_name)
+    assert _multigpu_step_index(prune_name) < _multigpu_step_index(
+        "Build the lilbee-engine-llama-cpp wheel"
+    )
 
 
 def _bin_dir(tmp_path: Path, bin_files: tuple[str, ...]) -> Path:
