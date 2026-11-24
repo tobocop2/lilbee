@@ -66,6 +66,7 @@ from lilbee.app.presets import (
 from lilbee.app.search import clean_results
 from lilbee.app.services import (
     get_services,
+    logged_services_build,
     loop_takes_signals,
     reset_services,
     reset_store,
@@ -2505,30 +2506,16 @@ async def _serve_stdio(server: LilbeeMCP) -> None:
         await server.run_stdio_async()
 
 
-def _fill_empty_chat_model() -> None:
-    """Fill an empty chat model; a failed fill logs a warning and the server still starts."""
-    try:
+def main() -> None:
+    """Entry point for the stdio MCP server.
+
+    The services build runs first, as in the HTTP server. A failed build ends the start
+    with the logged error and a non-zero exit, so no tool call retries it.
+    """
+    with logged_services_build():
         for notice in fill_empty_chat_model():
             log.info("%s", notice)
-    except Exception as exc:
-        log.warning(
-            "The chat model could not be filled at start (%s); tools use the chat model as set.",
-            exc,
-            exc_info=True,
-        )
-
-
-def main() -> None:
-    """Entry point for the stdio MCP server."""
-    # Preload so the first tool call doesn't pay the cold-start cost
-    # of provider/embedder/store init. Failures (missing model, bad
-    # config) still surface on the first tool call rather than crashing
-    # the server before it attaches to stdio.
-    _fill_empty_chat_model()
-    try:
         get_services()
-    except Exception:
-        log.debug("MCP pre-warm failed; services will init on first call", exc_info=True)
 
     from lilbee.parent_monitor import parse_parent_pid, watch_parent_thread
 
