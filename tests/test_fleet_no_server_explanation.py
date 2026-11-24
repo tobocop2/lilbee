@@ -131,11 +131,13 @@ class TestTheExplanationInstallsNothing:
 
 
 class TestTheErrorOfAHostWithNoServer:
-    def test_the_error_is_not_found_and_carries_the_install_hint(self, no_server: _Calls) -> None:
+    def test_the_error_is_engine_missing_and_carries_the_install_hint(
+        self, no_server: _Calls
+    ) -> None:
         with pytest.raises(ProviderError) as raised:
             binary.installed_llama_server()
 
-        assert raised.value.kind is ProviderErrorKind.NOT_FOUND
+        assert raised.value.kind is ProviderErrorKind.ENGINE_MISSING
         message = str(raised.value)
         assert "llama-server binary not found" in message
         assert "brew reinstall lilbee" in message

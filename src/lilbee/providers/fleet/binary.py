@@ -279,7 +279,7 @@ def installed_llama_server() -> Path:
     if server is None:
         raise ProviderError(
             f"llama-server binary not found. {engine_install_hint()}",
-            kind=ProviderErrorKind.NOT_FOUND,
+            kind=ProviderErrorKind.ENGINE_MISSING,
         )
     return server
 
