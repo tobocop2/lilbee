@@ -63,6 +63,33 @@ def _linux_start_ticks(pid: int) -> float:
         raise psutil.AccessDenied(pid) from None
 
 
+def linux_boot_id() -> str | None:
+    """The id of this boot, or None where /proc does not give one.
+
+    Start ticks count from boot, so a record that outlives a reboot must hold this id beside them.
+    """
+    try:
+        return (_PROC_ROOT / "sys/kernel/random/boot_id").read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def linux_start_stamp(pid: int) -> tuple[str, float] | None:
+    """(boot id, start ticks) of *pid*, or None off Linux or when either cannot be read.
+
+    The pair names one process across clock steps and reboots.
+    """
+    if not _is_linux():
+        return None
+    boot_id = linux_boot_id()
+    if boot_id is None:
+        return None
+    try:
+        return boot_id, _linux_start_ticks(pid)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return None
+
+
 def _start_identity(pid: int) -> float:
     """What tells *pid* apart from a process that later reuses the pid.
 

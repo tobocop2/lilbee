@@ -149,6 +149,42 @@ def _write_stat(root: Path, pid: int, start_ticks: int, comm: str = "lilbee") ->
     )
 
 
+class TestLinuxStartStamp:
+    """The (boot id, start ticks) pair a record keeps across clock steps and reboots."""
+
+    def test_pair_of_boot_id_and_start_ticks(self, tmp_path):
+        _write_stat(tmp_path, 42, 987654)
+        (tmp_path / "sys/kernel/random").mkdir(parents=True)
+        (tmp_path / "sys/kernel/random/boot_id").write_text("abc-123\n", encoding="utf-8")
+        with (
+            mock.patch("lilbee.parent_monitor._is_linux", return_value=True),
+            mock.patch.object(parent_monitor, "_PROC_ROOT", tmp_path),
+        ):
+            assert parent_monitor.linux_start_stamp(42) ==("abc-123", 987654.0)
+
+    def test_none_off_linux(self):
+        with mock.patch("lilbee.parent_monitor._is_linux", return_value=False):
+            assert parent_monitor.linux_start_stamp(42) is None
+
+    def test_none_without_a_boot_id(self, tmp_path):
+        _write_stat(tmp_path, 42, 1)
+        with (
+            mock.patch("lilbee.parent_monitor._is_linux", return_value=True),
+            mock.patch.object(parent_monitor, "_PROC_ROOT", tmp_path),
+        ):
+            assert parent_monitor.linux_boot_id() is None
+            assert parent_monitor.linux_start_stamp(42) is None
+
+    def test_none_for_a_missing_process(self, tmp_path):
+        (tmp_path / "sys/kernel/random").mkdir(parents=True)
+        (tmp_path / "sys/kernel/random/boot_id").write_text("abc-123\n", encoding="utf-8")
+        with (
+            mock.patch("lilbee.parent_monitor._is_linux", return_value=True),
+            mock.patch.object(parent_monitor, "_PROC_ROOT", tmp_path),
+        ):
+            assert parent_monitor.linux_start_stamp(42) is None
+
+
 class TestLinuxStartTicks:
     """On Linux the identity is the boot-relative start ticks, which a clock step cannot move."""
 
