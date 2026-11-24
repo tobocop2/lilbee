@@ -12,7 +12,7 @@ from lilbee.catalog import runnable
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.base import ProviderError
-from lilbee.providers.fleet import host_caps
+from lilbee.providers.fleet import host_caps, planning
 from lilbee.providers.fleet.engines import choice, ovms, proof
 from lilbee.providers.fleet.engines.base import (
     PORT_SLOT,
@@ -337,3 +337,13 @@ def test_rerank_bodies_and_scores_follow_the_shape() -> None:
         "results": [{"index": 1, "relevance_score": 0.7}, {"index": 0, "relevance_score": 0.2}]
     }
     assert profile.rerank_scores(payload) == {0: 0.2, 1: 0.7}
+
+
+def test_an_installed_ir_folder_is_placeable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "openvino_model.xml").write_bytes(b"x" * 100)
+    (tmp_path / "openvino_model.bin").write_bytes(b"y" * 900)
+    monkeypatch.setattr(planning.engine_params, "resolve_model_path", lambda _ref: tmp_path)
+    assert planning._role_weights_bytes(WorkerRole.CHAT, "org/ir#openvino") == 1000
+    assert planning.role_model_placeable(WorkerRole.CHAT, "org/ir#openvino", 0, engine=OVMS)
