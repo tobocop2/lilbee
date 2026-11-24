@@ -358,3 +358,82 @@ def test_registry_ref_shape_error_shows_the_ref_as_typed() -> None:
     with pytest.raises(ValueError) as excinfo:
         parse_hf_ref(WINDOWS_REF)
     _assert_verbatim(str(excinfo.value))
+
+
+SPACED_REF = "C:\\Users\\a b\\m.gguf"
+
+
+def test_unsafe_model_file_refusal_shows_the_name_as_typed() -> None:
+    from lilbee.catalog.formats import _refuse_unsafe_names
+
+    name = "..\\a b\\m.gguf"
+    with pytest.raises(ValueError) as excinfo:
+        _refuse_unsafe_names([name])
+    _assert_verbatim(str(excinfo.value), name)
+
+
+@pytest.mark.parametrize(
+    ("name", "fragment"),
+    [
+        (SPACED_REF, "must be relative"),
+        (".\\.", "invalid upload filename"),
+        ("..\\a b\\m.txt", "may not contain"),
+        ("docs\\a b\\x.svg", "x.svg"),
+    ],
+)
+def test_upload_name_refusal_shows_the_name_as_typed(name: str, fragment: str) -> None:
+    with pytest.raises(ValueError) as excinfo:
+        ingest_handlers._clean_upload_name(name)
+    assert fragment in str(excinfo.value)
+    _assert_verbatim(str(excinfo.value), name)
+
+
+def test_unsupported_architecture_shows_the_ref_as_typed() -> None:
+    from lilbee.catalog.compat import UnsupportedArchError
+
+    _assert_verbatim(str(UnsupportedArchError(SPACED_REF, "mamba")), SPACED_REF)
+
+
+def test_unsupported_quant_shows_the_ref_as_typed() -> None:
+    from lilbee.catalog.compat import UnsupportedQuantError
+
+    _assert_verbatim(str(UnsupportedQuantError(SPACED_REF, "Q9")), SPACED_REF)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "C:\\Users\\a b\\m.gguf#bogus",
+        "C:\\Users\\a b\\m#xdna",
+        "C:\\Users\\a b\\m#safetensors",
+    ],
+)
+def test_model_ref_format_errors_show_the_ref_as_typed(raw: str) -> None:
+    from lilbee.catalog.refs import parse_model_ref as parse_catalog_ref
+
+    with pytest.raises(ValueError) as excinfo:
+        parse_catalog_ref(raw)
+    _assert_verbatim(str(excinfo.value), raw)
+
+
+def test_dataset_format_error_shows_the_file_name_as_typed() -> None:
+    from lilbee.data.export import resolve_format
+
+    path = MagicMock()
+    path.suffix = ".gguf"
+    path.name = "a b\\m.gguf"
+    with pytest.raises(ValueError) as excinfo:
+        resolve_format("", path)
+    _assert_verbatim(str(excinfo.value), path.name)
+
+
+def test_engine_store_path_error_shows_the_file_name_as_typed(tmp_path) -> None:
+    from lilbee.providers.fleet.engine_store import EngineStore, StorePathError
+
+    path = MagicMock()
+    path.name = "a b\\m.gguf"
+    path.is_symlink.return_value = False
+    path.resolve.return_value.is_relative_to.return_value = False
+    with pytest.raises(StorePathError) as excinfo:
+        EngineStore(tmp_path)._inside_root(path)
+    _assert_verbatim(str(excinfo.value), path.name)
