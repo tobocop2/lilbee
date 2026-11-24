@@ -80,11 +80,15 @@ def test_extras_of_the_second_engine_reach_its_swap_entry() -> None:
         model="m",
         swap_extras=FAKE.swap_extras(plain),
     )
-    entry = json.loads(build_swap_config([launch], {launch.model_id: 9}))["models"][launch.model_id]
+    entry = json.loads(build_swap_config([launch], {launch.model_id: 9}, engine_logs={}))["models"][
+        launch.model_id
+    ]
     assert entry["checkEndpoint"] == "/live"
     assert entry["useModelName"] == "default"
     assert entry["cmd"].startswith("/b ")
-    bare = json.loads(build_swap_config([plain], {plain.model_id: 9}))["models"][plain.model_id]
+    bare = json.loads(build_swap_config([plain], {plain.model_id: 9}, engine_logs={}))["models"][
+        plain.model_id
+    ]
     assert "checkEndpoint" not in bare
 
 

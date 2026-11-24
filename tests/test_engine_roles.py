@@ -425,7 +425,9 @@ def test_a_chat_launch_config_builds_while_only_embed_has_no_engine(
         role=WorkerRole.CHAT, replica=0, argv=["/bin/llama-server"], env_overrides={}, model="m"
     )
     offload.reset_max_workers()
-    config = json.loads(swap_config.build_swap_config([launch], {launch.model_id: 9000}))
+    config = json.loads(
+        swap_config.build_swap_config([launch], {launch.model_id: 9000}, engine_logs={})
+    )
     assert config["models"][launch.model_id]["concurrencyLimit"] > 0
 
 
