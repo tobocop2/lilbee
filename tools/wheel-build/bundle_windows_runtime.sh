@@ -87,8 +87,8 @@ if [ -n "${notice_file}" ]; then
   {
     echo "These files are licensed under the Microsoft terms below, not under the other terms of this wheel."
     echo
-    echo "This wheel carries Microsoft Visual C++ runtime files: msvcp140.dll, vcruntime140.dll and"
-    echo "vcruntime140_1.dll, and vcomp140.dll when the wheel holds it. They are distributable code"
+    echo "This wheel carries Microsoft Visual C++ runtime files: the ones of msvcp140.dll, vcruntime140.dll,"
+    echo "vcruntime140_1.dll and vcomp140.dll that the wheel holds. They are distributable code"
     echo "under the Microsoft Visual Studio Community 2022 licence terms ${license_url}"
     echo "The files are not modified."
     echo
