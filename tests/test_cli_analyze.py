@@ -507,7 +507,8 @@ def test_sync_prints_the_tip_once_before_the_sync_starts(project):
 
 def test_sync_in_json_mode_prints_no_tip(project):
     with mock.patch(
-        "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel", side_effect=_fake_sync
+        "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel",
+        return_value=_Shown(**_NEW_CONTENT),
     ):
         result = runner.invoke(app, ["--json", "sync", "--data-dir", str(project)])
     assert result.exit_code == 0, result.output
