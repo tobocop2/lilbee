@@ -155,13 +155,37 @@ def test_a_body_shorter_than_the_expected_size_is_retried(tmp_path: Path) -> Non
     assert len(server.requests) == 3
 
 
-def test_a_server_that_ignores_the_range_restarts_the_file(tmp_path: Path) -> None:
+def test_a_server_that_ignores_the_range_restarts_the_file_in_one_attempt(
+    tmp_path: Path,
+) -> None:
     (tmp_path / "f").write_bytes(b"stale" * 200)
-    with release_server() as server:
+    seen: list[tuple[int, int]] = []
+    with release_server() as server, mock.patch.object(dl.time, "sleep") as slept:
         server.files["/f"] = BODY
         server.ignore_range = True
-        got = download_url(f"{server.url}/f", tmp_path, len(BODY))
+        got = download_url(
+            f"{server.url}/f", tmp_path, len(BODY), on_progress=lambda d, t: seen.append((d, t))
+        )
     assert got.read_bytes() == BODY
+    assert len(server.requests) == 1
+    slept.assert_not_called()
+    assert max(done for done, _ in seen) == len(BODY)
+
+
+@pytest.mark.parametrize("status", [408, 429])
+def test_a_busy_answer_is_waited_out_within_one_attempt(tmp_path: Path, status: int) -> None:
+    retries: list[tuple[object, ...]] = []
+    with release_server() as server, mock.patch.object(dl.time, "sleep") as slept:
+        server.files["/f"] = BODY
+        server.fail_next = 1
+        server.fail_status = status
+        got = download_url(
+            f"{server.url}/f", tmp_path, len(BODY), on_retry=lambda *a: retries.append(a)
+        )
+    assert got.read_bytes() == BODY
+    assert len(server.requests) == 2
+    assert retries == []
+    slept.assert_called_once()
 
 
 def test_a_complete_file_is_kept_without_a_request(tmp_path: Path) -> None:
