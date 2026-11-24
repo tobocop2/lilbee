@@ -21,6 +21,7 @@ from lilbee.app.services import (
     report_library_upgrade,
     reset_services_on_exit,
     set_server_exit_hook,
+    stop_for_parent_death,
     stop_on_interrupt,
     wait_for_hard_exit_teardown,
 )
@@ -111,8 +112,6 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
     """Start uvicorn, write port file, clean up on shutdown, and return the exit status."""
     import atexit
 
-    from lilbee.parent_monitor import parse_parent_pid, watch_parent_async
-
     loop = asyncio.get_running_loop()
     loop.set_exception_handler(_log_loop_exception)
 
@@ -131,7 +130,6 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
     # `shutdown()` when startup never ran: uvicorn dereferences `self.servers`
     # there and the resulting AttributeError would mask the original failure.
     started = False
-    parent_watcher: asyncio.Task[None] | None = None
     try:
         set_server_exit_hook(exit_request)
         try:
@@ -141,14 +139,6 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
             # A stop signal during the start has set its own nonzero status.
             return exit_request.status or _STARTUP_FAILED_EXIT_STATUS
         started = True
-
-        parent_pid = parse_parent_pid()
-        if parent_pid is not None:
-
-            def _on_parent_death() -> None:
-                server.should_exit = True
-
-            parent_watcher = asyncio.create_task(watch_parent_async(parent_pid, _on_parent_death))
 
         if server.servers:
             sock = server.servers[0].sockets[0]
@@ -162,8 +152,6 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
         arm_exit_deadline(_EXIT_DEADLINE_S)
         answer_provider_waiters()
         set_server_exit_hook(None)
-        if parent_watcher is not None and not parent_watcher.done():
-            parent_watcher.cancel()
         port_path.unlink(missing_ok=True)
         if started:
             # Suppress AttributeError from a partial uvicorn bring-up so any
@@ -206,6 +194,19 @@ def _take_the_scope() -> ScopeHold | None:
     return scope_hold
 
 
+def _watch_the_parent() -> None:
+    """Stop the server once the process named by ``LILBEE_PARENT_PID`` is gone.
+
+    It watches from the start, so a parent that dies while the server waits on a
+    lock or builds its app stops it too.
+    """
+    from lilbee.parent_monitor import parse_parent_pid, watch_parent_thread
+
+    parent_pid = parse_parent_pid()
+    if parent_pid is not None:
+        watch_parent_thread(parent_pid, stop_for_parent_death)
+
+
 def serve(
     host: str = typer.Option(None, "--host", "-H", help="Bind address (default: 127.0.0.1)"),
     port: int = typer.Option(None, "--port", "-p", help="Port (default: 0/random)"),
@@ -213,6 +214,7 @@ def serve(
     use_global: bool = global_option,
 ) -> None:
     """Start the HTTP API server."""
+    _watch_the_parent()
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _report_upgrade_as_log_lines()
     if host is not None:

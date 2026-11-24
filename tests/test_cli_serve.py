@@ -579,6 +579,52 @@ class TestServeSingleton:
         reacquired.release()
 
 
+class TestServeWatchesTheParent:
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_the_watch_starts_before_the_server_takes_its_lock(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, monkeypatch
+    ):
+        from lilbee.app.services import stop_for_parent_death
+        from lilbee.cli.commands import servers as commands
+
+        mock_create_app.return_value = "fake_app"
+        monkeypatch.setenv("LILBEE_PARENT_PID", "4242")
+        order: list[tuple[object, ...]] = []
+        take_the_lock = commands.acquire_server_lock
+
+        def locked(*args: object, **kwargs: object) -> object:
+            order.append(("lock",))
+            return take_the_lock(*args, **kwargs)
+
+        with (
+            mock.patch(
+                "lilbee.parent_monitor.watch_parent_thread",
+                side_effect=lambda pid, on_death: order.append(("watch", pid, on_death)),
+            ),
+            mock.patch.object(commands, "acquire_server_lock", side_effect=locked),
+        ):
+            result = runner.invoke(app, ["serve"])
+
+        assert result.exit_code == 0, result.output
+        assert order == [("watch", 4242, stop_for_parent_death), ("lock",)]
+
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_no_watch_starts_without_a_parent_pid(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, monkeypatch
+    ):
+        mock_create_app.return_value = "fake_app"
+        monkeypatch.delenv("LILBEE_PARENT_PID", raising=False)
+        with mock.patch("lilbee.parent_monitor.watch_parent_thread") as watcher:
+            result = runner.invoke(app, ["serve"])
+
+        assert result.exit_code == 0, result.output
+        watcher.assert_not_called()
+
+
 class TestServeExclusiveScope:
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
