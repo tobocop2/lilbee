@@ -2736,7 +2736,7 @@ def _warn_gpu_present_but_unenumerated(binary: Path, engine: EngineAdapter) -> N
         idle = sorted(v.label for v in PCIVendorID if v in undriven)
         if idle:
             log.warning(
-                "The %s GPU on this computer has no kernel driver loaded, so the engine "
+                "The %s GPU on this host has no kernel driver loaded, so the engine "
                 "cannot use it. Placement falls back to shared-memory mode. Load the "
                 "GPU's kernel driver and start lilbee again.",
                 " and ".join(idle),
