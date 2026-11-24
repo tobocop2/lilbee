@@ -377,6 +377,21 @@ class TestSearchAppliesReranker:
             assert warning.message.startswith("Reranking failed: results are in retrieval order.")
             assert warning.remedy
 
+    def test_a_missing_engine_says_it_is_not_installed_and_where_to_look(self):
+        warning = rerank_failure(ProviderError("x", kind=ProviderErrorKind.ENGINE_MISSING))
+        assert warning.message == (
+            "Reranking failed: results are in retrieval order. "
+            "The reranker engine is not installed."
+        )
+        assert warning.remedy == "Run lilbee status to see which engine is missing."
+
+    def test_a_starting_reranker_keeps_its_own_text_apart_from_a_missing_engine(self):
+        starting = rerank_failure(ProviderError("x", kind=ProviderErrorKind.STARTING))
+        missing = rerank_failure(ProviderError("x", kind=ProviderErrorKind.ENGINE_MISSING))
+        assert starting.message.endswith("The reranker is still starting.")
+        assert starting.remedy == "Search again in a moment."
+        assert missing != starting
+
     def test_the_remedies_of_the_rerank_failure_module_are_distinct(self):
         remedies = [remedy for _, remedy in rerank_failure_module._FAILURE_TEXTS.values()]
         remedies.append(rerank_failure_module._UNKNOWN_TEXT[1])

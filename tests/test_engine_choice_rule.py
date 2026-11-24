@@ -351,6 +351,44 @@ def test_auto_with_a_role_keeps_the_role_prefix_on_the_host_refusal() -> None:
     )
 
 
+def _host_refuses(monkeypatch: pytest.MonkeyPatch, name: EngineName, reason: str) -> None:
+    monkeypatch.setattr(ADAPTERS[name], "host_gate", lambda _host: HostGate(False, reason))
+
+
+def test_auto_names_every_refused_engine_with_one_space_between_the_sentences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _host_refuses(monkeypatch, OV, "No Intel GPU here.")
+    got = _ask(host=lambda: NO_AVX2, installed={IK: {G}, OV: {G}})
+    assert got.name is None
+    assert got.notice == (
+        f"{_IK_REFUSED} "
+        "Engine openvino loads the gguf format but cannot run on this host. "
+        "No Intel GPU here."
+    )
+
+
+def test_auto_leaves_out_a_refused_engine_that_does_not_serve_the_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # mlx serves embed and the host refuses it; openvino serves chat only, so its refusal
+    # says nothing about the embed role.
+    _host_refuses(monkeypatch, M, "No Apple silicon here.")
+    _host_refuses(monkeypatch, OV, "No Intel GPU here.")
+    got = _ask(
+        fmt=MX,
+        host=lambda: NVIDIA,
+        installed={M: {MX}, OV: {MX}},
+        role=WorkerRole.EMBED,
+    )
+    assert got.name is None
+    assert got.notice == (
+        "For embed: Engine mlx loads the mlx format but cannot run on this host. "
+        "No Apple silicon here."
+    )
+    assert "openvino" not in got.notice
+
+
 @pytest.mark.parametrize(
     "request_kw", [{"override": IK}, {"preferred": IK}], ids=["override", "pref"]
 )
