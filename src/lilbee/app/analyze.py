@@ -63,7 +63,7 @@ IMAGE_SCAN_NOTE = (
     "scaled by the share of documents sampled."
 )
 TARGET_WITHOUT_SAVE_MESSAGE = "target takes effect only with apply or save; nothing was read."
-RELATIVE_DIRECTORY_MESSAGE = "directory must be an absolute path on the lilbee server: {value!r}"
+RELATIVE_DIRECTORY_MESSAGE = "directory must be an absolute path on the lilbee server: '{value}'"
 DIRECTORY_NOT_READABLE_MESSAGE = "Path '{path}' is not readable."
 TIP_TEXT = (
     "This project uses the Default profile. Run lilbee analyze to get a profile "

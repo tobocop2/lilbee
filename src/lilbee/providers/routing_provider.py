@@ -297,7 +297,7 @@ class RoutingProvider(LLMProvider):
         """Pull via the SDK backend if installed, otherwise raise."""
         sdk = self._get_sdk_provider()
         if not sdk.available():
-            raise ProviderError(f"Cannot pull model {model!r}: no pull-capable backend available")
+            raise ProviderError(f"Cannot pull model '{model}': no pull-capable backend available")
         sdk.pull_model(model, on_progress=on_progress)
 
     def show_model(self, model: str) -> dict[str, Any] | None:
@@ -326,7 +326,7 @@ class RoutingProvider(LLMProvider):
         sdk = self._get_sdk_provider()
         if not sdk.supports_rerank():
             raise ProviderError(
-                f"Cannot rerank with {cfg.reranker_model!r}: "
+                f"Cannot rerank with '{cfg.reranker_model}': "
                 "hosted rerank backend not available. "
                 "Install the 'providers' extra to enable hosted reranking."
             )

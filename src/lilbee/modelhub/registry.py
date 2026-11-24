@@ -94,7 +94,7 @@ def parse_hf_ref(ref: str) -> tuple[str, str]:
     """
     parsed = parse_model_ref(ref)
     if not parsed.filename:
-        raise ValueError(f"Model ref {ref!r} is not a HuggingFace ref. {_REF_SHAPE_HINT}")
+        raise ValueError(f"Model ref '{ref}' is not a HuggingFace ref. {_REF_SHAPE_HINT}")
     return _validate_hf_repo(parsed.hf_repo), _validate_gguf_filename(parsed.filename)
 
 
