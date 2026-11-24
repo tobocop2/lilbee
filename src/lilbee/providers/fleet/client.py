@@ -42,7 +42,7 @@ from lilbee.providers.base import (
     is_prompt_length_overflow,
 )
 from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
-from lilbee.providers.fleet.engines.base import RequestProfile
+from lilbee.providers.fleet.engines.base import RequestProfile, UpstreamCheck
 from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
 from lilbee.providers.reasoning import ThinkInliner, inline_reasoning
 from lilbee.providers.roles import RerankMode
@@ -207,6 +207,10 @@ log = logging.getLogger(__name__)
 _TRUNCATION_CHECK_FAILURES = (httpx.HTTPError, ProviderError, KeyError, TypeError, ValueError)
 # The longest the advisory limit or count request may hold an embed, in seconds.
 _TRUNCATION_CHECK_TIMEOUT_S = 5.0
+# What a failed read of a device or load-failure route raises.
+_UPSTREAM_CHECK_FAILURES = (httpx.HTTPError, ProviderError, ValueError)
+# The longest a read of a device or load-failure route may take, in seconds; the model is loaded.
+_UPSTREAM_CHECK_TIMEOUT_S = 10.0
 
 
 def _estimate_tokens(text: str) -> int:
@@ -1895,6 +1899,48 @@ class LlamaServerClient:
         is carried in the path, not the body (unlike the ``/v1`` OpenAI routes).
         """
         return f"{_UPSTREAM_PREFIX}/{self._model}{suffix}"
+
+    def _read_check(self, check: UpstreamCheck) -> str | None:
+        """The error that the engine's reply on the route of *check* shows, or None."""
+        resp = self._http.get(self._native_route(check.path), timeout=_UPSTREAM_CHECK_TIMEOUT_S)
+        self._raise_for_side_route(resp)
+        return check.refusal(resp.json())
+
+    def confirm_device(self) -> None:
+        """Raise when the engine does not report the model on the device it was placed on.
+
+        An engine whose profile names no device route is not asked. An unreadable reply
+        raises too: the claim stands only on the engine's own report.
+        """
+        check = self._profile.device_check
+        if check is None:
+            return
+        label = self._profile.label
+        try:
+            refusal = self._read_check(check)
+        except _UPSTREAM_CHECK_FAILURES as exc:
+            raise ProviderError(
+                f"{label} did not report the device of the model: {exc}", provider=label
+            ) from exc
+        if refusal is not None:
+            raise ProviderError(refusal, provider=label)
+
+    def explain_load_failure(self, failure: ProviderError) -> None:
+        """Raise the reason the engine reports for the failed load *failure*, when it has one.
+
+        Returns when the profile names no route for it, the reply shows no reason, or the
+        read fails; the caller then raises *failure* as it is.
+        """
+        check = self._profile.load_failure_check
+        if check is None:
+            return
+        try:
+            refusal = self._read_check(check)
+        except _UPSTREAM_CHECK_FAILURES as exc:
+            log.debug("The reason of the failed load is unreadable: %s", exc)
+            return
+        if refusal is not None:
+            raise ProviderError(refusal, provider=failure.provider, kind=failure.kind) from failure
 
     def _tokenize(self, text: str, *, parse_special: bool = _TOKENIZE_PARSE_SPECIAL) -> list[int]:
         """Token ids for *text*; a gateway error is retried like an embedding."""
