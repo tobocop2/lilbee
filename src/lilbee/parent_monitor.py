@@ -68,8 +68,9 @@ def linux_boot_id() -> str | None:
 
     Start ticks count from boot, so a record that outlives a reboot must hold this id beside them.
     """
+    boot_id_file = _PROC_ROOT / "sys/kernel/random/boot_id"
     try:
-        return (_PROC_ROOT / "sys/kernel/random/boot_id").read_text(encoding="utf-8").strip() or None
+        return boot_id_file.read_text(encoding="utf-8").strip() or None
     except OSError:
         return None
 
