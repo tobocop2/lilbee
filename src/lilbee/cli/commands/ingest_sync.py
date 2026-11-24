@@ -490,7 +490,7 @@ def _tip_before_first_file(chain: DetailedProgressCallback) -> DetailedProgressC
         nonlocal shown
         if event_type in (EventType.FILE_START, EventType.BATCH_PROGRESS) and not shown:
             shown = True
-            print_tip_if_shown(cfg.data_root)
+            print_tip_if_shown(cfg.data_root, above_live_display=True)
         chain(event_type, data)
 
     return _callback

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -59,12 +60,24 @@ _target_option = typer.Option(
 _off_option = typer.Option(False, "--off", help="Hide the analyze tip; reads no files.")
 
 
-def print_tip_if_shown(root: Path) -> None:
-    """Print the analyze tip in text mode when the project at *root* should see it."""
+def print_tip_if_shown(root: Path, *, above_live_display: bool = False) -> None:
+    """Print the analyze tip in text mode when the project at *root* should see it.
+
+    *above_live_display* is for a caller inside a live Rich display with its own console, such
+    as the ingest bar. That display redirects ``sys.stdout``, so a write through it prints above
+    the bar; a write through this console would land on the bar's line.
+    """
     from lilbee.app.analyze import TIP_TEXT, tip_shows
 
-    if not cfg.json_mode and tip_shows(root):
-        console.print(Text(TIP_TEXT, style=theme.MUTED), soft_wrap=True)
+    if cfg.json_mode or not tip_shows(root):
+        return
+    tip = Text(TIP_TEXT, style=theme.MUTED)
+    if not above_live_display:
+        console.print(tip, soft_wrap=True)
+        return
+    with console.capture() as captured:
+        console.print(tip, soft_wrap=True)
+    sys.stdout.write(captured.get())
 
 
 @contextmanager
