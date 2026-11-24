@@ -78,9 +78,11 @@ def estimate_size_gb(params: int, gguf_filename: str) -> float:
 
     A lower bound, and the browse list renders it as approximate. llama.cpp
     promotes ``output.weight`` and an untied ``token_embd`` above the ftype and
-    leaves the norms in F32, so a published file costs more per weight than the
-    type its name carries; how much more needs the header's vocabulary and
-    embedding lengths, which a listing row does not have.
+    leaves the norms in F32, so a published file usually costs more per weight
+    than the type its name carries. An ftype can also mix a cheaper type into
+    some tensors, so a file can land a little below its type: published IQ2_S
+    files measure about 0.93 of it. How far a file moves needs the header's
+    vocabulary and embedding lengths, which a listing row does not have.
 
     This is the one place a size cannot be read: the HF listing API reports a
     parameter count (``gguf.total``) and no per-file bytes, and getting the real
