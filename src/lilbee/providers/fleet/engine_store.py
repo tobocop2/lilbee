@@ -30,7 +30,7 @@ from lilbee.catalog.download import (
 )
 from lilbee.catalog.download_progress import ProgressCallback
 from lilbee.core.security import FileLockUnavailableError, file_lock
-from lilbee.providers.fleet.build_use import build_in_use
+from lilbee.providers.fleet.build_use import BuildInUseError, build_in_use, removing
 from lilbee.providers.fleet.engine_crates import MPL_CRATE_CHECKSUMS, MPL_PYPI_CHECKSUMS
 from lilbee.providers.fleet.engine_record import PACKAGES_URL
 from lilbee.providers.fleet.wheel_server import server_entry, server_problems
@@ -703,13 +703,23 @@ def _clean_up(folder: Path) -> None:
 
 
 def _discard(build: Path) -> None:
-    """Delete one build slot; a folder goes to trash first, so no half build stays listed."""
+    """Delete one build slot; a folder goes to trash first, so no half build stays listed.
+
+    A folder stays held from the rename to the delete, so no launch starts from it then.
+    """
     try:
-        if stat.S_ISDIR(os.lstat(build).st_mode):
+        if not stat.S_ISDIR(os.lstat(build).st_mode):
+            _delete(build)
+            return
+        with removing(build):
             trash = build.with_name(f"{_TRASH_PREFIX}{uuid.uuid4().hex}")
             build.rename(trash)
-            build = trash
-        _delete(build)
+            _delete(trash)
+    except BuildInUseError as exc:
+        raise EngineInUseError(
+            f"Engine {build.parent.name} {build.name} is in use. Stop the engine with "
+            f"'lilbee engine stop' and try again."
+        ) from exc
     except PermissionError as exc:
         raise ReadOnlyFolderError(build.parent, build.parent.name, exc) from exc
 

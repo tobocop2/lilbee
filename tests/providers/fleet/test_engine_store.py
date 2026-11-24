@@ -13,7 +13,7 @@ import sys
 import textwrap
 import threading
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
@@ -23,7 +23,8 @@ from unittest import mock
 import pytest
 
 from lilbee.core.security import FileLockUnavailableError, file_lock
-from lilbee.providers.fleet import engine_store
+from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet import build_use, engine_store
 from lilbee.providers.fleet.build_use import BuildHolds, builds_run_by
 from lilbee.providers.fleet.engine_store import (
     LOCK_DIR,
@@ -1764,12 +1765,84 @@ def test_holds_for_no_build_hand_nothing_to_the_child() -> None:
     holds.close()
 
 
-def test_a_hold_that_cannot_open_closes_the_ones_it_took(tmp_path: Path) -> None:
-    taken = tmp_path / "a"
-    taken.mkdir()
-    with pytest.raises(OSError):
-        BuildHolds([taken, tmp_path / "missing"])
+def test_a_launch_of_a_removed_build_names_the_engine_and_closes_the_holds_it_took(
+    tmp_path: Path,
+) -> None:
+    taken = tmp_path / "fx" / "1-cpu"
+    taken.mkdir(parents=True)
+    with pytest.raises(ProviderError, match=r"^Engine fx 2-cpu is being removed\."):
+        BuildHolds([taken, tmp_path / "fx" / "2-cpu"])
     assert engine_store.build_in_use(taken) is False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows refuses the rename instead")
+def test_a_launch_while_a_remove_holds_the_build_names_the_engine(tmp_path: Path) -> None:
+    build = tmp_path / "fx" / "2-cpu"
+    build.mkdir(parents=True)
+    with (
+        build_use.removing(build),
+        pytest.raises(ProviderError, match=r"^Engine fx 2-cpu is being removed\."),
+    ):
+        BuildHolds([build])
+    assert engine_store.build_in_use(build) is False
+
+
+def test_a_remove_cannot_hold_a_build_an_engine_holds(tmp_path: Path) -> None:
+    build = tmp_path / "fx" / "2-cpu"
+    build.mkdir(parents=True)
+    holds = BuildHolds([build])
+    try:
+        with pytest.raises(build_use.BuildInUseError), build_use.removing(build):
+            pass
+    finally:
+        holds.close()
+
+
+def test_a_remove_of_a_missing_build_raises_the_file_error(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError), build_use.removing(tmp_path / "gone"):
+        pass
+
+
+def _launch_after_the_check(build: Path, taken: list[BuildHolds]) -> Callable[..., bool]:
+    """An in-use check that answers free, then a launch takes the build at once."""
+
+    def check(*_name: object) -> bool:
+        taken.append(BuildHolds([build]))
+        return False
+
+    return check
+
+
+def test_remove_keeps_a_build_a_launch_takes_after_the_check(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    installed_store(store, tmp_path)
+    build = store.root / "fx" / "1-cpu"
+    taken: list[BuildHolds] = []
+    try:
+        with pytest.raises(engine_store.EngineInUseError, match="Engine fx 1-cpu is in use"):
+            store.remove("fx", "1", "cpu", in_use=_launch_after_the_check(build, taken))
+    finally:
+        for holds in taken:
+            holds.close()
+    assert (build / RECORD_NAME).is_file()
+
+
+def test_install_keeps_a_damaged_build_a_launch_takes_after_the_check(
+    store: EngineStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    build = _damage_build(store, tmp_path)
+    path = tmp_path / "fx.whl"
+    lock = pin(hashlib.sha256(path.read_bytes()).hexdigest())
+    taken: list[BuildHolds] = []
+    monkeypatch.setattr(engine_store, "launch_uses_engine", _launch_after_the_check(build, taken))
+    try:
+        with pytest.raises(engine_store.EngineInUseError, match="Engine fx 1-cpu is in use"):
+            store.install_from_wheel(lock, path)
+    finally:
+        for holds in taken:
+            holds.close()
+    assert (build / "survivor.txt").is_file()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="flock is POSIX")

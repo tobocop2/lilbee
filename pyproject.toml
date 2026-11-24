@@ -226,6 +226,8 @@ show_missing = true
 fail_under = 100
 exclude_lines = [
     "pragma: no cover",
+    # Runs on Windows alone; .coveragerc-windows measures it there.
+    "pragma: windows only",
     "if TYPE_CHECKING:",
     "class.*Protocol",
 ]
