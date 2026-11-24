@@ -363,11 +363,14 @@ def spawn_server(
     child_env = {**os.environ, **(env_overrides or {}), PARENT_PID_ENV: str(os.getpid())}
 
     try:
-        # A session of its own keeps a terminal Ctrl-C to the launcher's group away
-        # from serve: the launcher's one SIGTERM is serve's first signal, so the
-        # clean stop runs instead of the second-signal force quit.
+        # The launcher's one SIGTERM must be serve's first signal, so the clean stop
+        # runs instead of the second-signal force quit. A session of its own keeps a
+        # terminal Ctrl-C to the launcher's group away from serve. The watcher alone
+        # stops serve when the launcher dies: the kernel death signal is sent again
+        # each time a launcher thread exits, so it can be a second SIGTERM.
         return spawn_bound_child(
             cmd,
+            bind_lifetime=False,
             stdout=stdout,
             stderr=stderr,
             env=child_env,
