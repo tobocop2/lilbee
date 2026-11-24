@@ -331,7 +331,7 @@ def test_a_refused_engine_is_not_offered_in_the_hint() -> None:
 
 
 _IK_REFUSED = (
-    "Engine ik_llama.cpp loads the gguf format but cannot run on this host. "
+    "Engine ik_llama.cpp loads the gguf format but cannot run on this computer. "
     "Xeon lacks AVX2. ik_llama.cpp needs a CPU with AVX2 or NEON."
 )
 
@@ -349,7 +349,7 @@ def test_auto_with_a_role_keeps_the_role_prefix_on_the_host_refusal() -> None:
     got = _ask(host=lambda: NO_AVX2, installed={IK: {G}}, role=WorkerRole.CHAT, model="org/m")
     assert got.name is None
     assert got.notice == (
-        "For chat: Engine ik_llama.cpp loads the gguf format of org/m but cannot run on this host. "
+        "For chat: Engine ik_llama.cpp loads the gguf format of org/m but cannot run on this computer. "
         "Xeon lacks AVX2. ik_llama.cpp needs a CPU with AVX2 or NEON."
     )
 

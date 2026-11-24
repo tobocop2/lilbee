@@ -319,7 +319,7 @@ def _by_default(
         )
     elif refused := _refused(fmt, installed, role, host):
         text = " ".join(
-            f"Engine {name} loads the {fmt} format{of_model} but cannot run on this host. "
+            f"Engine {name} loads the {fmt} format{of_model} but cannot run on this computer. "
             f"{answer.reason}"
             for name, answer in refused
         )
