@@ -684,6 +684,50 @@ class TestWriteCancellation:
         assert waits == []
         assert list(tmp_path.iterdir()) == []
 
+    def test_each_retry_waits_before_the_next_attempt(self, tmp_path, monkeypatch):
+        attempts, waits = self._refuse_renames(monkeypatch, "win32", refusals=2)
+        write_dataset(self._big_table(3), tmp_path / "pages.jsonl", DatasetFormat.JSONL, None)
+        assert len(attempts) == 3
+        assert len(waits) == 2
+        assert all(wait > 0 for wait in waits)
+
+    def test_a_rename_that_fails_for_another_reason_on_windows_is_not_tried_again(
+        self, tmp_path, monkeypatch
+    ):
+        attempts: list[str] = []
+
+        def _replace(src, dst):
+            attempts.append(str(src))
+            raise OSError(28, "No space left on device", src, None, dst)
+
+        monkeypatch.setattr(export_mod.sys, "platform", "win32")
+        monkeypatch.setattr(export_mod.os, "replace", _replace)
+        monkeypatch.setattr(export_mod.time, "sleep", lambda _s: None)
+        with pytest.raises(OSError, match="No space left"):
+            write_dataset(self._big_table(3), tmp_path / "pages.jsonl", DatasetFormat.JSONL, None)
+        assert len(attempts) == 1
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need a privilege on Windows")
+    def test_the_partial_file_is_written_beside_the_real_target_of_a_symlink(
+        self, tmp_path, monkeypatch
+    ):
+        target = tmp_path / "real" / "pages.jsonl"
+        target.parent.mkdir()
+        link_dir = tmp_path / "links"
+        link_dir.mkdir()
+        link = link_dir / "pages.jsonl"
+        link.symlink_to(target)
+        real_replace = export_mod.os.replace
+        partial_dirs: list[Path] = []
+
+        def _replace(src, dst):
+            partial_dirs.append(Path(src).parent)
+            real_replace(src, dst)
+
+        monkeypatch.setattr(export_mod.os, "replace", _replace)
+        write_dataset(self._big_table(3), link, DatasetFormat.JSONL, None)
+        assert partial_dirs == [target.parent.resolve()]
+
     def test_a_re_export_replaces_the_file_at_the_name(self, tmp_path):
         # Runs on every platform: the mode test below skips Windows, and this is
         # the run that reaches the copy of the old file's mode there.

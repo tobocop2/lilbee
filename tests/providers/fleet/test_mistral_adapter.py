@@ -22,7 +22,7 @@ from lilbee.app import engine_service
 from lilbee.catalog import runnable
 from lilbee.cli import app as cli_app
 from lilbee.core.config import cfg
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import engine_manifest, host_caps, planning, swap_config
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.devices import FleetDevice
@@ -691,6 +691,16 @@ def make_pack(path: Path) -> str:
         archive.writestr(tool, "#!/bin/sh\n")
         archive.writestr("pkg-1.dist-info/METADATA", "License-Expression: MIT\n")
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_a_missing_install_is_not_found_for_the_callers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64"))
+    with pytest.raises(ProviderError) as exc:
+        MISTRAL.binary()
+    assert exc.value.kind is ProviderErrorKind.NOT_FOUND
 
 
 def test_the_engine_counts_as_installed_only_with_a_record_and_finds_its_tool(

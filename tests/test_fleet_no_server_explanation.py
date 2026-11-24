@@ -161,6 +161,15 @@ class TestTheExplanationReadsThePack:
 
         assert "binary not found" not in str(error.value)
 
+    @pytest.mark.parametrize("role", list(WorkerRole))
+    def test_a_role_with_no_server_and_no_engine_problem_is_not_found(
+        self, pack_only: _Calls, book: str, role: WorkerRole
+    ) -> None:
+        with pytest.raises(ProviderError) as error:
+            FleetProvider()._raise_no_clients(role)
+
+        assert error.value.kind is ProviderErrorKind.NOT_FOUND
+
     def test_the_pack_server_is_ready(self, pack_only: _Calls) -> None:
         assert binary.llama_server_ready()
 
