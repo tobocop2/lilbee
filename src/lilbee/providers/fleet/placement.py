@@ -80,8 +80,6 @@ class ModelPlacementInput:
     kind: MemoryKind = MemoryKind.SIZED
     size_known: bool = True
     """False when the figures are the unknown-size reserve, not a measured size."""
-    equal_split_only: bool = False
-    """True when the engine launches a split only as an equal share on each card."""
 
 
 @dataclass(frozen=True)
@@ -123,16 +121,6 @@ class LowFreeMemory:
 
 
 @dataclass(frozen=True)
-class SplitMiss:
-    """The nearest a split came to fitting: its card count and the card it overshot most."""
-
-    count: int
-    device: int
-    need_bytes: float
-    room_bytes: float
-
-
-@dataclass(frozen=True)
 class Placement:
     """Planner output: server instances, swap tenants, and best-effort placements.
 
@@ -152,8 +140,6 @@ class Placement:
     swap_classes: tuple[frozenset[WorkerRole], ...] = ()
     tight_roles: dict[WorkerRole, int] = field(default_factory=dict)
     low_free_memory: dict[WorkerRole, LowFreeMemory] = field(default_factory=dict)
-    split_misses: dict[WorkerRole, SplitMiss] = field(default_factory=dict, compare=False)
-    """Per role, the nearest split the planner tried, from the first pack that tried one."""
 
     @property
     def co_tenants(self) -> frozenset[WorkerRole]:
@@ -206,7 +192,6 @@ def plan_placement(
         return _place_ungated(models)
     usable = usable_vram_fraction()
     cards: dict[int, float] = {idx: vram * usable for idx, vram in devices}
-    misses: dict[WorkerRole, SplitMiss] = {}
 
     def placer(remaining: dict[int, float]) -> Callable[[ModelPlacementInput], _Placed | None]:
         def place(model: ModelPlacementInput) -> _Placed | None:
@@ -217,7 +202,6 @@ def plan_placement(
                 chat_ctx_fit=chat_ctx_fit,
                 chat_ctx_target=chat_ctx_target,
                 free_headroom=free_headroom,
-                misses=misses,
             )
 
         return place
@@ -225,7 +209,7 @@ def plan_placement(
     if refuse_oversize:
         # The search repeats passes over the same roles and splits; one estimate each.
         estimate_peak = functools.cache(estimate_peak)
-        return replace(_place_refusing(models, cards, placer), split_misses=misses)
+        return _place_refusing(models, cards, placer)
 
     remaining = dict(cards)
     # The persistent singles are every replicas<=1 role plus replica 0 of each
@@ -665,7 +649,6 @@ def _persistent_single(model: ModelPlacementInput) -> ModelPlacementInput:
         role=model.role,
         est_vram_bytes=model.est_vram_bytes,
         replicas=1,
-        equal_split_only=model.equal_split_only,
     )
 
 
@@ -685,7 +668,6 @@ def _place_single(
     chat_ctx_fit: SplitCtxFitter | None = None,
     chat_ctx_target: int = 0,
     free_headroom: dict[int, int] | None = None,
-    misses: dict[WorkerRole, SplitMiss],
 ) -> _Placed | None:
     """Place one instance: a single GPU when it fits, else a tensor-split, else None."""
     single = _best_single_device(model.est_vram_bytes, remaining)
@@ -702,7 +684,6 @@ def _place_single(
         chat_ctx_fit=chat_ctx_fit,
         chat_ctx_target=chat_ctx_target,
         free_headroom=free_headroom,
-        misses=misses,
     )
 
 
@@ -714,7 +695,6 @@ def _place_split(
     chat_ctx_fit: SplitCtxFitter | None = None,
     chat_ctx_target: int = 0,
     free_headroom: dict[int, int] | None = None,
-    misses: dict[WorkerRole, SplitMiss],
 ) -> _Placed | None:
     """Tensor-split across the most-free GPUs whose per-device share each fits.
 
@@ -728,21 +708,17 @@ def _place_split(
     smallest card at the proportional ratio and fit at a shifted one. The sweep
     stops after ``_MAX_SPLIT_ESTIMATES`` estimator calls and says so, since each
     call is a subprocess. A split the engine refuses outright runs no estimate and is not counted.
-
-    When no split is placed, the estimated split whose busiest card overshoots its room
-    least goes to *misses* for the role, unless an earlier pack already recorded one.
     """
     from lilbee.providers.base import ProviderError
     from lilbee.providers.fleet.engines.base import SplitRefusedError
 
     by_free = sorted(remaining, key=lambda idx: remaining[idx], reverse=True)
     best: tuple[int, list[int], tuple[int, ...], tuple[int, ...]] | None = None
-    nearest: SplitMiss | None = None
     spent = 0
     refusals: set[str] = set()
     for count in range(2, len(by_free) + 1):
         chosen = by_free[:count]
-        for ratio in _split_ratio_candidates(chosen, remaining, equal_only=model.equal_split_only):
+        for ratio in _split_ratio_candidates(chosen, remaining):
             if spent >= _MAX_SPLIT_ESTIMATES:
                 log.info(
                     "Stopped looking for a tensor split for %s after %d estimates; "
@@ -750,7 +726,7 @@ def _place_split(
                     model.role.value,
                     spent,
                 )
-                return _noting_miss(_best_or_none(best, model, remaining), model, nearest, misses)
+                return _best_or_none(best, model, remaining)
             spent += 1
             try:
                 per_device = estimate_peak(model.role, ratio)
@@ -765,7 +741,6 @@ def _place_split(
                 # path downstream places it or, when refusing, refuses it.
                 continue
             if not _split_fits(chosen, per_device, remaining):
-                nearest = _nearer_miss(nearest, chosen, per_device, remaining)
                 continue
             # Only chat is widened past the fewest fitting cards; everything else (and
             # the no-fitter generic path) takes the first shard that fits.
@@ -783,7 +758,7 @@ def _place_split(
                 return _charge_split(model, chosen, ratio, per_device, remaining)
             if best is None or served > best[0]:
                 best = (served, chosen, ratio, per_device)
-    return _noting_miss(_best_or_none(best, model, remaining), model, nearest, misses)
+    return _best_or_none(best, model, remaining)
 
 
 def _split_fits(
@@ -793,47 +768,6 @@ def _split_fits(
     return len(per_device) == len(chosen) and all(
         peak <= remaining[idx] for idx, peak in zip(chosen, per_device, strict=True)
     )
-
-
-def _nearer_miss(
-    nearest: SplitMiss | None,
-    chosen: list[int],
-    per_device: tuple[int, ...],
-    remaining: dict[int, float],
-) -> SplitMiss | None:
-    """*nearest*, or the split of *chosen* when its busiest card overshoots its room less.
-
-    An estimate that does not give one figure per chosen card is no split and changes nothing.
-    """
-    if len(per_device) != len(chosen):
-        return nearest
-    candidate = max(
-        (
-            SplitMiss(len(chosen), idx, float(peak), remaining[idx])
-            for idx, peak in zip(chosen, per_device, strict=True)
-        ),
-        key=_overshoot,
-    )
-    if nearest is None or _overshoot(candidate) < _overshoot(nearest):
-        return candidate
-    return nearest
-
-
-def _overshoot(miss: SplitMiss) -> float:
-    """How far the busiest card of *miss* is over its room, in bytes."""
-    return miss.need_bytes - miss.room_bytes
-
-
-def _noting_miss(
-    placed: _Placed | None,
-    model: ModelPlacementInput,
-    nearest: SplitMiss | None,
-    misses: dict[WorkerRole, SplitMiss],
-) -> _Placed | None:
-    """Return *placed*; when it is None, keep *nearest* for the role unless one is kept."""
-    if placed is None and nearest is not None:
-        misses.setdefault(model.role, nearest)
-    return placed
 
 
 def _log_first_refusal(seen: set[str], count: int, role: WorkerRole, refusal: Exception) -> None:
@@ -1004,13 +938,9 @@ def placement_from_spec(
     plan_auto: AutoPlanner | None = None,
     model_refs: Mapping[WorkerRole, str] = MappingProxyType({}),
     lost_card: LostCardWording | None = None,
-    equal_split_roles: frozenset[WorkerRole] = frozenset(),
     outside: Mapping[int, int] = MappingProxyType({}),
 ) -> Placement:
     """Build a Placement from a manual *spec*, charging each card and failing loud.
-
-    A card role of *equal_split_roles* with no explicit ``tensor_split`` takes the
-    first ratio of the equal-only ladder (:func:`_split_ratio_candidates`).
 
     ``device_capacity`` is each card's total VRAM (not instantaneous free): the
     plan defines the fleet's full intended residency, so charging it against live
@@ -1050,12 +980,7 @@ def placement_from_spec(
             )
             continue
         card_roles.append(role)
-        ratio = (
-            rp.tensor_split
-            or _split_ratio_candidates(rp.devices, remaining, equal_only=role in equal_split_roles)[
-                0
-            ]
-        )
+        ratio = rp.tensor_split or _split_ratio_candidates(rp.devices, remaining)[0]
         try:
             per_device = estimate_peak(role, ratio)
         except SplitRefusedError as exc:
@@ -1126,7 +1051,7 @@ _RATIO_QUANTUM_DIVISOR = 4
 
 
 def _split_ratio_candidates(
-    devices: Sequence[int], remaining: dict[int, float], *, equal_only: bool = False
+    devices: Sequence[int], remaining: dict[int, float]
 ) -> tuple[tuple[int, ...], ...]:
     """Proportions worth trying for a split across *devices*, best-first.
 
@@ -1140,11 +1065,6 @@ def _split_ratio_candidates(
     Deduplicated by proportion rather than by tuple, so equal cards cost one
     estimate rather than three: (24, 24) and (96, 96) are the same split asked
     twice, and each ask is a subprocess.
-
-    An engine that launches only equal shares (*equal_only*) gets the proportions
-    above that are already equal, then the equal ratio itself. On cards of different
-    sizes the equal ratio is the one split it accepts, and each card then holds an
-    equal share of the footprint, so the smallest card gates it.
     """
     quantum = _vram_proportional_split(devices, remaining, divisor=_RATIO_QUANTUM_DIVISOR)
     candidates = [
@@ -1152,9 +1072,6 @@ def _split_ratio_candidates(
         quantum,
         _shifted_toward_roomiest(devices, remaining, quantum),
     ]
-    if equal_only:
-        candidates = [c for c in candidates if len(set(c)) == 1]
-        candidates.append((1,) * len(devices))
     seen: dict[tuple[int, ...], tuple[int, ...]] = {}
     for candidate in candidates:
         seen.setdefault(_normalized(candidate), candidate)
