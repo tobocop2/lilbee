@@ -483,9 +483,13 @@ real_ldd() {
 }
 
 @test "each manylinux script checks its libraries through the shared helper and never reads ldd itself" {
-  local script
+  local script call
   for script in llama_cuda_manylinux.sh llama_gpu_manylinux.sh ik_llama_manylinux.sh; do
-    grep -q 'assert_libraries_resolve "${BIN_DIR}/llama-server"' "${REPO_ROOT}/tools/wheel-build/${script}"
+    call='assert_libraries_resolve "${BIN_DIR}/llama-server"'
+    # The ik build also names the NVIDIA driver library that the host supplies.
+    if [ "${script}" = ik_llama_manylinux.sh ]; then call="${call} '^[[:space:]]*libcuda\\.so\\.1 '"; fi
+    # The whole line: a trailing "|| true" or another pattern must fail the test.
+    grep -Fx -- "${call}" "${REPO_ROOT}/tools/wheel-build/${script}"
     run grep -n '\bldd\b' "${REPO_ROOT}/tools/wheel-build/${script}"
     [ "$status" -eq 1 ]
   done
