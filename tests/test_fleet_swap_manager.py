@@ -1505,6 +1505,13 @@ class TestCrossRunReaping:
         self._step_clock(monkeypatch, create_time=8200.0, wall=8210.0, mono=510.0)
         assert sm._is_live_llama_swap(self._mono_record()) is True
 
+    def test_clock_step_that_leaves_the_create_time_alone_keeps_a_live_swap_live(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Windows: the wall clock steps +2 h and the process's create time stays put.
+        self._step_clock(monkeypatch, create_time=1000.0, wall=8210.0, mono=510.0)
+        assert sm._is_live_llama_swap(self._mono_record()) is True
+
     def test_a_swap_started_later_on_the_monotonic_clock_is_a_reused_pid(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
