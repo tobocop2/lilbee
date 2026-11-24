@@ -1524,7 +1524,8 @@ class TestCrossRunReaping:
     ) -> None:
         self._step_clock(monkeypatch, create_time=1000.5, wall=1010.0, mono=9.0)
         assert sm._is_live_llama_swap(self._mono_record(boot="boot-B")) is True
-        self._step_clock(monkeypatch, create_time=8200.0, wall=8210.0, mono=9.0)
+        # The numbers that match in the record's own boot do not match in another.
+        self._step_clock(monkeypatch, create_time=8200.0, wall=8210.0, mono=510.0)
         assert sm._is_live_llama_swap(self._mono_record(boot="boot-B")) is False
 
     def test_same_ticks_after_a_reboot_is_a_reused_pid(
