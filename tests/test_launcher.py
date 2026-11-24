@@ -28,7 +28,29 @@ def _patch_app_and_splash(monkeypatch: pytest.MonkeyPatch) -> tuple[Mock, Mock, 
     monkeypatch.setattr("lilbee.cli.app", fake_app)
     monkeypatch.setattr("lilbee.runtime.splash.start", start_spy)
     monkeypatch.setattr("lilbee.runtime.splash.stop", stop_spy)
+    # The real end exits past this process's own threads; the tests keep them.
+    monkeypatch.setattr("lilbee.app.services.end_command", _reraise)
     return fake_app, start_spy, stop_spy
+
+
+def _reraise(stop: SystemExit) -> None:
+    raise stop
+
+
+def test_a_command_exit_ends_through_the_bounded_end(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None
+) -> None:
+    fake_app, _, _ = _patch_app_and_splash(monkeypatch)
+    fake_app.side_effect = SystemExit(3)
+    ended = Mock(side_effect=_reraise)
+    monkeypatch.setattr("lilbee.app.services.end_command", ended)
+    monkeypatch.setattr(sys, "argv", ["lilbee", "sync"])
+
+    with pytest.raises(SystemExit) as exit_info:
+        launcher.main()
+
+    assert exit_info.value.code == 3
+    ended.assert_called_once_with(fake_app.side_effect)
 
 
 def test_bare_invocation_shows_splash(
