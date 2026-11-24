@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from itertools import pairwise
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -17,6 +17,7 @@ from lilbee.providers.base import (
     TokenUsage,
     ToolCall,
     ToolCallDelta,
+    byte_token_estimate,
 )
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
@@ -43,6 +44,8 @@ from lilbee.server.chat_dispatch.dispatch import (
     ModelDoesNotSupportToolsError,
     ModelNotFoundError,
     _provider_chat_kwargs,
+    _TEMPLATE_MESSAGE_TOKENS,
+    _TEMPLATE_PREAMBLE_TOKENS,
     count_request_tokens,
     dispatch_chat,
     dispatch_chat_stream,
@@ -63,6 +66,9 @@ def services_with_model(monkeypatch):
         text="hello", tool_calls=(), finish_reason=FinishReason.STOP
     )
     provider.supports_tools.return_value = False
+    provider.estimate_chat_tokens.side_effect = lambda text, *, model=None: byte_token_estimate(
+        text
+    )
 
     services = make_mock_services(provider=provider)
     installed = MagicMock()
@@ -1253,3 +1259,51 @@ class TestCountRequestTokens:
         steps = [later - earlier for earlier, later in pairwise(counts)]
         assert steps[0] > 0
         assert steps == [steps[0], steps[0] * 2, steps[0] * 4]
+
+    def test_the_estimate_counts_the_text_with_the_providers_counter(
+        self, services_with_model
+    ) -> None:
+        """A counter that reads fewer tokens than bytes lowers the count; the allowances stay."""
+        provider = services_with_model.provider
+        provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        provider.estimate_chat_tokens.side_effect = None
+        provider.estimate_chat_tokens.return_value = 3
+        req = _req(
+            system="be brief",
+            messages=[CanonicalMessage(role="user", content=[TextBlock(text="hello there")])],
+        )
+
+        count = count_request_tokens(req, canonical_model="vendor/model::Q4")
+
+        assert provider.estimate_chat_tokens.call_args == call(
+            "be brief\nhello there", model="vendor/model::Q4"
+        )
+        assert count == PromptTokenCount(
+            tokens=3 + _TEMPLATE_PREAMBLE_TOKENS + 2 * _TEMPLATE_MESSAGE_TOKENS,
+            accuracy=TokenCountAccuracy.ESTIMATED,
+        )
+
+    def test_the_counter_reads_tool_schemas_tool_calls_and_tool_results(
+        self, services_with_model
+    ) -> None:
+        """Every piece of text the request puts into the prompt reaches the counter in one call."""
+        provider = services_with_model.provider
+        provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        req = _req(messages=_TOOL_EXCHANGE, tools=[_BIG_TOOLS[0]])
+
+        count_request_tokens(req, canonical_model="vendor/model::Q4")
+
+        assert provider.estimate_chat_tokens.call_count == 1
+        counted = provider.estimate_chat_tokens.call_args.args[0]
+        tool_use = _TOOL_EXCHANGE[1].content[0]
+        assert isinstance(tool_use, ToolUseBlock)
+        for piece in (
+            _BIG_TOOLS[0].name,
+            _BIG_TOOLS[0].description,
+            json.dumps(_BIG_TOOLS[0].input_schema),
+            tool_use.name,
+            json.dumps(tool_use.input),
+            _TOOL_LOG,
+            "read it",
+        ):
+            assert piece in counted

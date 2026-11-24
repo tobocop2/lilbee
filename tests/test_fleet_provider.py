@@ -564,6 +564,14 @@ def test_count_tokens_routes_to_embed_server() -> None:
     client.count_tokens.assert_called_once_with("hello")
 
 
+def test_estimate_chat_tokens_counts_utf8_bytes_without_a_server() -> None:
+    """The estimate answers when the engine cannot render, so it calls no server."""
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    assert p.estimate_chat_tokens("héllo", model="vendor/m") == len("héllo".encode())
+    assert client.method_calls == []
+
+
 _COUNT_MESSAGES = [{"role": "user", "content": "hello"}]
 
 

@@ -9,6 +9,7 @@ native route is covered by the integration suite.
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
@@ -363,6 +364,13 @@ class TestFakeMatchesTheLibrary:
         fake = fakes.Usage(31, 4)
         for usage in (real, fake):
             assert (usage.prompt_tokens, usage.completion_tokens) == (31, 4)
+
+    def test_both_count_tokens_by_model_and_text(self) -> None:
+        """The adapter calls ``count_tokens(model, text)``; both modules take those names."""
+        real = inspect.signature(liter_llm.count_tokens)
+        fake = inspect.signature(fakes.FakeSdk().module().count_tokens)
+        assert list(real.parameters) == list(fake.parameters) == ["model", "text"]
+        assert issubclass(liter_llm.BadRequestError, liter_llm.LiterLlmError)
 
 
 class TestCatalogOnRealTypes:

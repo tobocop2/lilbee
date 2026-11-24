@@ -296,3 +296,13 @@ class LlmSdkBackend(Protocol):
     def supports_tools(self, model_ref: str) -> bool:
         """Return True iff the backend can route tool calls for *model_ref*."""
         ...
+
+    def count_tokens(self, ref: ProviderModelRef, text: str) -> int:
+        """Tokens *text* encodes to under the chat model *ref*'s own tokenizer.
+
+        Raise ``NotImplementedError`` when the SDK has no tokenizer of the model's
+        own, because a count under another model's tokenizer can read low. Raise
+        ``ProviderError`` when the tokenizer cannot load or count. The first call
+        for a model may download its tokenizer, so it can block.
+        """
+        ...

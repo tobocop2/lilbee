@@ -13,7 +13,7 @@ from litestar import Litestar
 from litestar.testing import AsyncTestClient
 
 from lilbee.app.services import set_services
-from lilbee.providers.base import ChatResult, FinishReason, ToolCall
+from lilbee.providers.base import ChatResult, FinishReason, ToolCall, byte_token_estimate
 from lilbee.server import auth as _auth_mod
 from lilbee.server.anthropic_api.routes import COUNT_ACCURACY_HEADER, anthropic_router
 from lilbee.server.chat_dispatch.canonical import (
@@ -59,6 +59,9 @@ def _services_with(provider: MagicMock, installed: list[MagicMock]) -> Any:
 
     provider.max_concurrent_chats.return_value = 1
     provider.served_chat_ctx.return_value = None
+    provider.estimate_chat_tokens.side_effect = lambda text, *, model=None: byte_token_estimate(
+        text
+    )
     services = make_mock_services(provider=provider)
     services.registry.list_installed = MagicMock(return_value=installed)
     refs = {m.ref for m in installed}

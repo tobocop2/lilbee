@@ -37,6 +37,7 @@ from lilbee.providers.base import (
     GENERATION_RESERVE_TOKENS,
     ProviderError,
     ProviderErrorKind,
+    byte_token_estimate,
     prompt_token_budget,
 )
 from lilbee.providers.fleet import planning
@@ -2190,6 +2191,10 @@ class FleetProvider:
                 ),
                 role=WorkerRole.CHAT,
             )
+
+    def estimate_chat_tokens(self, text: str, *, model: str | None = None) -> int:
+        """UTF-8 bytes of *text*: an engine that cannot render a prompt is not asked again."""
+        return byte_token_estimate(text)
 
     def vision_ocr(
         self,

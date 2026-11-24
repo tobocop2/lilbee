@@ -799,7 +799,7 @@ def _default_provider_mock():
     every downstream string consumer (regex, ``strip()``, etc.). Tests that
     care about the chat output override the return value explicitly.
     """
-    from lilbee.providers.base import ChatResult, FinishReason, LLMProvider
+    from lilbee.providers.base import ChatResult, FinishReason, LLMProvider, byte_token_estimate
 
     provider = MagicMock(spec=LLMProvider)
     provider.chat.return_value = ChatResult(text="", tool_calls=(), finish_reason=FinishReason.STOP)
@@ -817,6 +817,10 @@ def _default_provider_mock():
     provider.embed_token_cap.return_value = None
     # xberg probes a tokenizer binding with a one-character count at registration.
     provider.count_tokens.return_value = 1
+    # The count route's estimate reads an int from here; the default counts bytes.
+    provider.estimate_chat_tokens.side_effect = lambda text, *, model=None: byte_token_estimate(
+        text
+    )
     provider.health_warnings.return_value = []
     # warm_progress feeds the /api/warm/stream handler (WarmProgress | None);
     # default to None (idle). Warm-stream tests override this.
