@@ -552,9 +552,7 @@ class TestEstimateChatTokens:
             pytest.param(ProviderError("tokenizer did not load"), id="tokenizer-failed"),
         ],
     )
-    def test_falls_back_to_utf8_bytes_when_the_backend_cannot_count(
-        self, error: Exception
-    ) -> None:
+    def test_falls_back_to_utf8_bytes_when_the_backend_cannot_count(self, error: Exception) -> None:
         """A failed or missing tokenizer must not fail the count route, nor read low."""
         backend = FakeBackend(raise_count=error)
         provider = SdkLLMProvider(backend)
