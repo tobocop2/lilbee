@@ -78,6 +78,7 @@ from lilbee.cli.tui.screens.settings_widgets import (
 )
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.cli.tui.widgets.model_pick import STORE_ERRORS, apply_model_pick
+from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.cli.tui.widgets.profile_line import ProfileLine, ProfileLinePill
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import SettingSource
@@ -122,7 +123,7 @@ class _LazyGroupBody(VerticalScroll, can_focus=False):
             self.mount_all(widgets)
 
 
-class SettingsScreen(Screen[None]):
+class SettingsScreen(MountWhenAttached, Screen[None]):
     """Interactive settings viewer with grouped, type-aware editors."""
 
     app: LilbeeApp  # type: ignore[assignment]
@@ -191,6 +192,7 @@ class SettingsScreen(Screen[None]):
         self._pane_groups: dict[str, _PaneGroup] = {}
         self._pane_ids: list[str] = [PROFILE_PANE_ID]
         self._eagerly_populate = PROFILE_PANE_ID
+        self._profile_on_mount = False
         # What each editor showed when last built or refreshed; a save acts on a change from it.
         self._mount_display: dict[str, str] = {}
         # Keys whose field lost focus and whose save on blur has not run yet.
@@ -261,6 +263,8 @@ class SettingsScreen(Screen[None]):
         # The first pane is the one TabbedContent activates by default; populate
         # it eagerly so Settings shows content on first paint.
         self.call_after_refresh(self._populate_pane, self._eagerly_populate)
+        if self._profile_on_mount:
+            self.call_after_refresh(self.show_profile_tab)
 
     def on_screen_resume(self) -> None:
         """Take setting changes and rescan the profiles: another shell may have changed both.
@@ -397,6 +401,13 @@ class SettingsScreen(Screen[None]):
     @on(ProfileLinePill.Jump)
     def _on_profile_jump(self) -> None:
         self.show_profile_tab()
+
+    def request_profile_tab(self) -> None:
+        """Show the Profile tab after the next refresh, or from Mount before the screen mounts."""
+        if self.is_mounted:
+            self.call_after_refresh(self.show_profile_tab)
+        else:
+            self._profile_on_mount = True
 
     def show_profile_tab(self) -> None:
         """Activate the Profile tab and put focus on its dropdown."""
