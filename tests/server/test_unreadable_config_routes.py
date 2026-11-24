@@ -12,41 +12,12 @@ import stat
 
 import pytest
 
+from litestar.testing import TestClient
+
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
-from lilbee.server.routes.documents import add_route
-from lilbee.server.routes.general import config_reset_route, config_update_route
-from lilbee.server.routes.models import (
-    models_set_chat_route,
-    models_set_embedding_route,
-    models_set_reranker_route,
-    models_set_vision_route,
-)
-from lilbee.server.routes.placement import placement_clear_route, placement_set_route
-from lilbee.server.routes.presets import (
-    presets_add_route,
-    presets_edit_route,
-    presets_list_route,
-    presets_remove_route,
-)
-from tests._litestar_test_client import create_test_client
 
 READ_TEXT = f"Could not read {CONFIG_FILE_NAME}"
 ADD_BODY = {"name": "omlx", "url": "http://127.0.0.1:8000/v1", "roles": ["chat"]}
-ALL_ROUTES = [
-    add_route,
-    config_reset_route,
-    config_update_route,
-    models_set_chat_route,
-    models_set_embedding_route,
-    models_set_reranker_route,
-    models_set_vision_route,
-    placement_clear_route,
-    placement_set_route,
-    presets_add_route,
-    presets_edit_route,
-    presets_list_route,
-    presets_remove_route,
-]
 REQUESTS = [
     pytest.param("patch", "/api/config", {"json": {"top_k": 3}}, id="config-update"),
     pytest.param("post", "/api/config/reset", {"json": {"keys": ["top_k"]}}, id="config-reset"),
@@ -90,8 +61,13 @@ def _isolated_config(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client():
-    with create_test_client(ALL_ROUTES) as cl:
-        yield cl
+    # The real app, so the exception handlers the routes rely on are in place.
+    import lilbee.server.auth as auth_mod
+    from lilbee.server.app import create_app
+
+    auth_mod.session_manager.disable()
+    yield TestClient(create_app())
+    auth_mod.session_manager.cleanup()
 
 
 @pytest.mark.parametrize(("method", "url", "kwargs"), REQUESTS)
