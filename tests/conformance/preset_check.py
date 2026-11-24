@@ -193,7 +193,7 @@ def _rerank(setup: Setup) -> Outcome:
 
 def _send_oversize(setup: Setup) -> Outcome:
     messages = [{"role": "user", "content": OVERSIZE}]
-    options = {"max_tokens": 16}
+    options = {"num_predict": 16}
     try:
         if setup.window:
             from lilbee.providers.fleet.provider import FleetProvider

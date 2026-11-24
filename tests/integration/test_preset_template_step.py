@@ -22,9 +22,12 @@ _MODELS = {role: "m" for role in ("chat", "embed", "rerank", "vision")}
 
 
 def _template_outcome(
-    tmp_path: Path, message: dict[str, Any], seen: list[dict[str, Any]] | None = None
+    tmp_path: Path,
+    message: dict[str, Any],
+    seen: list[dict[str, Any]] | None = None,
+    step: str = "template",
 ) -> preset_check.Outcome:
-    """Run the template step through the real provider against a server that sends *message*.
+    """Run a step (the template step by default) through the real provider against a server that sends *message*.
 
     Each request body the server receives is appended to *seen*.
     """
@@ -55,7 +58,7 @@ def _template_outcome(
         with preset_check.configured(
             f"http://127.0.0.1:{server.server_address[1]}", setup, tmp_path
         ):
-            return preset_check._STEP_FUNCTIONS["template"](setup)
+            return preset_check._STEP_FUNCTIONS[step](setup)
     finally:
         server.shutdown()
         server.server_close()
@@ -96,3 +99,10 @@ def test_preset_template_step_request_is_deterministic_and_capped(tmp_path: Path
     assert len(seen) == 1
     assert seen[0]["temperature"] == 0
     assert seen[0]["max_tokens"] == 1024
+
+
+def test_preset_overflow_step_request_carries_its_token_cap(tmp_path: Path) -> None:
+    """The overflow step's 16-token cap reaches the request as max_tokens."""
+    seen: list[dict[str, Any]] = []
+    _template_outcome(tmp_path, {"content": "ok"}, seen, step="overflow")
+    assert [body["max_tokens"] for body in seen] == [16]
