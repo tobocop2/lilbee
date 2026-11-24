@@ -1,4 +1,4 @@
-"""The OpenVINO Model Server adapter: chat, embed and rerank of OpenVINO IR models."""
+"""The OpenVINO Model Server adapter: chat, embed, rerank and vision of OpenVINO IR models."""
 
 from __future__ import annotations
 
@@ -52,11 +52,13 @@ _TASKS = {
     WorkerRole.CHAT: "text_generation",
     WorkerRole.EMBED: "embeddings",
     WorkerRole.RERANK: "rerank",
+    WorkerRole.VISION: "text_generation",
 }
 _ENDPOINTS = {
     WorkerRole.CHAT: "/v3/chat/completions",
     WorkerRole.EMBED: "/v3/embeddings",
     WorkerRole.RERANK: "/v3/rerank",
+    WorkerRole.VISION: "/v3/chat/completions",
 }
 _DEVICES = {RoleTarget.CPU: "CPU", RoleTarget.GPU: "GPU", RoleTarget.NPU: "NPU"}
 """The ``--target_device`` value of each target a launch accepts."""
@@ -97,7 +99,9 @@ class OvmsAdapter:
 
     It loads OpenVINO IR folders only, one model for each process. Its HTTP port is
     ``--rest_port``; ``--port`` is its gRPC port, which lilbee leaves off. Its routes sit
-    under ``/v3``, and its rerank route takes the Cohere request shape.
+    under ``/v3``, and its rerank route takes the Cohere request shape. A vision model is a
+    text-generation model whose IR folder holds a vision encoder; it takes an image as a data
+    URI in the chat request.
 
     lilbee has no pack of it: the user installs the server, and lilbee runs the
     ``ovms`` on PATH.

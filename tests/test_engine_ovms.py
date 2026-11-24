@@ -66,9 +66,14 @@ def test_the_adapter_ships_in_the_choice_table() -> None:
     assert choice.ADAPTERS[EngineName.OVMS] is OVMS
 
 
-def test_the_engine_loads_openvino_ir_and_serves_three_roles() -> None:
+def test_the_engine_loads_openvino_ir_and_serves_four_roles() -> None:
     assert OVMS.formats == {ModelFormat.OPENVINO}
-    assert OVMS.served_roles == {WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK}
+    assert OVMS.served_roles == {
+        WorkerRole.CHAT,
+        WorkerRole.EMBED,
+        WorkerRole.RERANK,
+        WorkerRole.VISION,
+    }
 
 
 def test_the_http_port_is_rest_port_and_the_grpc_port_is_not_set() -> None:
@@ -80,13 +85,18 @@ def test_the_http_port_is_rest_port_and_the_grpc_port_is_not_set() -> None:
 def test_each_role_names_its_task() -> None:
     tasks = {
         role: (lambda a: a[a.index("--task") + 1])(_argv(role))
-        for role in (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK)
+        for role in (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION)
     }
     assert tasks == {
         WorkerRole.CHAT: "text_generation",
         WorkerRole.EMBED: "embeddings",
         WorkerRole.RERANK: "rerank",
+        WorkerRole.VISION: "text_generation",
     }
+
+
+def test_the_vision_role_is_a_chat_server() -> None:
+    assert OVMS.role_spec(WorkerRole.VISION, None, None).endpoint_path == "/v3/chat/completions"
 
 
 def test_the_launch_binds_loopback_and_serves_the_one_model_name() -> None:
@@ -106,7 +116,7 @@ def test_the_target_sets_the_device() -> None:
 
 def test_a_role_the_engine_does_not_serve_is_refused() -> None:
     with pytest.raises(ProviderError):
-        OVMS.role_spec(WorkerRole.VISION, None, None)
+        OVMS.role_spec("audio", None, None)  # type: ignore[arg-type]
 
 
 def test_the_gate_offers_linux_x86_64() -> None:
