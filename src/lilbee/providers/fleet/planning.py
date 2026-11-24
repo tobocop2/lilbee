@@ -1484,7 +1484,7 @@ def _estimate_or_fallback(
         )
     except (ProviderError, OSError) as exc:
         if isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.NOT_FOUND:
-            log.warning("Skipping %s server: model %r is not installed.", role.value, ref)
+            log.warning("Skipping %s server: model '%s' is not installed.", role.value, ref)
             skipped_not_installed[role] = ref
             return None
         return _sizing_failure_fallback(
@@ -1660,7 +1660,7 @@ def _sizing_failure_fallback(
     skipping it let an unsizable model past a check every sized model faces."""
     weights = _role_weights_bytes(role, ref)
     if weights == 0:
-        log.warning("Skipping %s server: could not size model %r (%s).", role.value, ref, exc)
+        log.warning("Skipping %s server: could not size model '%s' (%s).", role.value, ref, exc)
         return None
     if _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref, engine=engine)):
         _warn_weights_exceed(role, ref, weights, total_vram)

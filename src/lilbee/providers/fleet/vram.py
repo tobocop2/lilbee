@@ -335,7 +335,7 @@ def estimator_argv(
 def _run_parser(argv: list[str], path_str: str) -> str:
     """Run gguf-parser, returning its JSON stdout or a user-facing error."""
     failed = ProviderError(
-        f"Could not size the model {path_str!r}: the memory estimator failed to run.",
+        f"Could not size the model '{path_str}': the memory estimator failed to run.",
         provider=_PROVIDER,
         kind=ProviderErrorKind.SERVER,
     )
@@ -457,7 +457,7 @@ def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:
         )
     except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
         raise ProviderError(
-            f"Could not size the model {path_str!r}: unexpected estimator output "
+            f"Could not size the model '{path_str}': unexpected estimator output "
             f"({type(exc).__name__}: {exc}).",
             provider=_PROVIDER,
             kind=ProviderErrorKind.SERVER,
