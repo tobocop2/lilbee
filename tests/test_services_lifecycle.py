@@ -1649,6 +1649,87 @@ class TestExitAfterSignal:
 
         assert exits == []
 
+    def test_a_signal_that_joined_the_stop_sets_the_exit_status(self, monkeypatch) -> None:
+        _without_a_stop_thread(monkeypatch)
+        _install_stub_services()
+        exits: list[int] = []
+        monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+        monkeypatch.setattr(services_mod, "_STRAGGLER_BUDGET_S", 0.0)
+        monkeypatch.setattr(services_mod._lifecycle, "owed_status", 143)
+        threads = [threading.main_thread(), _Wedged()]
+        monkeypatch.setattr(services_mod, "_all_threads", lambda: list(threads))
+
+        services_mod.exit_after_signal(0)
+        del threads[1:]
+
+        assert exits == [143]
+
+    def test_a_ctrl_c_during_the_stop_wait_force_quits(self, monkeypatch) -> None:
+        exits: list[int] = []
+        monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+        monkeypatch.setattr(services_mod._lifecycle, "stop_for_exit", lambda: True)
+
+        def interrupted(timeout: float) -> bool:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(services_mod._lifecycle, "wait_stopped", interrupted)
+        monkeypatch.setattr(services_mod, "_all_threads", lambda: [threading.main_thread()])
+
+        services_mod.exit_after_signal(0)
+
+        assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
+
+
+@pytest.mark.parametrize(("code", "status"), [(None, 0), (3, 3), ("a message", 1)])
+def test_exit_code_of_maps_a_code_as_the_interpreter_does(code: object, status: int) -> None:
+    assert services_mod.exit_code_of(SystemExit(code)) == status
+
+
+class TestEndCommand:
+    def _threads(self, monkeypatch, extra):
+        """Patch enumerate with a mutable list, cleared before teardown."""
+        threads = [threading.main_thread(), *extra]
+        monkeypatch.setattr(services_mod, "_all_threads", lambda: list(threads))
+        return threads
+
+    def test_with_no_thread_left_it_raises_the_command_exit(self, monkeypatch) -> None:
+        bounded = MagicMock()
+        monkeypatch.setattr(services_mod, "exit_after_signal", bounded)
+        self._threads(monkeypatch, [])
+        stop = SystemExit(2)
+
+        with pytest.raises(SystemExit) as raised:
+            services_mod.end_command(stop)
+
+        assert raised.value is stop
+        bounded.assert_not_called()
+
+    def test_a_thread_left_takes_the_bounded_exit_with_the_command_status(
+        self, monkeypatch
+    ) -> None:
+        bounded = MagicMock()
+        monkeypatch.setattr(services_mod, "exit_after_signal", bounded)
+        threads = self._threads(monkeypatch, [_Wedged()])
+        stop = SystemExit(None)
+
+        with pytest.raises(SystemExit) as raised:
+            services_mod.end_command(stop)
+        del threads[1:]
+
+        assert raised.value is stop
+        bounded.assert_called_once_with(0)
+
+    def test_a_signal_during_the_bounded_exit_sets_the_status(self, monkeypatch) -> None:
+        monkeypatch.setattr(services_mod, "exit_after_signal", MagicMock())
+        monkeypatch.setattr(services_mod._lifecycle, "owed_status", 143)
+        threads = self._threads(monkeypatch, [_Wedged()])
+
+        with pytest.raises(SystemExit) as raised:
+            services_mod.end_command(SystemExit(0))
+        del threads[1:]
+
+        assert raised.value.code == 143
+
 
 class TestExitIfOpensRemain:
     @pytest.mark.parametrize(

@@ -9,7 +9,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from lilbee.app.services import exit_when_stragglers_would_hang, reset_services_on_exit
+from lilbee.app.services import (
+    exit_code_of,
+    exit_when_stragglers_would_hang,
+    reset_services_on_exit,
+)
 from lilbee.cli.tui.log_routing import setup_tui_log_file
 from lilbee.core.security import OWNER_ONLY_MODE
 from lilbee.runtime.asyncio_loop import run_without_join
@@ -140,8 +144,7 @@ def run_tui(*, initial_view: str | None = None) -> None:
         pass  # Ctrl-C exits the TUI; cleanup runs in the finally block
     except SystemExit as stop:
         # A SIGTERM ends the run with 128 + signum; the codes map as Python maps them.
-        code = stop.code
-        status = 0 if code is None else code if isinstance(code, int) else 1
+        status = exit_code_of(stop)
         raise
     finally:
         # Tasks stop through their own cancel while the executors and services live.

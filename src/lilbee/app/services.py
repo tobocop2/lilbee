@@ -32,7 +32,7 @@ from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -944,12 +944,15 @@ def exit_when_stragglers_would_hang(status: int) -> None:
 
 
 def _exit_if_stragglers(status: int, deadline: float) -> None:
-    """Join leftover non-daemon threads before *deadline*, else exit with *status*."""
+    """Join leftover non-daemon threads before *deadline*, else exit with *status*.
+
+    A signal that joined the stop meanwhile sets the status instead.
+    """
     with _interrupt_force_quits():
         for thread in _straggler_threads():
             thread.join(max(0.0, deadline - time.monotonic()))
         if _straggler_threads():
-            _exit_now(status, _STRAGGLER_NOTE)
+            _exit_now(exit_status_after_stop(status), _STRAGGLER_NOTE)
 
 
 def exit_if_opens_remain(status: int) -> None:
@@ -973,12 +976,37 @@ def exit_after_signal(status: int) -> None:
     The stdio MCP server reads stdin on a non-daemon thread that no signal
     wakes, so the interpreter would wait on it forever after the main thread
     unwound. The stop and the stragglers share one budget; a cut names its step.
+    A one-shot command with a leftover worker ends here too (``end_command``).
     """
     deadline = time.monotonic() + _STRAGGLER_BUDGET_S
-    if _lifecycle.stop_for_exit() and not _lifecycle.wait_stopped(_STRAGGLER_BUDGET_S):
-        log.warning("The exit cut the engine stop while %s", _lifecycle.stop_step)
-        _exit_now(status, _STRAGGLER_NOTE)
+    with _interrupt_force_quits():
+        if _lifecycle.stop_for_exit() and not _lifecycle.wait_stopped(_STRAGGLER_BUDGET_S):
+            log.warning("The exit cut the engine stop while %s", _lifecycle.stop_step)
+            _exit_now(exit_status_after_stop(status), _STRAGGLER_NOTE)
     _exit_if_stragglers(status, deadline)
+
+
+def exit_code_of(stop: SystemExit) -> int:
+    """The status the interpreter ends with for *stop*: None is 0, a message 1."""
+    code = stop.code
+    return 0 if code is None else code if isinstance(code, int) else 1
+
+
+def end_command(stop: SystemExit) -> NoReturn:
+    """End a one-shot command with *stop*, past a leftover thread that would hang the exit.
+
+    The interpreter joins every non-daemon thread before atexit, with no bound, and a
+    signal during that join loses its status. With such a thread left, the exit runs
+    the engine stop and gives the thread the straggler budget, then ends the process;
+    a signal meanwhile sets the status. With none left it raises *stop* as before.
+    """
+    if _straggler_threads():
+        status = exit_code_of(stop)
+        exit_after_signal(status)
+        owed = exit_status_after_stop(status)
+        if owed != status:
+            raise SystemExit(owed) from None
+    raise stop
 
 
 _lifecycle = _EngineLifecycle()
