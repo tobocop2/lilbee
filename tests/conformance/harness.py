@@ -692,7 +692,7 @@ def launch(
         proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         probe = _Probe(f"http://127.0.0.1:{port}", {}, 1.0)
         while time.monotonic() < deadline and proc.poll() is None:
-            if probe.call("GET", "/health")[0] == _HTTP_OK and proc.poll() is None:
+            if probe.call("GET", "/health")[0] == _HTTP_OK:
                 return proc, port
             time.sleep(_READY_POLL_S)
         if proc.poll() is None:
