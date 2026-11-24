@@ -7224,7 +7224,14 @@ def _answering_engine_that_has_not_loaded(
     )
     listing = SimpleNamespace(status_code=200, json=lambda: {"running": []})
     monkeypatch.setattr(sm, "_probe_client", lambda: SimpleNamespace(get=lambda *_a, **_k: listing))
-    monkeypatch.setattr(prov_mod, "time", SimpleNamespace(time=lambda: wall.now))
+    monkeypatch.setattr(
+        prov_mod,
+        "time",
+        SimpleNamespace(
+            time=lambda: wall.now,
+            monotonic=lambda: pytest.fail("the provider hands the verdict the wall clock"),
+        ),
+    )
     monkeypatch.setattr(sm, "linux_age_s", lambda _boot, _ticks: boot_age_s[0], raising=False)
     return machine
 

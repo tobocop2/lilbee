@@ -100,6 +100,7 @@ _STATE_KEY_ENGINE_PIN = "engine_pin"
 _STATE_KEY_CONFIG_ROOT = "config_root"
 _STATE_KEY_FLEET_VIEW = "fleet_view"
 _STATE_KEY_READY_AT = "ready_at"
+_STATE_KEY_STARTED_MONO = "started_mono"
 _STATE_KEY_SWAP_BINARY = "swap_binary"
 # Atomic state writes: the dot prefix keeps half-written tmp files out of the
 # reap scan's glob.
@@ -233,6 +234,7 @@ class SwapState:
     created_at: float | None = None
     boot_id: str | None = None  # with start_ticks, the Linux identity a clock step cannot move
     start_ticks: float | None = None
+    started_mono: float | None = None  # the system monotonic clock at spawn, on every platform
     member_ports: tuple[int, ...] = ()
     proxy_port: int | None = None
     launches: tuple[dict, ...] = ()
@@ -307,6 +309,9 @@ class SwapManager:
         # When this builder first saw a member ready; persisted so a binder can
         # tell an idle-unloaded engine from one whose first load never finished.
         self._ready_at: float | None = None
+        # The system monotonic clock at spawn. Every process of one boot shares it, so a
+        # binder ages the engine by it and a wall-clock step cannot move the age.
+        self._started_mono: float | None = None
 
     def start(
         self,
@@ -408,6 +413,7 @@ class SwapManager:
             start_new_session=True,
             creationflags=_CREATE_NEW_PROCESS_GROUP,
         )
+        self._started_mono = time.monotonic()
         self._write_state()
         self._await_health()
         log_role_launches(launches, engines=engines)
@@ -492,6 +498,8 @@ class SwapManager:
             state[_STATE_KEY_FLEET_VIEW] = self._origin.fleet_view
         if self._ready_at is not None:
             state[_STATE_KEY_READY_AT] = self._ready_at
+        if self._started_mono is not None:
+            state[_STATE_KEY_STARTED_MONO] = self._started_mono
         _atomic_write(self._state_path, json.dumps(state))
 
     def restamp(self, origin: PlanOrigin) -> None:
@@ -1027,11 +1035,17 @@ def _bind_deadline_s(state: SwapState) -> float:
 def _engine_age_s(state: SwapState, now: float) -> float | None:
     """Seconds the engine behind *state* has run, or None when the record gives no start.
 
-    A Linux record with the boot id and start ticks is aged by the boot clock, which a
-    wall-clock step does not move. Any other record (macOS, Windows, a Linux file written
-    before the pair) is aged by the wall clock *now* against its recorded create time, so
-    a forward step there can still pass the deadline early.
+    A record with the spawn reading of the system monotonic clock is aged by that clock on
+    every platform; a wall-clock step does not move it. A reading ahead of the clock came
+    from another boot and is ignored. A Linux record without it but with the boot id and
+    start ticks is aged by the boot clock. Any other record (a file written before both)
+    is aged by the wall clock *now* against its recorded create time, so a forward step
+    there can still pass the deadline early.
     """
+    if state.started_mono is not None:
+        mono_age = time.monotonic() - state.started_mono
+        if mono_age >= 0:
+            return mono_age
     if state.boot_id is not None and state.start_ticks is not None:
         age = linux_age_s(state.boot_id, state.start_ticks)
         if age is not None:
@@ -1052,7 +1066,8 @@ def _unloaded_readiness(state: SwapState, now: float) -> EngineReadiness:
 def engine_readiness(state: SwapState, *, now: float) -> EngineReadiness | None:
     """The bind verdict from one ``/running`` read, ``None`` when the engine does not answer.
 
-    *now* is wall-clock time; it ages only a record without the Linux boot id and start ticks.
+    *now* is wall-clock time; it ages only a record without the monotonic spawn reading or the
+    Linux boot id and start ticks.
     """
     listing = (
         None if state.proxy_port is None else _running_listing(f"http://{_HOST}:{state.proxy_port}")
@@ -1362,12 +1377,14 @@ def _load_state(path: Path) -> SwapState | None:
             else PlanOrigin(str(raw_root), payload.get(_STATE_KEY_FLEET_VIEW))
         )
         raw_ready = payload.get(_STATE_KEY_READY_AT)
+        raw_mono = payload.get(_STATE_KEY_STARTED_MONO)
         return SwapState(
             pid=int(payload[_STATE_KEY_PID]),
             pgid=int(raw_pgid) if raw_pgid is not None else None,
             created_at=float(raw_created) if raw_created is not None else None,
             boot_id=str(raw_boot_id) if raw_boot_id and raw_ticks is not None else None,
             start_ticks=float(raw_ticks) if raw_boot_id and raw_ticks is not None else None,
+            started_mono=float(raw_mono) if raw_mono is not None else None,
             member_ports=tuple(int(port) for port in raw_ports),
             proxy_port=int(raw_proxy) if raw_proxy is not None else None,
             launches=tuple(payload.get(_STATE_KEY_LAUNCHES) or ()),
