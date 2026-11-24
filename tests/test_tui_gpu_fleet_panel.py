@@ -398,7 +398,13 @@ async def test_panel_renders_stats_when_the_intel_hint_probe_raises(
 async def test_panel_removed_while_the_probe_runs_gets_no_update(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A panel removed while its worker runs stays quiet: no repaint, no error."""
+    """A panel removed while its worker runs stays quiet: no repaint, no error.
+
+    Textual cancels the worker when the panel is removed, and the worker's
+    callback is then dropped because the removed node has no app. A callback
+    already queued before the removal is not dropped that way, so the test
+    also delivers one to the removed panel by hand.
+    """
     import threading
 
     import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
@@ -425,6 +431,9 @@ async def test_panel_removed_while_the_probe_runs_gets_no_update(
         release.set()
         await app.workers.wait_for_complete()
         await pilot.pause()
+        assert updates == []
+        # A callback queued before the removal still lands on the removed panel.
+        panel._apply_stats({0: stat}, {0: "SYCL0"}, {}, None)
         assert updates == []
 
 
