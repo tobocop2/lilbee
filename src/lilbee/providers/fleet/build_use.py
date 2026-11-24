@@ -75,7 +75,7 @@ if sys.platform == "win32":  # pragma: no cover - proved on windows-latest, not 
         _k32.CloseHandle(handle)
 
     def _spawn_kwargs(handles: list[int]) -> dict[str, Any]:
-        info = subprocess.STARTUPINFO(lpAttributeList={"handle_list": handles})  # type: ignore[attr-defined]
+        info = subprocess.STARTUPINFO(lpAttributeList={"handle_list": handles})
         return {"startupinfo": info}
 
     def _open_elsewhere(path: Path) -> bool:
