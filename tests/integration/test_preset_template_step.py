@@ -21,8 +21,13 @@ importlib.import_module(sdk_library().module)
 _MODELS = {role: "m" for role in ("chat", "embed", "rerank", "vision")}
 
 
-def _template_outcome(tmp_path: Path, message: dict[str, Any]) -> preset_check.Outcome:
-    """Run the template step through the real provider against a server that sends *message*."""
+def _template_outcome(
+    tmp_path: Path, message: dict[str, Any], seen: list[dict[str, Any]] | None = None
+) -> preset_check.Outcome:
+    """Run the template step through the real provider against a server that sends *message*.
+
+    Each request body the server receives is appended to *seen*.
+    """
     setup = Setup(("chat",), dict(_MODELS))
     choice = {"index": 0, "message": {"role": "assistant", **message}, "finish_reason": "stop"}
     reply = json.dumps(
@@ -31,7 +36,9 @@ def _template_outcome(tmp_path: Path, message: dict[str, Any]) -> preset_check.O
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
-            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if seen is not None:
+                seen.append(json.loads(body))
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(reply)))
@@ -80,3 +87,12 @@ def test_preset_template_step_reads_only_the_answer(
     tmp_path: Path, message: dict[str, Any], ok: bool
 ) -> None:
     assert _template_outcome(tmp_path, message).ok is ok
+
+
+def test_preset_template_step_request_is_deterministic_and_capped(tmp_path: Path) -> None:
+    """A sampling engine must not decide the step: temperature 0, and a cap the client sends."""
+    seen: list[dict[str, Any]] = []
+    _template_outcome(tmp_path, {"content": "Rome."}, seen)
+    assert len(seen) == 1
+    assert seen[0]["temperature"] == 0
+    assert seen[0]["max_tokens"] == 1024
