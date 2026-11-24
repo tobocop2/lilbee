@@ -20,6 +20,10 @@ inputs:
     description: "Release holding the mirror."
     required: false
     default: engine-binaries
+  refresh-days:
+    description: "Age bucket in days. The blob is republished once per bucket, and a restore reads the current bucket, then the one before it."
+    required: false
+    default: "30"
   token:
     description: "Token with contents: write. Required for publish."
     required: false
@@ -39,6 +43,7 @@ runs:
       shell: bash
       env:
         MIRROR_RELEASE_TAG: ${{ inputs.release-tag }}
+        MIRROR_REFRESH_DAYS: ${{ inputs.refresh-days }}
       run: |
         set -uo pipefail
         if bash tools/wheel-build/ci_mirror.sh fetch "${{ inputs.key }}" "${{ inputs.cache-dir }}"; then
@@ -53,8 +58,9 @@ runs:
     # here and the next release reads it.
     #
     # First publish for a key wins; the step is a no-op once the mirror carries
-    # that asset. The key rotates on the dependency set, which is the
-    # invalidation that matters. The caller keys on a lock normalized by
+    # that asset. The key rotates on the dependency set, and the mirror adds an
+    # age bucket of refresh-days to it, so a blob is replaced at least that
+    # often even when no dependency moves. The caller keys on a lock normalized by
     # scripts/strip_own_version.sh: a key carrying lilbee's own version rotates
     # on every release and the restore never hits.
     # First-publish-wins is why the caller must name the build cell in the key.
@@ -66,4 +72,5 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token }}
         MIRROR_RELEASE_TAG: ${{ inputs.release-tag }}
+        MIRROR_REFRESH_DAYS: ${{ inputs.refresh-days }}
       run: bash tools/wheel-build/ci_mirror.sh publish "${{ inputs.key }}" "${{ inputs.cache-dir }}"
