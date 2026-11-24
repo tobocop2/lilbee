@@ -26,6 +26,7 @@ from tests._pe_fixture import pe_file
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools" / "wheel-build"
 QA = Path(__file__).resolve().parents[1] / "tools" / "qa"
+WHEEL_SERVER = QA.parents[1] / "src" / "lilbee" / "providers" / "fleet" / "wheel_server.py"
 PACKAGING = Path(__file__).resolve().parents[1] / "packaging" / "engine-wheel-mistral-rs"
 
 
@@ -263,6 +264,10 @@ def _tree(tmp_path: Path) -> Path:
         )
         (root / "tools" / "qa").mkdir()
         shutil.copy(QA / "assert_engine_bundle.py", root / "tools" / "qa")
+        # The script loads the wheel rules of the engine server from the source tree beside it.
+        rule = root / "src" / "lilbee" / "providers" / "fleet"
+        rule.mkdir(parents=True)
+        shutil.copy(WHEEL_SERVER, rule)
         (root / "tools" / "qa" / "check_mistralrs_chat.py").write_text(
             "import pathlib, sys\n"
             "pathlib.Path(__file__).with_name('asked').write_text('\\n'.join(sys.argv[1:]))\n",
