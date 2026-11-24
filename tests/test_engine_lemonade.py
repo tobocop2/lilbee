@@ -14,7 +14,7 @@ from lilbee.app import engine_service
 from lilbee.catalog import xdna
 from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.core.config import cfg
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import host_caps
 from lilbee.providers.fleet.engines import choice, lemonade, proof
 from lilbee.providers.fleet.engines.base import PORT_SLOT, EngineName, LaunchRequest
@@ -330,6 +330,16 @@ def test_g3_a_missing_install_says_where_to_get_lemonade(
     assert EMBEDDABLE in text
     assert "PATH" in text
     assert "lilbee engine install" not in text
+
+
+def test_g3_a_missing_install_is_not_found_for_the_callers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_store_build(monkeypatch)
+    monkeypatch.setattr(lemonade.shutil, "which", lambda name: None)
+    with pytest.raises(ProviderError) as exc:
+        LEMONADE.binary()
+    assert exc.value.kind is ProviderErrorKind.NOT_FOUND
 
 
 def test_g3_the_hint_sends_a_windows_user_to_the_archive() -> None:
