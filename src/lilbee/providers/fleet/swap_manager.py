@@ -35,7 +35,9 @@ from lilbee.providers.fleet.binary import (
     resolve_llama_swap,
     router_release,
 )
+from lilbee.providers.fleet.build_use import BuildHolds, builds_run_by
 from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_child
+from lilbee.providers.fleet.engine_store import engines_root
 from lilbee.providers.fleet.gpu_env import engine_environ
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch, role_model_prefix
@@ -386,21 +388,35 @@ class SwapManager:
         if lifetime is EngineLifetime.USERS and not ensure_engine_reaper(self._data_dir):
             log.warning("The engine at %s stops with this process.", self._data_dir)
             lifetime = EngineLifetime.BUILDER
-        self._proc = spawn_bound_child(
-            [
-                self._swap_binary,
-                _CONFIG_FLAG,
-                str(self._config_path),
-                _LISTEN_FLAG,
-                f"{_HOST}:{self._port}",
-            ],
-            bind_lifetime=lifetime is EngineLifetime.BUILDER,
-            env=engine_environ(),
-            stdout=self._log_file,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            creationflags=_CREATE_NEW_PROCESS_GROUP,
+        # The router outlives this process under a shared lifetime, and the servers it starts
+        # die with it, so the router holds the in-use file of every store build the fleet runs.
+        from lilbee.core.config import cfg
+
+        holds = BuildHolds(
+            builds_run_by(
+                engines_root(cfg.models_dir),
+                [self._swap_binary, *(launch.server_binary for launch in launches)],
+            )
         )
+        try:
+            self._proc = spawn_bound_child(
+                [
+                    self._swap_binary,
+                    _CONFIG_FLAG,
+                    str(self._config_path),
+                    _LISTEN_FLAG,
+                    f"{_HOST}:{self._port}",
+                ],
+                bind_lifetime=lifetime is EngineLifetime.BUILDER,
+                env=engine_environ(),
+                stdout=self._log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                creationflags=_CREATE_NEW_PROCESS_GROUP,
+                **holds.spawn_kwargs,
+            )
+        finally:
+            holds.close()
         self._write_state()
         self._await_health()
         log_role_launches(launches, engines=engines)
@@ -1091,29 +1107,6 @@ def _stop_recorded_engines(data_dir: Path, stop: Callable[[SwapState], bool]) ->
                 stopped.append(group)
         state_path.unlink(missing_ok=True)
     return stopped
-
-
-def recorded_launch_binaries(data_dir: Path) -> list[Path] | None:
-    """The router binary and the server binary of every recorded launch, or None.
-
-    None covers no state file, an unreadable one, a record without launches, and a
-    router or launch written before its binary was recorded.
-    """
-    binaries = []
-    for state_path in sorted(data_dir.glob(_STATE_FILE_GLOB)):
-        state = _load_state(state_path)
-        if state is None or not state.swap_binary or not state.launches:
-            return None
-        binaries.append(Path(state.swap_binary))
-        for item in state.launches:
-            try:
-                launch = InstanceLaunch.from_state(item)
-            except (KeyError, TypeError, ValueError):
-                return None
-            if not launch.server_binary:
-                return None
-            binaries.append(Path(launch.server_binary))
-    return binaries or None
 
 
 def unload_engine_models(data_dir: Path) -> bool:

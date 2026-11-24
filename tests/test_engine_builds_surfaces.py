@@ -18,6 +18,7 @@ from lilbee.app import engine_service
 from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import USAGE, run_engine_command
 from lilbee.core.config import Config, cfg
+from lilbee.providers.fleet.build_use import BuildHolds
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines import proof
 from lilbee.server.app import create_app
@@ -248,33 +249,16 @@ def test_a_build_in_use_is_refused_and_kept_on_every_surface(
     assert len(_installed()) == 1
 
 
-def test_a_build_is_in_use_only_while_a_launch_runs_its_binary(tmp_path: Path) -> None:
-    from lilbee.runtime.engine_lock import hold_user_lock
-
+def test_a_build_is_in_use_only_while_an_engine_holds_its_in_use_file() -> None:
     install(cfg.models_dir)
-    slot = tmp_path / "slot"
-    slot.mkdir()
-    launch = {
-        "role": "chat",
-        "argv": ["/usr/bin/env", "X=1", "srv"],
-        "model": "m",
-        "server_binary": str(tmp_path / "elsewhere" / "srv"),
-    }
-    state = {"pid": 1, "launches": [launch], "swap_binary": str(tmp_path / "elsewhere" / "swap")}
-    record = slot / "llama-swap.state.chat.1.json"
-    record.write_text(json.dumps(state), encoding="utf-8")
-    hold = hold_user_lock(slot)
+    holds = BuildHolds([engines_root(cfg.models_dir) / "fx" / "1-cpu"])
     try:
-        launch["server_binary"] = str(engines_root(cfg.models_dir) / "fx" / "1-cpu" / "srv")
-        record.write_text(json.dumps(state), encoding="utf-8")
         with pytest.raises(engine_service.EngineRefusedError, match="is in use"):
             engine_service.remove_build("fx", "1", "cpu")
         assert len(_installed()) == 1
-        launch["server_binary"] = str(tmp_path / "elsewhere" / "srv")
-        record.write_text(json.dumps(state), encoding="utf-8")
-        assert engine_service.remove_build("fx", "1", "cpu") == "fx 1 (cpu)"
     finally:
-        hold.release_and_check_last()
+        holds.close()
+    assert engine_service.remove_build("fx", "1", "cpu") == "fx 1 (cpu)"
     assert _installed() == []
 
 

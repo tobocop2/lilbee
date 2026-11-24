@@ -37,6 +37,7 @@ from lilbee.cli.tui.task_queue import TaskStatus
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.fleet import engine_manifest, engine_store, host_caps
+from lilbee.providers.fleet.build_use import BuildHolds
 from lilbee.providers.fleet.engine_store import LOCK_DIR, EngineStore, engines_root
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
@@ -45,7 +46,6 @@ from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.host_caps import Feature, HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.router_install import RouterDownloadError
 from lilbee.runtime.console import PlainConsole
-from lilbee.runtime.engine_lock import hold_user_lock
 from lilbee.server.routes import engines as routes
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import await_chat
@@ -1519,13 +1519,6 @@ def _damaged_build(good: Path, root: Path) -> Path:
     return build
 
 
-@pytest.fixture
-def launch_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    slot = tmp_path / "slot"
-    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(slot))
-    return slot
-
-
 def _service_install() -> str:
     with pytest.raises(engine_service.EngineInstallRefusedError) as exc:
         engine_service.install(ENGINE.value)
@@ -1567,35 +1560,35 @@ HELD_INSTALLS = {
 
 @pytest.mark.parametrize("surface", sorted(HELD_INSTALLS))
 def test_install_refuses_a_damaged_build_that_a_launch_holds(
-    surface: str, good: Path, root: Path, launch_slot: Path
+    surface: str, good: Path, root: Path
 ) -> None:
     build = _damaged_build(good, root)
-    hold = hold_user_lock(launch_slot)
+    hold = BuildHolds([build])
     try:
         text = HELD_INSTALLS[surface]()
     finally:
-        hold.release_and_check_last()
+        hold.close()
     assert text == HELD_REFUSAL
     assert (build / SURVIVOR).read_text(encoding="utf-8") == SURVIVOR_TEXT
     assert _builds() == []
 
 
 def test_install_and_remove_refuse_a_held_build_in_the_same_words(
-    good: Path, root: Path, launch_slot: Path
+    good: Path, root: Path
 ) -> None:
-    _damaged_build(good, root)
-    hold = hold_user_lock(launch_slot)
+    build = _damaged_build(good, root)
+    hold = BuildHolds([build])
     try:
         with pytest.raises(engine_service.EngineRefusedError) as removed:
             engine_service.remove_build(ENGINE.value, VERSION, "cpu")
         installed = _service_install()
     finally:
-        hold.release_and_check_last()
+        hold.close()
     assert str(removed.value).replace("remove it", "install it") == installed
 
 
 def test_install_replaces_a_damaged_build_that_no_launch_holds(
-    good: Path, root: Path, launch_slot: Path
+    good: Path, root: Path
 ) -> None:
     build = _damaged_build(good, root)
     engine_service.install(ENGINE.value)
@@ -1604,12 +1597,12 @@ def test_install_replaces_a_damaged_build_that_no_launch_holds(
 
 
 def test_install_succeeds_once_the_launch_releases_the_build(
-    good: Path, root: Path, launch_slot: Path
+    good: Path, root: Path
 ) -> None:
     build = _damaged_build(good, root)
-    hold = hold_user_lock(launch_slot)
+    hold = BuildHolds([build])
     assert _service_install() == HELD_REFUSAL
-    hold.release_and_check_last()
+    hold.close()
     engine_service.install(ENGINE.value)
     assert not (build / SURVIVOR).exists()
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]

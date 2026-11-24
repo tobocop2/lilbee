@@ -31,6 +31,7 @@ from lilbee.catalog.download import (
 from lilbee.catalog.download_progress import ProgressCallback
 from lilbee.core.security import FileLockUnavailableError, file_lock
 from lilbee.providers.fleet.engine_crates import MPL_CRATE_CHECKSUMS, MPL_PYPI_CHECKSUMS
+from lilbee.providers.fleet.build_use import build_in_use
 from lilbee.providers.fleet.engine_record import PACKAGES_URL
 from lilbee.providers.fleet.wheel_server import server_entry, server_problems
 from lilbee.runtime.cancellation import CancelSignal
@@ -1122,32 +1123,12 @@ def engines_root(models_dir: Path) -> Path:
 
 
 def launch_uses_engine(root: Path, engine: str, version: str, backend: str) -> bool:
-    """True while a launch of this machine runs a binary from this build folder.
+    """True while an engine process runs from this build folder.
 
-    The launches of the machine slot and of this config root's private slot both count. A
-    slot without a live user holds no launch. A user whose launches cannot all be named may
-    run any build, so it counts as a user. The paths are compared as written: a link inside
-    the build counts as the build.
+    The build folder holds the answer: every launch keeps its in-use file open (see
+    ``build_use``), so the check reads no slot, state file or config root.
     """
-    # circular: swap_manager -> binary -> first_use -> engine_store
-    from lilbee.core.config import cfg
-    from lilbee.providers.fleet.swap_manager import recorded_launch_binaries
-    from lilbee.runtime.engine_lock import (
-        live_users_exist,
-        machine_engine_dir,
-        private_engine_dir,
-    )
-
-    build = Path(os.path.abspath(root / engine / f"{version}-{backend}"))
-    for slot in dict.fromkeys((machine_engine_dir(), private_engine_dir(cfg.data_root))):
-        if not live_users_exist(slot):
-            continue
-        binaries = recorded_launch_binaries(slot)
-        if binaries is None or any(
-            Path(os.path.abspath(binary)).is_relative_to(build) for binary in binaries
-        ):
-            return True
-    return False
+    return build_in_use(root / engine / f"{version}-{backend}")
 
 
 def sweep_engines(models_dir: Path) -> list[Path]:
