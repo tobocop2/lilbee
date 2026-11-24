@@ -205,12 +205,9 @@ def test_unregistered_ref_error_shows_the_ref_as_typed() -> None:
     assert f"lilbee model pull {RELATIVE_REF}" in str(excinfo.value)
 
 
-def test_chat_dispatch_not_found_shows_the_ref_as_typed() -> None:
-    _assert_verbatim(str(ModelNotFoundError(WINDOWS_REF)))
-
-
-def test_chat_dispatch_no_tools_shows_the_ref_as_typed() -> None:
-    _assert_verbatim(str(ModelDoesNotSupportToolsError(WINDOWS_REF)))
+@pytest.mark.parametrize("error_class", [ModelNotFoundError, ModelDoesNotSupportToolsError])
+def test_chat_dispatch_error_shows_the_ref_as_typed(error_class: type[Exception]) -> None:
+    _assert_verbatim(str(error_class(WINDOWS_REF)))
 
 
 def test_ingest_refusal_shows_the_embedding_ref_as_typed(monkeypatch) -> None:
