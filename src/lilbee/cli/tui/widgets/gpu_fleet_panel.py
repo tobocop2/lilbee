@@ -22,6 +22,7 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.providers.fleet.gpu_stats import GpuStat, intel_util_hint, probe_gpu_stats
 
 if TYPE_CHECKING:
+    from lilbee.providers.fleet.gpu_backends import IntelUtilHint
     from lilbee.providers.fleet.gpu_stats import DeviceLike
 
 log = logging.getLogger(__name__)
@@ -252,21 +253,23 @@ class GpuFleetPanel(Static):
         labels: dict[int, str],
         roles: dict[int, Badge],
     ) -> None:
-        """Probe GPU stats off the UI thread and push the result back."""
+        """Probe GPU stats and the Intel util hint off the UI thread and push the result back."""
         try:
             stats = probe_gpu_stats(devices)
+            hint = intel_util_hint(devices, stats)
         except Exception:
             log.debug("gpu_fleet_panel: probe failed", exc_info=True)
             return
         finally:
             call_from_thread(self, setattr, self, "_probing", False)
-        call_from_thread(self, self._apply_stats, stats, labels, roles)
+        call_from_thread(self, self._apply_stats, stats, labels, roles, hint)
 
     def _apply_stats(
         self,
         stats: dict[int, GpuStat],
         labels: dict[int, str],
         roles: dict[int, Badge],
+        hint: IntelUtilHint | None,
     ) -> None:
         """Update the rendered content with fresh stat data (main thread)."""
         if self._probe_error is not None:
@@ -275,7 +278,6 @@ class GpuFleetPanel(Static):
             return
         theme = self._resolve_theme()
         content = _render_stats(stats, labels, roles, theme, probed=self._probed)
-        hint = intel_util_hint(self._devices, stats)
         if hint:
             muted = _theme_color(theme, "text-muted")
             hint_line = Content.styled(f"  {msg.intel_util_hint_text(hint)}", muted)
