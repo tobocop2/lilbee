@@ -17,6 +17,7 @@ from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.fleet.swap_manager import EngineLifetime
 from lilbee.providers.roles import WorkerRole
+from lilbee.runtime.daemon_call import DaemonCall
 from tests import test_fleet_reload_plan as plan_tests
 from tests.test_fleet_reload_plan import (
     _DRAIN_LIMIT_S,
@@ -491,7 +492,7 @@ def _plan_without_chat(monkeypatch: pytest.MonkeyPatch, *, then_fail: bool = Fal
 def _rediscover_during_the_drain(
     provider: FleetProvider, monkeypatch: pytest.MonkeyPatch, release: threading.Event
 ) -> tuple[list[int], threading.Thread]:
-    """Start a request thread's rediscover when the pass drains a client, then release the held request.
+    """Start a request thread's rediscover when the pass drains a client; then release the hold.
 
     The request fails once while the drain runs, so its rediscover starts inside the drain.
     Returns the calls of that request and its thread.
@@ -566,7 +567,7 @@ def test_a_rediscover_during_a_stalled_drain_still_stops_the_group_the_new_plan_
 def test_a_rediscover_in_a_failed_pass_waits_until_the_pass_gave_the_server_back(
     engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The plan after the drain fails; the fleet still maps the taken server when the pass gives it back."""
+    """The plan after the drain fails; the fleet still maps the server when the pass gives it back."""
     provider, _swaps = engine_fleet
     monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", plan_tests._LONG_DRAIN_S)
     old_chat = provider._swap_for(CHAT)
@@ -632,7 +633,7 @@ _REDISCOVER_WAIT_S = 2.0
 def test_a_rediscover_on_a_request_thread_during_the_drain_leaves_the_kept_group_serving(
     engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A request thread rediscovers while the pass drains chat; embed, which the pass keeps, serves."""
+    """A request thread rediscovers while the pass drains chat; embed, which it keeps, serves."""
     provider, _swaps = engine_fleet
     monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", plan_tests._LONG_DRAIN_S)
     old_chat = provider._swap_for(CHAT)
@@ -688,3 +689,31 @@ def test_a_rediscover_on_a_request_thread_during_the_drain_leaves_the_kept_group
     except ProviderError as err:
         pytest.fail(f"no embed server; old embed server running={embed_running}: {err}")
     assert clients
+
+
+def test_a_rediscover_still_waiting_at_the_fleet_work_limit_raises_and_keeps_the_map(
+    engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fleet work that outlasts the limit: the drop raises the still-starting error, maps intact."""
+    provider, _swaps = engine_fleet
+    monkeypatch.setattr(prov_mod, "_FLEET_WAIT_S", 0.0)
+    old_embed = provider._swap_for(EMBED)
+    gate = threading.Event()
+
+    def hold() -> None:
+        gate.wait(_JOIN_S)
+
+    with provider._lock:
+        provider._fleet_work = DaemonCall(hold, name="held-fleet-work")
+
+    try:
+        with pytest.raises(ProviderError, match="still starting") as raised:
+            provider._drop_swap_refs()
+    finally:
+        gate.set()
+        with provider._lock:
+            provider._fleet_work = None
+
+    assert raised.value.kind is ProviderErrorKind.STARTING
+    assert provider._swap_for(EMBED) is old_embed
+    assert provider._clients[EMBED]
