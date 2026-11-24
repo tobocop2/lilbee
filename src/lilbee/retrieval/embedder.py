@@ -143,7 +143,7 @@ class Embedder:
             log.info("No embedding model configured; embedding is off until one is set.")
             return False
         log.warning(
-            "Embedding model %r is not available; embedding will fail. "
+            "Embedding model '%s' is not available; embedding will fail. "
             "Pull it or set a different embedding_model.",
             self._config.embedding_model,
         )
