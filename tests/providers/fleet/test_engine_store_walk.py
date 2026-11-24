@@ -369,7 +369,9 @@ def test_a_leftover_that_goes_mid_sweep_is_gone_and_the_sweep_goes_on(
 
 
 def test_a_cleanup_failure_never_hides_the_first_error(
-    store: EngineStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    store: EngineStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     wheel = tmp_path / "fx.whl"
@@ -385,6 +387,22 @@ def test_a_cleanup_failure_never_hides_the_first_error(
     assert any(r.levelno == logging.WARNING for r in caplog.records)
 
 
+@posix_only
+def test_the_retry_adds_the_write_bit_only_inside_the_tree(tmp_path: Path) -> None:
+    top = tmp_path / "trash"
+    top.mkdir()
+    tmp_path.chmod(0o555)
+    try:
+        engine_store._retry_writable(str(top), os.rmdir, str(top), None)
+        outside = stat.S_IMODE(os.lstat(tmp_path).st_mode)
+    finally:
+        tmp_path.chmod(0o755)
+    top.chmod(0o555)
+    engine_store._retry_writable(str(top), os.rmdir, str(top / "gone"), None)
+    assert outside == 0o555, oct(outside)
+    assert stat.S_IMODE(os.lstat(top).st_mode) & stat.S_IWUSR
+
+
 # K ruling 3: an engine folder that is a link inside the root is damage.
 @posix_only
 def test_an_engine_folder_link_is_damage_and_remove_unlinks_it(
@@ -398,7 +416,7 @@ def test_an_engine_folder_link_is_damage_and_remove_unlinks_it(
     wheel = tmp_path / "fx.whl"
     lock = PinLock(ENGINE, "1", "cpu", {}, ("MIT",), make_wheel(wheel), "server", ())
     assert raised(lambda: store.install_from_wheel(lock, wheel)) is not None
-    assert store.prune(set(), in_use=idle) == []
+    assert store.prune({("llama-cpp", "9", "cpu")}, in_use=idle) == []
     assert (store.root / ENGINE).is_symlink()
     store.remove(ENGINE, "1", "cpu", in_use=idle)
     assert not os.path.lexists(store.root / ENGINE)
