@@ -597,6 +597,16 @@ def test_a_capped_vision_architecture_with_no_declared_window_gets_no_flag(
     assert _flag(MISTRAL.launch_argv(spec, request(tmp_path, model_path=folder))) is None
 
 
+@pytest.mark.parametrize("window", ["many", 0, True])
+def test_a_capped_vision_architecture_with_a_window_that_is_no_count_gets_no_flag(
+    window: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Windows", "x86_64"))
+    folder = _vision_folder(tmp_path, {"architectures": [_QWEN], _WINDOW: window})
+    spec = MISTRAL.role_spec(WorkerRole.VISION, None, None)
+    assert _flag(MISTRAL.launch_argv(spec, request(tmp_path, model_path=folder))) is None
+
+
 @pytest.mark.parametrize(
     "architecture",
     [
