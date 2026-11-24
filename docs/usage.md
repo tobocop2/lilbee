@@ -958,6 +958,11 @@ lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF   # required before `lilbe
 lilbee model browse                                     # pick a chat model interactively
 ```
 
+When a model download stalls, `lilbee model pull`, the first-run pull and the
+TUI task show each failed attempt in the progress line while the download runs.
+With `HF_HUB_VERBOSITY=error`, the notices for the hub's in-place resumes are
+hidden; the notices for a repeated transfer and a restarted download still show.
+
 Without an embedding model installed, every `lilbee add` call reports the file
 as `failed` with `Model '…' not found in registry`.
 
