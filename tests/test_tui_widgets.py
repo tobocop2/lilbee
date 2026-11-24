@@ -2726,14 +2726,14 @@ class TestArgSources:
     def test_model_and_document_lookups_log_and_return_empty_on_error(self) -> None:
         from unittest.mock import patch
 
-        from lilbee.cli.tui.widgets.autocomplete import ARG_SOURCES
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SEARCHES, ARG_SOURCES
 
         with patch(
             "lilbee.modelhub.models.list_installed_models", side_effect=RuntimeError("boom")
         ):
             assert ARG_SOURCES["/model"]() == []
         with patch("lilbee.cli.tui.widgets.autocomplete.get_services", side_effect=RuntimeError):
-            assert ARG_SOURCES["/delete"]() == []
+            assert ARG_SEARCHES["/delete"]("") == []
 
 
 class TestGetCompletions:
@@ -3012,15 +3012,15 @@ class TestSettingOptions:
 
 
 class TestDocumentOptions:
-    """``_document_options`` lists every ``/delete`` target from an uncached read."""
+    """``_document_options`` asks the store for the typed text, never for every source."""
 
     def test_returns_filenames(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import _document_options
 
         mock_svc = mock.MagicMock()
-        mock_svc.store.get_sources.return_value = [{"filename": "a.txt", "source": "a.txt"}]
+        mock_svc.store.source_names.return_value = ["a.txt"]
         with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
-            assert _document_options() == ["a.txt"]
+            assert _document_options("") == ["a.txt"]
 
     def test_returns_empty_on_error(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import _document_options
@@ -3028,15 +3028,17 @@ class TestDocumentOptions:
         with mock.patch(
             "lilbee.cli.tui.widgets.autocomplete.get_services", side_effect=Exception("err")
         ):
-            assert _document_options() == []
+            assert _document_options("") == []
 
-    def test_falls_back_to_source_key(self) -> None:
-        from lilbee.cli.tui.widgets.autocomplete import _document_options
+    def test_the_typed_text_and_a_bounded_limit_reach_the_store(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import _NAME_CANDIDATES, _document_options
 
         mock_svc = mock.MagicMock()
-        mock_svc.store.get_sources.return_value = [{"source": "b.pdf"}]
+        mock_svc.store.source_names.return_value = []
         with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
-            assert _document_options() == ["b.pdf"]
+            _document_options("note")
+        mock_svc.store.source_names.assert_called_once_with("note", limit=_NAME_CANDIDATES)
+        mock_svc.store.get_sources.assert_not_called()
 
     def test_held_out_sources_follow_indexed_ones(self, held_store) -> None:
         """A held-out file is a ``/delete`` target; one also indexed is listed once."""
@@ -3045,22 +3047,60 @@ class TestDocumentOptions:
 
         hold_failed({"scan.pdf": "h1", "a.txt": "h2"}, store=held_store)
         mock_svc = mock.MagicMock()
-        mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}]
+        mock_svc.store.source_names.return_value = ["a.txt"]
         with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
-            assert _document_options() == ["a.txt", "scan.pdf"]
+            assert _document_options("") == ["a.txt", "scan.pdf"]
 
     def test_delete_completion_reflects_a_store_change_at_once(self) -> None:
         """A source added after a completion is offered by the next Tab, with no invalidation."""
         from lilbee.cli.tui.widgets.autocomplete import get_completions
 
         mock_svc = mock.MagicMock()
-        mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}]
+        mock_svc.store.source_names.return_value = ["a.txt"]
         with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
             assert get_completions("/delete ") == ["a.txt"]
-            mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}, {"filename": "b.md"}]
+            mock_svc.store.source_names.return_value = ["a.txt", "b.md"]
             assert get_completions("/delete ") == ["a.txt", "b.md"]
-            mock_svc.store.get_sources.return_value = []
+            mock_svc.store.source_names.return_value = []
             assert get_completions("/delete ") == []
+
+    def test_a_delete_completion_ranks_prefix_matches_first(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        mock_svc = mock.MagicMock()
+        mock_svc.store.source_names.return_value = ["old-notes.md", "notes.md"]
+        with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
+            assert get_completions("/delete notes") == ["notes.md", "old-notes.md"]
+
+
+class TestDocumentOptionsOnALargeLibrary:
+    """On a real store the dropdown reads a bounded page of names and never every source."""
+
+    def _fill(self, store, count: int) -> None:
+        from lilbee.data.store.types import SourceMeta
+
+        for i in range(count):
+            store.upsert_source(f"corpus/doc-{i:04d}.txt", f"h{i}", 1)
+        store.upsert_source("corpus/plain.txt", "hp", 1, meta=SourceMeta(title="Quarterly report"))
+
+    def test_a_keystroke_reads_a_bounded_page_by_name_only(self, held_store) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import _NAME_CANDIDATES, get_completions
+
+        self._fill(held_store, 3 * _NAME_CANDIDATES)
+        with (
+            mock.patch.object(held_store, "get_sources", side_effect=AssertionError("full read")),
+            mock.patch.object(
+                held_store, "iter_source_heads", side_effect=AssertionError("full scan")
+            ),
+        ):
+            empty = get_completions("/delete ")
+            typed = get_completions("/delete doc-00")
+            by_title = get_completions("/delete quarterly")
+
+        assert 0 < len(empty) <= _NAME_CANDIDATES
+        assert typed and all("doc-00" in name for name in typed)
+        assert len(typed) <= _NAME_CANDIDATES
+        assert by_title == []  # a title is not a name: it must not fill the page
 
 
 class TestThemeOptions:
