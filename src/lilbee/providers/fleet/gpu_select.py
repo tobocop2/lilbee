@@ -1145,7 +1145,7 @@ def vulkan_icd_choice() -> IcdChoice | None:
         # disabling the wrong one costs the GPU outright.
         log.debug(
             "Not disabling any Vulkan ICD: none of the %d manifest vendors could be "
-            "confirmed present in the device tree of this computer, so which one drives this "
+            "confirmed present in this host's device tree, so which one drives this "
             "machine is unknown.",
             len(vendors),
         )
