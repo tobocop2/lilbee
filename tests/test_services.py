@@ -254,7 +254,9 @@ class TestWatchPool:
         watch_pool(on_spawned=on_spawned)
         get_services()
 
-        builds[0].add_spawn_listener.assert_called_once_with(on_spawning=None, on_spawned=on_spawned)
+        builds[0].add_spawn_listener.assert_called_once_with(
+            on_spawning=None, on_spawned=on_spawned
+        )
 
     def test_the_same_watcher_twice_is_heard_once(self, builds):
         from lilbee.app.services import get_services, watch_pool
@@ -265,7 +267,10 @@ class TestWatchPool:
         watch_pool(on_spawned=on_spawned)
         watch_pool(on_spawned=on_spawned)
 
-        builds[0].add_spawn_listener.assert_called_once_with(on_spawning=None, on_spawned=on_spawned)
+        builds[0].add_spawn_listener.assert_called_once_with(
+            on_spawning=None, on_spawned=on_spawned
+        )
+
 
 class TestEagerStartBranch:
     """``get_services`` warms the fleet when ``cfg.worker_pool_eager_start`` is set."""
