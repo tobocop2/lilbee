@@ -536,7 +536,6 @@ class Wedge:
         threading.Event().wait()
 
 wedge = Wedge()
-serve_logging._BACKSTOP_GRACE_S = 1.0
 serve_logging.arm_exit_deadline(1.0)
 """
 
@@ -581,6 +580,35 @@ def test_the_backstop_writes_the_hung_thread_to_the_fault_log_and_still_dies_of_
     )
     assert status == -signal.SIGALRM
     assert "in __del__" in fault_log
+
+
+_GIL_HOLD_PROBE = """\
+import ctypes, time
+from lilbee.cli.commands.serve_logging import arm_exit_deadline
+
+libc = ctypes.PyDLL(None)  # PyDLL keeps the GIL during the call
+
+def held_by_native_call():
+    libc.usleep(3_000_000)
+
+def next_function():
+    time.sleep(30)
+
+arm_exit_deadline(1.0)
+held_by_native_call()
+next_function()
+"""
+
+
+@posix_only
+def test_a_native_call_that_holds_the_gil_across_the_deadline_is_named(tmp_path: Path) -> None:
+    result = _run_probe(tmp_path, _GIL_HOLD_PROBE)
+    fault_log = "".join(
+        path.read_text(encoding="utf-8") for path in tmp_path.rglob("server-fault.log")
+    )
+    assert "in held_by_native_call" in fault_log
+    assert "in next_function" not in fault_log
+    assert result.returncode == -signal.SIGALRM
 
 
 @posix_only
