@@ -33,7 +33,6 @@ from lilbee.providers.fleet.placement_spec import (
     TargetRefusedError,
 )
 from lilbee.providers.roles import RoleTarget, WorkerRole
-from tests._mistral_cuda_pick import pick_cuda_on_gpu_hosts
 from tests._safetensors import safetensors_header
 from tests._stated_sizes import state_size
 
@@ -50,7 +49,7 @@ _HEADS_CONFIG = '{"num_attention_heads": 32, "num_key_value_heads": 8}'
 
 @pytest.fixture(autouse=True)
 def _two_cuda_cards(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A host whose mistral.rs build can split over two cards, whatever runs the tests."""
+    """A Linux host with two NVIDIA cards, whatever runs the tests."""
     nvidia = {
         "driver": "570.0",
         "cuda_driver": 12080,
@@ -62,7 +61,6 @@ def _two_cuda_cards(monkeypatch: pytest.MonkeyPatch) -> None:
         cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
         nvidia=nvidia,
     )
-    pick_cuda_on_gpu_hosts(monkeypatch)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
 
 
@@ -123,7 +121,14 @@ def _request(path: Path) -> MemoryRequest:
     )
 
 
-class _StatedEngine(type(MISTRAL)):
+class _SplitsAnywhere(type(MISTRAL)):
+    """The mistral.rs adapter with no launch refusal for a split, as a planner test needs."""
+
+    def check_split(self, model_path: Path, ratio: tuple[int, ...]) -> None:
+        return None
+
+
+class _StatedEngine(_SplitsAnywhere):
     """The mistral.rs adapter with a stated estimate in place of its own."""
 
     def __init__(self, estimate: MemoryEstimate) -> None:
@@ -301,7 +306,7 @@ def test_a_pin_on_two_cards_with_no_breakdown_says_to_pin_one(tmp_path, monkeypa
         r"Pin one card, or set its target to auto\.$"
     )
     with pytest.raises(PlacementError, match=expected):
-        _pin(MISTRAL, WorkerRole.CHAT, folder, (0, 1), monkeypatch, alone)
+        _pin(_SplitsAnywhere(), WorkerRole.CHAT, folder, (0, 1), monkeypatch, alone)
 
 
 def test_a_breakdown_of_the_wrong_length_keeps_the_count_text() -> None:
@@ -321,7 +326,9 @@ def test_a_breakdown_of_the_wrong_length_keeps_the_count_text() -> None:
 
 def test_the_refusal_of_a_two_card_pin_names_the_role_alone(tmp_path, monkeypatch) -> None:
     with pytest.raises(TargetRefusedError) as refused:
-        _pin(MISTRAL, WorkerRole.CHAT, _folder(tmp_path, GIB), (0, 1), monkeypatch, alone=True)
+        _pin(
+            _SplitsAnywhere(), WorkerRole.CHAT, _folder(tmp_path, GIB), (0, 1), monkeypatch, True
+        )
     assert set(refused.value.reasons) == {WorkerRole.CHAT}
 
 
