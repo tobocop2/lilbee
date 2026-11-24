@@ -313,14 +313,23 @@ class TestInstall:
         folder = tmp_path / "router"
         (folder / "inner").mkdir(parents=True)
 
-        def gone(path: str | Path) -> os.stat_result:
-            raise FileNotFoundError(2, "No such file", str(path))
+        class GoneAfterListing:
+            """The os module as the router code sees it, with each folder gone at its chmod."""
 
-        monkeypatch.setattr(os, "access", lambda *_a, **_k: False)
-        monkeypatch.setattr(os, "stat", gone)
+            def __getattr__(self, name: str) -> Any:
+                return getattr(os, name)
+
+            @staticmethod
+            def access(path: str | Path, mode: int) -> bool:
+                return False
+
+            @staticmethod
+            def stat(path: str | Path) -> os.stat_result:
+                raise FileNotFoundError(2, "No such file", str(path))
+
+        monkeypatch.setattr(router_install, "os", GoneAfterListing())
         with caplog.at_level("WARNING", logger=router_install.log.name):
             router_install._remove_folder(folder)
-        monkeypatch.undo()
         assert not folder.exists()
         assert caplog.records == []
 
@@ -353,10 +362,17 @@ class TestInstall:
         (stale / "old" / "stale.txt").write_text("old", encoding="utf-8")
         stale.chmod(0o555)
 
-        def refuse(path: str | Path, mode: int) -> None:
-            raise PermissionError(1, "Operation not permitted", str(path))
+        class ChmodRefused:
+            """The os module as the router code sees it, with chmod refused."""
 
-        monkeypatch.setattr(os, "chmod", refuse)
+            def __getattr__(self, name: str) -> Any:
+                return getattr(os, name)
+
+            @staticmethod
+            def chmod(path: str | Path, mode: int) -> None:
+                raise PermissionError(1, "Operation not permitted", str(path))
+
+        monkeypatch.setattr(router_install, "os", ChmodRefused())
         try:
             with (
                 caplog.at_level("WARNING", logger=router_install.log.name),
@@ -364,7 +380,6 @@ class TestInstall:
             ):
                 install_router()
         finally:
-            monkeypatch.undo()
             stale.chmod(0o755)
         assert not isinstance(raised.value, PermissionError)
         assert any(str(stale) in r.getMessage() for r in caplog.records)
