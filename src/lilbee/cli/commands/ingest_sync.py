@@ -55,7 +55,7 @@ from lilbee.crawler import is_url
 from lilbee.crawler.models import NO_LOGIN, CrawlLogin
 from lilbee.crawler.url_filter import without_userinfo
 from lilbee.providers.base import ProviderError
-from lilbee.runtime.asyncio_loop import run_without_join
+from lilbee.runtime.asyncio_loop import run_interruptible
 from lilbee.runtime.cancellation import CancelSignal, SignalFlag, sigint_cancel
 
 _SYNC_CANCELLED_MESSAGE = "Sync cancelled."
@@ -230,7 +230,7 @@ def _crawl_urls_blocking(
     crawl: bool,
     depth: int | None,
     max_pages: int | None,
-    cancel_event: CancelSignal,
+    cancel_event: SignalFlag,
     include_subdomains: bool = False,
     login: CrawlLogin = NO_LOGIN,
 ) -> _CrawlOutcome:
@@ -328,13 +328,13 @@ def _run_crawl_with_signal_cancel(
     depth: int | None,
     max_pages: int | None,
     on_progress: DetailedProgressCallback,
-    cancel_event: CancelSignal,
+    cancel_event: SignalFlag,
     crawl_and_save: Callable[..., Awaitable[list[Path]]],
     include_subdomains: bool = False,
     login: CrawlLogin = NO_LOGIN,
 ) -> list[Path]:
     """Crawl one URL on its own event loop; a crawl that ends under a set cancel raises it."""
-    result: list[Path] = run_without_join(
+    result: list[Path] = run_interruptible(
         crawl_and_save(
             url,
             depth=depth,
@@ -343,7 +343,8 @@ def _run_crawl_with_signal_cancel(
             cancel=cancel_event,
             include_subdomains=include_subdomains,
             login=login,
-        )
+        ),
+        cancel_event,
     )
     # A cancelled crawl returns the pages it saved; the command still stops here.
     if cancel_event.is_set():
@@ -459,7 +460,7 @@ def _default_progress() -> DetailedProgressCallback:
 
 
 def _run_sync(
-    cancel_event: CancelSignal,
+    cancel_event: SignalFlag,
     *,
     force_rebuild: bool = False,
     retry_skipped: bool = False,
@@ -486,7 +487,7 @@ def _run_sync(
     callback = _cancellable_progress(
         cancel_event, _wait_shown_on_stderr(on_progress or _default_progress())
     )
-    return run_without_join(
+    return run_interruptible(
         sync(
             force_rebuild=force_rebuild,
             quiet=cfg.json_mode,
@@ -495,7 +496,8 @@ def _run_sync(
             retry_skipped=retry_skipped,
             prune_ignored=prune_ignored,
             started_by=started_by,
-        )
+        ),
+        cancel_event,
     )
 
 
@@ -670,7 +672,7 @@ def _crawl_urls_step(
     depth: int | None,
     max_pages: int | None,
     include_subdomains: bool,
-    cancel_event: CancelSignal,
+    cancel_event: SignalFlag,
     typed_login: CrawlLogin,
 ) -> _CrawlOutcome:
     """Crawl URLs; without the crawler extra every URL fails with the install message."""
@@ -770,7 +772,7 @@ def _register_and_sync(
     crawled_paths: list[Path],
     *,
     force: bool,
-    cancel_event: CancelSignal,
+    cancel_event: SignalFlag,
     rollback: AddRollback,
     sync_results: list[object],
 ) -> dict | None:

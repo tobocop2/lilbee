@@ -11,12 +11,16 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextlib
+import select
 import signal
 import socket
 import sys
 import threading
 from collections.abc import Awaitable, Coroutine, Iterator
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
+
+if TYPE_CHECKING:
+    from lilbee.runtime.cancellation import SignalFlag
 
 T = TypeVar("T")
 
@@ -97,13 +101,111 @@ def _signals_wake(loop: asyncio.AbstractEventLoop) -> Iterator[None]:
         with reader, writer:
             reader.setblocking(False)
             writer.setblocking(False)
-            loop.add_reader(reader, reader.recv, _WAKEUP_READ_BYTES)
+            loop.add_reader(reader, _read_wakeups, reader)
             previous = signal.set_wakeup_fd(writer.fileno())
             try:
                 yield
             finally:
                 signal.set_wakeup_fd(previous)
                 loop.remove_reader(reader)
+
+
+def _read_wakeups(reader: socket.socket) -> None:
+    """Read the bytes the wakeups left in *reader*; an empty socket has nothing left to read.
+
+    A ready socket can be empty by the time its reader runs, so an empty read is the
+    end of the read, not an error.
+    """
+    with contextlib.suppress(BlockingIOError):
+        reader.recv(_WAKEUP_READ_BYTES)
+
+
+def _send_wakeup(writer: socket.socket) -> None:
+    """Wake a wait on *writer*'s pair; a full or closed socket has a wakeup or no wait."""
+    with contextlib.suppress(OSError):
+        writer.send(b"\0")
+
+
+def _wait_for(done: concurrent.futures.Future[Any]) -> None:
+    """Wait on this thread until *done* ends, while its signal handlers run at once.
+
+    The wait sleeps on a socket that both the end of *done* and Python's signal
+    wakeup write to. A lock wait does not wake for a signal that another thread
+    took, and macOS can give a process signal to any thread. A handler that raises
+    ends the wait with its exception.
+    """
+    reader, writer = socket.socketpair()
+    with reader, writer:
+        reader.setblocking(False)
+        writer.setblocking(False)
+        done.add_done_callback(lambda _done: _send_wakeup(writer))
+        previous = signal.set_wakeup_fd(writer.fileno())
+        try:
+            while not done.done():
+                select.select([reader], [], [])
+                _read_wakeups(reader)
+        finally:
+            signal.set_wakeup_fd(previous)
+
+
+def _run_with_sigint_blocked(
+    loop: asyncio.AbstractEventLoop,
+    task: asyncio.Future[T],
+    done: concurrent.futures.Future[T],
+) -> None:
+    """Run *task* on *loop* on this thread, where SIGINT is blocked, and put its end in *done*.
+
+    The block holds for every thread this one starts, so no Ctrl-C handler runs on
+    them and no signal lands inside the loop's own code.
+    """
+    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+    asyncio.set_event_loop(loop)
+    try:
+        done.set_result(loop.run_until_complete(task))
+    except BaseException as exc:
+        done.set_exception(exc)
+    finally:
+        asyncio.set_event_loop(None)
+
+
+def _cancel_all_tasks(loop: asyncio.AbstractEventLoop) -> None:
+    for task in asyncio.all_tasks(loop):
+        task.cancel()
+
+
+def run_interruptible(coro: Coroutine[Any, Any, T], cancel: SignalFlag) -> T:
+    """Run *coro* on its own loop on a worker thread; this thread only waits for the run.
+
+    Python runs a signal handler only on the main thread, so a Ctrl-C never lands
+    in the loop's code: a raise there could drop a task's wakeup. Setting *cancel*
+    hands the cancel of the run's task to the loop. A handler that raises during
+    the run ends only the wait. The run's tasks then get a cancel, and the run is
+    left to the process exit, so a run stuck in a sync step or a native call does
+    not keep the command. Off the main thread, and on Windows, *coro* runs on this
+    thread as ``run_without_join`` runs it.
+    """
+    if sys.platform == "win32" or threading.current_thread() is not threading.main_thread():
+        return run_without_join(coro)
+    loop = asyncio.new_event_loop()
+    # The task takes this thread's context, as a run on this thread would.
+    task = loop.create_task(coro)
+    done: concurrent.futures.Future[T] = concurrent.futures.Future()
+    cancel.bind_run(lambda: loop.call_soon_threadsafe(task.cancel))
+    try:
+        threading.Thread(
+            target=_run_with_sigint_blocked,
+            args=(loop, task, done),
+            name="lilbee-run",
+            daemon=True,
+        ).start()
+        _wait_for(done)
+    except BaseException:
+        loop.call_soon_threadsafe(_cancel_all_tasks, loop)
+        raise
+    finally:
+        cancel.unbind_run()
+    loop.close()
+    return done.result()
 
 
 def run_without_join(coro: Awaitable[T]) -> T:

@@ -5,17 +5,22 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import contextvars
+import os
 import selectors
 import signal
 import socket
 import sys
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from lilbee.runtime import asyncio_loop
+from lilbee.runtime.cancellation import SignalFlag
 from lilbee.runtime.lock import ResetRefusedError, _no_sync_running, sync_running
 from tests.conftest import read_takes_hooked, reset_held_on_a_thread
 
@@ -191,6 +196,133 @@ def test_run_without_join_off_the_main_thread_sets_no_wakeup_fd() -> None:
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         assert pool.submit(asyncio_loop.run_without_join, echo()).result() == 14
     assert _wakeup_fd() == before
+
+
+@posix_only
+def test_an_empty_wakeup_socket_ends_the_read_without_an_error(monkeypatch) -> None:
+    """A ready socket can be empty when its reader runs; the read must not raise."""
+    readers: list[tuple[Any, tuple[Any, ...]]] = []
+    real_add_reader = asyncio.SelectorEventLoop.add_reader
+
+    def add_reader(self, fd, callback, *args):
+        readers.append((callback, args))
+        return real_add_reader(self, fd, callback, *args)
+
+    monkeypatch.setattr(asyncio.SelectorEventLoop, "add_reader", add_reader)
+
+    async def read_the_empty_socket() -> None:
+        callback, args = readers[-1]
+        callback(*args)
+
+    asyncio_loop.run_without_join(read_the_empty_socket())
+    assert len(readers) == 1
+
+
+@contextmanager
+def _sigint_handler(handler: Any) -> Iterator[None]:
+    previous = signal.signal(signal.SIGINT, handler)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def _join_the_run_thread() -> None:
+    for thread in threading.enumerate():
+        if thread.name == "lilbee-run":
+            thread.join(timeout=5)
+
+
+@posix_only
+def test_run_interruptible_runs_on_a_thread_that_blocks_sigint() -> None:
+    flag = SignalFlag()
+
+    async def where() -> tuple[threading.Thread, set[int], asyncio.AbstractEventLoop]:
+        mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        return threading.current_thread(), mask, asyncio.get_running_loop()
+
+    before = _wakeup_fd()
+    thread, mask, loop = asyncio_loop.run_interruptible(where(), flag)
+    assert thread is not threading.main_thread()
+    assert signal.SIGINT in mask
+    assert signal.SIGINT not in signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    assert loop.is_closed()
+    assert flag.winding_down
+    assert _wakeup_fd() == before
+
+
+@posix_only
+def test_a_run_takes_the_main_threads_context() -> None:
+    marker: contextvars.ContextVar[str] = contextvars.ContextVar("marker")
+    marker.set("main")
+
+    async def read() -> str:
+        return marker.get()
+
+    assert asyncio_loop.run_interruptible(read(), SignalFlag()) == "main"
+
+
+@posix_only
+def test_a_ctrl_c_that_sets_the_flag_cancels_the_run() -> None:
+    flag = SignalFlag()
+
+    async def waits_forever() -> None:
+        # SIGINT is blocked here, so the main thread's wait takes it.
+        os.kill(os.getpid(), signal.SIGINT)
+        await asyncio.Event().wait()
+
+    def press(_signum: int, _frame: object) -> None:
+        flag.set()
+
+    with _sigint_handler(press), pytest.raises(asyncio.CancelledError):
+        asyncio_loop.run_interruptible(waits_forever(), flag)
+    assert flag.is_set()
+    assert flag.winding_down
+
+
+@posix_only
+def test_a_raising_handler_ends_the_wait_for_a_run_stuck_in_a_sync_step() -> None:
+    """The main thread never waits on the stuck loop; the run's tasks get the cancel."""
+    release = threading.Event()
+    cancelled = threading.Event()
+    loops: list[asyncio.AbstractEventLoop] = []
+
+    def interrupt(_signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    async def stuck() -> None:
+        loops.append(asyncio.get_running_loop())
+        os.kill(os.getpid(), signal.SIGINT)
+        release.wait()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    flag = SignalFlag()
+    try:
+        with _sigint_handler(interrupt), pytest.raises(KeyboardInterrupt):
+            asyncio_loop.run_interruptible(stuck(), flag)
+        assert not release.is_set()
+        assert flag.winding_down
+    finally:
+        release.set()
+    assert cancelled.wait(5)
+    _join_the_run_thread()
+    loops[0].close()
+
+
+def test_run_interruptible_off_the_main_thread_runs_on_that_thread() -> None:
+    async def where() -> threading.Thread:
+        return threading.current_thread()
+
+    def run() -> tuple[threading.Thread, threading.Thread]:
+        return asyncio_loop.run_interruptible(where(), SignalFlag()), threading.current_thread()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        ran_on, caller = pool.submit(run).result()
+    assert ran_on is caller
 
 
 def test_run_awaits_subtasks_to_completion() -> None:

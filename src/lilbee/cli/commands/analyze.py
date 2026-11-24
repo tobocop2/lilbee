@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -20,7 +21,7 @@ from lilbee.cli.commands.profile import render_changes
 from lilbee.cli.helpers import json_output
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import ProfileFolder, ProfileStore
-from lilbee.runtime.asyncio_loop import run_without_join
+from lilbee.runtime.asyncio_loop import run_interruptible
 from lilbee.runtime.cancellation import sigint_cancel
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.progress import AnalyzeEvent, EventType
@@ -185,10 +186,12 @@ def _analyze(request: AnalyzeRequest) -> AnalyzeResponse:
     try:
         # The scope of Ctrl+C is the outer one: its force quit runs after the bar closes.
         with sigint_cancel() as cancel, _progress() as on_progress:
-            report = run_without_join(
-                run_analysis(ProfileStore(), request, on_progress=on_progress, cancel=cancel)
+            report = run_interruptible(
+                run_analysis(ProfileStore(), request, on_progress=on_progress, cancel=cancel),
+                cancel,
             )
-    except TaskCancelledError:
+    # Ctrl+C cancels the run's task as it sets the token, so either one ends the run.
+    except (TaskCancelledError, asyncio.CancelledError):
         fail(CANCELLED_MESSAGE)
     except ValueError as exc:
         fail(str(exc))
