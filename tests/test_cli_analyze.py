@@ -24,7 +24,7 @@ from lilbee.core.profile_files import PROFILES_DIRNAME
 from lilbee.core.project_state import STATE_FILE_NAME, read_state
 from lilbee.data.types import SkippedSource, SyncResult
 from lilbee.runtime.cancellation import TaskCancelledError
-from lilbee.runtime.progress import EventType, FileStartEvent
+from lilbee.runtime.progress import BatchProgressEvent, BatchStatus, EventType, FileStartEvent
 from tests._unreadable import deny_listing
 from tests.conftest import make_mock_services, make_pdf
 
@@ -554,6 +554,25 @@ def test_sync_prints_the_tip_once_before_the_first_file_is_ingested(project):
     assert result.exit_code == 0, result.output
     flat = " ".join(result.output.split())
     assert flat.index(TIP_TEXT) < flat.index(_FIRST_FILE_LINE) < flat.index("SYNC RESULT")
+    assert flat.count(TIP_TEXT) == 1
+
+
+def test_a_multi_gpu_sync_prints_the_tip_on_its_first_batch_progress(project):
+    """A fan-out sync reports batch progress, not per-file starts."""
+
+    async def _fanout_sync(*, on_progress, **kwargs):
+        for done in (1, 2):
+            event = BatchProgressEvent(
+                file="a.md", status=BatchStatus.INGESTED, current=done, total=2
+            )
+            on_progress(EventType.BATCH_PROGRESS, event)
+        return _Shown(**_NEW_CONTENT)
+
+    with mock.patch("lilbee.data.ingest.sync", _fanout_sync):
+        result = runner.invoke(app, ["sync", "--data-dir", str(project)])
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    assert flat.index(TIP_TEXT) < flat.index("SYNC RESULT")
     assert flat.count(TIP_TEXT) == 1
 
 
