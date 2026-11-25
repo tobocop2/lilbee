@@ -207,7 +207,7 @@ def test_memory_is_the_large_vocabulary_charge_for_a_config_with_no_vocabulary_o
     folder = _encoder_folder(tmp_path, 4_000, "float32")
     estimate = TEI.estimate_memory(_encoder_request(folder))
     assert estimate.kind is MemoryKind.FIXED_RESERVE
-    charge = 4_000 * 11 // 10 + 3584 * _MIB
+    charge = 4_000 * 5 // 4 + 1280 * _MIB
     assert estimate.device_bytes == estimate.shared_bytes == charge
     assert estimate.size_known is True
 
@@ -237,9 +237,9 @@ def test_a_large_vocabulary_is_charged_its_load_peak_on_a_cpu_build(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps())
-    folder = _sparse_encoder_folder(tmp_path, 1060.7, 250_002)
+    folder = _sparse_encoder_folder(tmp_path, 2135, 250_002)
     charge = TEI.estimate_memory(_encoder_request(folder)).device_bytes
-    assert charge >= 4617 * _MIB
+    assert 3754 * _MIB <= charge <= 3754 * _MIB * 1.3
 
 
 @pytest.mark.usefixtures("stated_sizes")
@@ -247,9 +247,9 @@ def test_a_small_vocabulary_is_charged_within_1_3_times_its_load_peak_on_a_cpu_b
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps())
-    folder = _sparse_encoder_folder(tmp_path, 418, 30_522)
+    folder = _sparse_encoder_folder(tmp_path, 127, 30_522)
     charge = TEI.estimate_memory(_encoder_request(folder)).device_bytes
-    assert 742 * _MIB <= charge <= 742 * _MIB * 1.3
+    assert 222 * _MIB <= charge <= 222 * _MIB * 1.3
 
 
 @pytest.mark.usefixtures("stated_sizes")
@@ -261,7 +261,7 @@ def test_a_config_with_no_vocabulary_is_charged_as_a_large_one_on_a_cpu_build(
     other = tmp_path / "other"
     other.mkdir()
     large = TEI.estimate_memory(_encoder_request(_sparse_encoder_folder(other, 418, 250_002)))
-    assert missing.device_bytes == large.device_bytes >= 418 * _MIB + 3584 * _MIB
+    assert missing.device_bytes == large.device_bytes >= 1280 * _MIB
 
 
 @pytest.mark.usefixtures("stated_sizes")
@@ -302,7 +302,7 @@ def test_a_metal_build_is_charged_by_vocabulary_like_a_cpu_build(
     monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps("Darwin", "arm64"))
     folder = _encoder_folder(tmp_path, 4_000, "float32")
     assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
-        4_000 * 11 // 10 + 3584 * _MIB
+        4_000 * 5 // 4 + 1280 * _MIB
     )
 
 
@@ -312,7 +312,7 @@ def test_a_host_with_no_build_is_charged_by_vocabulary_like_a_cpu_build(
     monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps("Windows"))
     folder = _encoder_folder(tmp_path, 4_000, "float32")
     assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
-        4_000 * 11 // 10 + 3584 * _MIB
+        4_000 * 5 // 4 + 1280 * _MIB
     )
 
 
