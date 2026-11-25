@@ -17,6 +17,7 @@ from lilbee.core.config import cfg
 from lilbee.core.profile_files import NameProblem, ProfileFolder
 from lilbee.data.types import SyncResult
 from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+from lilbee.providers.roles import EngineBackend
 from lilbee.runtime.progress import OcrBackendUsed
 from lilbee.wiki.shared import WIKI_TYPE_HEADINGS as _WIKI_TYPE_HEADINGS
 
@@ -741,6 +742,22 @@ FLEET_STATE_REBUILDING = "rebuilding fleet…"
 FLEET_SINGLE_GPU_NOTE = "One graphics card. Choose cpu to run a role on the processor."
 FLEET_GPU_PROBING = "probing GPUs…"
 FLEET_NO_GPUS = "(no GPUs detected)"
+# The backend the engine selected. UNKNOWN means the device probe never answered, which
+# is a broken engine install and not a CPU host, so it names the fix.
+FLEET_ENGINE_BACKEND = "Engine backend: {backend}"
+FLEET_ENGINE_BACKEND_UNKNOWN = (
+    "Engine backend: unknown. The device probe did not answer. "
+    "Run `lilbee engine list`. Then run `lilbee engine install` to repair the engine."
+)
+
+
+def backend_line(backend: EngineBackend) -> str:
+    """The line naming the engine backend, with a repair step when the probe never answered."""
+    if backend is EngineBackend.UNKNOWN:
+        return FLEET_ENGINE_BACKEND_UNKNOWN
+    return FLEET_ENGINE_BACKEND.format(backend=backend.value)
+
+
 # Shown when the device probe failed outright (e.g. a wedged GPU driver), so the
 # panel names the problem instead of sitting on the probing placeholder forever.
 FLEET_GPU_PROBE_FAILED = "GPU probe failed: {reason}"

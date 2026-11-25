@@ -294,6 +294,7 @@ class FleetBody(MountWhenAttached, Widget):
                 help_icon.tooltip = msg.FLEET_HELP_TOOLTIP
                 yield help_icon
             yield GpuFleetPanel()
+            yield Static("", id="placement-backend", markup=False)
             yield Static("", id="placement-skipped", markup=False)
             yield Vertical(id="placement-editor")
             with Horizontal(id="placement-commands"):
@@ -396,6 +397,7 @@ class FleetBody(MountWhenAttached, Widget):
         self._build_editor()
         self._refresh_title(dirty=False)
         self._update_fleet_panel(view)
+        self.query_one("#placement-backend", Static).update(msg.backend_line(view.engine_backend))
         self._render_skipped(view)
         if view.swap_classes:
             self.notify(swap_summary(view.swap_classes), severity="information")
