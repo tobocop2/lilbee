@@ -12,6 +12,7 @@ from unittest import mock
 
 import pytest
 
+from lilbee.cli import engine as engine_cli
 from lilbee.cli import model as model_cli
 from lilbee.cli.commands import analyze as analyze_cli
 from lilbee.cli.commands import ingest_sync, wiki
@@ -75,6 +76,19 @@ def test_crawl_progress_leaves_a_stdout_print_on_stdout(capsys, stderr_terminal)
             max_pages=None,
             cancel_event=threading.Event(),
         )
+    _assert_whole_on_stdout(capsys)
+
+
+def test_engine_install_progress_leaves_a_stdout_print_on_stdout(capsys, stderr_terminal):
+    def install(*_args, **_kwargs):
+        print(MARKER)
+        return mock.Mock(plain_label="llama", note="", not_run_on=(), label="llama")
+
+    with (
+        mock.patch.object(engine_cli.engine_service, "install", install),
+        mock.patch.object(engine_cli, "_print_engines_folder"),
+    ):
+        engine_cli.install("llama", None)
     _assert_whole_on_stdout(capsys)
 
 
