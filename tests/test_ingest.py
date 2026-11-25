@@ -2605,6 +2605,25 @@ class TestHeldOutRecordLifecycle:
         assert "doc.txt" in changed.added
         assert held_kinds() == {}
 
+    async def test_an_overflow_hold_ignores_the_char_limit_of_a_token_capped_embedder(
+        self, isolated_env, mock_svc, monkeypatch
+    ):
+        """An embedder with a token cap never reads max_embed_chars, so changing it keeps the hold."""
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import EmbeddingOverflowError, ProviderErrorKind
+
+        mock_svc.provider.embed_token_cap.return_value = 400
+        raised = EmbeddingOverflowError("too long", kind=ProviderErrorKind.CONTEXT_OVERFLOW)
+        (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
+        with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=raised):
+            await sync(quiet=True)
+
+        monkeypatch.setattr(cfg, "max_embed_chars", 99999)
+        changed = await sync(quiet=True)
+
+        assert "doc.txt" not in changed.added
+        assert held_kinds() == {"doc.txt": HeldOut.FAILED}
+
     async def test_a_file_failure_hold_ignores_a_changed_setting(
         self, isolated_env, mock_svc, monkeypatch
     ):
