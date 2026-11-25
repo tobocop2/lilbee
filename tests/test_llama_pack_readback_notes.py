@@ -22,7 +22,9 @@ _ROW = re.compile(r"^\| `(?P<cell>[^`]+)` \| (?P<mode>[^|]+) \|$", re.MULTILINE)
 _BLOCK = re.compile(
     r"<!-- readback-cells:start -->\n(?P<body>.*?)<!-- readback-cells:end -->", re.DOTALL
 )
-_FORK_PIN = re.compile(r"^ENGINE_LLAMA_CPP_REPO=https://github\.com/(?P<repo>\S+?)(?:\.git)?$", re.M)
+_FORK_PIN = re.compile(
+    r"^ENGINE_LLAMA_CPP_REPO=https://github\.com/(?P<repo>\S+?)(?:\.git)?$", re.M
+)
 
 
 def _fork_repo() -> str:
@@ -87,5 +89,6 @@ def test_the_install_page_lists_the_readback_mode_of_every_cell() -> None:
 def test_the_mode_rule_knows_upstream_and_the_source_pin_fork_only() -> None:
     assert _mode_of_repo(_UPSTREAM_REPO) == _LOG
     assert _mode_of_repo(_fork_repo()) == _ENDPOINT
-    with pytest.raises(AssertionError, match="no readback mode is known for someone/llama.cpp"):
+    message = re.escape("no readback mode is known for someone/llama.cpp")
+    with pytest.raises(AssertionError, match=message):
         _mode_of_repo("someone/llama.cpp")
