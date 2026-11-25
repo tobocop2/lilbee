@@ -521,7 +521,7 @@ def _take_through_the_process_follower() -> None:
 
 
 def _held_writes_of_the_process_follower() -> dict[str, object]:
-    """The held keys config.toml changed during this run, by this process's follower; none without one."""
+    """The held keys config.toml changed during this run, by this process's follower."""
     follower = _state.follower
     return {} if follower is None else follower.held_writes()
 
