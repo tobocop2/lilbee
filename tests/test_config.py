@@ -1401,9 +1401,9 @@ class TestGenerationOptions:
         assert c.max_tokens is None
         assert "num_predict" not in c.generation_options()
 
-    def test_default_sends_no_sampling_so_the_engine_uses_the_models_own(self):
+    def test_default_sends_no_sampling_keys(self):
         # A near-greedy 0.1 / 0.9 / 40 on every request kept a thinking model
-        # thinking until the token cap; the engine reads the model's values.
+        # thinking until the token cap; unset leaves sampling to the engine.
         opts = Config().generation_options()
         assert {"temperature", "top_p", "top_k"} & opts.keys() == set()
 

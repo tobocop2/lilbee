@@ -85,6 +85,10 @@ class SettingDef:
 
 
 CHUNK_LIMIT_KEY = "max_chunks_per_file"
+_UNSET_SAMPLING = (
+    "Unset leaves it to the engine: the model's value when the model file has one,"
+    " else the engine's default"
+)
 
 SETTINGS_MAP: dict[str, SettingDef] = {
     "chat_model": SettingDef(
@@ -326,21 +330,19 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=True,
         group=SettingGroup.GENERATION,
-        help_text=(
-            "Sampling temperature (higher = more creative). Unset uses the model's own value"
-        ),
+        help_text=f"Sampling temperature (higher = more creative). {_UNSET_SAMPLING}",
     ),
     "top_p": SettingDef(
         float,
         nullable=True,
         group=SettingGroup.GENERATION,
-        help_text="Nucleus sampling cutoff probability. Unset uses the model's own value",
+        help_text=f"Nucleus sampling cutoff probability. {_UNSET_SAMPLING}",
     ),
     "top_k_sampling": SettingDef(
         int,
         nullable=True,
         group=SettingGroup.GENERATION,
-        help_text="Top-K sampling: number of tokens to consider. Unset uses the model's own value",
+        help_text=f"Top-K sampling: number of tokens to consider. {_UNSET_SAMPLING}",
     ),
     "repeat_penalty": SettingDef(
         float,
