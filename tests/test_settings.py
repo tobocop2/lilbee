@@ -1007,6 +1007,18 @@ class TestOcrPageSelectionSettings:
             appset.apply_settings_update({"force_ocr_pages": [0]})
         assert appset.cfg.force_ocr_pages == [2]
 
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [("ocr_language", 5), ("ocr_language", True), ("n_gpu_layers", [1])],
+    )
+    def test_a_non_string_value_is_refused_as_a_value_error(self, monkeypatch, key, value):
+        """The CLI, HTTP and MCP writes catch ValueError; a TypeError would crash them."""
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
+        with pytest.raises(ValueError, match=key):
+            appset.apply_settings_update({key: value})
+
 
 class TestMemoryTuningSettingsMap:
     """The dynamic-ctx tuning knobs are surfaced in the TUI settings map."""
