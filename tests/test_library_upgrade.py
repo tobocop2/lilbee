@@ -1389,6 +1389,7 @@ class TestServerShowsTheUpgrade:
             "/api/agent-config/claude",
             "/api/placement",
             "/api/gpus",
+            "/api/gpus/stream",
             "/setup/crawler/status",
             "/api/analyze/state",
             "/api/sessions",
