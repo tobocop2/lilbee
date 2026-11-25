@@ -34,7 +34,10 @@ from tests.conformance.fake_adapter import BundledFakeAdapter, FakeAdapter
 
 MLX_REF = "org/repo#mlx"
 GGUF_REF = "org/repo/file.gguf"
-NOT_INSTALLED = "Engine {} is not installed. Run lilbee engine list (or GET /api/engines) to see the installed engines."
+NOT_INSTALLED = (
+    "Engine {} is not installed. "
+    "Run lilbee engine list (or GET /api/engines) to see the installed engines."
+)
 
 
 class _GgufEngine(BundledFakeAdapter):
