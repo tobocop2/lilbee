@@ -19,10 +19,11 @@ from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.security import validate_path_within
 from lilbee.data.ingest.discovery import excluded_extension_reasons
+from lilbee.runtime.add_registry import AddIdRunningError
 from lilbee.runtime.ingest_lock import IngestLockRegistry
 from lilbee.runtime.lock import refuse_where_a_sync_cannot_lock
 from lilbee.runtime.progress import SseEvent
-from lilbee.server.handlers.sse import SseStream, sse_event
+from lilbee.server.handlers.sse import SseStream, sse_error, sse_event
 from lilbee.server.models import AddSummary, SyncSummary
 
 if TYPE_CHECKING:
@@ -226,6 +227,7 @@ async def _ingest_stream(
     items: list[tuple[str, _Payload]],
     run: Callable[[list[_Payload], SseStream], Coroutine[Any, Any, AddSummary]],
     label: str,
+    add_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Lock per source, run ``run`` over the acquired subset, and stream SSE.
 
@@ -243,14 +245,23 @@ async def _ingest_stream(
     reads any event. A client that closes the stream at ``already_ingesting``
     then stops the acquired subset as any close does, after the run's first
     uninterruptible step (the registration, or the file writes of an upload).
+
+    With an *add_id*, ``POST /api/add/cancel`` can stop the run from the
+    moment the locks are taken until the run ends. That cancel is the user's:
+    the stream still ends with the run's ``done`` event. An *add_id* that
+    another run holds ends the stream with an ``error`` event.
     """
-    registry = get_services().ingest_lock_registry
+    services = get_services()
+    registry = services.ingest_lock_registry
     acquired, busy = await registry.acquire([key for key, _payload in items])
     rejections = [_already_ingesting(label, name) for name in busy]
     try:
         if not acquired:
             for rejection in rejections:
                 yield rejection
+            return
+        if add_id is not None and services.add_registry.is_running(add_id):
+            yield sse_error(str(AddIdRunningError(add_id)))
             return
 
         acquired_names = {name for name, _lock in acquired}
@@ -260,15 +271,17 @@ async def _ingest_stream(
             sse.queue.put_nowait(rejection)
         task = asyncio.create_task(run(locked, sse))
         try:
-            async for event in sse.drain(task, label):
-                yield event
-            # already_ingesting names the sources this run never attempted, so
-            # a client reading only the terminal event still sees a partial batch.
-            frame = sse.terminal_frame(
-                task, lambda s: s.model_copy(update={"already_ingesting": list(busy)}).model_dump()
-            )
-            if frame is not None:
-                yield frame
+            with services.add_registry.running(add_id, functools.partial(sse.stop_by_user, task)):
+                async for event in sse.drain(task, label):
+                    yield event
+                # already_ingesting names the sources this run never attempted, so
+                # a client reading only the terminal event still sees a partial batch.
+                frame = sse.terminal_frame(
+                    task,
+                    lambda s: s.model_copy(update={"already_ingesting": list(busy)}).model_dump(),
+                )
+                if frame is not None:
+                    yield frame
         finally:
             if not task.done():
                 task.cancel()
@@ -290,16 +303,18 @@ async def add_files_stream(
     force: bool = False,
     ocr: OcrMode | None = None,
     ocr_timeout: float | None = None,
+    add_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Copy server-side files, sync, and yield SSE progress events.
+    """Register server-side files, sync, and yield SSE progress events.
 
     Takes the already-validated/parsed values from ``validate_add_paths`` so the
-    request dict is decoded once.
+    request dict is decoded once. *add_id* names the add for ``cancel_add``.
     """
     async for event in _ingest_stream(
         [(IngestLockRegistry.canonical_source_name(p), p) for p in paths],
         lambda locked, sse: _run_add(locked, force, ocr, ocr_timeout, sse),
         "Add files stream",
+        add_id,
     ):
         yield event
 
@@ -422,18 +437,26 @@ async def add_uploads_stream(
     *,
     ocr: OcrMode | None = None,
     ocr_timeout: float | None = None,
+    add_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Ingest uploaded file content, yielding the same SSE progress as add_files_stream.
 
     Locks per source name (the validated relative path) so an upload never
-    races an in-flight add of the same source.
+    races an in-flight add of the same source. *add_id* names the upload for
+    ``cancel_add``.
     """
     async for event in _ingest_stream(
         [(name, (name, content)) for name, content in files],
         lambda locked, sse: _run_upload(locked, sse, ocr, ocr_timeout),
         "Add uploads stream",
+        add_id,
     ):
         yield event
+
+
+def add_is_running(add_id: str) -> bool:
+    """Whether an add with *add_id* runs now."""
+    return get_services().add_registry.is_running(add_id)
 
 
 async def _run_import_with_sentinel(sse: SseStream, data: bytes, fmt: str) -> ImportSummary:

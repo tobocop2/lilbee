@@ -5,7 +5,7 @@ Typed pydantic models so Litestar's OpenAPI schema has field-level detail.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator, model_validator
 
@@ -140,11 +140,18 @@ class SyncRequest(_OcrRequest):
     prune_ignored: bool = False
 
 
+ADD_ID_PATTERN = r"^[A-Za-z0-9_-]+$"
+ADD_ID_MAX_LENGTH = 64
+AddId = Annotated[str, Field(min_length=1, max_length=ADD_ID_MAX_LENGTH, pattern=ADD_ID_PATTERN)]
+"""The id a client gives an add, so ``POST /api/add/cancel`` can name it."""
+
+
 class AddRequest(_OcrRequest):
     """Request body for /api/add."""
 
     paths: list[str]
     force: bool = False
+    add_id: AddId | None = None
 
 
 class SetModelRequest(BaseModel):

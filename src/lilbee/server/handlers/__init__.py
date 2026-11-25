@@ -41,6 +41,7 @@ from lilbee.server.handlers.documents import (
 )
 from lilbee.server.handlers.ingest import (
     add_files_stream,
+    add_is_running,
     add_uploads_stream,
     import_stream,
     parse_ocr_mode,
@@ -329,6 +330,7 @@ __all__ = [
     "ModelsResponse",
     "SseStream",
     "add_files_stream",
+    "add_is_running",
     "add_uploads_stream",
     "agent_config",
     "agent_config_index",
