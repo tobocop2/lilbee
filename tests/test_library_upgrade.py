@@ -1207,7 +1207,7 @@ class TestServerShowsTheUpgrade:
         ("path", "message_of"),
         [
             ("/api/status", lambda body: body["detail"]),
-            ("/v1/models", lambda body: body["error"]["message"]),
+            ("/v1/chat/completions", lambda body: body["error"]["message"]),
             ("/v1/messages/count_tokens", lambda body: body["error"]["message"]),
         ],
         ids=["plugin", "openai", "anthropic"],
@@ -1280,7 +1280,11 @@ class TestServerShowsTheUpgrade:
                         break
                     await asyncio.sleep(0.05)
                 plugin = await client.get("/api/status", headers=_headers())
-                openai = await client.get("/v1/models", headers=_headers())
+                openai = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "m", "messages": []},
+                    headers=_headers(),
+                )
                 anthropic = await client.post(
                     "/v1/messages/count_tokens",
                     json={"model": "m", "messages": []},
@@ -1361,6 +1365,87 @@ class TestServerShowsTheUpgrade:
         assert held.status_code == 503
         assert response.status_code == status
         assert marker in response.text.replace(" ", "")
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/presets",
+            "/api/config",
+            "/api/config/defaults",
+            "/api/config/schema",
+            "/api/config/sources",
+            "/api/models",
+            "/api/models/external",
+            "/api/models/catalog",
+            "/api/models/installed",
+            "/api/profiles",
+            "/api/profiles/active",
+            "/api/profiles/default",
+            "/api/profiles/default/diff",
+            "/api/profiles/default/export",
+            "/api/agent-config",
+            "/api/agent-config/claude",
+            "/api/placement",
+            "/api/gpus",
+            "/setup/crawler/status",
+            "/api/analyze/state",
+            "/api/sessions",
+            "/api/sessions/none",
+            "/api/sessions/none/markdown",
+            "/v1/models",
+            "/api/engines",
+            "/api/engines/roles",
+        ],
+    )
+    async def test_a_route_that_never_reads_the_library_is_not_held_by_a_slow_open(
+        self, library, monkeypatch, path
+    ):
+        from lilbee.server import app as app_mod
+        from lilbee.server.app import create_app
+        from tests.conftest import make_mock_services
+
+        monkeypatch.setattr(app_mod, "_UPGRADE_WAIT_SECONDS", 0.2)
+        store = Store(library)
+        services_mod.set_services(make_mock_services(store=store))
+        release = threading.Event()
+        with _upgrade_held(release):
+            async with AsyncTestClient(create_app(), raise_server_exceptions=False) as client:
+                for _ in range(200):
+                    if (await client.get("/api/health", headers=_headers())).json()["warnings"]:
+                        break
+                    await asyncio.sleep(0.05)
+                response = await client.get(path, headers=_headers())
+                release.set()
+                store.wait_for_open(30)
+
+        assert app_mod._OPENING_MESSAGE not in response.text
+        assert app_mod._UPGRADING_MESSAGE not in response.text
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/api/status", "/api/documents", "/api/search?q=x", "/api/memories", "/api/wiki"],
+    )
+    async def test_a_route_that_reads_the_library_keeps_the_wait(self, library, monkeypatch, path):
+        from lilbee.server import app as app_mod
+        from lilbee.server.app import create_app
+        from tests.conftest import make_mock_services
+
+        monkeypatch.setattr(app_mod, "_UPGRADE_WAIT_SECONDS", 0.2)
+        store = Store(library)
+        services_mod.set_services(make_mock_services(store=store))
+        release = threading.Event()
+        with _upgrade_held(release):
+            async with AsyncTestClient(create_app(), raise_server_exceptions=False) as client:
+                for _ in range(200):
+                    if (await client.get("/api/health", headers=_headers())).json()["warnings"]:
+                        break
+                    await asyncio.sleep(0.05)
+                response = await client.get(path, headers=_headers())
+                release.set()
+                store.wait_for_open(30)
+
+        assert response.status_code == 503
+        assert "upgrading the library" in response.json()["detail"]
 
     async def test_an_open_library_passes_a_request_straight_on(self):
         from lilbee.server.app import _LibraryOpenWait
