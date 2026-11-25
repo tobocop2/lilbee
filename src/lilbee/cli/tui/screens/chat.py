@@ -2268,6 +2268,8 @@ class ChatScreen(Screen[None]):
             )
             return
         call_from_thread(self, self.notify, msg.EMBED_ADOPTED.format(model=ref))
+        if result.warning is not None:
+            call_from_thread(self, self.notify, result.warning, severity="warning", timeout=10)
         if result.reindex_required:  # the re-asked question would meet the same refusal
             call_from_thread(self, self._offer_adopted_rebuild)
             return
