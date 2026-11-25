@@ -1615,10 +1615,12 @@ class TestDeleteDriftDraftIfPresent:
         """An older draft keys its marker by the hash of the paths and records no ids."""
         from lilbee.wiki.batch import short_source_hash
 
+        key = short_source_hash("a.md")
         draft = tmp_path / "x.md"
         draft.write_text(
-            f"<!-- DRIFT: 50% content changed; origin: concepts; source: {short_source_hash('a.md')}"
-            ' - flagged for human review -->\n\n---\nsources: ["a.md"]\n---\n\nbody\n'
+            f"<!-- DRIFT: 50% content changed; origin: concepts; source: {key}"
+            ' - flagged for human review -->\n\n---\nsources: ["a.md"]\n---\n\nbody\n',
+            encoding="utf-8",
         )
         assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"], source_ids={"a.md": "1"})
         assert not draft.exists()
