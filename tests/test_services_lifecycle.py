@@ -59,6 +59,14 @@ def _restore_handlers():
     reset_services()
 
 
+def test_windows_routes_sigbreak_as_the_launcher_stop(monkeypatch) -> None:
+    """The launcher stops serve with CTRL_BREAK, which Python delivers as SIGBREAK."""
+    sigbreak = 21
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(signal, "SIGBREAK", sigbreak, raising=False)
+    assert services_mod._EngineLifecycle._hard_exit_signals() == (signal.SIGTERM, sigbreak)
+
+
 def _join_teardown() -> None:
     """Wait out the stop thread's teardown so assertions don't race it."""
     assert services_mod._lifecycle.wait_stopped(5)
