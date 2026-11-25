@@ -363,6 +363,12 @@ def spawn_server(
     # launcher (whose finally never runs) does not orphan serve holding server_lock.
     child_env = {**os.environ, **(env_overrides or {}), PARENT_PID_ENV: str(os.getpid())}
 
+    # Windows: a group of its own stops a console Ctrl-C reaching serve and lets
+    # CTRL_BREAK target serve alone.
+    creationflags = 0
+    if sys.platform == "win32":
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+
     try:
         # The launcher's one SIGTERM must be serve's first signal, so the clean stop
         # runs instead of the second-signal force quit. A session of its own keeps a
@@ -376,9 +382,7 @@ def spawn_server(
             stderr=stderr,
             env=child_env,
             start_new_session=os.name == "posix",
-            # Windows: a group of its own stops a console Ctrl-C reaching serve and
-            # lets CTRL_BREAK target serve alone.
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
+            creationflags=creationflags,
         )
     finally:
         # Popen dups the fd into the child; the parent's handle is no longer
