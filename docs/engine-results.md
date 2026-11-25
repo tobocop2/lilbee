@@ -30,6 +30,7 @@ The Machine column names the machine that the recording names. The Version colum
 | llama.cpp-cuda | chat, embed, rerank, vision | NVIDIA GeForce RTX 3090 | pass, 10 of 10 steps | memory-20261019-152820 62be051e9 llama-server 0.7.0-dev (build 1, commit 62be051) | `llama.cpp-cuda.json` |
 | llama.cpp-cpu-inline | chat | CPU host | pass, 7 of 7 steps | 1.12032.1 | `llama.cpp-cpu-inline.json` |
 | mistralrs-cpu | chat, embed, vision | CPU host | pass, 9 of 9 steps | mistralrs 0.9.5 v0.9.5 cpu | `mistralrs-cpu.json` |
+| mistralrs-cuda | chat, embed, vision | NVIDIA GPU | not recorded |  |  |
 | tei-cpu | embed, rerank | CPU host | pass, 3 of 3 steps | 1.9.4 BAAI/bge-small-en-v1.5,BAAI/bge-reranker-base cpu-1.9 | `tei-cpu.json` |
 | tei-cuda | embed, rerank | NVIDIA GeForce RTX 3090 | pass, 3 of 3 steps | 1.9.4 BAAI/bge-small-en-v1.5,BAAI/bge-reranker-base cuda-source-1.9.4 | `tei-cuda.json` |
 | openvino-cpu | chat | Intel i7-10750H | manual run: 1 chat request, HTTP 200, no strict steps | llama-server 0.8.0-dev (build 12020, commit 0ec4027a2) openvino 2026.4.1 | `openvino-cpu.json` |
