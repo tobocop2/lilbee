@@ -753,7 +753,7 @@ def _report_failed_sources(payload: dict | None, failed: list[_FailedSource]) ->
         raise SystemExit(1)
 
 
-def _report_add_error(exc: RuntimeError, failed: list[_FailedSource]) -> NoReturn:
+def _report_add_error(exc: RuntimeError | ProviderError, failed: list[_FailedSource]) -> NoReturn:
     """Report the failed sources, then the error that stopped the add; exit 1."""
     if cfg.json_mode:
         payload: dict = {"error": str(exc)}
@@ -896,7 +896,7 @@ def add(
             # that returned has finished, and its result stands.
             if cancel_event.is_set() and not rollback.at_sync:
                 raise asyncio.CancelledError
-    except RuntimeError as exc:
+    except (RuntimeError, ProviderError) as exc:
         _report_add_error(exc, outcome.failed)
     _report_failed_sources(payload, outcome.failed)
     for result in sync_results:
