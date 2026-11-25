@@ -59,7 +59,7 @@ _KNOWN_SKILL_FILES: Mapping[str, frozenset[str]] = MappingProxyType(
         "reference-settings.md": frozenset(
             {
                 "9aa05001c478c43da0189b89da456784b3fb1eebb3b6896a771835896281305c",  # v0.6.90b693
-                "bf49071c0ee27ef56850348fc8460efabf62fff3085e2e7d285f12c2ffb6493b",  # bundled
+                "6ecb2bb6d6649bb4cafbdee3a0ffd07d8bb9a2cff15c798b64663034c58e2fd5",  # bundled
             }
         ),
         "reference-tuning.md": frozenset(
