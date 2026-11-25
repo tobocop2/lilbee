@@ -3723,7 +3723,9 @@ async def test_chat_slash_delete_lists_a_page_and_counts_the_rest(mock_svc):
 
 
 async def test_chat_slash_delete_suggests_a_close_spelling(mock_svc):
-    _delete_library(mock_svc, ["qa-corpus/usage.md", "qa-corpus/other.md"], missing={"qa-corpus/usagee.md"})
+    _delete_library(
+        mock_svc, ["qa-corpus/usage.md", "qa-corpus/other.md"], missing={"qa-corpus/usagee.md"}
+    )
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
@@ -3770,12 +3772,12 @@ async def test_chat_tab_completes_a_held_out_source_for_delete(mock_svc):
 
 async def test_chat_tab_delete_completion_follows_the_store(mock_svc):
     """A source indexed after the first ``/delete <Tab>`` is offered by the next one."""
-    mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}]
+    mock_svc.store.source_names.side_effect = lambda term="", *, limit: ["a.txt"]
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         set_services(mock_svc)
         assert await _tab_complete(app, pilot, "/delete a") == "/delete a.txt"
-        mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}, {"filename": "b.md"}]
+        mock_svc.store.source_names.side_effect = lambda term="", *, limit: ["a.txt", "b.md"]
         assert await _tab_complete(app, pilot, "/delete b") == "/delete b.md"
 
 

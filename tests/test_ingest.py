@@ -147,6 +147,10 @@ def mock_svc():
     store.bm25_probe.return_value = []
     store.source_summary.return_value = SourceSummary(0, 0, {}, [])
     store.get_sources.side_effect = lambda: list(index.sources.values())
+    store.iter_source_heads.side_effect = lambda: iter(
+        [{"filename": name} for name in list(index.sources)]
+    )
+    store.missing_sources.side_effect = lambda names: {n for n in names if n not in index.sources}
     store.add_chunks.side_effect = len
     store.upsert_source.side_effect = index.upsert
     store.write_chunks_batch.side_effect = index.write_batch
@@ -6827,7 +6831,7 @@ class TestForgetMissingFromWikiIndex:
 
         monkeypatch.setattr(cfg, "wiki", True)
         mock_svc.store.source_paths.return_value = {"kept-id": "kept.txt"}
-        mock_svc.store.missing_sources.return_value = set()
+        mock_svc.store.missing_sources.side_effect = lambda names: set()
         read = mock.MagicMock(return_value={"ford": _stub_of("kept-id")})
         written = mock.MagicMock()
         monkeypatch.setattr("lilbee.wiki.stubs.load_stub_index", read)
@@ -6846,7 +6850,7 @@ class TestForgetMissingFromWikiIndex:
 
         monkeypatch.setattr(cfg, "wiki", True)
         mock_svc.store.source_paths.return_value = {"kept-id": "kept.txt"}
-        mock_svc.store.missing_sources.return_value = set()
+        mock_svc.store.missing_sources.side_effect = lambda names: set()
         mock_svc.store.wiki_mention_rows.return_value = []
         asked = mock.MagicMock()
         written = mock.MagicMock()
