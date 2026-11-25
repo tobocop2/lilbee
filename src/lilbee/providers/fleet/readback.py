@@ -69,7 +69,11 @@ VERIFIED_ENGINE_BUILD = "9310 (e2ef8fe42)"
 # The device label is whatever the backend calls itself: CUDA0, MTL0, Vulkan1,
 # CPU. A timestamp and level prefix the line under --log-file, so the match is
 # not anchored to the start.
-_BUFFER_RE = re.compile(r"\S+:\s+(?P<device>\S+)\s+.*?buffer size\s*=\s*(?P<mib>[\d.]+)\s*MiB")
+_BUFFER_RE = re.compile(
+    r"\S+:\s+(?P<device>\S+)\s+(?P<kind>.*?)buffer size\s*=\s*(?P<mib>[\d.]+)\s*MiB"
+)
+# The buffer kind of a weight allocation: "model" in "CPU_Mapped model buffer size".
+_MODEL_BUFFER_RE = re.compile(r"\bmodel\b")
 # The engine names an mmapped weight buffer "<device>_Mapped" beside the same
 # device's other buffers. Same memory, so the suffix is folded away rather than
 # splitting one card's total across two keys.
@@ -303,7 +307,7 @@ def check_launch(
         # report_missing_log is how a caller that knows the engine is up says so.
         return None
     buffers = parse_device_buffers(text)
-    report_host_spill(role, model, _host_bytes(buffers), est_host_bytes)
+    report_host_spill(role, model, _host_weight_bytes(text), est_host_bytes)
     per_device = {label: size for label, size in buffers.items() if not _is_host_device(label)}
     actual = sum(per_device.values())
     if actual > 0 and est_by_device:
@@ -328,9 +332,16 @@ def check_launch(
     )
 
 
-def _host_bytes(per_device: dict[str, int]) -> int:
-    """The bytes of *per_device* that sit in host memory."""
-    return sum(size for label, size in per_device.items() if _is_host_device(label))
+def _host_weight_bytes(text: str) -> int:
+    """The model-weight bytes the engine log puts in host memory.
+
+    KV, compute and output buffers on the host are not weights, so they do not count.
+    """
+    return sum(
+        int(float(match.group("mib")) * MIB)
+        for match in _BUFFER_RE.finditer(text)
+        if _is_host_device(match.group("device")) and _MODEL_BUFFER_RE.search(match.group("kind"))
+    )
 
 
 def report_host_spill(role: WorkerRole, model: str, host_bytes: int, est_host_bytes: int) -> None:
@@ -472,8 +483,20 @@ def engine_advertises(binary: Path, flag: str) -> bool:
 _MEMORY_ROW_FIELDS = ("model", "context", "compute", "mmproj")
 
 
-def parse_memory_rows(payload: object) -> dict[str, int]:
+_MEMORY_WEIGHT_FIELDS = ("model",)
+
+
+def _host_weights(rows: dict[str, int]) -> int:
+    """The weight bytes of *rows* that sit in host memory."""
+    return sum(size for label, size in rows.items() if _is_host_device(label))
+
+
+def parse_memory_rows(
+    payload: object, fields: tuple[str, ...] = _MEMORY_ROW_FIELDS
+) -> dict[str, int]:
     """Bytes the engine reported allocating per device, from a /memory payload.
+
+    *fields* picks which byte fields of a row are summed; the default is all of them.
 
     Empty for anything that is not the endpoint's ``{"data": [rows]}`` shape,
     and per row for junk within it: this crosses a process boundary, and the
@@ -490,7 +513,7 @@ def parse_memory_rows(payload: object) -> dict[str, int]:
         if not isinstance(name, str) or not name:
             continue
         size = 0
-        for field in _MEMORY_ROW_FIELDS:
+        for field in fields:
             value = row.get(field, 0)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 size += int(value)
@@ -519,7 +542,8 @@ def check_memory_report(
     silent, it looks exactly like a correct estimate.
     """
     rows = parse_memory_rows(payload)
-    report_host_spill(role, model, _host_bytes(rows), est_host_bytes)
+    weight_rows = parse_memory_rows(payload, fields=_MEMORY_WEIGHT_FIELDS)
+    report_host_spill(role, model, _host_weights(weight_rows), est_host_bytes)
     per_device = {label: size for label, size in rows.items() if not _is_host_device(label)}
     if not per_device:
         log.warning(
