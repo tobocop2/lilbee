@@ -405,7 +405,9 @@ def request_wiki_text(
         response = provider.chat(messages, stream=False, options=wiki_generation_options(config))
     except Exception as exc:
         log.warning("Model call failed for %s: %s", label, exc)
-        stats.record_model_call(str(exc) or type(exc).__name__)
+        # Trailing periods are cut so the run's error joins the cause with one
+        # period; a blank cause falls back to the exception type so it is named.
+        stats.record_model_call(str(exc).strip().rstrip(". ") or type(exc).__name__)
         return None
     text = strip_reasoning(response.text).strip()
     if not text:
