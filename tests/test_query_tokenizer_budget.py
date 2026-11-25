@@ -1,5 +1,7 @@
 """The retrieval prompt is budgeted with the chat engine's tokenizer when it has one."""
 
+import math
+
 import pytest
 
 from lilbee.app.services import get_services, set_services
@@ -30,6 +32,12 @@ def _build(chunk: str = _DENSE_CHUNK, count: int = _CHUNKS):
     return get_services().searcher._finalize_context(results, "what is in them?", None)
 
 
+def _mixed_tokens(text: str) -> int:
+    """A tokenizer that spends one token per CJK character and one per four other characters."""
+    wide = sum(1 for c in text if ord(c) > 0x2E80)
+    return wide + math.ceil((len(text) - wide) / 4)
+
+
 def _prompt_chars(rag) -> int:
     return sum(len(m["content"]) for m in rag.messages)
 
@@ -58,23 +66,50 @@ class TestEngineTokenizerBudget:
         _services.provider.count_chat_text_tokens.side_effect = lambda text: len(text) // 6
         assert len(_build(count=30).results) == fallback_kept
 
-    def test_the_whole_prompt_is_counted_in_one_call(self, _services):
-        _services.provider.count_chat_text_tokens.side_effect = len
-        _build()
-        assert _services.provider.count_chat_text_tokens.call_count == 1
+    def test_a_mixed_dense_and_sparse_list_fits_the_window(self, _services):
+        """Dense chunks ranked first do not borrow the cheaper cost of the sparse ones after them.
 
-    def test_texts_are_joined_by_newlines_and_a_one_character_text_costs_one_token(self, _services):
+        One average over the list costs a dense chunk at a third of its tokens, so
+        the list overflows the window the engine count says is full.
+        """
+        dense = "\u4e00\u4e8c\u4e09\u56db" * 250
+        sparse = "plain english words " * 60
+        _services.provider.count_chat_text_tokens.side_effect = _mixed_tokens
+        results = [
+            _make_result(source=f"d{i}.pdf", chunk=dense, chunk_index=i) for i in range(5)
+        ] + [_make_result(source=f"s{i}.pdf", chunk=sparse, chunk_index=i) for i in range(20)]
+        rag = get_services().searcher._finalize_context(results, "what is in them?", None)
+        kept = [r.chunk for r in rag.results]
+        assert dense in kept
+        assert sparse in kept
+        assert sum(_mixed_tokens(m["content"]) for m in rag.messages) <= prompt_token_budget(
+            _WINDOW
+        )
+
+    def test_each_chunk_is_counted_on_its_own_and_once(self, _services):
         _services.provider.count_chat_text_tokens.side_effect = len
-        cost = get_services().searcher._token_cost(["ab", "cd"])
-        assert _services.provider.count_chat_text_tokens.call_args.args == ("ab\ncd",)
+        cost = get_services().searcher._token_cost()
+        assert cost("abcdef") == 6
+        assert cost("abcdef") == 6
         assert cost("x") == 1
+        counted = [c.args[0] for c in _services.provider.count_chat_text_tokens.call_args_list]
+        assert counted == ["abcdef", "x"]
+
+    def test_a_failing_count_costs_every_later_text_by_the_character_rule(self, _services):
+        _services.provider.count_chat_text_tokens.side_effect = ProviderError(
+            "engine down", kind=ProviderErrorKind.CONNECTION
+        )
+        cost = get_services().searcher._token_cost()
+        assert cost("a" * 9) == 3
+        assert cost("b" * 30) == 10
+        assert _services.provider.count_chat_text_tokens.call_count == 1
 
     def test_counted_text_holds_the_system_prompt_and_every_candidate(self, _services):
         _services.provider.count_chat_text_tokens.side_effect = len
         _build(chunk="marker chunk", count=3)
-        (text,) = _services.provider.count_chat_text_tokens.call_args.args
-        assert cfg.rag_system_prompt in text
-        assert text.count("marker chunk") == 3
+        counted = [c.args[0] for c in _services.provider.count_chat_text_tokens.call_args_list]
+        assert cfg.rag_system_prompt in counted
+        assert "marker chunk" in counted
 
     def test_counted_text_holds_every_history_message(self, _services):
         _services.provider.count_chat_text_tokens.side_effect = len
@@ -84,9 +119,9 @@ class TestEngineTokenizerBudget:
         ]
         results = [_make_result(source="0.pdf", chunk="marker chunk", chunk_index=0)]
         get_services().searcher._finalize_context(results, "what is in them?", history)
-        (text,) = _services.provider.count_chat_text_tokens.call_args.args
-        assert "earlier question about marigolds" in text
-        assert "earlier answer about marigolds" in text
+        counted = [c.args[0] for c in _services.provider.count_chat_text_tokens.call_args_list]
+        assert "earlier question about marigolds" in counted
+        assert "earlier answer about marigolds" in counted
 
     def test_neighbor_widening_spends_the_engine_measured_leftover(self, _services):
         """Widening stops where the engine's count says the window is full."""

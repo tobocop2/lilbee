@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import math
 import re
 from collections.abc import Callable, Generator
 from datetime import datetime
@@ -31,7 +30,6 @@ from lilbee.data.store import (
 )
 from lilbee.data.store.fusion import fuse_ranked_lists
 from lilbee.providers.base import (
-    BUDGET_CHARS_PER_TOKEN,
     CHAT_MESSAGE_OVERHEAD_TOKENS,
     LLMProvider,
     ProviderError,
@@ -1234,9 +1232,7 @@ class Searcher:
         """
         system = self._system_with_memory(self._config.rag_system_prompt, question)
         base_results = list(results)
-        cost = self._token_cost(
-            [system, question, *(m["content"] for m in history or []), *(r.chunk for r in results)]
-        )
+        cost = self._token_cost()
         budget = self._context_budget(system, question, history, scale, cost)
         results, used, dropped = self._fit_to_budget(results, budget, cost)
         results = self._widen_with_neighbors(results, max(0, budget - used), cost)
@@ -1254,20 +1250,37 @@ class Searcher:
             dropped,
         )
 
-    def _token_cost(self, texts: list[str]) -> Callable[[str], int]:
-        """Token cost from the chat engine's count of *texts*, else the character rule."""
-        joined = "\n".join(texts)
-        try:
-            tokens = self._provider.count_chat_text_tokens(joined)
-        except ProviderError:
-            log.debug("Chat engine tokenize failed; budgeting with the character rule.")
-            return estimate_budget_tokens
-        if not tokens:
-            return estimate_budget_tokens
-        # The provider's window check costs text at BUDGET_CHARS_PER_TOKEN, so a
-        # prompt costed lower here would be refused there.
-        chars_per_token = min(len(joined) / tokens, BUDGET_CHARS_PER_TOKEN)
-        return lambda text: max(1, math.ceil(len(text) / chars_per_token))
+    def _token_cost(self) -> Callable[[str], int]:
+        """Per-text token cost from the chat engine's own count, else the character rule.
+
+        Every text is counted on its own, whatever it is: a dense chunk and a
+        sparse one cost what their own tokens say, never a share of one list
+        average. Counts are cached by text. An engine with no tokenize route, or
+        one that fails, switches every later text to the character rule.
+        """
+        counted: dict[str, int] = {}
+        measuring = True
+
+        def cost(text: str) -> int:
+            nonlocal measuring
+            floor = estimate_budget_tokens(text)
+            if not measuring:
+                return floor
+            if text not in counted:
+                try:
+                    tokens = self._provider.count_chat_text_tokens(text)
+                except ProviderError:
+                    log.debug("Chat engine tokenize failed; budgeting with the character rule.")
+                    tokens = None
+                if tokens is None:
+                    measuring = False
+                    return floor
+                counted[text] = tokens
+            # The provider's window check costs text at BUDGET_CHARS_PER_TOKEN, so a
+            # prompt costed lower here would be refused there.
+            return max(counted[text], floor)
+
+        return cost
 
     def _context_budget(
         self,
