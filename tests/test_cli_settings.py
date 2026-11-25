@@ -266,6 +266,14 @@ def test_set_on_a_read_only_config_toml_exits_1_and_leaves_the_file(project):
     assert path.read_text(encoding="utf-8") == before
 
 
+@pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
+def test_set_a_server_address_that_is_refused_keeps_its_credentials_out(project, key):
+    result = _invoke(project, "set", key, "http://user:s3cret@ollama:abc")
+    assert result.exit_code == 1
+    assert "s3cret" not in result.output
+    assert result.output.count(key) == 1
+
+
 def test_set_a_value_of_the_wrong_type_names_it_in_one_sentence(project):
     result = _invoke(project, "set", "chunk_size", "abc")
     assert result.exit_code == 1

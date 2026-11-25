@@ -2615,6 +2615,15 @@ class TestSettingsMcp:
         assert "top_k" in persisted
         assert "chunk_size" in persisted
 
+    @pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
+    def test_settings_set_refuses_a_server_address_without_its_credentials(
+        self, isolated_env, key
+    ):
+        cfg.data_root = isolated_env
+        result = settings_set({key: "http://user:s3cret@ollama:abc"})
+        assert "s3cret" not in result["error"]
+        assert result["error"].count(key) == 1
+
     def test_settings_set_stores_browser_launch_flags(self, isolated_env):
         cfg.data_root = isolated_env
         result = settings_set({"crawl_browser_extra_args": ["--lang=fr", "--mute-audio"]})

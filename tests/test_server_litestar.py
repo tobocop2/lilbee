@@ -1656,6 +1656,15 @@ class TestConfigUpdateRoute:
         assert name in resp.text
         assert "http://localhost" in resp.text
 
+    @pytest.mark.parametrize("name", ["ollama_base_url", "lm_studio_base_url"])
+    def test_a_refused_local_server_address_keeps_its_credentials_out_of_the_reply(
+        self, client, name
+    ):
+        resp = client.patch("/api/config", json={name: "http://user:s3cret@ollama:abc"})
+        assert resp.status_code == 400
+        assert "s3cret" not in resp.text
+        assert name in resp.text
+
     def test_a_local_server_address_with_a_port_is_accepted(self, client):
         resp = client.patch("/api/config", json={"ollama_base_url": "http://my-host:9000"})
         assert (resp.status_code, cfg.ollama_base_url) == (200, "http://my-host:9000")

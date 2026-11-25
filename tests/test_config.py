@@ -44,6 +44,7 @@ from tests._sys_modules import inject_modules
 _SAMPLE_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 _SAMPLE_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
 _SAMPLE_VISION_REF = "Qwen/Qwen2.5-VL-3B-Instruct-GGUF/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf"
+_SECRET_ADDRESS = "http://user:s3cret@ollama:abc"
 
 
 class TestFromEnvDefaults:
@@ -972,6 +973,29 @@ class TestSemanticChunkingConfig:
         assert (getattr(built, key), built.top_k) == ("", 7)
         assert len(warnings) == 1
         assert key in warnings[0]
+
+    @pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
+    def test_the_load_warning_for_a_server_address_keeps_its_credentials_out(
+        self, tmp_path, key
+    ) -> None:
+        _, warnings = _build_with(tmp_path, f'{key} = "{_SECRET_ADDRESS}"\n')
+        assert len(warnings) == 1
+        assert "s3cret" not in warnings[0]
+        assert warnings[0].count(key) == 1
+
+    @pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
+    def test_a_bad_server_address_variable_is_refused_by_name_without_its_value(
+        self, tmp_path, key
+    ) -> None:
+        variable = f"LILBEE_{key.upper()}"
+        with pytest.raises(RefusedVariableError) as refused:
+            _build_with(tmp_path, "", **{variable: _SECRET_ADDRESS})
+        assert variable in str(refused.value)
+        assert "s3cret" not in str(refused.value)
+
+    @pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
+    def test_the_stored_server_address_is_the_one_that_was_checked(self, key) -> None:
+        assert getattr(Config(**{key: "  http://h:1/  "}), key) == "http://h:1"
 
     @pytest.mark.parametrize(
         "address",
