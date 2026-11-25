@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import posixpath
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,8 @@ _SAFETENSORS_OFFSETS_KEY = "data_offsets"
 _SAFETENSORS_OFFSET_COUNT = 2
 _IR_MODEL_STEM = "openvino_model"
 _IR_SUFFIXES = (".xml", ".bin")
+_IR_PART_PREFIX = "openvino_"
+_IR_TOKENIZER_STEMS = frozenset({"openvino_tokenizer", "openvino_detokenizer"})
 _IR_WEIGHTS_SUFFIX = ".bin"
 _IR_WEIGHT_SPAN = re.compile(r'<data\b[^>]*?\boffset="(\d+)"[^>]*?\bsize="(\d+)"')
 """A constant's ``offset`` and ``size`` in the ``.bin``, in the order the IR writer emits them."""
@@ -277,49 +279,84 @@ def encoder_estimate(weights: int | None) -> MemoryEstimate:
     return _sized_estimate(weights + ENCODER_RUNTIME_BYTES)
 
 
-def _ir_pair_folder(sizes: Mapping[str, int]) -> str | None:
-    """The shallowest folder that holds both ``openvino_model.xml`` and ``.bin``, or None."""
-    folders = sorted(
-        (
-            posixpath.dirname(name)
-            for name in sizes
-            if posixpath.basename(name) == _IR_MODEL_STEM + ".xml"
-            and posixpath.join(posixpath.dirname(name), _IR_MODEL_STEM + ".bin") in sizes
-        ),
-        key=lambda folder: (folder.count("/"), folder),
+def _shallowest(folders: Iterable[str]) -> str | None:
+    ordered = sorted(set(folders), key=lambda folder: (folder.count("/"), folder))
+    return ordered[0] if ordered else None
+
+
+def _has_pair(sizes: Mapping[str, int], folder: str, stem: str) -> bool:
+    return all(posixpath.join(folder, stem + suffix) in sizes for suffix in _IR_SUFFIXES)
+
+
+def _ir_pairs(sizes: Mapping[str, int]) -> tuple[str, list[str]] | None:
+    """The folder and the stems of the IR pairs that hold the model's weights, or None.
+
+    A model with an ``openvino_model`` pair is that pair alone, in the shallowest folder that
+    holds it. A model with none, such as a vision model, is every other ``openvino_`` pair of
+    the shallowest folder that holds one, except the tokenizer and the detokenizer.
+    """
+    main = _shallowest(
+        posixpath.dirname(name)
+        for name in sizes
+        if posixpath.basename(name) == _IR_MODEL_STEM + ".xml"
+        and _has_pair(sizes, posixpath.dirname(name), _IR_MODEL_STEM)
     )
-    return folders[0] if folders else None
+    if main is not None:
+        return main, [_IR_MODEL_STEM]
+    stems: dict[str, list[str]] = {}
+    for name in sizes:
+        stem, suffix = posixpath.splitext(posixpath.basename(name))
+        folder = posixpath.dirname(name)
+        if (
+            suffix == ".xml"
+            and stem.startswith(_IR_PART_PREFIX)
+            and not stem.startswith(_IR_MODEL_STEM)
+            and stem not in _IR_TOKENIZER_STEMS
+            and _has_pair(sizes, folder, stem)
+        ):
+            stems.setdefault(folder, []).append(stem)
+    folder = _shallowest(stems)
+    return None if folder is None else (folder, sorted(stems[folder]))
 
 
 def _ir_pair_bytes(sizes: Mapping[str, int]) -> int:
-    """Bytes of ``openvino_model.xml`` plus ``.bin`` in the shallowest folder that holds both."""
-    folder = _ir_pair_folder(sizes)
-    if folder is None:
+    """Bytes of the ``.xml`` and ``.bin`` of every IR pair that holds the model's weights."""
+    pairs = _ir_pairs(sizes)
+    if pairs is None:
         return 0
-    return sum(sizes[posixpath.join(folder, _IR_MODEL_STEM + suffix)] for suffix in _IR_SUFFIXES)
+    folder, stems = pairs
+    return sum(
+        sizes[posixpath.join(folder, stem + suffix)] for stem in stems for suffix in _IR_SUFFIXES
+    )
 
 
 def _ir_bin_is_cut_off(model_path: Path, sizes: Mapping[str, int]) -> bool:
-    """Whether the ``.bin`` of the IR pair is shorter than the weight offsets its ``.xml`` lists."""
-    folder = _ir_pair_folder(sizes)
-    if folder is None:
+    """Whether the ``.bin`` of an IR pair is shorter than the weight offsets its ``.xml`` lists."""
+    pairs = _ir_pairs(sizes)
+    if pairs is None:
         return False
+    folder, stems = pairs
+    return any(_pair_is_cut_off(model_path, sizes, folder, stem) for stem in stems)
+
+
+def _pair_is_cut_off(model_path: Path, sizes: Mapping[str, int], folder: str, stem: str) -> bool:
     try:
-        xml_text = (model_path / folder / (_IR_MODEL_STEM + ".xml")).read_text(encoding="utf-8")
+        xml_text = (model_path / folder / (stem + ".xml")).read_text(encoding="utf-8")
     except (OSError, ValueError):
         return False
     declared = max(
         (int(offset) + int(size) for offset, size in _IR_WEIGHT_SPAN.findall(xml_text)), default=0
     )
-    return sizes[posixpath.join(folder, _IR_MODEL_STEM + _IR_WEIGHTS_SUFFIX)] < declared
+    return sizes[posixpath.join(folder, stem + _IR_WEIGHTS_SUFFIX)] < declared
 
 
 def weights_from_files(sizes: Mapping[str, int]) -> int:
     """Weight bytes of an OpenVINO IR model from a ``name -> size`` listing.
 
-    Only ``openvino_model.xml`` and ``openvino_model.bin`` in the shallowest folder
-    that holds both count: a pickled ``pytorch_model.bin``, ONNX files and tokenizer
-    IR files are not the model's weights. A repo with no such pair counts the total of
+    Only the IR pairs of ``_ir_pairs`` count: ``openvino_model.xml`` and ``.bin`` in
+    the shallowest folder that holds both, or, for a model with no such pair, every
+    other ``openvino_`` pair of one folder. A pickled ``pytorch_model.bin``, ONNX files
+    and tokenizer IR files are not the model's weights. A repo with no such pair counts the total of
     its ``openvino_model*.bin`` files, and a repo with none gives the unknown-size reserve.
     """
     pair = _ir_pair_bytes(sizes)
@@ -367,7 +404,7 @@ def installed_safetensors_bytes(model_path: Path) -> int:
 
 
 def installed_folder_weight_bytes(model_path: Path) -> int:
-    """Weight bytes of an installed folder: safetensors, else the OpenVINO IR pair; 0 for none."""
+    """Weight bytes of an installed folder: safetensors, else its OpenVINO IR pairs; 0 for none."""
     sizes = _installed_sizes(model_path)
     return _sum_suffix(sizes, _SAFETENSORS_SUFFIX) or _ir_pair_bytes(sizes)
 

@@ -1105,6 +1105,7 @@ def _placeable_demand(
         placeable_total_vram,
         plan_all_launches,
         role_model_placeable,
+        role_unplaceable_reason,
     )
 
     try:
@@ -1115,18 +1116,22 @@ def _placeable_demand(
         raise
     placed = {launch.role for launch in plan.launches}
     total_vram = placeable_total_vram(engine)
-    pairs = {
-        (role, model)
-        for role in WorkerRole
-        if role in placed
-        and (model := _configured_model_for(role))
-        and role_model_placeable(role, model, total_vram, engine=engines[role])
-    }
+    pairs: set[tuple[WorkerRole, str]] = set()
+    left_out: dict[WorkerRole, str] = {}
+    for role in WorkerRole:
+        if role not in placed or not (model := _configured_model_for(role)):
+            continue
+        if role_model_placeable(role, model, total_vram, engine=engines[role]):
+            pairs.add((role, model))
+        else:
+            reason = role_unplaceable_reason(role, model, total_vram, engine=engines[role])
+            log.warning("%s", reason)
+            left_out[role] = reason
     return _EngineDemand(
         pairs,
         _demanded_chat_ctx(plan.launches, pairs),
         dict(plan.skipped_not_installed),
-        dict(plan.refused_roles),
+        {**left_out, **plan.refused_roles},
         _demanded_vision_slots(pairs),
         {launch.role: launch.settings for launch in plan.launches},
     )
