@@ -1396,6 +1396,14 @@ class TestModelCallOutcomes:
     def test_a_run_with_no_calls_did_not_fail(self):
         assert not BuildStats().every_model_call_failed
 
+    @pytest.mark.parametrize("cause", ["engine down", "engine down.", "engine down..."])
+    def test_the_cause_in_the_message_ends_with_one_period(self, cause):
+        stats = BuildStats()
+        stats.record_model_call(cause)
+        with pytest.raises(RuntimeError) as err:
+            stats.raise_if_nothing_written(0)
+        assert "Last error: engine down. Check that" in str(err.value)
+
     def test_failed_calls_with_a_page_written_do_not_raise(self):
         stats = BuildStats()
         stats.record_model_call("engine down")
