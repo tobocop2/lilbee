@@ -2292,12 +2292,11 @@ class TestCancellation:
                 "lilbee.data.ingest.pipeline.produce_records", side_effect=_fail_after_cancel
             ),
             caplog.at_level("WARNING", logger="lilbee.data.ingest.pipeline"),
-            pytest.raises(asyncio.CancelledError) as raised,
+            pytest.raises(asyncio.CancelledError),
         ):
             await ingest_stream(
                 one_plan_batch([entry]), {"bad.pdf": None}, {}, {}, {}, quiet=True, cancel=cancel
             )
-        assert raised.value.__cause__ is error
         logged = [r.getMessage() for r in caplog.records if "bad.pdf" in r.getMessage()]
         if shutdown:
             assert logged == []

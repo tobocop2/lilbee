@@ -2081,8 +2081,8 @@ def _failed_result(
     cancellation, not ingest failures: the cancel flag is the source of truth,
     and the executor's shutdown message covers the race where cancel was set
     after the submit. A file error that lands after the cancel is a real failure:
-    it leaves as the cause of the cancel, and is logged here because no result
-    carries it to :func:`_classify_result`.
+    it is logged here, because the collector replaces this cancel with its own
+    and no result carries the error to :func:`_classify_result`.
     """
     if is_executor_shutdown(exc):
         raise asyncio.CancelledError from exc
