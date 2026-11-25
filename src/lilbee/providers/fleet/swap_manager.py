@@ -81,6 +81,7 @@ def _raise_open_file_limit() -> None:
 
     llama-swap and its engines inherit the limit. A hard limit under the floor is
     used as it is, with one warning. A platform with no limit to set is left alone.
+    A refused change logs one warning and the start goes on.
     """
     if resource is None:
         return
