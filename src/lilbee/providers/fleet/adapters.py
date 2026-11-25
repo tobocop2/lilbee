@@ -56,10 +56,10 @@ class RoleServerSpec:
 
 
 # Every role runs on the fleet by mirroring the in-process primitive over HTTP:
-# rerank uses rank-pooling embeddings (--pooling rank -> /v1/embeddings, with the
-# same query</s></s>candidate pairing as in-process), NOT the template-dependent
-# /v1/rerank; vision uses the chat endpoint with an --mmproj projector. This keeps
-# the in-process robustness without depending on a model's embedded rerank template.
+# rerank uses rank-pooling embeddings (--pooling rank -> /v1/embeddings, each pair
+# sent as token ids in the GGUF's own pair layout), NOT /v1/rerank, which does not
+# truncate and lacks the extra separator of older XLM-R GGUFs; vision uses the chat
+# endpoint with an --mmproj projector.
 ROLE_SPECS: dict[WorkerRole, RoleServerSpec] = {
     WorkerRole.CHAT: RoleServerSpec(
         role=WorkerRole.CHAT,
