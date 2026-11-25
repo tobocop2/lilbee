@@ -123,6 +123,15 @@ fatbin_pair() {
   [[ "$output" == *"REJECT"* ]]
 }
 
+@test "a failed extract of one build is a difference, never a stale equal" {
+  fatbin_pair
+  printf 'not an ELF file\n' > "${B}/libggml.so"
+  run "${CHECK}" "${A}" "${B}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"DIFF libggml.so:.text"* ]]
+  [[ "$output" != *"ACCEPT"* ]]
+}
+
 @test "three builds are rejected when the third differs in .text" {
   fatbin_pair
   local C="${BATS_TEST_TMPDIR}/c"
