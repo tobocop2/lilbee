@@ -550,6 +550,8 @@ def _every_optional_flag_argv(
         cpu_moe=cpu_moe_only,
         n_cpu_moe=None if cpu_moe_only else 3,
         kv_unified_per_slot=4096,
+        cache_ram_mib=1024,
+        ctx_checkpoints=4,
     )
 
 
@@ -573,7 +575,8 @@ _FULL_ARGV = _argv(
     "-1 --parallel 1 --cont-batching --ctx-size 4096 --threads 4 --flash-attn on "
     "--cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 --ubatch-size 512 "
     "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
-    "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --no-context-shift --jinja "
+    "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+    "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
     "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
 )
 _FULL_ARGV_CPU_MOE = _argv(
@@ -581,7 +584,8 @@ _FULL_ARGV_CPU_MOE = _argv(
     "-1 --parallel 1 --cont-batching --ctx-size 4096 --threads 4 --flash-attn on "
     "--cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 --ubatch-size 512 "
     "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
-    "--cpu-moe --kv-unified --kv-unified-per-slot 4096 --no-context-shift --jinja "
+    "--cpu-moe --kv-unified --kv-unified-per-slot 4096 --ctx-checkpoints 4 "
+    "--cache-ram 1024 --no-context-shift --jinja "
     "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
 )
 _ARGV_WITHOUT = {
@@ -590,7 +594,8 @@ _ARGV_WITHOUT = {
         "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
         "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 "
         "--ubatch-size 512 --mmproj /models/mmproj.gguf --tensor-split 1,1 "
-        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --no-context-shift --jinja "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
         "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
     ),
     "--tensor-split": _argv(
@@ -598,7 +603,8 @@ _ARGV_WITHOUT = {
         "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
         "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 "
         "--ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
-        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --no-context-shift --jinja "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
         "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
     ),
     "--flash-attn": _argv(
@@ -606,7 +612,8 @@ _ARGV_WITHOUT = {
         "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
         "4 --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 --ubatch-size "
         "512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
-        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --no-context-shift --jinja "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
         "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
     ),
     "--cache-type-k": _argv(
@@ -614,7 +621,8 @@ _ARGV_WITHOUT = {
         "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
         "4 --flash-attn on --cache-type-v q8_0 --batch-size 512 --ubatch-size 512 "
         "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
-        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --no-context-shift --jinja "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
         "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
     ),
     "--cache-type-v": _argv(
@@ -622,7 +630,8 @@ _ARGV_WITHOUT = {
         "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
         "4 --flash-attn on --cache-type-k q8_0 --batch-size 512 --ubatch-size 512 "
         "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
-        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --no-context-shift --jinja "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
         "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
     ),
     "--batch-size": _argv(
@@ -630,7 +639,8 @@ _ARGV_WITHOUT = {
         "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
         "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --ubatch-size "
         "512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
-        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --no-context-shift --jinja "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
         "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
     ),
     "--ubatch-size": _argv(
@@ -638,7 +648,8 @@ _ARGV_WITHOUT = {
         "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
         "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
         "512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
-        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --no-context-shift --jinja "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
         "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
     ),
     "--mmproj": _argv(
@@ -646,7 +657,8 @@ _ARGV_WITHOUT = {
         "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
         "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
         "512 --ubatch-size 512 --device CUDA0,CUDA1 --tensor-split 1,1 "
-        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 --no-context-shift --jinja "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
         "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
     ),
     "--n-cpu-moe": _argv(
@@ -654,7 +666,8 @@ _ARGV_WITHOUT = {
         "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
         "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
         "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
-        "--tensor-split 1,1 --kv-unified --kv-unified-per-slot 4096 --no-context-shift --jinja "
+        "--tensor-split 1,1 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
         "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
     ),
     "--cpu-moe": _argv(
@@ -662,7 +675,8 @@ _ARGV_WITHOUT = {
         "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
         "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
         "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
-        "--tensor-split 1,1 --kv-unified --kv-unified-per-slot 4096 --no-context-shift --jinja "
+        "--tensor-split 1,1 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
         "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
     ),
     "--threads": _argv(
@@ -671,6 +685,7 @@ _ARGV_WITHOUT = {
         "--flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 "
         "--ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
         "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 "
         "--no-context-shift --jinja --reasoning-format deepseek --no-prefill-assistant --pooling "
         "rank"
     ),
@@ -680,6 +695,7 @@ _ARGV_WITHOUT = {
         "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
         "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
         "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 "
         "--no-context-shift --reasoning-format deepseek --no-prefill-assistant "
         "--pooling rank"
     ),
@@ -689,6 +705,7 @@ _ARGV_WITHOUT = {
         "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
         "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
         "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 "
         "--no-context-shift --jinja --no-prefill-assistant --pooling rank"
     ),
     "--no-prefill-assistant": _argv(
@@ -697,6 +714,7 @@ _ARGV_WITHOUT = {
         "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
         "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
         "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 "
         "--no-context-shift --jinja --reasoning-format deepseek --pooling rank"
     ),
     "--pooling": _argv(
@@ -705,6 +723,7 @@ _ARGV_WITHOUT = {
         "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
         "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
         "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 "
         "--no-context-shift --jinja --reasoning-format deepseek --no-prefill-assistant"
     ),
     "--kv-unified": _argv(
@@ -712,7 +731,8 @@ _ARGV_WITHOUT = {
         "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
         "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
         "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
-        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified-per-slot 4096 --no-context-shift "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified-per-slot 4096 --ctx-checkpoints 4 "
+        "--cache-ram 1024 --no-context-shift "
         "--jinja --reasoning-format deepseek --no-prefill-assistant --pooling rank"
     ),
     "--no-context-shift": _argv(
@@ -721,7 +741,26 @@ _ARGV_WITHOUT = {
         "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
         "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
         "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 "
         "--jinja --reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--ctx-checkpoints": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--cache-ram 1024 --no-context-shift --jinja --reasoning-format deepseek "
+        "--no-prefill-assistant --pooling rank"
+    ),
+    "--cache-ram": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --no-context-shift --jinja --reasoning-format deepseek "
+        "--no-prefill-assistant --pooling rank"
     ),
 }
 
@@ -735,7 +774,7 @@ _FULL_ARGV_CPU_MOE = _FULL_ARGV_CPU_MOE + _PING
 
 
 def test_the_optional_flag_table_is_not_empty() -> None:
-    assert len(_OPTIONAL) == 18
+    assert len(_OPTIONAL) == 20
 
 
 def test_the_stream_heartbeat_is_written_every_thirty_seconds_when_the_help_lists_it(
