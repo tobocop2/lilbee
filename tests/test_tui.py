@@ -124,7 +124,9 @@ def _hang_up():
 
 class _HungUpApp(tui_app.LilbeeApp):
     def on_mount(self):  # Textual runs the mount handler of LilbeeApp as well
-        self.set_timer(0.5, _hang_up)
+        # A screen's timer ticks in the screen's own task, as the chat screen's pollers do;
+        # an app timer would tick in the run's main task.
+        self.set_timer(0.5, lambda: self.screen.set_timer(0.1, _hang_up))
 
 
 _exit_when_stragglers_would_hang = tui.exit_when_stragglers_would_hang
