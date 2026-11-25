@@ -530,8 +530,8 @@ class TestAskStaysOffTheLoop:
         threads: list[int] = []
         page = _web_chunk()
         services.store.web_titles.side_effect = _recording(threads, returns={})
-        with patch.object(rag_handlers, "_store_extracted_memories", AsyncMock(return_value=[])):
-            frames = [f async for f in rag_handlers._emit_sources_and_memories("q", ["a"], [page])]
+        record = rag_handlers._TurnRecord()
+        frames = [f async for f in rag_handlers._emit_sources_and_done("q", ["a"], [page], record)]
         assert any(page.source in frame for frame in frames)
         _assert_off_the_loop(threads, 1)
 

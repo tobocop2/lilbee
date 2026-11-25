@@ -8,6 +8,7 @@ import contextvars
 import logging
 import threading
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 from lilbee.app.memory import SavedMemory, auto_extract, auto_extract_enabled
@@ -320,22 +321,55 @@ async def _store_extracted_memories(question: str, answer: str) -> list[SavedMem
         return []
 
 
-async def _done_frames(question: str, answer: str) -> list[str]:
-    """The ``done`` frame and the frames that trail it, all built before it is sent.
+@dataclass(frozen=True)
+class _AnsweredTurn:
+    """The turn a trailer stage reads: the question and the full answer the client has."""
 
-    The trailer is the ``memory_extracted`` event, present only when the turn
-    auto-saved a memory. The extraction pass and the event's serialisation both
-    finish before this returns, so the stream sends done and its trailer without
-    running any work: nothing after done can fail and replace the answer.
-    """
-    stored = await _store_extracted_memories(question, answer)
+    question: str
+    answer: str
+
+
+@dataclass
+class _TurnRecord:
+    """Filled by an answer stream just before it sends done; empty for a refusal."""
+
+    answered: _AnsweredTurn | None = None
+
+
+async def _memory_trailer(turn: _AnsweredTurn) -> list[str]:
+    """The ``memory_extracted`` frame when the turn auto-saved a memory, else nothing."""
+    stored = await _store_extracted_memories(turn.question, turn.answer)
     if not stored:
-        return [sse_done({})]
+        return []
     event = MemoryExtractedEvent(
         count=len(stored),
         items=[MemoryExtractedItem(id=m.id, kind=m.kind, text=m.text) for m in stored],
     )
-    return [sse_done({}), sse_event(SseEvent.MEMORY_EXTRACTED, event.model_dump(mode="json"))]
+    return [sse_event(SseEvent.MEMORY_EXTRACTED, event.model_dump(mode="json"))]
+
+
+async def _then_trailer(
+    answer_stream: Callable[[_TurnRecord], AsyncGenerator[str, None]],
+) -> AsyncGenerator[str, None]:
+    """Run an answer stream to its done frame, then the trailer stage after it.
+
+    The answer stream ends at done, so done goes out before the trailer starts.
+    The trailer runs only on an answered turn, on the same response. A trailer
+    that raises is logged and dropped here, so it never becomes an error frame
+    that would replace an answer the client already has.
+    """
+    record = _TurnRecord()
+    async for frame in answer_stream(record):
+        yield frame
+    if record.answered is None:
+        return
+    try:
+        frames = await _memory_trailer(record.answered)
+    except Exception:
+        log.exception("a stream trailer failed after done; the answer is unaffected")
+        return
+    for frame in frames:
+        yield frame
 
 
 def _mismatch_detail(exc: EmbeddingModelMismatchError) -> str | None:
@@ -344,19 +378,19 @@ def _mismatch_detail(exc: EmbeddingModelMismatchError) -> str | None:
     return exc.persisted_model if exc.dims_match else None
 
 
-async def _emit_sources_and_memories(
+async def _emit_sources_and_done(
     question: str,
     answer_parts: list[str],
     sources: list[SearchChunk],
+    record: _TurnRecord,
 ) -> AsyncGenerator[str, None]:
-    """Emit the trailing SOURCES event, ``done``, and any memory-extracted event.
+    """Emit the trailing SOURCES event and ``done``, and record the answered turn.
 
     SOURCES carries the cited subset (what the answer referenced), falling back to
     the full retrieved set when the answer cited nothing, mirroring
     ``Searcher.ask_stream``. Recalled memories always ride along: they were in the
-    prompt whether the answer cited a document or not. The memory-extracted
-    event trails ``done`` on the wire, but it is built before ``done`` is sent,
-    so no work runs once the client has its answer.
+    prompt whether the answer cited a document or not. ``done`` is the last
+    frame; the trailer stage reads *record* after it.
     """
     answer = "".join(answer_parts)
     cited = cited_subset(answer, sources)
@@ -368,11 +402,12 @@ async def _emit_sources_and_memories(
         source_list = sources
     # clean_results reads the stored web titles, so it runs on a worker.
     yield sse_event(SseEvent.SOURCES, await asyncio.to_thread(clean_results, source_list, sources))
-    for frame in await _done_frames(question, answer):
-        yield frame
+    record.answered = _AnsweredTurn(question, answer)
+    yield sse_done({})
 
 
 async def _stream_rag_response(
+    record: _TurnRecord,
     question: str,
     history: list[ChatMessage] | None = None,
     top_k: int = 0,
@@ -455,7 +490,7 @@ async def _stream_rag_response(
     # Ensure executor thread has finished before yielding final events
     await executor_fut
 
-    async for event in _emit_sources_and_memories(question, answer_parts, results):
+    async for event in _emit_sources_and_done(question, answer_parts, results, record):
         yield event
 
 
@@ -465,8 +500,12 @@ def ask_stream(
     options: dict[str, Any] | None = None,
     chunk_type: ChunkType | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Yield SSE events: token, sources, done."""
-    return _stream_rag_response(question, top_k=top_k, options=options, chunk_type=chunk_type)
+    """Yield SSE events: token, sources, done, then any trailer such as memory_extracted."""
+    return _then_trailer(
+        lambda record: _stream_rag_response(
+            record, question, top_k=top_k, options=options, chunk_type=chunk_type
+        )
+    )
 
 
 def _compaction_pending(history: list[ChatMessage], summary: str) -> bool:
@@ -680,15 +719,21 @@ def chat_stream(
     summary: str = "",
     session_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Stream RAG chat tokens through canonical dispatch as token/sources/done events."""
-    return _stream_chat_response(
-        question,
-        history=history,
-        top_k=top_k,
-        options=options,
-        chunk_type=chunk_type,
-        summary=summary,
-        session_id=session_id,
+    """Stream RAG chat tokens through canonical dispatch as token/sources/done events.
+
+    Any trailer, such as memory_extracted, follows done.
+    """
+    return _then_trailer(
+        lambda record: _stream_chat_response(
+            record,
+            question,
+            history=history,
+            top_k=top_k,
+            options=options,
+            chunk_type=chunk_type,
+            summary=summary,
+            session_id=session_id,
+        )
     )
 
 
@@ -751,6 +796,7 @@ def _resolve_chat_stream_context(
 
 
 async def _stream_chat_response(
+    record: _TurnRecord,
     question: str,
     history: list[ChatMessage],
     top_k: int | None,
@@ -775,15 +821,15 @@ async def _stream_chat_response(
     if ctx is None:
         return
     async for frame in _chat_answer_frames(
-        question, _build_canonical_request(ctx.messages, options), ctx.results
+        record, question, _build_canonical_request(ctx.messages, options), ctx.results
     ):
         yield frame
 
 
 async def _chat_answer_frames(
-    question: str, req: CanonicalChatRequest, sources: list[SearchChunk]
+    record: _TurnRecord, question: str, req: CanonicalChatRequest, sources: list[SearchChunk]
 ) -> AsyncGenerator[str, None]:
-    """Stream the model's answer as SSE frames, then the sources and memories."""
+    """Stream the model's answer as SSE frames, then the sources and done."""
     answer_parts: list[str] = []
     # Only grounded turns append an authoritative SOURCES event, so only they
     # need a model-generated Sources block suppressed.
@@ -804,7 +850,7 @@ async def _chat_answer_frames(
     if tail_frame:
         yield tail_frame
 
-    async for frame in _emit_sources_and_memories(question, answer_parts, sources):
+    async for frame in _emit_sources_and_done(question, answer_parts, sources, record):
         yield frame
 
 

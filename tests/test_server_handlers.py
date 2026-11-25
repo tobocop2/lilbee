@@ -4,6 +4,7 @@ import asyncio
 import errno
 import json
 import logging
+import threading
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1977,37 +1978,24 @@ class TestMemoryExtractedEvent:
         assert "memory_extracted" in _event_types(events)
 
 
-async def _frames_after_done(stream, done_sent: list[bool]) -> list[str]:
-    """Drain *stream* and return the frames it yields after the done frame.
+class TestDoneEndsTheAnswerStream:
+    """The answer stream ends at done; the memory trailer runs after done is sent."""
 
-    Each frame after done must arrive in one step of the generator, with no
-    await in between. A stream that awaits anything once done is out, such as
-    an extraction pass or a worker thread, fails the assertion. *done_sent*
-    turns true once done is out, so a test can also refuse frame building.
-    """
-    async for frame in stream:
-        if frame.startswith("event: done"):
-            break
-    else:
-        raise AssertionError("the stream sent no done frame")
-    done_sent.append(True)
-    after: list[str] = []
-    while True:
-        step = stream.__anext__()
-        try:
-            step.send(None)
-        except StopIteration as yielded:
-            after.append(yielded.value)
-            continue
-        except StopAsyncIteration:
-            return after
-        step.close()
-        await stream.aclose()
-        raise AssertionError(f"the stream awaited work after the done frame; sent {after}")
-
-
-class TestNothingRunsAfterDone:
-    """Once done is sent, a chat or ask stream only yields frames it has already built."""
+    @pytest.fixture
+    def turn(self, mock_svc):
+        mock_svc.searcher.search_unavailable.return_value = False
+        mock_svc.searcher.skip_retrieval.return_value = False
+        mock_svc.searcher.pre_retrieval_answer.return_value = None
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.return_value = iter(["noted"])
+        with (
+            patch.object(
+                _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["noted"])
+            ),
+            patch.object(_rag_h, "_warming_frames", AsyncMock(return_value=[])),
+            patch.object(_rag_h, "auto_extract_enabled", return_value=True),
+        ):
+            yield mock_svc
 
     def _saved(self):
         from lilbee.app.memory import SavedMemory
@@ -2015,64 +2003,54 @@ class TestNothingRunsAfterDone:
 
         return [SavedMemory(id="m1", kind=MemoryKind.FACT, text="the user drives a crown vic")]
 
-    def _chat(self, mock_svc):
-        mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        return handlers.chat_stream("q", [])
-
-    def _ask(self, mock_svc):
-        mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.return_value = iter(["noted"])
-        return handlers.ask_stream("q")
-
-    def _chat_refusal(self, mock_svc):
-        mock_svc.searcher.search_unavailable.return_value = True
-        return handlers.chat_stream("q", [])
-
-    def _ask_refusal(self, mock_svc):
-        mock_svc.searcher.search_unavailable.return_value = True
-        return handlers.ask_stream("q")
-
-    def _chat_direct_answer(self, mock_svc):
-        mock_svc.searcher.pre_retrieval_answer.return_value = "the library is empty"
-        return handlers.chat_stream("q", [])
-
-    def _ask_direct_answer(self, mock_svc):
-        mock_svc.searcher.pre_retrieval_answer.return_value = "the library is empty"
-        return handlers.ask_stream("q")
-
+    @pytest.mark.parametrize("kind", ["chat", "ask"])
     @pytest.mark.parametrize(
-        ("path", "trailer"),
+        ("setup", "answered"),
         [
-            ("_chat", ["memory_extracted"]),
-            ("_ask", ["memory_extracted"]),
-            ("_chat_refusal", []),
-            ("_ask_refusal", []),
-            ("_chat_direct_answer", []),
-            ("_ask_direct_answer", []),
+            ({}, True),
+            ({"search_unavailable": True}, False),
+            ({"pre_retrieval_answer": "the library is empty"}, False),
         ],
+        ids=["answered", "refusal", "direct_answer"],
     )
-    async def test_frames_after_done_are_prebuilt(self, mock_svc, path, trailer):
-        mock_svc.searcher.search_unavailable.return_value = False
-        mock_svc.searcher.skip_retrieval.return_value = False
-        mock_svc.searcher.pre_retrieval_answer.return_value = None
-        done_sent: list[bool] = []
-        real_sse_event = _rag_h.sse_event
+    async def test_the_answer_stream_ends_at_done_without_extracting(
+        self, turn, kind, setup, answered
+    ):
+        for name, value in setup.items():
+            getattr(turn.searcher, name).return_value = value
+        record = _rag_h._TurnRecord()
+        stream = (
+            _rag_h._stream_chat_response(record, "q", [], None, None, None)
+            if kind == "chat"
+            else _rag_h._stream_rag_response(record, "q")
+        )
+        with patch.object(_rag_h, "auto_extract") as extract:
+            frames = [frame async for frame in stream]
+        assert _event_types(frames)[-1] == "done"
+        extract.assert_not_called()
+        assert (record.answered is not None) is answered
 
-        def build_frame(event, data):
-            assert not done_sent, f"a {event} frame was built after the done frame"
-            return real_sse_event(event, data)
+    @pytest.mark.parametrize("kind", ["chat", "ask"])
+    async def test_done_arrives_while_the_extraction_is_blocked(self, turn, kind):
+        release = threading.Event()
+        finished = threading.Event()
+        saved = self._saved()
 
-        with (
-            patch.object(_rag_h, "sse_event", build_frame),
-            patch.object(
-                _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["noted"])
-            ),
-            patch.object(_rag_h, "_warming_frames", AsyncMock(return_value=[])),
-            patch.object(_rag_h, "auto_extract_enabled", return_value=True),
-            patch.object(_rag_h, "auto_extract", return_value=self._saved()),
-        ):
-            after = await _frames_after_done(getattr(self, path)(mock_svc), done_sent)
-        assert _event_types(after) == trailer
+        def blocking_extract(_question, _answer):
+            release.wait(timeout=5)
+            finished.set()
+            return saved
+
+        stream = handlers.chat_stream("q", []) if kind == "chat" else handlers.ask_stream("q")
+        with patch.object(_rag_h, "auto_extract", blocking_extract):
+            async for frame in stream:
+                if frame.startswith("event: done"):
+                    break
+            extraction_blocked_at_done = not finished.is_set()
+            release.set()
+            after = [frame async for frame in stream]
+        assert extraction_blocked_at_done
+        assert _event_types(after) == ["memory_extracted"]
 
 
 class TestSyncStream:
