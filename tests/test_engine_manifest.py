@@ -470,7 +470,8 @@ SHIPPED_MISTRAL_CUDA = {
 def test_a_linux_host_with_a_cuda_12_8_driver_resolves_the_mistral_pack_of_its_card(
     cc: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    facts = {"driver": "570.86", "cuda_driver": 12080, "gpus": [{"name": "c", "cc": [cc // 10, cc % 10]}]}
+    card = {"name": "c", "cc": [cc // 10, cc % 10]}
+    facts = {"driver": "570.86", "cuda_driver": 12080, "gpus": [card]}
     host = host_caps.collect(system="Linux", machine="x86_64", cpu_info={}, nvidia=facts)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     pin = ADAPTERS[EngineName.MISTRAL].pin_record()

@@ -112,6 +112,7 @@ SHIPPED_CELLS = [
     "linux-x86_64-cuda-sm89",
     "linux-x86_64-cuda-sm90",
     "macos-arm64-metal",
+    "windows-x86_64-cpu",
 ]
 
 
