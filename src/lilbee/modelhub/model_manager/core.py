@@ -205,6 +205,7 @@ class ModelManager:
         on_notice: Callable[[str], None] | None = None,
         on_retry: "RetryCallback | None" = None,
         allow_unsupported: bool = False,
+        report_no_engine: bool = True,
         cancel: CancelSignal | None = None,
     ) -> Path | None:
         """Download a native GGUF model and return its path.
@@ -218,7 +219,8 @@ class ModelManager:
         cannot decode with ``UnsupportedQuantError``, unless *allow_unsupported*
         is True. *on_bytes* receives (downloaded_bytes, total_bytes) progress.
         *on_notice* receives the sentence that says the model's size is unknown,
-        and after the download the sentence that says no engine loads the model.
+        and after the download the sentence that says no engine loads the model,
+        unless *report_no_engine* is False.
         *on_retry* hears each failed attempt while the download runs. A *cancel*
         signal makes the download cancellable mid-transfer; see
         :func:`~lilbee.catalog.download_model`.
@@ -246,7 +248,7 @@ class ModelManager:
             )
         finally:
             self._invalidate_installed_cache()
-        if no_engine is not None and on_notice is not None:
+        if report_no_engine and no_engine is not None and on_notice is not None:
             on_notice(no_engine)
         return path
 

@@ -228,16 +228,18 @@ def adopt_embedder(ref: str) -> AdoptResult:
     manager = get_services().model_manager
     installed = manager.is_installed(ref, ModelSource.NATIVE)
     already_active = cfg.embedding_model == ref and installed
-    pull_warning = None if installed else pull_model_data(ref, ModelSource.NATIVE).warning
+    # The settings update reports the no-engine notice of the role; the pull stays silent on it.
+    pulled = (
+        None
+        if installed
+        else pull_model_data(ref, ModelSource.NATIVE, report_no_engine=False).warning
+    )
     result = apply_settings_update({"embedding_model": ref})
-    # The settings notice names the role and repeats the pull's no-engine text: show it once.
-    if any(pull_warning in notice for notice in result.warnings if pull_warning):
-        pull_warning = None
     return AdoptResult(
         model=ref,
         status=AdoptStatus.ALREADY_ACTIVE if already_active else AdoptStatus.ADOPTED,
         reindex_required=result.reindex_required,
-        warning=join_warnings(pull_warning, *result.warnings),
+        warning=join_warnings(pulled, *result.warnings),
     )
 
 
@@ -492,9 +494,13 @@ def pull_model_data(
     on_update: Callable[[DownloadProgress], None] | None = None,
     on_retry: Callable[[str], None] | None = None,
     allow_unsupported: bool = False,
+    report_no_engine: bool = True,
     cancel: CancelSignal | None = None,
 ) -> PullResult:
     """Pull *ref* from *source* and return a typed result.
+
+    *report_no_engine* False leaves the no-engine notice out of the warning, for a
+    caller whose settings update reports it.
 
     Only native models are downloadable; a non-native *source* is refused by
     :meth:`ModelManager.pull`. Progress updates are throttled by
@@ -523,6 +529,7 @@ def pull_model_data(
         on_notice=notices.append,
         on_retry=retry_reporter(on_retry),
         allow_unsupported=allow_unsupported,
+        report_no_engine=report_no_engine,
         cancel=cancel,
     )
     return PullResult(
