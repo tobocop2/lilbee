@@ -3,6 +3,7 @@
 import re
 
 from lilbee.catalog.formatting import clean_display_name, extract_quant
+from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.models import CatalogModel, ModelFamily, ModelVariant
 from lilbee.catalog.picks import picks_for
 from lilbee.catalog.types import ModelTask
@@ -70,15 +71,14 @@ def _build_families(models: tuple[CatalogModel, ...], task: ModelTask) -> list[M
     return families
 
 
-def get_families() -> list[ModelFamily]:
+def get_families(*, hf_client: HfClient) -> list[ModelFamily]:
     """Get the current picks grouped into families.
     Returns families ordered: chat, then embedding, then vision, then reranker.
     Within each family, variants preserve the order the picks arrive in, which
     is most-popular-first within each parameter tier.
     """
-    return (
-        _build_families(picks_for(ModelTask.CHAT), ModelTask.CHAT)
-        + _build_families(picks_for(ModelTask.EMBEDDING), ModelTask.EMBEDDING)
-        + _build_families(picks_for(ModelTask.VISION), ModelTask.VISION)
-        + _build_families(picks_for(ModelTask.RERANK), ModelTask.RERANK)
-    )
+    return [
+        family
+        for task in (ModelTask.CHAT, ModelTask.EMBEDDING, ModelTask.VISION, ModelTask.RERANK)
+        for family in _build_families(picks_for(task, hf_client=hf_client), task)
+    ]

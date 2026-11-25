@@ -353,7 +353,7 @@ def build_services(
         searcher = Searcher(config, provider, store, embedder, reranker, concepts)
         hf_client = HfClient(config)
         ingest_lock_registry = IngestLockRegistry()
-        model_manager = ModelManager(config.models_dir, config)
+        model_manager = ModelManager(config.models_dir, config, hf_client=hf_client)
         crawler_semaphore = (
             asyncio.Semaphore(config.crawl_max_concurrent)
             if config.crawl_max_concurrent > 0
