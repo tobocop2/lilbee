@@ -3902,6 +3902,16 @@ class TestMcpCommandExit:
         assert "lilbee: the MCP server failed: no model" in result.output
         assert "Traceback" not in result.output
 
+    def test_a_failure_with_an_empty_message_prints_the_exception_type(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        with mock.patch("lilbee.mcp_server.main", side_effect=ValueError("")):
+            result = CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "lilbee: the MCP server failed: ValueError" in result.output
+
     def test_ctrl_c_reaches_the_stop_before_the_loop_starts(self, tmp_path):
         """The Ctrl-C handler is the stop path's before the loop starts, so asyncio leaves it."""
         from typer.testing import CliRunner
