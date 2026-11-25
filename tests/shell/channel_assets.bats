@@ -170,12 +170,17 @@ STUB
   [[ "$output" != *"cannot arrive"* ]]
 }
 
-@test "the wait step fails when the workflow stops setting REPO" {
+@test "the wait step loses the blocker verdict when the workflow stops setting REPO" {
   WORKFLOW_FILE="${BATS_TEST_TMPDIR}/verify-release.yml"
   yq "del(${WAIT_STEP} | .env.REPO)" "${REPO_ROOT}/.github/workflows/verify-release.yml" > "${WORKFLOW_FILE}"
+  # The mutation must be applied, or the assertions below prove nothing.
+  [ "$(yq "${WAIT_STEP} | .env | has(\"REPO\")" "${WORKFLOW_FILE}")" = "false" ]
   : > "${FIXTURE}/sleep.log"
   rc_dispatch "dispatch-fanout:success" "dispatch-cuda:success" "dispatch-rocm:skipped"
-  run wait_step
-  # Without REPO the blockers lookup fails, so the skipped dispatch goes unseen.
+  # Without REPO the blockers lookup fails, so the skipped dispatch goes unseen
+  # and the step runs to its deadline instead of failing at once.
+  WAIT_MINUTES=0 run wait_step
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"still missing after 0m"* ]]
   [[ "$output" != *"cannot arrive"* ]]
 }
