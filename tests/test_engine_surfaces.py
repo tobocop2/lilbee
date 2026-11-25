@@ -34,6 +34,7 @@ from lilbee.providers.fleet.engines.host_gate import HostGate
 from lilbee.providers.fleet.host_caps import HostCaps, collect
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
+from lilbee.server.route_names import name_tools
 from lilbee.server.routes import engines as routes
 from tests._litestar_test_client import create_test_client
 from tests.conformance.fake_adapter import FakeAdapter
@@ -113,6 +114,11 @@ def _refusal(surface: str, role: str, model: str, engine: str) -> str:
     return out.text
 
 
+def _shown(surface: str, text: str) -> str:
+    """The text as *surface* shows it: an MCP client gets the tool beside a command."""
+    return name_tools(text) if surface == "mcp" else text
+
+
 def _service_refusal(role: str, model: str, engine: str) -> str:
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.use_for_role(WorkerRole(role), model, engine)
@@ -146,7 +152,7 @@ def test_every_surface_shows_the_service_refusal_and_stores_nothing(
 ) -> None:
     expected = _service_refusal(role, model, engine)
     assert expected
-    assert _refusal(surface, role, model, engine) == expected
+    assert _refusal(surface, role, model, engine) == _shown(surface, expected)
     assert _stored("engine_choices") is None
 
 
@@ -157,7 +163,7 @@ def test_a_choice_that_is_not_installed_is_refused_with_the_same_text(
     cfg.chat_model = MLX_REF
     expected = _service_refusal("chat", MLX_REF, "mlx")
     assert expected == NOT_INSTALLED.format("mlx")
-    assert _refusal(surface, "chat", MLX_REF, "mlx") == expected
+    assert _refusal(surface, "chat", MLX_REF, "mlx") == _shown(surface, expected)
 
 
 def test_the_refused_preference_has_the_same_text_on_every_surface(no_mlx: None) -> None:
@@ -169,7 +175,7 @@ def test_the_refused_preference_has_the_same_text_on_every_surface(no_mlx: None)
     assert (code, body["error"]) == (1, expected)
     code, body = _rest("PUT", "/api/engines/preferred", {"engine": "mlx"})
     assert (code, body["detail"]) == (422, expected)
-    assert mcp_server.engine_prefer_tool("mlx") == {"error": expected}
+    assert mcp_server.engine_prefer_tool("mlx") == {"error": name_tools(expected)}
     assert run_engine_command("prefer mlx").text == expected
     assert _stored("preferred_engine") is None
 
