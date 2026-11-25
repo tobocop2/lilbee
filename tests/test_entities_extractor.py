@@ -377,6 +377,21 @@ class TestExtractEntities:
         assert rows and rows[0]["type"] == "person"
         assert rows[0]["confidence"] == pytest.approx(0.8)
 
+    def test_spacy_labels_outside_the_schema_are_ignored(self):
+        def nlp(text):
+            return SimpleNamespace(
+                ents=[
+                    SimpleNamespace(label_="GPE", text="Oslo"),
+                    SimpleNamespace(label_="PERSON", text="E. Larsen"),
+                ]
+            )
+
+        rows = extract_entities(
+            [_chunk("E. Larsen sailed from Oslo")], EntitySchema(types=[PERSON]), nlp=nlp
+        )
+        assert [r["type"] for r in rows] == ["person"]
+        assert all("oslo" not in r["entity"].lower() for r in rows)
+
     def test_spacy_kind_skipped_without_nlp(self):
         rows = extract_entities(
             [_chunk("keeper E. Larsen wrote nightly")],

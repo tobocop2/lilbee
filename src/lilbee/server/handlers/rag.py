@@ -291,9 +291,8 @@ def _run_llm_stream(
                     )
                 )
             elif event.is_reasoning:
-                if event.content:
-                    put(sse_event(SseEvent.REASONING, {"token": event.content}))
-            elif event.content:
+                put(sse_event(SseEvent.REASONING, {"token": event.content}))
+            else:
                 _put_answer_token(event.content, put, cite_filter, answer_parts)
     except Exception as exc:
         error_holder.append(exc)
@@ -854,8 +853,7 @@ async def _drive_stream(
             if not text:
                 continue
             for tok in parser.feed(text):
-                if tok.content:
-                    yield tok
+                yield tok
             if cap_chars > 0 and parser.reasoning_chars > cap_chars:
                 cap_fired = True
                 break

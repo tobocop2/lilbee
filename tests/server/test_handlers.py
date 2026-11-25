@@ -928,6 +928,32 @@ class TestAddIngestMutex:
         registry.release(held)
         assert registry._locks == {}
 
+    async def test_release_of_a_lock_that_is_already_free_still_evicts_its_entry(
+        self, isolated_env
+    ):
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+
+        registry = IngestLockRegistry()
+        acquired, _ = await registry.acquire(["doc.txt"])
+        acquired[0][1].release()  # freed by the caller before the registry release
+        registry.release(acquired)
+        assert registry._locks == {}
+
+    async def test_release_leaves_a_newer_lock_registered_under_the_same_name(self, isolated_env):
+        """A stale handle from before a reset must not evict the lock that replaced it."""
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+
+        registry = IngestLockRegistry()
+        stale, _ = await registry.acquire(["doc.txt"])
+        registry.reset()
+        fresh, busy = await registry.acquire(["doc.txt"])
+        assert busy == []
+        registry.release(stale)
+        assert registry._locks.get("doc.txt") is fresh[0][1]
+        assert fresh[0][1].locked()
+        registry.release(fresh)
+        assert registry._locks == {}
+
     async def test_acquire_dedups_repeated_names(self, isolated_env):
         """The registry locks each distinct name once."""
         from lilbee.app.services import get_services

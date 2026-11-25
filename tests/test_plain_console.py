@@ -88,3 +88,18 @@ def test_model_show_prints_a_bracketed_name_and_path_literally() -> None:
     out = _captured(PlainConsole(width=200), lambda c: c.print(_render_show(data)))
     assert "org/m[q4]" in out
     assert "/m/a[/b].gguf" in out
+
+
+def test_model_show_leaves_out_the_source_and_path_lines_when_there_are_none() -> None:
+    data = ShowModelResult(model="org/m", installed=False)
+    out = _captured(PlainConsole(width=200), lambda c: c.print(_render_show(data)))
+    assert "installed:    False" in out
+    assert "source:" not in out
+    assert "path:" not in out
+
+
+def test_model_show_prints_a_source_without_a_path() -> None:
+    data = ShowModelResult(model="org/m", installed=True, source="native")
+    out = _captured(PlainConsole(width=200), lambda c: c.print(_render_show(data)))
+    assert "source:       native" in out
+    assert "path:" not in out

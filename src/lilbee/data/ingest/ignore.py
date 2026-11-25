@@ -63,18 +63,12 @@ class IgnoreRules:
 
     def __init__(self, corpus_spec: PathSpec | None = None) -> None:
         self._corpus_spec = corpus_spec
-        self._specs: dict[Path, PathSpec | None] = {}
         self._chains: dict[Path, tuple[tuple[Path, PathSpec], ...]] = {}
 
     @classmethod
     def for_corpus(cls, data_root: Path) -> IgnoreRules:
         """Build rules carrying the corpus-wide layer from the ignore file in *data_root*."""
         return cls(_load_spec(data_root / IGNORE_FILENAME))
-
-    def _spec_for(self, directory: Path) -> PathSpec | None:
-        if directory not in self._specs:
-            self._specs[directory] = _load_spec(directory / IGNORE_FILENAME)
-        return self._specs[directory]
 
     def _chain_for(self, directory: Path, base: Path) -> tuple[tuple[Path, PathSpec], ...]:
         """The ignore files covering *directory*, deepest first.
@@ -88,7 +82,7 @@ class IgnoreRules:
         if cached is not None:
             return cached
         parent = () if directory == base else self._chain_for(directory.parent, base)
-        spec = self._spec_for(directory)
+        spec = _load_spec(directory / IGNORE_FILENAME)
         chain = (((directory, spec),) if spec is not None else ()) + parent
         self._chains[directory] = chain
         return chain

@@ -241,9 +241,7 @@ def filter_reasoning(
     last_progress_tick = 0
     try:
         for token in tokens:
-            for st in parser.feed(token):
-                if st.content:
-                    yield st
+            yield from parser.feed(token)
             if (
                 on_progress is not None
                 and parser.reasoning_chars >= last_progress_tick + _PROGRESS_TICK_CHARS
@@ -326,9 +324,8 @@ def stream_chat_with_cap(
             for token in filter_reasoning(
                 _text_only(second_stream), show=show_reasoning, cap_chars=0
             ):
-                if token.content:
-                    answered = True
-                    yield StreamToken(content=token.content, is_reasoning=False)
+                answered = True
+                yield StreamToken(content=token.content, is_reasoning=False)
         finally:
             _close_iterator(second_stream)
     if reasoned and not answered:

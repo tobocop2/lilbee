@@ -299,6 +299,17 @@ def test_install_health_access_filter_idempotent() -> None:
     assert len(ours) == 1
 
 
+def test_install_health_access_filter_keeps_a_foreign_filter_and_adds_ours(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    access_logger = logging.getLogger("uvicorn.access")
+    foreign = logging.Filter("something.else")
+    monkeypatch.setattr(access_logger, "filters", [foreign])
+    install_health_access_filter()
+    assert access_logger.filters[0] is foreign
+    assert [type(f) for f in access_logger.filters] == [logging.Filter, _HealthAccessFilter]
+
+
 def _console_handler(level: int) -> logging.Handler:
     handler = logging.StreamHandler()
     handler.setLevel(level)

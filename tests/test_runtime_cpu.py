@@ -396,6 +396,16 @@ def test_engine_thread_count_follows_an_affinity_mask() -> None:
         assert engine_thread_count() == 8
 
 
+def test_engine_thread_count_without_an_affinity_call_follows_the_quota(monkeypatch) -> None:
+    """A platform with no scheduling affinity (macOS, Windows) is sized by cpu_count and quota."""
+    monkeypatch.delattr("lilbee.runtime.cpu.os.sched_getaffinity", raising=False)
+    with (
+        mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=96),
+        mock.patch("lilbee.runtime.cpu._cgroup_cpu_quota", return_value=7.65),
+    ):
+        assert engine_thread_count() == 7
+
+
 def test_engine_thread_count_floors_at_one() -> None:
     with (
         mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=96),

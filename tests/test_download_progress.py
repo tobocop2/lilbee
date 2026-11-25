@@ -280,6 +280,20 @@ class TestInitDefensiveBranches:
         monkeypatch.setattr(builtins, "__import__", fake_import)
         _install_thread_only_tqdm_lock()  # must not raise
 
+    def test_tqdm_lock_install_keeps_an_existing_lock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import threading
+
+        from tqdm.std import tqdm as tqdm_base
+
+        from lilbee import _install_thread_only_tqdm_lock
+
+        existing = threading.RLock()
+        monkeypatch.setattr(tqdm_base, "_lock", existing, raising=False)
+        _install_thread_only_tqdm_lock()
+        assert tqdm_base._lock is existing
+
 
 class TestDownloadModelProgressChain:
     """Verify download_model correctly chains progress through to the user callback."""

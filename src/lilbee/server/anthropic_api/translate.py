@@ -49,8 +49,6 @@ from lilbee.server.chat_dispatch.canonical import (
     ContentBlockStart,
     ContentBlockStop,
     MessageDelta,
-    MessageStart,
-    MessageStop,
     StopReason,
     TextBlock,
     TextDelta,
@@ -217,7 +215,8 @@ def _block_messages(
             blocks.append(ToolUseBlock(id=block.id, name=block.name, input=block.input))
         elif isinstance(block, ToolResultBlockParam):
             tool_messages.append(_tool_result_message(block))
-        elif isinstance(block, ImageBlockParam | UnknownBlockParam):
+        else:
+            # Image and unknown blocks have no canonical form; they are dropped.
             continue
 
     out = tool_messages
@@ -550,9 +549,10 @@ async def canonical_stream_to_anthropic_events(
                     },
                 },
             )
-        elif isinstance(event, MessageStart | MessageStop):
-            # The Anthropic message_start is emitted eagerly above (it needs no
-            # canonical data), and message_stop follows the loop so it stays
-            # last even if the provider never sends one.
+        else:
+            # MessageStart and MessageStop. The Anthropic message_start is
+            # emitted eagerly above (it needs no canonical data), and
+            # message_stop follows the loop so it stays last even if the
+            # provider never sends one.
             continue
     yield (AnthropicEventType.MESSAGE_STOP, {"type": "message_stop"})
