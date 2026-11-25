@@ -91,7 +91,8 @@ def route_diagnostics_to_log_file(ctx: typer.Context) -> Path | None:
     LILBEE_LOG_LEVEL was given: diagnostics then stay on stderr as usual.
 
     The routing lasts as long as the running command: *ctx* undoes it when the
-    command ends, however it ends.
+    command ends, however it ends. These commands also end the process's services, so a
+    second command in the same process is refused.
     """
     if _router.explicit_verbosity:
         return None
@@ -121,10 +122,14 @@ def _restore_diagnostics(handlers_before: list[logging.Handler], capture_was_on:
         reset_services_on_exit()
     finally:
         root = logging.getLogger()
-        for handler in root.handlers:
-            if handler not in handlers_before:
-                handler.close()
+        # Detach first, close after: a handler closed while attached reopens its file on
+        # the next record from another thread. removeHandler takes the logging lock.
+        added = [handler for handler in root.handlers if handler not in handlers_before]
+        for handler in added:
+            root.removeHandler(handler)
         root.handlers[:] = handlers_before
+        for handler in added:
+            handler.close()
         if not capture_was_on:
             logging.captureWarnings(False)
 
