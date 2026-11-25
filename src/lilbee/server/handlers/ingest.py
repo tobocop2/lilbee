@@ -97,8 +97,8 @@ async def sync_stream(
 
     When ``force_rebuild`` is true, the underlying sync re-ingests every file from
     ``cfg.documents_dir`` over the index (the REST equivalent of ``lilbee rebuild``).
-    When ``retry_skipped`` is true, it clears the failed-file markers so files
-    that were skipped on a previous sync get another attempt, without dropping
+    When ``retry_skipped`` is true, it releases the records of failed files and
+    reads partly read files again, so both get another attempt without dropping
     the store. When ``prune_ignored`` is true, it also drops sources a
     ``.lilbeeignore`` now excludes. ``done_payload`` builds the done event's data
     from the sync's result.

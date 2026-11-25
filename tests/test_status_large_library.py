@@ -17,6 +17,7 @@ from lilbee.app.status import STATUS_RECENT_LIMIT, gather_status
 from lilbee.cli.app import app
 from lilbee.core.config import cfg
 from lilbee.data.store import Store
+from lilbee.data.store.schema import _sources_failed_pages_field
 from tests.conftest import make_mock_services
 
 MILLION = 1_000_000
@@ -58,6 +59,7 @@ def _fill(store: Store, count: int) -> None:
             "authors": pa.array([None for _ in ids], pa.utf8()),
             "created_at": pa.array([None for _ in ids], pa.utf8()),
             **_not_held(len(ids)),
+            **_read_whole(len(ids)),
         }
         table.add(pa.table(rows, schema=table.schema))
 
@@ -68,6 +70,12 @@ def _not_held(count: int) -> dict[str, pa.Array]:
         name: pa.array([None] * count, pa.utf8())
         for name in ("held_out", "held_hash", "held_reason", "held_inputs")
     }
+
+
+def _read_whole(count: int) -> dict[str, pa.Array]:
+    """The failed-pages column of *count* source rows whose OCR failed on no page."""
+    column = _sources_failed_pages_field()
+    return {column.name: pa.array([None] * count, column.type)}
 
 
 def _chunks_total(count: int) -> int:
@@ -233,6 +241,7 @@ class TestSourceSummary:
                     "authors": pa.array([None] * 4, pa.utf8()),
                     "created_at": pa.array([None] * 4, pa.utf8()),
                     **_not_held(4),
+                    **_read_whole(4),
                 },
                 schema=table.schema,
             )
@@ -275,6 +284,7 @@ class TestSourceSummary:
                     "held_hash": pa.array([None] * len(rows), pa.utf8()),
                     "held_reason": pa.array([None] * len(rows), pa.utf8()),
                     "held_inputs": pa.array([None] * len(rows), pa.utf8()),
+                    **_read_whole(len(rows)),
                 },
                 schema=table.schema,
             )

@@ -13,6 +13,7 @@ from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, ExitStack, contextmanager, suppress
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, cast
@@ -91,6 +92,7 @@ from .schema import (
     _entity_schema_state_schema,
     _meta_schema,
     _page_texts_schema,
+    _sources_failed_pages_field,
     _sources_schema,
     _wiki_mentions_schema,
 )
@@ -106,6 +108,7 @@ from .types import (
     EmbeddingEngineChangedError,
     EmbeddingModelMismatchError,
     EntitySchemaState,
+    FailedPage,
     HeldOut,
     HeldRecord,
     MemoryKind,
@@ -328,6 +331,8 @@ _HELD_REASON = "held_reason"
 _HELD_INPUTS = "held_inputs"
 _HELD_COLUMNS = (_HELD_OUT, _HELD_HASH, _HELD_REASON, _HELD_INPUTS)
 _HELD_RECORD_COLUMNS = (_HELD_HASH, _HELD_REASON, _HELD_INPUTS)
+# The ``_sources`` column of the pages whose OCR failed; NULL when every page was read.
+_FAILED_PAGES = _sources_failed_pages_field().name
 
 # Tables that hold a source's rows, deleted with the source. The concept
 # nodes/edges tables carry no source column (corpus-level aggregates).
@@ -913,6 +918,19 @@ def _add_held_columns(db: LanceDBConnection) -> None:
     missing = [name for name in _HELD_RECORD_COLUMNS if name not in sources.schema.names]
     if missing:
         sources.add_columns(dict.fromkeys(missing, _NULL_TEXT_SQL))
+
+
+def _lacks_failed_pages(db: LanceDBConnection) -> bool:
+    """Whether ``_sources`` lacks the column of the pages whose OCR failed."""
+    sources = open_committed(db, SOURCES_TABLE)
+    return sources is not None and _FAILED_PAGES not in sources.schema.names
+
+
+def _add_failed_pages_column(db: LanceDBConnection) -> None:
+    """Give an existing ``_sources`` the column of failed pages, NULL on every row. Lock held."""
+    sources = open_committed(db, SOURCES_TABLE)
+    if sources is not None and _FAILED_PAGES not in sources.schema.names:
+        sources.add_columns(_sources_failed_pages_field())
 
 
 def _index_names(table: LanceTable) -> dict[str, list[str]]:
@@ -1966,6 +1984,7 @@ class Store:
         return (
             _upgrade_pending(db)
             or _held_unmigrated(db, self._config.data_root)
+            or _lacks_failed_pages(db)
             or _holds_label_keys(db, self._locations())
             or bool(legacy_crawl_files(self._config.data_dir))
         )
@@ -1995,6 +2014,7 @@ class Store:
         held = _held_unmigrated(db, self._config.data_root)
         if held:
             _add_held_columns(db)
+        _add_failed_pages_column(db)
         if _upgrade_pending(db):
             self._migrate_unlocked(db)
             self._record_upgrade_running()
@@ -3247,6 +3267,25 @@ class Store:
             del latest[newest:]
         return SourceSummary(documents, total_chunks, dict(kinds), latest)
 
+    def partly_read_sources(self, limit: int) -> tuple[dict[str, list[FailedPage]], int]:
+        """Up to *limit* listed sources with pages whose OCR failed, by name, and their count.
+
+        Reads the name and failed-page columns of those rows alone, so the cost
+        follows the number of partly read files, not the size of the library.
+        """
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return {}, 0
+        where = f"({_LISTED}) AND {_FAILED_PAGES} IS NOT NULL"
+        name = self._locations().name
+        query = table.search().where(where).select([_PATH, _FAILED_PAGES]).limit(limit)
+        found = {
+            name(row[_PATH]): [FailedPage(**page) for page in row[_FAILED_PAGES]]
+            for row in query.to_list()
+        }
+        total: int = table.count_rows(filter=where)
+        return dict(sorted(found.items())), total
+
     def iter_source_heads(self) -> Iterator[SourceHead]:
         """Every listed source, streamed in batches so no more than one batch is held."""
         for table in self._iter_source_batches(_HEAD_COLUMNS):
@@ -3441,11 +3480,12 @@ class Store:
         source_type: SourceType,
         stat: SourceStat | None = None,
         meta: SourceMeta | None = None,
+        ocr_page_failures: list[FailedPage] | None = None,
     ) -> dict:
         """The fields of one ``_sources`` row but its id and path; no stat reads as unknown.
 
-        Absent extraction metadata persists as NULL, matching rows written
-        before the metadata columns existed.
+        Absent extraction metadata and an empty list of failed pages persist as
+        NULL, matching rows written before those columns existed.
         """
         meta = meta or SourceMeta()
         return {
@@ -3460,6 +3500,7 @@ class Store:
             "title": meta.title or None,
             "authors": meta.authors or None,
             "created_at": meta.created_at or None,
+            _FAILED_PAGES: [asdict(page) for page in ocr_page_failures or []] or None,
             **dict.fromkeys(_HELD_COLUMNS),
         }
 
@@ -3747,7 +3788,14 @@ class Store:
             _SourceWrite(
                 it.source,
                 it.source_type,
-                self._source_row(it.file_hash, len(it.records), it.source_type, it.stat, it.meta),
+                self._source_row(
+                    it.file_hash,
+                    len(it.records),
+                    it.source_type,
+                    it.stat,
+                    it.meta,
+                    it.ocr_page_failures,
+                ),
             )
             for it in items
         ]

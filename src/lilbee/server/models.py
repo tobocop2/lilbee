@@ -129,8 +129,8 @@ class SyncRequest(_OcrRequest):
     or ingest because ``cfg.embedding_model`` no longer matches the persisted vectors).
     ``retry_skipped`` is the lighter recovery: it clears the markers for files that
     failed a previous sync (Tesseract timeout, decode failure, no usable text) so this
-    sync attempts them again, without dropping the existing store. The default is an
-    incremental sync.
+    sync attempts them again, and it reads partly read files again, without dropping
+    the existing store. The default is an incremental sync.
     ``prune_ignored`` drops sources a ``.lilbeeignore`` now excludes. Off by default:
     the patterns govern what sync takes in, not what a past sync already indexed.
     """
@@ -199,6 +199,23 @@ class CleanedChunk(BaseModel):
     # The ``[n]`` the answer cites this source by. Absent on a dropped chunk whose
     # source no chunk in the answer's context holds.
     citation_number: int | None = None
+
+
+class FailedPageInfo(BaseModel):
+    """One page whose OCR failed."""
+
+    page: int
+    """The page number, starting at 1."""
+    error: str
+    recovered: bool
+    """Whether the page still has native text or text from an embedded image."""
+
+
+class PartialFileInfo(BaseModel):
+    """An indexed file with at least one page whose OCR failed."""
+
+    name: str
+    pages: list[FailedPageInfo]
 
 
 class StatusSourceInfo(BaseModel):
@@ -280,6 +297,9 @@ class StatusResponse(BaseModel):
     skipped: list[SkippedSource] = []
     """Failed files held out of the index, capped; ``skipped_total`` is the real count."""
     skipped_total: int = 0
+    partly_read: list[PartialFileInfo] = []
+    """Indexed sources with pages whose OCR failed, capped; ``partial_total`` is the real count."""
+    partial_total: int = 0
     ocr_note: str = ""
     """What happens to scanned pages: skipped, or read by which engine."""
     serving: list[ServingInfo] = []
@@ -449,6 +469,8 @@ class DocumentInfo(BaseModel):
     filename: str
     chunk_count: int = 0
     ingested_at: str = ""
+    ocr_page_failures: list[FailedPageInfo] = []
+    """The pages whose OCR failed; empty when every page was read."""
 
 
 class DocumentListResponse(BaseModel):
@@ -650,6 +672,10 @@ class SyncSummary(BaseModel):
     relocated: list[str] = []
     failed: list[str] = []
     skipped: list[str] = []
+    partial: list[PartialFileInfo] = []
+    """Indexed files with pages whose OCR failed."""
+    reasons: dict[str, str] = {}
+    """Why each failed or skipped file was not indexed, by filename."""
     held_out: list[SkippedSource] = []
     truncated: int = 0
     unreadable_folders: list[str] = []

@@ -13,7 +13,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType, OcrMode
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, default_data_dir
 from lilbee.data.store import HeldOut
-from lilbee.data.types import SkippedSource
+from lilbee.data.types import PartialFile, SkippedSource
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.serving import role_serving
 
@@ -162,6 +162,10 @@ class StatusResult(BaseModel):
     skipped: list[SkippedSource] = []
     """Files a held-out record holds out of the index, capped at ``STATUS_SKIPPED_LIMIT``."""
     skipped_total: int = 0
+    partly_read: list[PartialFile] = []
+    """Indexed sources with pages whose OCR failed, capped at ``STATUS_SKIPPED_LIMIT``."""
+    partial_total: int = 0
+    """How many indexed sources have pages whose OCR failed."""
     ocr_note: str = ""
     """What happens to scanned pages: skipped, or read by which engine."""
     serving: list[ServingStatus] = []
@@ -211,6 +215,7 @@ def gather_status() -> StatusResult:
     """Collect status data as a typed model (shared by human + JSON output)."""
     summary = get_services().store.source_summary(STATUS_RECENT_LIMIT)
     skipped, skipped_total = held_out_sources()
+    partly_read, partial_total = get_services().store.partly_read_sources(STATUS_SKIPPED_LIMIT)
     return StatusResult(
         index=_index_status(),
         config=StatusConfig(
@@ -246,6 +251,8 @@ def gather_status() -> StatusResult:
         entities=entity_status(),
         skipped=skipped,
         skipped_total=skipped_total,
+        partly_read=[PartialFile(name, pages) for name, pages in partly_read.items()],
+        partial_total=partial_total,
         ocr_note=scanned_pages_state(),
         serving=serving_roles(),
     )

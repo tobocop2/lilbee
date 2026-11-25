@@ -494,8 +494,8 @@ async def sync(
 ) -> dict[str, Any]:
     """Sync the documents directory into the vector store.
 
-    ``force_rebuild`` re-ingests everything. ``retry_skipped`` retries failed
-    files. ``prune_ignored`` drops sources ``.lilbeeignore`` excludes.
+    ``force_rebuild`` re-ingests all. ``retry_skipped`` retries failed and partly
+    read files. ``prune_ignored`` drops ``.lilbeeignore`` matches.
     """
     from lilbee.app.ingest import SYNC_REFUSALS, temporary_ocr_config
     from lilbee.data.ingest import sync as run_sync
@@ -517,6 +517,15 @@ async def sync(
         except (*SYNC_REFUSALS, ProviderError) as exc:
             return _error(str(exc))
     return result.model_dump()
+
+
+def _add_warning(errors: list[str], sync_result: dict[str, Any]) -> str | None:
+    """The warning an add carries when some files were not fully indexed, else None."""
+    if errors or sync_result.get("failed"):
+        return "some files could not be processed"
+    if sync_result.get("partial"):
+        return "some files were partly read"
+    return None
 
 
 async def _sync_after_add(
@@ -650,8 +659,9 @@ async def add(
         # Nothing was added. Returning the success shape with a warning let a
         # caller report the add as done over an untouched index.
         return _error("add indexed nothing. " + " ".join(errors))
-    if errors or (sync_result is not None and sync_result.get("failed")):
-        result["warning"] = "some files could not be processed"
+    warning = _add_warning(errors, sync_result or {})
+    if warning is not None:
+        result["warning"] = warning
     return result | _login_note(urls)
 
 
@@ -793,7 +803,12 @@ def list_documents(limit: int = DOCUMENTS_PAGE_DEFAULT, offset: int = 0) -> dict
     total = store.count_sources()
     return {
         "documents": [
-            {"filename": s["filename"], "chunk_count": s.get("chunk_count", 0)} for s in page
+            {
+                "filename": s["filename"],
+                "chunk_count": s.get("chunk_count", 0),
+                "ocr_page_failures": s.get("ocr_page_failures") or [],
+            }
+            for s in page
         ],
         "total": total,
         "has_more": len(page) > 0 and (offset + len(page)) < total,
