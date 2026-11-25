@@ -155,7 +155,8 @@ def _binary_signature(path: Path) -> str:
     A replacement changes some of these, so the pin stops matching the old build. Tar
     extraction and OCI layers restore whole-second mtimes, so two builds of equal size
     can share size and mtime; the inode tells a swapped file apart, and the change time,
-    which no caller can set, tells an in-place rewrite apart.
+    which no caller can set, tells an in-place rewrite apart. On Windows the ctime is the
+    creation time, so only a swapped file (new inode) is told apart there.
     Best-effort and total (engine_pin runs on every state write): an unstatable
     path degrades to a fixed marker rather than raising.
     """
