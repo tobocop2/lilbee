@@ -308,3 +308,24 @@ def test_an_exit_that_cuts_the_stop_logs_the_step_it_cut(monkeypatch, restored_s
     assert [record.getMessage() for record in caplog.records] == [
         "The exit cut the engine stop while answering the callers that wait on the provider"
     ]
+
+
+@pytest.mark.parametrize(
+    ("stop_began_here", "stop_finished"),
+    [(False, False), (False, True), (True, True)],
+    ids=["another-stop-still-runs", "no-stop-to-wait-for", "stop-finished-in-time"],
+)
+def test_an_exit_that_cuts_no_stop_ends_nothing_and_logs_nothing(
+    monkeypatch, restored_signals, caplog, stop_began_here, stop_finished
+):
+    exits: list[int] = []
+    monkeypatch.setattr(services_mod._lifecycle, "stop_for_exit", lambda: stop_began_here)
+    monkeypatch.setattr(services_mod._lifecycle, "wait_stopped", lambda timeout: stop_finished)
+    monkeypatch.setattr(services_mod, "_exit_now", lambda status, note: exits.append(status))
+    monkeypatch.setattr(services_mod, "_exit_if_stragglers", lambda status, deadline: None)
+
+    with caplog.at_level(logging.WARNING, logger="lilbee.app.services"):
+        services_mod.exit_after_signal(0)
+
+    assert exits == []
+    assert caplog.records == []
