@@ -4582,6 +4582,31 @@ def test_role_model_placeable_false_for_a_remote_ref(monkeypatch) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("remote", "projector", "weights", "exceeds", "words"),
+    [
+        (True, False, 1, False, "runs on a remote service"),
+        (False, True, 1, False, "has no projector file"),
+        (False, False, 0, False, "no weight files that lilbee can read"),
+        (False, False, 1, True, "needs more memory than this host has"),
+        (False, False, 1, False, "needs more memory than this host has"),
+    ],
+    ids=["remote", "projector", "weights", "memory", "placeable-falls-back-to-memory"],
+)
+def test_role_unplaceable_reason_names_the_cause_and_the_role(
+    monkeypatch, remote: bool, projector: bool, weights: int, exceeds: bool, words: str
+) -> None:
+    _ref = type("R", (), {"is_remote": remote})()
+    monkeypatch.setattr(planning_mod, "parse_model_ref", lambda _r: _ref)
+    monkeypatch.setattr(planning_mod, "_vision_without_mmproj", lambda _r, _ref: projector)
+    monkeypatch.setattr(planning_mod, "_role_weights_bytes", lambda _r, _ref: weights)
+    monkeypatch.setattr(planning_mod, "_weights_exceed_hardware", lambda _w, _v, **_k: exceeds)
+    monkeypatch.setattr(planning_mod, "_ref_is_moe", lambda _ref, *, engine: False)
+    reason = planning_mod.role_unplaceable_reason(WorkerRole.VISION, "org/m", 1, engine=LLAMA)
+    assert words in reason
+    assert "org/m" in reason
+
+
 def test_placeable_total_vram_reuses_the_captured_probe(monkeypatch) -> None:
     _pin_snapshot(monkeypatch, (_card(40 * _GB), _card(40 * _GB, index=1)))
     assert planning_mod.placeable_total_vram(engine=LLAMA) == 80 * _GB
