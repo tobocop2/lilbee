@@ -96,7 +96,10 @@ def _new_process_ladder(
     monkeypatch.setattr(prov_mod, "live_users_exist", lambda _dir, **_kw: True)
     monkeypatch.setattr(prov_mod, "_watch_bound_engine", lambda _dir: None)
     monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted, _engine: True)
-    monkeypatch.setattr(prov_mod, "stop_engine", lambda _dir: pytest.fail("stopped the fleet"))
+    # The owner ran the reload, so it holds the dir and its shutdown at teardown stops
+    # the engine as the last user. Only a stop during the ladder is a defect.
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", stopped.append)
 
     class _BindingSwap(_FakeSwap):
         def bind(self, _state: SwapState) -> bool:
@@ -114,6 +117,7 @@ def _new_process_ladder(
         overflow_dir=tmp_path / "private",
         wait_until=time.monotonic() + prov_mod._OWNER_CATCH_UP_WAIT_S,
     )
+    assert stopped == [], "stopped the fleet"
     return result, peer
 
 
