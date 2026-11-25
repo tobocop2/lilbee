@@ -300,7 +300,7 @@ class BuildView:
 
     @property
     def label(self) -> str:
-        """The line a person reads: the plain label, the pin clause, then the experimental clause."""
+        """The line a person reads: the plain label, the pin clause, the experimental clause."""
         pin = f", {DIFFERS_FROM_PIN_TEXT}" if self.differs_from_pin else ""
         return f"{self.plain_label}{pin}{experimental_clause(self.not_run_on)}"
 
