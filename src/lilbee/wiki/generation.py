@@ -329,10 +329,6 @@ def build_wiki(
     return pages
 
 
-class WikiBuildError(RuntimeError):
-    """A build wrote no page because every model call failed."""
-
-
 class WikiBuildSummary(TypedDict):
     """Result of a full wiki build/update."""
 
@@ -435,12 +431,7 @@ def run_full_build(
             f"{len(pages)} pages from {len(entities)} records; {stats.summary_line()}",
             config,
         )
-    if stats.every_model_call_failed and not pages:
-        raise WikiBuildError(
-            f"No wiki pages were written: all {stats.model_calls} model calls failed. "
-            f"Last error: {stats.last_model_failure}. "
-            "Check that the chat model is available, then run the build again."
-        )
+    stats.raise_if_nothing_written(len(pages))
     return {
         "paths": [str(p) for p in pages],
         "entities": len(entities),
@@ -485,6 +476,7 @@ def run_full_synthesize(
             f"{len(paths)} synthesis pages; {stats.summary_line()}",
             config,
         )
+    stats.raise_if_nothing_written(len(paths))
     return {
         "paths": [str(p) for p in paths],
         "count": len(paths),

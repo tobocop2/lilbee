@@ -27,7 +27,6 @@ from lilbee.core.config import Config
 from lilbee.core.text import clean_label_for_display, make_slug
 from lilbee.data.store import CitationRecord, SearchChunk, Store
 from lilbee.providers.base import LLMProvider
-from lilbee.retrieval.reasoning import strip_reasoning
 from lilbee.wiki.batch import (
     finalize_section,
     hash_existing_sources,
@@ -40,11 +39,10 @@ from lilbee.wiki.citations import (
 )
 from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity
 from lilbee.wiki.page import (
-    build_wiki_messages,
     chunks_to_text,
     generate_page,
+    request_wiki_text,
     truncate_chunks_to_budget,
-    wiki_generation_options,
 )
 from lilbee.wiki.persistence import write_pending_marker
 from lilbee.wiki.shared import (
@@ -418,20 +416,7 @@ def _request_batch_sections(
     Each outcome is counted in *stats* so the run can tell a build that wrote
     nothing because every call failed from one that had nothing to write.
     """
-    messages = build_wiki_messages(prompt, provider, config)
-    try:
-        response = provider.chat(messages, stream=False, options=wiki_generation_options(config))
-    except Exception as exc:
-        log.warning("Batched LLM call failed for source %s: %s", source, exc)
-        stats.record_model_call(str(exc) or type(exc).__name__)
-        return None
-    text = strip_reasoning(response.text).strip()
-    if not text:
-        log.warning("Batched LLM call returned empty response for source %s", source)
-        stats.record_model_call("the model returned no text")
-        return None
-    stats.record_model_call(None)
-    return text
+    return request_wiki_text(source, prompt, provider, config, stats)
 
 
 def _finalize_sections(
