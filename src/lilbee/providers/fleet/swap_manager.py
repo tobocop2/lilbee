@@ -87,7 +87,9 @@ def _raise_open_file_limit() -> None:
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     if soft >= _OPEN_FILE_FLOOR:
         return
-    target = _OPEN_FILE_FLOOR if hard == resource.RLIM_INFINITY else min(_OPEN_FILE_FLOOR, hard)
+    target = _OPEN_FILE_FLOOR
+    if hard != resource.RLIM_INFINITY:
+        target = min(target, hard)
     if target < _OPEN_FILE_FLOOR:
         log.warning(
             "The open-file limit is capped at %d, under the %d the engine can use at full load.",
