@@ -3088,7 +3088,7 @@ class Store:
         if len(first) >= limit:
             return first
         seen = set(first)
-        rest = read(f"{_LISTED} AND {locations.search_filter(term, _PATH)}", limit + len(first))
+        rest = read(f"{_LISTED} AND {locations.search_filter(term, _PATH)}", limit)
         return [*first, *(name for name in rest if name not in seen)][:limit]
 
     def source_summary(self, newest: int) -> SourceSummary:
