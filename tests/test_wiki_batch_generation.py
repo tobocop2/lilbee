@@ -1527,9 +1527,7 @@ class TestFullBuildWhenTheModelFails:
             "1 of 2 pages could not be written.\nLast error: The chat model is not running."
         )
 
-    def test_a_failed_call_for_a_concept_only_source_is_counted(
-        self, stub_embedder, monkeypatch
-    ):
+    def test_a_failed_call_for_a_concept_only_source_is_counted(self, stub_embedder, monkeypatch):
         """t.txt has no entity, so its call only asks for concepts; that call fails."""
         monkeypatch.setattr(cfg, "wiki_extract_concepts", True)
         result = _run_build_losing_source_t(
