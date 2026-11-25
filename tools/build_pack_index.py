@@ -72,9 +72,12 @@ def write_index(out_dir: Path, wheels: list[tuple[str, str, str]]) -> None:
             f'<a href="{html.escape(url)}#sha256={sha}">{html.escape(name)}</a>'
             for name, url, sha in items
         ]
-        (root / project / "index.html").write_text(_page(f"Links for {project}", rows))
+        (root / project / "index.html").write_text(
+            _page(f"Links for {project}", rows), encoding="utf-8"
+        )
     (root / "index.html").write_text(
-        _page("Simple index", [f'<a href="{p}/">{p}</a>' for p in sorted(by_project)])
+        _page("Simple index", [f'<a href="{p}/">{p}</a>' for p in sorted(by_project)]),
+        encoding="utf-8",
     )
 
 

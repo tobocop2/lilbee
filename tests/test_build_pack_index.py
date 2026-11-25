@@ -148,13 +148,13 @@ def test_write_index_layout_and_links(tmp_path: Path) -> None:
     url_tei = f"{_BASE}/engine-packs-20261116-tei/{_TEI}"
     url_ik = f"{_BASE}/engine-packs-20261115/{_IK}"
     bpi.write_index(tmp_path, [(_TEI, url_tei, _SHA_A), (_IK, url_ik, _SHA_B)])
-    root = (tmp_path / "packs" / "index.html").read_text()
+    root = (tmp_path / "packs" / "index.html").read_text(encoding="utf-8")
     assert 'href="lilbee-engine-tei/"' in root
     assert 'href="lilbee-engine-ik-llama-cpp/"' in root
-    page = (tmp_path / "packs" / "lilbee-engine-tei" / "index.html").read_text()
+    page = (tmp_path / "packs" / "lilbee-engine-tei" / "index.html").read_text(encoding="utf-8")
     assert f'href="{url_tei}#sha256={_SHA_A}"' in page
     assert _IK not in page
-    ik_page = (tmp_path / "packs" / "lilbee-engine-ik-llama-cpp" / "index.html").read_text()
+    ik_page = (tmp_path / "packs" / "lilbee-engine-ik-llama-cpp" / "index.html").read_text(encoding="utf-8")
     assert f'href="{url_ik}#sha256={_SHA_B}"' in ik_page
 
 
@@ -184,7 +184,7 @@ def test_pages_workflow_builds_the_pack_index() -> None:
     # The index only reaches lilbee.sh if the deploy job's input holds it: the step
     # must run the generator into the same dir the compat and backend indexes use.
     workflow = yaml.safe_load(
-        (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "pages.yml").read_text()
+        (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
     )
     steps = workflow["jobs"]["build-wheel-indexes"]["steps"]
     runs = [s["run"] for s in steps if "build_pack_index.py wheel-indexes" in s.get("run", "")]
