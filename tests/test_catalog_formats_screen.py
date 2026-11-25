@@ -144,7 +144,7 @@ def _record_downloads(pilot_app: LilbeeAppHost) -> list[CatalogModel]:
 
 def _quiet(monkeypatch: pytest.MonkeyPatch, screen: CatalogScreen) -> None:
     monkeypatch.setattr(screen, "notify", lambda message, **_kw: None)
-    monkeypatch.setattr("lilbee.cli.tui.screens.catalog.disk_shortfall", lambda *_a, **_kw: None)
+    monkeypatch.setattr("lilbee.cli.tui.screens.catalog.reclaimed_shortfall", lambda *_a, **_kw: None)
 
 
 async def test_install_of_a_two_format_row_offers_the_formats_and_pulls_the_chosen_one(
@@ -239,7 +239,7 @@ async def test_install_of_a_one_format_row_asks_nothing(monkeypatch: pytest.Monk
         monkeypatch.setattr(
             "lilbee.cli.tui.screens.catalog.resolve_filename", lambda *_a, **_kw: "x.gguf"
         )
-        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.download_bytes", lambda *_a: 1)
+        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.remote_shards", lambda *_a: [])
 
         screen._install_model(model)
         assert await wait_until(pilot, lambda: bool(started))

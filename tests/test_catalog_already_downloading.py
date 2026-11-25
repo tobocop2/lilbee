@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from textual.app import ComposeResult
 from textual.widgets import Static
 
+from lilbee.catalog.download import RemoteFile
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui.task_queue import TaskQueue, TaskType
@@ -89,7 +91,7 @@ async def test_install_of_an_unqueued_model_still_enqueues(
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: None)
         # Otherwise this asserts on the runner's free space, not on the guard.
         monkeypatch.setattr(
-            "lilbee.cli.tui.screens.catalog.disk_shortfall", lambda *_a, **_kw: None
+            "lilbee.cli.tui.screens.catalog.reclaimed_shortfall", lambda *_a, **_kw: None
         )
 
         screen._install_model(_model())
@@ -121,7 +123,7 @@ async def test_a_pull_too_big_for_the_disk_never_becomes_a_task(
         notices: list[str] = []
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(str(message)))
         monkeypatch.setattr(
-            "lilbee.cli.tui.screens.catalog.disk_shortfall",
+            "lilbee.cli.tui.screens.catalog.reclaimed_shortfall",
             lambda *_a, **_kw: (
                 "Not enough disk space for acme/already-GGUF: needs 24.2 GB, 0.2 GB free."
             ),
@@ -157,11 +159,12 @@ async def test_the_disk_check_asks_the_hub_what_the_file_really_costs(
             "lilbee.cli.tui.screens.catalog.resolve_filename", lambda _m, engine: "acme-Q4_K_M.gguf"
         )
         monkeypatch.setattr(
-            "lilbee.cli.tui.screens.catalog.download_bytes", lambda _repo, _name: 9_000_000_000
+            "lilbee.cli.tui.screens.catalog.remote_shards",
+            lambda _repo, _name: [RemoteFile(size=9_000_000_000, blob="b1")],
         )
         monkeypatch.setattr(
-            "lilbee.cli.tui.screens.catalog.disk_shortfall",
-            lambda _dir, _repo, needed: asked.append(needed) or None,
+            "lilbee.cli.tui.screens.catalog.reclaimed_shortfall",
+            lambda _dir, _repo, _blobs, needed: asked.append(needed) or None,
         )
         monkeypatch.setattr(screen, "_enqueue_download", lambda _m: None)
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: None)
@@ -189,8 +192,8 @@ async def test_an_unresolvable_file_leaves_the_rows_own_figure(
         asked: list[int] = []
         monkeypatch.setattr("lilbee.cli.tui.screens.catalog.resolve_filename", _unreachable)
         monkeypatch.setattr(
-            "lilbee.cli.tui.screens.catalog.disk_shortfall",
-            lambda _dir, _repo, needed: asked.append(needed) or None,
+            "lilbee.cli.tui.screens.catalog.reclaimed_shortfall",
+            lambda _dir, _repo, _blobs, needed: asked.append(needed) or None,
         )
         monkeypatch.setattr(screen, "_enqueue_download", lambda _m: None)
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: None)
@@ -249,3 +252,46 @@ async def test_unsupported_confirm_enqueue_notifies_a_bracketed_name_literally()
 
         assert len(notified) == 1
         assert "note[draft]" in notified[0]
+
+
+async def test_a_pull_that_fits_only_after_reclaim_is_enqueued(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A leftover partial is unreadable bytes the pull reclaims, so it must not refuse the pull.
+
+    The disk holds 10 bytes free once the 90 byte partial is gone, and the pull
+    needs 50. A check that measures before reclaiming sees nothing free.
+    """
+    from lilbee.catalog import download as dl
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.core.config import cfg
+
+    blobs = tmp_path / "models--acme--already-GGUF" / "blobs"
+    blobs.mkdir(parents=True)
+    partial = blobs / "b1.4f2a91cc.incomplete"
+    partial.write_bytes(b"x" * 90)
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+        pilot.app.task_bar.queue = TaskQueue()
+
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(dl, "_free_bytes", lambda _p: 40 if partial.exists() else 130)
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.catalog.resolve_filename", lambda _m, engine: "model.gguf"
+        )
+        monkeypatch.setattr(
+            dl, "fetch_remote_file", lambda _repo, _name: RemoteFile(size=50, blob="b1")
+        )
+        enqueued: list[str] = []
+        monkeypatch.setattr(screen, "_enqueue_download", lambda m: enqueued.append(m.hf_repo))
+        notices: list[str] = []
+        monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(str(message)))
+
+        screen._install_model(_model())
+
+        assert notices == []
+        assert enqueued == ["acme/already-GGUF"]
+        assert not partial.exists()

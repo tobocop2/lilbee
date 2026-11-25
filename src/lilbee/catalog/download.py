@@ -228,13 +228,29 @@ def _unlink_partials(repo_dir: Path, blob: str) -> None:
             log.warning("Left a partial download behind: %s", partial)
 
 
-def _require_disk_space(entry: CatalogModel, models_dir: Path, needed: int) -> None:
+def reclaimed_shortfall(
+    models_dir: Path, hf_repo: str, blobs: Iterable[str], needed: int
+) -> str | None:
+    """Describe why *needed* bytes will not fit once the leftover partials of *blobs* are gone.
+
+    The one decision every pull makes before it moves bytes, so the command
+    line, the server and the TUI agree. A leftover partial is unreadable bytes
+    that still occupy the volume, so it is reclaimed before the volume is
+    measured.
+    """
+    discard_partial_blobs(models_dir, hf_repo, blobs)
+    return disk_shortfall(models_dir, hf_repo, needed)
+
+
+def _require_disk_space(
+    entry: CatalogModel, models_dir: Path, blobs: Iterable[str], needed: int
+) -> None:
     """Refuse a download the disk cannot hold, naming the shortfall.
 
     huggingface_hub only warns, and the xet path reports a full disk as a
     reconstruction error naming neither the disk nor the file.
     """
-    message = disk_shortfall(models_dir, entry.hf_repo, needed)
+    message = reclaimed_shortfall(models_dir, entry.hf_repo, blobs, needed)
     if message is not None:
         raise RuntimeError(message)
 
@@ -636,13 +652,10 @@ def _fetch_files(
     remote = [_probed_shard(entry, shard, on_probe) for shard in files]
     shard_sizes = [file.size for file in remote]
     sizes_known = all(size != _SIZE_UNKNOWN for size in shard_sizes)
-    # Reclaim first: a leftover partial is unreadable bytes that still occupy
-    # the volume the space check is about to measure.
-    discard_partial_blobs(models_dir, entry.hf_repo, _blobs(remote))
     to_fetch = sum(
         size for name, size in zip(files, shard_sizes, strict=True) if name not in cached
     )
-    _require_disk_space(entry, models_dir, to_fetch if sizes_known else 0)
+    _require_disk_space(entry, models_dir, cache_blobs(remote), to_fetch if sizes_known else 0)
 
     # Sum the shard sizes up front so a multi-shard pull reports one monotonic
     # 0->100% against the real total, not N separate per-shard cycles. Only use
@@ -725,7 +738,7 @@ def fetch_format_files(
     return paths[0]
 
 
-def _blobs(files: Iterable[RemoteFile]) -> list[str]:
+def cache_blobs(files: Iterable[RemoteFile]) -> list[str]:
     """The cache blob names among *files*, dropping the ones the Hub did not report."""
     return [file.blob for file in files if file.blob is not None]
 
@@ -850,8 +863,7 @@ def _fetch_mmproj(
     tracker = _ProgressTracker(on_progress) if on_progress else None
     log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, models_dir)
     projector = _probe(on_probe, fetch_remote_file(entry.hf_repo, mmproj_filename))
-    discard_partial_blobs(models_dir, entry.hf_repo, _blobs([projector]))
-    _require_disk_space(entry, models_dir, projector.size)
+    _require_disk_space(entry, models_dir, cache_blobs([projector]), projector.size)
     # The projector gets the same error translation and retry as the GGUF.
     path = _download_with_retry(
         entry,
@@ -1128,12 +1140,17 @@ def fetch_remote_file(hf_repo: str, filename: str) -> RemoteFile:
     return RemoteFile(size=size or _SIZE_UNKNOWN, blob=blob)
 
 
-def download_bytes(hf_repo: str, filename: str) -> int:
-    """Bytes a pull of *filename* fetches, every shard summed, or 0 when unknown.
+def remote_shards(hf_repo: str, filename: str) -> list[RemoteFile]:
+    """The Hub's answer about each shard of *filename*."""
+    return [fetch_remote_file(hf_repo, shard) for shard in split_shard_filenames(filename)]
+
+
+def shards_bytes(files: Iterable[RemoteFile]) -> int:
+    """Bytes a pull of *files* fetches, summed, or 0 when unknown.
 
     The exact figure HuggingFace reports, not the catalog row's approximation:
     a disk check refuses a real download, so it asks about the real file. A
     single unresolvable shard makes the sum unknown rather than short.
     """
-    sizes = [fetch_remote_file(hf_repo, shard).size for shard in split_shard_filenames(filename)]
+    sizes = [file.size for file in files]
     return sum(sizes) if all(sizes) else _SIZE_UNKNOWN

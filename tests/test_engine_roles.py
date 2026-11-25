@@ -359,8 +359,8 @@ async def test_the_catalog_install_of_an_embedding_model_resolves_a_file_with_th
         return "model.gguf"
 
     monkeypatch.setattr("lilbee.cli.tui.screens.catalog.resolve_filename", _resolve)
-    monkeypatch.setattr("lilbee.cli.tui.screens.catalog.download_bytes", lambda repo, filename: 1)
-    monkeypatch.setattr("lilbee.cli.tui.screens.catalog.disk_shortfall", lambda *_a, **_kw: None)
+    monkeypatch.setattr("lilbee.cli.tui.screens.catalog.remote_shards", lambda repo, filename: [])
+    monkeypatch.setattr("lilbee.cli.tui.screens.catalog.reclaimed_shortfall", lambda *_a, **_kw: None)
     async with _App().run_test(size=(120, 40)) as pilot:
         screen = CatalogScreen()
         await pilot.app.push_screen(screen)
