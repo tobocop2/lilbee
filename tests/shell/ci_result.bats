@@ -135,11 +135,12 @@ path_group() {
   done
 }
 
-@test "the path filter defines the code and flake groups and no other" {
-  run bash -c "yq -r '.jobs.changes.steps[] | select(.id == \"filter\") | .with.filters' '${CI}' | yq -r 'keys | join(\",\")'"
-  [ "$output" = "code,flake" ]
-  run yq -r '.jobs.changes.outputs | keys | join(",")' "${CI}"
-  [ "$output" = "code,flake" ]
+# Sorted in the shell: the jq wrapper sorts keys and the Go yq keeps their order.
+@test "the path filter defines the code, engine and flake groups and no other" {
+  run bash -c "yq -r '.jobs.changes.steps[] | select(.id == \"filter\") | .with.filters' '${CI}' | yq -r 'keys | .[]' | sort | paste -sd, -"
+  [ "$output" = "code,engine,flake" ]
+  run bash -c "yq -r '.jobs.changes.outputs | keys | .[]' '${CI}' | sort | paste -sd, -"
+  [ "$output" = "code,engine,flake" ]
 }
 
 @test "each job runs on the path group it tests" {
@@ -153,6 +154,7 @@ path_group() {
     "fuzz-smoke=needs.changes.outputs.code == 'true'" \
     "test=needs.changes.outputs.code == 'true'" \
     "integration=needs.changes.outputs.code == 'true'" \
-    "flake=needs.changes.outputs.flake == 'true'")
+    "flake=needs.changes.outputs.flake == 'true'" \
+    "engine=needs.changes.outputs.engine == 'true'")
   [ "$output" = "${expected}" ]
 }
