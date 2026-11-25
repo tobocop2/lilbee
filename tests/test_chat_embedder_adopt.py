@@ -291,8 +291,9 @@ class TestDoAdoptAndRetry:
         manager = MagicMock()
         manager.is_installed.return_value = True
         update = SimpleNamespace(reindex_required=False, warnings=(notice,))
+        services = SimpleNamespace(model_manager=manager)
         with (
-            patch("lilbee.app.models.get_services", return_value=SimpleNamespace(model_manager=manager)),
+            patch("lilbee.app.models.get_services", return_value=services),
             patch("lilbee.app.settings.apply_settings_update", return_value=update),
             patch(
                 "lilbee.cli.tui.screens.chat.call_from_thread",

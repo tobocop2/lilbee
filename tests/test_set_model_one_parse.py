@@ -210,7 +210,8 @@ class TestAdoptEmbedder:
     ) -> None:
         manager = MagicMock()
         manager.is_installed.return_value = True
-        monkeypatch.setattr(app_models, "get_services", lambda: SimpleNamespace(model_manager=manager))
+        services = SimpleNamespace(model_manager=manager)
+        monkeypatch.setattr(app_models, "get_services", lambda: services)
         notice = "No installed engine loads this model."
         update = SimpleNamespace(reindex_required=False, warnings=(notice,))
         with patch("lilbee.app.settings.apply_settings_update", return_value=update):
@@ -222,11 +223,13 @@ class TestAdoptEmbedder:
     ) -> None:
         manager = MagicMock()
         manager.is_installed.return_value = False
-        monkeypatch.setattr(app_models, "get_services", lambda: SimpleNamespace(model_manager=manager))
+        services = SimpleNamespace(model_manager=manager)
+        monkeypatch.setattr(app_models, "get_services", lambda: services)
         update = SimpleNamespace(reindex_required=False, warnings=("No engine.",))
+        pulled = SimpleNamespace(warning="Slow.")
         with (
             patch("lilbee.app.settings.apply_settings_update", return_value=update),
-            patch.object(app_models, "pull_model_data", return_value=SimpleNamespace(warning="Slow.")),
+            patch.object(app_models, "pull_model_data", return_value=pulled),
         ):
             result = app_models.adopt_embedder("org/repo/f.gguf#gguf")
         assert result.warning == "Slow. No engine."
