@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.conftest import without_lilbee_env
 
 REF = "myorg/model"
 FIELDS = ["chat_model", "embedding_model", "reranker_model", "vision_model"]
@@ -17,7 +18,7 @@ LOAD = "from lilbee.core.config import cfg; print(getattr(cfg, {field!r}))"
 def _run(
     field: str, data_root: Path, env_extra: dict[str, str]
 ) -> subprocess.CompletedProcess[str]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}
+    env = without_lilbee_env()
     env["LILBEE_DATA"] = str(data_root)
     env.update(env_extra)
     return subprocess.run(
