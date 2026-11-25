@@ -22,6 +22,7 @@ from textual.notifications import SeverityLevel
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.signal import Signal
+from textual.timer import Timer
 from textual.widgets import Input, TextArea
 
 from lilbee.app.services import (
@@ -272,6 +273,8 @@ class LilbeeApp(App[None]):
         # The TUI runs until the user closes it and takes every key, a provider switch too.
         self._config_follower = follow_config_long_running(frozenset(), keeper="the TUI")
         self._config_follower.report_to(self._show_taken_settings_from_thread)
+        # The one check scheduled after a skipped in-place write; see _recheck_a_skipped_file.
+        self._settle_recheck: Timer | None = None
         self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
             self, "provider_availability_changed"
         )
@@ -731,7 +734,28 @@ class LilbeeApp(App[None]):
         changed, result = self._config_follower.check()
         if result is not None:
             self._show_taken_settings(result)
+        self._recheck_a_skipped_file()
         return changed
+
+    def _recheck_a_skipped_file(self) -> None:
+        """Check once more after the quiet window when the check skipped a young in-place write.
+
+        The TUI checks only on events, so without this a whole save made just before an
+        event stays unseen until the next event. Every event reader calls
+        ``adopt_external_settings``, so this is the one place that makes a skipped check
+        always retried.
+        """
+        delay = self._config_follower.recheck_delay_s()
+        if delay > 0 and self._settle_recheck is None:
+            self._settle_recheck = self.set_timer(delay, self._take_after_the_quiet_window)
+
+    def _take_after_the_quiet_window(self) -> None:
+        from lilbee.cli.tui.screens.settings import SettingsScreen
+
+        self._settle_recheck = None
+        changed = self.adopt_external_settings()
+        if changed and isinstance(self.screen, SettingsScreen):
+            self.screen.reload_profile()
 
     def _show_taken_settings_from_thread(self, result: SettingsUpdateResult) -> None:
         """Show what the engine's retry took; the settings already landed on cfg in its thread."""
