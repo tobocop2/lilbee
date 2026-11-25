@@ -262,3 +262,41 @@ class TestAdoptEmbedder:
         ):
             result = app_models.adopt_embedder(ref)
         assert result.warning == f"The download size is unknown. {settings_notice}"
+
+
+_NO_ENGINE_SENTENCE = (
+    "No installed engine loads the safetensors format of org/repo#safetensors. "
+    "Run lilbee engine list to see the installed engines."
+)
+
+
+def _pull_with_no_engine(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **kwargs: bool
+) -> app_models.PullResult:
+    """Run a real pull of a non-GGUF model that no engine loads, with the download stubbed."""
+    manager = ModelManager(tmp_path / "models", cfg)
+    services = SimpleNamespace(model_manager=manager)
+    monkeypatch.setattr(app_models, "get_services", lambda: services)
+    monkeypatch.setattr(engine_choice, "installed_engines", dict)
+    monkeypatch.setattr(app_models, "ensure_vision_projector", lambda *a, **k: None)
+    with (
+        patch.object(ModelManager, "is_installed", return_value=False),
+        patch.object(ModelManager, "enforce_arch_compat"),
+        patch.object(ModelManager, "_pull_native", return_value=tmp_path / "model"),
+    ):
+        return app_models.pull_model_data("org/repo#safetensors", ModelSource.NATIVE, **kwargs)
+
+
+class TestPullModelDataNoEngineNotice:
+    def test_a_pull_with_no_keyword_reports_the_no_engine_notice(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The CLI and task bar pulls pass no keyword and rely on this notice."""
+        result = _pull_with_no_engine(monkeypatch, tmp_path)
+        assert result.warning == _NO_ENGINE_SENTENCE
+
+    def test_a_pull_that_opts_out_leaves_the_no_engine_notice_out(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        result = _pull_with_no_engine(monkeypatch, tmp_path, report_no_engine=False)
+        assert result.warning is None
