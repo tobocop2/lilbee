@@ -371,6 +371,12 @@ def test_a_stamp_records_the_planned_values_and_the_keys_its_builder_follows(
     assert origin.followed == followed
 
 
+def test_a_torn_config_file_gives_a_stamp_with_no_view(monkeypatch) -> None:
+    monkeypatch.setattr(prov_mod, "read_persisted", lambda _root: (None, None))
+    origin = FleetProvider(followed_keys=lambda: ENGINE_TUNING_KEYS)._stamp_origin()
+    assert (origin.fleet_view, origin.planned_view, origin.followed) == (None, None, None)
+
+
 def test_a_flagged_stamp_keeps_the_file_view_an_older_peer_reads(monkeypatch) -> None:
     """Mixed versions, new owner and old peer: the file view is what 0267482 wrote.
 
