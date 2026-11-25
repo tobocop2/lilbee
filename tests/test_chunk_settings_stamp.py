@@ -244,7 +244,8 @@ def test_a_sync_into_a_legacy_library_records_its_settings_and_warns_once(caplog
 
 def test_a_first_sync_after_a_memory_records_its_settings_without_a_warning(caplog):
     store = get_services().store
-    store.add_memory(make_memory_row("a note", lambda _text: [0.5] * cfg.embedding_dim))
+    vector = np.full(cfg.embedding_dim, 0.5, dtype=np.float32)
+    store.add_memory(make_memory_row("a note", lambda _text: vector))
     assert store.get_meta() is not None
     with caplog.at_level(logging.WARNING, logger="lilbee.data.store.core"):
         store.add_chunks(_records(["a"]), chunk_settings=reindex_values())
