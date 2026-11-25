@@ -325,7 +325,7 @@ jobs:
           # instead of hanging to timeout-minutes. A Python timer at 75% of each
           # test's timeout also prints every stack to this log before
           # pytest-timeout ends a stuck test. See tests/_hang_watchdog.py.
-          LILBEE_TEST_HANG_DUMP_S: "90"
+          # The Makefile sets LILBEE_TEST_HANG_DUMP_S (90); CI sets only the folder.
           LILBEE_TEST_HANG_DUMP_DIR: ${{ runner.temp }}/hang-dumps
 
       - name: Surface hang-watchdog stack dumps
