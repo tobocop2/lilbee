@@ -168,6 +168,11 @@ class ChunkRecord(TypedDict):
     title: NotRequired[str | None]
 
 
+def rebuild_advice(drift: list[str]) -> str:
+    """The advice for an index whose chunks were cut with other values of the *drift* settings."""
+    return f"{', '.join(drift)} changed since the chunks were cut; run `lilbee rebuild`"
+
+
 class SyncResult(BaseModel):
     """Summary of a sync operation."""
 
@@ -192,6 +197,9 @@ class SyncResult(BaseModel):
     # Set when the index was built with another embedder than the one configured:
     # the sync left it as it is, and search refuses it until a rebuild or a switch back.
     index_mismatch: IndexMismatch | None = None
+    # The settings now in force that differ from the ones the chunks were cut with.
+    # Advisory: search and ingest go on, and a rebuild brings the chunks in line.
+    chunk_drift: list[str] = []
 
     def has_failures(self) -> bool:
         """Whether a file failed this run, or failed files are held out and none is indexed."""
@@ -208,6 +216,9 @@ class SyncResult(BaseModel):
         ]
         if self.index_mismatch is not None:
             lines.append([("Index mismatch:", "red"), (f" {self.index_mismatch.message}", "")])
+        if self.chunk_drift:
+            advice = rebuild_advice(self.chunk_drift)
+            lines.append([("Rebuild advised:", "yellow"), (f" {advice}", "")])
         if self.relocated:
             lines.append([(f"Relocated: {len(self.relocated)}", "")])
         lines += [
