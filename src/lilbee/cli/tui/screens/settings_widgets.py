@@ -21,7 +21,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.defaults import env_var_name
 from lilbee.core.config.enums import SettingSource
 from lilbee.core.config.resolve import read_profile_table
-from lilbee.crawler import crawler_available
+from lilbee.crawler import crawler_installed
 
 if TYPE_CHECKING:
     from lilbee.catalog.types import ModelTask
@@ -297,7 +297,9 @@ def _providers_installed() -> bool:
 
 
 def _crawler_installed() -> bool:
-    return crawler_available()
+    # Cheap check, no import: a broken install still shows the group. The crawl
+    # entry points run the import probe and show the error with the fix.
+    return crawler_installed()
 
 
 def _wiki_enabled() -> bool:

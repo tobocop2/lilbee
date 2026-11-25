@@ -16,6 +16,16 @@ CRAWLER_BROKEN_MESSAGE = (
 )
 
 
+def crawler_installed() -> bool:
+    """Whether every module of the crawler extra is installed, without importing any.
+
+    The check reads the import path only, so a screen can call it on the UI thread.
+    A broken install counts as installed: a crawl runs :func:`crawler_available`
+    and shows the reinstall message.
+    """
+    return all(importlib.util.find_spec(module) is not None for module in _CRAWLER_MODULES)
+
+
 @functools.cache
 def crawler_unavailable_reason() -> str | None:
     """The message for why the crawler cannot run, or ``None`` when every module of it loads.
