@@ -80,6 +80,7 @@ _PROFILE = RequestProfile(
     batch_overflow=None,
     unreadable_embedding_hint="Lemonade answers embeddings as lists of floats.",
     reasoning_field="reasoning_content",
+    silent_prefill=True,
 )
 
 

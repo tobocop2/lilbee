@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Generator, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal, TypedDict, TypeVar, overload
@@ -974,6 +974,20 @@ class LlamaServerClient:
                 reasoning_field=self._profile.reasoning_field,
             )
 
+    def _bound_body(self, resp: httpx.Response) -> httpx.Request | None:
+        """Bound the body reads of *resp* from the headers on, or from the first frame.
+
+        An engine with a silent prefill sends no byte between its headers and its first
+        frame, so its bound starts at the frame and this returns no bounded request.
+        """
+        return None if self._profile.silent_prefill else _bound_body_reads(resp)
+
+    def _body_lines(self, resp: httpx.Response) -> Iterator[str]:
+        """The lines of the body of *resp*, bound as ``_bound_body`` says."""
+        if self._profile.silent_prefill:
+            return _lines_bound_from_first_frame(resp)
+        return resp.iter_lines()
+
     def _chat_stream(
         self, payload: dict[str, Any], timeout: Any = httpx.USE_CLIENT_DEFAULT
     ) -> Iterator[str]:
@@ -988,9 +1002,9 @@ class LlamaServerClient:
                 ) as resp,
             ):
                 self._raise_for_status(resp)
-                bounded = _bound_body_reads(resp)
+                bounded = self._bound_body(resp)
                 self._abortable(resp)
-                for line in resp.iter_lines():
+                for line in self._body_lines(resp):
                     delta = inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
                     if delta:
                         started = True
@@ -1064,8 +1078,13 @@ class LlamaServerClient:
                 if not resp.is_success:
                     await resp.aread()
                 self._raise_for_status(resp)
-                bounded = _bound_body_reads(resp)
-                async for line in resp.aiter_lines():
+                bounded = self._bound_body(resp)
+                lines = (
+                    _alines_bound_from_first_frame(resp)
+                    if self._profile.silent_prefill
+                    else resp.aiter_lines()
+                )
+                async for line in lines:
                     parts.append(
                         inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
                     )
@@ -1214,9 +1233,9 @@ class LlamaServerClient:
                 self._http.stream("POST", _CHAT_PATH, json=payload) as resp,
             ):
                 self._raise_for_status(resp)
-                bounded = _bound_body_reads(resp)
+                bounded = self._bound_body(resp)
                 self._abortable(resp)
-                for line in resp.iter_lines():
+                for line in self._body_lines(resp):
                     if on_prefill is not None:
                         progress = _prefill_progress(line)
                         if progress is not None:
@@ -2295,6 +2314,57 @@ def _bound_body_reads(resp: httpx.Response) -> httpx.Request:
     read = timeouts["read"]
     timeouts["read"] = _STREAM_IDLE_TIMEOUT_S if read is None else min(read, _STREAM_IDLE_TIMEOUT_S)
     return resp.request
+
+
+def _lines_bound_from_first_frame(resp: httpx.Response) -> Iterator[str]:
+    """The lines of *resp*, with the idle bound running from the first ``data:`` line.
+
+    httpcore reads the body's read timeout once, when the body starts, so no read timeout can
+    change after a frame. A timer runs while this reader waits for a line, once a frame has
+    come; it shuts the socket down when the wait passes the bound. The timer stops while the
+    caller holds a line, so a slow caller is never cut. Before the first frame, the wait is
+    the client timeout.
+    """
+    cut = threading.Event()
+
+    def shut() -> None:
+        cut.set()
+        _shut_down_socket(resp)
+
+    lines = resp.iter_lines()
+    seen = False
+    while True:
+        timer = threading.Timer(_STREAM_IDLE_TIMEOUT_S, shut)
+        if seen:
+            timer.start()
+        try:
+            line = next(lines, None)
+        except httpx.TransportError as exc:
+            if cut.is_set():
+                raise StreamSilentError(_STREAM_IDLE_TIMEOUT_S, request=resp.request) from exc
+            raise
+        finally:
+            timer.cancel()
+        if line is None:
+            return
+        seen = seen or line.startswith(_DATA_PREFIX)
+        yield line
+
+
+async def _alines_bound_from_first_frame(resp: httpx.Response) -> AsyncIterator[str]:
+    """The async form of ``_lines_bound_from_first_frame``: the wait for a line is timed."""
+    lines = resp.aiter_lines()
+    seen = False
+    while True:
+        try:
+            async with asyncio.timeout(_STREAM_IDLE_TIMEOUT_S if seen else None):
+                line = await anext(lines)
+        except StopAsyncIteration:
+            return
+        except TimeoutError as exc:
+            raise StreamSilentError(_STREAM_IDLE_TIMEOUT_S, request=resp.request) from exc
+        seen = seen or line.startswith(_DATA_PREFIX)
+        yield line
 
 
 def _raise_stream_failure(
