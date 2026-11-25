@@ -581,6 +581,7 @@ def _fit_slots(
                     kv_cache_type=_role_kv_cache_type(role, engine=engine),
                     mmproj_path=mmproj_path,
                     expert_offload=_role_expert_offload(model_path, engine=engine),
+                    role=role,
                 )
             )
         except (ProviderError, OSError):
@@ -672,6 +673,7 @@ def _chat_host_estimate(model_path: Path, ctx: int, slots: int, engine: EngineAd
                 flash_attn=_role_flash(WorkerRole.CHAT, engine=engine),
                 kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT, engine=engine),
                 expert_offload=_role_expert_offload(model_path, engine=engine),
+                role=WorkerRole.CHAT,
             )
         )
     except (ProviderError, OSError):
@@ -1147,6 +1149,7 @@ def _estimate_role(
             batch_size=_pooled_batch_size(role, rerank_mode, ctx),
             expert_offload=_role_expert_offload(path, engine=engine),
             on_cpu=on_cpu,
+            role=role,
         )
     )
     fp = est.resident_footprint(unified=one_pool)
@@ -1274,6 +1277,7 @@ def _peak_estimator(
                 tensor_split=ratio,
                 batch_size=_pooled_batch_size(role, rerank_mode, ctx),
                 expert_offload=_role_expert_offload(path, engine=engine),
+                role=role,
             )
         )
         if len(ratio) == 1 and not est.per_device and est.device_bytes > 0:
@@ -2318,6 +2322,7 @@ def _launch_for(
                 kv_cache_type=_role_kv_cache_type(plan.role, engine=engine),
                 mmproj_path=mmproj,
                 expert_offload=_role_expert_offload(model_path, engine=engine),
+                role=plan.role,
             ),
             unified=unified_budget is not None,
         )

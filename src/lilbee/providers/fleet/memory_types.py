@@ -7,6 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from lilbee.core.config.enums import KvCacheType
+from lilbee.providers.roles import WorkerRole
 
 
 class MemoryKind(StrEnum):
@@ -34,6 +35,8 @@ class MemoryRequest:
     """True when the weights load into the CPU backend, not onto a card."""
     cpu_repack: bool = True
     """True when the engine's CPU backend keeps a repacked copy of the weights it loads."""
+    role: WorkerRole | None = None
+    """The role the instance serves. An engine that charges by task reads it; none means chat."""
 
 
 @dataclass(frozen=True)

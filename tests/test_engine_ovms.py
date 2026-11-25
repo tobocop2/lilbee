@@ -328,27 +328,13 @@ def test_the_engine_has_no_optional_features_to_probe() -> None:
     assert OVMS.target_env(RoleTarget.CPU, 1) == {}
 
 
+_CONFIG = '{"num_hidden_layers": 1, "num_attention_heads": 1, "head_dim": 1}'
+
+
 def test_the_memory_estimate_charges_the_weights_of_the_ir_folder(tmp_path: Path) -> None:
     (tmp_path / "openvino_model.xml").write_text("<net/>", encoding="utf-8")
     (tmp_path / "openvino_model.bin").write_bytes(b"\0" * 4096)
-    request = MemoryRequest(
-        model_path=tmp_path,
-        ctx=2048,
-        slots=1,
-        gpu_layers=0,
-        flash_attn=False,
-        kv_cache_type=KvCacheType.F16,
-    )
-    estimate = OVMS.estimate_memory(request)
-    assert estimate.device_bytes >= 4096
-
-
-def test_the_memory_estimate_of_a_vision_ir_folder_sums_its_parts_not_the_reserve(
-    tmp_path: Path,
-) -> None:
-    for part in ("language", "text_embeddings", "vision_embeddings"):
-        (tmp_path / f"openvino_{part}_model.xml").write_text("<net/>", encoding="utf-8")
-        (tmp_path / f"openvino_{part}_model.bin").write_bytes(b"\0" * 4096)
+    (tmp_path / "config.json").write_text(_CONFIG, encoding="utf-8")
     request = MemoryRequest(
         model_path=tmp_path,
         ctx=2048,
@@ -359,7 +345,27 @@ def test_the_memory_estimate_of_a_vision_ir_folder_sums_its_parts_not_the_reserv
     )
     estimate = OVMS.estimate_memory(request)
     assert estimate.size_known
-    assert 3 * 4096 <= estimate.device_bytes < UNKNOWN_SIZE_RESERVE_BYTES
+    assert estimate.device_bytes >= 2 * 4096
+
+
+def test_the_memory_estimate_of_a_vision_ir_folder_sums_its_parts_not_the_reserve(
+    tmp_path: Path,
+) -> None:
+    for part in ("language", "text_embeddings", "vision_embeddings"):
+        (tmp_path / f"openvino_{part}_model.xml").write_text("<net/>", encoding="utf-8")
+        (tmp_path / f"openvino_{part}_model.bin").write_bytes(b"\0" * 4096)
+    (tmp_path / "config.json").write_text(_CONFIG, encoding="utf-8")
+    request = MemoryRequest(
+        model_path=tmp_path,
+        ctx=2048,
+        slots=1,
+        gpu_layers=0,
+        flash_attn=False,
+        kv_cache_type=KvCacheType.F16,
+    )
+    estimate = OVMS.estimate_memory(request)
+    assert estimate.size_known
+    assert 2 * 3 * 4096 <= estimate.device_bytes < UNKNOWN_SIZE_RESERVE_BYTES
 
 
 def test_the_proof_table_lists_every_device_as_not_run() -> None:

@@ -23,6 +23,7 @@ from lilbee.providers.fleet.vram import (
 )
 from lilbee.providers.folder_embed_width import read_folder_config
 from lilbee.providers.model_cache import kv_bytes_per_token
+from lilbee.providers.roles import WorkerRole
 
 _SAFETENSORS_SUFFIX = ".safetensors"
 _SAFETENSORS_PREFIX_BYTES = 8
@@ -88,6 +89,21 @@ _SCORE_BYTES_PER_QUERY_HEAD = 4
 """The f32 attention score matrix of a flash-off launch, per query head."""
 _SCORE_BYTES_PER_KV_HEAD = 6
 """The CPU workspace beside the score matrix, per KV head (fitted to three models)."""
+
+# The OVMS constants below are fitted to readings of the OVMS process (VmHWM) on CPU, OVMS
+# 2026.4.1, x86 without AVX-512. They do not cover GPU, NPU or ARM hosts.
+_OVMS_KV_ELEMENT_BYTES = 1
+"""The CPU plugin holds each cache element as one byte (u8)."""
+_OVMS_CHAT_RUNTIME_BYTES = 928 * _MIB
+"""What a chat role holds beyond its two copies of the weights and its cache."""
+_OVMS_ENCODER_RUNTIME_BYTES = 576 * _MIB
+"""What an embed or rerank role holds beyond its weights and its request activations."""
+_OVMS_EMBED_BYTES_PER_TOKEN_WIDTH = 64
+"""Activation bytes an embed role keeps for each token of its largest request, per hidden unit."""
+_OVMS_RERANK_BYTES_PER_TOKEN_WIDTH = 120
+"""Activation bytes a rerank role keeps for each token of its largest request, per hidden unit."""
+OVMS_RERANK_BATCH = 100
+"""The most documents lilbee sends in one rerank request. The server allows 10000 by default."""
 
 UNKNOWN_SIZE_RESERVE_BYTES = 8 * 1024**3
 """What a non-GGUF model is charged when neither its header nor its files give a size."""
@@ -189,13 +205,16 @@ def _positive_int(value: object) -> int | None:
     return count if count is not None and count > 0 else None
 
 
-def kv_per_token_from_config(config: Mapping[str, Any]) -> KvPerToken | None:
+def kv_per_token_from_config(
+    config: Mapping[str, Any], *, element_bytes: int = _KV_ELEMENT_BYTES
+) -> KvPerToken | None:
     """The cache bytes per token a model's ``config.json`` implies, or None when it cannot say.
 
     The cache holds a key and a value per layer for each key-value head. A config with
     no layer, head or width keys gives None, and so does a latent-attention model
     (``kv_lora_rank``), whose cache holds neither shape. A sliding window or a layer
-    list that is not all full attention marks the figure as an upper bound.
+    list that is not all full attention marks the figure as an upper bound. Each cache
+    element takes *element_bytes*.
     """
     section = _config_section(config)
     layers = _positive_int(section.get("num_hidden_layers"))
@@ -216,7 +235,7 @@ def kv_per_token_from_config(config: Mapping[str, Any]) -> KvPerToken | None:
         "value_length": str(head_dim),
     }
     return KvPerToken(
-        bytes_per_token=kv_bytes_per_token(meta, k_elem_bytes=_KV_ELEMENT_BYTES),
+        bytes_per_token=kv_bytes_per_token(meta, k_elem_bytes=element_bytes),
         upper_bound=_is_upper_bound(section),
     )
 
@@ -310,6 +329,19 @@ def _ir_bin_is_cut_off(model_path: Path, sizes: Mapping[str, int]) -> bool:
     return False
 
 
+def _ir_weight_bytes(sizes: Mapping[str, int]) -> int | None:
+    """Weight bytes of an OpenVINO IR listing, or None when it holds no IR weights."""
+    pair = _ir_pair_bytes(sizes)
+    if pair > 0:
+        return pair
+    total = sum(
+        size
+        for name, size in sizes.items()
+        if posixpath.basename(name).startswith(_IR_MODEL_STEM) and name.endswith(_IR_WEIGHTS_SUFFIX)
+    )
+    return total if total > 0 else None
+
+
 def weights_from_files(sizes: Mapping[str, int]) -> int:
     """Weight bytes of an OpenVINO IR model from a ``name -> size`` listing.
 
@@ -318,17 +350,7 @@ def weights_from_files(sizes: Mapping[str, int]) -> int:
     not the model's weights. A repo with no complete IR counts the total of its
     ``openvino_model*.bin`` files, and a repo with none gives the unknown-size reserve.
     """
-    pair = _ir_pair_bytes(sizes)
-    if pair > 0:
-        return pair
-    return _known_or_reserve(
-        sum(
-            size
-            for name, size in sizes.items()
-            if posixpath.basename(name).startswith(_IR_MODEL_STEM)
-            and name.endswith(_IR_WEIGHTS_SUFFIX)
-        )
-    )
+    return _known_or_reserve(_ir_weight_bytes(sizes))
 
 
 def weights_from_gguf_report(report: Mapping[str, Any]) -> int:
@@ -461,11 +483,55 @@ def _estimate_installed_chat(request: MemoryRequest) -> MemoryEstimate:
     )
 
 
+def _ovms_encoder_estimate(
+    weights: int,
+    config: Mapping[str, Any] | None,
+    request_tokens: int,
+    bytes_per_token_width: int,
+) -> MemoryEstimate:
+    """The weights, the runtime, and the activations of the largest request an encoder serves."""
+    hidden = _positive_int(_config_section(config or {}).get("hidden_size"))
+    if hidden is None:
+        return _unknown_estimate(weights)
+    return _sized_estimate(
+        weights
+        + _OVMS_ENCODER_RUNTIME_BYTES
+        + request_tokens * hidden * bytes_per_token_width
+    )
+
+
 def _estimate_openvino(request: MemoryRequest) -> MemoryEstimate:
+    """The charge of an OVMS role by its task: chat holds its weights twice, plus its cache.
+
+    A request with no role is charged as chat, the larger figure for the same weights. An
+    encoder request is sized by the tokens of the largest request lilbee sends: a batch of
+    sequences, each no longer than the window or the chunk size.
+    """
+    from lilbee.core.config import cfg
+
     sizes = _installed_sizes(request.model_path)
     if _ir_bin_is_cut_off(request.model_path, sizes):
         return _unknown_estimate(None)
-    return _sized_estimate(weights_from_files(sizes))
+    weights = _ir_weight_bytes(sizes)
+    if weights is None:
+        return _unknown_estimate(None)
+    config = installed_config(request.model_path)
+    if request.role is WorkerRole.EMBED:
+        tokens = cfg.embed_batch_sequences * min(request.ctx, cfg.chunk_size)
+        return _ovms_encoder_estimate(weights, config, tokens, _OVMS_EMBED_BYTES_PER_TOKEN_WIDTH)
+    if request.role is WorkerRole.RERANK:
+        tokens = OVMS_RERANK_BATCH * min(request.ctx, cfg.chunk_size)
+        return _ovms_encoder_estimate(weights, config, tokens, _OVMS_RERANK_BYTES_PER_TOKEN_WIDTH)
+    kv = (
+        kv_per_token_from_config(config, element_bytes=_OVMS_KV_ELEMENT_BYTES)
+        if config is not None
+        else None
+    )
+    if kv is None:
+        return _unknown_estimate(weights)
+    return _sized_estimate(
+        2 * weights + kv.bytes_per_token * request.ctx * request.slots + _OVMS_CHAT_RUNTIME_BYTES
+    )
 
 
 def _estimate_xdna(request: MemoryRequest) -> MemoryEstimate:
