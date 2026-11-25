@@ -271,6 +271,30 @@ class TestWatchPool:
             on_spawning=None, on_spawned=on_spawned
         )
 
+    def test_the_watchers_are_attached_before_the_container_is_visible(self, builds, monkeypatch):
+        from lilbee.app import services as services_mod
+        from lilbee.app.services import get_services, watch_pool
+
+        def on_spawned(_role: WorkerRole) -> None: ...
+
+        visible_at_attach: list[bool] = []
+
+        def record(**_kwargs: object) -> None:
+            visible_at_attach.append(services_mod._state.singleton is not None)
+
+        original_build = services_mod.build_services
+
+        def build(*args, **kwargs):
+            services = original_build(*args, **kwargs)
+            services.provider.add_spawn_listener.side_effect = record
+            return services
+
+        monkeypatch.setattr(services_mod, "build_services", build)
+        watch_pool(on_spawned=on_spawned)
+        get_services()
+
+        assert visible_at_attach == [False]
+
 
 class TestEagerStartBranch:
     """``get_services`` warms the fleet when ``cfg.worker_pool_eager_start`` is set."""
