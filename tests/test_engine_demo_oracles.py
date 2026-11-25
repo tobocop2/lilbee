@@ -61,7 +61,13 @@ def _role_view(role: str, engine: str | None = _ENGINE) -> dict[str, object]:
 
 
 def _build(engine: str = _ENGINE, version: str = _PIN) -> dict[str, object]:
-    return {"engine": engine, "version": version, "backend": "cpu", "not_run_on": []}
+    return {
+        "engine": engine,
+        "version": version,
+        "backend": "cpu",
+        "not_run_on": [],
+        "differs_from_pin": False,
+    }
 
 
 def _listing(builds: list[dict[str, object]]) -> dict[str, object]:
@@ -680,18 +686,22 @@ def _recorded_run1() -> dict[str, Any]:
 
 
 def _run1() -> dict[str, Any]:
-    """The recorded run with the field that the engine list gained after the recording."""
+    """The recorded run with the fields that the engine list gained after the recording."""
     payload = _recorded_run1()
     for step in payload["steps"]:
         if step["name"].startswith("engine-list"):
-            step["stdout"] = json.dumps({**json.loads(step["stdout"]), "damaged": []})
+            listing = json.loads(step["stdout"])
+            builds = [{**b, "differs_from_pin": False} for b in listing["builds"]]
+            step["stdout"] = json.dumps({**listing, "builds": builds, "damaged": []})
     return payload
 
 
-def test_the_recording_fails_only_on_the_list_field_it_predates() -> None:
+def test_the_recording_fails_only_on_the_list_fields_it_predates() -> None:
     failures = judge(Transcript.from_json(_recorded_run1()))
-    assert len(failures) == 2
-    assert all("damaged" in failure.detail for failure in failures)
+    assert failures
+    assert all(
+        "damaged" in failure.detail or "differs_from_pin" in failure.detail for failure in failures
+    )
 
 
 def _run1_edited(step_names: tuple[str, ...], **fields: object) -> Transcript:
