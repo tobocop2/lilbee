@@ -99,7 +99,9 @@ def read_only_config(client, tmp_path, monkeypatch):
     assert client.post("/api/presets", json=seed).status_code == 201
     path = tmp_path / CONFIG_FILE_NAME
     # A reset and a clear write only when the key is stored, so store both.
-    path.write_text('top_k = 7\nplacement = "{}"\n' + path.read_text())
+    path.write_text(
+        'top_k = 7\nplacement = "{}"\n' + path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     path.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
     yield path
     path.chmod(stat.S_IRUSR | stat.S_IWUSR)
@@ -126,7 +128,7 @@ def test_add_with_a_read_only_config_streams_the_write_refusal_as_an_error_event
     """The add route streams: the status goes out first, so the error event holds the text."""
     outside = tmp_path / "outside"
     outside.mkdir()
-    (outside / "note.txt").write_text("hello")
+    (outside / "note.txt").write_text("hello", encoding="utf-8")
     res = client.post("/api/add", json={"paths": [str(outside)]})
     assert "event: error" in res.text, res.text
     assert str(read_only_config) + " is read-only; make it writable and try again" in res.text
