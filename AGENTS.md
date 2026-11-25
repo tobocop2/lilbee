@@ -492,8 +492,9 @@ closure. These rules exist because each one shipped a broken artifact once.
   annotation list that cannot be read is unknown, not clean. The script names
   the job id and exits non-zero, so `release_selfheal.sh` stops instead of
   reporting a clean run: a clean report there is the failure this gate removes.
-  `release_watch.sh` falls back to watching the legs. Its exit code follows the
-  legs, so an unreadable list there can still exit 0 with every leg green.
+  `release_watch.sh` falls back to watching the legs. It adds an unknown
+  candidate row and exits 1, so an unreadable list never reads as every channel
+  published.
   This is the one place a GitHub string is matched. The blind-retry rule above
   still holds: there the text would only refine a decision whose wrong answer
   costs one rebuild. Here it is the only signal that separates a cell past its
