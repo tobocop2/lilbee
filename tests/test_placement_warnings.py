@@ -152,9 +152,26 @@ class TestHostSpillInHealth:
             "load_model: initializing slots\n",
             encoding="utf-8",
         )
-        manager._estimate_checked.clear()
+        manager._check_estimates(set())
         manager._check_estimates({"chat-0"})
         assert WarningCode.HOST_SPILL not in [w.code for w in manager.health_warnings()]
+
+    def test_an_unload_clears_the_spill(self, tmp_path: Path) -> None:
+        from lilbee.core.health_warnings import WarningCode
+
+        manager = self._manager(tmp_path, self._LOG)
+        manager._check_estimates({"chat-0"})
+        assert [w.code for w in manager.health_warnings()] == [WarningCode.HOST_SPILL]
+        manager._check_estimates(set())
+        assert manager.health_warnings() == []
+
+    def test_a_poll_of_a_loaded_engine_keeps_the_spill(self, tmp_path: Path) -> None:
+        from lilbee.core.health_warnings import WarningCode
+
+        manager = self._manager(tmp_path, self._LOG)
+        manager._check_estimates({"chat-0"})
+        manager._check_estimates({"chat-0"})
+        assert [w.code for w in manager.health_warnings()] == [WarningCode.HOST_SPILL]
 
     def test_shutdown_clears_it(self, tmp_path: Path, monkeypatch) -> None:
         from lilbee.core.health_warnings import WarningCode
