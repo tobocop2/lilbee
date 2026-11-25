@@ -13,13 +13,14 @@ from collections.abc import AsyncGenerator, Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from lilbee.app.ingest import register_sources
+from lilbee.app.ingest import AddRollback, RegisterResult, leave_as_cancel, register_sources
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.security import validate_path_within
 from lilbee.data.ingest.discovery import excluded_extension_reasons
 from lilbee.runtime.add_registry import AddIdRunningError
+from lilbee.runtime.cancellation import CancelSignal
 from lilbee.runtime.ingest_lock import IngestLockRegistry
 from lilbee.runtime.lock import refuse_where_a_sync_cannot_lock
 from lilbee.runtime.progress import SseEvent
@@ -115,6 +116,46 @@ async def sync_stream(
         yield frame
 
 
+def _not_by_user() -> bool:
+    """The user-cancel test given to the shared rollback, which then only names the cancel.
+
+    The server runs the rollback itself, in a thread: it reads the store and
+    writes the config, which must not block the event loop.
+    """
+    return False
+
+
+def _register(
+    paths: list[Path], force: bool, rollback: AddRollback, cancel: CancelSignal
+) -> RegisterResult:
+    """Register *paths*, then read the stamps *rollback* needs to undo it, in one thread."""
+    registration = register_sources(paths, force=force)
+    rollback.registered(registration, cancel)
+    return registration
+
+
+async def _rolled_back(
+    rollback: AddRollback, errors: list[str], registration: RegisterResult | None = None
+) -> AddSummary:
+    """Undo what a user-cancelled add did not finish; return the summary that names it.
+
+    The undo runs to its end before the add lets go of its ingest locks.
+    """
+    await _to_thread_unbroken(rollback.forget_unfinished)
+    if registration is None:
+        registration = RegisterResult()
+    return AddSummary(
+        copied=[label for label in registration.registered if label not in rollback.not_added],
+        name_taken=registration.name_taken,
+        overlapping=registration.overlapping,
+        absorbed=[label for labels in rollback.absorbed_into.values() for label in labels],
+        tracked=registration.tracked,
+        errors=errors if rollback.error is None else [*errors, rollback.error],
+        cancelled=True,
+        not_added=rollback.not_added,
+    )
+
+
 async def _run_add(
     paths: list[str],
     force: bool,
@@ -122,7 +163,11 @@ async def _run_add(
     ocr_timeout: float | None,
     sse: SseStream,
 ) -> AddSummary:
-    """Copy files and sync, returning the summary for the final done event."""
+    """Register the paths and sync, returning the summary for the final done event.
+
+    A cancel by the user (``POST /api/add/cancel``) un-registers each root with
+    no file indexed since the sync started, as Ctrl+C on ``lilbee add`` does.
+    """
     from lilbee.app.ingest import temporary_ocr_config
     from lilbee.data.ingest import sync
 
@@ -138,12 +183,19 @@ async def _run_add(
 
         # A stream that stops while the registration runs stops the sync, not the add.
         stopped = sse.cancel.is_set()
-        reg_result = await _to_thread_unbroken(
-            functools.partial(register_sources, valid, force=force)
-        )
+        rollback = AddRollback(paths=valid, at_sync=False)
+        try:
+            with leave_as_cancel(rollback, sse.cancel, _not_by_user):
+                reg_result = await _to_thread_unbroken(
+                    functools.partial(_register, valid, force, rollback, sse.cancel)
+                )
+        except asyncio.CancelledError:
+            if not sse.stopped_by_user:
+                raise
+            return await _rolled_back(rollback, errors)
 
         errors.extend(reg_result.refused)
-        if stopped:
+        if stopped and not sse.stopped_by_user:
             return AddSummary(
                 copied=reg_result.registered,
                 name_taken=reg_result.name_taken,
@@ -156,10 +208,21 @@ async def _run_add(
         if not reg_result.reached_corpus:
             return AddSummary(copied=[], name_taken=reg_result.name_taken, errors=errors)
 
-        with temporary_ocr_config(ocr, ocr_timeout):
-            sync_result = await sync(
-                quiet=True, on_progress=sse.callback, cancel=sse.cancel, started_by=_SYNC_STARTER
-            )
+        try:
+            with (
+                leave_as_cancel(rollback, sse.cancel, _not_by_user),
+                temporary_ocr_config(ocr, ocr_timeout),
+            ):
+                sync_result = await sync(
+                    quiet=True,
+                    on_progress=sse.callback,
+                    cancel=sse.cancel,
+                    started_by=_SYNC_STARTER,
+                )
+        except asyncio.CancelledError:
+            if not sse.stopped_by_user:
+                raise
+            return await _rolled_back(rollback, errors, reg_result)
 
         return AddSummary(
             copied=reg_result.registered,

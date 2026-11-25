@@ -8,10 +8,12 @@ from unittest import mock
 import pytest
 from litestar.testing import AsyncTestClient
 
+from lilbee.app.ingest import RegisterResult
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
+from lilbee.data.types import SyncResult
 from lilbee.server.handlers import SseStream, cancel_add
-from lilbee.server.handlers.ingest import _ingest_stream
+from lilbee.server.handlers.ingest import _ingest_stream, _run_add
 from lilbee.server.models import AddSummary
 from tests.server.conftest import parse_sse_events
 from tests.server.test_handlers import (  # noqa: F401 (autouse fixtures)
@@ -34,6 +36,24 @@ def _app():
     from lilbee.server.app import create_app
 
     return create_app()
+
+
+def _stop_as_user(sse: SseStream) -> None:
+    """What a cancel by the user leaves on *sse*; the run's task is not cancelled here."""
+    sse.stopped_by_user = True
+    sse.cancel.set()
+
+
+def _stopping_sync(sse: SseStream, *, error: BaseException | None = None):
+    """A sync the user stops while it runs; it raises as the cancel of its task does."""
+
+    async def _sync(**_kwargs) -> SyncResult:
+        _stop_as_user(sse)
+        if error is not None:
+            raise error
+        raise asyncio.CancelledError
+
+    return _sync
 
 
 class TestTheCancelRoute:
@@ -208,3 +228,100 @@ class TestAStopByTheUser:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+class TestACancelOfAnAddByPath:
+    async def test_the_cancel_unregisters_a_root_with_no_file_indexed(self, tmp_path):
+        src = tmp_path / "scan.txt"
+        src.write_text("contents", encoding="utf-8")
+        sse = SseStream()
+
+        with mock.patch("lilbee.data.ingest.sync", new=_stopping_sync(sse)):
+            summary = await _run_add([str(src)], False, None, None, sse)
+
+        assert summary.cancelled is True
+        assert summary.not_added == ["scan.txt"] and summary.copied == []
+        assert summary.errors == []
+        assert "scan.txt" not in cfg.linked_roots
+
+    async def test_an_error_after_the_cancel_is_named_with_it(self, tmp_path):
+        src = tmp_path / "scan.txt"
+        src.write_text("contents", encoding="utf-8")
+        sse = SseStream()
+        sync = _stopping_sync(sse, error=RuntimeError("the embedder went away"))
+
+        with mock.patch("lilbee.data.ingest.sync", new=sync):
+            summary = await _run_add([str(src)], False, None, None, sse)
+
+        assert summary.cancelled is True and summary.not_added == ["scan.txt"]
+        assert summary.errors == ["the embedder went away"]
+
+    async def test_a_cancel_before_the_registration_adds_nothing(self, tmp_path):
+        src = tmp_path / "scan.txt"
+        src.write_text("contents", encoding="utf-8")
+        sse = SseStream()
+        _stop_as_user(sse)
+
+        async def _sync(**kwargs) -> SyncResult:
+            assert kwargs["cancel"].is_set()
+            raise asyncio.CancelledError
+
+        with mock.patch("lilbee.data.ingest.sync", new=_sync):
+            summary = await _run_add([str(src)], False, None, None, sse)
+
+        assert summary.cancelled is True and summary.not_added == ["scan.txt"]
+        assert "scan.txt" not in cfg.linked_roots
+
+    async def test_a_registration_that_fails_after_the_cancel_ends_as_the_cancel(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        sse = SseStream()
+
+        def _failing(_paths, *, force):
+            _stop_as_user(sse)
+            raise OSError("the config file is read-only")
+
+        with mock.patch("lilbee.server.handlers.ingest.register_sources", _failing):
+            summary = await _run_add([str(src)], False, None, None, sse)
+
+        assert summary.cancelled is True
+        assert summary.copied == [] and summary.not_added == ["src"]
+        assert summary.errors == ["the config file is read-only"]
+
+    async def test_a_registration_that_fails_after_a_dropped_stream_ends_as_a_cancel(
+        self, tmp_path
+    ):
+        sse = SseStream()
+
+        def _failing(_paths, *, force):
+            sse.cancel.set()
+            raise OSError("the config file is read-only")
+
+        with (
+            mock.patch("lilbee.server.handlers.ingest.register_sources", _failing),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await _run_add([str(tmp_path)], False, None, None, sse)
+
+    async def test_a_root_that_took_in_a_source_names_it_in_the_cancelled_summary(
+        self, tmp_path
+    ):
+        sse = SseStream()
+        registration = RegisterResult(
+            registered=["notes"], absorbed_into={"notes": ["work"]}, absorbed_roots={}
+        )
+        notes = tmp_path / "notes"
+        notes.mkdir()
+
+        def _forget(rollback):
+            rollback.not_added = []
+
+        with (
+            mock.patch("lilbee.server.handlers.ingest.register_sources", return_value=registration),
+            mock.patch("lilbee.app.ingest.AddRollback.forget_unfinished", _forget),
+            mock.patch("lilbee.data.ingest.sync", new=_stopping_sync(sse)),
+        ):
+            summary = await _run_add([str(notes)], False, None, None, sse)
+
+        assert summary.cancelled is True
+        assert summary.copied == ["notes"] and summary.absorbed == ["work"]
