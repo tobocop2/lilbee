@@ -1086,9 +1086,7 @@ def test_a_cuda_host_runs_the_gpu_target_on_the_cuda_pack_and_the_cpu_target_on_
 # ---- a role across several cards ----
 
 
-def _cuda_host(
-    monkeypatch: pytest.MonkeyPatch, system: str = "Linux", *, cards: int = 2
-) -> None:
+def _cuda_host(monkeypatch: pytest.MonkeyPatch, system: str = "Linux", *, cards: int = 2) -> None:
     gpus = [L4] * cards if system != "Darwin" else None
     machine = "arm64" if system == "Darwin" else "x86_64"
     monkeypatch.setattr(runnable, "session_host", lambda: caps(system, machine, gpus=gpus))
