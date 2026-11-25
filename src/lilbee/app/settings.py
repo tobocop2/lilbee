@@ -10,7 +10,7 @@ from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
@@ -27,6 +27,7 @@ from lilbee.config_meta import (
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
 from lilbee.core.config.defaults import SKIP_TOML_ENV
+from lilbee.core.config.model import commit_config
 from lilbee.core.config.enums import OcrMode, SettingSource
 from lilbee.core.config.keys import (
     LOAD_AFFECTING_KEYS,
@@ -429,36 +430,6 @@ def _coerce_value(key: str, value: Any) -> Any:
     return checked_write(key, value)
 
 
-_T = TypeVar("_T")
-
-
-def _commit(change: Callable[[Config], _T]) -> _T:
-    """Make *change* on a copy of cfg, then publish every field it moved onto cfg in one step.
-
-    Each assignment validates on the copy, so a refusal raises before cfg moves. The
-    publish is one ``dict.update`` of keys cfg already holds: with the GIL, no other
-    thread runs inside it. A reader that reads two fields in two lookups can still read
-    one on each side of a commit. The whole field dict is compared, because the model
-    validator can re-derive a field the change does not name. It is compared against
-    cfg as it was at the copy, by value: a field another thread writes meanwhile keeps
-    its new value, and a re-derived equal value is not published.
-
-    ``model_copy`` is shallow, so *change* must assign a field and never mutate a
-    mutable value in place: an in-place change would reach cfg before the publish.
-    """
-    draft = cfg.model_copy()
-    base = dict(draft.__dict__)
-    result = change(draft)
-    moved = {
-        key: value
-        for key, value in draft.__dict__.items()
-        if value is not base[key] and value != base[key]
-    }
-    cfg.__dict__.update(moved)
-    cfg.__pydantic_fields_set__.update(moved)
-    return result
-
-
 def _set_each(config: Config, values: Mapping[str, Any]) -> None:
     for key in values:
         setattr(config, key, values[key])
@@ -466,7 +437,7 @@ def _set_each(config: Config, values: Mapping[str, Any]) -> None:
 
 def _restore_values(values: Mapping[str, Any]) -> None:
     """Put *values* back on cfg in one step."""
-    _commit(lambda draft: _set_each(draft, values))
+    commit_config(lambda draft: _set_each(draft, values))
 
 
 def _restore_in_memory(snapshot: SettingsSnapshot) -> None:
@@ -690,7 +661,7 @@ def apply_settings_update(
             _rederive_from_resolved(draft, set(updates))
             return result
 
-        to_persist, to_delete = _commit(change)
+        to_persist, to_delete = commit_config(change)
         written = False
         try:
             # A write can fail part way: the update lands and the delete raises.
@@ -842,7 +813,7 @@ def _settle(
         _rederive_from_resolved(draft, effective)
 
     try:
-        _commit(change)
+        commit_config(change)
     finally:
         _invalidate_caches(effective)
     reindex_required = bool((REINDEX_FIELDS - inert_reindex_keys()) & reindex_effective)

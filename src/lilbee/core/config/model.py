@@ -9,10 +9,12 @@ import json
 import logging
 import os
 import re
-from collections.abc import Iterable, Mapping
+import threading
+from collections.abc import Callable, Iterable, Mapping
+from contextvars import ContextVar
 from enum import Enum
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar, cast
 
 from pydantic import Field, ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_core import ErrorDetails
@@ -2069,9 +2071,113 @@ def _build_cfg() -> tuple[Config, tuple[str, ...]]:
     return built, tuple(found)
 
 
+class ConfigPin:
+    """The Config one scope reads: a library call's own, or the one a request started with.
+
+    A request pin *follows_writes*: a write the request makes moves the pin to the
+    Config that write published, so the request reads its own write. The pin is a
+    mutable cell, so a thread the request starts (it copies the context) moves the
+    request's pin too.
+    """
+
+    __slots__ = ("config", "follows_writes")
+
+    def __init__(self, config: Config, *, follows_writes: bool) -> None:
+        self.config = config
+        self.follows_writes = follows_writes
+
+
+# The pin of the running scope; None reads the published Config.
+active_pin: ContextVar[ConfigPin | None] = ContextVar("lilbee_active_config", default=None)
+
+_T = TypeVar("_T")
+
+
+class LiveConfig:
+    """The process config ``cfg``: a handle over the published Config.
+
+    A read goes to the running request's pin, else to the published Config. The
+    published Config never changes in place: a write builds a new Config and
+    publishes it by one reference store, so a request keeps reading the Config it
+    started with while another request takes a change. ``cfg.__dict__`` is the
+    field dict of the Config read, so ``mock.patch.object`` restores a field.
+    """
+
+    __slots__ = ("_live_lock", "_live_published")
+    model_fields: ClassVar[dict[str, Any]] = Config.model_fields
+    _live_lock: threading.Lock
+    _live_published: Config
+
+    def __init__(self, config: Config) -> None:
+        object.__setattr__(self, "_live_published", config)
+        object.__setattr__(self, "_live_lock", threading.Lock())
+
+    def _live_current(self) -> Config:
+        """The Config this scope reads: the request's pin, else the published one."""
+        pin = active_pin.get()
+        if pin is not None and pin.follows_writes:
+            return pin.config
+        return self._live_published
+
+    def _live_commit(self, change: Callable[[Config], _T]) -> _T:
+        """Make *change* on a copy of the published Config, then publish what it moved.
+
+        Each assignment validates on the copy, so a refusal raises before anything is
+        published. The fields *change* moved are compared by value against the copy's
+        source, because the model validator can re-derive a field the change does not
+        name. They go onto the Config published at the time of the store, so a field
+        another thread wrote meanwhile keeps its new value. A request pin moves to the
+        new Config. ``model_copy`` is shallow, so *change* must assign a field and
+        never mutate a mutable value in place.
+        """
+        source = self._live_published
+        draft = source.model_copy()
+        result = change(draft)
+        before = source.__dict__
+        moved = {
+            key: value
+            for key, value in draft.__dict__.items()
+            if value is not before[key] and value != before[key]
+        }
+        if not moved:
+            return result
+        with self._live_lock:
+            latest = self._live_published
+            if latest is not source:
+                draft = latest.model_copy()
+                draft.__dict__.update(moved)
+                draft.__pydantic_fields_set__.update(moved)
+            object.__setattr__(self, "_live_published", draft)
+        pin = active_pin.get()
+        if pin is not None and pin.follows_writes:
+            pin.config = draft
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._live_current(), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self._live_commit(lambda draft: setattr(draft, name, value))
+
+    def __repr__(self) -> str:
+        return repr(self._live_current())
+
+
 # The config.toml that cfg is built from; a later read of it reports only what is new.
 loaded_config_file = _config_file()
-cfg, load_warnings = _build_cfg()
+_built, load_warnings = _build_cfg()
+_live = LiveConfig(_built)
+cfg = cast("Config", _live)
+
+
+def published_config() -> Config:
+    """The Config published last, whatever the running scope pins."""
+    return _live._live_published
+
+
+def commit_config(change: Callable[[Config], _T]) -> _T:
+    """Make *change* on a copy of the published Config and publish it; see LiveConfig."""
+    return _live._live_commit(change)
 # Once, at import on the main thread: a later warning stays in this process, because
 # a write from a loading thread would race native readers of the environment.
 if shown := shown_marks():

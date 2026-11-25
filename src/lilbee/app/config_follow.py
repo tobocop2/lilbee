@@ -14,6 +14,7 @@ from lilbee.app.settings import (
 )
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
+from lilbee.core.config.context import published_config_scope
 from lilbee.core.config.keys import PROVIDER_SWITCHING_KEYS
 
 log = logging.getLogger(__name__)
@@ -62,8 +63,13 @@ class ConfigFileFollower:
         await asyncio.to_thread(self.take_now)
 
     def take_now(self) -> None:
-        """Take the changes another process made to config.toml, and log what was taken."""
-        result = self._adopt()
+        """Take the changes another process made to config.toml, and log what was taken.
+
+        The check compares against the published Config and publishes a new one; a
+        request that runs it (or pins a Config) keeps the Config it pinned.
+        """
+        with published_config_scope():
+            result = self._adopt()
         if result is None:
             return
         log.info("Took %s from config.toml.", ", ".join(result.updated))
