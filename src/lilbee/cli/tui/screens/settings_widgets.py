@@ -15,6 +15,7 @@ from textual.widgets import Button, Checkbox, Collapsible, Input, Select, Static
 from lilbee.app.settings import OCR_SETTING_KEYS, scanned_pages_line
 from lilbee.app.settings_map import SETTINGS_MAP, RenderStyle, SettingDef, SettingGroup
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.mount_guard import GuardedSelect
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.core.config import cfg
@@ -405,7 +406,7 @@ def make_select(key: str, defn: SettingDef, value: str) -> Select[str]:
     # The blank row is the unset state; a nullable bool names it "Auto".
     prompt = msg.SETTING_AUTO_LABEL if defn.type is bool else "Select"
     if value in {c[1] for c in choices}:
-        return Select(
+        return GuardedSelect(
             choices,
             value=select_shown_value(defn, value),
             allow_blank=defn.nullable,
@@ -414,7 +415,7 @@ def make_select(key: str, defn: SettingDef, value: str) -> Select[str]:
             classes="setting-editor",
             id=f"{EDITOR_ID_PREFIX}{key}",
         )
-    return Select(
+    return GuardedSelect(
         choices,
         prompt=prompt,
         name=key,
