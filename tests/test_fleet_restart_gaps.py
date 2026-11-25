@@ -131,7 +131,6 @@ def test_a_stream_open_that_fails_on_a_server_nobody_restarted_rediscovers(
     _release_first_engines(swaps)
     drop = MagicMock()
     monkeypatch.setattr(provider, "_drop_swap_refs", drop)
-    monkeypatch.setattr(provider, "_release_unused_holds", lambda: None)
     client = provider._clients[CHAT][0]
     opens = _fail_first_open(client, httpx.ConnectError("refused"))
 
@@ -179,72 +178,6 @@ class _FlakyLock:
         self._lock.__exit__(*exc)
 
 
-def test_a_rediscover_that_never_opened_releases_no_count(
-    engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    provider, _swaps = engine_fleet
-    monkeypatch.setattr(provider, "_release_unused_holds", lambda: None)
-    flaky = _FlakyLock(provider._lock)
-    monkeypatch.setattr(provider, "_lock", flaky)
-    flaky.fail_next = True
-
-    def call() -> str:
-        raise _connection_error()
-
-    with pytest.raises(OSError, match="the lock failed"):
-        provider._with_rediscover(call)
-
-    assert provider._open_rediscovers == 0
-
-
-def test_two_overlapping_rediscovers_count_two(
-    engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    provider, _swaps = engine_fleet
-    monkeypatch.setattr(provider, "_drop_swap_refs", lambda: None)
-    monkeypatch.setattr(provider, "_release_unused_holds", lambda: None)
-    release = threading.Event()
-    inside = [threading.Event(), threading.Event()]
-    results: list[str] = []
-
-    def retrying(index: int) -> Callable[[], str]:
-        attempts: list[int] = []
-
-        def call() -> str:
-            attempts.append(1)
-            if len(attempts) == 1:
-                raise _connection_error()
-            inside[index].set()
-            assert release.wait(_JOIN_S)
-            return "answered"
-
-        return call
-
-    def caller(call: Callable[[], str]) -> Callable[[], None]:
-        return lambda: results.append(provider._with_rediscover(call))
-
-    callers = [
-        threading.Thread(
-            target=caller(retrying(i)),
-            daemon=True,
-        )
-        for i in range(2)
-    ]
-    for caller in callers:
-        caller.start()
-    try:
-        assert all(event.wait(_JOIN_S) for event in inside)
-        counted = provider._open_rediscovers
-    finally:
-        release.set()
-        for caller in callers:
-            caller.join(_JOIN_S)
-
-    assert counted == 2
-    assert results == ["answered", "answered"]
-    assert provider._open_rediscovers == 0
-
-
 def test_a_timeout_on_a_role_with_no_clients_restarts_nothing(
     engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -252,7 +185,6 @@ def test_a_timeout_on_a_role_with_no_clients_restarts_nothing(
     restart = MagicMock()
     monkeypatch.setattr(provider, "_force_restart", restart)
     monkeypatch.setattr(provider, "_drop_swap_refs", lambda: None)
-    monkeypatch.setattr(provider, "_release_unused_holds", lambda: None)
     with provider._lock:
         provider._clients.pop(CHAT)
     attempts: list[int] = []

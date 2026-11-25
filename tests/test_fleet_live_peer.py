@@ -525,7 +525,6 @@ def test_a_stream_in_flight_through_a_rediscover_keeps_a_peer_from_ending_its_en
     # The stream ends: its last frame takes the retired client's count to zero.
     assert list(frames) == ["llo"]
     assert stream.in_flight == 0
-    _join_hold_sweeps()
     assert list(process._engine_holds) == [box.private]
     assert not own_slot_lock.exists()
     assert peer_hold.release_and_check_last() is True
@@ -548,13 +547,6 @@ def _streaming_client() -> LlamaServerClient:
     )
     client._needs_alternation = False
     return client
-
-
-def _join_hold_sweeps() -> None:
-    """Wait for each hold sweep that a retired client's last request started."""
-    for thread in threading.enumerate():
-        if thread.name == prov_mod._HOLD_SWEEP_THREAD:
-            thread.join()
 
 
 def test_a_process_that_cannot_build_leaves_a_warm_engine_it_cannot_bind(

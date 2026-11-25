@@ -134,7 +134,6 @@ _FLEET_WAIT_S = _SHUTDOWN_WORK_WAIT_S + _RELOAD_START_WAIT_S
 _RELOAD_GAP_WAIT_S = _FLEET_WAIT_S
 
 # The thread that releases the engine holds no group uses once a retired client is idle.
-_HOLD_SWEEP_THREAD = "fleet-hold-sweep"
 # How often a reload drain looks at the shutdown latch.
 _DRAIN_POLL_S = 0.25
 
@@ -260,6 +259,22 @@ def _least_in_flight(clients: Sequence[LlamaServerClient]) -> LlamaServerClient:
 
 
 @dataclasses.dataclass(frozen=True)
+class _DirLease:
+    """One user of an engine dir's hold. The last lease to end releases the hold.
+
+    Ending a lease twice ends it once, so a client that goes idle and then
+    closes cannot end its lease twice.
+    """
+
+    def __init__(self, owner: FleetProvider, engine_dir: Path) -> None:
+        self.engine_dir = engine_dir
+        self.live = True
+        self._owner = owner
+
+    def release(self) -> None:
+        self._owner._end_lease(self)
+
+
 class _LivePool(Generic[_Item]):
     """A role's replicas, read fresh at each pick under the lock that retires them.
 
@@ -1357,8 +1372,12 @@ class FleetProvider:
         # reload (by when those readers have finished) or at shutdown, never while
         # potentially in use. See _retire_clients.
         self._retiring_clients: list[LlamaServerClient] = []
-        # Rediscover retries between their drop and their end; the hold sweep waits for zero.
-        self._open_rediscovers = 0
+        # Users of each held engine dir: a lease per running group and per retired client
+        # that still serves a request, and one per open rediscover retry. The last lease to
+        # end releases the dir's hold.
+        self._dir_leases: dict[Path, int] = {}
+        self._group_leases: dict[SwapGroup, _DirLease] = {}
+        self._client_leases: dict[LlamaServerClient, _DirLease] = {}
         # Chat batching slots and per-slot context from the chat launch, surfaced to
         # the concurrency gate and clients; defaults until the chat group is up.
         self._chat_slots = 1
@@ -1889,7 +1908,7 @@ class FleetProvider:
         with self._lock:
             for group, (swap, launches) in bound.items():
                 self._adopt_group(group, swap, launches)
-                self._group_dirs[group] = engine_dir
+                self._set_group_dir(group, engine_dir)
         log.info("Bound to the running engine at %s", engine_dir)
         _log_adopted_launches(candidates, self._engines)
         return True
@@ -1997,7 +2016,7 @@ class FleetProvider:
         with self._lock:
             for group, swap in started.items():
                 self._adopt_group(group, swap, list(by_group[group]))
-                self._group_dirs[group] = data_dir
+                self._set_group_dir(group, data_dir)
         return True
 
     def _adopt_group(
@@ -2049,7 +2068,7 @@ class FleetProvider:
             # warning comes from the health route once the engine is up.
             if role is WorkerRole.EMBED and profile.input_limit_path is None:
                 planning.warn_when_embed_window_below_chunk(role_launches[0])
-            self._retire_clients(old_clients)
+            self._retire_clients(old_clients, self._group_dirs.get(group))
         self._reload_done.notify_all()
 
     def _swap_for(self, role: WorkerRole) -> SwapManager | None:
@@ -2086,10 +2105,11 @@ class FleetProvider:
         self._launches.pop(group, None)
         # Prune the dir map with the group: a stale entry outliving its group makes
         # _reload_dir see two dirs and pick one arbitrarily, splitting the provider.
-        self._group_dirs.pop(group, None)
+        engine_dir = self._group_dirs.get(group)
         for role in [r for r, g in self._role_group.items() if g is group]:
             del self._role_group[role]
-            self._retire_clients(self._clients.pop(role, []), keep_open=keep_open)
+            self._retire_clients(self._clients.pop(role, []), engine_dir, keep_open=keep_open)
+        self._unset_group_dir(group)
             if role is WorkerRole.CHAT:
                 self._chat_slots = 1
                 self._chat_ctx = None
@@ -2098,6 +2118,7 @@ class FleetProvider:
     def _retire_clients(
         self,
         old_clients: list[LlamaServerClient],
+        engine_dir: Path | None = None,
         *,
         keep_open: Collection[LlamaServerClient] = (),
     ) -> None:
@@ -2116,14 +2137,86 @@ class FleetProvider:
         still_busy: list[LlamaServerClient] = []
         for client in self._retiring_clients:
             if client.in_flight == 0 and client not in keep_open:
-                client.close()
+                self._close_client(client)
             else:
                 still_busy.append(client)
         for client in old_clients:
-            # A hold the sweep kept for this client's stream is released when the
-            # stream ends; see _start_hold_sweep.
-            client.notify_when_idle(self._start_hold_sweep)
+            self._hold_dir_for(client, engine_dir)
         self._retiring_clients = still_busy + old_clients
+
+    def _role_dir(self, role: WorkerRole) -> Path | None:
+        """The engine dir *role*'s group runs in, or None. Caller holds ``self._lock``."""
+        group = self._role_group.get(role)
+        return None if group is None else self._group_dirs.get(group)
+
+    def _hold_dir_for(self, client: LlamaServerClient, engine_dir: Path | None) -> None:
+        """Keep *engine_dir* held until *client* runs no request or closes.
+
+        The lease ends on the first of three events: the client's last request
+        ends, the client closes, or a pass gives the client back to dispatch. The
+        lease is dropped at once when the client has no request now.
+        """
+        if engine_dir is None:
+            return
+        lease = self._lease_dir(engine_dir)
+        self._client_leases[client] = lease
+        client.notify_when_idle(lease.release)
+        if client.in_flight == 0:
+            lease.release()
+
+    def _close_client(self, client: LlamaServerClient) -> None:
+        """Close *client* and end the hold it keeps on its engine dir."""
+        client.close()
+        lease = self._client_leases.pop(client, None)
+        if lease is not None:
+            lease.release()
+
+    def _lease_dir(self, engine_dir: Path) -> _DirLease:
+        """Count one more user of *engine_dir*'s hold; the lease ends it."""
+        with self._lock:
+            self._dir_leases[engine_dir] = self._dir_leases.get(engine_dir, 0) + 1
+        return _DirLease(self, engine_dir)
+
+    def _end_lease(self, lease: _DirLease) -> None:
+        """End *lease*; the last one on a dir releases the dir's hold.
+
+        A dir whose start runs now keeps its hold: the start drops it itself.
+        Nothing is stopped here. A peer's stop runs under the dir's build lock,
+        which every bind and build holds while it joins the users.
+        """
+        with self._lock:
+            if not lease.live:
+                return
+            lease.live = False
+            left = self._dir_leases[lease.engine_dir] - 1
+            if left:
+                self._dir_leases[lease.engine_dir] = left
+                return
+            del self._dir_leases[lease.engine_dir]
+            hold = None
+            if lease.engine_dir not in self._starting_dirs:
+                hold = self._engine_holds.pop(lease.engine_dir, None)
+        if hold is not None:
+            hold.release_and_check_last()
+
+    def _set_group_dir(self, group: SwapGroup, engine_dir: Path) -> None:
+        """Record that *group* runs in *engine_dir*, and keep that dir held while it does.
+
+        Caller holds ``self._lock``. The new lease starts before the old one ends,
+        so a group that stays in its dir never lets the hold drop.
+        """
+        old = self._group_leases.pop(group, None)
+        self._group_dirs[group] = engine_dir
+        self._group_leases[group] = self._lease_dir(engine_dir)
+        if old is not None:
+            old.release()
+
+    def _unset_group_dir(self, group: SwapGroup) -> None:
+        """Forget *group*'s dir and end the lease it kept. Caller holds ``self._lock``."""
+        self._group_dirs.pop(group, None)
+        lease = self._group_leases.pop(group, None)
+        if lease is not None:
+            lease.release()
 
     def _require_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
         """The client pool for *role*, or a user-facing error when it has no server.
@@ -2259,14 +2352,9 @@ class FleetProvider:
             log.info("Engine unreachable; rediscovering before one retry")
             # The holds stay through the retry: a stream on a retired client and a
             # second thread's rebuild both need the dir held, and the ladder does not
-            # count this process's own hold as a live user. The open count keeps any
-            # sweep from releasing a hold before this retry ends. The count goes up
-            # inside the try, so an exception at any point after it brings it down.
-            opened = False
-            try:
-                with self._lock:
-                    self._open_rediscovers += 1
-                    opened = True
+            # count this process's own hold as a live user. The leases end with the
+            # block, so a dir the retry did not rebind is released then.
+            with self._keep_dirs_held():
                 self._drop_swap_refs()
                 # An owner that restarted its fleet for new settings wrote them first.
                 # With no group held, the replan the take starts returns at once, and
@@ -2276,15 +2364,17 @@ class FleetProvider:
                 if self._config_refresh is not None:
                     self._config_refresh()
                 return _final_attempt(call)
-            finally:
-                if opened:
-                    with self._lock:
-                        self._open_rediscovers -= 1
-                try:
-                    self._release_unused_holds()
-                except Exception:
-                    # A failed sweep must not replace the retry's own result or error.
-                    log.warning("Hold sweep after a rediscover failed", exc_info=True)
+
+    @contextmanager
+    def _keep_dirs_held(self) -> Iterator[None]:
+        """Keep every dir this provider holds until the block ends."""
+        with self._lock:
+            leases = [self._lease_dir(engine_dir) for engine_dir in list(self._dir_leases)]
+        try:
+            yield
+        finally:
+            for lease in leases:
+                lease.release()
 
     def _left_working(self, err: BaseException, role: WorkerRole) -> bool:
         """Whether *err* timed out on a server that keeps working on the request it left.
@@ -2589,58 +2679,6 @@ class FleetProvider:
                     _watch_bound_engine(engine_dir)
                     log.info("Engine left warm at %s (last user out)", engine_dir)
 
-    def _release_unused_holds(self) -> None:
-        """Drop each membership whose dir no group uses, once no retired client is busy.
-
-        After a rediscover retry overflows, the old dir's hold is no longer needed,
-        and a stale hold keeps that engine's real last user from stopping it. A
-        retired client still streams from the old engine, so while any retired
-        client is in flight the holds stay; that client's last request starts the
-        sweep again (see _start_hold_sweep). While a rediscover is open its dropped
-        groups have no dir yet, so the holds stay; its own retry ends with a sweep.
-        A sweep takes its holds only in a lock hold that sees no fleet work, so it never
-        releases a dir that a build on the loop is about to hold. It returns at once
-        when there is nothing to release, so the common sweep never waits on a build.
-        Nothing is stopped here.
-        """
-        while True:
-            with self._lock:
-                if not self._unused_hold_dirs():
-                    return
-                work = self._fleet_work
-                if work is None:
-                    holds = [self._engine_holds.pop(path) for path in self._unused_hold_dirs()]
-                    break
-            work.wait()
-        for hold in holds:
-            hold.release_and_check_last()
-
-    def _unused_hold_dirs(self) -> list[Path]:
-        """The held dirs that no group uses, or none while a sweep must wait. Caller holds _lock."""
-        if self._open_rediscovers or any(client.in_flight for client in self._retiring_clients):
-            return []
-        used = set(self._group_dirs.values())
-        return [path for path in self._engine_holds if path not in used]
-
-    def _start_hold_sweep(self) -> None:
-        """Run the hold sweep on a new thread: a retired client ended its last request.
-
-        The thread that ended the request belongs to the caller and can hold any of
-        its locks. An abandoned stream also closes from garbage collection, inside
-        whatever frame runs then, including one that holds the build lock. A sweep
-        on that thread could wait on a lock the thread itself holds. A new thread
-        holds no lock and takes them in the sweep's own order. At interpreter exit no
-        new thread can start; the sweep is skipped then, as the process ends anyway.
-        """
-        try:
-            threading.Thread(
-                target=self._release_unused_holds,
-                name=_HOLD_SWEEP_THREAD,
-                daemon=True,
-            ).start()
-        except RuntimeError:
-            log.debug("Hold sweep not started: no new thread can start", exc_info=True)
-
     def _drop_swap_refs(self, *, close_all: bool = False) -> None:
         """Clear every group's swap/clients and the chat capacity so the next call rebuilds.
 
@@ -2657,10 +2695,10 @@ class FleetProvider:
         doomed: list[LlamaServerClient] = []
         with self._lock:
             live = [client for pool in self._clients.values() for client in pool]
+            pools = [(self._role_dir(role), pool) for role, pool in self._clients.items()]
             self._swaps = {}
             self._launches = {}
             self._role_group = {}
-            self._group_dirs = {}
             self._clients = {}
             # No group is left to have failed: the next build records its own result.
             self._reload_failed = False
@@ -2668,7 +2706,12 @@ class FleetProvider:
                 doomed = live + self._retiring_clients
                 self._retiring_clients = []
             else:
-                self._retire_clients(live)
+                self._retire_clients(live, None)
+                for engine_dir, pool in pools:
+                    for client in pool:
+                        self._hold_dir_for(client, engine_dir)
+            for group in list(self._group_dirs):
+                self._unset_group_dir(group)
             self._chat_slots = 1
             self._chat_ctx = None
             # A torn-down fleet's load failures describe servers that no longer
@@ -2678,7 +2721,7 @@ class FleetProvider:
         # re-snapshot memory rather than plan against this boot's probe.
         planning.clear_plan_probe()
         for client in doomed:
-            client.close()
+            self._close_client(client)
 
     def _require_configured_model(
         self, model: str | None, configured: str, role: WorkerRole
@@ -3720,7 +3763,7 @@ class FleetProvider:
                         raise
                     with self._lock:
                         self._adopt_group(group, swap, group_launches)
-                        self._group_dirs[group] = reload_dir
+                        self._set_group_dir(group, reload_dir)
                     restarted.extend(_by_role(group_launches))
                 self._restamp_kept(running - changed, origin)
                 return restarted
@@ -3804,8 +3847,10 @@ class FleetProvider:
         for role in [r for r, g in self._role_group.items() if g in groups and r not in drained]:
             drained[role] = self._clients.pop(role, [])
             taken.extend(drained[role])
-        for client in taken:
-            client.notify_when_idle(self._start_hold_sweep)
+        for role, pool in drained.items():
+            for client in pool:
+                if client in taken:
+                    self._hold_dir_for(client, self._role_dir(role))
         self._retiring_clients = self._retiring_clients + taken
         return taken
 
@@ -3822,6 +3867,9 @@ class FleetProvider:
                     self._retiring_clients = [c for c in self._retiring_clients if c not in pool]
                     for client in pool:
                         client.notify_when_idle(None)
+                        lease = self._client_leases.pop(client, None)
+                        if lease is not None:
+                            lease.release()
                     self._clients[role] = pool
 
     def _drain_clients(self, clients: list[LlamaServerClient], until: float) -> None:
