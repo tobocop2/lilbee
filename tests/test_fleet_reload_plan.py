@@ -16,7 +16,7 @@ from filelock import Timeout as FileLockTimeout
 
 from lilbee.app.settings import _reload_changed_roles
 from lilbee.core.config import cfg
-from lilbee.providers import engine_params
+from lilbee.providers import engine_params, model_cache
 from lilbee.providers.base import SERVER_STOPPING_MESSAGE, ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
@@ -58,11 +58,14 @@ _NOTES_CHUNK_OVERLAP = 64
 # A chunk of tokens plus the 128-token input headroom and the 8-token margin.
 _EMBED_WINDOW_AT_512 = 648
 _EMBED_WINDOW_AT_384 = 520
+# The plan shares the host RAM out as prompt caches. With this much RAM every cache gets its
+# ceiling, so a role that starts or stops does not resize the cache of another role.
+_HOST_RAM = 64 * _GB
 
 
 @pytest.fixture
 def real_planner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """The real planner, with fakes only at the engine binary, device probe and GGUF read."""
+    """The real planner, with fakes only at the engine binary, device probe, GGUF read and RAM."""
     files = {
         _EMBED_REF: tmp_path / "embed.gguf",
         _CHAT_REF: tmp_path / "chat.gguf",
@@ -89,6 +92,8 @@ def real_planner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[No
         "probe_devices",
         lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
     )
+    monkeypatch.setattr(model_cache, "total_system_memory", lambda: _HOST_RAM)
+    monkeypatch.setattr(planning_mod, "total_system_memory", lambda: _HOST_RAM)
     monkeypatch.setattr(cfg, "embedding_model", _EMBED_REF)
     monkeypatch.setattr(cfg, "chat_model", _CHAT_REF)
     monkeypatch.setattr(cfg, "vision_model", "")
