@@ -44,6 +44,7 @@ from tests.conformance.request_set import (
     JSON_ASK,
     JSON_SCHEMA,
     OVERSIZE,
+    PINNED_SAMPLING,
     REASONING_ASK,
     RERANK_BEST,
     RERANK_DOCS,
@@ -147,7 +148,7 @@ def _template(setup: Setup) -> Outcome:
     result = create_sdk_provider().chat(
         CONVERSATION,
         model=_ref(setup, "chat"),
-        options={"num_predict": 1024, "temperature": 0},
+        options={**PINNED_SAMPLING, "num_predict": 1024},
     )
     assert isinstance(result, ChatResult)
     answer = split_reasoning(result.text).answer
@@ -160,7 +161,7 @@ def _tool(setup: Setup) -> Outcome:
         model=_ref(setup, "chat"),
         tools=[WEATHER],
         tool_choice="auto",
-        options={"num_predict": 1024},
+        options={**PINNED_SAMPLING, "num_predict": 1024},
     )
     assert isinstance(result, ChatResult)
     names = [call.name for call in result.tool_calls]
@@ -194,7 +195,7 @@ def _rerank(setup: Setup) -> Outcome:
 
 def _send_oversize(setup: Setup) -> Outcome:
     messages = [{"role": "user", "content": OVERSIZE}]
-    options = {"num_predict": 16}
+    options = {**PINNED_SAMPLING, "num_predict": 16}
     try:
         if setup.window:
             from lilbee.providers.fleet.provider import FleetProvider
@@ -239,7 +240,7 @@ def _json_step(
     result = create_sdk_provider().chat(
         [{"role": "user", "content": JSON_ASK}],
         model=_ref(setup, "chat"),
-        options={"num_predict": 256, "response_format": response_format},
+        options={**PINNED_SAMPLING, "num_predict": 256, "response_format": response_format},
     )
     assert isinstance(result, ChatResult)
     return Outcome(not json_fault(result.text, schema), f"finish={result.finish_reason}")
@@ -273,7 +274,9 @@ def _engine_json_step(
         # wire as the fleet provider puts them.
         result = client.chat_result(
             [{"role": "user", "content": JSON_ASK}],
-            options=chat_options_to_kwargs(aux_options(256, response_format=response_format)),
+            options=chat_options_to_kwargs(
+                aux_options(256, response_format=response_format, **PINNED_SAMPLING)
+            ),
         )
     except ProviderError as exc:
         refused = not profile.structured_output and exc.kind is ProviderErrorKind.BAD_REQUEST
@@ -308,7 +311,12 @@ def _reasoning_text(setup: Setup) -> Outcome:
 
     The provider drops the reasoning field, so the step reads the wire message itself.
     """
-    body = {"messages": [REASONING_ASK], "model": setup.models["chat"], "stream": False}
+    body = {
+        "messages": [REASONING_ASK],
+        "model": setup.models["chat"],
+        "stream": False,
+        **PINNED_SAMPLING,
+    }
     request = urllib.request.Request(  # noqa: S310  a local server under test
         presets.get_preset(setup.preset).base_url + "/v1/chat/completions",
         data=json.dumps(body).encode(),
@@ -343,7 +351,7 @@ def _named(setup: Setup) -> Outcome:
     try:
         if role == "chat":
             cfg.chat_model = model
-            routing.chat(CONVERSATION, options={"num_predict": 1024})
+            routing.chat(CONVERSATION, options={**PINNED_SAMPLING, "num_predict": 1024})
         elif role == "embed":
             cfg.embedding_model = model
             routing.embed(["alpha"])
@@ -556,7 +564,7 @@ def recording(
         thread.join()
 
 
-_SAMPLING_KNOBS = ("temperature", "max_tokens")
+_SAMPLING_KNOBS = ("temperature", "seed", "max_tokens")
 """Request fields that shape how a reply is sampled, not what is asked."""
 
 SAMPLING_KNOBS_KEY = "sampling_knobs"

@@ -13,7 +13,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.base import ChatResult, FinishReason, ToolCall
 from lilbee.providers.routing_provider import RoutingProvider
 from tests import _fake_sdk as fakes
-from tests.conformance import preset_check, record_presets, request_set
+from tests.conformance import harness, preset_check, record_presets, request_set
 from tests.conformance.fake_engine import Behaviour, FakeEngine
 from tests.conformance.harness import (
     NEAR_COPY_COSINE,
@@ -249,12 +249,53 @@ def test_preset_embed_step_rejects_near_copies(
     assert _outcome(monkeypatch, "embed", embed=vectors) is ok
 
 
+class _OptionsRecorder:
+    """A provider that keeps the options of every chat call."""
+
+    def __init__(self) -> None:
+        self.options: list[dict[str, Any]] = []
+
+    def chat(self, *_args: Any, **kwargs: Any) -> ChatResult:
+        self.options.append(kwargs.get("options") or {})
+        return _result("Rome.")
+
+
+@pytest.mark.parametrize("step", ["template", "tool", "overflow", "json_object", "json_schema"])
+def test_preset_chat_steps_send_the_pinned_sampling(
+    monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    provider = _OptionsRecorder()
+    monkeypatch.setattr(preset_check, "create_sdk_provider", lambda: provider)
+    preset_check._STEP_FUNCTIONS[step](Setup(("chat",), dict(_MODELS), strict=True))
+    assert len(provider.options) == 1
+    assert {k: provider.options[0].get(k) for k in request_set.PINNED_SAMPLING} == (
+        request_set.PINNED_SAMPLING
+    )
+
+
+def test_harness_chat_sends_the_pinned_sampling() -> None:
+    sent: list[dict[str, Any]] = []
+
+    class _Spy(harness._Probe):
+        def call(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+            sent.append(body or {})
+            return 200, b"{}"
+
+    _Spy("http://unused", {"chat": "m"}, 1.0).chat("chat", [{"role": "user", "content": "x"}])
+    assert {k: sent[0][k] for k in request_set.PINNED_SAMPLING} == request_set.PINNED_SAMPLING
+
+
 def _reasoning_outcome(
     tmp_path: Path, message: dict[str, Any], finish: str = "stop"
 ) -> preset_check.Outcome:
     """Run the reasoning step against a server that sends *message* as its one reply."""
     setup = Setup(("chat",), dict(_MODELS), strict=True)
-    request = {"messages": [request_set.REASONING_ASK], "model": "m", "stream": False}
+    request = {
+        "messages": [request_set.REASONING_ASK],
+        "model": "m",
+        "stream": False,
+        **request_set.PINNED_SAMPLING,
+    }
     reply = {"choices": [{"message": message, "finish_reason": finish}]}
     exchange = preset_check.Exchange(
         "POST", "/v1/chat/completions", request, 200, "application/json", json.dumps(reply)
