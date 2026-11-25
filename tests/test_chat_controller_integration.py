@@ -2120,6 +2120,32 @@ async def test_a_quit_spends_one_budget_on_the_unmount_wait_and_stop_all(
     assert 0.9 < total < 1.6  # the unmount wait and the stop_all join, at 1 s each, take 2 s
 
 
+async def test_the_unmount_drains_the_loop_so_a_worker_waiting_on_a_coroutine_returns() -> None:
+    """A worker that waits on a coroutine ends by the drain, so the unmount must run it."""
+    import asyncio
+    import concurrent.futures
+    import contextlib
+    import threading
+
+    from lilbee.runtime import asyncio_loop
+
+    started = threading.Event()
+    returned = threading.Event()
+
+    def _waits_on_a_coroutine(_reporter: ProgressReporter) -> None:
+        pending = asyncio.run_coroutine_threadsafe(asyncio.sleep(3600), asyncio_loop.get_loop())
+        started.set()
+        with contextlib.suppress(concurrent.futures.CancelledError):
+            pending.result()
+        returned.set()
+
+    app = LilbeeApp()
+    async with app.run_test():
+        app.task_bar.start_task("Sync", TaskType.SYNC, _waits_on_a_coroutine)
+        assert started.wait(5.0)
+    assert returned.is_set()
+
+
 class _OwnedLock:
     """A lock that knows which thread holds it."""
 
