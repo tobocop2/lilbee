@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from lilbee.app import settings as app_settings
+from lilbee.app.memory import make_memory_row
 from lilbee.app.services import get_services, set_services
 from lilbee.app.settings import apply_settings_update, index_has_chunks, reindex_values
 from lilbee.app.status import gather_status
@@ -238,6 +239,16 @@ def test_a_sync_into_a_legacy_library_records_its_settings_and_warns_once(caplog
     pins = [r for r in caplog.records if "records no chunk settings" in r.getMessage()]
     assert len(pins) == 1
     assert "lilbee rebuild" in pins[0].getMessage()
+    assert store.chunk_stamp()["chunk_size"] == OLD_SIZE
+
+
+def test_a_first_sync_after_a_memory_records_its_settings_without_a_warning(caplog):
+    store = get_services().store
+    store.add_memory(make_memory_row("a note", lambda _text: [0.5] * cfg.embedding_dim))
+    assert store.get_meta() is not None
+    with caplog.at_level(logging.WARNING, logger="lilbee.data.store.core"):
+        store.add_chunks(_records(["a"]), chunk_settings=reindex_values())
+    assert not [r for r in caplog.records if "records no chunk settings" in r.getMessage()]
     assert store.chunk_stamp()["chunk_size"] == OLD_SIZE
 
 
