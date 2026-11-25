@@ -182,8 +182,25 @@ remote_branches() {
 
 @test "every nix-flake job checks out with the flake pins key" {
   for wf in publish-packages publish-cuda-packages publish-rocm-packages publish-compat-packages publish-compat-cuda-packages; do
-    run yq -r '.jobs["nix-flake"].steps[0].with["ssh-key"]' "${REPO_ROOT}/.github/workflows/${wf}.yml"
+    run yq -r '.jobs["nix-flake"].steps[] | select(.uses == "actions/checkout@v7") | .with["ssh-key"]' \
+      "${REPO_ROOT}/.github/workflows/${wf}.yml"
     [ "$output" = '${{ secrets.FLAKE_PINS_SSH_KEY }}' ] || { echo "${wf}: ${output}" >&2; return 1; }
+  done
+}
+
+# A missing secret expands to empty. Checkout then falls back to the job token,
+# whose push starts no CI, so the job must stop before it.
+@test "every nix-flake job fails before checkout when the flake pins key is missing" {
+  for wf in publish-packages publish-cuda-packages publish-rocm-packages publish-compat-packages publish-compat-cuda-packages; do
+    file="${REPO_ROOT}/.github/workflows/${wf}.yml"
+    run yq -r '.jobs["nix-flake"].steps[0].env.FLAKE_PINS_SSH_KEY' "${file}"
+    [ "$output" = '${{ secrets.FLAKE_PINS_SSH_KEY }}' ] || { echo "${wf}: ${output}" >&2; return 1; }
+    step=$(yq -r '.jobs["nix-flake"].steps[0].run' "${file}")
+    FLAKE_PINS_SSH_KEY= run bash -c "${step}"
+    [ "$status" -eq 1 ] || { echo "${wf}: exit ${status}" >&2; return 1; }
+    [[ "$output" == *"FLAKE_PINS_SSH_KEY is not set"* ]]
+    FLAKE_PINS_SSH_KEY=key run bash -c "${step}"
+    [ "$status" -eq 0 ] || { echo "${wf}: exit ${status} with the key set" >&2; return 1; }
   done
 }
 
