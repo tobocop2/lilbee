@@ -115,7 +115,8 @@ def _linux_pick(host: HostCaps) -> BuildPick:
     """The CUDA archive that every card of *host* runs, else the CPU archive with the reason.
 
     One binary serves every card, so the weakest card picks the archive: machine code for
-    sm89 does not run on an sm86 card.
+    sm89 does not run on an sm86 card. It does not run on a card of another major version
+    either, so cards of two generations get the CPU archive.
     """
     if not host.nvidia_known:
         return BuildPick(_CPU, f"{host.nvidia_reason}, so the CPU archive runs.")
@@ -131,6 +132,14 @@ def _linux_pick(host: HostCaps) -> BuildPick:
             "Update the driver. lilbee installs the CPU build.",
         )
     cell = cuda_cell(_CUDA_CELLS, card.compute)
+    other = next((g for g in host.gpus if g.compute[0] != card.compute[0]), None)
+    if cell is not None and other is not None:
+        return BuildPick(
+            _CPU,
+            f"The NVIDIA GPUs {card.name} (compute {_version(card.compute)}) and {other.name} "
+            f"(compute {_version(other.compute)}) are of different generations, and one "
+            "mistral.rs CUDA build runs on one generation only. lilbee installs the CPU build.",
+        )
     if cell is None:
         return BuildPick(
             _CPU,
