@@ -3236,16 +3236,20 @@ class TestPathOptions:
         r = _path_options(str(tmp_path / "KEEP"))
         assert r == [f"keep{i:02d}" for i in range(20)]
 
-    def test_mixed_case_names_keep_the_case_folded_order_of_a_case_folding_platform(self, tmp_path):
-        """On Windows normcase folds case; the 20 rows and their order follow the folded names."""
+    def test_mixed_case_names_sort_case_folded_on_every_platform(self, tmp_path):
+        """One rule everywhere: names sort case-folded, with the exact name breaking ties."""
         from lilbee.cli.tui.widgets.autocomplete import _path_options
 
         for i in range(15):
             (tmp_path / f"U{i:02d}").touch()
             (tmp_path / f"l{i:02d}").touch()
-        with mock.patch("os.path.normcase", new=str.lower):
-            r = _path_options(str(tmp_path) + "/")
+        r = _path_options(str(tmp_path) + "/")
         assert r == [f"l{i:02d}" for i in range(15)] + [f"U{i:02d}" for i in range(5)]
+
+    def test_names_that_differ_only_in_case_have_a_fixed_order(self):
+        from lilbee.cli.tui.widgets.autocomplete import _path_order
+
+        assert sorted(["b", "B", "a"], key=_path_order) == ["a", "B", "b"]
 
     def test_limits_results_to_20(self, tmp_path):
         from lilbee.cli.tui.widgets.autocomplete import _path_options
