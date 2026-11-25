@@ -7,6 +7,7 @@
 # <crate-licences> is the list of licence ids that rust_licences.py prints, one per line.
 # Reads:
 #   BACKEND, PLATFORM      the backend and the platform tag that the wheel must have (cuda-sm<NN> for a CUDA wheel)
+#   BUILD_NUMBER           the build number that the wheel must have
 #   MISTRALRS_CHAT_MODEL   the model of the chat check, which a cpu wheel must answer
 
 set -euo pipefail
@@ -23,8 +24,8 @@ check_tag() {  # wheel
   local name info
   name="$(basename "$1")"
   case "${name}" in
-    lilbee_engine_mistral_rs-*-1."${BACKEND//-/_}"-py3-none-"${PLATFORM}".whl) ;;
-    *) refuse "wrong tag on ${name}: expected backend ${BACKEND} and platform ${PLATFORM}" || return 1 ;;
+    lilbee_engine_mistral_rs-*-"${BUILD_NUMBER}.${BACKEND//-/_}"-py3-none-"${PLATFORM}".whl) ;;
+    *) refuse "wrong tag on ${name}: expected build ${BUILD_NUMBER}.${BACKEND//-/_} and platform ${PLATFORM}" || return 1 ;;
   esac
   info="$(dist_info "$1" WHEEL)" || return 1
   grep -qxF "Tag: py3-none-${PLATFORM}" <<< "${info}" || refuse "the WHEEL file of ${name} lacks the tag py3-none-${PLATFORM}"
