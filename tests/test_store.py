@@ -3079,6 +3079,77 @@ class TestSourceIngestedAtMap:
         assert store.source_ingested_at_map() == {}
 
 
+class TestIngestedAtOf:
+    """The temporal filter reads the dates of the hits, never a map of every source."""
+
+    def test_returns_only_the_named_sources(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        store.upsert_source("b.md", "h2", 1)
+        result = store.ingested_at_of(["a.md", "missing.md"])
+        assert set(result) == {"a.md"}
+        assert result["a.md"] == store.source_ingested_at_map()["a.md"]
+
+    def test_empty_store_and_no_names(self, store):
+        assert store.ingested_at_of(["a.md"]) == {}
+        store.upsert_source("a.md", "h1", 1)
+        assert store.ingested_at_of([]) == {}
+
+    def test_wiki_pages_have_no_date(self, store):
+        store.upsert_source("wiki/a.md", "h1", 1, SourceType.WIKI)
+        assert store.ingested_at_of(["wiki/a.md"]) == {}
+
+    def test_name_with_quote_is_escaped(self, store):
+        store.upsert_source("it's.md", "h1", 1)
+        assert set(store.ingested_at_of(["it's.md"])) == {"it's.md"}
+
+    def test_batches_over_many_names(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        names = [f"n{i}.md" for i in range(700)] + ["a.md"]
+        with mock.patch("lilbee.data.store.core._SOURCE_STAT_BATCH_ROWS", 100):
+            assert set(store.ingested_at_of(names)) == {"a.md"}
+
+    def test_chat_turn_with_time_word_reads_no_full_source_record(self, store, test_config):
+        """A temporal question reads zero full source records and still filters by date."""
+        from lilbee.retrieval.query.searcher import Searcher
+
+        store.upsert_source("old.md", "h1", 1)
+        store.upsert_source("new.md", "h2", 1)
+        store.upsert_source("other.md", "h3", 1)
+        table = store.open_table(SOURCES_TABLE)
+        table.update(where="path = 'old.md'", values={"ingested_at": "2020-01-01T00:00:00+00:00"})
+        store._invalidate_source_cache()
+        searcher = Searcher(
+            test_config,
+            mock.MagicMock(),
+            store,
+            mock.MagicMock(),
+            mock.MagicMock(),
+            mock.MagicMock(),
+        )
+        results = [
+            SearchChunk(
+                source=name,
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="x",
+                chunk_index=0,
+                vector=[0.0],
+            )
+            for name in ("old.md", "new.md")
+        ]
+        with (
+            mock.patch("lilbee.data.store.core._source_record") as record,
+            mock.patch.object(Store, "get_sources") as get_sources,
+            mock.patch.object(Store, "source_ingested_at_map") as whole_map,
+        ):
+            kept = searcher._apply_temporal_filter(results, "what changed recently")
+        assert [r.source for r in kept] == ["new.md"]
+        assert record.call_count + get_sources.call_count + whole_map.call_count == 0
+
+
 def _make_citation(**overrides) -> CitationRecord:
     defaults: CitationRecord = {
         "wiki_source": "wiki/summaries/doc.md",
