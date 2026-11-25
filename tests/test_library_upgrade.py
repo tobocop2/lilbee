@@ -1314,8 +1314,10 @@ class TestServerShowsTheUpgrade:
             ("GET", "/api/warm/stream", 200, "event:done"),
             ("POST", "/api/shutdown", 202, "shutting_down"),
             ("POST", "/mcp", 200, '"jsonrpc":"2.0"'),
+            ("GET", "/api/engines", 200, '"builds"'),
+            ("GET", "/api/engines/roles", 200, '"roles"'),
         ],
-        ids=["health", "warm-stream", "shutdown", "mcp"],
+        ids=["health", "warm-stream", "shutdown", "mcp", "engine-list", "engine-roles"],
     )
     async def test_these_routes_are_not_held_while_a_normal_route_answers_503(
         self, library, monkeypatch, method, path, status, marker
