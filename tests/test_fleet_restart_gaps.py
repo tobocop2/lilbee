@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import threading
-from collections.abc import Callable
 from unittest.mock import MagicMock
 
 import httpx
