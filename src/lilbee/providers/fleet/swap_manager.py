@@ -1292,9 +1292,8 @@ def reap_stale(data_dir: Path) -> bool:
             # An answering engine is in use (bind accepts on exactly this
             # test); reaping must never disagree with binding.
             continue
-        _stop_recorded_engine(state)
+        stopped = _stop_recorded_engine(state) or stopped
         state_path.unlink(missing_ok=True)
-        stopped = True
     return stopped
 
 

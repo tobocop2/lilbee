@@ -817,6 +817,32 @@ def test_reload_propagates_a_probe_failure_on_the_resurrect_path(monkeypatch) ->
     assert excinfo.value.kind is ProviderErrorKind.CONNECTION
 
 
+@pytest.mark.parametrize(("reaped", "kept"), [(True, False), (False, True)], ids=["reaped", "none"])
+def test_a_reload_forgets_a_kept_device_reading_only_after_a_reap(
+    monkeypatch, tmp_path: Path, reaped: bool, kept: bool
+) -> None:
+    from lilbee.providers.base import ProviderError
+
+    binary = tmp_path / "engine"
+    binary.write_bytes(b"v1")
+    planning_mod.clear_read_device_cache()
+    planning_mod._read_device_cache.remember(
+        binary, planning_mod.DeviceReading([], planning_mod.EngineBackend.UNKNOWN)
+    )
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: reaped)
+    seen: list[bool] = []
+
+    def _capture(_engines) -> None:
+        seen.append(planning_mod._read_device_cache.recent_empty(binary) is not None)
+        raise ProviderError("stop here", provider="llama-server")
+
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", _capture)
+    with pytest.raises(ProviderError):
+        FleetProvider()._reload_pass()
+    planning_mod.clear_read_device_cache()
+    assert seen == [kept]
+
+
 def test_reload_fails_loud_when_the_engine_binary_is_missing(monkeypatch) -> None:
     # A reload that cannot find the engine binary did not apply the change, so it
     # raises; the caller of a write must not report success.
