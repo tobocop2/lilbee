@@ -249,7 +249,7 @@ def require_role_ref(ref: str, role: WorkerRole, *, provider: str = "") -> str:
     if not ref:
         raise ProviderError(
             f"No {_ROLE_WORDS[role]} model is configured. Pick one from the catalog "
-            f"or run 'lilbee model pull <model>' (or POST /api/models/pull).",
+            f"or run 'lilbee model pull <model>'.",
             provider=provider,
             kind=ProviderErrorKind.NOT_FOUND,
         )

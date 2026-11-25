@@ -80,7 +80,7 @@ def test_the_no_engine_notice_arrives_after_the_download(tmp_path: Path) -> None
     assert events == [
         "download",
         "No installed engine loads the safetensors format of acme/tiny-model#safetensors. "
-        "Run lilbee engine list (or GET /api/engines) to see the installed engines.",
+        "Run lilbee engine list to see the installed engines.",
     ]
 
 

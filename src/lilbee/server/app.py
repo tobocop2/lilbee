@@ -46,6 +46,7 @@ from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.content_disposition import CONTENT_DISPOSITION
 from lilbee.server.mcp_mount import build_mcp_mount
 from lilbee.server.provider_status import APP_ERROR_STATUSES, retry_after_headers
+from lilbee.server.route_names import name_routes
 from lilbee.server.routes import engines as engine_routes
 from lilbee.server.routes import presets as preset_routes
 from lilbee.server.routes.agent_config import (
@@ -391,7 +392,11 @@ def _json_error_response(request: Request, exc: Exception) -> Response:
 
     Litestar builds an error response with the route handler's media type, so a
     streaming route would label a JSON error body text/event-stream.
+
+    An HTTP caller has no command line, so a command in the detail gets its route beside it.
     """
+    if isinstance(exc, HTTPException):
+        exc.detail = name_routes(exc.detail)
     response = create_exception_response(request, exc)
     response.media_type = MediaType.JSON
     return response

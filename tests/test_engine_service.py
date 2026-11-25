@@ -34,10 +34,7 @@ from tests.conformance.fake_adapter import BundledFakeAdapter, FakeAdapter
 
 MLX_REF = "org/repo#mlx"
 GGUF_REF = "org/repo/file.gguf"
-NOT_INSTALLED = (
-    "Engine {} is not installed. "
-    "Run lilbee engine list (or GET /api/engines) to see the installed engines."
-)
+NOT_INSTALLED = "Engine {} is not installed. Run lilbee engine list to see the installed engines."
 
 
 class _GgufEngine(BundledFakeAdapter):
@@ -223,7 +220,7 @@ def test_an_unusable_override_falls_back_with_the_notice_in_the_role_view(with_m
     assert chat.engine == "llama.cpp"
     assert chat.notice == (
         "Engine openvino is not installed. Using llama.cpp. "
-        "Run lilbee engine list (or GET /api/engines) to see the installed engines."
+        "Run lilbee engine list to see the installed engines."
     )
 
 
@@ -234,7 +231,7 @@ def test_the_role_view_of_a_role_with_no_engine_names_the_model_and_format() -> 
     assert (chat.engine, chat.model, chat.format) == (None, MLX_REF, "mlx")
     assert chat.notice == (
         "For chat: No installed engine loads the mlx format of org/repo#mlx. "
-        "Run lilbee engine list (or GET /api/engines) to see the installed engines."
+        "Run lilbee engine list to see the installed engines."
     )
 
 
@@ -270,7 +267,7 @@ def test_the_unreadable_notice_comes_before_the_fallback_notice(with_mlx: None) 
     chat = next(v for v in engine_service.roles(config) if v.role is WorkerRole.CHAT)
     assert chat.notice == (
         f"{UNREADABLE_NOTICE} Engine openvino is not installed. Using llama.cpp. "
-        "Run lilbee engine list (or GET /api/engines) to see the installed engines."
+        "Run lilbee engine list to see the installed engines."
     )
 
 

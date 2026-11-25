@@ -23,6 +23,7 @@ from lilbee.runtime.progress import (
     SseEvent,
 )
 from lilbee.server.chat_completions_api.errors import CompletionsErrorCode
+from lilbee.server.route_names import name_routes
 
 log = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ def sse_error(
     message: str, *, code: SseErrorCodeValue | None = None, detail: str | None = None
 ) -> str:
     """Format an SSE error event with optional structured ``code`` / ``detail``."""
-    payload: dict[str, Any] = {"message": message}
+    payload: dict[str, Any] = {"message": name_routes(message)}
     if code is not None:
         payload["code"] = code
     if detail is not None:
