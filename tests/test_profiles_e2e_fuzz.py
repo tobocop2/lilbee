@@ -14,12 +14,13 @@ import json
 import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 from urllib.parse import quote
 
 import pytest
 import tomli_w
-from hypothesis import HealthCheck, Phase, event, example, given, settings
+from hypothesis import HealthCheck, Phase, event, given, settings
+from hypothesis.errors import InvalidArgument
 from hypothesis import strategies as st
 from litestar.testing import TestClient
 from typer.testing import Result
@@ -46,15 +47,14 @@ from tests._profiles_e2e import (
     real_root_listing,
 )
 
-F = TypeVar("F", bound=Callable[..., Any])
-
-# No shrink phase: a failing example is reported as found, well inside the 60 s timeout.
+# No shrink phase and no explicit phase: the hostile cases are parametrized tests, so each
+# runs under its own 60 s timeout. A failing example is reported as found.
 FUZZ = settings(
     max_examples=20,
     deadline=dt.timedelta(seconds=10),
     derandomize=True,
     database=None,
-    phases=[Phase.explicit, Phase.generate],
+    phases=[Phase.generate],
     suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
 )
 # HTTP refusals: 400 bad input, 404 no such profile, 409 a name clash, 413 too large.
@@ -192,25 +192,52 @@ _folder_words = st.text(
 _folders = st.one_of(_folder_words, _folder_words.map(lambda word: f"{WORLD}/absent/{word}"))
 
 
-def _examples(**cases: tuple[Any, ...]) -> Callable[[F], F]:
-    """Run every listed value of each argument as an explicit example, on every run."""
+def _case_ids(cases: tuple[Any, ...]) -> list[str]:
+    """One readable, unique id per hostile case."""
+    return [f"{number:02d}-{ascii(case)[:40]}" for number, case in enumerate(cases)]
 
-    def _decorate(fn: F) -> F:
-        for argname, values in cases.items():
-            for value in values:
-                fn = example(**{argname: value})(fn)
-        return fn
+
+def _hostile(argname: str, cases: tuple[Any, ...]) -> pytest.MarkDecorator:
+    """Run each hostile value as its own test, so no one test carries them all."""
+    return pytest.mark.parametrize(argname, cases, ids=_case_ids(cases))
+
+
+# Each hostile file name with a valid file, and each hostile file with a plain name.
+HOSTILE_UPLOADS = (
+    *((VALID_TEXT, filename) for filename in HOSTILE_FILENAMES),
+    *((text, "upload.toml") for text in HOSTILE_TEXTS),
+)
+HOSTILE_FILES = (*HOSTILE_BYTES, *(text.encode("utf-8") for text in HOSTILE_TEXTS))
+HOSTILE_UPLOADS_MARK = pytest.mark.parametrize(
+    ("text", "filename"), HOSTILE_UPLOADS, ids=_case_ids(HOSTILE_UPLOADS)
+)
+
+
+def _fuzz_and_hostile(
+    hostile: pytest.MarkDecorator, **strategies: st.SearchStrategy[Any]
+) -> Callable[[Callable[..., None]], Callable[..., None]]:
+    """Make the decorated ``test_x`` a generated test, and add ``test_hostile_x``.
+
+    Both run the same body with the same fixtures. Each hostile case is its own test, so
+    the cases do not share one 60 s timeout with each other or with the generated examples.
+    """
+
+    def _decorate(body: Callable[..., None]) -> Callable[..., None]:
+        @functools.wraps(body)
+        def case(*args: Any, **kwargs: Any) -> None:
+            body(*args, **kwargs)
+
+        case.__name__ = body.__name__.replace("test_", "test_hostile_", 1)
+        body.__globals__[case.__name__] = hostile(case)
+        return FUZZ(given(**strategies)(body))
 
     return _decorate
 
 
-def _upload_examples(fn: F) -> F:
-    """Each hostile file name with a valid file, and each hostile file with a plain name."""
-    for filename in HOSTILE_FILENAMES:
-        fn = example(text=VALID_TEXT, filename=filename)(fn)
-    for text in HOSTILE_TEXTS:
-        fn = example(text=text, filename="upload.toml")(fn)
-    return fn
+def _record(description: str) -> None:
+    """Tell Hypothesis about an outcome; a hostile case runs outside Hypothesis and skips it."""
+    with contextlib.suppress(InvalidArgument):
+        event(description)
 
 
 def _tree(root: Path) -> dict[str, bytes]:
@@ -317,7 +344,7 @@ def client(world: World) -> Iterator[TestClient[Any]]:
 
 def _cli_verdict(result: Result, operation: str) -> dict[str, Any] | None:
     """The command's JSON on success, None on a refusal; anything else fails."""
-    event(f"cli {operation} exit {result.exit_code}")
+    _record(f"cli {operation} exit {result.exit_code}")
     shown = json.loads(result.output)
     if result.exit_code == 0:
         return shown if isinstance(shown, dict) else {"result": shown}
@@ -362,7 +389,7 @@ def _http_verdict(response: Any, operation: str) -> Any:
     the published schema knows each error it can get.
     """
     assert TRACEBACK not in response.text, response.text
-    event(f"http {operation} {response.status_code}")
+    _record(f"http {operation} {response.status_code}")
     request = response.request
     # Litestar routes a path with a trailing slash as the same path without it.
     path = request.url.raw_path.decode().split("?")[0].rstrip("/") or "/"
@@ -379,7 +406,7 @@ def _mcp_verdict(tool: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
     payload = asyncio.run(mcp_call(tool, arguments))
     assert TRACEBACK not in json.dumps(payload, default=str)
     operation = arguments.get("action", tool)
-    event(f"mcp {operation} {'refused' if 'error' in payload else 'ok'}")
+    _record(f"mcp {operation} {'refused' if 'error' in payload else 'ok'}")
     if "error" in payload:
         assert isinstance(payload["error"], str) and payload["error"]
         return None
@@ -412,9 +439,7 @@ def test_the_cli_names_driver_writes_a_valid_name(world: World, name: str) -> No
     _check_written(world, name, json.loads(result.output))
 
 
-@FUZZ
-@given(name=_names)
-@_examples(name=HOSTILE_NAMES)
+@_fuzz_and_hostile(_hostile("name", HOSTILE_NAMES), name=_names)
 def test_new_names_through_the_cli(world: World, guard: _Guard, name: str) -> None:
     if not _cli_safe(name):
         return
@@ -422,9 +447,7 @@ def test_new_names_through_the_cli(world: World, guard: _Guard, name: str) -> No
     guard.check()
 
 
-@FUZZ
-@given(name=_names)
-@_examples(name=HOSTILE_NAMES)
+@_fuzz_and_hostile(_hostile("name", HOSTILE_NAMES), name=_names)
 def test_new_names_through_http(
     world: World, guard: _Guard, client: TestClient[Any], name: str
 ) -> None:
@@ -437,9 +460,7 @@ def test_new_names_through_http(
     guard.check()
 
 
-@FUZZ
-@given(name=_names)
-@_examples(name=HOSTILE_NAMES)
+@_fuzz_and_hostile(_hostile("name", HOSTILE_NAMES), name=_names)
 def test_new_names_through_mcp(world: World, guard: _Guard, name: str) -> None:
     _check_written(world, name, _mcp_verdict("profile_manage", {"action": "new", "name": name}))
     guard.check()
@@ -453,9 +474,7 @@ def _imported_is_valid(world: World, written: dict[str, Any] | None, valid: bool
     assert Path(written["path"]).resolve().is_relative_to(world.global_profiles().resolve())
 
 
-@FUZZ
-@given(raw=_raw_bytes)
-@_examples(raw=(*HOSTILE_BYTES, *(text.encode("utf-8") for text in HOSTILE_TEXTS)))
+@_fuzz_and_hostile(_hostile("raw", HOSTILE_FILES), raw=_raw_bytes)
 def test_profile_files_through_the_cli(world: World, guard: _Guard, raw: bytes) -> None:
     path = world.base.parent / "fixtures" / "upload.toml"
     path.parent.mkdir(exist_ok=True)
@@ -470,9 +489,7 @@ def test_profile_files_through_the_cli(world: World, guard: _Guard, raw: bytes) 
     guard.check()
 
 
-@FUZZ
-@given(text=_texts, filename=_filenames)
-@_upload_examples
+@_fuzz_and_hostile(HOSTILE_UPLOADS_MARK, text=_texts, filename=_filenames)
 def test_profile_uploads_through_http(
     world: World, guard: _Guard, client: TestClient[Any], text: str, filename: str
 ) -> None:
@@ -484,9 +501,7 @@ def test_profile_uploads_through_http(
     guard.check()
 
 
-@FUZZ
-@given(text=_texts, filename=_filenames)
-@_upload_examples
+@_fuzz_and_hostile(HOSTILE_UPLOADS_MARK, text=_texts, filename=_filenames)
 def test_profile_uploads_through_mcp(world: World, guard: _Guard, text: str, filename: str) -> None:
     args = {"content": text, "filename": filename}
     shown = _mcp_verdict("profile_manage", {"action": "validate", **args})
@@ -540,9 +555,7 @@ def _folder(world: World, spec: str) -> str:
     return spec.replace(WORLD, str(world.base))
 
 
-@FUZZ
-@given(spec=_folders)
-@_examples(spec=HOSTILE_FOLDERS)
+@_fuzz_and_hostile(_hostile("spec", HOSTILE_FOLDERS), spec=_folders)
 def test_analyze_folders_through_the_cli(world: World, guard: _Guard, spec: str) -> None:
     if not _cli_safe(spec):
         return
@@ -553,9 +566,7 @@ def test_analyze_folders_through_the_cli(world: World, guard: _Guard, spec: str)
     guard.check()
 
 
-@FUZZ
-@given(spec=_folders)
-@_examples(spec=HOSTILE_FOLDERS)
+@_fuzz_and_hostile(_hostile("spec", HOSTILE_FOLDERS), spec=_folders)
 def test_analyze_folders_through_http(
     world: World, guard: _Guard, client: TestClient[Any], spec: str
 ) -> None:
@@ -564,16 +575,14 @@ def test_analyze_folders_through_http(
     response = client.post("/api/analyze", json={"directory": _folder(world, spec)})
     assert TRACEBACK not in response.text, response.text
     if response.status_code == 200:
-        event("http analyze 200")
+        _record("http analyze 200")
         assert "event: done" in response.text, response.text
     else:
         _http_verdict(response, "analyze")
     guard.check()
 
 
-@FUZZ
-@given(spec=_folders)
-@_examples(spec=HOSTILE_FOLDERS)
+@_fuzz_and_hostile(_hostile("spec", HOSTILE_FOLDERS), spec=_folders)
 def test_analyze_folders_through_mcp(world: World, guard: _Guard, spec: str) -> None:
     _seed_folders(world)
     guard.rebase()
