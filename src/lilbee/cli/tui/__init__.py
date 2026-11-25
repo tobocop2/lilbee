@@ -171,9 +171,9 @@ def run_tui(*, initial_view: str | None = None) -> None:
             _restore_native_stderr(stderr_redirect)
             shutdown_executor()
             reset_services_on_exit()
+            exit_when_stragglers_would_hang(status)
         finally:
-            # The tui.log handler lives only as long as this session.
+            # The tui.log handler lives to the end of the session, the straggler wait included.
             detach_rotating_file_handler(log_path)
-        exit_when_stragglers_would_hang(status)
     if status:
         raise SystemExit(status)
