@@ -1790,7 +1790,7 @@ def test_a_launch_of_a_removed_build_names_the_engine_and_closes_the_holds_it_to
 ) -> None:
     taken = tmp_path / "fx" / "1-cpu"
     taken.mkdir(parents=True)
-    with pytest.raises(ProviderError, match=r"^Engine fx 2-cpu is being removed\."):
+    with pytest.raises(ProviderError, match=r"^Engine fx 2 \(cpu\) is being removed\."):
         BuildHolds([taken, tmp_path / "fx" / "2-cpu"])
     assert engine_store.build_in_use(taken) is False
 
@@ -1801,7 +1801,7 @@ def test_a_launch_while_a_remove_holds_the_build_names_the_engine(tmp_path: Path
     build.mkdir(parents=True)
     with (
         build_use.removing(build),
-        pytest.raises(ProviderError, match=r"^Engine fx 2-cpu is being removed\."),
+        pytest.raises(ProviderError, match=r"^Engine fx 2 \(cpu\) is being removed\."),
     ):
         BuildHolds([build])
     assert engine_store.build_in_use(build) is False
@@ -1816,6 +1816,52 @@ def test_a_remove_cannot_hold_a_build_an_engine_holds(tmp_path: Path) -> None:
             pass
     finally:
         holds.close()
+
+
+def test_install_makes_the_in_use_file_of_the_build(store: EngineStore, tmp_path: Path) -> None:
+    installed_store(store, tmp_path)
+    assert (store.root / "fx" / "1-cpu" / build_use.IN_USE_NAME).is_file()
+
+
+def test_remove_deletes_an_older_build_with_no_in_use_file(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    installed_store(store, tmp_path)
+    (store.root / "fx" / "1-cpu" / build_use.IN_USE_NAME).unlink()
+    store.remove("fx", "1", "cpu", in_use=lambda *_name: False)
+    assert names(store.root / "fx") == []
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0, reason="folder modes do not bind this user"
+)
+def test_remove_of_an_older_read_only_build_names_the_folder_and_writes_nothing(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    installed_store(store, tmp_path)
+    build = store.root / "fx" / "1-cpu"
+    (build / build_use.IN_USE_NAME).unlink()
+    for folder in (build, build.parent):
+        folder.chmod(0o555)
+    try:
+        with pytest.raises(engine_store.ReadOnlyFolderError):
+            store.remove("fx", "1", "cpu", in_use=lambda *_name: False)
+    finally:
+        for folder in (build.parent, build):
+            folder.chmod(0o755)
+    assert (build / RECORD_NAME).is_file()
+    assert not (build / build_use.IN_USE_NAME).exists()
+
+
+def test_a_remove_whose_rename_meets_a_launch_names_the_engine(
+    store: EngineStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows refuses the rename while a launch holds the file it opened after the probe.
+    installed_store(store, tmp_path)
+    monkeypatch.setattr(Path, "rename", mock.Mock(side_effect=PermissionError("open")))
+    monkeypatch.setattr(engine_store, "build_in_use", lambda _build: True)
+    with pytest.raises(engine_store.EngineInUseError, match=r"^Engine fx 1 \(cpu\) is in use\."):
+        store.remove("fx", "1", "cpu", in_use=lambda *_name: False)
 
 
 def test_a_remove_of_a_missing_build_raises_the_file_error(tmp_path: Path) -> None:
@@ -1840,7 +1886,7 @@ def test_remove_keeps_a_build_a_launch_takes_after_the_check(
     build = store.root / "fx" / "1-cpu"
     taken: list[BuildHolds] = []
     try:
-        with pytest.raises(engine_store.EngineInUseError, match="Engine fx 1-cpu is in use"):
+        with pytest.raises(engine_store.EngineInUseError, match=r"Engine fx 1 \(cpu\) is in use"):
             store.remove("fx", "1", "cpu", in_use=_launch_after_the_check(build, taken))
     finally:
         for holds in taken:
@@ -1857,7 +1903,7 @@ def test_install_keeps_a_damaged_build_a_launch_takes_after_the_check(
     taken: list[BuildHolds] = []
     monkeypatch.setattr(engine_store, "launch_uses_engine", _launch_after_the_check(build, taken))
     try:
-        with pytest.raises(engine_store.EngineInUseError, match="Engine fx 1-cpu is in use"):
+        with pytest.raises(engine_store.EngineInUseError, match=r"Engine fx 1 \(cpu\) is in use"):
             store.install_from_wheel(lock, path)
     finally:
         for holds in taken:
