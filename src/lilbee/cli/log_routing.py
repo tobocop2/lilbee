@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import logging
 import sys
+import warnings
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+import click
 
 from lilbee.core.config import cfg
 
@@ -75,6 +78,9 @@ def route_diagnostics_to_log_file() -> Path | None:
     ``py.warnings`` log records via ``logging.captureWarnings``; nothing is
     filtered and no logger level changes. Skipped entirely when --log-level or
     LILBEE_LOG_LEVEL was given: diagnostics then stay on stderr as usual.
+
+    The routing lasts as long as the running command: Click's context undoes it
+    when the command ends, whatever way it ends.
     """
     if _router.explicit_verbosity:
         return None
@@ -84,10 +90,32 @@ def route_diagnostics_to_log_file() -> Path | None:
     except OSError:
         return None
     log_path = log_dir / _CLI_LOG_FILE_NAME
-    attach_rotating_file_handler(log_path)
     root = logging.getLogger()
+    handlers_before = list(root.handlers)
+    capture_was_on = _warnings_are_captured()
+    attach_rotating_file_handler(log_path)
     for handler in list(root.handlers):
         if _is_terminal_handler(handler):
             root.removeHandler(handler)
     logging.captureWarnings(True)
+
+    def restore() -> None:
+        for handler in list(root.handlers):
+            if handler not in handlers_before:
+                root.removeHandler(handler)
+                handler.close()
+        for handler in handlers_before:
+            if handler not in root.handlers:
+                root.addHandler(handler)
+        if not capture_was_on:
+            logging.captureWarnings(False)
+
+    context = click.get_current_context(silent=True)
+    if context is not None:
+        context.call_on_close(restore)
     return log_path
+
+
+def _warnings_are_captured() -> bool:
+    """Whether ``logging.captureWarnings`` is on: its hook is the active ``showwarning``."""
+    return warnings.showwarning.__module__ == logging.__name__
