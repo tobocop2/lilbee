@@ -4607,8 +4607,8 @@ def test_role_model_placeable_false_for_a_remote_ref(monkeypatch) -> None:
         (True, False, 1, False, "runs on a remote service"),
         (False, True, 1, False, "has no projector file"),
         (False, False, 0, False, "no weight files that lilbee can read"),
-        (False, False, 1, True, "needs more memory than this host has"),
-        (False, False, 1, False, "needs more memory than this host has"),
+        (False, False, 1, True, "needs more memory than this computer has"),
+        (False, False, 1, False, "needs more memory than this computer has"),
     ],
     ids=["remote", "projector", "weights", "memory", "placeable-falls-back-to-memory"],
 )
