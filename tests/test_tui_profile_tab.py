@@ -1007,13 +1007,9 @@ async def test_update_with_values_equal_to_the_profile_changes_nothing() -> None
     app = _SettingsApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await _loaded(app, pilot, "legal-discovery")
-        shown = screen.query_one("#profile-update", ConfirmPill).display
-        with mock.patch.object(app, "notify") as notify:
-            if shown:
-                await _press(pilot, screen.query_one("#profile-update", ConfirmPill))
-                assert await _until(pilot, lambda: notify.called)
-    messages = [c.args[0] for c in notify.call_args_list]
-    assert not shown or not any(m.startswith("Updated") for m in messages), messages
+        assert not screen.query_one("#profile-update", ConfirmPill).display
+        assert not screen.query_one("#profile-discard", ConfirmPill).display
+        assert not screen.query_one("#profile-changes").display
 
 
 async def test_update_toasts_the_warning_it_leaves_behind() -> None:
