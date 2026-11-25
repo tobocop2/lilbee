@@ -464,32 +464,52 @@ def test_a_connection_lost_after_the_first_frame_of_a_silent_prefill_is_a_cut_an
     assert not isinstance(caught.value.__cause__, fleet_client.StreamSilentError)
 
 
-def _live_watchdogs() -> list[threading.Thread]:
-    """The watchdog threads that are alive: the thread name carries its target, ``_run``."""
-    return [thread for thread in threading.enumerate() if thread.name.endswith("(_run)")]
+@pytest.fixture
+def watchdog_threads(monkeypatch: pytest.MonkeyPatch) -> list[threading.Thread]:
+    """Every watchdog thread the test starts, kept by identity when the watchdog is armed.
+
+    The thread body then sleeps 50 ms after its loop, so a stop that does not join leaves
+    the thread alive when the stream returns, in every ending.
+    """
+    seen: list[threading.Thread] = []
+    watchdog = fleet_client._SilenceWatchdog
+    real_arm, real_run = watchdog.arm, watchdog._run
+
+    def arm(self: fleet_client._SilenceWatchdog) -> None:
+        real_arm(self)
+        if self._thread is not None and self._thread not in seen:
+            seen.append(self._thread)
+
+    def run(self: fleet_client._SilenceWatchdog) -> None:
+        real_run(self)
+        time.sleep(0.05)
+
+    monkeypatch.setattr(watchdog, "arm", arm)
+    monkeypatch.setattr(watchdog, "_run", run)
+    return seen
 
 
-def _end_normally(client: LlamaServerClient) -> None:
+def _end_normally(client: LlamaServerClient, threads: list[threading.Thread]) -> None:
     assert "w2" in list(client.chat_stream_items(_MESSAGES))
 
 
-def _end_cut(client: LlamaServerClient) -> None:
+def _end_cut(client: LlamaServerClient, threads: list[threading.Thread]) -> None:
     with pytest.raises(StreamInterruptedError):
         list(client.chat_stream_items(_MESSAGES))
 
 
-def _end_by_caller_error(client: LlamaServerClient) -> None:
+def _end_by_caller_error(client: LlamaServerClient, threads: list[threading.Thread]) -> None:
     stream = client.chat_stream_items(_MESSAGES)
     assert [next(stream), next(stream)] == ["w0", "w1"]
-    assert len(_live_watchdogs()) == 1
+    assert threads[-1].is_alive()
     with pytest.raises(RuntimeError):
         stream.throw(RuntimeError("the caller failed"))
 
 
-def _end_by_close(client: LlamaServerClient) -> None:
+def _end_by_close(client: LlamaServerClient, threads: list[threading.Thread]) -> None:
     stream = client.chat_stream_items(_MESSAGES)
     assert [next(stream), next(stream)] == ["w0", "w1"]
-    assert len(_live_watchdogs()) == 1
+    assert threads[-1].is_alive()
     stream.close()
 
 
@@ -503,14 +523,17 @@ def _end_by_close(client: LlamaServerClient) -> None:
     ],
 )
 def test_no_watchdog_thread_outlives_its_stream(
-    script: _Script, end: Callable[[LlamaServerClient], None]
+    script: _Script,
+    end: Callable[[LlamaServerClient, list[threading.Thread]], None],
+    watchdog_threads: list[threading.Thread],
 ) -> None:
-    """The stream joins its watchdog before it returns, so no thread is left to count.
+    """The stream joins its watchdog before it returns: the thread it started is not alive.
 
-    Each pass starts one watchdog; the repeats make a join that is missing show as a thread
-    that is still alive at the check.
+    Each pass starts one watchdog and the test holds that thread object, so a renamed target
+    cannot hide it. The thread ends 50 ms late, so a missing join shows in every ending.
     """
     with _serve(script, silent_prefill=True) as (_server, client):
-        for _ in range(10):
-            end(client)
-            assert _live_watchdogs() == []
+        for number in range(1, 6):
+            end(client, watchdog_threads)
+            assert len(watchdog_threads) == number
+            assert not watchdog_threads[-1].is_alive()
