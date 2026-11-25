@@ -55,6 +55,11 @@ def _chunk(data: bytes) -> bytes:
     return f"{len(data):x}\r\n".encode() + data + b"\r\n"
 
 
+_ROLE_FRAME = _chunk(
+    b'data: {"choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": null}]}\n\n'
+)
+
+
 def _frame(text: str, *, finish: bool = False) -> bytes:
     choice = {"index": 0, "delta": {"content": text}, "finish_reason": "stop" if finish else None}
     return _chunk(f"data: {json.dumps({'choices': [choice]})}\n\n".encode())
@@ -117,7 +122,7 @@ class _ScriptedServer:
             )
             return True
         self._release.wait(script.head_wait_s)
-        out = bytearray(_HEADERS)
+        out = bytearray(_HEADERS + (_ROLE_FRAME if script.role_first else b""))
 
         def pause(seconds: float) -> None:
             if seconds > 0:
@@ -125,9 +130,6 @@ class _ScriptedServer:
                 out.clear()
                 self._release.wait(seconds)
 
-        if script.role_first:
-            role = {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
-            out.extend(_chunk(f"data: {json.dumps({'choices': [role]})}\n\n".encode()))
         if script.heartbeat_s:
             deadline = time.monotonic() + script.wait_s
             while time.monotonic() < deadline:
@@ -392,18 +394,29 @@ def test_silence_after_a_first_frame_without_content_is_the_silence_error(site: 
         _SITES[site](client)
 
 
-def test_a_slow_reader_of_a_silent_prefill_stream_is_not_cut() -> None:
+def test_a_slow_reader_of_a_silent_prefill_stream_is_not_cut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The bound runs only while the client waits for a line, not while the caller holds one.
 
-    The second frame comes after the caller's hold, so a bound that ran during the hold has
-    shut the socket by then.
+    The caller holds the second frame past the bound. The fake server then still has frames to
+    send, so a bound that ran during the hold has shut the socket.
     """
-    script = _Script(frames=2, gap_s=_IDLE_S * 2.5, end=True)
+    shutdowns: list[httpx.Response] = []
+    real = fleet_client._shut_down_socket
+
+    def record(resp: httpx.Response) -> bool:
+        shutdowns.append(resp)
+        return real(resp)
+
+    monkeypatch.setattr(fleet_client, "_shut_down_socket", record)
+    script = _Script(frames=8, gap_s=_IDLE_S * 0.3, end=True)
     with _serve(script, silent_prefill=True) as (_server, client):
         stream = client.chat_stream_items(_MESSAGES)
-        assert next(stream) == "w0"
-        time.sleep(_IDLE_S * 2)
-        assert "w1" in list(stream)
+        assert [next(stream), next(stream)] == ["w0", "w1"]
+        time.sleep(_IDLE_S * 1.5)
+        assert "w7" in list(stream)
+    assert shutdowns == []
 
 
 def test_a_bound_never_fires_after_its_stream_ends(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -435,7 +448,7 @@ def test_a_silent_prefill_stream_starts_one_thread_for_all_its_lines() -> None:
         real(thread)
 
     with _serve(_Script(frames=50, end=True), silent_prefill=True) as (_server, client):
-        list(client.chat_stream_items(_MESSAGES))  # opens the pooled connection and its server thread
+        list(client.chat_stream_items(_MESSAGES))  # opens the connection and its server thread
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(threading.Thread, "start", count)
             assert "w49" in list(client.chat_stream_items(_MESSAGES))
