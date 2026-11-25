@@ -986,7 +986,7 @@ def reset_services_on_exit() -> None:
             _wait_for_stop()
 
 
-def straggler_threads() -> list[threading.Thread]:
+def _straggler_threads() -> list[threading.Thread]:
     """Non-daemon threads the interpreter would join at shutdown, besides us."""
     return [
         thread
@@ -1019,9 +1019,9 @@ def _exit_if_stragglers(status: int, deadline: float) -> None:
     A signal that joined the stop meanwhile sets the status instead.
     """
     with _interrupt_force_quits():
-        for thread in straggler_threads():
+        for thread in _straggler_threads():
             thread.join(max(0.0, deadline - time.monotonic()))
-        if straggler_threads():
+        if _straggler_threads():
             _exit_now(exit_status_after_stop(status), _STRAGGLER_NOTE)
 
 
@@ -1077,10 +1077,10 @@ def end_command(stop: SystemExit) -> NoReturn:
     the end of the process. A signal meanwhile sets the status. With no thread left, it
     raises *stop*, so the interpreter's exit and atexit run as before.
     """
-    if straggler_threads():
+    if _straggler_threads():
         code = exit_code_of(stop)
         status = _end_pool_workers(code)
-        if straggler_threads():
+        if _straggler_threads():
             exit_after_signal(status)
         owed = exit_status_after_stop(status)
         if owed != code:
