@@ -2,6 +2,8 @@
 
 import fnmatch
 import logging
+import ntpath
+import os
 import shutil
 import time
 from collections.abc import Callable, Iterable
@@ -172,12 +174,38 @@ def discard_partial_blobs(models_dir: Path, hf_repo: str, blobs: Iterable[str]) 
         lock_path = models_dir / ".locks" / repo_folder / f"{blob}.lock"
         try:
             lock_path.parent.mkdir(parents=True, exist_ok=True)
-            with FileLock(lock_path, timeout=0):
+            try:
+                with FileLock(extended_path(lock_path), timeout=0):
+                    _unlink_partials(repo_dir, blob)
+            except NotImplementedError:
+                # The filesystem has no flock, so the hub uses a soft lock that
+                # this check cannot see: clean this blob as before the lock check.
                 _unlink_partials(repo_dir, blob)
         except Timeout:
             log.info("Kept the partial download of %s: another transfer holds it.", blob)
         except OSError as exc:
             raise _unreadable_cache(repo_dir, exc) from exc
+
+
+_WINDOWS_PATH_LIMIT = 255
+
+
+def extended_path(path: Path, *, windows: bool = os.name == "nt") -> str:
+    r"""Return *path* with the ``\\?\`` prefix when Windows would refuse its length.
+
+    huggingface_hub does the same for its lock path above 255 characters, so the
+    hub and this check open one file. A path that already has the prefix, or is
+    short, stays as it is; a network share takes the ``\\?\UNC`` form.
+    """
+    text = str(path)
+    if not windows:
+        return text
+    absolute = ntpath.abspath(text)
+    if len(absolute) <= _WINDOWS_PATH_LIMIT or absolute.startswith("\\\\?\\"):
+        return text
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute[2:]
+    return "\\\\?\\" + absolute
 
 
 def _unreadable_cache(repo_dir: Path, exc: OSError) -> RuntimeError:
