@@ -79,7 +79,12 @@ class ModelEntry(BaseModel):
         return cls(
             name=ref,
             source=ModelSource.NATIVE,
-            task=ModelTask(manifest.task) if manifest else None,
+            # A task this lilbee does not know (a newer writer) lists with no task.
+            task=(
+                ModelTask(manifest.task)
+                if manifest and manifest.task in tuple(ModelTask)
+                else None
+            ),
             size_gb=_bytes_to_gb(manifest.disk_size_bytes) if manifest else None,
             display_name=clean_display_name(manifest.hf_repo) if manifest else "",
         )
