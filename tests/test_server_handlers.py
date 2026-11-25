@@ -30,6 +30,7 @@ from lilbee.server.handlers import (
 from lilbee.server.handlers import (
     sse as _sse_h,
 )
+from lilbee.server.route_names import name_routes
 from tests._held import held_kinds, hold_failed
 from tests.conftest import install_fake_model
 
@@ -1016,7 +1017,7 @@ class TestAskStream:
         assert len(error_events) == 1
         parsed = json.loads(error_events[0].split("data: ")[1].strip())
         assert parsed["code"] == "engine_missing"
-        assert parsed["message"] == text
+        assert parsed["message"] == name_routes(text)
 
     async def test_unclassified_provider_error_has_message_but_no_code(self, mock_svc):
         # An UNKNOWN-kind ProviderError still surfaces its message, with no code.
