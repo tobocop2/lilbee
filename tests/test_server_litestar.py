@@ -2536,6 +2536,12 @@ class TestSetupCrawlerRoutes:
         assert resp.status_code == 200
         assert resp.json()["installed"] is False
 
+    @mock.patch("lilbee.server.routes.setup.chromium_installed", return_value=True)
+    def test_status_with_a_crawler_that_cannot_load(self, _mock_chromium, client, broken_crawlberg):
+        body = client.get("/setup/crawler/status").json()
+        assert body["package_installed"] is False
+        assert body["installed"] is False
+
     def test_status_route_is_gated_by_the_middleware(self):
         """Reports whether Chromium is installed, which is host inventory."""
         from lilbee.server.auth import authenticates_itself
