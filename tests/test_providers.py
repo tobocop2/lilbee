@@ -19,6 +19,7 @@ from tests import _fake_sdk as fakes
 from tests._exit_probe import assert_probe_exits
 from tests._gguf_fixture import needs_gguf_parser as _needs_gguf_parser
 from tests._sys_modules import inject_modules
+from tests.conftest import without_lilbee_env
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -176,7 +177,7 @@ class TestFactory:
 
 class TestConfigProvider:
     def test_default_llm_provider(self, tmp_path) -> None:
-        env = {k: v for k, v in __import__("os").environ.items() if not k.startswith("LILBEE_")}
+        env = without_lilbee_env()
         # Point LILBEE_DATA at a clean tmp dir so the test doesn't pick up a
         # user-local config.toml whose model slots predate strict catalog
         # validation (round 4).

@@ -50,6 +50,7 @@ from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.app import clear_overrides
 from lilbee.core import profile_files
 from lilbee.core.config import cfg
+from lilbee.core.config.defaults import ENV_PREFIX
 from lilbee.core.profile_files import profile_folders
 from lilbee.core.system import canonical_models_dir, default_data_dir
 from lilbee.data.extract import xberg as _xberg_extract
@@ -1367,6 +1368,15 @@ def child_pythonpath(*folders: str | Path) -> str:
     return os.pathsep.join(filter(None, [os.environ.get("PYTHONPATH"), *map(str, folders)]))
 
 
+def without_lilbee_env() -> dict[str, str]:
+    """Return os.environ without the variables the config layer reads.
+
+    The ambient environment is kept because the platform data directory
+    resolves through it, and dropping it leaves Windows with no home directory.
+    """
+    return {k: v for k, v in os.environ.items() if not k.startswith(ENV_PREFIX)}
+
+
 def clean_env(tmp_path: Path | None = None) -> dict[str, str]:
     """Return os.environ with all LILBEE_* vars removed.
 
@@ -1374,11 +1384,8 @@ def clean_env(tmp_path: Path | None = None) -> dict[str, str]:
     is accidentally picked up. Sets ``LILBEE_SKIP_MODEL_TASK_VALIDATION=1``
     so tests using placeholder model names don't trip the per-role
     catalog-task validator; pop it explicitly to exercise that validator.
-
-    The ambient environment is kept because the platform data directory
-    resolves through it, and dropping it leaves Windows with no home directory.
     """
-    env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}
+    env = without_lilbee_env()
     env["LILBEE_SKIP_MODEL_TASK_VALIDATION"] = "1"
     if tmp_path is not None:
         env["LILBEE_DATA"] = str(tmp_path)
