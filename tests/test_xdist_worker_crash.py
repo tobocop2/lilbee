@@ -47,7 +47,7 @@ _TOY_WORKERS = 2
 _START_COST_ENV = "TOY_WORKER_START_COST_S"
 _START_LOCK_ENV = "TOY_WORKER_START_LOCK"
 _START_COST_S = 4.0
-_TOY_CONFTEST = """
+_TOY_CONFTEST = f"""
 import os
 import time
 
@@ -57,9 +57,9 @@ import filelock
 def pytest_configure(config):
     # A loaded host starts the workers one after another on shared CPUs. One lock models that:
     # each worker holds it for the cost of its start.
-    cost = float(os.environ.get("TOY_WORKER_START_COST_S", "0"))
+    cost = float(os.environ.get("{_START_COST_ENV}", "0"))
     if cost and os.environ.get("PYTEST_XDIST_WORKER"):
-        with filelock.FileLock(os.environ["TOY_WORKER_START_LOCK"]):
+        with filelock.FileLock(os.environ["{_START_LOCK_ENV}"]):
             time.sleep(cost)
 """
 _TOY_SUITE = """
