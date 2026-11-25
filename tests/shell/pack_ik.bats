@@ -300,6 +300,9 @@ run_server_build() {
   tool dnf 'echo "dnf $*" >> "${STEPS}"'
   tool git 'case "$*" in *" rev-parse HEAD") echo "${UPSTREAM_COMMIT}" ;; esac'
   tool cmake 'echo "cmake ${PATH%%:*}" >> "${STEPS}"' 'exit 9'
+  # The git stub fetches nothing; the build removes -lineinfo from this file of the source.
+  mkdir -p "${BATS_TEST_TMPDIR}/ik-src/ggml/src"
+  echo 'set(CUDA_FLAGS ${CUDA_FLAGS} -use_fast_math -lineinfo)' > "${BATS_TEST_TMPDIR}/ik-src/ggml/src/CMakeLists.txt"
   sed -e "s#=/tmp/#=${IMAGE}/tmp/#" -e "s#/opt/#${IMAGE}/opt/#g" "${REPO_ROOT}/tools/wheel-build/ik_llama_manylinux.sh" > "${script}"
   BIN_DIR="${BATS_TEST_TMPDIR}/out-bin" SRC_DIR="${BATS_TEST_TMPDIR}/ik-src" OWNER=1:1 run bash "${script}"
 }
@@ -307,6 +310,7 @@ run_server_build() {
 @test "the server builds with the pinned tools of a new venv first on PATH" {
   run_server_build
   [ "$status" -eq 9 ]
+  [ "$(cat "${BATS_TEST_TMPDIR}/ik-src/ggml/src/CMakeLists.txt")" = 'set(CUDA_FLAGS ${CUDA_FLAGS} -use_fast_math)' ]
   [ "$(sed 's/ | epoch=.*//' "${PYTHON_CALLS}")" = "${IMAGE}/opt/python/cp312-cp312/bin/python -m venv ${IMAGE}/tmp/build-venv
 ${IMAGE}/tmp/build-venv/bin/python -m pip install --require-hashes --force-reinstall -r ${ROOT}/tools/wheel-build/ik-tools.constraints" ]
   [ "$(cat "${STEPS}")" = "dnf install -y gcc-toolset-13-gcc-c++
