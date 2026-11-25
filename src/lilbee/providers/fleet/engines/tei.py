@@ -27,6 +27,7 @@ from lilbee.providers.fleet.engines.base import (
     RequestProfile,
     ServerProcess,
 )
+from lilbee.providers.fleet.engines.cuda_cells import cuda_cell
 from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate
 from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
@@ -82,13 +83,6 @@ class BuildPick:
     reason: str = ""
 
 
-def _cuda_cell(compute: tuple[int, int]) -> int | None:
-    """The newest CUDA build of the same major version that does not exceed *compute*."""
-    major, minor = compute
-    fits = [c for c in _CUDA_CELLS if c // 10 == major and c % 10 <= minor]
-    return max(fits, default=None)
-
-
 def _gpu_pick(host: HostCaps) -> BuildPick:
     """The CUDA build for the newest GPU, else the CPU build with the reason."""
     if not host.gpus:
@@ -100,7 +94,7 @@ def _gpu_pick(host: HostCaps) -> BuildPick:
         return BuildPick(
             _CPU, f"CUDA builds need compute capability {needed} or newer; found {found}"
         )
-    cell = _cuda_cell(best)
+    cell = cuda_cell(_CUDA_CELLS, best)
     if cell is None:
         found = ".".join(map(str, best))
         return BuildPick(_CPU, f"No CUDA build covers compute capability {found}")
