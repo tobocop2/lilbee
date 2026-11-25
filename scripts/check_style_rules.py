@@ -828,7 +828,15 @@ def _check_markup_parsers(paths: Iterable[Path]) -> Iterator[str]:
 
 
 LIVE_DISPLAY_DOTTED = frozenset(
-    {"rich.progress", "rich.progress.Progress", "rich.live", "rich.status"}
+    {
+        "rich.progress",
+        "rich.progress.Progress",
+        "rich.progress.track",
+        "rich.progress.wrap_file",
+        "rich.progress.open",
+        "rich.live",
+        "rich.status",
+    }
 )
 
 
