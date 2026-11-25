@@ -3594,6 +3594,12 @@ class TestModelsCatalog:
         result = await handlers.models_catalog()
         assert result.models[0].installed is True
 
+    @patch("lilbee.catalog.query.get_picks", return_value=[])
+    async def test_an_unreadable_registry_fails_the_installed_filter(self, _picks, mock_svc):
+        mock_svc.model_manager.list_installed.side_effect = OSError("manifests unreadable")
+        with pytest.raises(OSError, match="manifests unreadable"):
+            await handlers.models_catalog(installed=True)
+
     @patch("lilbee.server.handlers.models.get_catalog")
     async def test_has_more_propagated(self, mock_get_catalog, mock_svc):
         from lilbee.catalog import CatalogResult

@@ -313,10 +313,14 @@ def self_check_cmd(
     """
     from lilbee.catalog.types import ModelTask
 
-    if chat_model_path is None:
-        chat_model_path = _installed_model_path(ModelTask.CHAT, cfg.chat_model)
-    if embed_model_path is None and not skip_embedding:
-        embed_model_path = _installed_model_path(ModelTask.EMBEDDING, cfg.embedding_model)
+    try:
+        if chat_model_path is None:
+            chat_model_path = _installed_model_path(ModelTask.CHAT, cfg.chat_model)
+        if embed_model_path is None and not skip_embedding:
+            embed_model_path = _installed_model_path(ModelTask.EMBEDDING, cfg.embedding_model)
+    except OSError as exc:
+        _self_check_emit_failure(f"Could not read the model registry: {exc}")
+        raise typer.Exit(1) from exc
 
     with _teardown_on_sigterm():
         text, chat_path = _self_check_leg(

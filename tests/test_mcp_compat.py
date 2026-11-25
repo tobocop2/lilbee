@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -35,6 +35,18 @@ def test_catalog_browse_carries_compat_fields(unsupported_row: CatalogModel) -> 
     entry = payload["models"][0]
     assert entry["architecture"] == "kimi_k2_unsupported"
     assert entry["compat"] == ModelCompat.UNSUPPORTED.value
+
+
+def test_catalog_browse_raises_on_an_unreadable_registry_instead_of_listing_no_models() -> None:
+    manager = MagicMock()
+    manager.list_installed.side_effect = OSError("manifests unreadable")
+    services = MagicMock(model_manager=manager)
+    with (
+        patch("lilbee.mcp_server.get_services", return_value=services),
+        patch("lilbee.catalog.query.get_picks", return_value=[]),
+        pytest.raises(OSError, match="manifests unreadable"),
+    ):
+        catalog_browse(installed=True)
 
 
 @pytest.mark.asyncio
