@@ -55,9 +55,6 @@ def backfill_concepts(
     covered = store.concepts_covered()
     if covered is not None and covered.version == store.sources_version():
         return None
-    if not graph.can_extract():
-        # Without the model every chunk yields no concept: owe the sources to a later sync.
-        return ConceptBackfill(0, None)
     # Before the read of the owed rows: a row committed after it is owed to the next pass.
     checkpoint = store.sources_checkpoint()
     names = (
@@ -68,6 +65,9 @@ def backfill_concepts(
     ids = store.source_ids(names, SourceType.DOCUMENT)
     holding = graph.sources_with_concepts(ids.values())
     owed = sorted(source_id for source_id in ids.values() if source_id not in holding)
+    if owed and not graph.can_extract():
+        # Without the model every chunk yields no concept: owe the sources to a later sync.
+        return ConceptBackfill(0, None)
     written = 0
     for start in range(0, len(owed), _SOURCES_PER_BATCH):
         if cancel is not None and cancel.is_set():
