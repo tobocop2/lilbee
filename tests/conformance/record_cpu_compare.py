@@ -6,8 +6,8 @@
 The run takes the two binaries from the packs that the tree pins. It downloads each model
 it does not find in --models and stops if a file has another sha256 than the record states.
 It starts every server with the adapter's own command line on the CPU, the engine on cores 0-7
-and the oracle on cores 8-15, each with 8 threads. Then it runs tests.conformance.compare_run with the cross_format
-embed bound, and stops the servers. compare_run writes the record and refuses a stale pin.
+and the oracle on cores 8-15, each with 8 threads. Then it runs tests.conformance.compare_run
+with the cross_format embed bound, and stops the servers. compare_run writes the record and refuses a stale pin.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
 
-from lilbee.providers.fleet.engines.base import EngineAdapter, LaunchRequest, PORT_SLOT
+from lilbee.providers.fleet.engines.base import PORT_SLOT, EngineAdapter, LaunchRequest
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
@@ -140,7 +140,8 @@ def _download(url: str, dest: Path) -> None:
     part = dest.with_name(dest.name + ".part")
     for attempt in range(_FETCH_TRIES):
         try:
-            with urllib.request.urlopen(url, timeout=120) as answer, part.open("wb") as out:
+            # The url is an https URL of the Hugging Face hub, built from the model table.
+            with urllib.request.urlopen(url, timeout=120) as answer, part.open("wb") as out:  # noqa: S310
                 while block := answer.read(1 << 20):
                     out.write(block)
             part.replace(dest)
@@ -153,7 +154,7 @@ def _download(url: str, dest: Path) -> None:
 
 def _repo_files(repo: str) -> list[str]:
     url = f"{_HF}/api/models/{repo}/tree/main?recursive=true"
-    with urllib.request.urlopen(url, timeout=60) as answer:
+    with urllib.request.urlopen(url, timeout=60) as answer:  # noqa: S310  an https hub URL
         entries: list[dict[str, Any]] = json.load(answer)
     return [e["path"] for e in entries if e["type"] == "file"]
 
@@ -235,7 +236,7 @@ class _Servers:
 def _wait(url: str) -> None:
     for _ in range(_HEALTH_TRIES):
         try:
-            with urllib.request.urlopen(url + "/health", timeout=3):
+            with urllib.request.urlopen(url + "/health", timeout=3):  # noqa: S310  a local http URL
                 return
         except (urllib.error.URLError, TimeoutError, ConnectionError):
             time.sleep(2)
