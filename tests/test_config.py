@@ -281,6 +281,16 @@ class TestOcrLanguage:
         with pytest.raises(ValueError, match="language code"):
             Config(ocr_language=value)
 
+    @pytest.mark.parametrize(
+        "value",
+        [5, 1.5, True, datetime.date(2026, 1, 1), {"eng": 1}, ["eng", 5], ["eng", None], [["eng"]]],
+        ids=["int", "float", "bool", "date", "table", "int-item", "none-item", "nested-list"],
+    )
+    def test_rejects_non_string_values_with_a_validation_error(self, value):
+        """A non-string value gets the refusal any bad code gets, never a TypeError."""
+        with pytest.raises(ValidationError, match="ocr_language"):
+            Config(ocr_language=value)
+
     def test_chat_mode_defaults_to_search_when_none_or_empty(self):
         """The validator coerces None / "" to 'search' so old configs round-trip."""
         from lilbee.core.config.model import Config as ConfigCls
@@ -855,6 +865,16 @@ class TestNGpuLayersConfig:
             c = Config()
             c.n_gpu_layers = 3.0  # type: ignore[assignment]
             assert c.n_gpu_layers == 3
+
+    @pytest.mark.parametrize(
+        "value",
+        [[1], {"a": 1}, datetime.date(2026, 1, 1)],
+        ids=["list", "table", "date"],
+    )
+    def test_non_number_value_is_a_validation_error(self, value) -> None:
+        """A value that is no number gets a refusal, never a TypeError from int()."""
+        with pytest.raises(ValidationError, match="n_gpu_layers"):
+            Config(n_gpu_layers=value)
 
 
 class TestGpuDevicesConfig:
@@ -1476,6 +1496,12 @@ class TestIgnoreDirs:
             assert "output" in c.ignore_dirs
             assert "generated" in c.ignore_dirs
             assert "node_modules" in c.ignore_dirs
+
+    @pytest.mark.parametrize("value", [[["a"]], [{"a": 1}]], ids=["nested-list", "table"])
+    def test_unhashable_entry_is_a_validation_error(self, value):
+        """A list entry that cannot join a set gets a refusal, never a TypeError."""
+        with pytest.raises(ValidationError, match="ignore_dirs"):
+            Config(ignore_dirs=value)
 
     def test_lilbee_ignore_dirs_empty_string(self):
         env = clean_env()
