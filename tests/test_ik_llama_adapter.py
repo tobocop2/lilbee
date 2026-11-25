@@ -807,17 +807,16 @@ def test_the_build_script_holds_a_virtual_architecture_at_or_above_hopper() -> N
     assert max(virtual) >= max(real)
 
 
-def test_the_build_script_pins_the_source_mtimes_before_the_first_compile() -> None:
-    """nvcc -lineinfo copies each source mtime into the GPU code; a checkout sets its own time."""
+def test_the_build_script_removes_lineinfo_before_the_first_compile() -> None:
+    """nvcc -lineinfo puts source mtimes and process IDs into the GPU code; builds then differ."""
     text = _active_script()
-    epoch = 'epoch="$(bash "$(dirname "${BASH_SOURCE[0]}")/source_date_epoch.sh" "${SRC_DIR}")"'
-    touch = '-exec touch -d "@${epoch#SOURCE_DATE_EPOCH=}" {} +'
-    assert text.count(epoch) == 1
-    assert text.count(touch) == 1
-    assert text.index("checkout -q FETCH_HEAD") < text.index(epoch) < text.index(touch)
-    assert text.index(touch) < text.index("cmake -S")
-    assert "-name .git -prune" in text
-    assert (_BUILD_SCRIPT.parent / "source_date_epoch.sh").is_file()
+    sed = "sed -i 's/ -lineinfo)/)/' \"${SRC_DIR}/ggml/src/CMakeLists.txt\""
+    guard = "grep -rq -e '-lineinfo' \"${SRC_DIR}\" --include=CMakeLists.txt --include='*.cmake'"
+    assert text.count(sed) == 1
+    assert text.count(guard) == 1
+    assert text.index("checkout -q FETCH_HEAD") < text.index(sed) < text.index(guard)
+    assert text.index(guard) < text.index("cmake -S")
+    assert text.count("exit 1") >= 1 and "-lineinfo is still in a CMake file" in text
 
 
 def test_the_build_script_strips_exactly_the_first_party_files() -> None:
