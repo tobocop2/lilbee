@@ -1,7 +1,7 @@
 name: Pages
 
 # Marketing site at https://lilbee.sh/ plus the per-backend
-# PEP 503 wheel indexes under /<backend>/. Decoupled from package distribution:
+# PEP 503 wheel indexes under /<backend>/, /compat/ and /packs/ (the engine packs). Decoupled from package distribution:
 # it redeploys when site/ (or this workflow) changes on main, and after a
 # successful Release candidate run (which builds the full wheel-* set -- default
 # + CUDA extras), so wheel index subdirs stay current without making site
@@ -144,6 +144,16 @@ jobs:
         run: |
           rm -f wheel-indexes/.empty
           python3 tools/build_compat_index.py wheel-indexes --repo tobocop2/lancedb
+
+      - name: Build engine pack index
+        # Serves lilbee.sh/packs/: the wheels of the public engine-packs-<date>
+        # releases of this repo. Independent of the wheel set above.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          rm -f wheel-indexes/.empty
+          python3 tools/build_pack_index.py wheel-indexes --repo "${REPO}"
 
       - name: Upload wheel-indexes artifact
         uses: actions/upload-artifact@v7
