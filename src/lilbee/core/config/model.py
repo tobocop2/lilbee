@@ -1426,8 +1426,13 @@ class Config(BaseSettings):
         """
         if isinstance(v, str):
             v = v.replace("+", ",").replace("\n", ",").split(",")
-        items = v or []
-        langs = [s.strip() for s in items if isinstance(s, str) and s.strip()]
+        items = [] if v is None else v
+        if not isinstance(items, (list, tuple)) or not all(isinstance(s, str) for s in items):
+            raise ValueError(
+                f"ocr_language: {v!r} is not a list of Tesseract language codes "
+                "(examples: eng, deu, chi_sim, jpn_vert)"
+            )
+        langs = [s.strip() for s in items if s.strip()]
         for lang in langs:
             if not _TESSERACT_LANGUAGE_CODE.fullmatch(lang):
                 raise ValueError(
@@ -1474,7 +1479,10 @@ class Config(BaseSettings):
                 return parse_optional_int(v, aliases={"cpu": 0})
             except ValueError:
                 raise ValueError("use a whole number, cpu or auto") from None
-        return int(v)
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            raise ValueError("use a whole number, cpu or auto") from None
 
     @field_validator("gpu_devices", mode="before")
     @classmethod
@@ -1626,6 +1634,8 @@ class Config(BaseSettings):
             extra = frozenset(name.strip() for name in v.split(",") if name.strip())
             return DEFAULT_IGNORE_DIRS | extra
         if isinstance(v, (set, frozenset, list)):
+            if not all(isinstance(name, str) for name in v):
+                raise ValueError("ignore_dirs: every entry must be a directory name")
             return DEFAULT_IGNORE_DIRS | frozenset(v)
         return DEFAULT_IGNORE_DIRS
 
