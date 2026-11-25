@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import os
 
-from lilbee.crawler.availability import CRAWLER_MISSING_MESSAGE, crawler_available
+from lilbee.crawler.availability import (
+    CRAWLER_MISSING_MESSAGE,
+    crawler_available,
+    crawler_unavailable_message,
+)
 from lilbee.crawler.bootstrap import (
     CrawlerBackendError,
     CrawlerBrowserError,
@@ -56,6 +60,7 @@ __all__ = [
     "crawl_single",
     "crawler_available",
     "crawler_browsers_path",
+    "crawler_unavailable_message",
     "get_blocked_networks",
     "is_url",
     "require_valid_crawl_url",

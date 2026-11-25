@@ -98,8 +98,8 @@ from lilbee.core.security import FileLockUnavailableError
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
 from lilbee.crawler import (
-    CRAWLER_MISSING_MESSAGE,
     crawler_available,
+    crawler_unavailable_message,
     is_url,
     require_valid_crawl_url,
 )
@@ -608,7 +608,7 @@ async def add(
     crawled_count = 0
     if urls:
         if not crawler_available():
-            return _error(CRAWLER_MISSING_MESSAGE)
+            return _error(crawler_unavailable_message())
         crawled_count, url_errors = await _crawl_add_urls(urls, render_mode)
         errors.extend(url_errors)
 
@@ -661,7 +661,7 @@ async def crawl(
     ``authorization`` (a whole Authorization header value) or ``username`` and
     ``password``, and ``cookie`` (a Cookie header value), log in to the seed host only."""
     if not crawler_available():
-        return _error(CRAWLER_MISSING_MESSAGE)
+        return _error(crawler_unavailable_message())
     if (too_large := crawl_limit_error(depth, max_pages)) is not None:
         return _error(too_large)
     try:

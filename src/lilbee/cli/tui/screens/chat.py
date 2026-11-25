@@ -107,8 +107,8 @@ from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
 from lilbee.core.text import strip_control_characters
 from lilbee.crawler import (
-    CRAWLER_MISSING_MESSAGE,
     crawler_available,
+    crawler_unavailable_message,
     is_url,
     require_valid_crawl_url,
 )
@@ -1064,7 +1064,7 @@ class ChatScreen(Screen[None]):
 
     def _cmd_crawl(self, args: str) -> None:
         if not crawler_available():
-            self.notify(CRAWLER_MISSING_MESSAGE, severity="error")
+            self.notify(crawler_unavailable_message(), severity="error")
             return
         if not args:
             self._open_crawl_dialog()

@@ -676,12 +676,11 @@ def _crawl_urls_step(
     """Crawl URLs; without the crawler extra every URL fails with the install message."""
     if not urls:
         return _CrawlOutcome()
-    from lilbee.crawler import CRAWLER_MISSING_MESSAGE, crawler_available
+    from lilbee.crawler import crawler_available, crawler_unavailable_message
 
     if not crawler_available():
-        return _CrawlOutcome(
-            failed=[_FailedSource(without_userinfo(url), CRAWLER_MISSING_MESSAGE) for url in urls]
-        )
+        message = crawler_unavailable_message()
+        return _CrawlOutcome(failed=[_FailedSource(without_userinfo(url), message) for url in urls])
     try:
         login = crawl_login(urls, typed_login)
     except ValueError as exc:
