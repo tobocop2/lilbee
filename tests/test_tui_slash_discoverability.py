@@ -1162,12 +1162,16 @@ _LISTING_DELAYS_S = [0.0, 5.5]
 
 def _slow_first_listing(models: list[str], delay_s: float):
     """Return a listing stand-in whose first call sleeps *delay_s* seconds."""
+    import threading
     import time
 
     delays = [delay_s]
 
     def _listing() -> list[str]:
-        time.sleep(delays.pop(0) if delays else 0.0)
+        # The completion helper also calls the listing on the loop thread; only the
+        # worker's call runs on a busy host, so only a call off the main thread waits.
+        if threading.current_thread() is not threading.main_thread():
+            time.sleep(delays.pop(0) if delays else 0.0)
         return list(models)
 
     return _listing
