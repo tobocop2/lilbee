@@ -31,8 +31,8 @@ CALLS_FILE = ROOT / "calls.txt"
 UTF8 = "utf-8"
 # The ref suffix that picks the safetensors format of a repo.
 SAFETENSORS_SUFFIX = "#safetensors"
-# The route that sets each role's model on the server.
-ROUTE_ROLES = {"chat": "chat", "reranker": "rerank", "vision": "vision"}
+# The roles `model use` sets; like the real command, it refuses embed.
+USE_ROLES = ("chat", "rerank", "vision")
 # Every role, in the order engine roles lists them.
 ALL_ROLES = ("chat", "embed", "rerank", "vision")
 
@@ -117,9 +117,6 @@ class Api(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         if self.headers["Authorization"] != f"Bearer {self.token}":
             self.reply(401, {"detail": "bad token"})
-        elif self.command == "PUT" and self.path.startswith("/api/models/"):
-            stored = set_model(ROUTE_ROLES[self.path.rsplit("/", 1)[1]], body["model"])
-            self.reply(200, {"model": stored})
         elif self.command == "POST" and self.path == "/api/chat":
             self.chat(body["question"])
         else:
@@ -141,9 +138,6 @@ class Api(BaseHTTPRequestHandler):
         self.reply(500 if MODE == "chat-500" else 200, reply)
 
     def do_POST(self) -> None:
-        self.handle_request()
-
-    def do_PUT(self) -> None:
         self.handle_request()
 
     def log_message(self, *args: object) -> None:
@@ -204,6 +198,14 @@ def use_embedder(argv: list[str]) -> None:
     print(f"Now embedding with {argv[1]}.")
 
 
+def model_use(argv: list[str]) -> None:
+    """Set the model of a role and print the stored ref as JSON, as `--json model use` does."""
+    role, ref = argv[2], argv[3]
+    if role not in USE_ROLES:
+        sys.exit(f"embed is refused: use 'lilbee use-embedder'. Got {role}.")
+    print(json.dumps({"model": set_model(role, ref), "warnings": []}))
+
+
 def engine_use(argv: list[str]) -> None:
     assert argv[-1] == "--yes", argv
     role, ref = argv[2], argv[3]
@@ -254,6 +256,7 @@ COMMANDS = {
     ("engine", "install"): engine_install,
     ("engine", "prefer"): engine_prefer,
     ("model", "pull"): model_pull,
+    ("model", "use"): model_use,
     ("use-embedder",): use_embedder,
     ("engine", "use"): engine_use,
     ("add",): add,
