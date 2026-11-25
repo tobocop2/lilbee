@@ -315,8 +315,8 @@ def _ir_pairs(sizes: Mapping[str, int]) -> tuple[str, list[str]] | None:
             and _has_pair(sizes, folder, stem)
         ):
             stems.setdefault(folder, []).append(stem)
-    folder = _shallowest(stems)
-    return None if folder is None else (folder, sorted(stems[folder]))
+    shallowest = _shallowest(stems)
+    return None if shallowest is None else (shallowest, sorted(stems[shallowest]))
 
 
 def _ir_pair_bytes(sizes: Mapping[str, int]) -> int:

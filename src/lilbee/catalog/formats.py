@@ -14,6 +14,7 @@ SAFETENSORS_INDEX = "model.safetensors.index.json"
 _SHARD_RE = re.compile(r"-\d+-of-\d+\.safetensors$")
 _SHARD_PARTS_RE = re.compile(r"(.*)-(\d+)-of-(\d+)\.safetensors")
 _IR_MODEL = "openvino_model.xml"
+_IR_VISION_ENTRY = "openvino_language_model.xml"
 _IR_COMPANIONS = (
     "openvino_model.bin",
     "openvino_tokenizer.xml",
@@ -142,14 +143,33 @@ def _module_files(names: list[str]) -> list[str]:
     return [_MODULES_FILE, *(name for name in names if _MODULE_FILE_RE.fullmatch(name))]
 
 
-def _select_openvino(names: list[str]) -> list[str]:
+def _shallowest_folder(names: list[str], entry: str) -> str | None:
+    """The shallowest folder that holds a file named *entry*, or None."""
     folders = sorted(
-        (posixpath.dirname(name) for name in names if posixpath.basename(name) == _IR_MODEL),
+        (posixpath.dirname(name) for name in names if posixpath.basename(name) == entry),
         key=lambda folder: (folder.count("/"), folder),
     )
-    if not folders:
-        return []
-    folder = folders[0]
-    ir = [posixpath.join(folder, name) for name in (_IR_MODEL, *_IR_COMPANIONS)]
+    return folders[0] if folders else None
+
+
+def _select_openvino(names: list[str]) -> list[str]:
+    """The IR files of a model: its ``openvino_model`` pair, else every part of a vision model."""
     extras = ["config.json", "generation_config.json", *_TOKENIZER_FILES, *_POOLING_FILES]
-    return [*_present(names, ir), *_present(names, extras)]
+    folder = _shallowest_folder(names, _IR_MODEL)
+    if folder is not None:
+        ir = [posixpath.join(folder, name) for name in (_IR_MODEL, *_IR_COMPANIONS)]
+        return [*_present(names, ir), *_present(names, extras)]
+    folder = _shallowest_folder(names, _IR_VISION_ENTRY)
+    if folder is None:
+        return []
+    entry = posixpath.join(folder, _IR_VISION_ENTRY)
+    parts = [
+        name
+        for name in names
+        if name != entry
+        and posixpath.dirname(name) == folder
+        and posixpath.basename(name).startswith("openvino_")
+        and name.endswith((".xml", ".bin"))
+    ]
+    sidecars = ["openvino_config.json", *_PROCESSOR_FILES, *extras]
+    return [entry, *parts, *_present(names, sidecars)]
