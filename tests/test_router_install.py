@@ -276,10 +276,14 @@ class TestInstall:
         stale.mkdir(parents=True)
         (stale / "stale.txt").write_text("old", encoding="utf-8")
 
-        def refuse(path: str | Path, *args: Any, **kwargs: Any) -> None:
-            raise PermissionError(13, "Permission denied", str(path))
+        real_unlink = os.unlink
 
-        monkeypatch.setattr(shutil, "rmtree", refuse)
+        def refuse(path: str | Path, *args: Any, **kwargs: Any) -> None:
+            if str(path).endswith("stale.txt"):
+                raise PermissionError(13, "Permission denied", str(path))
+            real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", refuse)
         with caplog.at_level("WARNING", logger=engine_store.log.name), pytest.raises(OSError):
             install_router()
         assert any(str(stale) in r.getMessage() for r in caplog.records)
