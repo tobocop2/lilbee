@@ -4667,10 +4667,13 @@ class TestCollectNativeModelsError:
             "vision": [],
         }
         seen: set[str] = set()
-        with mock.patch(
-            "lilbee.modelhub.registry.ModelRegistry",
-            side_effect=OSError("boom"),
-        ), pytest.raises(OSError, match="boom"):
+        with (
+            mock.patch(
+                "lilbee.modelhub.registry.ModelRegistry",
+                side_effect=OSError("boom"),
+            ),
+            pytest.raises(OSError, match="boom"),
+        ):
             _collect_native_models(buckets, seen)
         assert buckets["chat"] == []
 
