@@ -55,6 +55,11 @@ git -C "${SRC_DIR}" init -q
 git -C "${SRC_DIR}" fetch -q --depth 1 "https://github.com/${UPSTREAM_REPO}.git" "${UPSTREAM_COMMIT}"
 git -C "${SRC_DIR}" checkout -q FETCH_HEAD
 test "$(git -C "${SRC_DIR}" rev-parse HEAD)" = "${UPSTREAM_COMMIT}"
+# nvcc -lineinfo writes the mtime of each source file into the GPU code, and the checkout stamps every file with
+# the time of the checkout. Two builds of one commit would differ. nvcc and ptxas ignore SOURCE_DATE_EPOCH, so set
+# the mtime of each file to the commit time.
+epoch="$(bash "$(dirname "${BASH_SOURCE[0]}")/source_date_epoch.sh" "${SRC_DIR}")"
+find "${SRC_DIR}" -name .git -prune -o -type f -exec touch -d "@${epoch#SOURCE_DATE_EPOCH=}" {} +
 
 # One CPU baseline for every host: AVX2, FMA and F16C, no -march=native. NCCL is off: the engine
 # links it when the image has it, and the wheel must not need it.
@@ -92,8 +97,11 @@ while IFS= read -r -d '' lib; do
 done < <(find "${SRC_DIR}/build" \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' \) -print0)
 
 # The first-party files find each other beside the binary. The NVIDIA files stay as they are.
+# nvcc names its temporary files after its process ID, and the name stays in the symbol table of each GPU object.
+# The strip removes it, so two builds of one commit are equal.
 for f in "${BIN_DIR}"/llama-server "${BIN_DIR}"/libggml* "${BIN_DIR}"/libllama*; do
   [ -e "${f}" ] || continue
+  strip --strip-unneeded "${f}"
   # shellcheck disable=SC2016  # $ORIGIN is a literal for the dynamic loader
   patchelf --set-rpath '$ORIGIN' "${f}"
 done
