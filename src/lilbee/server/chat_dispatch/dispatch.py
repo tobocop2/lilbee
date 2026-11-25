@@ -61,9 +61,8 @@ class ModelNotFoundError(Exception):
     def __init__(self, model: str) -> None:
         self.model = model
         super().__init__(
-            f"Model '{model}' is not installed. Run 'lilbee model list' "
-            "(or GET /api/models/installed) to see installed models, "
-            f"or 'lilbee model pull {model}' (or POST /api/models/pull) to download it."
+            f"Model '{model}' is not installed. Run 'lilbee model list' to see "
+            f"installed models, or 'lilbee model pull {model}' to download it."
         )
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 CHROMIUM_MISSING_MESSAGE = (
     "The headless Chromium browser is not installed. "
-    "Run 'lilbee setup crawler' (or POST /setup/crawler) to enable browser-mode crawling."
+    "Run 'lilbee setup crawler' to enable browser-mode crawling."
 )
 # ``{reason}`` is crawlberg's own error text.
 CRAWL_REFUSED_MESSAGE = "crawlberg refuses to start this crawl: {reason}"

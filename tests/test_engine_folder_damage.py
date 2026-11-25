@@ -34,6 +34,7 @@ from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.engines.tei import TeiAdapter
 from lilbee.providers.fleet.host_caps import collect
+from lilbee.server.route_names import name_routes
 from lilbee.server.routes import engines as routes
 from tests._litestar_test_client import create_test_client
 from tests._unreadable import POSIX_DENIES_READS, unreadable
@@ -45,10 +46,7 @@ DENIED_IN_BUILD = [BUILD, f"{BUILD}/bin", f"{BUILD}/{RECORD_NAME}"]
 DENIED = [(ENGINE, ENGINE), *((name, BUILD) for name in DENIED_IN_BUILD)]
 
 
-def _error(
-    folder: Path,
-    install: str = " and run 'lilbee engine install tei' (or POST /api/engines/install)",
-) -> str:
+def _error(folder: Path, install: str = " and run 'lilbee engine install tei'") -> str:
     return (
         f"The engine folder {folder} holds no build that lilbee can read. If its "
         f"permissions deny a read, correct them. lilbee cannot remove it until then. "
@@ -141,7 +139,9 @@ def _assert_every_surface_names(folder: Path) -> None:
     assert status == 200
     for body in (cli, rest, mcp_server.engine_list_tool()):
         assert [build["engine"] for build in body["builds"]] == GOOD
-        assert body.get("damaged") == [{"folder": str(folder), "error": error}]
+        # REST callers have no command line, so the route stands beside the command there only.
+        shown = name_routes(error) if body is rest else error
+        assert body.get("damaged") == [{"folder": str(folder), "error": shown}]
     text = CliRunner().invoke(cli_app, ["engine", "list"])
     assert (text.exit_code, text.output.splitlines().count(error)) == (0, 1)
     chat = run_engine_command("list").text.splitlines()
