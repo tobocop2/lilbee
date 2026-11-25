@@ -613,3 +613,56 @@ class TestCheckMarkupParsers:
         findings = self._findings(tmp_path, "x = 1\nconsole.print(v, markup=True)")
         assert len(findings) == 1
         assert findings[0].startswith(f"{tmp_path / 'sample.py'}:2: ")
+
+
+class TestLiveDisplays:
+    """A live display is built only by the helpers in the console module."""
+
+    @staticmethod
+    def _findings(tmp_path: Path, source: str) -> list[str]:
+        target = tmp_path / "sample.py"
+        target.write_text(source, encoding="utf-8")
+        return list(csr._check_live_displays([target]))
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("from rich.progress import Progress", id="progress"),
+            pytest.param("from rich.progress import Progress as P", id="alias"),
+            pytest.param("from rich.progress import BarColumn, Progress", id="among_columns"),
+            pytest.param("import rich.progress", id="module"),
+            pytest.param("import rich.progress as rp", id="module_alias"),
+            pytest.param("from rich import progress", id="module_from_rich"),
+            pytest.param("import rich\nrich.progress.Progress()", id="attribute"),
+            pytest.param("from rich.live import Live", id="live"),
+            pytest.param("import rich.live", id="live_module"),
+            pytest.param("from rich.status import Status", id="status"),
+        ],
+    )
+    def test_refuses_a_way_to_a_live_display(self, tmp_path: Path, source: str) -> None:
+        assert self._findings(tmp_path, source), f"should have flagged: {source}"
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("from rich.progress import BarColumn, TextColumn", id="columns"),
+            pytest.param("from rich.progress import ProgressColumn, Task, TaskID", id="types"),
+            pytest.param("from rich.console import Console", id="console"),
+            pytest.param("from lilbee.runtime.console import live_progress", id="helper"),
+            pytest.param("from .rich import progress", id="relative"),
+        ],
+    )
+    def test_allows_columns_and_the_helpers(self, tmp_path: Path, source: str) -> None:
+        assert not self._findings(tmp_path, source), f"should not have flagged: {source}"
+
+    def test_the_console_module_is_allowed(self) -> None:
+        assert list(csr._live_display_hits(csr.PLAIN_CONSOLE_MODULE))
+        assert not list(csr._check_live_displays([csr.PLAIN_CONSOLE_MODULE]))
+
+    def test_the_finding_names_the_file_line_and_the_helpers(self, tmp_path: Path) -> None:
+        (finding,) = self._findings(tmp_path, "x = 1\nfrom rich.progress import Progress as P")
+        assert finding.startswith(f"{tmp_path / 'sample.py'}:2: ")
+        assert "live_progress or stdout_progress" in finding
+
+    def test_an_unparsable_file_yields_nothing(self, tmp_path: Path) -> None:
+        assert not self._findings(tmp_path, "def broken(:")
