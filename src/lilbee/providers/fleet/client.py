@@ -2321,35 +2321,88 @@ def _lines_bound_from_first_frame(resp: httpx.Response) -> Iterator[str]:
     """The lines of *resp*, with the idle bound running from the first ``data:`` line.
 
     httpcore reads the body's read timeout once, when the body starts, so no read timeout can
-    change after a frame. A timer runs while this reader waits for a line, once a frame has
-    come; it shuts the socket down when the wait passes the bound. The timer stops while the
-    caller holds a line, so a slow caller is never cut. Before the first frame, the wait is
-    the client timeout.
+    change after a frame. One watchdog thread serves the whole stream. The reader arms it
+    while it waits for a line, once a frame has come, and disarms it when the line is in
+    hand, so a slow caller is never cut. Before the first frame, the wait is the client
+    timeout.
     """
-    cut = threading.Event()
-
-    def shut() -> None:
-        cut.set()
-        _shut_down_socket(resp)
-
+    dog = _SilenceWatchdog(resp)
     lines = resp.iter_lines()
     seen = False
-    while True:
-        timer = threading.Timer(_STREAM_IDLE_TIMEOUT_S, shut)
-        if seen:
-            timer.start()
-        try:
-            line = next(lines, None)
-        except httpx.TransportError as exc:
-            if cut.is_set():
-                raise StreamSilentError(_STREAM_IDLE_TIMEOUT_S, request=resp.request) from exc
-            raise
-        finally:
-            timer.cancel()
-        if line is None:
-            return
-        seen = seen or line.startswith(_DATA_PREFIX)
-        yield line
+    try:
+        while True:
+            if seen:
+                dog.arm()
+            try:
+                line = next(lines, None)
+            except httpx.TransportError as exc:
+                if dog.cut:
+                    raise StreamSilentError(_STREAM_IDLE_TIMEOUT_S, request=resp.request) from exc
+                raise
+            finally:
+                dog.disarm()
+            if line is None:
+                return
+            seen = seen or line.startswith(_DATA_PREFIX)
+            yield line
+    finally:
+        dog.stop()
+
+
+class _SilenceWatchdog:
+    """One thread that shuts the socket of a stream when the reader waits too long for a line.
+
+    The reader moves a deadline with ``arm`` and ``disarm``; each is one lock round, with no
+    thread start per line. The thread shuts the socket down only while the deadline is armed
+    and has passed, and it does so with the lock held. A reader waits for a line only while
+    its response is open, and ``disarm`` returns only after any shutdown has finished, so a
+    shutdown never reaches a connection that a later request reuses.
+    """
+
+    def __init__(self, resp: httpx.Response) -> None:
+        self._resp = resp
+        self._cond = threading.Condition()
+        self._deadline: float | None = None
+        self._stopped = False
+        self._thread: threading.Thread | None = None
+        self.cut = False
+        """Whether the watchdog shut the socket down."""
+
+    def arm(self) -> None:
+        """Start the clock: the socket is shut down if ``disarm`` does not follow in time."""
+        with self._cond:
+            self._deadline = time.monotonic() + _STREAM_IDLE_TIMEOUT_S
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, daemon=True)
+                self._thread.start()
+
+    def disarm(self) -> None:
+        """Stop the clock."""
+        with self._cond:
+            self._deadline = None
+
+    def stop(self) -> None:
+        """End the thread."""
+        with self._cond:
+            self._stopped = True
+            self._deadline = None
+            self._cond.notify_all()
+        if self._thread is not None:
+            self._thread.join()
+
+    def _run(self) -> None:
+        with self._cond:
+            while not self._stopped:
+                if self._deadline is None:
+                    self._cond.wait(_STREAM_IDLE_TIMEOUT_S)
+                    continue
+                left = self._deadline - time.monotonic()
+                if left > 0:
+                    self._cond.wait(left)
+                    continue
+                self.cut = True
+                self._deadline = None
+                _shut_down_socket(self._resp)
 
 
 async def _alines_bound_from_first_frame(resp: httpx.Response) -> AsyncIterator[str]:
