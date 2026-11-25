@@ -93,6 +93,18 @@ def pressing_forget(self):
 
 
 AddRollback.forget_unfinished = pressing_forget
+_real_shutdown = _threading._shutdown
+
+
+def pressing_shutdown():
+    # The exit joins the worker thread that the cancelled run left stuck.
+    if _press_at == "shutdown" and _presses == ["set"]:
+        _presses.append("pressed")
+        press()
+    _real_shutdown()
+
+
+_threading._shutdown = pressing_shutdown
 
 
 def native_stuck():
@@ -156,6 +168,19 @@ def test_a_second_ctrl_c_during_the_rollback_lets_the_rollback_finish(
     tmp_path: Path, command: str
 ) -> None:
     run = base._Command(tmp_path, command, "polling+rollback")
+    status = _status_after_one_press(run)
+    assert "PRESS 2" in run.output, run.output
+    _assert_forced(status, run.output)
+
+
+@posix_only
+@pytest.mark.usefixtures("pressing_entry")
+@pytest.mark.parametrize("hold", ["pool", "to_thread"])
+@pytest.mark.parametrize("command", base._COMMANDS)
+def test_a_second_ctrl_c_at_the_shutdown_join_ends_the_command(
+    tmp_path: Path, command: str, hold: str
+) -> None:
+    run = base._Command(tmp_path, command, f"{hold}+shutdown")
     status = _status_after_one_press(run)
     assert "PRESS 2" in run.output, run.output
     _assert_forced(status, run.output)
