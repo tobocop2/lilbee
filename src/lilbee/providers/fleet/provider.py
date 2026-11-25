@@ -2109,10 +2109,10 @@ class FleetProvider:
         for role in [r for r, g in self._role_group.items() if g is group]:
             del self._role_group[role]
             self._retire_clients(self._clients.pop(role, []), engine_dir, keep_open=keep_open)
-        self._unset_group_dir(group)
             if role is WorkerRole.CHAT:
                 self._chat_slots = 1
                 self._chat_ctx = None
+        self._unset_group_dir(group)
         return swap
 
     def _retire_clients(
