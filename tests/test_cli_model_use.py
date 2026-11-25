@@ -202,7 +202,7 @@ class TestModelUseNamesTheMissingEngine:
         flat = _flat(result.output)
         assert f"{role} model is now {ref}." in flat
         assert f"For {role}: {self._NOTICE}" in flat
-        assert "Run lilbee engine list to see the installed engines." in flat
+        assert "Run lilbee engine list (or GET /api/engines) to see the installed engines." in flat
 
     @patch(_SERVICES)
     def test_json_carries_the_notice_in_warnings(self, mock_svc, no_engine, tmp_path):
