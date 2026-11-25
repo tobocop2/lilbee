@@ -31,7 +31,7 @@ from lilbee.wiki.shared import (
     WikiSubdir,
     total_wiki_pages,
 )
-from lilbee.wiki.stats import WikiBuildError, failed_pages_message, format_summary_line
+from lilbee.wiki.stats import WikiBuildError, model_failures_message, format_summary_line
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -74,13 +74,13 @@ def _print_build_stats(stats: BuildStatsDict) -> None:
     console.print(f"  Gates: {format_summary_line(stats)}")
 
 
-def _exit_if_pages_failed(stats: BuildStatsDict) -> None:
-    """Exit 1 when the run lost pages to failed model calls, after its output.
+def _exit_if_model_calls_failed(stats: BuildStatsDict) -> None:
+    """Exit 1 when the run lost pages or concepts to failed model calls, after its output.
 
-    The JSON document already carries the count in its stats, so only the
-    text output prints the count and the last cause.
+    The JSON document already carries the counts in its stats, so only the
+    text output prints the counts and the last cause.
     """
-    message = failed_pages_message(stats)
+    message = model_failures_message(stats)
     if message is None:
         return
     if not cfg.json_mode:
@@ -455,7 +455,7 @@ def wiki_synthesize(
         json_output({"command": "wiki_synthesize", **result})
     else:
         _print_synthesize_result(result)
-    _exit_if_pages_failed(result["stats"])
+    _exit_if_model_calls_failed(result["stats"])
 
 
 def _print_synthesize_result(result: WikiSynthesizeSummary) -> None:
@@ -657,7 +657,7 @@ def _run_wiki_build(command_name: str) -> None:
         json_output({"command": command_name, **result})
     else:
         _print_build_result(result)
-    _exit_if_pages_failed(result["stats"])
+    _exit_if_model_calls_failed(result["stats"])
 
 
 def _print_build_result(result: WikiBuildSummary) -> None:
