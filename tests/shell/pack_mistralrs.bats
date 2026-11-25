@@ -26,7 +26,7 @@ setup() {
   export GIT_LOG="${BATS_TEST_TMPDIR}/git.log" ABOUT_LOG="${BATS_TEST_TMPDIR}/about.log"
   export PYTHON_LOG="${BATS_TEST_TMPDIR}/python.log"
   export CARGO_HOME="${BATS_TEST_TMPDIR}/cargo"
-  export MISTRALRS_REPO=owner/mistral.rs MISTRALRS_TAG=v0.9.5 ASSET=m.tar.gz BACKEND=cpu
+  export MISTRALRS_REPO=owner/mistral.rs MISTRALRS_TAG=v0.9.5 ASSET=m.tar.gz BACKEND=cpu BUILD_NUMBER=1
   export PLATFORM=manylinux_2_35_x86_64 RUST_TARGET=x86_64-unknown-linux-gnu RUST_FEATURES=
   export CARGO_ABOUT_VERSION=0.9.3 ABOUT_TARGET=x86_64-unknown-linux-musl MISTRALRS_CHAT_MODEL=m
   export RUNNER_OS=Linux OUT="${BATS_TEST_TMPDIR}/packs-out"
@@ -68,8 +68,8 @@ ${WHEEL}.sha256" ]
 
 @test "every variable of the contract is required" {
   local name
-  for name in MISTRALRS_REPO MISTRALRS_TAG ASSET BACKEND PLATFORM RUST_TARGET CARGO_ABOUT_VERSION ABOUT_TARGET \
-    MISTRALRS_CHAT_MODEL OUT; do
+  for name in MISTRALRS_REPO MISTRALRS_TAG ASSET BACKEND PLATFORM BUILD_NUMBER RUST_TARGET CARGO_ABOUT_VERSION \
+    ABOUT_TARGET MISTRALRS_CHAT_MODEL OUT; do
     run env "${name}=" bash "${SCRIPT}"
     [ "$status" -eq 2 ]
     [[ "$output" == *"${name} is not set"* ]]
@@ -226,31 +226,31 @@ ${WHEEL}.sha256" ]
   [ ! -e "${PYTHON_LOG}" ]
 }
 
-@test "the build number holds the backend and the retag the platform" {
-  run bash "${SCRIPT}"
+@test "the build number holds the build number of the cell, the backend, and the retag the platform" {
+  BUILD_NUMBER=2 run bash "${SCRIPT}"
   [ "$status" -eq 0 ]
-  grep -q '^-m build --wheel --no-isolation -C--build-option=--build-number=1.cpu ' "${PYTHON_LOG}"
+  grep -q '^-m build --wheel --no-isolation -C--build-option=--build-number=2.cpu ' "${PYTHON_LOG}"
   grep -q '^-m wheel tags --remove --platform-tag manylinux_2_35_x86_64 dist/' "${PYTHON_LOG}"
 }
 
 # Bats reads test names as literals, so each cell has its own test.
 cuda_build_tag() {  # compute capability
-  BACKEND="cuda-sm$1" run stage build_wheel
+  BUILD_NUMBER=2 BACKEND="cuda-sm$1" run stage build_wheel
   [ "$status" -eq 0 ]
-  grep -q -- "--build-number=1.cuda_sm$1 " "${PYTHON_LOG}"
+  grep -q -- "--build-number=2.cuda_sm$1 " "${PYTHON_LOG}"
 }
 
-@test "the build number of the cuda-sm80 cell is 1.cuda_sm80, with no hyphen" { cuda_build_tag 80; }
-@test "the build number of the cuda-sm86 cell is 1.cuda_sm86, with no hyphen" { cuda_build_tag 86; }
-@test "the build number of the cuda-sm89 cell is 1.cuda_sm89, with no hyphen" { cuda_build_tag 89; }
-@test "the build number of the cuda-sm90 cell is 1.cuda_sm90, with no hyphen" { cuda_build_tag 90; }
-@test "the build number of the cuda-sm100 cell is 1.cuda_sm100, with no hyphen" { cuda_build_tag 100; }
-@test "the build number of the cuda-sm120 cell is 1.cuda_sm120, with no hyphen" { cuda_build_tag 120; }
+@test "the build number 2 of the cuda-sm80 cell gives 2.cuda_sm80, with no hyphen" { cuda_build_tag 80; }
+@test "the build number 2 of the cuda-sm86 cell gives 2.cuda_sm86, with no hyphen" { cuda_build_tag 86; }
+@test "the build number 2 of the cuda-sm89 cell gives 2.cuda_sm89, with no hyphen" { cuda_build_tag 89; }
+@test "the build number 2 of the cuda-sm90 cell gives 2.cuda_sm90, with no hyphen" { cuda_build_tag 90; }
+@test "the build number 2 of the cuda-sm100 cell gives 2.cuda_sm100, with no hyphen" { cuda_build_tag 100; }
+@test "the build number 2 of the cuda-sm120 cell gives 2.cuda_sm120, with no hyphen" { cuda_build_tag 120; }
 
-@test "the build number of the Metal cell stays 1.metal" {
-  BACKEND=metal run stage build_wheel
+@test "the build number 2 of the Metal cell gives 2.metal" {
+  BUILD_NUMBER=2 BACKEND=metal run stage build_wheel
   [ "$status" -eq 0 ]
-  grep -q -- '--build-number=1.metal ' "${PYTHON_LOG}"
+  grep -q -- '--build-number=2.metal ' "${PYTHON_LOG}"
 }
 
 @test "the build runs with umask 022 whatever the shell has" {
