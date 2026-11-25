@@ -65,7 +65,7 @@ def test_missing_profile_table_falls_to_built_in(tmp_path):
     root = _write(tmp_path / "root", "top_k = 7\n")
     layers = read_layers(root)
     assert layers.profile == {}
-    assert resolve("temperature", layers).value == builtin_value("temperature") == 0.1
+    assert resolve("temperature", layers).value is builtin_value("temperature") is None
     assert resolve("temperature", layers).source is SettingSource.BUILT_IN
     assert resolve("top_k", layers).source is SettingSource.USER
 
@@ -282,7 +282,7 @@ def test_config_construction_ignores_a_disallowed_profile_value(tmp_path, monkey
     )
     monkeypatch.setenv("LILBEE_DATA", str(root))
     built = Config()
-    assert built.temperature == builtin_value("temperature") == 0.1
+    assert built.temperature is builtin_value("temperature") is None
     assert built.layout_detection is True
 
 

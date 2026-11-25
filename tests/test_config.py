@@ -511,7 +511,7 @@ class TestTomlConfigFile:
         assert {k for k in keys if getattr(built, k) != getattr(probe, k)} == set()
         assert (built.top_k, built.chunk_size, built.chunk_overlap) == (7, 1024, 50)
         assert built.rerank_min_score == 0.7
-        assert built.top_p == 0.9
+        assert built.top_p is None
 
     def test_toml_values_loaded(self, tmp_path):
         ref = "ollama/my-saved-model:latest"
@@ -1401,6 +1401,12 @@ class TestGenerationOptions:
         assert c.max_tokens is None
         assert "num_predict" not in c.generation_options()
 
+    def test_default_sends_no_sampling_so_the_engine_uses_the_models_own(self):
+        # A near-greedy 0.1 / 0.9 / 40 on every request kept a thinking model
+        # thinking until the token cap; the engine reads the model's values.
+        opts = Config().generation_options()
+        assert {"temperature", "top_p", "top_k"} & opts.keys() == set()
+
     def test_max_tokens_reaches_the_providers_as_num_predict(self):
         from lilbee.providers.base import filter_options, normalize_generation_options
 
@@ -1585,7 +1591,7 @@ class TestBlankOptionalNumberInTheEnvironment:
         env["LILBEE_TEMPERATURE"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-        assert c.temperature == 0.1
+        assert c.temperature is None
 
     def test_whitespace_seed_variable_leaves_seed_unset(self, tmp_path):
         env = clean_env(tmp_path)

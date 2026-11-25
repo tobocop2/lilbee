@@ -477,9 +477,12 @@ class Config(BaseSettings):
             "Emit structured JSON from CLI commands. The --json flag sets it for one invocation"
         ),
     )
-    temperature: float | None = ConfigField(default=0.1, ge=0.0, writable=True)
-    top_p: float | None = ConfigField(default=0.9, ge=0.0, le=1.0, writable=True)
-    top_k_sampling: int | None = ConfigField(default=40, ge=1, writable=True)
+    # None sends no value, so the engine samples with the model's own values: the
+    # GGUF's general.sampling keys, or generation_config.json. A near-greedy
+    # default here kept thinking models thinking until the token cap.
+    temperature: float | None = ConfigField(default=None, ge=0.0, writable=True)
+    top_p: float | None = ConfigField(default=None, ge=0.0, le=1.0, writable=True)
+    top_k_sampling: int | None = ConfigField(default=None, ge=1, writable=True)
     # 1.1 is llama.cpp's default. Leaving this at None caused n-gram loops
     # ("tire tire tire...") on some open-weights models.
     repeat_penalty: float | None = ConfigField(default=1.1, ge=0.0, writable=True)
