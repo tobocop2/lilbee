@@ -92,6 +92,7 @@ from lilbee.server.models import (
     ShutdownResponse,
     StatusResponse,
 )
+from lilbee.server.route_names import name_routes
 
 if TYPE_CHECKING:
     from lilbee.app.placement import GpuInfo, PlacementView
@@ -125,7 +126,7 @@ def _chat_status(
         return "ready", None
     snapshot = provider.warm_progress()
     if snapshot is not None and snapshot.phase is WarmPhase.ERROR:
-        return "error", snapshot.error
+        return "error", name_routes(snapshot.error) if snapshot.error else None
     if is_active_warm(snapshot):
         return "loading", None
     return "not_started", None
