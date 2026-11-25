@@ -108,9 +108,35 @@ rc_dispatch() {  # job:conclusion ...
 
 # Runs the real wait step of verify-release.yml, extracted with yq, from the
 # repository root. sleep is stubbed, so a wait that polls again is visible.
+# The step gets exactly the env the workflow sets for it, read from the file:
+# a ${{ }} expression resolves through workflow_expr, a literal passes as is.
+# A key the workflow drops is then missing here too, and the step fails.
+WAIT_STEP='.jobs["verify-channel-assets"].steps[] | select(.name == "Every channel artifact reached the release")'
+
+workflow_expr() {  # the value a ${{ }} expression takes in this fixture
+  case "$1" in
+    "github.token") echo stub ;;
+    "needs.resolve.outputs.tag") echo v1.0.0 ;;
+    "github.event.workflow_run.id") echo "${RC_RUN_ID:-900}" ;;
+    "github.repository") echo tobocop2/lilbee ;;
+    *) echo "no fixture value for \${{ $1 }}" >&2; return 1 ;;
+  esac
+}
+
 wait_step() {
-  yq -r '.jobs["verify-channel-assets"].steps[1].run' "${REPO_ROOT}/.github/workflows/verify-release.yml" \
-    > "${BATS_TEST_TMPDIR}/wait.sh"
+  local workflow="${WORKFLOW_FILE:-${REPO_ROOT}/.github/workflows/verify-release.yml}" key value expr
+  local -a step_env=()
+  yq -r "${WAIT_STEP} | .run" "${workflow}" > "${BATS_TEST_TMPDIR}/wait.sh"
+  while IFS= read -r key; do
+    value=$(yq -r "${WAIT_STEP} | .env[\"${key}\"]" "${workflow}")
+    if [[ "${value}" =~ ^\$\{\{[[:space:]]*(.*[^[:space:]])[[:space:]]*\}\}$ ]]; then
+      expr="${BASH_REMATCH[1]}"
+      value=$(workflow_expr "${expr}") || return 1
+    fi
+    step_env+=("${key}=${value}")
+  done < <(yq -r "${WAIT_STEP} | .env | keys | .[]" "${workflow}")
+  # WAIT_MINUTES stays a test knob: a test that wants a short wait sets it.
+  [ -z "${WAIT_MINUTES:-}" ] || step_env+=("WAIT_MINUTES=${WAIT_MINUTES}")
   # A wait that never ends would hang the suite: the third poll stops the step.
   cat > "${FIXTURE}/bin/sleep" <<'STUB'
 #!/usr/bin/env bash
@@ -119,10 +145,10 @@ echo "$1" >> "${SLEEP_LOG:?SLEEP_LOG is required}"
 STUB
   chmod +x "${FIXTURE}/bin/sleep"
   cd "${REPO_ROOT}"
-  FIXTURE="${FIXTURE}" SLEEP_LOG="${FIXTURE}/sleep.log" GH_TOKEN=stub \
-  GITHUB_REPOSITORY=tobocop2/lilbee REPO=tobocop2/lilbee TAG=v1.0.0 \
-  RC_RUN_ID="${RC_RUN_ID:-900}" WAIT_MINUTES="${WAIT_MINUTES:-180}" \
-  PATH="${FIXTURE}/bin:${PATH}" bash "${BATS_TEST_TMPDIR}/wait.sh"
+  # env -i: only the workflow's env and what the runner always provides.
+  env -i HOME="${HOME}" PATH="${FIXTURE}/bin:${PATH}" FIXTURE="${FIXTURE}" \
+    SLEEP_LOG="${FIXTURE}/sleep.log" GITHUB_REPOSITORY=tobocop2/lilbee \
+    "${step_env[@]}" bash "${BATS_TEST_TMPDIR}/wait.sh"
 }
 
 @test "the wait step fails at once when the rocm dispatch was skipped" {
@@ -141,5 +167,15 @@ STUB
   WAIT_MINUTES=0 run wait_step
   [ "$status" -eq 1 ]
   [[ "$output" == *"still missing after 0m"* ]]
+  [[ "$output" != *"cannot arrive"* ]]
+}
+
+@test "the wait step fails when the workflow stops setting REPO" {
+  WORKFLOW_FILE="${BATS_TEST_TMPDIR}/verify-release.yml"
+  yq "del(${WAIT_STEP} | .env.REPO)" "${REPO_ROOT}/.github/workflows/verify-release.yml" > "${WORKFLOW_FILE}"
+  : > "${FIXTURE}/sleep.log"
+  rc_dispatch "dispatch-fanout:success" "dispatch-cuda:success" "dispatch-rocm:skipped"
+  run wait_step
+  # Without REPO the blockers lookup fails, so the skipped dispatch goes unseen.
   [[ "$output" != *"cannot arrive"* ]]
 }
