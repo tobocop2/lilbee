@@ -768,6 +768,7 @@ async def test_the_picker_rows_show_state_and_backend_and_the_size_of_a_missing_
         )
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 async def test_a_missing_engine_asks_to_download_then_installs_as_a_task_then_applies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
