@@ -36,15 +36,16 @@ from lilbee.server.models import (
     SessionRenameResponse,
     SessionSummaryRequest,
 )
+from lilbee.server.routes.engines import NO_LIBRARY_KEY
 
 
-@get("/api/sessions")
+@get("/api/sessions", opt={NO_LIBRARY_KEY: True})
 async def sessions_list_route() -> SessionListResponse:
     """List saved conversations, newest first."""
     return await list_sessions()
 
 
-@get("/api/sessions/{session_id:str}")
+@get("/api/sessions/{session_id:str}", opt={NO_LIBRARY_KEY: True})
 async def session_get_route(session_id: FromPath[str]) -> SessionDetailResponse:
     """Return a conversation's metadata and full transcript."""
     return await get_session(session_id)
@@ -54,6 +55,7 @@ async def session_get_route(session_id: FromPath[str]) -> SessionDetailResponse:
     "/api/sessions/{session_id:str}/markdown",
     media_type=MARKDOWN_MIME,
     raises=[NotFoundException],
+    opt={NO_LIBRARY_KEY: True},
     response_headers=[
         ResponseHeader(
             name=CONTENT_DISPOSITION,

@@ -285,7 +285,8 @@ class _LibraryOpenWait(ASGIMiddleware):
 
     The wait runs off the loop, so an upgrade never blocks it. The limit sits under the
     15 s timeout of the Obsidian plugin, so the plugin shows the reason. Health, the warm
-    stream and shutdown pass at once: health reports the upgrade. MCP tool calls wait
+    stream and shutdown pass at once: health reports the upgrade. A route that carries
+    the no_library option never reads the library, so it passes too. MCP tool calls wait
     for the library where they use it. A process with no services has no open to wait
     for, and the request passes without building them.
     """
@@ -296,6 +297,7 @@ class _LibraryOpenWait(ASGIMiddleware):
         "^/api/shutdown$",
         f"^{MCP_PATH}(/.*)?$",
     )
+    exclude_opt_key = engine_routes.NO_LIBRARY_KEY
 
     async def handle(self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp) -> None:
         services = peek_services()

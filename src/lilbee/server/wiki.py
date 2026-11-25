@@ -42,6 +42,7 @@ from lilbee.server.models import (
     WikiStatusResult,
     WikiWipeResult,
 )
+from lilbee.server.routes.engines import NO_LIBRARY_KEY
 from lilbee.wiki import lint as lint_mod
 from lilbee.wiki import prune as prune_mod
 from lilbee.wiki import wipe as wipe_mod
@@ -87,7 +88,7 @@ def _find_page(slug: str) -> Path | None:
     return find_page(_wiki_root(), slug)
 
 
-@get("/api/wiki")
+@get("/api/wiki", opt={NO_LIBRARY_KEY: True})
 async def wiki_list_route() -> list[dict[str, Any]]:
     """List all wiki pages across subdirectories.
 
@@ -102,7 +103,7 @@ async def wiki_list_route() -> list[dict[str, Any]]:
     return [p.to_dict() for p in pages]
 
 
-@get("/api/wiki/drafts")
+@get("/api/wiki/drafts", opt={NO_LIBRARY_KEY: True})
 async def wiki_drafts_route() -> list[DraftInfoResponse]:
     """List pending wiki drafts with drift, faithfulness, and pending-marker info."""
     _require_wiki()
