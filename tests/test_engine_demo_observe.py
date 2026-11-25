@@ -234,11 +234,7 @@ def test_the_chat_step_is_one_turn_over_the_chat_route(tmp_path: Path) -> None:
 
 def _set_refs(t: Transcript) -> dict[int, str]:
     """The model ref each set-model step sent, by step index; each is a CLI command."""
-    return {
-        i: s.command[-1]
-        for i, s in enumerate(t.steps)
-        if s.name is StepName.SET_MODEL
-    }
+    return {i: s.command[-1] for i, s in enumerate(t.steps) if s.name is StepName.SET_MODEL}
 
 
 def test_every_role_model_is_set_before_its_engine_is_chosen(tmp_path: Path) -> None:
