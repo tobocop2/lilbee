@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +38,12 @@ from tests.test_fleet_settings_bind import (
     _peer_mid_call_over_an_owner_restart,
     _record,
 )
+
+
+@pytest.fixture(autouse=True)
+def _files_are_old(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every write here counts as settled: the quiet window has its own tests."""
+    monkeypatch.setattr(persistent_settings, "_now_ns", lambda: time.time_ns() + 3_600_000_000_000)
 
 __all__ = ["real_planner"]
 _WAIT_S = 10.0
