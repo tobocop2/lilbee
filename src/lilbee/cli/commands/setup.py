@@ -98,15 +98,12 @@ def _installed_model_path(want: str, configured: str) -> Path | None:
     Prefers the configured ref when it is installed and matches the role,
     so the check exercises the model the user actually runs.
     """
-    from lilbee.catalog.query import reclassify_by_name
     from lilbee.catalog.types import ModelFormat
     from lilbee.modelhub.registry import ModelRegistry
 
     registry = ModelRegistry(cfg.models_dir)
     try:
-        manifests = [
-            m for m in registry.list_installed() if reclassify_by_name(m.ref, m.task) == want
-        ]
+        manifests = [m for m in registry.list_installed() if m.task == want]
     except Exception:
         return None
     for skipped in (m for m in manifests if m.format is not ModelFormat.GGUF):

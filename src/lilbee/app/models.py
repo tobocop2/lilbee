@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from lilbee.app.services import get_services
-from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import canonical_ref, model_format
 from lilbee.catalog.types import ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import cfg
@@ -80,7 +79,7 @@ class ModelEntry(BaseModel):
         return cls(
             name=ref,
             source=ModelSource.NATIVE,
-            task=ModelTask(reclassify_by_name(ref, manifest.task)) if manifest else None,
+            task=ModelTask(manifest.task) if manifest else None,
             size_gb=_bytes_to_gb(manifest.disk_size_bytes) if manifest else None,
             display_name=clean_display_name(manifest.hf_repo) if manifest else "",
         )

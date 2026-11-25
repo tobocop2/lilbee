@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.types import KeyStatus, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.install_state import InstallState, install_state
@@ -168,7 +167,7 @@ def _first_installed_local_ref(want: ModelTask) -> str | None:
     """
     registry = ModelRegistry(cfg.models_dir)
     for manifest in registry.list_installed():
-        if reclassify_by_name(manifest.ref, manifest.task) != want:
+        if manifest.task != want:
             continue
         if install_state(manifest.ref, registry) is InstallState.REGISTERED and loadable_refs(
             [manifest.ref], _TASK_ROLE[want]
