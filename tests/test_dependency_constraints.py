@@ -74,6 +74,16 @@ def test_mcp_admits_the_current_major_and_stops_below_the_next() -> None:
     assert not req.specifier.contains("3.0.0b1", prereleases=True)
 
 
+def test_typer_floor_is_the_first_release_that_builds_the_cli() -> None:
+    # The option annotations (Path | None, secondary flags on bool options) fail
+    # at command build time on 0.12.x: "Type not yet supported" up to 0.12.3,
+    # "Secondary flag is not valid for non-boolean flag" at 0.12.5. 0.13.0 builds.
+    req = _base_requirement("typer")
+    for version in ("0.12.0", "0.12.3", "0.12.5"):
+        assert not req.specifier.contains(version), version
+    assert req.specifier.contains("0.13.0")
+
+
 def test_qa_matrix_excludes_vulnerable_anyio() -> None:
     # 4.14.2 fixes GHSA-82r6-8w77-94w6 and GHSA-5p39-cfhj-2xmp.
     req = _qa_requirement("anyio")
