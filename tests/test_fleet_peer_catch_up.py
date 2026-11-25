@@ -217,7 +217,7 @@ def _peer_is_stale(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Gap:
 def _unreadable_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Gap:
     gap = _gap(monkeypatch, tmp_path)
     _write_flash_attention_off(monkeypatch)
-    monkeypatch.setattr(prov_mod, "read_persisted", lambda _root: (None, None))
+    monkeypatch.setattr(prov_mod, "read_settled", lambda _root: (None, None))
     return gap
 
 

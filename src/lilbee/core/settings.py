@@ -3,6 +3,7 @@
 import logging
 import os
 import threading
+import time
 import tomllib
 import weakref
 from collections.abc import Callable, Generator, Iterable, Mapping
@@ -382,6 +383,9 @@ def persisted_values(root: Path) -> dict[str, Any] | None:
     return {key: getattr(trial, key) for key in _assign_resolved(trial, resolved, keys, root)}
 
 
+SETTLE_NS = 1_000_000_000  # a file changed less than this long ago may be mid-rewrite
+
+
 def read_persisted(root: Path) -> tuple[tuple[int, int, int] | None, dict[str, Any] | None]:
     """The stamp of *root*'s config.toml and ``persisted_values``, from one locked read.
 
@@ -396,6 +400,24 @@ def read_persisted(root: Path) -> tuple[tuple[int, int, int] | None, dict[str, A
         return _stable_reading(root)
     with _config_read_lock(root):
         return _stable_reading(root)
+
+
+def _now_ns() -> int:
+    """The clock ``read_settled`` measures a file's age against."""
+    return time.time_ns()
+
+
+def read_settled(root: Path) -> tuple[tuple[int, int, int] | None, dict[str, Any] | None]:
+    """``read_persisted``, but a file that changed under ``SETTLE_NS`` ago is not taken.
+
+    Another program can truncate the file and write it back a moment later, and the
+    empty file in between is stable to ``read_persisted``. A file that young gives
+    values None and stamp None, so the next check reads it again.
+    """
+    stamp, values = read_persisted(root)
+    if stamp is not None and _now_ns() - stamp[0] < SETTLE_NS:
+        return None, None
+    return stamp, values
 
 
 def _stable_reading(

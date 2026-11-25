@@ -1299,7 +1299,7 @@ def adopt_external_changes(
     if persistent_settings.overlay_stamp(cfg.data_root) == last.stamp and not roots_changed:
         return last, None
     with _settings_transaction() as txn:
-        stamp, values = persistent_settings.read_persisted(cfg.data_root)
+        stamp, values = persistent_settings.read_settled(cfg.data_root)
         now = last if values is None else replace(last, stamp=stamp, values=values)
         targets: dict[str, Any] = {}
         for key in _RELOADED_KEYS:
