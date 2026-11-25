@@ -163,7 +163,7 @@ def _engine_id(launch: InstanceLaunch, engine: EngineAdapter) -> str:
     devices = probed_devices(engine)
     names = ", ".join(f"{d.backend}{d.index}: {d.name}" for d in devices) or _NO_DEVICES
     return (
-        f"{launch.binary} (engine {engine.name.value}, "
+        f"{launch.binary} (engine {engine.name}, "
         f"build {engine.identity(Path(launch.binary))}, "
         f"backend {engine_backend(engine).value}, devices: {names})"
     )

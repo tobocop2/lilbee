@@ -7887,7 +7887,10 @@ def test_binding_logs_the_engine_and_the_pid_that_owns_it(
 ) -> None:
     """Adoption names the engine it joined, so a wrong backend is traceable."""
     swap, _machine = _bindable_machine(monkeypatch, tmp_path)
-    monkeypatch.setattr(planning_mod, "engine_build_id", lambda: "wheel:0.6.91")
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.engine_binary_identity",
+        lambda binary: f"{binary}@digest",
+    )
     monkeypatch.setattr(planning_mod, "probed_devices", lambda engine: ())
 
     p = FleetProvider()
@@ -7898,7 +7901,8 @@ def test_binding_logs_the_engine_and_the_pid_that_owns_it(
     adopted = [r.message for r in caplog.records if r.message.startswith("Adopted")]
     assert adopted == [
         "Adopted chat-0 serving m-chat from engine pid 999998 on "
-        "/bin/llama-server (build wheel:0.6.91, backend unknown, devices: none)"
+        "/bin/llama-server (engine llama.cpp, build /bin/llama-server@digest, "
+        "backend unknown, devices: none)"
     ]
 
 
