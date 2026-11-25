@@ -403,35 +403,6 @@ jobs:
           bash scripts/ci_retry.sh 3 choco install tesseract -y
           echo 'C:\Program Files\Tesseract-OCR' >> "${GITHUB_PATH}"
 
-      # Integration tests run real local inference, which now means a real
-      # llama-server. The lilbee-engine-llama-cpp wheel ships empty bin/ in this lane
-      # (CI fills it only in the release wheel build), so download a prebuilt
-      # llama.cpp release binary; resolve_llama_server() finds it on PATH.
-      - name: Install llama-server (engine)
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          # Pinned: releases/latest can ship partial asset sets (b9352 dropped
-          # the x64/windows builds). Bump to a tag carrying all three platforms.
-          LLAMA_CPP_TAG: b9351
-        run: |
-          set -euo pipefail
-          bindir=$(bash scripts/install_engine.sh \
-            "${LLAMA_CPP_TAG}" "${RUNNER_OS}" "${HOME}/llama-engine")
-          # On Windows, GITHUB_PATH needs a native path (C:\...), not the git-bash
-          # /c/... form, or Python's shutil.which won't find the binary. cygpath
-          # is a no-op fallback on Linux/macOS. Co-located DLLs are found via PATH.
-          #
-          # PATH only, deliberately no loader variable: llama-server and every
-          # library it pulls in carry RUNPATH $ORIGIN on Linux and LC_RPATH
-          # @loader_path on macOS, so the engine resolves its own libraries. A
-          # GITHUB_ENV export would apply to every later step in the job.
-          if command -v cygpath >/dev/null 2>&1; then
-            cygpath -w "${bindir}" >> "${GITHUB_PATH}"
-          else
-            echo "${bindir}" >> "${GITHUB_PATH}"
-          fi
-
       # The engine also needs llama-swap (process supervisor / OpenAI proxy) and
       # gguf-parser (footprint estimator), introduced with the llama-swap engine.
       # The lilbee-engine-llama-cpp wheel ships these only in the release build, so build the
@@ -481,6 +452,18 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --locked --all-extras
+
+      # The product ships the tobocop2 llama.cpp fork because only it serves GET /memory;
+      # upstream llama-server does not, so the lane would run the log fallback alone. The
+      # action restores the engine the warm run mirrored, or builds it, and installs the
+      # engine wheel into the venv, where resolve_llama_server() finds it first. After
+      # the sync, which would not keep a wheel installed before it. Keyed as the warm run keys
+      # its CPU cells, so a mirrored engine is a hit.
+      - name: Install the llama.cpp fork engine
+        uses: ./.github/actions/bundle-llama-server
+        with:
+          backend: cpu
+          cache-env: ${{ runner.os == 'Linux' && 'ubuntu-22.04' || matrix.os }}
 
       - name: Install spacy model
         # `uv pip install` retries 3 times internally; a 502 from GitHub
