@@ -1379,13 +1379,22 @@ class TestModelCompletionsOffTheLoopAsync:
                 assert await pump_until(pilot, lambda: inp.value == "/model qwen3:8b")
         assert len(calls) == 1
 
+    @pytest.mark.parametrize("first_listing_delay_s", [0.0, 5.5])
     async def test_clearing_the_input_after_a_submit_lists_the_models_again(
-        self, _mock_resolve, _mock_services
+        self, _mock_resolve, _mock_services, first_listing_delay_s
     ) -> None:
+        import time
+
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         listings = [list(self._MODELS), ["mistral:7b"]]
+        delays = [first_listing_delay_s, 0.0]
+
+        def _listing() -> list[str]:
+            # A busy host: the first listing outlasts any fixed wait.
+            time.sleep(delays.pop(0))
+            return listings.pop(0)
 
         app = _ChatHostApp()
         async with app.run_test() as pilot:
@@ -1394,7 +1403,7 @@ class TestModelCompletionsOffTheLoopAsync:
             overlay = screen.query_one("#completion-overlay", CompletionOverlay)
             inp = screen.query_one("#chat-input")
             with mock.patch(
-                "lilbee.modelhub.models.list_installed_models", side_effect=listings
+                "lilbee.modelhub.models.list_installed_models", side_effect=_listing
             ) as listed:
                 inp.value = "/remove q"
                 assert await pump_until(pilot, lambda: overlay.options == ["qwen3:8b"])
