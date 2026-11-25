@@ -96,7 +96,7 @@ def engine_build_id() -> str:
     that carries a llama-server file), PATH, the installed pack.
 
     A BYO (``custom:``) or PATH-resolved (``path:``) binary is identified by its
-    location AND a cheap build fingerprint (size + mtime), so replacing the binary
+    location AND a cheap build fingerprint (size, mtime, inode, ctime), so replacing the binary
     in place (a brew upgrade, a re-download) changes the pin and never binds a new
     process to an engine spawned from the old build. The bundled wheel needs no
     fingerprint: its pin already encodes the build.
@@ -379,7 +379,7 @@ def router_release(router: Path) -> int | None:
     ``go build`` from source, as the engine wheel and ``go install`` make, prints
     ``version: 0``, so it has no number to compare. A router that does not answer
     the probe has no number either; its own start then reports what is wrong with it.
-    The probe runs once per router file: a new size or mtime reads again, and a file
+    The probe runs once per router file: a changed fingerprint reads again, and a file
     that cannot be statted is read each time.
     """
     signature = _binary_signature(router)
@@ -390,7 +390,7 @@ def router_release(router: Path) -> int | None:
 
 @functools.lru_cache(maxsize=8)
 def _router_release_of(router: Path, _signature: str) -> int | None:
-    """:func:`_probe_router_release`, kept per router file; a new size or mtime reads again."""
+    """:func:`_probe_router_release`, kept per router file; a changed fingerprint reads again."""
     return _probe_router_release(router)
 
 
