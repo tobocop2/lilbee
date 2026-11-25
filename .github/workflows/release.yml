@@ -51,7 +51,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ inputs.ref || github.ref_name }}
-        run: bash scripts/release_ci_passed.sh "${GITHUB_REPOSITORY}" "${REF}" >> "$GITHUB_OUTPUT"
+        run: echo ci_passed=false >> "$GITHUB_OUTPUT" # bash scripts/release_ci_passed.sh
 
   # Reads the build cells from .github/release-cells.yml. A caller that sets
   # only_asset gets that one cell, which is how a pull request builds a single
