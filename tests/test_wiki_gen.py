@@ -1022,6 +1022,23 @@ class TestGenerateSynthesisPage:
         )
         assert result is None
 
+    def test_llm_failure_counts_the_lost_page(self):
+        provider = MagicMock()
+        provider.chat.side_effect = ConnectionError("down")
+        stats = BuildStats()
+
+        result = generate_synthesis_page(
+            "topic",
+            ["a.md"],
+            {"a.md": [_make_chunk("text", source="a.md")]},
+            provider,
+            _mock_store(),
+            cfg,
+            stats=stats,
+        )
+        assert result is None
+        assert (stats.pages_failed, stats.last_model_failure) == (1, "down")
+
     def test_no_valid_citations_returns_none(self, tmp_path: Path):
         chunks_by_source = {"a.md": [_make_chunk("real text", source="a.md")]}
         wiki_text = (

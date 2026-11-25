@@ -793,6 +793,31 @@ class TestWikiEnabled:
         assert payload["stats"]["pages_drafted"] == 1
         assert payload["stats"]["citation_verify_rate"] == 2 / 3
 
+    async def test_done_frame_carries_the_count_of_lost_pages(self, monkeypatch):
+        """A run that lost pages to failed model calls ends in a done frame with the count."""
+        from lilbee.wiki.stats import BuildStats
+
+        stats = BuildStats()
+        stats.record_published("wiki/concepts/x.md", 2)
+        stats.record_model_call("engine down")
+        stats.record_failed_pages(2)
+        monkeypatch.setattr(
+            "lilbee.server.handlers.wiki.run_full_build",
+            lambda config, on_progress, cancel: {
+                "paths": ["wiki/concepts/x.md"],
+                "entities": 3,
+                "count": 1,
+                "stats": stats.as_dict(),
+            },
+        )
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/build", headers=_h())
+        assert resp.status_code == 201
+        name, payload = _sse_events(resp.text)[-1]
+        assert name == "done"
+        assert payload["stats"]["pages_failed"] == 2
+        assert payload["stats"]["last_model_failure"] == "engine down"
+
     async def test_build_dry_run_returns_candidates_as_json(self, monkeypatch):
         """dry_run answers 200 with the entity candidates, not a 201 SSE stream."""
 

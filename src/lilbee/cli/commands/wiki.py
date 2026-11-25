@@ -31,14 +31,18 @@ from lilbee.wiki.shared import (
     WikiSubdir,
     total_wiki_pages,
 )
-from lilbee.wiki.stats import WikiBuildError, format_summary_line
+from lilbee.wiki.stats import WikiBuildError, failed_pages_message, format_summary_line
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
     from lilbee.data.store import CitationRecord
     from lilbee.runtime.progress import DetailedProgressCallback, ProgressEvent
-    from lilbee.wiki.generation import WikiEntityCandidate
+    from lilbee.wiki.generation import (
+        WikiBuildSummary,
+        WikiEntityCandidate,
+        WikiSynthesizeSummary,
+    )
     from lilbee.wiki.stats import BuildStatsDict
 
 
@@ -68,6 +72,20 @@ def _count_md_files(directory: Path) -> int:
 def _print_build_stats(stats: BuildStatsDict) -> None:
     """Print what a build or synthesize run's quality gates did."""
     console.print(f"  Gates: {format_summary_line(stats)}")
+
+
+def _exit_if_pages_failed(stats: BuildStatsDict) -> None:
+    """Exit 1 when the run lost pages to failed model calls, after its output.
+
+    The JSON document already carries the count in its stats, so only the
+    text output prints the count and the last cause.
+    """
+    message = failed_pages_message(stats)
+    if message is None:
+        return
+    if not cfg.json_mode:
+        print_prefixed(console, "Error: ", message, style=theme.ERROR)
+    raise SystemExit(1)
 
 
 def _wiki_progress_line(event_type: EventType, data: ProgressEvent) -> str | None:
@@ -435,8 +453,13 @@ def wiki_synthesize(
 
     if cfg.json_mode:
         json_output({"command": "wiki_synthesize", **result})
-        return
+    else:
+        _print_synthesize_result(result)
+    _exit_if_pages_failed(result["stats"])
 
+
+def _print_synthesize_result(result: WikiSynthesizeSummary) -> None:
+    """Print the pages a synthesize run wrote and what its gates did."""
     paths = result["paths"]
     if paths:
         console.print(
@@ -632,8 +655,13 @@ def _run_wiki_build(command_name: str) -> None:
 
     if cfg.json_mode:
         json_output({"command": command_name, **result})
-        return
+    else:
+        _print_build_result(result)
+    _exit_if_pages_failed(result["stats"])
 
+
+def _print_build_result(result: WikiBuildSummary) -> None:
+    """Print the pages a build wrote and what its gates did."""
     pages = result["paths"]
     if pages:
         console.print(

@@ -348,6 +348,7 @@ def generate_source_batch(
     prompt = render(chunks_to_text(budgeted))
     text = _request_batch_sections(source, prompt, provider, config, stats)
     if text is None:
+        stats.record_failed_pages(len(entities))
         _write_pending_markers(entities, set(), source, drafts_dir, stats)
         return []
 
