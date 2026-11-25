@@ -20,8 +20,8 @@ from urllib.parse import quote
 import pytest
 import tomli_w
 from hypothesis import HealthCheck, Phase, event, given, settings
-from hypothesis.errors import InvalidArgument
 from hypothesis import strategies as st
+from hypothesis.errors import InvalidArgument
 from litestar.testing import TestClient
 from typer.testing import Result
 
@@ -47,8 +47,8 @@ from tests._profiles_e2e import (
     real_root_listing,
 )
 
-# No shrink phase and no explicit phase: the hostile cases are parametrized tests, so each
-# runs under its own 60 s timeout. A failing example is reported as found.
+# No shrink phase: a failing example is reported as found, well inside the 60 s timeout.
+# The hostile inputs are parametrized tests, not explicit examples (see _fuzz_and_hostile).
 FUZZ = settings(
     max_examples=20,
     deadline=dt.timedelta(seconds=10),
