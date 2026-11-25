@@ -22,6 +22,7 @@ from lilbee.server.models import (
     PresetRemovedResponse,
     PresetResponse,
 )
+from lilbee.server.routes.engines import NO_LIBRARY_KEY
 
 _T = TypeVar("_T")
 _HTTP_NOT_FOUND = 404
@@ -60,7 +61,7 @@ def _require_engines_enabled(_connection: ASGIConnection, _handler: BaseRouteHan
         raise HTTPException(status_code=_HTTP_CONFLICT, detail=service.engines_refused_message())
 
 
-@get("/api/presets")
+@get("/api/presets", opt={NO_LIBRARY_KEY: True})
 async def presets_list_route() -> PresetListResponse:
     """The stored server presets. A key shows as has_key and never as a value."""
     presets = await _call(service.list_presets)
