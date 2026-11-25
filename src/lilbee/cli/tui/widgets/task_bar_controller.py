@@ -33,6 +33,7 @@ _DOWNLOAD_CONCURRENCY = 4
 _BYTES_PER_MB = 1024 * 1024
 # Seconds the running tasks get, together, to unwind and end their workers at app exit.
 _EXIT_STOP_BUDGET_S = 5.0
+_EXIT_POLL_S = 0.01
 _WARNING_TOAST_S = 10.0
 
 
@@ -515,16 +516,22 @@ class TaskBarController:
         for task in [*self.queue.queued_tasks, *self.queue.active_tasks]:
             self._cancel(task.task_id, CancelOrigin.EXIT)
 
-    def start_exit_clock(self) -> float:
-        """Start the one budget of the exit, once; return the time by which it is spent.
+    async def wait_for_exit(self) -> None:
+        """Cancel every task, drain the loop, and wait for the started workers to return.
 
-        The app waits for its workers up to this time, and ``stop_all`` stops at it too, so
-        a worker that ignores its cancel costs the exit the budget once and not twice.
+        The app calls this at its unmount, so no worker is left calling into a stopped app.
+        It starts the one budget of the exit: ``stop_all`` stops at the same deadline, so a
+        worker that ignores its cancel costs the quit the budget once and not twice. The
+        drain runs off the app's loop, which keeps running the workers' calls into the app.
         """
+        self.begin_stop()
         with self._lock:
             if self._exit_deadline is None:
                 self._exit_deadline = time.monotonic() + _EXIT_STOP_BUDGET_S
-            return self._exit_deadline
+            deadline = self._exit_deadline
+        await asyncio.to_thread(asyncio_loop.shutdown, max(0.0, deadline - time.monotonic()))
+        while self.has_running_workers() and time.monotonic() < deadline:
+            await asyncio.sleep(_EXIT_POLL_S)
 
     def has_running_workers(self) -> bool:
         """True while a started worker has not returned, including one past its task.
