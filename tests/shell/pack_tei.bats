@@ -50,7 +50,7 @@ setup() {
   export PIP_NO_INDEX=1 PIP_FIND_LINKS="${BATS_TEST_TMPDIR}/wheels" PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_CONFIG_FILE=/dev/null
   unset SOURCE_DATE_EPOCH EMULATE_CPU STUB_DIR PIP_CONSTRAINT PIP_REQUIRE_HASHES CARGO_HOME RUSTFLAGS
   WHEEL=lilbee_engine_tei-1.9.4-2.cpu-py3-none-manylinux_2_34_x86_64.whl
-  cd"${BATS_TEST_TMPDIR}"
+  cd "${BATS_TEST_TMPDIR}"
 }
 
 # Write one tool of BIN from its lines.
