@@ -333,7 +333,9 @@ class TestReplayMatching:
         from tests.conformance.preset_check import load_fixture, replaying
 
         exchanges = load_fixture(path)[2]
-        chat = next(e for e in exchanges if e.path.endswith("/chat/completions") and e.status == 200)
+        chat = next(
+            e for e in exchanges if e.path.endswith("/chat/completions") and e.status == 200
+        )
         with replaying(exchanges) as url:
             request = urllib.request.Request(  # noqa: S310
                 url + chat.path, data=json.dumps(sent).encode(), method="POST"
@@ -345,13 +347,13 @@ class TestReplayMatching:
                 return exc.code
 
     _FIXTURE_DIR = Path(__file__).with_name("fixtures")
-    _PINNED_FIXTURES = [
+    _PINNED_FIXTURES = (
         "engines/llama.cpp-cpu.json",
         "engines/llama.cpp-cpu-inline.json",
         "engines/mistralrs-cpu.json",
         "presets/lemonade.json",
         "presets/mistralrs-chat.json",
-    ]
+    )
 
     @pytest.mark.parametrize("name", _PINNED_FIXTURES)
     def test_a_recorded_fixture_with_pins_misses_on_a_wrong_knob(self, name: str) -> None:
