@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterator
+from itertools import combinations
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -548,14 +549,27 @@ def recording(
 
 
 _SAMPLING_KNOBS = ("temperature", "max_tokens")
-"""Request fields that shape how a reply is sampled, not what is asked. A replay ignores them, so
-a recording made before the recorder sent them still answers the request that sends them."""
+"""Request fields that shape how a reply is sampled, not what is asked."""
 
 
 def _queue_key(method: str, path: str, request: Any) -> tuple[str, str, str]:
-    if isinstance(request, dict):
-        request = {k: v for k, v in request.items() if k not in _SAMPLING_KNOBS}
     return method, path, json.dumps(request, sort_keys=True)
+
+
+def _replay_keys(method: str, path: str, request: Any) -> Iterator[tuple[str, str, str]]:
+    """The keys a sent request may match: itself, then itself less some of its sampling knobs.
+
+    A knob the sent request holds may be left out only to match a recording that does not
+    hold it, so a recording made before the recorder sent the knob still answers. A recording
+    that holds the knob matches only the same value.
+    """
+    yield _queue_key(method, path, request)
+    if not isinstance(request, dict):
+        return
+    knobs = [knob for knob in _SAMPLING_KNOBS if knob in request]
+    for size in range(1, len(knobs) + 1):
+        for dropped in combinations(knobs, size):
+            yield _queue_key(method, path, {k: v for k, v in request.items() if k not in dropped})
 
 
 def error_answers(exchanges: list[Exchange]) -> list[list[Any]]:
@@ -570,7 +584,15 @@ def _replay_handler(
         def _serve(self) -> None:
             size = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(size) if size else b""
-            queue = queues.get(_queue_key(self.command, self.path, _scrubbed(_decoded(raw))))
+            sent = _scrubbed(_decoded(raw))
+            queue = next(
+                (
+                    queues[key]
+                    for key in _replay_keys(self.command, self.path, sent)
+                    if queues.get(key)
+                ),
+                None,
+            )
             if not queue:
                 self.send_response(599)
                 self.send_header("Content-Length", "0")
@@ -596,7 +618,7 @@ def _replay_handler(
 def replaying(exchanges: list[Exchange]) -> Iterator[str]:
     """A server that answers each recorded request in order, matched on method, path and body.
 
-    The body is matched without its sampling knobs.
+    A sampling knob of the sent request counts only when the recording holds it.
     """
     queues: dict[tuple[str, str, str], deque[Exchange]] = defaultdict(deque)
     for exchange in exchanges:
