@@ -169,7 +169,7 @@ def _page_number(item: Any) -> int:
 
 
 class Config(BaseSettings):
-    """Runtime configuration: one singleton instance, mutated by CLI overrides."""
+    """Runtime configuration; the process reads the one published through ``cfg``."""
 
     model_config = SettingsConfigDict(
         env_prefix=ENV_PREFIX,
