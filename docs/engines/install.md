@@ -101,9 +101,10 @@ end and show no progress.
 After a launch, lilbee compares the memory that the engine used with its own
 estimate. An engine that serves `GET /memory` answers this directly. Upstream
 llama.cpp has no `GET /memory` (upstream pull request 26130 is open). Every
-llama.cpp pack is built from an upstream release, so every pack cell reads the
-memory from the startup log of the engine. A `llama-server` built from the
-lilbee source pin serves `GET /memory`.
+llama.cpp pack is built from an upstream release, so today all 8 pack cells
+read the memory from the startup log of the engine. No pack serves
+`GET /memory`. A `llama-server` that you build from the lilbee source pin
+serves `GET /memory`.
 
 <!-- readback-cells:start -->
 | Pack cell | Memory readback |
