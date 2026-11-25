@@ -54,13 +54,41 @@ PUBLISHED = {
         "6285fad074767caebc53dd5ed42ca522d28ddabbef3240f3d53968927b74a987",
         64952399,
     ),
-    "lilbee_engine_mistral_rs-0.9.5-1.cpu-py3-none-manylinux_2_35_x86_64.whl": (
-        "b55ace7732b20c64a0f91e46325d68370388620b02e5deeee4317d7e2e9fef4d",
-        36675724,
+    "lilbee_engine_mistral_rs-0.9.5-2.cpu-py3-none-manylinux_2_35_x86_64.whl": (
+        "35c70ed067923c185a5275d57c8582c9efac087022fc2b7d5486f6385e9b7ee6",
+        36675722,
     ),
-    "lilbee_engine_mistral_rs-0.9.5-1.metal-py3-none-macosx_11_0_arm64.whl": (
-        "08c30b536f6b6795587902fbe050ae2e53b27cc6873da6ceff55faca21179c2a",
-        50923671,
+    "lilbee_engine_mistral_rs-0.9.5-2.cpu-py3-none-win_amd64.whl": (
+        "f4c22d36171ff99d9e8ec9a11fd46cc0d2edb84fd31bc6194e981304ee377cd7",
+        33421613,
+    ),
+    "lilbee_engine_mistral_rs-0.9.5-2.cuda_sm100-py3-none-manylinux_2_35_x86_64.whl": (
+        "a027766de06b18e2ede8234c08f17d1d4236e5034e62a9eb4950aa7f20402f81",
+        1121620966,
+    ),
+    "lilbee_engine_mistral_rs-0.9.5-2.cuda_sm120-py3-none-manylinux_2_35_x86_64.whl": (
+        "83bbfc1c7e20780707b5990fba0386df3a625abf6dd6ca60341efe0cbb42de01",
+        1118555961,
+    ),
+    "lilbee_engine_mistral_rs-0.9.5-2.cuda_sm80-py3-none-manylinux_2_35_x86_64.whl": (
+        "07976991691ce2188eaa4a43293ae7fbb85dac253e8f79bc3cc3fc2f3ee43eae",
+        1119497348,
+    ),
+    "lilbee_engine_mistral_rs-0.9.5-2.cuda_sm86-py3-none-manylinux_2_35_x86_64.whl": (
+        "74f15bf25cb9112947175b513533a6438d87016a66c5edaa4dc9de19813b3e2f",
+        1118748956,
+    ),
+    "lilbee_engine_mistral_rs-0.9.5-2.cuda_sm89-py3-none-manylinux_2_35_x86_64.whl": (
+        "fbd58aa532ba8f1a6491b4be9c90a247534e25f97d7474f0b0c2fc4d41c3629e",
+        1096363057,
+    ),
+    "lilbee_engine_mistral_rs-0.9.5-2.cuda_sm90-py3-none-manylinux_2_35_x86_64.whl": (
+        "9547e8afe2ddcb8a94eea4ac20cc2ba76222adc324d2aa51491b90110173cb44",
+        1104148600,
+    ),
+    "lilbee_engine_mistral_rs-0.9.5-2.metal-py3-none-macosx_15_0_arm64.whl": (
+        "f21ef879a4072e4ba3a98910eb87908ae7a219c8d8c0cfbe4a715de3e5f1019a",
+        50923670,
     ),
     "lilbee_engine_tei-1.9.4-1.cpu-py3-none-manylinux_2_34_x86_64.whl": (
         "a92f666c0cdc825f173c3e29486c409a4b5435d037f57d3a60f970844eaf09b8",
