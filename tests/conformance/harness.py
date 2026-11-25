@@ -25,6 +25,7 @@ from typing import Any
 
 from lilbee.providers.fleet.client import _EMBED_N_SEQ_MAX as EMBED_REQUEST_LIMIT
 from lilbee.retrieval.reasoning import split_reasoning
+from tests.conformance.request_set import PINNED_SAMPLING
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 CLAIMS = frozenset({"chat", "embed", "rerank", "vision", "reasoning", "json"})
@@ -162,7 +163,7 @@ class _Probe:
             return 0, b""
 
     def chat(self, role: str, messages: list[dict[str, Any]], **extra: Any) -> tuple[int, Any]:
-        body = {"model": self.model(role), "messages": messages, **extra}
+        body = {"model": self.model(role), "messages": messages, **PINNED_SAMPLING, **extra}
         status, raw = self.call("POST", "/v1/chat/completions", body)
         return status, _parse(raw)
 
@@ -237,7 +238,13 @@ def _check_health(probe: _Probe, health_path: str | None) -> tuple[Verdict, Verd
 
 def _check_stream(probe: _Probe) -> Verdict:
     messages = golden("E5")["request"]["messages"]
-    body = {"model": probe.model("chat"), "messages": messages, "stream": True, "max_tokens": 32}
+    body = {
+        "model": probe.model("chat"),
+        "messages": messages,
+        "stream": True,
+        "max_tokens": 32,
+        **PINNED_SAMPLING,
+    }
     status, raw = probe.call("POST", "/v1/chat/completions", body)
     lines = [line for line in raw.decode(errors="replace").splitlines() if line.strip()]
     if status != _HTTP_OK or not lines or lines[-1] != "data: [DONE]":
