@@ -5105,6 +5105,13 @@ class TestRelocateInOnePass:
         assert Counted.reads <= 4 * len(names)
 
 
+def _half_made_folder(config, name):
+    """The folder a killed first ``create_table`` leaves: listed, with a temp file, no version."""
+    data = config.lancedb_dir / f"{name}.lance" / "data"
+    data.mkdir(parents=True)
+    (data / ".tmpABC").write_bytes(b"")
+
+
 def _path_keyed_library(config):
     """A Store over a library the layout before source ids wrote: every table keys by path."""
     return _open_after(config, _path_keyed_tables(config))
@@ -5210,14 +5217,33 @@ class TestOpenTimeMigration:
         assert "path" in names and "filename" not in names and "held_out" in names
 
     def test_a_meta_folder_with_no_committed_version_does_not_stop_the_upgrade(self, test_config):
-        (test_config.lancedb_dir).mkdir(parents=True, exist_ok=True)
-        (test_config.lancedb_dir / f"{META_TABLE}.lance").mkdir()
+        _half_made_folder(test_config, META_TABLE)
         store = _path_keyed_library(test_config)
         db = store.get_db()
 
         assert META_TABLE in table_names(db)
         assert "source_id" in db.open_table(CHUNKS_TABLE).schema.names
         assert store.get_meta() is None
+
+    @pytest.mark.parametrize("name", ["entities", PAGE_TEXTS_TABLE, "chunk_concepts"])
+    def test_a_half_made_table_the_library_lacks_does_not_stop_the_upgrade(
+        self, test_config, name
+    ):
+        tables = _path_keyed_tables(test_config)
+        tables.pop(name, None)
+        _half_made_folder(test_config, name)
+        store = _open_after(test_config, tables)
+
+        assert name in table_names(store.get_db())
+        assert store.source_ids(["a.md"], SourceType.DOCUMENT) == {"a.md": _md5("a.md")}
+
+    def test_a_half_made_sources_table_does_not_stop_the_upgrade(self, test_config):
+        tables = _path_keyed_tables(test_config)
+        del tables[SOURCES_TABLE]
+        _half_made_folder(test_config, SOURCES_TABLE)
+        store = _open_after(test_config, tables)
+
+        assert "source_id" in store.get_db().open_table(CHUNKS_TABLE).schema.names
 
     def test_an_existing_source_takes_the_md5_of_its_path(self, test_config):
         store = _path_keyed_library(test_config)
