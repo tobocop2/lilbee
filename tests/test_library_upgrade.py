@@ -1427,7 +1427,13 @@ class TestServerShowsTheUpgrade:
 
     @pytest.mark.parametrize(
         "path",
-        ["/api/status", "/api/documents", "/api/search?q=x", "/api/memories", "/api/wiki/citations"],
+        [
+            "/api/status",
+            "/api/documents",
+            "/api/search?q=x",
+            "/api/memories",
+            "/api/wiki/citations",
+        ],
     )
     async def test_a_route_that_reads_the_library_keeps_the_wait(self, library, monkeypatch, path):
         from lilbee.server import app as app_mod
