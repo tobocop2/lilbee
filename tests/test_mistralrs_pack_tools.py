@@ -1176,7 +1176,8 @@ _NOTICE_EULA = (
 )
 _EULA_LIBS = "libcublas.so, libcublasLt.so, libcudart.so, libcurand.so."
 _SHA256SUM = pytest.mark.skipif(
-    shutil.which("sha256sum") is None, reason="the notice step runs sha256sum"
+    sys.platform == "win32" or shutil.which("sha256sum") is None,
+    reason="the notice step runs sha256sum on the Linux runner of a CUDA cell",
 )
 
 
