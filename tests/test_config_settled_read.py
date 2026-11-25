@@ -1,4 +1,4 @@
-"""A config.toml that changed under a second ago is not taken: an editor may be mid-rewrite."""
+"""An in-place write to config.toml under a second old is not taken; an atomic replace is."""
 
 from __future__ import annotations
 
@@ -40,10 +40,21 @@ def _config_path() -> Path:
     return cfg.data_root / CONFIG_FILE_NAME
 
 
-def _write(key: str, value: Any, tick: int) -> None:
-    persistent_settings.set_value(cfg.data_root, key, value)
+def _stamp_file(tick: int) -> None:
     stamp = _MTIME_NS + tick * _SECOND_NS
     os.utime(_config_path(), ns=(stamp, stamp))
+
+
+def _write(key: str, value: Any, tick: int) -> None:
+    """An atomic write, as lilbee and `lilbee set` make it: a new inode."""
+    persistent_settings.set_value(cfg.data_root, key, value)
+    _stamp_file(tick)
+
+
+def _truncate_in_place(tick: int) -> None:
+    """An editor's truncate: the same inode, no keys, its rewrite not landed."""
+    _config_path().write_text("", encoding="utf-8")
+    _stamp_file(tick)
 
 
 def _clock_at(monkeypatch: pytest.MonkeyPatch, tick: int, offset_ns: int) -> None:
@@ -56,10 +67,7 @@ def test_a_truncated_file_mid_rewrite_keeps_the_values(monkeypatch):
     _write("top_k", 21, tick=1)
     reading = app_settings.read_config_state()
     cfg.top_k = 21
-    # the editor's truncate; its rewrite has not landed
-    _config_path().write_text("", encoding="utf-8")
-    stamp = _MTIME_NS + 2 * _SECOND_NS
-    os.utime(_config_path(), ns=(stamp, stamp))
+    _truncate_in_place(tick=2)
     _clock_at(monkeypatch, 2, _SECOND_NS // 10)
     after, result = app_settings.adopt_external_changes(reading)
     assert cfg.top_k == 21
@@ -67,67 +75,82 @@ def test_a_truncated_file_mid_rewrite_keeps_the_values(monkeypatch):
     assert after.stamp == reading.stamp  # the next check reads the file again
 
 
-def test_the_next_check_takes_the_file_once_it_is_quiet(monkeypatch):
+def test_an_atomic_replace_under_a_second_old_is_taken_at_once(monkeypatch):
     _write("top_k", 21, tick=1)
     reading = app_settings.read_config_state()
     cfg.top_k = 21
     _write("top_k", 13, tick=2)
+    _clock_at(monkeypatch, 2, 0)
+    app_settings.adopt_external_changes(reading)
+    assert cfg.top_k == 13
+
+
+def test_the_same_file_is_taken_once_it_is_a_second_old(monkeypatch):
+    _write("top_k", 21, tick=1)
+    reading = app_settings.read_config_state()
+    cfg.top_k = 21
+    _truncate_in_place(tick=2)
     _clock_at(monkeypatch, 2, _SECOND_NS // 10)
     reading, _ = app_settings.adopt_external_changes(reading)
     assert cfg.top_k == 21
+    _clock_at(monkeypatch, 2, _SECOND_NS)
+    app_settings.adopt_external_changes(reading)
+    assert cfg.top_k != 21
+
+
+def test_a_finished_in_place_rewrite_is_taken_after_the_window(monkeypatch):
+    _write("top_k", 21, tick=1)
+    reading = app_settings.read_config_state()
+    cfg.top_k = 21
+    _config_path().write_text("top_k = 13\n", encoding="utf-8")
+    _stamp_file(2)
     _clock_at(monkeypatch, 2, 2 * _SECOND_NS)
     app_settings.adopt_external_changes(reading)
     assert cfg.top_k == 13
 
 
-def test_a_finished_rewrite_is_taken_at_once(monkeypatch):
+def test_read_settled_with_no_last_stamp_reads_a_young_file(monkeypatch):
     _write("top_k", 21, tick=1)
-    reading = app_settings.read_config_state()
-    cfg.top_k = 21
-    _write("top_k", 13, tick=2)
-    _clock_at(monkeypatch, 2, _SECOND_NS)
-    app_settings.adopt_external_changes(reading)
-    assert cfg.top_k == 13
-
-
-def test_read_settled_gives_nothing_for_a_young_file(monkeypatch):
-    _write("top_k", 21, tick=1)
-    _clock_at(monkeypatch, 1, _SECOND_NS - 1)
-    assert persistent_settings.read_settled(cfg.data_root) == (None, None)
-
-
-def test_read_settled_reads_an_old_file(monkeypatch):
-    _write("top_k", 21, tick=1)
-    _clock_at(monkeypatch, 1, _SECOND_NS)
-    stamp, values = persistent_settings.read_settled(cfg.data_root)
+    _clock_at(monkeypatch, 1, 0)
+    stamp, values = persistent_settings.read_settled(cfg.data_root, None)
     assert stamp is not None
     assert values is not None
     assert values["top_k"] == 21
 
 
-def test_read_settled_reads_a_file_dated_in_the_future(monkeypatch):
+def test_read_settled_skips_a_young_file_of_the_same_inode(monkeypatch):
     _write("top_k", 21, tick=1)
-    _clock_at(monkeypatch, 1, -_SECOND_NS)
-    stamp, values = persistent_settings.read_settled(cfg.data_root)
+    last = persistent_settings.overlay_stamp(cfg.data_root)
+    _truncate_in_place(tick=2)
+    _clock_at(monkeypatch, 2, _SECOND_NS - 1)
+    assert persistent_settings.read_settled(cfg.data_root, last) == (None, None)
+
+
+def test_read_settled_reads_a_young_file_of_a_new_inode(monkeypatch):
+    _write("top_k", 21, tick=1)
+    last = persistent_settings.overlay_stamp(cfg.data_root)
+    _write("top_k", 13, tick=2)
+    _clock_at(monkeypatch, 2, 0)
+    stamp, values = persistent_settings.read_settled(cfg.data_root, last)
     assert stamp is not None
     assert values is not None
+    assert values["top_k"] == 13
+
+
+def test_read_settled_reads_a_file_dated_in_the_future(monkeypatch):
+    _write("top_k", 21, tick=1)
+    last = persistent_settings.overlay_stamp(cfg.data_root)
+    _truncate_in_place(tick=2)
+    _clock_at(monkeypatch, 2, -_SECOND_NS)
+    stamp, _values = persistent_settings.read_settled(cfg.data_root, last)
+    assert stamp is not None
 
 
 def test_read_settled_without_a_file_reads_defaults(monkeypatch):
     _clock_at(monkeypatch, 1, 0)
-    stamp, values = persistent_settings.read_settled(cfg.data_root)
+    stamp, values = persistent_settings.read_settled(cfg.data_root, None)
     assert stamp is None
     assert values is not None
-
-
-def test_the_fleet_view_of_a_young_file_is_empty(monkeypatch):
-    from lilbee.providers.fleet import provider as fleet_provider
-
-    _write("top_k", 21, tick=1)
-    _clock_at(monkeypatch, 1, 0)
-    assert fleet_provider._plan_origin().fleet_view is None
-    _clock_at(monkeypatch, 1, _SECOND_NS)
-    assert fleet_provider._plan_origin().fleet_view is not None
 
 
 def test_the_startup_overlay_takes_a_file_written_just_now(monkeypatch):

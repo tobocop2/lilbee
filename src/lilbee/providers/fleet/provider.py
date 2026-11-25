@@ -32,7 +32,7 @@ from lilbee.catalog import clean_display_name
 from lilbee.catalog.refs import canonical_ref
 from lilbee.core.config import cfg
 from lilbee.core.health_warnings import HealthWarning
-from lilbee.core.settings import read_settled
+from lilbee.core.settings import read_persisted
 from lilbee.core.vectors import Vector
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers import engine_params
@@ -375,7 +375,7 @@ def _plan_origin() -> PlanOrigin:
     other key never makes a fleet look older than the file. A torn or unreadable file
     gives no view.
     """
-    _stamp, values = read_settled(cfg.data_root)
+    _stamp, values = read_persisted(cfg.data_root)
     view = None
     if values is not None:
         picked = {key: value for key, value in values.items() if key in FLEET_RELOAD_KEYS}

@@ -407,16 +407,26 @@ def _now_ns() -> int:
     return time.time_ns()
 
 
-def read_settled(root: Path) -> tuple[tuple[int, int, int] | None, dict[str, Any] | None]:
-    """``read_persisted``, but a file that changed under ``SETTLE_NS`` ago is not taken.
+def read_settled(
+    root: Path, last_stamp: tuple[int, int, int] | None
+) -> tuple[tuple[int, int, int] | None, dict[str, Any] | None]:
+    """``read_persisted``, but an in-place write under ``SETTLE_NS`` old is not taken.
 
-    Another program can truncate the file and write it back a moment later, and the
-    empty file in between is stable to ``read_persisted``. A file that young gives
-    values None and stamp None, so the next check reads it again. A modification time
-    in the future (a skewed clock) is not young: the file would never be taken.
+    An editor can truncate the file and write it back a moment later, and the empty
+    file in between is stable to ``read_persisted``. An atomic replace (every write by
+    lilbee, and the default of some editors) gives the file a new inode and is never
+    torn, so it is taken at once. A file with the inode of *last_stamp* and a young
+    modification time may be mid-write: the reading has values None and stamp None, so
+    the next check reads it again. With no *last_stamp* the read is plain. A modification
+    time in the future (a skewed clock) is not young.
+
+    Gaps: a file system whose inode numbers do not change on a replace gets the window
+    for every write; an in-place edit that stays torn for more than ``SETTLE_NS`` is taken.
     """
     stamp, values = read_persisted(root)
-    if stamp is not None and 0 <= _now_ns() - stamp[0] < SETTLE_NS:
+    if stamp is None or last_stamp is None or stamp[2] != last_stamp[2]:
+        return stamp, values
+    if 0 <= _now_ns() - stamp[0] < SETTLE_NS:
         return None, None
     return stamp, values
 
