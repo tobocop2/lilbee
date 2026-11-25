@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 
-from lilbee.core.results import DocumentResult
+from lilbee.core.results import DocumentResult, to_dicts
 from lilbee.core.results import group as _group
-from lilbee.core.results import to_dicts
 from lilbee.data.store import SearchChunk
 
 
