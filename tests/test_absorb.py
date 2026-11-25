@@ -20,7 +20,7 @@ from lilbee.app.ingest import (
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.data.ingest import sync
-from lilbee.data.store import REMOVED_REASON, HeldOut, SourceType, Store
+from lilbee.data.store import REMOVED_REASON, HeldOut, SourceMove, SourceType, Store
 from lilbee.runtime.lock import (
     LibraryUnlockableError,
     LockingUnsupportedError,
@@ -1683,3 +1683,123 @@ class TestACancelledJsonAdd:
         payload = json.loads(capsys.readouterr().out)
         assert payload["not_added"] == ["notes"]
         assert "copied" not in payload and "absorbed" not in payload
+
+
+def _page_text(sources: list[str], body: str, score: float = 0.9) -> str:
+    """A generated page as the wiki's own writers assemble it, citing *sources*."""
+    from lilbee.wiki.page import assemble_content, build_frontmatter
+
+    return assemble_content(build_frontmatter(cfg, sources, score), body, "")
+
+
+def _generate(store: Store, subdir: str, sources: list[str], body: str) -> Path:
+    """Generate the page ``boeing`` again from *sources*, as the wiki build does."""
+    from lilbee.wiki.page import write_page
+
+    return write_page(
+        cfg.data_root / cfg.wiki_dir,
+        subdir,
+        "boeing",
+        _page_text(sources, body),
+        0.0,
+        sources,
+        "entities",
+        source_ids=store.source_ids(sources, SourceType.DOCUMENT),
+    )
+
+
+def _drafts() -> list[str]:
+    drafts = cfg.data_root / cfg.wiki_dir / "drafts"
+    return sorted(path.name for path in drafts.glob("*.md")) if drafts.is_dir() else []
+
+
+_OLD_BODY = "# Boeing\n\nBoeing builds aircraft for airlines.\n"
+_FIRST = "# Boeing\n\nA first proposal about something else entirely.\n"
+_SECOND = "# Boeing\n\nA second proposal about yet another unrelated topic.\n"
+
+
+class TestADraftSurvivesAMoveOfItsSources:
+    """A page generated again after its sources changed path replaces its own pending draft."""
+
+    @pytest.fixture
+    def pending(self, library, notes):
+        """``work`` registered, a published page about its two files, and a drift draft."""
+        store = library.store
+        register_sources([notes / "work"])
+        for name in ("plan.md", "budget.md"):
+            _seed(store, f"work/{name}")
+        keys = ["work/budget.md", "work/plan.md"]
+        _generate(store, "entities", keys, _OLD_BODY)
+        assert _generate(store, "entities", keys, _FIRST).parent.name == "drafts"
+        assert _drafts() == ["boeing.md"]
+        return store, keys
+
+    def test_an_absorb_keeps_one_draft_after_the_page_is_generated_again(
+        self, library, notes, pending
+    ):
+        store, _keys_before = pending
+
+        register_sources([notes])
+        renamed = ["notes/work/budget.md", "notes/work/plan.md"]
+        assert sorted(store.source_ids(renamed, SourceType.DOCUMENT)) == renamed
+        _generate(store, "entities", renamed, _SECOND)
+
+        assert _drafts() == ["boeing.md"]
+        draft = (cfg.data_root / cfg.wiki_dir / "drafts" / "boeing.md").read_text(encoding="utf-8")
+        assert "second proposal" in draft
+
+    def test_a_move_keeps_one_draft_after_the_page_is_generated_again(
+        self, library, notes, pending
+    ):
+        store, _keys_before = pending
+        ids = store.source_ids(["work/plan.md"], SourceType.DOCUMENT)
+        store.relocate_sources([SourceMove(("work/plan.md",), "work/sub/plan.md", None)])
+        assert store.source_ids(["work/sub/plan.md"], SourceType.DOCUMENT) == {
+            "work/sub/plan.md": ids["work/plan.md"]
+        }
+
+        _generate(store, "entities", ["work/budget.md", "work/sub/plan.md"], _SECOND)
+
+        assert _drafts() == ["boeing.md"]
+
+    def test_a_draft_held_by_the_quality_gate_is_replaced_after_a_move(
+        self, library, notes, pending
+    ):
+        store, _keys_before = pending
+        held = _generate(store, "drafts", ["work/budget.md", "work/plan.md"], _FIRST)
+        store.relocate_sources([SourceMove(("work/plan.md",), "work/sub/plan.md", None)])
+
+        again = _generate(store, "drafts", ["work/budget.md", "work/sub/plan.md"], _SECOND)
+
+        assert again == held
+        assert _drafts() == ["boeing.md"]
+
+    def test_publishing_after_a_move_removes_the_superseded_drift_draft(
+        self, library, notes, pending
+    ):
+        from lilbee.wiki.page import write_page
+
+        store, _keys_before = pending
+        store.relocate_sources([SourceMove(("work/plan.md",), "work/sub/plan.md", None)])
+        names = ["work/budget.md", "work/sub/plan.md"]
+
+        write_page(
+            cfg.data_root / cfg.wiki_dir,
+            "entities",
+            "boeing",
+            _page_text(names, _OLD_BODY),
+            1.0,
+            names,
+            "entities",
+            source_ids=store.source_ids(names, SourceType.DOCUMENT),
+        )
+
+        assert _drafts() == []
+
+    def test_another_pages_sources_still_collide(self, library, notes, pending):
+        store, _keys_before = pending
+        _seed(store, "work/other.md")
+
+        _generate(store, "entities", ["work/other.md"], _SECOND)
+
+        assert len(_drafts()) == 2
