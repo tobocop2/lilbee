@@ -271,6 +271,8 @@ def _pull_interactive_progress(ref: str, src: ModelSource, *, allow_unsupported:
         TimeRemainingColumn(),
         console=err_console,
         transient=False,
+        redirect_stdout=False,
+        redirect_stderr=False,
     ) as progress:
         task_id = progress.add_task(f"Downloading {ref}", total=100, detail="")
 

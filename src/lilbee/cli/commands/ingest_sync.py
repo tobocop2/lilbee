@@ -265,6 +265,8 @@ def _crawl_urls_blocking(
         transient=True,
         console=err_console,
         disable=cfg.json_mode,
+        redirect_stdout=False,
+        redirect_stderr=False,
     ) as progress:
         for url in urls:
             shown = without_userinfo(url)
