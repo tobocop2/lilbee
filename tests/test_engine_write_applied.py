@@ -106,7 +106,7 @@ class _ProcessSwap:
     def start(self, launches: list[Any], **kwargs: Any) -> None:
         type(self).starting.set()
         if type(self).start_gate is not None:
-            assert type(self).start_gate.wait(_WAIT_S)
+            type(self).start_gate.wait()
         if type(self).start_failure is not None:
             raise type(self).start_failure
         self.process = subprocess.Popen(
