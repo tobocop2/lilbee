@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+A REST client can now cancel an add. Give `POST /api/add` or `POST /api/add/upload` an `add_id`, then send `POST /api/add/cancel` with that id. As with Ctrl+C on `lilbee add`, the cancel removes what the add did not finish: a source with no file indexed is no longer added, and an uploaded file that the server did not index is deleted. The stream of the add ends with a `done` event that carries `cancelled` and `not_added`. A stream that only closes still keeps every source.
+
 `DELETE /api/models/{model}` now removes a model whose ref holds slashes, such as `org/repo/model.gguf`. Before, the route matched one path segment, so the server answered with an error for these refs and a REST client could not remove the model.
 
 When an engine has a second build on disk that is not the build its pin names, `lilbee engine list`, the `/engine list` command and the Engines tab in Settings now mark that build as "differs from the pin". lilbee runs only the pin build, and Remove stays on the row of the other build. Each build in the `builds` field of `GET /api/engines` and the `engine_list` MCP tool has a new field, `differs_from_pin`.
