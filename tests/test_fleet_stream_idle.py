@@ -19,7 +19,7 @@ import socket
 import threading
 import time
 from collections.abc import Callable, Collection, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import BinaryIO
 
 import httpx
@@ -171,12 +171,11 @@ def _short_idle_bound(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @contextlib.contextmanager
 def _serve(
-    script: _Script, timeout: float = _COLD_LOAD_S
+    script: _Script, timeout: float = _COLD_LOAD_S, *, silent_prefill: bool = False
 ) -> Iterator[tuple[_ScriptedServer, LlamaServerClient]]:
     server = _ScriptedServer(script)
-    client = LlamaServerClient(
-        server.url, "m", timeout=timeout, profile=LLAMA.request_profile(WorkerRole.CHAT)
-    )
+    profile = replace(LLAMA.request_profile(WorkerRole.CHAT), silent_prefill=silent_prefill)
+    client = LlamaServerClient(server.url, "m", timeout=timeout, profile=profile)
     client._needs_alternation = False
     try:
         yield server, client
@@ -338,3 +337,59 @@ def test_many_streams_on_one_connection_end_without_an_error() -> None:
             assert "w0" in list(client.chat_stream_items(_MESSAGES))
     assert len(server.peers) == 1500
     assert len(set(server.peers)) == 1
+
+
+# An engine with a silent prefill (Lemonade on the NPU) sends its headers, then no byte until
+# its first frame. The fake server holds the stream silent for three idle bounds.
+
+
+@pytest.mark.parametrize("site", sorted(_SITES))
+def test_a_silent_prefill_past_the_idle_bound_is_not_cut(site: str) -> None:
+    with _serve(_Script(wait_s=_IDLE_S * 3, end=True), silent_prefill=True) as (_server, client):
+        assert "w0" in _SITES[site](client)
+
+
+@pytest.mark.parametrize("site", sorted(_SITES))
+def test_a_silent_prefill_still_waits_only_the_client_timeout(site: str) -> None:
+    with (
+        _serve(_Script(wait_s=60.0), timeout=_IDLE_S * 2, silent_prefill=True) as (_s, client),
+        pytest.raises(httpx.ReadTimeout),
+    ):
+        _SITES[site](client)
+
+
+@pytest.mark.parametrize("site", sorted(_SITES))
+def test_silence_after_the_first_frame_ends_at_the_idle_bound_for_a_silent_prefill(
+    site: str,
+) -> None:
+    with _serve(_Script(wait_s=_IDLE_S), silent_prefill=True) as (_server, client):
+        start = time.monotonic()
+        with pytest.raises(StreamInterruptedError):
+            _SITES[site](client)
+        waited = time.monotonic() - start
+    assert _IDLE_S <= waited < _QUICK_S
+
+
+def test_a_comment_is_not_the_first_frame_of_a_silent_prefill() -> None:
+    """The bound starts at a ``data:`` line, so a ping before it does not start it."""
+    script = _Script(wait_s=_IDLE_S * 3, heartbeat_s=_IDLE_S * 2, end=True)
+    with _serve(script, silent_prefill=True) as (_server, client):
+        assert "w0" in list(client.chat_stream_items(_MESSAGES))
+
+
+def test_a_slow_reader_of_a_silent_prefill_stream_is_not_cut() -> None:
+    """The timer runs only while the client waits for a line, not while the caller holds one."""
+    with _serve(_Script(frames=3, end=True), silent_prefill=True) as (_server, client):
+        stream = client.chat_stream_items(_MESSAGES)
+        assert next(stream) == "w0"
+        time.sleep(_IDLE_S * 2)
+        assert "w2" in list(stream)
+
+
+def test_a_connection_lost_after_the_first_frame_of_a_silent_prefill_is_a_cut_answer() -> None:
+    with _serve(_Script(close=True), silent_prefill=True) as (_server, client):
+        stream = client.chat_stream_items(_MESSAGES)
+        assert next(stream) == "w0"
+        with pytest.raises(StreamInterruptedError) as caught:
+            list(stream)
+    assert not isinstance(caught.value.__cause__, fleet_client.StreamSilentError)
