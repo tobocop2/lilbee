@@ -1230,6 +1230,8 @@ def _clear_engine_dir(engine_dir: Path) -> None:
     reap_stale(engine_dir)
     if engine_record_exists(engine_dir):
         stop_engine(engine_dir)
+        # The stop frees the card the engine held, so a reading taken before it is stale.
+        planning.clear_read_device_cache()
 
 
 def _watch_bound_engine(engine_dir: Path) -> None:

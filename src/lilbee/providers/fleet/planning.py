@@ -2986,7 +2986,8 @@ def assert_engine_probeable(engine: EngineAdapter) -> None:
     residency-dependent memory snapshot (that belongs on the clean box, after the
     stop, in capture_plan_probe). The reading is kept in the read cache. When it
     listed no device, the follow-up capture reuses it instead of walking the retry
-    ladder again; a reading with devices is taken again by the capture.
+    ladder again; a reading with devices is taken again by the capture. Stopping an
+    incumbent engine drops the reading, because the stop frees the card it held.
     """
     binary = engine.binary()
     _read_device_cache.remember(binary, _read_devices(binary, engine))
