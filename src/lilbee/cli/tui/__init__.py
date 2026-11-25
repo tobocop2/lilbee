@@ -17,6 +17,7 @@ from lilbee.app.services import (
     loop_takes_signals,
     reset_services_on_exit,
 )
+from lilbee.cli.log_routing import detach_rotating_file_handler
 from lilbee.cli.tui.log_routing import setup_tui_log_file
 from lilbee.core.security import OWNER_ONLY_MODE
 from lilbee.runtime.asyncio_loop import run_without_join
@@ -164,11 +165,15 @@ def run_tui(*, initial_view: str | None = None) -> None:
         status = exit_code_of(stop)
         raise
     finally:
-        # Tasks stop through their own cancel while the executors and services live.
-        app.task_bar.stop_all()
-        _restore_native_stderr(stderr_redirect)
-        shutdown_executor()
-        reset_services_on_exit()
+        try:
+            # Tasks stop through their own cancel while the executors and services live.
+            app.task_bar.stop_all()
+            _restore_native_stderr(stderr_redirect)
+            shutdown_executor()
+            reset_services_on_exit()
+        finally:
+            # The tui.log handler lives only as long as this session.
+            detach_rotating_file_handler(log_path)
         exit_when_stragglers_would_hang(status)
     if status:
         raise SystemExit(status)
