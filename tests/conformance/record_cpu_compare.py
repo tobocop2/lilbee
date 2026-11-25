@@ -307,7 +307,9 @@ def main(argv: list[str] | None = None) -> int:
         _wait(quant_url)
         spec = args.logs / "models.json"
         quant = {"embed": _entry(quant_url, quant_alias, _QUANT_EMBED, quant_path)}
-        spec.write_text(json.dumps({"engine": engine, "oracle": oracle, "quant": quant}))
+        spec.write_text(
+            json.dumps({"engine": engine, "oracle": oracle, "quant": quant}), encoding="utf-8"
+        )
         command = [
             sys.executable,
             "-m",
