@@ -368,19 +368,20 @@ class _SlotOwed(NamedTuple):
     states: dict[SwapGroup, SwapState]
 
 
-def _origin(*, planned: bool, followed: frozenset[str] | None = None) -> PlanOrigin:
+def _origin(*, held: frozenset[str], followed: frozenset[str] | None) -> PlanOrigin:
     """This config root and the fleet reload keys config.toml sets, as a state records them.
 
     Only the keys whose change makes the fleet owner rebuild count, so a write of any
-    other key never makes a fleet look older than the file. With *planned*, a key this
+    other key never makes a fleet look older than the file. A key in *held* that this
     process runs on another value of (a flag, or a start value it holds) records that
-    value. A torn or unreadable file gives no view.
+    value. A key the process takes from the file records the file's value, the one it
+    runs on, in the file's spelling. A torn or unreadable file gives no view.
     """
     _stamp, values = read_persisted(cfg.data_root)
     view = None
     if values is not None:
         picked = {
-            key: getattr(cfg, key) if planned and value != getattr(cfg, key) else value
+            key: getattr(cfg, key) if key in held and value != getattr(cfg, key) else value
             for key, value in values.items()
             if key in FLEET_RELOAD_KEYS
         }
@@ -390,12 +391,12 @@ def _origin(*, planned: bool, followed: frozenset[str] | None = None) -> PlanOri
 
 def _plan_origin(followed: frozenset[str]) -> PlanOrigin:
     """The origin a fleet this process plans now is stamped with; *followed* is its builder's."""
-    return _origin(planned=True, followed=followed)
+    return _origin(held=FLEET_RELOAD_KEYS - followed, followed=followed)
 
 
 def _file_origin() -> PlanOrigin:
     """The origin a fleet planned on config.toml as it is now would carry."""
-    return _origin(planned=False)
+    return _origin(held=frozenset(), followed=None)
 
 
 def _owner_owes_the_file(states: dict[SwapGroup, SwapState]) -> bool:
