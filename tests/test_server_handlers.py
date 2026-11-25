@@ -3554,6 +3554,7 @@ class TestModelsCatalog:
             offset=5,
         )
         mock_get_catalog.assert_called_once_with(
+            hf_client=mock_svc.hf_client,
             task=ModelTask.CHAT,
             search="qwen",
             size=CatalogSize.SMALL,

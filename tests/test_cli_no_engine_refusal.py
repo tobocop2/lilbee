@@ -11,6 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from lilbee.app import services as svc_mod
+from lilbee.catalog.hf_client import HfClient
 from lilbee.cli import app
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import EngineSetting
@@ -64,7 +65,9 @@ def downloads(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[list[
     store = MagicMock()
     store.index_mismatch.return_value = None
     svc_mod.set_services(
-        make_mock_services(store=store, model_manager=ModelManager(cfg.models_dir, cfg))
+        make_mock_services(
+            store=store, model_manager=ModelManager(cfg.models_dir, cfg, hf_client=HfClient(cfg))
+        )
     )
     yield started
     for name in type(cfg).model_fields:

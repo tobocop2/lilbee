@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from lilbee import catalog
+from lilbee.app.services import get_services
 from lilbee.catalog import compat
 from lilbee.catalog.formatting import download_task_name
 from lilbee.catalog.refs import (
@@ -56,14 +57,14 @@ def test_a_one_slash_gguf_file_with_the_suffix_has_no_repo_label() -> None:
 
 @pytest.mark.parametrize("ref", [_PLAIN, _SUFFIXED])
 def test_the_pull_target_of_a_native_ref_is_the_same_file(ref: str) -> None:
-    entry = catalog.resolve_pull_target(ref)
+    entry = catalog.resolve_pull_target(ref, hf_client=get_services().hf_client)
     assert entry is not None
     assert (entry.hf_repo, entry.gguf_filename) == ("org/Repo-GGUF", "Q4_K_M/model-Q4_K_M.gguf")
 
 
 @pytest.mark.parametrize("ref", [_BARE, _BARE_SUFFIXED])
 def test_the_pull_target_of_a_bare_repo_is_the_repo(ref: str) -> None:
-    entry = catalog.resolve_pull_target(ref)
+    entry = catalog.resolve_pull_target(ref, hf_client=get_services().hf_client)
     assert entry is not None
     assert entry.hf_repo == _BARE
 

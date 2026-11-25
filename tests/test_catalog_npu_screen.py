@@ -65,7 +65,7 @@ def _npu_card_shown(screen: CatalogScreen) -> bool:
 
 
 def _browse(monkeypatch: pytest.MonkeyPatch, host: host_caps.HostCaps) -> None:
-    monkeypatch.setattr(_query, "get_picks", lambda: [])
+    monkeypatch.setattr(_query, "get_picks", lambda **_: [])
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     stub_hf_listing(monkeypatch, {})
     rows = parse_models(PINNED)

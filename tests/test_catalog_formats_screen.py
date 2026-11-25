@@ -71,7 +71,7 @@ def _screen_text(screen: CatalogScreen) -> str:
 
 
 def _hidden_listing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_query, "get_picks", lambda: [])
+    monkeypatch.setattr(_query, "get_picks", lambda **_: [])
     stub_hf_listing(
         monkeypatch,
         {
@@ -294,7 +294,7 @@ async def test_search_result_hides_count_in_the_same_note(monkeypatch: pytest.Mo
     from lilbee.app.services import get_services
     from lilbee.catalog.models import HfPage
 
-    monkeypatch.setattr(_query, "get_picks", lambda: [])
+    monkeypatch.setattr(_query, "get_picks", lambda **_: [])
 
     def _fetch(**kwargs: object) -> HfPage:
         if kwargs.get("search"):
@@ -319,7 +319,7 @@ async def test_cut_short_hint_keeps_the_hidden_note(monkeypatch: pytest.MonkeyPa
     from lilbee.app.services import get_services
     from lilbee.catalog.models import HfPage
 
-    monkeypatch.setattr(_query, "get_picks", lambda: [])
+    monkeypatch.setattr(_query, "get_picks", lambda **_: [])
     seen: list[str] = []
 
     def _fetch(**kwargs: object) -> HfPage:

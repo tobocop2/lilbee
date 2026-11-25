@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.app import engine_choice
+from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import ModelManager
@@ -35,7 +36,7 @@ def models_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path
 
 
 def test_the_download_needs_no_engine_and_the_load_names_the_fix(models_dir: Path) -> None:
-    path = ModelManager(models_dir, cfg).pull(_REF, ModelSource.NATIVE)
+    path = ModelManager(models_dir, cfg, hf_client=HfClient(cfg)).pull(_REF, ModelSource.NATIVE)
 
     assert path is not None
     assert path.name == "model.safetensors"

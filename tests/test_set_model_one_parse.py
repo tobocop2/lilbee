@@ -14,6 +14,8 @@ from conftest import PICKS_CHAT, install_fake_model
 from lilbee.app import engine_choice, engine_service
 from lilbee.app import models as app_models
 from lilbee.app.engine_service import EngineRefusedError
+from lilbee.app.services import get_services
+from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.refs import canonical_ref
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg
@@ -59,26 +61,39 @@ class TestConfigBoundary:
 class TestSetModelBoundary:
     def test_installed_exact_file_persists_the_plain_ref(self) -> None:
         ref = install_fake_model("other/Chat-Model-GGUF", "chat-Q4_K_M.gguf", "chat")
-        result = validate_model_task_assignment("chat_model", f"{ref}#gguf", allow_bypass=False)
+        result = validate_model_task_assignment(
+            "chat_model", f"{ref}#gguf", allow_bypass=False, hf_client=get_services().hf_client
+        )
         assert result == ref
 
     def test_installed_bare_repo_with_qualifier_resolves_to_its_quant(self) -> None:
         ref = install_fake_model("other/Chat-Model-GGUF", "chat-Q4_K_M.gguf", "chat")
         result = validate_model_task_assignment(
-            "chat_model", "other/Chat-Model-GGUF#gguf", allow_bypass=False
+            "chat_model",
+            "other/Chat-Model-GGUF#gguf",
+            allow_bypass=False,
+            hf_client=get_services().hf_client,
         )
         assert result == ref
 
     def test_pick_with_qualifier_resolves_to_the_picks_ref(self) -> None:
         pick = PICKS_CHAT[0]
         result = validate_model_task_assignment(
-            "chat_model", f"{pick.hf_repo}#gguf", allow_bypass=False
+            "chat_model",
+            f"{pick.hf_repo}#gguf",
+            allow_bypass=False,
+            hf_client=get_services().hf_client,
         )
         assert result == pick.ref
 
     def test_malformed_qualifier_is_refused_as_not_installed(self) -> None:
         with pytest.raises(ValueError, match="not installed"):
-            validate_model_task_assignment("chat_model", "nobody/Repo#nosuch", allow_bypass=False)
+            validate_model_task_assignment(
+                "chat_model",
+                "nobody/Repo#nosuch",
+                allow_bypass=False,
+                hf_client=get_services().hf_client,
+            )
 
 
 class TestRestSetModelBoundary:
@@ -174,7 +189,7 @@ class TestPullEngineChoice:
     def test_a_qualified_pull_reads_the_choice_stored_under_the_plain_ref(
         self, overrides: list[str | None], tmp_path: Path
     ) -> None:
-        manager = ModelManager(tmp_path / "models", cfg)
+        manager = ModelManager(tmp_path / "models", cfg, hf_client=HfClient(cfg))
         with pytest.raises(_StopAtChoice):
             manager.pull("org/repo/f.gguf#gguf", ModelSource.NATIVE)
         assert overrides == ["llama"]
@@ -182,7 +197,9 @@ class TestPullEngineChoice:
     async def test_the_rest_preflight_reads_the_choice_stored_under_the_plain_ref(
         self, overrides: list[str | None], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        services = SimpleNamespace(model_manager=ModelManager(tmp_path / "models", cfg))
+        services = SimpleNamespace(
+            model_manager=ModelManager(tmp_path / "models", cfg, hf_client=HfClient(cfg))
+        )
         monkeypatch.setattr(handlers, "get_services", lambda: services)
         with pytest.raises(_StopAtChoice):
             await handlers.enforce_pull_arch_compat("org/repo/f.gguf#gguf")
@@ -241,7 +258,7 @@ class TestAdoptEmbedder:
         from lilbee.app import settings as app_settings
 
         ref = "org/repo#safetensors"
-        manager = ModelManager(tmp_path / "models", cfg)
+        manager = ModelManager(tmp_path / "models", cfg, hf_client=HfClient(cfg))
         services = SimpleNamespace(model_manager=manager)
         monkeypatch.setattr(app_models, "get_services", lambda: services)
         monkeypatch.setattr(cfg, "embedding_model", ref)
@@ -274,7 +291,7 @@ def _pull_with_no_engine(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **kwargs: bool
 ) -> app_models.PullResult:
     """Run a real pull of a non-GGUF model that no engine loads, with the download stubbed."""
-    manager = ModelManager(tmp_path / "models", cfg)
+    manager = ModelManager(tmp_path / "models", cfg, hf_client=HfClient(cfg))
     services = SimpleNamespace(model_manager=manager)
     monkeypatch.setattr(app_models, "get_services", lambda: services)
     monkeypatch.setattr(engine_choice, "installed_engines", dict)

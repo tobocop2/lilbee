@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from conftest import PICKS_CHAT, PICKS_EMBEDDING, install_fake_model
+from lilbee.app.services import get_services
 from lilbee.modelhub.role_validator import TaskMismatchError, validate_model_task_assignment
 
 
@@ -12,20 +13,29 @@ class TestPickRefs:
     def test_bare_pick_repo_canonicalizes_to_the_picks_ref(self) -> None:
         """A bare repo that is a current pick resolves without being installed."""
         pick = PICKS_CHAT[0]
-        result = validate_model_task_assignment("chat_model", pick.hf_repo, allow_bypass=False)
+        result = validate_model_task_assignment(
+            "chat_model", pick.hf_repo, allow_bypass=False, hf_client=get_services().hf_client
+        )
         assert result == pick.ref
 
     def test_native_gguf_ref_is_kept_verbatim(self) -> None:
         """A full ref names an exact quant, so it survives canonicalization."""
         pick = PICKS_CHAT[0]
         full = f"{pick.hf_repo}/some-quant-Q4_K_M.gguf"
-        assert validate_model_task_assignment("chat_model", full, allow_bypass=False) == full
+        assert (
+            validate_model_task_assignment(
+                "chat_model", full, allow_bypass=False, hf_client=get_services().hf_client
+            )
+            == full
+        )
 
     def test_pick_in_the_wrong_slot_reports_a_task_mismatch(self) -> None:
         """The pick carries its task, so this is a mismatch, not 'not installed'."""
         pick = PICKS_EMBEDDING[0]
         with pytest.raises(TaskMismatchError):
-            validate_model_task_assignment("chat_model", pick.hf_repo, allow_bypass=False)
+            validate_model_task_assignment(
+                "chat_model", pick.hf_repo, allow_bypass=False, hf_client=get_services().hf_client
+            )
 
 
 class TestNonPickRefs:
@@ -33,23 +43,33 @@ class TestNonPickRefs:
         """Nothing can vouch for a repo that is neither a pick nor installed."""
         with pytest.raises(ValueError, match="not installed"):
             validate_model_task_assignment(
-                "chat_model", "nobody/Not-A-Pick-GGUF", allow_bypass=False
+                "chat_model",
+                "nobody/Not-A-Pick-GGUF",
+                allow_bypass=False,
+                hf_client=get_services().hf_client,
             )
 
     def test_installed_non_pick_is_accepted_for_its_task(self) -> None:
         ref = install_fake_model("other/Chat-Model-GGUF", "chat-Q4_K_M.gguf", "chat")
-        result = validate_model_task_assignment("chat_model", ref, allow_bypass=False)
+        result = validate_model_task_assignment(
+            "chat_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+        )
         assert result == ref
 
     def test_installed_non_pick_in_the_wrong_slot_is_rejected(self) -> None:
         ref = install_fake_model("other/Chat-Model-GGUF", "chat-Q4_K_M.gguf", "chat")
         with pytest.raises(TaskMismatchError):
-            validate_model_task_assignment("embedding_model", ref, allow_bypass=False)
+            validate_model_task_assignment(
+                "embedding_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+            )
 
     def test_installed_bare_repo_resolves_to_its_quant(self) -> None:
         ref = install_fake_model("other/Chat-Model-GGUF", "chat-Q4_K_M.gguf", "chat")
         result = validate_model_task_assignment(
-            "chat_model", "other/Chat-Model-GGUF", allow_bypass=False
+            "chat_model",
+            "other/Chat-Model-GGUF",
+            allow_bypass=False,
+            hf_client=get_services().hf_client,
         )
         assert result == ref
 
@@ -61,12 +81,17 @@ class TestNoNetworkOnTheWritePath:
 
         ref = install_fake_model("other/Chat-Model-GGUF", "chat-Q4_K_M.gguf", "chat")
 
-        def boom() -> tuple:
+        def boom(**_) -> tuple:
             raise AssertionError("resolved picks on the role write path")
 
         monkeypatch.setattr(picks_mod, "_resolve_picks", boom)
         picks_mod.reset_picks()
-        assert validate_model_task_assignment("chat_model", ref, allow_bypass=False) == ref
+        assert (
+            validate_model_task_assignment(
+                "chat_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+            )
+            == ref
+        )
 
 
 _VLM_REPO = "other/Chat-Vlm-GGUF"
@@ -124,14 +149,21 @@ class TestRecoveredModelLabelByName:
         manifest = registry.get_manifest(ref)
         assert manifest is not None
         assert manifest.task == ModelTask.VISION
-        assert validate_model_task_assignment("vision_model", ref, allow_bypass=False) == ref
+        assert (
+            validate_model_task_assignment(
+                "vision_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+            )
+            == ref
+        )
 
 
 class TestUnknownTaskRole:
     def test_assigning_a_model_with_an_unknown_task_names_the_model(self) -> None:
         ref = install_fake_model("other/Plain-Chat-GGUF", "plain-Q4_K_M.gguf", "bogus")
         with pytest.raises(ValueError, match="unknown task 'bogus'") as caught:
-            validate_model_task_assignment("chat_model", ref, allow_bypass=False)
+            validate_model_task_assignment(
+                "chat_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+            )
         assert ref in str(caught.value)
         assert not isinstance(caught.value, TaskMismatchError)
 
@@ -156,7 +188,9 @@ class TestRecoveredModelWithProjector:
         assert [o.ref for o in buckets[ModelTask.VISION]] == [recovered_vlm]
 
     def test_vision_role_accepts_it(self, recovered_vlm: str) -> None:
-        result = validate_model_task_assignment("vision_model", recovered_vlm, allow_bypass=False)
+        result = validate_model_task_assignment(
+            "vision_model", recovered_vlm, allow_bypass=False, hf_client=get_services().hf_client
+        )
         assert result == recovered_vlm
 
     def test_vision_route_check_accepts_it(self, recovered_vlm: str, monkeypatch) -> None:
@@ -170,4 +204,6 @@ class TestRecoveredModelWithProjector:
     def test_a_chat_model_without_a_projector_is_still_rejected_for_vision(self) -> None:
         ref = install_fake_model("other/Plain-Chat-GGUF", "plain-Q4_K_M.gguf", "chat")
         with pytest.raises(TaskMismatchError):
-            validate_model_task_assignment("vision_model", ref, allow_bypass=False)
+            validate_model_task_assignment(
+                "vision_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+            )

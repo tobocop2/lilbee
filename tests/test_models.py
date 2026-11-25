@@ -7,6 +7,7 @@ import pytest
 from rich.progress import Progress
 
 from conftest import PICKS_CHAT, install_fake_model
+from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.modelhub import models
 from lilbee.modelhub.models import ModelInfo
@@ -16,22 +17,24 @@ from tests._unreadable import POSIX_DENIES_READS
 
 class TestModelCatalog:
     def test_not_empty(self):
-        assert len(models.MODEL_CATALOG) > 0
+        assert len(models._get_model_catalog(hf_client=get_services().hf_client)) > 0
 
     def test_all_model_info(self):
-        for m in models.MODEL_CATALOG:
+        for m in models._get_model_catalog(hf_client=get_services().hf_client):
             assert isinstance(m, ModelInfo)
 
     def test_derived_from_catalog(self):
-        """models.MODEL_CATALOG entries match catalog.py's PICKS_CHAT."""
+        """The model catalog entries match catalog.py's PICKS_CHAT."""
 
-        assert len(models.MODEL_CATALOG) == len(PICKS_CHAT)
-        for mc, fc in zip(models.MODEL_CATALOG, PICKS_CHAT, strict=True):
+        assert len(models._get_model_catalog(hf_client=get_services().hf_client)) == len(PICKS_CHAT)
+        for mc, fc in zip(
+            models._get_model_catalog(hf_client=get_services().hf_client), PICKS_CHAT, strict=True
+        ):
             assert mc.ref == fc.ref
 
     def test_frozen(self):
         with pytest.raises(AttributeError):
-            models.MODEL_CATALOG[0].ref = "nope"  # type: ignore[misc]
+            models._get_model_catalog(hf_client=get_services().hf_client)[0].ref = "nope"  # type: ignore[misc]
 
 
 class TestGetSystemRamGb:
@@ -100,80 +103,92 @@ class TestGetFreeDiskGb:
 
 class TestPickDefaultModel:
     def test_returns_model_info(self):
-        result = models.pick_default_model(8.0)
+        result = models.pick_default_model(8.0, hf_client=get_services().hf_client)
         assert isinstance(result, ModelInfo)
 
     def test_low_ram_picks_small(self):
-        result = models.pick_default_model(4.0)
+        result = models.pick_default_model(4.0, hf_client=get_services().hf_client)
         assert result.min_ram_gb <= 4.0
 
     def test_8gb_ram(self):
-        result = models.pick_default_model(8.0)
+        result = models.pick_default_model(8.0, hf_client=get_services().hf_client)
         assert result.min_ram_gb <= 8.0
 
     def test_16gb_ram(self):
-        result = models.pick_default_model(16.0)
+        result = models.pick_default_model(16.0, hf_client=get_services().hf_client)
         assert result.min_ram_gb <= 16.0
 
     def test_32gb_ram(self):
-        result = models.pick_default_model(32.0)
+        result = models.pick_default_model(32.0, hf_client=get_services().hf_client)
         assert result.min_ram_gb <= 32.0
 
     def test_raises_when_the_catalog_is_empty(self, monkeypatch):
         """HuggingFace unreachable must surface as a message, not an IndexError."""
-        monkeypatch.setattr(models, "_get_model_catalog", lambda: ())
+        monkeypatch.setattr(models, "_get_model_catalog", lambda **_: ())
         with pytest.raises(RuntimeError, match="Could not reach HuggingFace"):
-            models.pick_default_model(16.0)
+            models.pick_default_model(16.0, hf_client=get_services().hf_client)
 
     def test_tiny_ram_picks_smallest(self):
         """No repo id is stable any more, so assert the fit rule, not a name."""
-        result = models.pick_default_model(2.0)
+        result = models.pick_default_model(2.0, hf_client=get_services().hf_client)
         assert result.min_ram_gb <= 2.0
-        fitting = [m for m in models.MODEL_CATALOG if m.min_ram_gb <= 2.0]
+        fitting = [
+            m
+            for m in models._get_model_catalog(hf_client=get_services().hf_client)
+            if m.min_ram_gb <= 2.0
+        ]
         assert result.size_gb == max(m.size_gb for m in fitting)
 
 
 class TestModelDownloadSizeGb:
     def test_known_models(self):
-        first = models.MODEL_CATALOG[0]
-        assert models._model_download_size_gb(first.ref) == first.size_gb
+        first = models._get_model_catalog(hf_client=get_services().hf_client)[0]
+        assert (
+            models._model_download_size_gb(first.ref, hf_client=get_services().hf_client)
+            == first.size_gb
+        )
 
     def test_unknown_model_returns_fallback(self):
-        result = models._model_download_size_gb("unknown:latest")
+        result = models._model_download_size_gb(
+            "unknown:latest", hf_client=get_services().hf_client
+        )
         assert isinstance(result, float)
         assert result > 0
 
 
 class TestDisplayModelPicker:
     def test_renders_table(self, capsys):
-        recommended = models.display_model_picker(16.0, 50.0)
+        recommended = models.display_model_picker(16.0, 50.0, hf_client=get_services().hf_client)
         captured = capsys.readouterr()
         assert "Available Models" in captured.err
-        assert models.MODEL_CATALOG[0].display_name in captured.err
+        assert (
+            models._get_model_catalog(hf_client=get_services().hf_client)[0].display_name
+            in captured.err
+        )
         assert isinstance(recommended, ModelInfo)
 
     def test_recommended_highlighted(self, capsys):
-        recommended = models.display_model_picker(32.0, 100.0)
+        recommended = models.display_model_picker(32.0, 100.0, hf_client=get_services().hf_client)
         assert recommended.min_ram_gb <= 32.0
         captured = capsys.readouterr()
         # The star marker should be in the output
         assert "\u2605" in captured.err
 
     def test_disk_warning_with_low_space(self, capsys):
-        models.display_model_picker(32.0, 3.0)
+        models.display_model_picker(32.0, 3.0, hf_client=get_services().hf_client)
         captured = capsys.readouterr()
         # Table still renders with disk info showing low space
         assert "3.0 GB free disk" in captured.err
         assert "Available Models" in captured.err
 
     def test_shows_system_stats(self, capsys):
-        models.display_model_picker(16.0, 42.5)
+        models.display_model_picker(16.0, 42.5, hf_client=get_services().hf_client)
         captured = capsys.readouterr()
         assert "16 GB RAM" in captured.err
         assert "42.5 GB free disk" in captured.err
 
     def test_shows_browse_link(self, capsys):
-        models.display_model_picker(8.0, 50.0)
+        models.display_model_picker(8.0, 50.0, hf_client=get_services().hf_client)
         captured = capsys.readouterr()
         assert models.MODELS_BROWSE_URL in captured.err
 
@@ -182,22 +197,22 @@ class TestPromptModelChoice:
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     def test_default_choice(self, mock_disk_estimate):
         with mock.patch("builtins.input", return_value=""):
-            result = models.prompt_model_choice(8.0)
+            result = models.prompt_model_choice(8.0, hf_client=get_services().hf_client)
         assert isinstance(result, ModelInfo)
         # Default = recommended for 8 GB
-        assert result == models.pick_default_model(8.0)
+        assert result == models.pick_default_model(8.0, hf_client=get_services().hf_client)
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     def test_numeric_choice(self, mock_disk_estimate):
         with mock.patch("builtins.input", return_value="1"):
-            result = models.prompt_model_choice(8.0)
-        assert result == models.MODEL_CATALOG[0]
+            result = models.prompt_model_choice(8.0, hf_client=get_services().hf_client)
+        assert result == models._get_model_catalog(hf_client=get_services().hf_client)[0]
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     def test_invalid_then_valid(self, mock_disk_estimate):
         with mock.patch("builtins.input", side_effect=repeat_last("abc", "99", "2")):
-            result = models.prompt_model_choice(8.0)
-        assert result == models.MODEL_CATALOG[1]
+            result = models.prompt_model_choice(8.0, hf_client=get_services().hf_client)
+        assert result == models._get_model_catalog(hf_client=get_services().hf_client)[1]
 
     @pytest.mark.parametrize("signal", [EOFError, KeyboardInterrupt])
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
@@ -206,7 +221,7 @@ class TestPromptModelChoice:
             mock.patch("builtins.input", side_effect=signal),
             pytest.raises(RuntimeError, match="lilbee model pull"),
         ):
-            models.prompt_model_choice(8.0)
+            models.prompt_model_choice(8.0, hf_client=get_services().hf_client)
 
 
 class TestValidateDiskAndPull:
@@ -383,7 +398,7 @@ class TestEnsureChatModelAtEndOfInput:
             mock.patch("builtins.input", side_effect=signal),
             pytest.raises(RuntimeError, match="lilbee model pull"),
         ):
-            models.ensure_chat_model()
+            models.ensure_chat_model(hf_client=get_services().hf_client)
         mock_pull.assert_not_called()
 
     @mock.patch.object(models, "pull_with_progress")
@@ -395,8 +410,8 @@ class TestEnsureChatModelAtEndOfInput:
             mock.patch.object(models.sys.stdin, "isatty", return_value=True),
             mock.patch("builtins.input", return_value=""),
         ):
-            pulled = models.ensure_chat_model()
-        assert pulled == models.pick_default_model(32.0).ref
+            pulled = models.ensure_chat_model(hf_client=get_services().hf_client)
+        assert pulled == models.pick_default_model(32.0, hf_client=get_services().hf_client).ref
         mock_pull.assert_called_once()
 
 
@@ -410,7 +425,7 @@ class TestEnsureChatModel:
 
     def test_noop_when_chat_model_exists(self):
         with mock.patch.object(models, "list_installed_models", return_value=["llama3:latest"]):
-            assert models.ensure_chat_model() is None  # no pull
+            assert models.ensure_chat_model(hf_client=get_services().hf_client) is None  # no pull
 
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
@@ -424,7 +439,7 @@ class TestEnsureChatModel:
             mock.patch.object(models.sys.stdin, "isatty", return_value=False),
             pytest.raises(RuntimeError, match="lilbee model pull"),
         ):
-            models.ensure_chat_model()
+            models.ensure_chat_model(hf_client=get_services().hf_client)
         mock_pull.assert_not_called()
 
     @mock.patch.object(models, "pull_with_progress")
@@ -438,9 +453,11 @@ class TestEnsureChatModel:
             mock.patch.object(models.sys.stdin, "isatty", return_value=True),
             mock.patch("builtins.input", return_value="1"),
         ):
-            models.ensure_chat_model()
+            models.ensure_chat_model(hf_client=get_services().hf_client)
         mock_pull.assert_called_once_with(
-            models.MODEL_CATALOG[0].ref, console=None, report_no_engine=True
+            models._get_model_catalog(hf_client=get_services().hf_client)[0].ref,
+            console=None,
+            report_no_engine=True,
         )
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=0.01)
@@ -452,7 +469,7 @@ class TestEnsureChatModel:
             mock.patch("builtins.input", return_value="1"),
             pytest.raises(RuntimeError, match="Not enough disk space"),
         ):
-            models.ensure_chat_model()
+            models.ensure_chat_model(hf_client=get_services().hf_client)
 
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
@@ -485,8 +502,8 @@ class TestEnsureChatModel:
             # The reranker is excluded, so the chat-task list is empty...
             assert models.list_installed_models() == []
             # ...and the bootstrap therefore prompts for a real chat model.
-            pulled = models.ensure_chat_model()
-        assert pulled == models.pick_default_model(16.0).ref
+            pulled = models.ensure_chat_model(hf_client=get_services().hf_client)
+        assert pulled == models.pick_default_model(16.0, hf_client=get_services().hf_client).ref
         mock_pull.assert_called_once()
 
 
@@ -498,9 +515,9 @@ class TestEnsureChatModel:
 class TestPickDefaultModelFallback:
     def test_nothing_fits_falls_back_to_the_smallest(self, monkeypatch):
         """A host too small for every pick still gets an honest offer."""
-        catalog = tuple(models._get_model_catalog())
-        monkeypatch.setattr(models, "_get_model_catalog", lambda: catalog)
-        result = models.pick_default_model(0.5)
+        catalog = tuple(models._get_model_catalog(hf_client=get_services().hf_client))
+        monkeypatch.setattr(models, "_get_model_catalog", lambda **_: catalog)
+        result = models.pick_default_model(0.5, hf_client=get_services().hf_client)
         assert result.size_gb == min(m.size_gb for m in catalog)
 
 
@@ -557,7 +574,7 @@ class TestEnsureChatModelWithNoEngine:
             mock.patch.object(models, "pull_with_progress") as mock_pull,
             pytest.raises(RuntimeError, match="No installed engine loads the gguf format") as err,
         ):
-            models.ensure_chat_model()
+            models.ensure_chat_model(hf_client=get_services().hf_client)
         assert ref in str(err.value)
         assert "lilbee engine list" in str(err.value)
         assert "No chat model is installed" not in str(err.value)
@@ -568,4 +585,4 @@ class TestEnsureChatModelWithNoEngine:
             mock.patch.object(models.sys.stdin, "isatty", return_value=False),
             pytest.raises(RuntimeError, match="No chat model is installed"),
         ):
-            models.ensure_chat_model()
+            models.ensure_chat_model(hf_client=get_services().hf_client)

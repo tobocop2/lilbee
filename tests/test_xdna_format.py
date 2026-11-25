@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.app.models import remove_model_data, show_model_data
+from lilbee.app.services import get_services
 from lilbee.catalog import xdna
 from lilbee.catalog.download import download_model
 from lilbee.catalog.formats import formats_from_tags, select_files
@@ -62,13 +63,13 @@ class TestRef:
         assert routes_to_native_model("qwen3:0.6b#xdna")
 
     def test_pull_target_is_an_entry_in_xdna(self) -> None:
-        entry = resolve_pull_target("qwen3:0.6b#xdna")
+        entry = resolve_pull_target("qwen3:0.6b#xdna", hf_client=get_services().hf_client)
         assert entry is not None
         assert (entry.hf_repo, entry.format) == ("qwen3:0.6b", ModelFormat.XDNA)
         assert entry.pull_ref == "qwen3:0.6b#xdna"
 
     def test_a_malformed_tag_has_no_pull_target(self) -> None:
-        assert resolve_pull_target("qwen3#xdna") is None
+        assert resolve_pull_target("qwen3#xdna", hf_client=get_services().hf_client) is None
 
 
 class TestHubSide:
@@ -144,7 +145,7 @@ class TestPullAndResolve:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        entry = resolve_pull_target("qwen3:0.6b#xdna")
+        entry = resolve_pull_target("qwen3:0.6b#xdna", hf_client=get_services().hf_client)
         assert entry is not None
         path = download_model(entry, None)
         assert path == tmp_path / "xdna" / "qwen3@0.6b.json"
@@ -175,7 +176,7 @@ class TestInstalledList:
 
     def _pull(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        entry = resolve_pull_target(self.REF)
+        entry = resolve_pull_target(self.REF, hf_client=get_services().hf_client)
         assert entry is not None
         download_model(entry, None)
 
@@ -185,7 +186,10 @@ class TestInstalledList:
         self._pull(tmp_path, monkeypatch)
         assert [m.ref for m in ModelRegistry(tmp_path).list_installed()] == [self.REF]
         assert (
-            validate_model_task_assignment("chat_model", self.REF, allow_bypass=False) == self.REF
+            validate_model_task_assignment(
+                "chat_model", self.REF, allow_bypass=False, hf_client=get_services().hf_client
+            )
+            == self.REF
         )
 
     def test_the_listed_entry_carries_the_tag_and_the_task(
@@ -206,9 +210,16 @@ class TestInstalledList:
         ref = "qwen3:0.6b#xdna"
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(cfg, "models_dir", tmp_path)
-            assert validate_model_task_assignment("embedding_model", ref, allow_bypass=False) == ref
+            assert (
+                validate_model_task_assignment(
+                    "embedding_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+                )
+                == ref
+            )
             with pytest.raises(ValueError, match="embedding"):
-                validate_model_task_assignment("chat_model", ref, allow_bypass=False)
+                validate_model_task_assignment(
+                    "chat_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+                )
 
     def test_a_missing_ticket_is_not_listed_and_not_assignable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -217,7 +228,9 @@ class TestInstalledList:
         assert ModelRegistry(tmp_path).list_installed() == []
         assert ModelRegistry(tmp_path).get_manifest(self.REF) is None
         with pytest.raises(ValueError, match="not installed"):
-            validate_model_task_assignment("chat_model", self.REF, allow_bypass=False)
+            validate_model_task_assignment(
+                "chat_model", self.REF, allow_bypass=False, hf_client=get_services().hf_client
+            )
 
     def _old_ticket(self, tmp_path: Path) -> None:
         path = xdna.ticket_path(tmp_path, "qwen3:0.6b")
