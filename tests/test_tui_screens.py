@@ -12,7 +12,6 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from typing import ClassVar
 from unittest.mock import MagicMock, PropertyMock, call, patch
 
 import pytest
@@ -23,10 +22,7 @@ from textual.widgets._tabbed_content import ContentTabs
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.app.services import set_services
 from lilbee.app.settings_map import SettingGroup
-from lilbee.catalog import (
-    CatalogModel,
-    CatalogResult,
-)
+from lilbee.catalog import CatalogModel, CatalogResult
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import _silence_stderr_log_handlers
 from lilbee.cli.tui import app as tui_app
@@ -64,6 +60,7 @@ from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
 from lilbee.wiki.drafts import StaleDraftError
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
+from tests import _tui_screen_fixtures as _fixtures
 from tests._async_wait import subtree_mounted, wait_for_widget, wait_until
 from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
 from tests._crawlberg_stub import StubCrawlberg, refusing_patterns
@@ -75,7 +72,22 @@ from tests._lilbee_app_test_host import (
     pump_until,
     saved_setting,
 )
+from tests._settings_test_app import (
+    LazySettingsTestApp,
+    SettingsTestApp,
+    _blur_after_focus,
+    _wait_for_pane_rows,
+    populate_pane_of,
+)
 from tests._toasts import posted_toasts
+from tests._tui_screen_fixtures import (  # noqa: F401
+    _isolated_cfg,
+    _patch_chat_setup,
+    _settings_gates_open,
+)
+
+# Bound by assignment, so a test argument named mock_svc does not shadow an import.
+mock_svc = _fixtures.mock_svc
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 _RESET_REFUSED_MID_SYNC = (
@@ -88,87 +100,11 @@ _RESET_REFUSED_MID_SYNC = (
 _real_embedding_ready = _ChatScreen._embedding_ready
 
 
-@pytest.fixture(autouse=True)
-def _isolated_cfg(tmp_path):
-    """Snapshot and restore cfg for every test."""
-    snapshot = cfg.model_copy()
-    cfg.data_root = tmp_path
-    cfg.data_dir = tmp_path / "data"
-    cfg.documents_dir = tmp_path / "documents"
-    cfg.lancedb_dir = tmp_path / "lancedb"
-    cfg.chat_model = TEST_LOCAL_REF
-    cfg.embedding_model = TEST_EMBED_REF
-    cfg.chunk_size = 512
-    # Simulate "already-initialized" state so the app does not read this as
-    # a fresh install and route away from tests that exercise chat.
-    cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
-    yield
-    for name in type(cfg).model_fields:
-        setattr(cfg, name, getattr(snapshot, name))
-
-
-@pytest.fixture(autouse=True)
-def mock_svc():
-    """Inject mock Services so TUI screens never touch real backends."""
-    from lilbee.data.store import SourceSummary
-    from tests.conftest import make_mock_services
-
-    store = MagicMock()
-    store.search.return_value = []
-    store.bm25_probe.return_value = []
-    store.get_sources.return_value = []
-    store.source_summary.return_value = SourceSummary(0, 0, {}, [])
-    store.count_sources.return_value = 0
-    store.add_chunks.side_effect = len
-    store.delete_by_source.return_value = None
-    store.delete_source.return_value = None
-    services = make_mock_services(store=store)
-    set_services(services)
-    yield services
-    set_services(None)
-
-
 def _with_real_store(services):
     """A copy of *services* whose store is a real one at the test's index, bound as current."""
     real = dataclasses.replace(services, store=Store(cfg))
     set_services(real)
     return real
-
-
-@pytest.fixture(autouse=True)
-def _patch_chat_setup():
-    """Patch out embedding model checks and model scanning so ChatScreen mounts cleanly."""
-    from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-    with (
-        patch("lilbee.cli.tui.app.chat_ready", return_value=True),
-        patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
-        patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
-            return_value=False,
-        ),
-        patch.object(ModelBar, "_scan_models"),
-    ):
-        yield
-
-
-@pytest.fixture(autouse=True)
-def _settings_gates_open():
-    """Open all SettingsScreen feature gates so legacy tests can query
-    every group's editors regardless of which optional extras are
-    installed in the test environment."""
-    with (
-        patch(
-            "lilbee.providers.availability.provider_sdk_available",
-            return_value=True,
-        ),
-        patch(
-            "lilbee.cli.tui.screens.settings_widgets.crawler_installed",
-            return_value=True,
-        ),
-    ):
-        cfg.wiki = True
-        yield
 
 
 def _make_catalog_model(
@@ -554,76 +490,6 @@ class TestGroupRowsForGrid:
         assert len(experimental.rows) == 1
 
 
-def _make_eager_settings_screen(*, eager: bool = True, keys: tuple[str, ...] = ()):
-    """SettingsScreen subclass that populates every pane or only the panes holding *keys*.
-
-    Production lazy-mounts non-active panes on activation; the test
-    suite predates that pattern and queries editors across all panes
-    by id, so this subclass hooks ``on_mount`` to walk pane groups
-    and populate every body before tests query. CSS_PATH is pinned
-    to the original module's directory because Textual otherwise
-    resolves it next to the test file.
-
-    Building every pane styles hundreds of widgets, which takes seconds alone
-    and over a minute under gate load. With ``eager=False``, only the panes
-    holding *keys* build on mount and every other pane stays lazy.
-    """
-    import importlib
-    from pathlib import Path
-
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    src_module = importlib.import_module(SettingsScreen.__module__)
-    css_path = str(Path(src_module.__file__ or "").parent / "settings.tcss")
-
-    class _EagerSettingsScreen(SettingsScreen):
-        CSS_PATH = css_path
-
-        # Textual runs the on_mount of every class in the tree, SettingsScreen's after this one.
-        def on_mount(self) -> None:
-            if eager:
-                self.populate_all_panes()
-            else:
-                for key in keys:
-                    populate_pane_of(self, key)
-
-    return _EagerSettingsScreen
-
-
-class SettingsTestApp(LilbeeAppHost):
-    """Test fixture that pre-populates every Settings pane on mount."""
-
-    CSS = ""
-    # A subclass sets this, not its own on_mount: Textual runs every on_mount in the class tree.
-    eager_panes: ClassVar[bool] = True
-    settings_to_populate: tuple[str, ...] = ()
-
-    def compose(self) -> ComposeResult:
-        yield Footer()
-
-    def on_mount(self) -> None:
-        self.push_screen(
-            _make_eager_settings_screen(eager=self.eager_panes, keys=self.settings_to_populate)()
-        )
-
-
-class LazySettingsTestApp(SettingsTestApp):
-    """Test fixture that builds selected Settings panes and leaves the rest lazy."""
-
-    eager_panes = False
-
-    def __init__(self, *keys: str) -> None:
-        super().__init__()
-        self.settings_to_populate = keys
-
-
-def populate_pane_of(screen, key: str) -> None:
-    """Build only the pane that holds the editor of setting *key*."""
-    for pane_id, group in screen._pane_groups.items():
-        if any(name == key for name, _defn in group.items):
-            screen._populate_pane(pane_id)
-
-
 @pytest.mark.parametrize(
     ("app_class", "eager"), [(SettingsTestApp, True), (LazySettingsTestApp, False)]
 )
@@ -703,24 +569,6 @@ async def test_settings_tab_activation_populates_pane():
         assert target_pane_id is not None
         tabbed.active = target_pane_id
         await _wait_for_pane_rows(app, pilot, target_pane_id)
-
-
-async def _wait_for_pane_rows(app, pilot, pane_id):
-    """Wait until *pane_id* holds rows and the screen, each dropdown included, has mounted.
-
-    A dropdown that still mounts when the app exits raises for the overlay it misses.
-    """
-    from textual.widgets import Select
-
-    def _ready() -> bool:
-        pane = app.screen.query_one(f"#{pane_id}")
-        return (
-            bool(pane.query(".setting-row"))
-            and subtree_mounted(app.screen)
-            and all(select.query("SelectOverlay") for select in app.screen.query(Select))
-        )
-
-    assert await wait_until(pilot, _ready, timeout=5.0), f"{pane_id} did not mount all its rows"
 
 
 async def test_settings_bool_renders_checkbox():
@@ -2367,18 +2215,6 @@ async def test_ctrl_r_then_blur_writes_nothing(tmp_path):
         for _ in range(5):
             await pilot.pause()
         assert persistent_settings.load(tmp_path) == {"chunk_size": 1024}
-
-
-async def _blur_after_focus(pilot, app, editor) -> None:
-    """Focus *editor*, then move focus to another row so its blur handler runs."""
-    from textual.widgets import Input
-
-    editor.focus()
-    await wait_until(pilot, lambda: app.screen.focused is editor)
-    app.screen.query_one("#ed-max_distance", Input).focus()
-    await wait_until(pilot, lambda: not editor.has_focus)
-    for _ in range(5):
-        await pilot.pause()
 
 
 @pytest.mark.parametrize(
