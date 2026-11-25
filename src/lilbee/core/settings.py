@@ -362,12 +362,12 @@ def persisted_values(root: Path) -> dict[str, Any] | None:
     if path.exists():
         harden_private_file(path)
         source = overlay_source(path)
-        try:
-            data = read_config_table(path)
-        except (ValueError, OSError):
+        table = read_config_table(path)
+        if table is None:
             source.report_unreadable()
             return None
-        accepted = source.accept(data)
+        data = table
+        accepted = source.accept(table)
     layers = read_layers(root, data)
     refused = (layers.user.keys() - accepted.keys()) | layers.refused_user
     resolved = resolve_all(
