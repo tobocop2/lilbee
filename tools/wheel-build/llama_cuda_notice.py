@@ -52,7 +52,7 @@ def main(notice: Path) -> None:
     body = "\n".join(line.strip() for line in lines if line.strip())
     if "Attachment A" not in body or len(body) < MIN_EULA_CHARS:
         raise SystemExit(f"the EULA text from {URL} looks incomplete")
-    notice.write_text(HEAD + body + "\n", encoding="utf-8")
+    notice.write_text(HEAD + body + "\n", encoding="utf-8", newline="\n")
 
 
 if __name__ == "__main__":

@@ -88,10 +88,10 @@ def write_notices(report: dict, lock_text: str, checkout: Path, registry: Path, 
     names = []
     mpl = mpl_notice(report, lock_checksums(lock_text))
     if mpl is not None:
-        (tree / "SOURCE-MPL-2.0").write_text(mpl, encoding="utf-8")
+        (tree / "SOURCE-MPL-2.0").write_text(mpl, encoding="utf-8", newline="\n")
         names.append("SOURCE-MPL-2.0")
     if any(entry["id"] == "OpenSSL" for entry in report["licenses"]):
-        (tree / "NOTICE-OpenSSL").write_text(OPENSSL_NOTICE, encoding="utf-8")
+        (tree / "NOTICE-OpenSSL").write_text(OPENSSL_NOTICE, encoding="utf-8", newline="\n")
         names.append("NOTICE-OpenSSL")
     roots = [("mistral.rs", checkout)]
     for name, version in graph_crates(report):
