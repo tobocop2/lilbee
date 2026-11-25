@@ -97,6 +97,13 @@ def _mock_batch_provider(text: str, *, truncated: bool = False) -> MagicMock:
     return provider
 
 
+def _store_without_ids() -> MagicMock:
+    """A store whose sources have no ids yet, so a draft keys them by name."""
+    store = MagicMock()
+    store.source_ids.return_value = {}
+    return store
+
+
 def _mock_store_for_source(source: str, chunks: list[SearchChunk]) -> MagicMock:
     store = MagicMock()
     store.get_chunks_by_source.side_effect = lambda name: chunks if name == source else []
@@ -773,7 +780,7 @@ class TestBuildStatsForABatch:
             entities=[],
             chunks=[_chunk("second.txt", 0, _EXCERPT)],
             provider=_mock_batch_provider(text),
-            store=MagicMock(),
+            store=_store_without_ids(),
             config=cfg,
             extract_concepts=True,
             written_concept_slugs={"brake-system": "first.txt"},
@@ -854,7 +861,7 @@ class TestBuildStatsForABatch:
                     entities=[],
                     chunks=[_chunk(source, 0, "Brake system details.")],
                     provider=_mock_batch_provider(_batch_text(source)),
-                    store=MagicMock(),
+                    store=_store_without_ids(),
                     config=cfg,
                     extract_concepts=True,
                     written_concept_slugs=written,
@@ -1227,7 +1234,7 @@ class TestBatchGeneration:
                 entities=[],
                 chunks=[_chunk(src, 0, "Brake system details.")],
                 provider=_mock_batch_provider(_batch_text(src)),
-                store=MagicMock(),
+                store=_store_without_ids(),
                 config=cfg,
                 extract_concepts=True,
                 written_concept_slugs=written,
