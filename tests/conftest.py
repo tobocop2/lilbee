@@ -1282,6 +1282,8 @@ def _default_reranker_mock():
 def _default_concepts_mock():
     concepts = MagicMock()
     concepts.get_graph.return_value = False
+    # No spaCy model, so the post-sync concept backfill reads nothing.
+    concepts.can_extract.return_value = False
     return concepts
 
 

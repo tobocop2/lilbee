@@ -6662,7 +6662,7 @@ class TestConceptIndexing:
     async def test_concepts_unavailable_skips_rebuild(
         self, mock_extract_file, isolated_env, mock_svc
     ):
-        """When concepts_available() returns False, _rebuild_concept_clusters is a no-op."""
+        """When concepts_available() returns False, the concept graph update is a no-op."""
         cfg.concept_graph = True
         (isolated_env / "unavail_rebuild.txt").write_text("Content for unavailable test.")
 
