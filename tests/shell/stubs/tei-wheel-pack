@@ -20,7 +20,7 @@ expression="Apache-2.0 AND MIT"
 case "${BACKEND:?}" in cuda*) expression="${expression} AND LicenseRef-NVIDIA-CUDA-EULA" ;; esac
 printf '%s\n' "${expression}" > "${expression_file}"
 for ((n = 1; n <= ${WHEEL_COUNT:-1}; n++)); do
-  name="${WHEEL_NAME:-lilbee_engine_tei-1.9.4-${n}.${BACKEND//-/_}-py3-none-${platform}.whl}"
+  name="${WHEEL_NAME:-lilbee_engine_tei-1.9.4-$((BUILD_NUMBER + n - 1)).${BACKEND//-/_}-py3-none-${platform}.whl}"
   "${REAL_PYTHON:?}" - "${dir}/${name}" "${expression}" "${WHEEL_TAG:-${platform}}" "${BACKEND}" "${WHEEL_WITHOUT-}" <<'PY'
 import os
 import sys

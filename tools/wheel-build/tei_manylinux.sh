@@ -9,6 +9,7 @@
 #   CUDA_PACKAGE_SUFFIX  the toolkit version in package names, for example 12-9
 #   CUDA_VERSION         the full toolkit version, for example 12.9.1; names the EULA text of the notice
 #   WHEEL_VERSION        the version of the wheel
+#   BUILD_NUMBER         the build number of the wheel
 #   BACKEND              the backend of the wheel build tag, for example cuda-sm89
 #   WORK                 the repository checkout (bind mounted)
 #   OUT                  the directory for the wheel and its notes (bind mounted)
@@ -22,7 +23,7 @@
 
 set -euo pipefail
 
-: "${TEI_REPO:?}" "${TEI_TAG:?}" "${RUSTC_VERSION:?}" "${WHEEL_VERSION:?}" "${BACKEND:?}" "${WORK:?}" "${OUT:?}" "${OWNER:?}"
+: "${TEI_REPO:?}" "${TEI_TAG:?}" "${RUSTC_VERSION:?}" "${WHEEL_VERSION:?}" "${BUILD_NUMBER:?}" "${BACKEND:?}" "${WORK:?}" "${OUT:?}" "${OWNER:?}"
 # shellcheck source=tools/wheel-build/pack_common.sh
 . "${WORK}/tools/wheel-build/pack_common.sh"
 CUDA_CC="${CUDA_CC:-}"
@@ -105,7 +106,7 @@ fi
 "${binary}" --version || true
 
 mkdir -p "${OUT}"
-export WHEEL_VERSION OPENSSL_LICENSE=/usr/share/licenses/openssl-libs/LICENSE.txt PYTHON="${venv}/bin/python"
+export WHEEL_VERSION BUILD_NUMBER OPENSSL_LICENSE=/usr/share/licenses/openssl-libs/LICENSE.txt PYTHON="${venv}/bin/python"
 bash "${WORK}/tools/wheel-build/tei_wheel.sh" "${src}" "${binary}" "${features}" x86_64-unknown-linux-gnu \
   "${BACKEND}" linux_x86_64 "${OUT}"
 

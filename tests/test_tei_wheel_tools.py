@@ -730,7 +730,9 @@ def _commit(source: Path) -> None:
         )
 
 
-def _run_wheel_script(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+def _run_wheel_script(
+    tmp_path: Path, build_number: str = "2"
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     """Run tei_wheel.sh against stub tools; return the result, the wheel project and the record."""
     tools = tmp_path / "tools/wheel-build"
     shutil.copytree(_TOOLS, tools)
@@ -775,6 +777,7 @@ def _run_wheel_script(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str],
             "CARGO_HOME": str(tmp_path / "cargo"),
             "PYTHON": str(python),
             "WHEEL_VERSION": "1.9.4",
+            "BUILD_NUMBER": build_number,
         },
     )
     return result, project, record
@@ -794,8 +797,16 @@ def test_the_wheel_build_makes_no_environment_of_its_own(tmp_path: Path) -> None
     result, _, record = _run_wheel_script(tmp_path)
     assert result.returncode == 0, result.stderr
     args = (record / "build-args").read_text(encoding="utf-8")
-    option = "-C--build-option=--build-number=1.cpu"
+    option = "-C--build-option=--build-number=2.cpu"
     assert args.startswith(f"-m build --wheel --no-isolation {option} --outdir ")
+
+
+@_WHEEL_SCRIPT
+def test_the_wheel_script_requires_the_build_number_of_the_cell(tmp_path: Path) -> None:
+    result, _, record = _run_wheel_script(tmp_path, build_number="")
+    assert result.returncode != 0
+    assert "BUILD_NUMBER" in result.stderr
+    assert not (record / "build-args").exists()
 
 
 @_WHEEL_SCRIPT
@@ -939,6 +950,7 @@ def _run_build(
         "TEI_TAG": "tag",
         "RUSTC_VERSION": "1.0.0",
         "WHEEL_VERSION": "1.9.4",
+        "BUILD_NUMBER": "2",
         "BACKEND": "cuda",
         "WORK": str(work),
         "OUT": str(tmp_path / "out"),
