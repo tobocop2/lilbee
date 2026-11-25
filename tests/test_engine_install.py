@@ -515,14 +515,11 @@ def test_the_engines_tab_row_of_a_build_of_another_wheel_removes_it_so_install_w
 
 
 def _install_second_build(tmp_path: Path) -> None:
-    """Put a build of the engine beside the pin build, as a store that kept an older pin does."""
+    """Put the pin version in another backend beside the pin build; the startup prune keeps it."""
     wheel = tmp_path / "second.whl"
     sha = make_wheel(wheel)
-    lock = engine_store.PinLock(ENGINE.value, SECOND_VERSION, "cuda", {}, ("MIT",), sha, "server")
+    lock = engine_store.PinLock(ENGINE.value, VERSION, "cuda", {}, ("MIT",), sha, "server")
     EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
-
-
-SECOND_VERSION = "git-ffffffffffff"
 
 
 def _cli_list_json() -> dict[str, Any]:
@@ -538,7 +535,7 @@ def test_a_second_build_of_an_installed_engine_differs_from_the_pin_in_the_tab(
     rows = [r for r in engine_service.engine_rows() if r.engine == ENGINE.value]
     assert [(r.version, r.backend, r.state) for r in rows] == [
         (VERSION, "cpu", engine_service.EngineState.INSTALLED),
-        (SECOND_VERSION, "cuda", engine_service.EngineState.DIFFERS_FROM_PIN),
+        (VERSION, "cuda", engine_service.EngineState.DIFFERS_FROM_PIN),
     ]
     assert not rows[1].outside_store
 
@@ -556,7 +553,7 @@ def test_every_surface_marks_the_second_build_with_the_same_term(
             "not_run_on": mock.ANY,
             "differs_from_pin": differs,
         }
-        for version, backend, differs in [(VERSION, "cpu", False), (SECOND_VERSION, "cuda", True)]
+        for version, backend, differs in [(VERSION, "cpu", False), (VERSION, "cuda", True)]
     ]
     assert engine_service.engine_list().payload()["builds"] == expected
     assert _cli_list_json()["builds"] == expected
@@ -565,10 +562,9 @@ def test_every_surface_marks_the_second_build_with_the_same_term(
         assert client.get("/api/engines").json()["builds"] == expected
     lines = CliRunner().invoke(cli_app, ["engine", "list"]).output.splitlines()
     term = engine_service.DIFFERS_FROM_PIN_TEXT
-    assert [term in line for line in lines if SECOND_VERSION in line] == [True]
-    assert not any(term in line for line in lines if VERSION in line)
+    assert [term in line for line in lines if f"{VERSION} (" in line] == [False, True]
     slash = run_engine_command("list").text.splitlines()
-    assert [term in line for line in slash if SECOND_VERSION in line] == [True]
+    assert [term in line for line in slash if f"{VERSION} (" in line] == [False, True]
 
 
 def test_a_build_of_an_engine_whose_pin_names_no_pack_differs_from_the_pin(
@@ -584,7 +580,7 @@ def test_a_llama_build_differs_from_the_pin_when_its_backend_is_not_the_one_of_t
 ) -> None:
     wheel = tmp_path / "llama.whl"
     sha = make_wheel(wheel)
-    version = engine_service.LLAMA.pin_record()["version"]
+    version = choice.ADAPTERS[EngineName.LLAMA].pin_record()["version"]
     store = EngineStore(engines_root(cfg.models_dir))
     for backend in ("cpu", "cuda"):
         lock = engine_store.PinLock("llama.cpp", version, backend, {}, ("MIT",), sha, "server")
