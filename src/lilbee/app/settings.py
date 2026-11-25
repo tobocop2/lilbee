@@ -1290,7 +1290,8 @@ def adopt_external_changes(
     holds it, it keeps its folders, and a later check takes the change. The keys go
     through the same settle step as an update made here. A file that does not parse
     changes nothing and keeps *last*, as at startup. A file that an in-place write
-    changed under a second ago is left for the next check (see ``read_settled``). A key in *hold* is never taken: a
+    changed under a second ago is left for the next check (see ``read_settled``).
+    A key in *hold* is never taken: a
     warning says the process takes it at its next start. With *reset_providers* False a
     provider switch leaves the fleet running: the caller stops it with
     ``reset_for_provider_switch`` once the lock it holds around this call is free.
