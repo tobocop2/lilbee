@@ -45,7 +45,8 @@ from tests._toasts import posted_toasts
 from tests.conformance.fake_adapter import BundledFakeAdapter, FakeAdapter
 
 _DOWNLOAD_BYTES = 180_000_000
-# The build the dialogs name; its label carries the experimental clause of this host's cell.
+# The build the dialogs name. The fixtures pin the proof lookup to no devices, so its label has no
+# experimental clause on any host.
 _IK_CUDA = engine_service.BuildView("ik_llama.cpp", "1.2.3", "cuda")
 
 _LLAMA = EngineRow("llama.cpp", EngineState.BUNDLED, backend="metal", roles=("embed",))
@@ -104,9 +105,17 @@ def service(monkeypatch: pytest.MonkeyPatch) -> _Rows:
 async def test_a_backend_with_a_device_that_has_no_record_shows_the_experimental_mark(
     service: _Rows, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    unproven = {"ik_llama.cpp": ("NVIDIA GPU",), "llama.cpp": ("Apple GPU",)}
+    # Only the exact (engine, cell) pair has no record. Any other cell of the same engine is proven,
+    # so a lookup with the wrong cell, or with none, shows no mark and the test goes red.
+    unproven = {
+        ("ik_llama.cpp", "cell-cuda"): ("NVIDIA GPU",),
+        ("llama.cpp", "cell-metal"): ("Apple GPU",),
+    }
+    monkeypatch.setattr(engine_service, "cell_key", lambda _host, backend: f"cell-{backend}")
     monkeypatch.setattr(
-        engine_service, "experimental_devices", lambda engine, _cell=None: unproven.get(engine, ())
+        engine_service,
+        "experimental_devices",
+        lambda engine, cell=None: unproven.get((engine, cell), ()),
     )
     service.rows.append(EngineRow("mistral.rs", EngineState.NOT_INSTALLED))
     app = _SettingsApp()
