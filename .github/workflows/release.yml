@@ -268,7 +268,8 @@ jobs:
 
       # Intel Mac: `uv sync` can't run here -- stock lancedb 0.40.0 ships no
       # macosx_x86_64 wheel. One install resolves the whole cell: lancedb comes
-      # from the +compat index (PEP 440 drop-in) and every other package is held
+      # from the +compat index (PEP 440 drop-in; pyproject binds that explicit
+      # index to lancedb on this platform) and every other package is held
       # to uv.lock through a constraints file that `uv export` writes from the
       # lock, so this cell installs what every other cell installs. Resolving
       # lancedb in a step of its own leaves its closure (numpy, pyarrow,
@@ -299,7 +300,6 @@ jobs:
             --format requirements-txt -o intel-constraints.txt
           uv pip install --python-platform x86_64-apple-darwin \
             --constraint intel-constraints.txt \
-            --extra-index-url https://lilbee.sh/compat/ \
             lancedb==0.40.0+compat '.[release]' 'nuitka[onefile]==4.3.1' pip
 
       - name: Verify extras installed in build venv
@@ -316,7 +316,7 @@ jobs:
         shell: bash
         run: |
           uv pip install --reinstall --no-deps \
-            --extra-index-url https://lilbee.sh/compat/ \
+            --default-index https://lilbee.sh/compat/ \
             lancedb==0.40.0+compat
 
       # Build the self-contained llama-server (binary + ggml/llama/mtmd libs with a
