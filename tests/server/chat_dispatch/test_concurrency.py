@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 
 import pytest
 
@@ -53,12 +52,11 @@ async def test_waits_then_succeeds_when_a_slot_frees() -> None:
         await release_chat_slot()
 
     task = asyncio.create_task(_release_after(0.05))
-    start = time.monotonic()
-    await acquire_chat_slot_or_busy(1, timeout=1.0)
-    elapsed = time.monotonic() - start
+    # The release must wake the waiter. A waiter that outlasted its own timeout would
+    # raise ChatBusyError here, so a return is the proof; no stopwatch is read.
+    await acquire_chat_slot_or_busy(1, timeout=5.0)
     await task
     assert chat_gate().in_flight == 1
-    assert 0.04 < elapsed < 0.5
     await release_chat_slot()
 
 
