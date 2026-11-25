@@ -120,6 +120,8 @@ def _stored() -> dict:
         (_signals(file_types={"md": 4, "pdf": 6}), "Default"),
         (_signals(pdf={"files_with_tables": 2}), analyze.RESEARCH_PAPERS),
         (_signals(pdf={"files_with_tables": 1}), "Default"),
+        # one PDF with tables among many other documents is not a research corpus
+        (_signals(files_read=100, pdf={"files": 1, "files_with_tables": 1}), "Default"),
     ],
 )
 def test_each_builtin_is_picked_at_its_threshold_and_not_below(signals, builtin):

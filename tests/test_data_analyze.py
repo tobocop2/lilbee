@@ -82,7 +82,7 @@ def test_signals_come_from_every_file_and_the_extracted_sample(corpus, fake):
     assert signals.code_share == 1 / 8
     pdf = signals.pdf
     assert (pdf.files, pdf.pages, pdf.scanned_pages) == (2, 12, 4)
-    assert pdf.scanned_share == (4 + 1) / (12 + 1)
+    assert pdf.scanned_share == (4 + 1) / (12 + 2 + 1)
     assert (pdf.files_with_tables, pdf.tables, pdf.median_pages) == (1, 3, 6.0)
     assert signals.median_chars == 200.0
     assert signals.languages == (LanguageShare("eng", 2 / 3), LanguageShare("deu", 1 / 3))
@@ -231,6 +231,41 @@ def test_a_folder_of_images_only_is_all_scans(tmp_path, fake):
     assert (signals.documents_total, signals.files_read, signals.image_files) == (0, 0, 1)
     assert signals.pdf.scanned_share == 1.0
     assert fake.batches == []
+
+
+def _share_of(tmp_path, monkeypatch, *, markdown=0, images=0, scanned_pdfs=0, text_pdfs=0):
+    """The scanned share of a folder; each PDF has 10 pages, a scanned one has all 10 scanned."""
+    names: dict[str, object] = {}
+    for i in range(markdown):
+        names[f"d{i}.md"] = _doc(content="x", languages=["eng"])
+    for i in range(scanned_pdfs):
+        names[f"s{i}.pdf"] = _doc(pdf=(10, list(range(10))))
+    for i in range(text_pdfs):
+        names[f"t{i}.pdf"] = _doc(pdf=(10, []))
+    files = {name: _write(tmp_path, name) for name in names}
+    files.update({f"i{i}.png": _write(tmp_path, f"i{i}.png") for i in range(images)})
+    monkeypatch.setattr(analyze, "aextract_batch", _FakeExtract(names))
+    return asyncio.run(collect_signals(files)).pdf.scanned_share
+
+
+def test_a_markdown_docs_repo_with_images_is_not_scanned(tmp_path, monkeypatch):
+    share = _share_of(tmp_path, monkeypatch, markdown=20, images=5)
+    assert share == 5 / 25
+    assert share < 0.30
+
+
+def test_a_folder_of_scanned_pdfs_is_still_scanned(tmp_path, monkeypatch):
+    share = _share_of(tmp_path, monkeypatch, scanned_pdfs=8, markdown=2, images=1)
+    assert share == 81 / 83
+    assert share >= 0.30
+
+
+def test_a_mixed_corpus_lands_between_the_two(tmp_path, monkeypatch):
+    docs = _share_of(tmp_path, monkeypatch, markdown=20, images=5)
+    mixed = _share_of(tmp_path / "mixed", monkeypatch, scanned_pdfs=1, text_pdfs=1, markdown=20)
+    scans = _share_of(tmp_path / "scans", monkeypatch, scanned_pdfs=8, markdown=2, images=1)
+    assert docs < mixed < scans
+    assert mixed == 10 / 40
 
 
 def test_ocr_language_supported_asks_the_tesseract_backend(monkeypatch):
