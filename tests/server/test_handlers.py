@@ -1352,8 +1352,8 @@ class TestAddDisconnect:
 
         original = ingest._ingest_stream
 
-        async def _slow(items, run, label):
-            async for event in original(items, run, label):
+        async def _slow(items, run, label, add_id=None):
+            async for event in original(items, run, label, add_id):
                 yield event
                 await asyncio.sleep(0.5)
 
