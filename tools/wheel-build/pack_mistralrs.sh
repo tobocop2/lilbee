@@ -7,6 +7,7 @@
 #   MISTRALRS_REPO, MISTRALRS_TAG   the upstream release
 #   ASSET                           the archive of that release for this cell
 #   BACKEND, PLATFORM               the backend and the platform tag of the wheel
+#   BUILD_NUMBER                    the build number of the wheel
 #   RUST_TARGET, RUST_FEATURES      the crate graph of the binary (empty for a cpu cell; a CUDA cell names the cuda features)
 #   CUDA_VERSION, NCCL_TAG          a CUDA cell only: the toolkit of the upstream archive and the tag of its NCCL
 #   CARGO_ABOUT_VERSION             the cargo-about release
@@ -30,8 +31,8 @@ WHEEL_TREE=packaging/engine-wheel-mistral-rs
 require_inputs() {
   local name
   host_os > /dev/null
-  for name in MISTRALRS_REPO MISTRALRS_TAG ASSET BACKEND PLATFORM RUST_TARGET CARGO_ABOUT_VERSION ABOUT_TARGET \
-    MISTRALRS_CHAT_MODEL OUT; do
+  for name in MISTRALRS_REPO MISTRALRS_TAG ASSET BACKEND PLATFORM BUILD_NUMBER RUST_TARGET CARGO_ABOUT_VERSION \
+    ABOUT_TARGET MISTRALRS_CHAT_MODEL OUT; do
     [ -n "${!name:-}" ] || { echo "pack_mistralrs: ${name} is not set" >&2; return 2; }
   done
   if is_cuda; then
@@ -143,7 +144,7 @@ build_wheel() {
     # A relative path: Windows Python does not read a Git Bash path.
     install_build_tools python ../../tools/wheel-build/build-tools.constraints ../../tools/wheel-build/windows-bundle-tools.constraints
     prune_windows_runtime
-    build_wheel_with_tools python -C--build-option="--build-number=1.${BACKEND//-/_}"
+    build_wheel_with_tools python -C--build-option="--build-number=${BUILD_NUMBER}.${BACKEND//-/_}"
     python -m wheel tags --remove --platform-tag "${PLATFORM}" dist/*.whl
     ls dist
   )
