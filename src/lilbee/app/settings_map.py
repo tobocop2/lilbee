@@ -326,19 +326,21 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=True,
         group=SettingGroup.GENERATION,
-        help_text="Sampling temperature (higher = more creative)",
+        help_text=(
+            "Sampling temperature (higher = more creative). Unset uses the model's own value"
+        ),
     ),
     "top_p": SettingDef(
         float,
         nullable=True,
         group=SettingGroup.GENERATION,
-        help_text="Nucleus sampling cutoff probability",
+        help_text="Nucleus sampling cutoff probability. Unset uses the model's own value",
     ),
     "top_k_sampling": SettingDef(
         int,
         nullable=True,
         group=SettingGroup.GENERATION,
-        help_text="Top-K sampling: number of tokens to consider",
+        help_text="Top-K sampling: number of tokens to consider. Unset uses the model's own value",
     ),
     "repeat_penalty": SettingDef(
         float,

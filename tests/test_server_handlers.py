@@ -4681,7 +4681,7 @@ class TestUpdateConfig:
         cfg.temperature = 0.5
         result = await handlers.update_config({"temperature": None})
         assert result.updated == ["temperature"]
-        assert cfg.temperature == 0.1  # the built-in, as a fresh Config() gives
+        assert cfg.temperature is None  # the built-in, as a fresh Config() gives
         # Verify delete_value was called (file should not contain temperature)
         from lilbee.core import settings as s
 

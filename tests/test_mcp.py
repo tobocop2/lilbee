@@ -3131,7 +3131,7 @@ class TestSettingsMcp:
         listed = {row["key"]: row for row in settings_list()["settings"]}
         assert listed["top_k"]["default"] == 7
         assert listed["seed"]["default"] is None
-        assert listed["temperature"]["default"] == 0.1
+        assert listed["temperature"]["default"] is None
         settings_reset(["top_k"])
         assert cfg.top_k == 7
 

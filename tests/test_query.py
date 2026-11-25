@@ -1761,8 +1761,6 @@ class TestGenerationOptions:
             get_services().searcher.ask_raw("q")
             assert mock_svc.provider.chat.call_args[1]["options"] == {
                 "temperature": 0.7,
-                "top_p": 0.9,
-                "top_k": 40,
                 "repeat_penalty": 1.1,
             }
         finally:

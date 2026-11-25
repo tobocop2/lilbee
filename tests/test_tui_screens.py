@@ -2040,7 +2040,7 @@ async def test_chat_slash_set_nullable_none():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_set("temperature none")
-        assert cfg.temperature == 0.1  # the built-in, as a fresh Config() gives
+        assert cfg.temperature is None  # the built-in, as a fresh Config() gives
 
 
 async def test_chat_slash_set_refused_list_value_reads_for_users():

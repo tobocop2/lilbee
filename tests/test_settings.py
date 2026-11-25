@@ -2416,7 +2416,7 @@ class TestResolverIsTheOnlyWriter:
         appset.apply_settings_update({"temperature": 0.3})
         assert cfg.temperature == 0.3
         appset.apply_settings_update({"temperature": ""})
-        assert cfg.temperature == 0.1
+        assert cfg.temperature is None
         assert "temperature" not in settings.load(cfg.data_root)
 
     def test_null_update_refuses_an_invalid_profile_value_and_changes_nothing(self):
