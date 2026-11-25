@@ -1333,6 +1333,35 @@ class TestStragglerExit:
     @pytest.fixture(autouse=True)
     def _interactive(self, monkeypatch):
         monkeypatch.setattr(services_mod._state, "interactive", True)
+        # The real hook sets the pools' global shutdown flag in this process.
+        monkeypatch.setattr(services_mod, "_end_pool_workers", lambda status: status)
+
+    def test_idle_pool_workers_the_hook_ends_leave_the_normal_exit(self, monkeypatch) -> None:
+        exits: list[int] = []
+        monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+        threads = self._fake_enumerate(monkeypatch, [_Wedged()])
+
+        def hook_ends_them(status: int) -> int:
+            del threads[1:]
+            return status
+
+        monkeypatch.setattr(services_mod, "_end_pool_workers", hook_ends_them)
+
+        services_mod.exit_when_stragglers_would_hang(0)
+
+        assert exits == []
+
+    def test_a_signal_in_the_pool_hook_gives_the_exit_its_status(self, monkeypatch) -> None:
+        exits: list[int] = []
+        monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+        monkeypatch.setattr(services_mod, "_STRAGGLER_BUDGET_S", 0.0)
+        monkeypatch.setattr(services_mod, "_end_pool_workers", lambda status: 143)
+        threads = self._fake_enumerate(monkeypatch, [_Wedged()])
+
+        services_mod.exit_when_stragglers_would_hang(0)
+        del threads[1:]
+
+        assert exits == [143]
 
     def test_a_non_interactive_process_keeps_its_threads(self, monkeypatch) -> None:
         """A test host or library embedder owns its threads; never exit them."""
