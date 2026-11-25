@@ -9,7 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import NoReturn
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from litestar import get
@@ -19,6 +20,7 @@ import lilbee.mcp_server as mcp_server
 from lilbee.app import engine_service
 from lilbee.app.engine_service import RoleView
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.crawler.messages import CHROMIUM_MISSING_MESSAGE
 from lilbee.data.store import EmbeddingEngineChangedError, EmbeddingModelMismatchError
 from lilbee.providers import engine_params
@@ -28,13 +30,19 @@ from lilbee.providers.fleet.client import _upstream_death_message
 from lilbee.providers.fleet.engine_install import engine_install_hint
 from lilbee.providers.fleet.engine_store import EngineFolderError
 from lilbee.providers.fleet.engines import choice
+from lilbee.server import handlers
 from lilbee.server.app import _json_error_response, _provider_error_response
 from lilbee.server.chat_completions_api.errors import classify_provider_error
 from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
+from lilbee.server.handlers.rag import SearchResponse
 from lilbee.server.handlers.sse import sse_error
-from lilbee.server.route_names import name_routes, name_tools
+from lilbee.server.route_names import name_routes, name_tools, name_warnings
 from lilbee.server.routes import engines as engine_routes
-from lilbee.server.routes.search import _embedding_mismatch_http
+from lilbee.server.routes.search import (
+    SEARCH_WARNINGS_HEADER,
+    _embedding_mismatch_http,
+    search_route,
+)
 from tests._litestar_test_client import create_test_client
 
 PULL = "POST /api/models/pull"
@@ -361,3 +369,74 @@ def test_the_list_tool_over_http_names_only_the_tools_setting(
     monkeypatch.setattr(mcp_server._transport, "http_mounted", True)
     error = mcp_server._error("Run 'lilbee engine list' first.")["error"]
     assert "the engine_list tool, which needs mcp_engines_enabled in place of" in error
+
+
+BOTH_SETTINGS = "mcp_engines_enabled and allow_http_engines"
+INSTALL_COMMAND = "Run 'lilbee engine install tei' first."
+REBUILD_REMEDY = "Run `lilbee rebuild` to rebuild the search index."
+
+
+def _rebuild_warning() -> HealthWarning:
+    return HealthWarning(
+        code=WarningCode.FTS_UNAVAILABLE, message="keyword search is down", remedy=REBUILD_REMEDY
+    )
+
+
+def test_a_warning_gets_the_namer_applied_to_its_message_and_its_remedy() -> None:
+    plain = HealthWarning(code=WarningCode.FTS_UNAVAILABLE, message="keyword search is down")
+    named = name_warnings([_rebuild_warning(), plain], name_routes)
+    assert named[0].remedy == name_routes(REBUILD_REMEDY)
+    assert (named[1].message, named[1].remedy) == ("keyword search is down", None)
+    assert name_warnings([_rebuild_warning()], str.upper)[0].message == "KEYWORD SEARCH IS DOWN"
+
+
+def test_the_search_warnings_header_names_the_sync_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    outcome = SearchResponse([], (_rebuild_warning(),))
+    monkeypatch.setattr(handlers, "search", AsyncMock(return_value=outcome))
+    with create_test_client([search_route], debug=False) as client:
+        header = client.get("/api/search", params={"q": "x"}).headers[SEARCH_WARNINGS_HEADER]
+    assert REBUILD in json.loads(header)[0]["remedy"]
+
+
+def test_the_mcp_search_warnings_name_the_sync_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    report = SimpleNamespace(rows=[], degraded=[_rebuild_warning()])
+    services = SimpleNamespace(searcher=SimpleNamespace(search_report=lambda *_a, **_k: report))
+    monkeypatch.setattr(mcp_server, "get_services", lambda: services)
+    result = mcp_server.search("x")
+    sentence = "Over MCP, call the sync tool, with force_rebuild true in place of"
+    assert sentence in result.structured_content["warnings"][0]["remedy"]
+    assert sentence in result.content[-1].text
+
+
+async def test_a_refused_rebuild_names_both_install_settings_over_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def refused(**_kwargs: object) -> NoReturn:
+        raise ProviderError(INSTALL_COMMAND)
+
+    monkeypatch.setattr("lilbee.data.ingest.sync", refused)
+    monkeypatch.setattr(mcp_server._transport, "http_mounted", True)
+    result = await mcp_server._rebuild_when(True)
+    assert BOTH_SETTINGS in result["rebuild_error"]
+
+
+def test_the_mcp_roles_notice_names_both_install_settings_over_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cfg, "mcp_engines_enabled", True)
+    monkeypatch.setattr(mcp_server._transport, "http_mounted", True)
+    monkeypatch.setattr(engine_service, "roles", lambda *_a: _roles_with(INSTALL_COMMAND))
+    assert BOTH_SETTINGS in mcp_server.engine_roles_tool()["roles"][0]["notice"]
+
+
+def test_the_mcp_list_names_both_install_settings_beside_a_damaged_folder_over_http(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(first_use, "pack_lock", lambda: (None, "cell"))
+    monkeypatch.setattr(choice, "install_offered", lambda *_a: True)
+    monkeypatch.setattr(cfg, "mcp_engines_enabled", True)
+    monkeypatch.setattr(mcp_server._transport, "http_mounted", True)
+    damaged = [EngineFolderError(tmp_path / "tei", "tei")]
+    listed = engine_service.EngineListView([], damaged, [], tmp_path)
+    monkeypatch.setattr(engine_service, "engine_list", lambda *_a: listed)
+    assert BOTH_SETTINGS in mcp_server.engine_list_tool()["damaged"][0]["error"]
