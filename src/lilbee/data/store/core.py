@@ -3069,17 +3069,27 @@ class Store:
     def source_names(self, term: str = "", *, limit: int) -> list[str]:
         """Up to *limit* listed source names holding *term* (a name only, never a title).
 
-        Reads the name column alone, so a keystroke-driven caller pays for *limit* rows.
+        Names that begin with *term* come first, then the others that hold it, so a
+        short prefix still finds its match in a large library. Reads the name
+        column alone, and at most twice *limit* rows.
         """
         table = self.open_table(SOURCES_TABLE)
         if table is None:
             return []
         locations = self._locations()
-        where = _LISTED
-        if term:
-            where = f"{_LISTED} AND {locations.search_filter(term, _PATH)}"
-        rows = table.search().where(where).select([_PATH]).limit(limit).to_list()
-        return [locations.name(row[_PATH]) for row in rows]
+
+        def read(where: str, count: int) -> list[str]:
+            query = table.search().where(where).select([_PATH]).limit(count)
+            return [locations.name(row[_PATH]) for row in query.to_list()]
+
+        if not term:
+            return read(_LISTED, limit)
+        first = read(f"{_LISTED} AND {locations.search_filter(term, _PATH, starts=True)}", limit)
+        if len(first) >= limit:
+            return first
+        seen = set(first)
+        rest = read(f"{_LISTED} AND {locations.search_filter(term, _PATH)}", limit + len(first))
+        return [*first, *(name for name in rest if name not in seen)][:limit]
 
     def source_summary(self, newest: int) -> SourceSummary:
         """Totals over every listed source and the *newest* most recently ingested, in one pass.
@@ -3142,6 +3152,28 @@ class Store:
             mask = pa.array([keep(name) for name in names])
             kept.extend(_source_record(row, locations) for row in batch.filter(mask).to_pylist())
         return kept
+
+    def _named_and_members(self, names: Iterable[str]) -> tuple[set[str], dict[str, list[str]]]:
+        """The listed sources among *names* and the sources under each as ``name/``, in one pass.
+
+        Reads the name column in batches and keeps only the matches, so a
+        remove holds no record of the library it does not remove.
+        """
+        wanted = set(names)
+        known: set[str] = set()
+        members: dict[str, list[str]] = {}
+        table = self.open_table(SOURCES_TABLE)
+        if table is None or not wanted:
+            return known, members
+        name = self._locations().name
+        scan = table.search().where(_LISTED).select([_PATH]).limit(None)
+        for batch in scan.to_batches(_SOURCE_SCAN_BATCH_ROWS):
+            shown = [name(path) for path in batch.column(_PATH).to_pylist()]
+            known.update(source for source in shown if source in wanted)
+            for archive, found in _members_by_archive(wanted, shown).items():
+                members.setdefault(archive, []).extend(found)
+        known.update(member for found in members.values() for member in found)
+        return known, members
 
     def missing_sources(self, names: Iterable[str]) -> set[str]:
         """The *names* that hold no source row, from one pass over the name column."""
@@ -3841,9 +3873,7 @@ class Store:
 
         Returns a RemoveResult with removed and not_found lists.
         """
-        filenames = [s["filename"] for s in self.get_sources()]
-        known = set(filenames)
-        members = _members_by_archive(names, filenames)
+        known, members = self._named_and_members(names)
         targets = [*names, *(m for name in names for m in members.get(name, []))]
         removed = [name for name in targets if name in known]
         not_found = [name for name in names if name not in known]
