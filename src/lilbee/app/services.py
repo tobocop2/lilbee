@@ -1108,15 +1108,21 @@ def loop_takes_signals(loop: asyncio.AbstractEventLoop) -> Iterator[None]:
     then the exit is lost and the loop idles. A loop callback runs between steps, so
     the SystemExit it raises always leaves ``run_forever``. The handlers that were
     installed before return when the loop ends, so a late signal still reaches the stop.
+    The loop's last remove clears the signal wakeup descriptor, so the one set before
+    (the TUI's) returns too.
     """
     routed = _lifecycle.routed_in_loop()
     previous = {sig: signal.getsignal(sig) for sig in routed}
     added: list[signal.Signals] = []
+    woken_by = -1
     try:
+        if routed:
+            woken_by = signal.set_wakeup_fd(-1)
+            signal.set_wakeup_fd(woken_by)
         for sig in routed:
             loop.add_signal_handler(sig, _lifecycle.on_loop_signal, sig)
             added.append(sig)  # pragma: posix only - Windows loops raise on the add
-    except (NotImplementedError, RuntimeError):  # pragma: no cover - Windows, off the main thread
+    except (NotImplementedError, RuntimeError, ValueError):  # pragma: no cover - Windows, off main
         pass
     try:
         yield
@@ -1124,6 +1130,8 @@ def loop_takes_signals(loop: asyncio.AbstractEventLoop) -> Iterator[None]:
         for sig in added:  # pragma: posix only - empty on Windows
             loop.remove_signal_handler(sig)
             signal.signal(sig, previous[sig])
+        if added:  # pragma: posix only - empty on Windows
+            signal.set_wakeup_fd(woken_by)
 
 
 def exit_status_after_stop(status: int) -> int:
