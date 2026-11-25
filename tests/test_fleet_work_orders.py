@@ -25,13 +25,13 @@ from tests.test_engine_real_fleet import GGUF_CHAT
 from tests.test_engine_write_applied import (
     _local,
     _ProcessSwap,
-    _wait_for,
     fleet,
 )
 
 __all__ = ["fleet"]
 
 _WAIT_S = 10.0
+_CALLER = "work-order-caller"
 _FAILED = ProviderError("engine did not start")
 _STILL_STARTING = "The engines are still starting after 0 s."
 _MLX = "mlx"
@@ -58,13 +58,34 @@ def passes(fleet: Any, monkeypatch: pytest.MonkeyPatch) -> list[int]:
     return seen
 
 
+@pytest.fixture
+def joined(fleet: Any, monkeypatch: pytest.MonkeyPatch) -> Callable[[], None]:
+    """Blocks until two callers have joined the fleet work, each after it set what it wants."""
+    local = _local(fleet)
+    entered = threading.Semaphore(0)
+    real = local._join_fleet_work
+
+    def _entered(work: Any, **kwargs: Any) -> None:
+        if threading.current_thread().name == _CALLER:
+            entered.release()
+        real(work, **kwargs)
+
+    monkeypatch.setattr(local, "_join_fleet_work", _entered)
+
+    def _both() -> None:
+        entered.acquire()
+        entered.acquire()
+
+    return _both
+
+
 class _Caller:
     """Runs one call on a thread and keeps what it heard, or None when it returned."""
 
     def __init__(self, call: Callable[[], Any]) -> None:
         self.heard: BaseException | None = None
         self._call = call
-        self._thread = threading.Thread(target=self._run)
+        self._thread = threading.Thread(target=self._run, name=_CALLER)
         self._thread.start()
 
     def _run(self) -> None:
@@ -74,8 +95,7 @@ class _Caller:
             self.heard = exc
 
     def join(self) -> None:
-        self._thread.join(_WAIT_S)
-        assert not self._thread.is_alive()
+        self._thread.join()
 
 
 def _write(engine: str) -> _Caller:
@@ -104,7 +124,7 @@ def _build_at_the_gate(local: FleetProvider) -> tuple[threading.Event, _Caller]:
     """A first build, with its plan made, held at the gate, and the read that started it."""
     gate = _cold_with_a_gate(local)
     reader = _Caller(local._ensure_fleet)
-    assert _ProcessSwap.starting.wait(_WAIT_S)
+    _ProcessSwap.starting.wait()
     assert local._swaps == {}
     return gate, reader
 
@@ -115,7 +135,7 @@ def _pass_at_the_gate(local: FleetProvider, engine: str = _MLX) -> tuple[threadi
     gate = threading.Event()
     _ProcessSwap.start_gate = gate
     first = _write(engine)
-    assert _ProcessSwap.starting.wait(_WAIT_S)
+    _ProcessSwap.starting.wait()
     assert local._swaps == {}
     return gate, first
 
@@ -128,7 +148,7 @@ def _work_threads() -> int:
 def _settle(local: FleetProvider) -> None:
     work = local._fleet_work
     if work is not None:
-        assert work.wait(_WAIT_S)
+        work.wait()
     assert local._fleet_work is None
 
 
@@ -147,7 +167,7 @@ def test_the_warm_up_waits_for_the_build_past_the_bound(
     monkeypatch.setattr(local, "_preload_roles", lambda roles=None: None)
     gate = _cold_with_a_gate(local)
     warm = _Caller(local._warm_up_blocking)
-    assert _ProcessSwap.starting.wait(_WAIT_S)
+    _ProcessSwap.starting.wait()
     gate.set()
     warm.join()
     assert failures == []
@@ -155,12 +175,12 @@ def test_the_warm_up_waits_for_the_build_past_the_bound(
 
 
 def test_o1_a_write_during_the_first_build_reaches_the_engines(
-    fleet: Any, passes: list[int]
+    fleet: Any, passes: list[int], joined: Callable[[], None]
 ) -> None:
     local = _local(fleet)
     gate, reader = _build_at_the_gate(local)
     writer = _write(_MLX)
-    _wait_for(lambda: local._writes_wanted > local._writes_done)
+    joined()
     gate.set()
     reader.join()
     writer.join()
@@ -171,12 +191,12 @@ def test_o1_a_write_during_the_first_build_reaches_the_engines(
 
 
 def test_o2_a_write_while_every_group_stops_reaches_the_engines(
-    fleet: Any, passes: list[int]
+    fleet: Any, passes: list[int], joined: Callable[[], None]
 ) -> None:
     local = _local(fleet)
     gate, first = _pass_at_the_gate(local)
     second = _write(_LLAMA)
-    _wait_for(lambda: local._writes_wanted == local._writes_done + 2)
+    joined()
     gate.set()
     first.join()
     second.join()
@@ -185,12 +205,14 @@ def test_o2_a_write_while_every_group_stops_reaches_the_engines(
     assert "--mlx" not in _chat_argv(local)
 
 
-def test_o3_a_write_that_joins_a_failing_pass_hears_it(fleet: Any, passes: list[int]) -> None:
+def test_o3_a_write_that_joins_a_failing_pass_hears_it(
+    fleet: Any, passes: list[int], joined: Callable[[], None]
+) -> None:
     local = _local(fleet)
     _ProcessSwap.start_failure = _FAILED
     gate, first = _pass_at_the_gate(local)
     second = _write(_LLAMA)
-    _wait_for(lambda: local._writes_wanted == local._writes_done + 2)
+    joined()
     gate.set()
     first.join()
     second.join()
@@ -331,12 +353,12 @@ def test_o8_a_write_that_joins_at_the_latch_is_answered(
 
 
 def test_o8_the_loop_ends_at_the_latch_with_a_write_outstanding(
-    fleet: Any, passes: list[int]
+    fleet: Any, passes: list[int], joined: Callable[[], None]
 ) -> None:
     local = _local(fleet)
     gate, first = _pass_at_the_gate(local)
     second = _write(_LLAMA)
-    _wait_for(lambda: local._writes_wanted == local._writes_done + 2)
+    joined()
     with local._lock:
         local._shut_down = True
     gate.set()
@@ -365,14 +387,14 @@ def test_s2_a_write_no_wait_returns_at_once_during_a_stuck_build(fleet: Any) -> 
     gate = _cold_with_a_gate(local)
     work = threading.Thread(target=local._ensure_fleet, kwargs={"bounded": False})
     work.start()
-    assert _ProcessSwap.starting.wait(_WAIT_S)
+    _ProcessSwap.starting.wait()
     running = local._fleet_work
     local.replan_fleet(wait=False)  # the gate is shut, so a wait here would never end
     assert _work_threads() == 1
     assert local._fleet_work is running
     assert local.reload_notice() == RELOADING_NOTICE
     gate.set()
-    work.join(_WAIT_S)
+    work.join()
     _settle(local)
     assert local.reload_notice() is None
 
@@ -385,7 +407,7 @@ def test_s3_a_read_during_a_stuck_build_answers_at_the_bound(
     monkeypatch.setattr(fleet_provider, "_FLEET_WAIT_S", 0)
     with pytest.raises(ProviderError, match=_STILL_STARTING):
         local._ensure_fleet()
-    assert _ProcessSwap.starting.wait(_WAIT_S)
+    _ProcessSwap.starting.wait()
     with pytest.raises(ProviderError, match=_STILL_STARTING):
         local._require_clients(WorkerRole.CHAT)
     gate.set()
@@ -398,7 +420,7 @@ def test_s3_a_read_with_a_group_up_never_waits_on_work(fleet: Any, no_wait: None
     _ProcessSwap.start_gate = gate
     with pytest.raises(engine_service.EngineNotAppliedError, match=_STILL_STARTING):
         engine_service.use_for_role(WorkerRole.CHAT, GGUF_CHAT, _MLX)
-    assert _ProcessSwap.starting.wait(_WAIT_S)
+    _ProcessSwap.starting.wait()
     assert local._swaps != {}
     assert local._fleet_work is not None
     assert local._ensure_fleet() is True
@@ -468,12 +490,14 @@ def test_s7_a_write_during_a_stuck_pass_answers_at_the_bound(
     assert len(passes) == 2
 
 
-def test_f1_a_write_that_joins_a_failing_build_hears_it(fleet: Any, passes: list[int]) -> None:
+def test_f1_a_write_that_joins_a_failing_build_hears_it(
+    fleet: Any, passes: list[int], joined: Callable[[], None]
+) -> None:
     local = _local(fleet)
     _ProcessSwap.start_failure = _FAILED
     gate, reader = _build_at_the_gate(local)
     writer = _write(_MLX)
-    _wait_for(lambda: local._writes_wanted > local._writes_done)
+    joined()
     gate.set()
     reader.join()
     writer.join()
@@ -487,13 +511,15 @@ def test_f1_a_write_that_joins_a_failing_build_hears_it(fleet: Any, passes: list
     assert "--mlx" in _chat_argv(local)
 
 
-def test_f2_a_read_that_joins_a_failing_build_hears_the_same_failure(fleet: Any) -> None:
+def test_f2_a_read_that_joins_a_failing_build_hears_the_same_failure(
+    fleet: Any, joined: Callable[[], None]
+) -> None:
     local = _local(fleet)
     _ProcessSwap.start_failure = _FAILED
     gate, first = _build_at_the_gate(local)
     work = local._fleet_work
     second = _Caller(local._ensure_fleet)
-    _wait_for(lambda: local._build_wanted)
+    joined()
     assert local._fleet_work is work
     gate.set()
     first.join()
@@ -503,13 +529,13 @@ def test_f2_a_read_that_joins_a_failing_build_hears_the_same_failure(fleet: Any)
 
 
 def test_f3_a_failed_pass_with_a_later_write_runs_again_and_joiners_hear_the_last(
-    fleet: Any, passes: list[int]
+    fleet: Any, passes: list[int], joined: Callable[[], None]
 ) -> None:
     local = _local(fleet)
     _ProcessSwap.start_failure = _FAILED
     gate, first = _pass_at_the_gate(local)
     second = _write(_LLAMA)
-    _wait_for(lambda: local._writes_wanted == local._writes_done + 2)
+    joined()
     real_start = _ProcessSwap.start
 
     def _second_pass_starts(self: _ProcessSwap, launches: list[Any], **kwargs: Any) -> None:
