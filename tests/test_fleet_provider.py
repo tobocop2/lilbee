@@ -8155,9 +8155,7 @@ def test_plan_and_spawn_missing_binary_keeps_demand_skips(monkeypatch, tmp_path:
     assert p._skipped_not_installed == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
 
 
-def _rediscover_over_a_held_dir(
-    monkeypatch, order: list[str]
-) -> tuple[FleetProvider, MagicMock]:
+def _rediscover_over_a_held_dir(monkeypatch, order: list[str]) -> tuple[FleetProvider, MagicMock]:
     """A provider whose chat group uses one held dir; *order* records the drop and the release."""
     p = FleetProvider()
     hold = MagicMock()
