@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from lilbee.core.config import Config
@@ -105,39 +105,88 @@ def _read_draft(draft_path: Path) -> str | None:
         return None
 
 
-def draft_source_names(draft_path: Path) -> list[str] | None:
-    """Sorted source names in an existing draft's frontmatter, or None when it has none.
+def _identities(names: Iterable[str], source_ids: Mapping[str, str]) -> list[str]:
+    """Sorted identity of each of *names*: its source id, or the name when it has none.
+
+    A moved or absorbed file keeps its id, so the identity of a page's sources
+    does not change when their paths do.
+    """
+    return sorted(source_ids.get(name, name) for name in names)
+
+
+def source_key(source_names: Iterable[str], source_ids: Mapping[str, str]) -> str:
+    """8-char key of the identity of *source_names*; it names and marks a page's drafts."""
+    # circular: persistence -> batch via short_source_hash (batch imports
+    # persist_and_finalize / divert_concept_collision from persistence).
+    from lilbee.wiki.batch import short_source_hash
+
+    return short_source_hash(", ".join(_identities(source_names, source_ids)))
+
+
+def _listed_sources(text: str) -> list[str] | None:
+    """The sources a draft's frontmatter lists, or None when it lists none.
 
     A PENDING marker carries no ``sources`` field and so reads as unowned: it is
-    a placeholder, not review content. Reading past the marker run is the
-    parser's job.
+    a placeholder, not review content.
+    """
+    listed = parse_frontmatter(text).get(_DRAFT_SOURCES_FIELD)
+    # Frontmatter is untyped YAML: a hand-edited draft can hold anything.
+    return listed if isinstance(listed, list) else None
+
+
+def _draft_sources_differ(
+    text: str, listed: list[str], source_names: list[str], source_ids: Mapping[str, str]
+) -> bool:
+    """Whether the draft *text*, listing *listed*, holds sources other than *source_names*.
+
+    Sources compare by id when the draft records ids; a draft written before
+    ids compares by name.
+    """
+    recorded = recorded_source_ids(text)
+    if recorded is None:
+        return sorted(listed) != sorted(source_names)
+    return _identities(listed, recorded) != _identities(source_names, source_ids)
+
+
+def draft_held_by_other_sources(
+    draft_path: Path, source_names: list[str], source_ids: Mapping[str, str]
+) -> bool:
+    """Whether the draft at *draft_path* lists sources other than *source_names*.
+
+    False when there is no draft, or it lists no sources (a PENDING marker).
     """
     text = _read_draft(draft_path)
-    if text is None:
-        return None
-    sources = parse_frontmatter(text).get(_DRAFT_SOURCES_FIELD)
-    # Frontmatter is untyped YAML: a hand-edited draft can hold anything.
-    return sorted(sources) if isinstance(sources, list) else None
+    listed = None if text is None else _listed_sources(text)
+    if text is None or listed is None:
+        return False
+    return _draft_sources_differ(text, listed, source_names, source_ids)
 
 
 def _draft_belongs_to_other_source(
-    draft_path: Path, source_key: str, source_names: list[str]
+    draft_path: Path, source_names: list[str], source_ids: Mapping[str, str]
 ) -> bool:
     """Return whether an existing draft holds reviewable content from another source.
 
     A PENDING marker or an empty file is a placeholder, not review content, so
     neither blocks the write. A drift draft carries its source key in the
-    marker; a quality-gate draft carries its sources in frontmatter, so a
-    same-source draft of either kind is superseded in place rather than
-    treated as a collision.
+    marker (by id, or by name when written before ids); a quality-gate draft
+    carries its sources in frontmatter, so a same-source draft of either kind
+    is superseded in place rather than treated as a collision.
     """
+    # circular: see source_key.
+    from lilbee.wiki.batch import short_source_hash
+
     text = _read_draft(draft_path)
     if text is None or not text.strip() or is_pending_marker_text(text):
         return False
     first_line = text.splitlines()[0]
-    if f"{_DRIFT_SOURCE_FIELD}{source_key}" in first_line:
+    keys = [source_key(source_names, source_ids)]
+    if recorded_source_ids(text) is None:
+        keys.append(short_source_hash(", ".join(sorted(source_names))))
+    if any(f"{_DRIFT_SOURCE_FIELD}{key}" in first_line for key in keys):
         return False
-    return draft_source_names(draft_path) != sorted(source_names)
+    listed = _listed_sources(text)
+    return listed is None or _draft_sources_differ(text, listed, source_names, source_ids)
 
 
 def divert_to_drafts(
@@ -161,15 +210,11 @@ def divert_to_drafts(
     diverted content, this one lands at a ``-collision-<hash>`` draft rather
     than overwriting a page awaiting review.
     """
-    # circular: persistence -> batch via short_source_hash (batch imports
-    # persist_and_finalize / divert_concept_collision from persistence).
-    from lilbee.wiki.batch import short_source_hash
-
     sources_label = ", ".join(sorted(source_names))
-    source_key = short_source_hash(sources_label)
     note = (
         f"{_DRIFT_MARKER_PREFIX} {change_ratio:.0%} content changed; origin: {origin_subdir}; "
-        f"{_DRIFT_SOURCE_FIELD}{source_key} - flagged for human review -->\n\n"
+        f"{_DRIFT_SOURCE_FIELD}{source_key(source_names, source_ids)} "
+        f"- flagged for human review -->\n\n"
     )
     log.warning(
         "Drift detected for %s (%.0f%% changed), diverted to drafts. Diff:\n%s",
@@ -178,10 +223,11 @@ def divert_to_drafts(
         diff_text,
     )
     draft_path = drafts_dir / f"{slug}.md"
-    if _draft_belongs_to_other_source(draft_path, source_key, source_names):
+    if _draft_belongs_to_other_source(draft_path, source_names, source_ids):
         return divert_concept_collision(
             slug=slug,
             source=sources_label,
+            source_names=source_names,
             first_source=f"{WikiSubdir.DRAFTS}/{slug}.md",
             content=note + new_content,
             drafts_dir=drafts_dir,
@@ -339,7 +385,9 @@ def delete_pending_marker_if_present(drafts_dir: Path, slug: str) -> bool:
     return True
 
 
-def delete_drift_draft_if_present(drafts_dir: Path, slug: str, source_names: list[str]) -> bool:
+def delete_drift_draft_if_present(
+    drafts_dir: Path, slug: str, source_names: list[str], *, source_ids: Mapping[str, str]
+) -> bool:
     """Delete *slug*'s superseded drift draft; return whether one was removed.
 
     A regen that lands under the drift threshold supersedes the proposal an
@@ -348,16 +396,11 @@ def delete_drift_draft_if_present(drafts_dir: Path, slug: str, source_names: lis
     drafts namespace is flat, so a draft carrying another source's key (a
     concept and an entity can share a slug) is kept.
     """
-    # circular: persistence -> batch via short_source_hash (batch imports
-    # persist_and_finalize / divert_concept_collision from persistence).
-    from lilbee.wiki.batch import short_source_hash
-
     draft_path = drafts_dir / f"{slug}.md"
     text = _read_draft(draft_path)
     if text is None or not text.lstrip().startswith(_DRIFT_MARKER_PREFIX):
         return False
-    source_key = short_source_hash(", ".join(sorted(source_names)))
-    if _draft_belongs_to_other_source(draft_path, source_key, source_names):
+    if _draft_belongs_to_other_source(draft_path, source_names, source_ids):
         log.info("Keeping drift draft %s: it holds another source's proposal", draft_path)
         return False
     draft_path.unlink()
@@ -369,6 +412,7 @@ def divert_concept_collision(
     *,
     slug: str,
     source: str,
+    source_names: list[str],
     first_source: str,
     content: str,
     drafts_dir: Path,
@@ -378,7 +422,8 @@ def divert_concept_collision(
     """Write the losing concept to ``drafts/<slug>-collision-<hash>.md``.
 
     The winning source's page is unchanged on disk. Hash is the
-    first 8 hex of sha256(source_filename); stable per source so a
+    first 8 hex of sha256 over the ids of *source_names* (their names
+    where a source has no id); a move keeps the ids, so a
     retry on the same two sources lands at the same draft path,
     letting the user iterate without marker sprawl. ``origin_subdir``
     is the published subdir the losing page would have landed in; it
@@ -386,12 +431,7 @@ def divert_concept_collision(
     accepting a collision with no published counterpart restores it to
     its own page type instead of ``summaries/``.
     """
-    # circular: persistence -> batch via short_source_hash (batch imports
-    # persist_and_finalize / divert_concept_collision from persistence).
-    from lilbee.wiki.batch import short_source_hash
-
-    short = short_source_hash(source)
-    collision_slug = f"{slug}-collision-{short}"
+    collision_slug = f"{slug}-collision-{source_key(source_names, source_ids)}"
     marker = (
         f"{PENDING_COLLISION_MARKER_PREFIX} with source {first_source}, "
         f"content from {source} held for review; origin: {origin_subdir} -->\n\n"
