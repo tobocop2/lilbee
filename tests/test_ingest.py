@@ -2608,7 +2608,7 @@ class TestHeldOutRecordLifecycle:
         from lilbee.data.ingest import sync
         from lilbee.providers.base import EmbeddingOverflowError, ProviderErrorKind
 
-        mock_svc.provider.embed_token_cap.return_value = 400
+        mock_svc.provider.embed_token_cap.return_value = 4096
         raised = EmbeddingOverflowError("too long", kind=ProviderErrorKind.CONTEXT_OVERFLOW)
         (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
         with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=raised):
