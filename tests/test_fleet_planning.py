@@ -5368,7 +5368,6 @@ class TestLogEngineLaunch:
 
     @pytest.fixture(autouse=True)
     def _known_engine(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod, "engine_build_id", lambda: "wheel:0.6.91")
         monkeypatch.setattr(planning_mod, "engine_backend", lambda engine: EngineBackend.VULKAN)
         monkeypatch.setattr(
             planning_mod,
@@ -5384,9 +5383,29 @@ class TestLogEngineLaunch:
         message = caplog.records[0].message
         assert message.startswith("Launched embed-0 serving org/repo/embed.gguf")
         assert "/opt/lilbee/llama-server" in message
-        assert "build wheel:0.6.91" in message
+        assert f"engine {LLAMA.name.value}" in message
+        assert f"build {LLAMA.identity(Path('/opt/lilbee/llama-server'))}" in message
         assert "backend vulkan" in message
         assert "Vulkan0: NVIDIA GeForce RTX 3090" in message
+
+    def test_an_openvino_launch_names_its_own_build_not_the_llama_pack(self, caplog) -> None:
+        from lilbee.providers.fleet.engines.openvino import OpenvinoAdapter
+
+        engine = OpenvinoAdapter()
+        launch = self._launch()
+        with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
+            planning_mod.log_engine_launch(launch, engine=engine)
+        message = caplog.records[0].message
+        assert f"engine {engine.name.value}" in message
+        assert f"build {engine.identity(Path(launch.binary))}" in message
+
+    def test_the_engine_label_follows_the_engine_that_runs_the_process(self, caplog) -> None:
+        from lilbee.providers.fleet.engines.ik_llama import IkLlamaAdapter
+
+        engine = IkLlamaAdapter()
+        with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
+            planning_mod.log_engine_launch(self._launch(), engine=engine)
+        assert f"engine {engine.name.value}" in caplog.records[0].message
 
     def test_an_adopted_launch_names_the_engine_owner(self, caplog) -> None:
         with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
@@ -5396,7 +5415,7 @@ class TestLogEngineLaunch:
             "Adopted embed-0 serving org/repo/embed.gguf from engine pid 4242"
         )
         assert "/opt/lilbee/llama-server" in message
-        assert "build wheel:0.6.91" in message
+        assert f"build {LLAMA.identity(Path('/opt/lilbee/llama-server'))}" in message
         assert "backend vulkan" in message
 
     def test_an_unreadable_host_still_logs(self, caplog, monkeypatch) -> None:
