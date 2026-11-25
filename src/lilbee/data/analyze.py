@@ -45,7 +45,11 @@ class FileFailure:
 
 @dataclass(frozen=True)
 class PdfSignals:
-    """PDF pages, scans and tables; ``scanned_share`` also counts image files at the sample rate."""
+    """PDF pages, scans and tables.
+
+    ``scanned_share`` is scanned pages over all pages. Each other document and each image file
+    counts as one page, and image files weigh in at the sample rate.
+    """
 
     files: int
     pages: int
@@ -189,15 +193,20 @@ def _median(values: list[int]) -> float | None:
 
 
 def _pdf_signals(readings: list[_Reading], image_weight: float) -> PdfSignals:
-    """PDF signals over the read sample; *image_weight* is the image files at the sample rate."""
+    """PDF signals over the read sample; *image_weight* is the image files at the sample rate.
+
+    The scanned share counts pages. A PDF counts its pages, and every other read document and
+    every image file counts as one page. Images are scans; other documents have a text layer.
+    """
     pdfs = [r for r in readings if r.content_type == PDF_CONTENT_TYPE]
     pages = sum(r.pdf_pages for r in pdfs)
     scanned = sum(r.scanned_pages for r in pdfs)
+    other_pages = len(readings) - len(pdfs)
     return PdfSignals(
         files=len(pdfs),
         pages=pages,
         scanned_pages=scanned,
-        scanned_share=_share(scanned + image_weight, pages + image_weight),
+        scanned_share=_share(scanned + image_weight, pages + other_pages + image_weight),
         files_with_tables=sum(1 for r in pdfs if r.tables > 0),
         tables=sum(r.tables for r in pdfs),
         median_pages=_median([r.pdf_pages for r in pdfs]),

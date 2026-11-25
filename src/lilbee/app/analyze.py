@@ -190,8 +190,7 @@ def _notes_share(signals: CorpusSignals) -> float:
 
 
 def _tables_share(signals: CorpusSignals) -> float:
-    pdf = signals.pdf
-    return pdf.files_with_tables / pdf.files if pdf.files else 0.0
+    return signals.pdf.files_with_tables / signals.files_read if signals.files_read else 0.0
 
 
 _PICK_RULES: tuple[_PickRule, ...] = (
@@ -200,7 +199,7 @@ _PICK_RULES: tuple[_PickRule, ...] = (
     ),
     _PickRule(CODE_REPOSITORY, CODE_REPOSITORY_SHARE, lambda s: s.code_share, "of files are code"),
     _PickRule(NOTES_AND_MARKDOWN, NOTES_SHARE, _notes_share, "of files are Markdown or text"),
-    _PickRule(RESEARCH_PAPERS, RESEARCH_TABLES_SHARE, _tables_share, "of PDFs have tables"),
+    _PickRule(RESEARCH_PAPERS, RESEARCH_TABLES_SHARE, _tables_share, "of documents are PDFs with tables"),
 )
 
 
