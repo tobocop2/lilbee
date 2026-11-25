@@ -988,6 +988,18 @@ that runs before `lilbee ask`. The command exits with status 130. A stopped
 `add` names the files it did not add, and `lilbee --json add` lists them in
 `not_added`.
 
+Over HTTP, give `POST /api/add` an `add_id` in its body, or `POST /api/add/upload`
+an `add_id` query parameter. The id has 1 to 64 letters, digits, `_` or `-`. To
+cancel that add, send `POST /api/add/cancel` with `{"add_id": "..."}`. The route
+answers `200` with `{"add_id": "...", "cancelling": true}`, or `404` when no add
+runs with that id. An add that already runs with the same id answers `409`. The
+cancel removes what the add did not finish, as Ctrl+C does: a source with no
+file indexed is no longer added, and its files on disk stay as they are. An
+uploaded file that the upload created and the server did not index is deleted.
+The add stream ends with a `done` event that carries `"cancelled": true` and
+`not_added`. A client that only closes the stream stops the sync and keeps every
+source.
+
 If you add a folder that contains a source you already added, the folder takes
 that source in. `lilbee add ~/notes` after `lilbee add ~/notes/work` prints
 `Registered 1 source(s); notes now includes work`. The documents of `work` keep
