@@ -24,8 +24,8 @@ from lilbee.providers.fleet.adapters import (
     resolve_rerank_mode,
 )
 from lilbee.providers.fleet.engines.base import LaunchRequest
-from lilbee.providers.fleet.engines.llama import LLAMA
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.fleet.engines.choice import ADAPTERS
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 
 def test_every_worker_role_has_a_spec() -> None:
@@ -400,8 +400,15 @@ def test_build_argv_no_mmap_reads_help_on_stderr(monkeypatch) -> None:
     assert _mmap_tokens(argv) == ["--load-mode", "none"]
 
 
-def test_no_mmap_help_read_targets_the_launched_binary(monkeypatch) -> None:
-    """With two builds side by side, the flag comes from the one the argv launches."""
+@pytest.mark.parametrize("adapter", list(ADAPTERS.values()), ids=[n.value for n in ADAPTERS])
+def test_no_mmap_help_read_targets_the_launched_binary(monkeypatch, adapter) -> None:
+    """With two builds side by side, an adapter's flag comes from the build its argv launches.
+
+    Every shipped adapter runs. One that reads help must read the launched build and match
+    its flag; one that never reads help passes without a read.
+    """
+    if WorkerRole.CHAT not in adapter.served_roles:
+        pytest.skip("the adapter does not serve chat")
     old_build, new_build = Path("/engines/old/llama-server"), Path("/engines/new/llama-server")
     helps = {old_build: _HELP_NO_MMAP, new_build: _HELP_LOAD_MODE}
     read: list[Path] = []
@@ -425,11 +432,13 @@ def test_no_mmap_help_read_targets_the_launched_binary(monkeypatch) -> None:
             slots=1,
             ctx_per_slot=4096,
             no_mmap=True,
+            target=RoleTarget.CPU,
         )
-        argv = LLAMA.launch_argv(ROLE_SPECS[WorkerRole.CHAT], request)
-        assert argv[0] == str(launched)
-        assert _mmap_tokens(argv) == tokens
+        argv = adapter.launch_argv(adapter.role_spec(WorkerRole.CHAT, None, None), request)
         assert other not in read
+        if read:
+            assert str(launched) in argv
+            assert _mmap_tokens(argv) == tokens
 
 
 def test_build_argv_defaults_to_mmap(monkeypatch) -> None:
