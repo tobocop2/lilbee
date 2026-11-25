@@ -461,8 +461,8 @@ class TestEnsureChatModel:
         """Regression (bb-ziks.67): an installed reranker/vision model is not a chat
         model, so the real (task-filtered) list_installed_models excludes it and the
         bootstrap still engages the picker rather than short-circuiting. Drives the
-        real list_installed_models through reclassify_by_name (no mock of the
-        classifier)."""
+        real list_installed_models with a real ModelManifest, which demotes the
+        reranker by name when it is built."""
         from lilbee.catalog.types import ModelTask
         from lilbee.modelhub.registry import ModelManifest
 
