@@ -6,6 +6,7 @@ import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.progress import BarColumn, DownloadColumn, SpinnerColumn, TextColumn
 from rich.table import Table
@@ -24,6 +25,9 @@ from lilbee.providers.fleet.engines.choice import (
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import PlainConsole, live_progress, styled
 from lilbee.runtime.progress.columns import literal_text_column
+
+if TYPE_CHECKING:
+    from lilbee.catalog.hf_client import HfClient
 
 log = logging.getLogger(__name__)
 
@@ -53,18 +57,12 @@ def _catalog_from_picks(picks: tuple) -> tuple[ModelInfo, ...]:
     )
 
 
-def _get_model_catalog() -> tuple[ModelInfo, ...]:
+def _get_model_catalog(*, hf_client: "HfClient") -> tuple[ModelInfo, ...]:
     """Chat picks as ModelInfo. Not cached here: picks are already memoized for
     the process, and a second cache would survive ``reset_picks()``."""
     from lilbee.catalog import picks_for
 
-    return _catalog_from_picks(picks_for(ModelTask.CHAT))
-
-
-def __getattr__(name: str) -> tuple[ModelInfo, ...]:
-    if name == "MODEL_CATALOG":
-        return _get_model_catalog()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return _catalog_from_picks(picks_for(ModelTask.CHAT, hf_client=hf_client))
 
 
 def get_system_ram_gb() -> float:
@@ -107,14 +105,14 @@ def get_free_disk_gb(path: Path) -> float:
     return usage.free / (1024**3)
 
 
-def pick_default_model(ram_gb: float) -> ModelInfo:
+def pick_default_model(ram_gb: float, *, hf_client: "HfClient") -> ModelInfo:
     """Choose the largest catalog model that fits in *ram_gb*.
 
     Raises ``RuntimeError`` when the catalog is empty, which happens when
     HuggingFace cannot be reached: callers surface that far better than the
     ``IndexError`` an empty catalog would otherwise produce.
     """
-    catalog = _get_model_catalog()
+    catalog = _get_model_catalog(hf_client=hf_client)
     if not catalog:
         raise RuntimeError(
             "Could not reach HuggingFace to choose a chat model. "
@@ -127,19 +125,23 @@ def pick_default_model(ram_gb: float) -> ModelInfo:
     return max(eligible, key=lambda m: m.size_gb)
 
 
-def _model_download_size_gb(model: str) -> float:
+def _model_download_size_gb(model: str, *, hf_client: "HfClient") -> float:
     """Estimated download size in GiB for an HF model ref."""
-    catalog_sizes = {m.ref: m.size_gb for m in _get_model_catalog()}
+    catalog_sizes = {m.ref: m.size_gb for m in _get_model_catalog(hf_client=hf_client)}
     fallback = 5.0  # reasonable default for unknown models
     return catalog_sizes.get(model, fallback)
 
 
 def display_model_picker(
-    ram_gb: float, free_disk_gb: float, *, console: PlainConsole | None = None
+    ram_gb: float,
+    free_disk_gb: float,
+    *,
+    hf_client: "HfClient",
+    console: PlainConsole | None = None,
 ) -> ModelInfo:
     """Show a Rich table of catalog models and return the recommended model."""
     console = console or PlainConsole(stderr=True)
-    recommended = pick_default_model(ram_gb)
+    recommended = pick_default_model(ram_gb, hf_client=hf_client)
 
     table = Table(title="Available Models", show_lines=False)
     table.add_column("#", justify="right", style="bold")
@@ -147,7 +149,7 @@ def display_model_picker(
     table.add_column("Size", justify="right")
     table.add_column("Description")
 
-    for idx, model in enumerate(_get_model_catalog(), 1):
+    for idx, model in enumerate(_get_model_catalog(hf_client=hf_client), 1):
         is_recommended = model == recommended
         disk_too_small = free_disk_gb < model.size_gb + _DISK_HEADROOM_GB
         emphasis = "bold" if is_recommended else ""
@@ -175,15 +177,16 @@ NO_CHAT_MODEL_GUIDANCE = (
 )
 
 
-def prompt_model_choice(ram_gb: float) -> ModelInfo:
+def prompt_model_choice(ram_gb: float, *, hf_client: "HfClient") -> ModelInfo:
     """Prompt the user to pick a model by number. Returns the chosen ModelInfo.
 
     Raises ``RuntimeError`` when input ends or is interrupted: no one chose.
     The prompt goes to stderr with the catalog table, so stdout keeps only output.
     """
     free_disk_gb = get_free_disk_gb(cfg.data_dir)
-    recommended = display_model_picker(ram_gb, free_disk_gb)
-    default_idx = list(_get_model_catalog()).index(recommended) + 1
+    recommended = display_model_picker(ram_gb, free_disk_gb, hf_client=hf_client)
+    catalog = _get_model_catalog(hf_client=hf_client)
+    default_idx = list(catalog).index(recommended) + 1
 
     while True:
         sys.stderr.write(f"Choice [{default_idx}]: ")
@@ -199,13 +202,13 @@ def prompt_model_choice(ram_gb: float) -> ModelInfo:
         try:
             choice = int(raw)
         except ValueError:
-            sys.stderr.write(f"Enter a number 1-{len(_get_model_catalog())}.\n")
+            sys.stderr.write(f"Enter a number 1-{len(catalog)}.\n")
             continue
 
-        if 1 <= choice <= len(_get_model_catalog()):
-            return _get_model_catalog()[choice - 1]
+        if 1 <= choice <= len(catalog):
+            return catalog[choice - 1]
 
-        sys.stderr.write(f"Enter a number 1-{len(_get_model_catalog())}.\n")
+        sys.stderr.write(f"Enter a number 1-{len(catalog)}.\n")
 
 
 def validate_disk_and_pull(
@@ -279,7 +282,7 @@ def pull_with_progress(
     console.print(f"Model '{model}' ready.", soft_wrap=True)
 
 
-def ensure_chat_model(*, report_no_engine: bool = True) -> str | None:
+def ensure_chat_model(*, hf_client: "HfClient", report_no_engine: bool = True) -> str | None:
     """If no chat models are installed, prompt for one and pull it. Returns the pulled ref or None.
 
     *report_no_engine* False leaves the no-engine notice out of the pull, for a caller
@@ -304,7 +307,7 @@ def ensure_chat_model(*, report_no_engine: bool = True) -> str | None:
 
     ram_gb = get_system_ram_gb()
     free_gb = get_free_disk_gb(cfg.data_dir)
-    model_info = prompt_model_choice(ram_gb)
+    model_info = prompt_model_choice(ram_gb, hf_client=hf_client)
     return validate_disk_and_pull(model_info, free_gb, report_no_engine=report_no_engine)
 
 

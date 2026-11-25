@@ -294,7 +294,7 @@ def _prepare_ask(*, no_sync: bool) -> None:
     from lilbee.modelhub.models import ensure_chat_model
 
     # The settings update below reports the no-engine notice; the pull stays silent on it.
-    pulled = ensure_chat_model(report_no_engine=False)
+    pulled = ensure_chat_model(hf_client=get_services().hf_client, report_no_engine=False)
     if pulled is not None:
         result = apply_settings_update({"chat_model": pulled})
         # stderr keeps the JSON document on stdout whole.
