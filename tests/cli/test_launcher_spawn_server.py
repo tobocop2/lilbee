@@ -289,6 +289,8 @@ def test_spawn_gives_serve_its_own_process_group(monkeypatch, _capture_popen) ->
     """A group of its own keeps a console Ctrl-C from reaching serve (Windows)."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", _NEW_GROUP, raising=False)
+    # From Python 3.12, shutil.which on win32 calls the Windows API, which POSIX lacks.
+    monkeypatch.setattr(server_mod.shutil, "which", lambda _name: None)
     monkeypatch.setenv("LILBEE_LAUNCHER_SERVE_QUIET", "1")
     server_mod.spawn_server(8080)
     assert _capture_popen["popen_kwargs"]["creationflags"] == _NEW_GROUP
