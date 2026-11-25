@@ -1724,7 +1724,10 @@ class AnalyzeFailureResponse(BaseModel):
 
 
 class AnalyzePdfResponse(BaseModel):
-    """PDF pages, scans and tables; ``scanned_share`` also counts image files at the sample rate."""
+    """PDF pages, scans and tables; ``scanned_share`` is scanned pages over all pages.
+
+    Each other document and each image file counts as one page.
+    """
 
     files: int
     pages: int
