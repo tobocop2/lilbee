@@ -164,7 +164,8 @@ class RequestProfile:
     input_limit_path: str | None = None
     """The route that reports ``max_input_length``, or None. An engine with both routes cuts an
     over-limit embed input by its own tokens without a sign, so the client sends such an input
-    whole, then counts the cuts and warns."""
+    whole, then counts the cuts and warns. Such an engine has no ``tokenize_path``: with one, the
+    client would cut the input itself and the count would add the same cut again."""
     rerank_shape: RerankShape = RerankShape.TEXTS
     """The shape of the rerank route; it matters only when ``rerank_path`` is set."""
     rerank_model: str | None = None
@@ -176,6 +177,13 @@ class RequestProfile:
     load_failure_check: UpstreamCheck | None = None
     """Read once after a warm fails; an error replaces the engine's own failure with a reason
     the user can act on. None keeps the engine's failure."""
+
+    def __post_init__(self) -> None:
+        if self.tokenize_path is not None and self.input_limit_path is not None:
+            raise ValueError(
+                f"{self.label}: tokenize_path and input_limit_path cannot both be set; "
+                "an input the client cut would be counted a second time as cut by the server"
+            )
 
     def rerank_body(
         self, query: str, texts: list[str], extra: Mapping[str, Any] | None = None
