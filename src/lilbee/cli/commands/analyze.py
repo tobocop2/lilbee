@@ -124,7 +124,7 @@ def _render_reading(report: AnalyzeResponse) -> None:
     pdf = report.pdf
     line(f"Code files: {report.code_share:.0%}")
     line(f"Scanned pages: {pdf.scanned_pages} of {pdf.pages} PDF pages")
-    line(f"Scanned share of pages: {pdf.scanned_share:.0%} (a non-PDF file is one page)")
+    line(f"Scanned share of pages: {pdf.scanned_share:.0%} (a non-PDF file counts as one page)")
     line(f"PDFs with tables: {pdf.files_with_tables} of {pdf.files}")
     if pdf.median_pages is not None:
         line(f"Median PDF length: {pdf.median_pages:g} pages")
