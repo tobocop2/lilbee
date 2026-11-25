@@ -114,12 +114,13 @@ def _wiki_progress() -> Iterator[DetailedProgressCallback]:
 
 @contextmanager
 def _library_refusal_exits() -> Iterator[None]:
-    """Exit 1 with the refusal as the error when a wiki write cannot lock the library."""
+    """Exit 1 with the error when a wiki write is refused or every model call fails."""
     from lilbee.app.ingest import LIBRARY_REFUSALS
+    from lilbee.wiki.generation import WikiBuildError
 
     try:
         yield
-    except LIBRARY_REFUSALS as exc:
+    except (*LIBRARY_REFUSALS, WikiBuildError) as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
