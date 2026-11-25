@@ -118,3 +118,31 @@ class TestPostDoneExtractionFailure:
         assert "error" not in kinds, kinds
         assert kinds[-1] == "done", kinds
         assert "extraction model is not installed" in caplog.text
+
+    async def test_a_raising_trailer_gives_no_error_frame(
+        self, grounded_services, monkeypatch, caplog
+    ) -> None:
+        """A trailer stage that raises after done is logged, and the answer stands."""
+        from lilbee.server import app as app_module
+
+        async def _boom(_turn: object) -> list[str]:
+            raise RuntimeError("the trailer broke")
+
+        monkeypatch.setattr(rag, "dispatch_chat_stream", _answer_stream)
+        monkeypatch.setattr(rag, "_memory_trailer", _boom)
+
+        async with AsyncTestClient(app_module.create_app()) as client:
+            resp = await client.post(
+                "/api/chat/stream",
+                json={"question": "q", "history": []},
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 201
+        events = parse_sse_events(resp.content)
+        kinds = [kind for kind, _ in events]
+        tokens = [data["token"] for kind, data in events if kind == "token"]
+        assert "".join(tokens) == "hello"
+        assert "error" not in kinds, kinds
+        assert kinds[-1] == "done", kinds
+        assert "the trailer broke" in caplog.text

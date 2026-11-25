@@ -176,7 +176,7 @@ async def test_the_rag_stream_thread_reads_the_request_config(monkeypatch):
     monkeypatch.setattr(searcher, "search_unavailable", lambda: False)
     monkeypatch.setattr(searcher, "skip_retrieval", lambda: False)
     monkeypatch.setattr(rag, "_warming_frames", no_frames)
-    monkeypatch.setattr(rag, "_emit_sources_and_memories", no_sources)
+    monkeypatch.setattr(rag, "_emit_sources_and_done", no_sources)
     monkeypatch.setattr(
         rag, "_resolve_stream_context", lambda *_a, **_k: ([], [{"role": "user"}], [])
     )
