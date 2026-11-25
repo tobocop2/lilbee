@@ -484,7 +484,9 @@ def test_the_placement_command_prints_the_notice_and_exits_clean(
     assert "chat: For chat: No installed engine loads the mlx format of org/repo#mlx" in " ".join(
         result.output.split()
     )
-    assert "Run lilbee engine list (or GET /api/engines) to see the installed engines." in " ".join(result.output.split())
+    assert "Run lilbee engine list (or GET /api/engines) to see the installed engines." in " ".join(
+        result.output.split()
+    )
     assert f"{GGUF_REF} not downloaded" in " ".join(result.output.split())
     assert "Traceback" not in result.output
 
