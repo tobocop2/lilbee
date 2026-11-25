@@ -76,9 +76,18 @@ _DAMAGED_MODEL = (
 _VERSION = "0.9.5"
 _TOOL = "mistralrs"
 _HOST = "127.0.0.1"
-_LICENCES = ["MIT"]
-# The expression a CUDA pack declares: it bundles NVIDIA runtime libraries.
-_CUDA_LICENCES = ["MIT AND LicenseRef-NVIDIA-CUDA-EULA"]
+# Each expression is the License-Expression of the published wheels of that build.
+_PACK_TERMS = (
+    "MIT AND 0BSD AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND CDLA-Permissive-2.0 "
+    "AND ISC AND MPL-2.0 AND OpenSSL AND Unicode-3.0 AND Zlib"
+)
+_WINDOWS_PACK_TERMS = (
+    "MIT AND 0BSD AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 "
+    "AND CDLA-Permissive-2.0 AND ISC AND MPL-2.0 AND OpenSSL AND Unicode-3.0 AND Zlib "
+    "AND LicenseRef-Microsoft-VC-Runtime"
+)
+# A CUDA pack bundles NVIDIA runtime libraries.
+_CUDA_PACK_TERMS = f"{_PACK_TERMS} AND LicenseRef-NVIDIA-CUDA-EULA"
 _CPU = "cpu"
 # The one id the engine serves a model under; it answers 400 to any other.
 _SERVED_NAME = "default"
@@ -261,6 +270,15 @@ def _apportion(layers: int, ratio: tuple[int, ...]) -> tuple[int, ...] | None:
     return tuple(shares) if min(shares) > 0 else None
 
 
+def _pack_terms(host: HostCaps, backend: str) -> str:
+    """The License-Expression of the wheel of *backend* that *host* installs."""
+    if backend.startswith(_CUDA_PREFIX):
+        return _CUDA_PACK_TERMS
+    if host.os is HostOS.WINDOWS:
+        return _WINDOWS_PACK_TERMS
+    return _PACK_TERMS
+
+
 class MistralAdapter:
     """mistral.rs behind the engine contract; it serves chat, embed and vision, never rerank."""
 
@@ -320,7 +338,7 @@ class MistralAdapter:
             "launch": [_TOOL, "serve"],
             "platforms": platforms,
             "memory": {"sizing": None, "rule": MemoryKind.FIXED_RESERVE.value},
-            "licenses": _CUDA_LICENCES if backend.startswith(_CUDA_PREFIX) else _LICENCES,
+            "licenses": [_pack_terms(host, backend)],
         }
 
     def binary(self) -> Path:

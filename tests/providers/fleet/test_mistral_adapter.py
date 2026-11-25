@@ -27,7 +27,13 @@ from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import engine_manifest, host_caps, planning, swap_config
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.devices import FleetDevice
-from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
+from lilbee.providers.fleet.engine_store import (
+    NOTICE_RULES,
+    EngineStore,
+    PinLock,
+    engines_root,
+    licence_permitted,
+)
 from lilbee.providers.fleet.engines import mistral as mistral_module
 from lilbee.providers.fleet.engines.base import (
     PORT_SLOT,
@@ -787,11 +793,45 @@ def test_a_metal_build_reads_no_card_and_lists_no_device(
     assert (probe.devices, probe.spoke_protocol) == ([], False)
 
 
-def test_the_metal_pin_record_declares_the_mit_licence_only(
-    monkeypatch: pytest.MonkeyPatch,
+# License-Expression of each wheel in release engine-packs-20261125-mistralrs, read from its
+# METADATA (lilbee_engine_mistral_rs-0.9.5-2.<build>-py3-none-<platform>.whl).
+_WHEEL_TERMS = (
+    "MIT AND 0BSD AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND CDLA-Permissive-2.0 "
+    "AND ISC AND MPL-2.0 AND OpenSSL AND Unicode-3.0 AND Zlib"
+)
+_WINDOWS_WHEEL_TERMS = (
+    "MIT AND 0BSD AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 "
+    "AND CDLA-Permissive-2.0 AND ISC AND MPL-2.0 AND OpenSSL AND Unicode-3.0 AND Zlib "
+    "AND LicenseRef-Microsoft-VC-Runtime"
+)
+_CUDA_WHEEL_TERMS = f"{_WHEEL_TERMS} AND LicenseRef-NVIDIA-CUDA-EULA"
+_MACOS_15 = host_caps.collect(
+    system="Darwin", machine="arm64", cpu_info={"flags": []}, nvidia=None, mac_ver="15.1"
+)
+
+
+@pytest.mark.parametrize(
+    ("host", "backend", "terms"),
+    [
+        pytest.param(caps("Linux", "x86_64"), "cpu", _WHEEL_TERMS, id="cpu-manylinux"),
+        pytest.param(caps("Windows", "AMD64"), "cpu", _WINDOWS_WHEEL_TERMS, id="cpu-win_amd64"),
+        pytest.param(_MACOS_15, "metal", _WHEEL_TERMS, id="metal-macosx_15_0_arm64"),
+        pytest.param(caps("Linux", "x86_64", gpus=[A100]), "cuda-sm80", _CUDA_WHEEL_TERMS),
+        pytest.param(caps("Linux", "x86_64", gpus=[A40]), "cuda-sm86", _CUDA_WHEEL_TERMS),
+        pytest.param(caps("Linux", "x86_64", gpus=[L4]), "cuda-sm89", _CUDA_WHEEL_TERMS),
+        pytest.param(caps("Linux", "x86_64", gpus=[H100]), "cuda-sm90", _CUDA_WHEEL_TERMS),
+        pytest.param(caps("Linux", "x86_64", gpus=[B200]), "cuda-sm100", _CUDA_WHEEL_TERMS),
+        pytest.param(caps("Linux", "x86_64", gpus=[RTX5090]), "cuda-sm120", _CUDA_WHEEL_TERMS),
+    ],
+)
+def test_the_pin_of_each_build_equals_the_terms_of_its_published_wheel(
+    host: host_caps.HostCaps, backend: str, terms: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(runnable, "session_host", lambda: caps("Darwin", "arm64"))
-    assert MISTRAL.pin_record()["licenses"] == ["MIT"]
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+    pin = MISTRAL.pin_record()
+    assert (pin["backend"], pin["licenses"]) == (backend, [terms])
+    notices = frozenset(rule.file for rule in NOTICE_RULES.values())
+    assert licence_permitted(terms, notices)
 
 
 def test_a_cuda_build_reads_the_cards_from_the_driver(
@@ -2105,3 +2145,36 @@ def test_a_split_of_a_loose_file_without_a_gguf_suffix_keeps_the_heads_refusal(
     ):
         _split_argv(tmp_path, (1, 1), model_path=loose)
     assert read == []
+
+
+@pytest.mark.parametrize(
+    ("layers", "ratio", "shares"),
+    [(28, (1, 1, 1), (10, 9, 9)), (29, (1, 1, 1), (10, 10, 9)), (7, (1, 1), (4, 3))],
+)
+def test_layers_that_do_not_divide_by_the_cards_go_to_the_largest_remainders(
+    layers: int, ratio: tuple[int, ...], shares: tuple[int, ...]
+) -> None:
+    assert mistral_module._apportion(layers, ratio) == shares
+
+
+@pytest.mark.parametrize(("engine_name", "equal_only"), [("mistral", True), ("llama", False)])
+def test_a_model_that_could_not_be_sized_keeps_the_equal_split_rule_of_its_engine(
+    engine_name: str, equal_only: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.providers.fleet.engines.llama import LLAMA
+
+    engine = MISTRAL if engine_name == "mistral" else LLAMA
+    monkeypatch.setattr(planning, "_role_weights_bytes", lambda *_a: GIB)
+    monkeypatch.setattr(planning, "_weights_exceed_hardware", lambda *_a, **_k: False)
+    monkeypatch.setattr(planning, "_host_memory_refuses", lambda *_a: False)
+    monkeypatch.setattr(planning, "_fallback_floor_for", lambda *_a, **_k: 8 * GIB)
+    placed = planning._sizing_failure_fallback(
+        WorkerRole.CHAT,
+        "org/model",
+        RuntimeError("no size"),
+        device_count=2,
+        total_vram=40 * GIB,
+        engine=engine,
+    )
+    assert placed is not None
+    assert placed.equal_split_only is equal_only
