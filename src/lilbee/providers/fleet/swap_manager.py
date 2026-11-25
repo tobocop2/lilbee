@@ -99,6 +99,7 @@ def _raise_open_file_limit() -> None:
     if target > soft:
         resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
 
+
 _HOST = "127.0.0.1"
 # Where a router older than ROUTER_FLOOR is replaced from, beside ROUTER_GO_INSTALL.
 _ROUTER_RELEASES_URL = "https://github.com/mostlygeek/llama-swap/releases"
