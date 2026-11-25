@@ -266,6 +266,17 @@ class ReadOnlyFolderError(EngineFolderError):
         )
 
 
+class FolderMoveError(EngineFolderError):
+    """The rename that sets a build aside failed for a reason other than a denied write."""
+
+    def __str__(self) -> str:
+        reason = self.fault.strerror if self.fault is not None and self.fault.strerror else ""
+        return (
+            f"lilbee cannot move the engine folder {self.folder} aside ({reason or 'it failed'}). "
+            f"lilbee leaves the folder as it is. Run the command again."
+        )
+
+
 class StorePathError(Exception):
     """A name or path resolves outside the engines root, so the store does not touch it."""
 
@@ -731,7 +742,12 @@ def discard_build(build: Path, retry: str) -> None:
             return
         with removing(build):
             trash = build.with_name(f"{_TRASH_PREFIX}{uuid.uuid4().hex}")
-            build.rename(trash)
+            try:
+                build.rename(trash)
+            except (PermissionError, FileNotFoundError):
+                raise
+            except OSError as exc:
+                raise FolderMoveError(build.parent, build.parent.name, exc) from exc
             _delete(trash)
     except BuildInUseError as exc:
         raise _in_use_error(build_label(build), retry) from exc
