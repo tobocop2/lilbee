@@ -179,6 +179,26 @@ def test_a_fleet_of_another_config_root_still_overflows(
     assert len(built) == 1 and built[0] != tmp_path, built
 
 
+def test_a_fleet_of_another_config_root_overflows_on_a_held_write(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    """The held write is real, but the slot's fleet is not this root's: overflow, no error."""
+    persistent_settings.save(cfg.data_root, {"chat_model": _CHAT_REF})
+    follow_config_one_off(frozenset())
+    kwargs = _one_off_provider_kwargs(monkeypatch)
+    persistent_settings.save(cfg.data_root, {"chat_model": _OTHER_CHAT_REF})
+    monkeypatch.setattr(cfg, "chat_model", _OTHER_CHAT_REF)
+    _owner_provider, states = _owner(monkeypatch, tmp_path)
+    other_root = tmp_path / "another-root"
+    _stamp(states, PlanOrigin(str(other_root), prov_mod._plan_origin().fleet_view))
+    monkeypatch.setattr(cfg, "chat_model", _CHAT_REF)
+    assert services_mod._held_writes_of_the_process_follower() == {"chat_model": _OTHER_CHAT_REF}
+    peer, built = _peer_beside_the_slot(monkeypatch, tmp_path, states, kwargs)
+    message = _outcome(peer._ensure_fleet) or (peer._engine_refusal or "")
+    assert message == "", message
+    assert len(built) == 1 and built[0] != tmp_path, built
+
+
 def test_a_model_this_command_chose_by_flag_still_overflows(
     real_planner, monkeypatch, tmp_path: Path
 ) -> None:
