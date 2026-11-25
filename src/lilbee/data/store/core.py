@@ -3689,7 +3689,10 @@ class Store:
             return
         table = self._chunks_table()
         self._add_and_stamp_unlocked(
-            lambda: table.add(_chunk_rows(table, all_records)), embedding_model, embedding_dim, chunk_settings
+            lambda: table.add(_chunk_rows(table, all_records)),
+            embedding_model,
+            embedding_dim,
+            chunk_settings,
         )
 
     def _batch_source_writes(self, items: list[ChunkWrite]) -> list[_SourceWrite]:
