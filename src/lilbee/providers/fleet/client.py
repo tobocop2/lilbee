@@ -1303,9 +1303,12 @@ class LlamaServerClient:
         """Raise the context-overflow error for a prompt past the served window, before it is sent.
 
         Only an engine that names a count route is checked: it accepts any prompt up to the
-        model's own length, so the client holds the window. The character estimate clears the
-        common short prompt with no request; a longer one is counted by the engine's tokenizer
-        over the message text and the tool definitions, which leaves out the chat template.
+        model's own length, so the client holds the window. A token is at least one byte, so a
+        prompt with no more bytes than the window needs no count; a longer one is counted by the
+        engine's tokenizer over the message text and the tool definitions, which leaves out the
+        chat template. A count that fails refuses the prompt with an error that says so. The
+        count runs before the abortable chat starts, so a cancel waits for it, bounded by the
+        client timeout.
         """
         path = self._profile.window_tokenize_path
         if path is None or not self._chat_ctx:
@@ -1313,7 +1316,7 @@ class LlamaServerClient:
         text = "\n".join(_message_text(message) for message in messages)
         if tools:
             text += "\n" + json.dumps(tools, ensure_ascii=False)
-        if _estimate_tokens(text) <= self._chat_ctx:
+        if len(text.encode("utf-8")) <= self._chat_ctx:
             return
         count = len(self._count_window_tokens(path, text))
         if count > self._chat_ctx:
@@ -1324,7 +1327,11 @@ class LlamaServerClient:
             )
 
     def _count_window_tokens(self, path: str, text: str) -> list[int]:
-        """Token ids of *text* from the engine's count route; a gateway error is retried."""
+        """Token ids of *text* from the engine's count route; a gateway error is retried.
+
+        A failed count raises a ProviderError that says the prompt was not sent, because a
+        prompt that cannot be counted cannot be held to the window.
+        """
 
         def _call() -> list[int]:
             resp = self._http.post(
@@ -1334,7 +1341,22 @@ class LlamaServerClient:
             self._raise_for_status(resp)
             return list(resp.json()["tokens"])
 
-        return retry_on_gateway_error(_call)
+        try:
+            with self._track():
+                return retry_on_gateway_error(_call)
+        except (ProviderError, httpx.HTTPError, KeyError, ValueError) as exc:
+            if isinstance(exc, ProviderError):
+                kind = exc.kind
+            elif isinstance(exc, httpx.HTTPError):
+                kind = ProviderErrorKind.CONNECTION
+            else:
+                kind = ProviderErrorKind.SERVER
+            raise ProviderError(
+                f"{self._profile.label} could not count the tokens of the prompt, so the "
+                f"prompt was not sent: {exc}",
+                provider=self._profile.label,
+                kind=kind,
+            ) from exc
 
     def _wire_options(self, options: dict[str, Any] | None) -> dict[str, Any]:
         """*options* without the fields this server's engine does not read or enforce.
