@@ -1460,21 +1460,22 @@ class TestCrawlerAvailable:
             seen.append(name)
             return None
 
-        crawler_available.cache_clear()
+        availability.crawler_unavailable_reason.cache_clear()
         monkeypatch.setattr(availability.importlib.util, "find_spec", find_spec)
         try:
             assert crawler_available() is False
         finally:
-            crawler_available.cache_clear()
+            availability.crawler_unavailable_reason.cache_clear()
         assert seen == ["crawlberg"]
 
     def test_crawlberg_without_ada_url_is_not_a_crawler(self, monkeypatch):
         def find_spec(name: str) -> object | None:
             return None if name == "ada_url" else object()
 
-        crawler_available.cache_clear()
+        availability.crawler_unavailable_reason.cache_clear()
         monkeypatch.setattr(availability.importlib.util, "find_spec", find_spec)
+        monkeypatch.setattr(availability.importlib, "import_module", lambda name: object())
         try:
             assert crawler_available() is False
         finally:
-            crawler_available.cache_clear()
+            availability.crawler_unavailable_reason.cache_clear()
