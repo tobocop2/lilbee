@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from pydantic import BaseModel
 
 from lilbee.data.store import SearchChunk
@@ -56,10 +58,14 @@ def _best_content_type(source_chunks: list[SearchChunk]) -> str:
     return max(source_chunks, key=lambda c: c.score if c.score is not None else -1.0).content_type
 
 
-def group(chunks: list[SearchChunk]) -> list[DocumentResult]:
-    """Group raw LanceDB chunks into document-centric results."""
-    from lilbee.app.search import resolve_vault_path
+def group(
+    chunks: list[SearchChunk], vault_path_of: Callable[[str], str | None]
+) -> list[DocumentResult]:
+    """Group raw LanceDB chunks into document-centric results.
 
+    ``vault_path_of`` maps a source to its vault-relative path, or ``None``. The
+    app layer owns that lookup, so the caller passes it in.
+    """
     by_source: dict[str, list[SearchChunk]] = {}
     for chunk in chunks:
         source = chunk.source
@@ -81,7 +87,7 @@ def group(chunks: list[SearchChunk]) -> list[DocumentResult]:
                 content_type=_best_content_type(source_chunks),
                 excerpts=excerpts,
                 best_relevance=excerpts[0].relevance,
-                vault_path=resolve_vault_path(source),
+                vault_path=vault_path_of(source),
             )
         )
 
