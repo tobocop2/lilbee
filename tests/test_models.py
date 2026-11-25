@@ -4,6 +4,7 @@ import io
 from unittest import mock
 
 import pytest
+from rich.progress import Progress
 
 from conftest import PICKS_CHAT, install_fake_model
 from lilbee.core.config import cfg
@@ -324,7 +325,7 @@ class TestPullWithProgressProjector:
         services.model_manager.pull.side_effect = _pull
         details: list[str] = []
 
-        class _Recording(models.Progress):
+        class _Recording(Progress):
             def update(self, task_id, **fields):
                 if "detail" in fields:
                     details.append(fields["detail"])
@@ -333,7 +334,9 @@ class TestPullWithProgressProjector:
         console = models.PlainConsole(file=io.StringIO(), width=300)
         with (
             mock.patch("lilbee.app.models.ensure_vision_projector", return_value=None),
-            mock.patch.object(models, "Progress", _Recording),
+            mock.patch.object(
+                models, "live_progress", lambda *cols, **opts: _Recording(*cols, **opts)
+            ),
         ):
             models.pull_with_progress("acme/vl-GGUF", console=console)
         notice = (

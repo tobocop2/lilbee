@@ -24,7 +24,7 @@ from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
 from lilbee.core.text import strip_control_characters
 from lilbee.runtime.cancellation import sigint_cancel
-from lilbee.runtime.console import PlainConsole, styled
+from lilbee.runtime.console import PlainConsole, live_progress, styled
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhaseEvent
 from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
@@ -91,18 +91,16 @@ def _wiki_progress() -> Iterator[DetailedProgressCallback]:
     the same events the HTTP and TUI surfaces consume. Disabled in json_mode so
     stdout stays a single JSON document.
     """
-    from rich.progress import Progress, SpinnerColumn
+    from rich.progress import SpinnerColumn
 
     from lilbee.runtime.progress.columns import literal_text_column
 
-    with Progress(
+    with live_progress(
         SpinnerColumn(),
         literal_text_column("{task.description}"),
         transient=True,
         console=PlainConsole(stderr=True),
         disable=cfg.json_mode,
-        redirect_stdout=False,
-        redirect_stderr=False,
     ) as progress:
         task = progress.add_task(msg.WIKI_BUILD_STARTING, total=None)
 

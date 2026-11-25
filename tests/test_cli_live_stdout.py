@@ -6,19 +6,23 @@ here write to stderr, so a redirect would move the text of a stdout print to std
 
 from __future__ import annotations
 
+import ast
 import threading
 from io import StringIO
+from pathlib import Path
 from unittest import mock
 
 import pytest
 
+import lilbee
+from lilbee.app.services import set_services
 from lilbee.cli import engine as engine_cli
 from lilbee.cli import model as model_cli
 from lilbee.cli.commands import analyze as analyze_cli
 from lilbee.cli.commands import ingest_sync, wiki
 from lilbee.cli.upgrade_line import UpgradeLine
 from lilbee.modelhub import models as models_hub
-from lilbee.runtime.console import PlainConsole
+from lilbee.runtime.console import PlainConsole, live_progress
 from lilbee.runtime.progress import EventType, LibraryUpgradeEvent, UpgradePhase
 
 MARKER = "stdout marker line"
@@ -97,14 +101,41 @@ def test_model_hub_pull_progress_leaves_a_stdout_print_on_stdout(capsys, stderr_
     def pull(*_args, **_kwargs):
         print(MARKER)
 
-    services = mock.Mock()
-    services.model_manager.pull = pull
-    with (
-        mock.patch("lilbee.app.services.get_services", return_value=services),
-        mock.patch("lilbee.app.models.ensure_vision_projector", return_value=None),
-    ):
+    set_services(mock.MagicMock(model_manager=mock.MagicMock(pull=pull)))
+    with mock.patch("lilbee.app.models.ensure_vision_projector", return_value=None):
         models_hub.pull_with_progress("org/repo", console=PlainConsole(stderr=True))
     _assert_whole_on_stdout(capsys)
+
+
+def test_live_progress_turns_both_redirects_off():
+    progress = live_progress(console=PlainConsole(stderr=True), transient=True)
+
+    assert progress.live.redirect_stdout is False
+    assert progress.live.redirect_stderr is False
+
+
+def _builds_a_live_display(path: Path) -> bool:
+    """Whether the module at *path* calls ``Progress(...)`` or ``Live(...)`` itself."""
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+            if name in {"Progress", "Live"}:
+                return True
+    return False
+
+
+def test_a_stderr_display_is_built_by_the_helper():
+    """Only the warm render, on the stdout console, builds a Progress itself."""
+    root = Path(lilbee.__file__).parent
+    builders = {
+        path.relative_to(root).as_posix()
+        for folder in (root / "cli", root / "modelhub")
+        for path in folder.rglob("*.py")
+        if _builds_a_live_display(path)
+    }
+
+    assert builders == {"cli/launchers/warm_render.py"}
 
 
 def test_pull_progress_leaves_a_stdout_print_on_stdout(capsys, stderr_terminal):
