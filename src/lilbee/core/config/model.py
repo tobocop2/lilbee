@@ -1906,17 +1906,25 @@ class _TomlSource:
             if f"{CONFIG_FILE_NAME}: {_not_a_setting(key, key)}" not in self._reported:
                 self._warn(f"{self._label}: {_not_a_setting(key, key)}")
 
-    def __call__(self) -> dict[str, Any]:
+    def read(self) -> dict[str, Any] | None:
+        """The parsed file, or None, reported once, when it does not open or parse."""
         import tomllib
 
         try:
             with self._path.open("rb") as f:
-                data = tomllib.load(f)
+                return tomllib.load(f)
         except (ValueError, OSError):
             unreadable = f"Failed to read {self._path}, ignoring"
             if unreadable not in self._reported:
                 self._warn(unreadable)
-            return {}
+            return None
+
+    def __call__(self) -> dict[str, Any]:
+        data = self.read()
+        return {} if data is None else self.accept(data)
+
+    def accept(self, data: dict[str, Any]) -> dict[str, Any]:
+        """The values in *data*, the parsed file, that Config accepts; reports each it refuses."""
         self._refuse_not_settings(data)
         # A blank string is unset (the field default applies, since pydantic
         # cannot coerce "" to int|None), except on a clearable model role,
@@ -2043,6 +2051,10 @@ def toml_values(path: Path, only: str | None = None) -> dict[str, Any]:
     and a refused value are each reported once per change of the file, less
     what the load reported when the file is the one cfg is built from.
     """
+    return _overlay_source(path, only)()
+
+
+def _overlay_source(path: Path, only: str | None = None) -> _TomlSource:
     return _TomlSource(
         Config,
         path,
@@ -2051,7 +2063,17 @@ def toml_values(path: Path, only: str | None = None) -> dict[str, Any]:
         reported=load_warnings if path == loaded_config_file else (),
         only=only,
         per_change=True,
-    )()
+    )
+
+
+def read_toml_values(path: Path) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """The parsed config.toml at *path*, None when it does not parse, and ``toml_values`` of it.
+
+    One read of the file serves both; the reports are those of ``toml_values``.
+    """
+    source = _overlay_source(path)
+    data = source.read()
+    return data, ({} if data is None else source.accept(data))
 
 
 def toml_value(path: Path, key: str) -> Any:
