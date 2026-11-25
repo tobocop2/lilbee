@@ -101,6 +101,16 @@ def test_replacing_the_engine_binary_in_place_probes_again(wedged: WedgedEngine)
     assert len(wedged.probed) == 2
 
 
+def test_a_kept_reading_replaces_a_cached_failure(wedged: WedgedEngine) -> None:
+    with pytest.raises(ProviderError):
+        gpu_device_count(wedged)
+    probed = len(wedged.probed)
+    reading = planning.DeviceReading([], planning.EngineBackend.UNKNOWN)
+    planning._read_device_cache.remember(wedged.binary(), reading)
+    assert planning._read_device_cache.get(wedged.binary(), wedged) is reading
+    assert len(wedged.probed) == probed
+
+
 def test_replacing_the_engine_binary_in_place_counts_the_cards_again(healthy: SpyEngine) -> None:
     assert gpu_device_count(healthy) == 2
     healthy.binary().write_bytes(b"v2, upgraded in place")
