@@ -179,6 +179,10 @@ class TestCharge:
         assert launch.est_host_cache_bytes == 0
 
 
+def _lost_bound_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if "starts without" in r.getMessage()]
+
+
 class TestNoRoom:
     def test_a_host_with_no_room_launches_without_a_prompt_cache_and_warns_once(
         self, host, caplog
@@ -188,8 +192,9 @@ class TestNoRoom:
             launch = _launch()
         assert _flag(launch, "--cache-ram") == 0
         assert launch.est_host_cache_bytes == 0
-        named = [r.getMessage() for r in caplog.records if "prompt cache" in r.getMessage()]
+        named = _lost_bound_warnings(caplog)
         assert len(named) == 1
+        assert "without its prompt cache" in named[0]
         assert "Each turn reprocesses the whole conversation." in named[0]
 
     def test_a_lost_cache_with_its_checkpoints_kept_does_not_say_each_turn_is_reprocessed(
@@ -199,15 +204,42 @@ class TestNoRoom:
         with caplog.at_level(logging.WARNING, logger="lilbee"):
             launch = _launch()
         assert _flag(launch, "--cache-ram") == 0
-        named = [r.getMessage() for r in caplog.records if "prompt cache" in r.getMessage()]
+        named = _lost_bound_warnings(caplog)
         assert len(named) == 1
         assert "Each turn" not in named[0]
+
+    def test_lost_checkpoints_with_a_cache_kept_warn_once_that_each_turn_is_reprocessed(
+        self, host, monkeypatch, caplog
+    ) -> None:
+        # 300 MiB of room and 4 slots of 116 MiB checkpoints: no checkpoint fits, and half
+        # the room, 150 MiB, is the prompt cache.
+        monkeypatch.setattr(planning_mod, "_slots_for", lambda *_a, **_k: 4)
+        host(total=_HELD + 300 * _MIB, checkpoint_bytes=116 * _MIB)
+        with caplog.at_level(logging.WARNING, logger="lilbee"):
+            launch = _launch()
+        assert _flag(launch, "--ctx-checkpoints") == 0
+        assert _flag(launch, "--cache-ram") == 150
+        named = _lost_bound_warnings(caplog)
+        assert len(named) == 1
+        assert "without context checkpoints" in named[0]
+        assert "Each turn reprocesses the whole conversation." in named[0]
+
+    def test_a_model_that_makes_no_checkpoints_does_not_warn_for_a_bound_of_zero(
+        self, host, caplog
+    ) -> None:
+        bounds = planning_mod._HostCache(cache_ram_mib=10, ctx_checkpoints=0)
+        launch = InstanceLaunch(
+            role=WorkerRole.CHAT, argv=[], env_overrides={}, model="m.gguf", slots=1
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee"):
+            planning_mod._warn_without_prompt_cache(launch, bounds, 0)
+        assert not _lost_bound_warnings(caplog)
 
     def test_a_host_with_room_does_not_warn(self, host, caplog) -> None:
         host(total=_total_for(1000))
         with caplog.at_level(logging.WARNING, logger="lilbee"):
             _launch()
-        assert not [r for r in caplog.records if "prompt cache" in r.getMessage()]
+        assert not _lost_bound_warnings(caplog)
 
 
 def _draft(role: WorkerRole, *, held: int, checkpoint: int, keeps: bool):
@@ -381,3 +413,24 @@ class TestCheckpointBytes:
             base, replace(base, unified_bytes=5, checkpoint_bytes=9), 2
         )
         assert corrected.checkpoint_bytes == 7
+
+
+class TestTheLaunchKvTypePricesTheCheckpoint:
+    def test_a_q8_0_chat_launch_is_charged_q8_0_checkpoints(self, host, monkeypatch) -> None:
+        # gemma-3-4b's header through the real parser path: one q8_0 checkpoint is
+        # 29 x 4 x 512 x 1024 x 34/32 = 64618496 bytes. Two slots keep 4 each, and 64 GiB
+        # leaves room for the 8192 MiB cache.
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+        monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/bin/gguf-parser"))
+        monkeypatch.setattr(vram_mod, "_run_parser", lambda _argv, _p: _report(_GEMMA3_4B))
+        monkeypatch.setattr(
+            model_memory_mod, "estimate_instance_footprint", vram_mod.estimate_instance_footprint
+        )
+        monkeypatch.setattr(model_memory_mod, "gguf_is_incomplete", lambda _p: False)
+        vram_mod._cached_footprint.cache_clear()
+        host(total=64 * _GIB)
+        launch = _launch()
+        vram_mod._cached_footprint.cache_clear()
+        assert launch.argv[launch.argv.index("--cache-type-k") + 1] == "q8_0"
+        # 8192 MiB of cache plus 2 x 4 x 64618496: at f16 it would be 9563013120.
+        assert launch.est_host_cache_bytes == 9_106_882_560
