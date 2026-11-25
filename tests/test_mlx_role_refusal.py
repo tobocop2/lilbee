@@ -249,7 +249,9 @@ class TestModelRoutes:
     ) -> None:
         monkeypatch.setenv("LILBEE_SKIP_MODEL_TASK_VALIDATION", "1")
         with pytest.raises(ValueError, match=family):
-            validate_model_task_assignment(field, ref, hf_client=get_services().hf_client)
+            validate_model_task_assignment(
+                field, ref, hf_client_for=lambda: get_services().hf_client
+            )
 
     def test_the_cli_refuses_an_unsupported_reranker(
         self, listed: list[str], tmp_path: Path

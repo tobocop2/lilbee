@@ -2415,7 +2415,9 @@ class TestValidateModelTaskAssignment:
 
         ref = f"{PICKS_CHAT[0].hf_repo}/tiny-1b-Q4_K_M.gguf"
         assert (
-            validate_model_task_assignment("chat_model", ref, hf_client=get_services().hf_client)
+            validate_model_task_assignment(
+                "chat_model", ref, hf_client_for=lambda: get_services().hf_client
+            )
             == ref
         )
 
@@ -2424,7 +2426,9 @@ class TestValidateModelTaskAssignment:
 
         with pytest.raises(ValueError, match="vision"):
             validate_model_task_assignment(
-                "chat_model", PICKS_VISION[0].hf_repo, hf_client=get_services().hf_client
+                "chat_model",
+                PICKS_VISION[0].hf_repo,
+                hf_client_for=lambda: get_services().hf_client,
             )
 
     def test_chat_slot_rejects_reranker_model(self, _task_validation_enabled):
@@ -2432,7 +2436,9 @@ class TestValidateModelTaskAssignment:
 
         with pytest.raises(ValueError, match="rerank"):
             validate_model_task_assignment(
-                "chat_model", PICKS_RERANK[0].hf_repo, hf_client=get_services().hf_client
+                "chat_model",
+                PICKS_RERANK[0].hf_repo,
+                hf_client_for=lambda: get_services().hf_client,
             )
 
     def test_embedding_slot_rejects_chat_model(self, _task_validation_enabled):
@@ -2440,7 +2446,9 @@ class TestValidateModelTaskAssignment:
 
         with pytest.raises(ValueError, match="chat"):
             validate_model_task_assignment(
-                "embedding_model", PICKS_CHAT[0].hf_repo, hf_client=get_services().hf_client
+                "embedding_model",
+                PICKS_CHAT[0].hf_repo,
+                hf_client_for=lambda: get_services().hf_client,
             )
 
     def test_vision_slot_rejects_chat_model(self, _task_validation_enabled):
@@ -2448,7 +2456,9 @@ class TestValidateModelTaskAssignment:
 
         with pytest.raises(ValueError, match="chat"):
             validate_model_task_assignment(
-                "vision_model", PICKS_CHAT[0].hf_repo, hf_client=get_services().hf_client
+                "vision_model",
+                PICKS_CHAT[0].hf_repo,
+                hf_client_for=lambda: get_services().hf_client,
             )
 
     def test_reranker_slot_rejects_vision_model(self, _task_validation_enabled):
@@ -2456,7 +2466,9 @@ class TestValidateModelTaskAssignment:
 
         with pytest.raises(ValueError, match="vision"):
             validate_model_task_assignment(
-                "reranker_model", PICKS_VISION[0].hf_repo, hf_client=get_services().hf_client
+                "reranker_model",
+                PICKS_VISION[0].hf_repo,
+                hf_client_for=lambda: get_services().hf_client,
             )
 
     def test_empty_string_passes_through(self, _task_validation_enabled):
@@ -2464,12 +2476,14 @@ class TestValidateModelTaskAssignment:
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         assert (
-            validate_model_task_assignment("vision_model", "", hf_client=get_services().hf_client)
+            validate_model_task_assignment(
+                "vision_model", "", hf_client_for=lambda: get_services().hf_client
+            )
             == ""
         )
         assert (
             validate_model_task_assignment(
-                "reranker_model", "   ", hf_client=get_services().hf_client
+                "reranker_model", "   ", hf_client_for=lambda: get_services().hf_client
             )
             == "   "
         )
@@ -2482,7 +2496,9 @@ class TestValidateModelTaskAssignment:
 
         ref = "ollama/qwen3:0.6b"
         assert (
-            validate_model_task_assignment("chat_model", ref, hf_client=get_services().hf_client)
+            validate_model_task_assignment(
+                "chat_model", ref, hf_client_for=lambda: get_services().hf_client
+            )
             == ref
         )
 
@@ -2493,7 +2509,7 @@ class TestValidateModelTaskAssignment:
         repo = PICKS_RERANK[0].hf_repo
         assert (
             validate_model_task_assignment(
-                "reranker_model", repo, hf_client=get_services().hf_client
+                "reranker_model", repo, hf_client_for=lambda: get_services().hf_client
             )
             == repo
         )
@@ -2504,7 +2520,9 @@ class TestValidateModelTaskAssignment:
 
         with pytest.raises(ValueError, match="not installed"):
             validate_model_task_assignment(
-                "chat_model", "totally-unknown-model:99b", hf_client=get_services().hf_client
+                "chat_model",
+                "totally-unknown-model:99b",
+                hf_client_for=lambda: get_services().hf_client,
             )
 
     def test_skip_env_var_disables_check(self, tmp_path):
@@ -2514,7 +2532,9 @@ class TestValidateModelTaskAssignment:
         with mock.patch.dict(os.environ, {"LILBEE_SKIP_MODEL_TASK_VALIDATION": "1"}):
             # Bypass: returns input unchanged, does not raise.
             result = validate_model_task_assignment(
-                "chat_model", "totally-unknown-model:99b", hf_client=get_services().hf_client
+                "chat_model",
+                "totally-unknown-model:99b",
+                hf_client_for=lambda: get_services().hf_client,
             )
         assert result == "totally-unknown-model:99b"
 
@@ -2531,7 +2551,9 @@ class TestValidateModelTaskAssignment:
                 pytest.raises(ValueError, match="not installed"),
             ):
                 validate_model_task_assignment(
-                    "chat_model", "totally-unknown-model:99b", hf_client=get_services().hf_client
+                    "chat_model",
+                    "totally-unknown-model:99b",
+                    hf_client_for=lambda: get_services().hf_client,
                 )
         finally:
             if saved_pytest is not None:
@@ -2544,7 +2566,9 @@ class TestValidateModelTaskAssignment:
 
         vision = PICKS_VISION[0].hf_repo
         with pytest.raises(TaskMismatchError) as exc_info:
-            validate_model_task_assignment("chat_model", vision, hf_client=get_services().hf_client)
+            validate_model_task_assignment(
+                "chat_model", vision, hf_client_for=lambda: get_services().hf_client
+            )
 
         err = exc_info.value
         assert err.ref == vision
@@ -2560,7 +2584,9 @@ class TestValidateModelTaskAssignment:
             "MaziyarPanahi/Qwen3-1.7B-GGUF", "Qwen3-1.7B.Q4_K_M.gguf", task="chat"
         )
         assert (
-            validate_model_task_assignment("chat_model", ref, hf_client=get_services().hf_client)
+            validate_model_task_assignment(
+                "chat_model", ref, hf_client_for=lambda: get_services().hf_client
+            )
             == ref
         )
 
@@ -2579,7 +2605,7 @@ class TestValidateModelTaskAssignment:
         result = validate_model_task_assignment(
             "chat_model",
             "bartowski/SmolLM2-360M-Instruct-GGUF",
-            hf_client=get_services().hf_client,  # pragma: allowlist secret
+            hf_client_for=lambda: get_services().hf_client,  # pragma: allowlist secret
         )
         assert result == ref
 
@@ -2589,7 +2615,9 @@ class TestValidateModelTaskAssignment:
 
         with pytest.raises(ValueError, match="not installed"):
             validate_model_task_assignment(
-                "chat_model", "org/Never-Pulled-GGUF", hf_client=get_services().hf_client
+                "chat_model",
+                "org/Never-Pulled-GGUF",
+                hf_client_for=lambda: get_services().hf_client,
             )
 
     def test_installed_non_featured_wrong_role_rejected(self, _task_validation_enabled):
@@ -2603,7 +2631,7 @@ class TestValidateModelTaskAssignment:
         )
         with pytest.raises(TaskMismatchError) as exc_info:
             validate_model_task_assignment(
-                "reranker_model", ref, hf_client=get_services().hf_client
+                "reranker_model", ref, hf_client_for=lambda: get_services().hf_client
             )
         assert exc_info.value.entry_task == ModelTask.CHAT
         assert exc_info.value.expected_task == ModelTask.RERANK

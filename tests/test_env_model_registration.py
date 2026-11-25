@@ -411,7 +411,10 @@ class TestEntryPointParity:
             pytest.raises(ValueError, match="not installed"),
         ):
             validate_model_task_assignment(
-                "chat_model", str(gguf), allow_bypass=False, hf_client=get_services().hf_client
+                "chat_model",
+                str(gguf),
+                allow_bypass=False,
+                hf_client_for=lambda: get_services().hf_client,
             )
         assert "chat_model" in flagged
 
