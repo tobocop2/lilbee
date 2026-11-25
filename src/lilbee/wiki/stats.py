@@ -74,12 +74,17 @@ class BuildStats:
                 "Check that the chat model is available, then run the command again."
             )
 
-    def record_model_call(self, failure: str | None) -> None:
-        """Count one model call; *failure* is why it gave no text, or None when it did."""
+    def record_model_call(self, failure: str | None, *, error_type: str = "unknown error") -> None:
+        """Count one model call; *failure* is why it gave no text, or None when it did.
+
+        The cause is stored so the run's error can end it with one period:
+        surrounding spaces and trailing periods are cut. A cause left blank
+        is replaced by *error_type*, so the error always names a cause.
+        """
         self.model_calls += 1
         if failure is not None:
             self.model_calls_failed += 1
-            self.last_model_failure = failure
+            self.last_model_failure = failure.strip().rstrip(". ") or error_type
 
     @classmethod
     def ensure(cls, stats: BuildStats | None) -> BuildStats:
