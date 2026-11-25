@@ -5433,24 +5433,25 @@ class TestLogEngineLaunch:
         )
 
     def test_an_openvino_launch_names_its_own_build_not_the_llama_pack(self, caplog) -> None:
+        from lilbee.providers.fleet.engines import openvino as openvino_mod
         from lilbee.providers.fleet.engines.openvino import OpenvinoAdapter
 
         with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
             planning_mod.log_engine_launch(self._launch(), engine=OpenvinoAdapter())
         assert caplog.records[0].message == (
             "Launched embed-0 serving org/repo/embed.gguf on /opt/lilbee/llama-server "
-            "(engine openvino, build openvino 1.12032.1 /opt/lilbee/llama-server, "
+            f"(engine openvino, build openvino {openvino_mod._VERSION} /opt/lilbee/llama-server, "
             f"{self._DEVICES}"
         )
 
     def test_an_ik_llama_launch_shows_the_ik_release_not_the_llama_pin(self, caplog) -> None:
-        from lilbee.providers.fleet.engines.ik_llama import IkLlamaAdapter
+        from lilbee.providers.fleet.engines.ik_llama import VERSION, IkLlamaAdapter
 
         with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
             planning_mod.log_engine_launch(self._launch(), engine=IkLlamaAdapter())
         assert caplog.records[0].message == (
             "Launched embed-0 serving org/repo/embed.gguf on /opt/lilbee/llama-server "
-            "(engine ik_llama.cpp, build 0+git13cffc006b82 "
+            f"(engine ik_llama.cpp, build {VERSION} "
             "/opt/lilbee/llama-server@sha256-of-bytes, "
             f"{self._DEVICES}"
         )
