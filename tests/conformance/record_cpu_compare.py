@@ -7,7 +7,8 @@ The run takes the two binaries from the packs that the tree pins. It downloads e
 it does not find in --models and stops if a file has another sha256 than the record states.
 It starts every server with the adapter's own command line on the CPU, the engine on cores 0-7
 and the oracle on cores 8-15, each with 8 threads. Then it runs tests.conformance.compare_run
-with the cross_format embed bound, and stops the servers. compare_run writes the record and refuses a stale pin.
+with the cross_format embed bound, and stops the servers. compare_run writes the record and
+refuses a stale pin.
 """
 
 from __future__ import annotations
@@ -219,9 +220,7 @@ class _Servers:
         print("start", " ".join(argv), flush=True)
         env = {**os.environ, "RAYON_NUM_THREADS": str(_THREADS)}
         command = ["taskset", "-c", cores, *argv]
-        self.procs.append(
-            subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=env)
-        )
+        self.procs.append(subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=env))
         return f"http://127.0.0.1:{port}"
 
     def stop(self) -> None:
