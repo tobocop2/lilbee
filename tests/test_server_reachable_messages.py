@@ -20,6 +20,7 @@ from lilbee.app import engine_service
 from lilbee.app.engine_service import RoleView
 from lilbee.core.config import cfg
 from lilbee.crawler.messages import CHROMIUM_MISSING_MESSAGE
+from lilbee.data.store import EmbeddingEngineChangedError, EmbeddingModelMismatchError
 from lilbee.providers import engine_params
 from lilbee.providers.base import ProviderError, ProviderErrorKind, WorkerRole, require_role_ref
 from lilbee.providers.fleet import first_use
@@ -33,6 +34,7 @@ from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
 from lilbee.server.handlers.sse import sse_error
 from lilbee.server.route_names import name_routes, name_tools
 from lilbee.server.routes import engines as engine_routes
+from lilbee.server.routes.search import _embedding_mismatch_http
 from tests._litestar_test_client import create_test_client
 
 PULL = "POST /api/models/pull"
@@ -40,6 +42,7 @@ LIST = "GET /api/models/installed"
 ENGINE_INSTALL = "POST /api/engines/install, which needs allow_http_engines"
 ENGINE_LIST = "GET /api/engines"
 CRAWLER_SETUP = "POST /setup/crawler"
+REBUILD = "POST /api/sync, with force_rebuild true"
 
 
 def _not_installed() -> ProviderError:
@@ -93,6 +96,7 @@ def test_the_messages_that_the_cli_and_the_tui_show_name_no_route(
         pytest.param("lilbee engine install tei", ENGINE_INSTALL, id="engine-install"),
         pytest.param("lilbee engine list", ENGINE_LIST, id="engine-list"),
         pytest.param("lilbee setup crawler", CRAWLER_SETUP, id="crawler"),
+        pytest.param("lilbee rebuild", REBUILD, id="rebuild"),
     ],
 )
 def test_a_command_gets_the_route_that_does_the_same_work(command: str, route: str) -> None:
@@ -211,6 +215,11 @@ TOOL_NAMED = [
         "the engine_list tool, which needs mcp_engines_enabled in place of",
         id="engine-list",
     ),
+    pytest.param(
+        "lilbee rebuild",
+        "the sync tool, with force_rebuild true in place of",
+        id="rebuild",
+    ),
 ]
 
 
@@ -294,3 +303,61 @@ def test_a_rest_error_leaves_the_raised_exception_as_it_was() -> None:
     plain = error.detail
     _error_body(error, {HTTPException: _json_error_response})
     assert error.detail == plain
+
+
+def _mismatches() -> list[EmbeddingModelMismatchError]:
+    same_dim = EmbeddingModelMismatchError(
+        persisted_model="a", persisted_dim=8, current_model="b", current_dim=8
+    )
+    other_dim = EmbeddingModelMismatchError(
+        persisted_model="a", persisted_dim=8, current_model="b", current_dim=16
+    )
+    engine = EmbeddingEngineChangedError(model="a", dim=8, distance=0.5, verified=True)
+    return [same_dim, other_dim, engine]
+
+
+@pytest.mark.parametrize("mismatch", _mismatches(), ids=["same-dim", "other-dim", "engine"])
+def test_an_mcp_embedding_mismatch_names_the_sync_tool(
+    mismatch: EmbeddingModelMismatchError,
+) -> None:
+    error = mcp_server._embedding_mismatch_error(mismatch)["error"]
+    assert "lilbee rebuild" in error
+    assert "Over MCP, call the sync tool, with force_rebuild true in place of" in error
+    assert "/api/" not in error
+
+
+@pytest.mark.parametrize("mismatch", _mismatches(), ids=["same-dim", "other-dim", "engine"])
+def test_a_rest_embedding_mismatch_names_the_sync_route(
+    mismatch: EmbeddingModelMismatchError,
+) -> None:
+    status, body = _error_body(
+        _embedding_mismatch_http(mismatch), {HTTPException: _json_error_response}
+    )
+    assert status == 409
+    assert REBUILD in body["detail"]
+
+
+def test_the_install_tool_over_http_names_both_settings_that_gate_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_server._transport, "http_mounted", True)
+    error = mcp_server._error("Run 'lilbee engine install tei' first.")["error"]
+    both = "mcp_engines_enabled and allow_http_engines"
+    assert f"the engine_install tool, which needs {both} in place of" in error
+
+
+def test_the_install_tool_over_stdio_names_only_the_tools_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_server._transport, "http_mounted", False)
+    error = mcp_server._error("Run 'lilbee engine install tei' first.")["error"]
+    assert "the engine_install tool, which needs mcp_engines_enabled in place of" in error
+    assert "allow_http_engines" not in error
+
+
+def test_the_list_tool_over_http_names_only_the_tools_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_server._transport, "http_mounted", True)
+    error = mcp_server._error("Run 'lilbee engine list' first.")["error"]
+    assert "the engine_list tool, which needs mcp_engines_enabled in place of" in error
