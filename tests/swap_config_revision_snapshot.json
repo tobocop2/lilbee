@@ -1,0 +1,512 @@
+{
+  "revision": 5,
+  "configs": {
+    "resident-no-logs": {
+      "healthCheckTimeout": 600,
+      "logLevel": "info",
+      "logToStdout": "proxy,upstream",
+      "models": {
+        "chat-0": {
+          "cmd": "/engine/llama-server --model /m/chat.gguf --port 5900",
+          "proxy": "http://127.0.0.1:5900",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "env": [
+            "CUDA_VISIBLE_DEVICES=0,1"
+          ]
+        },
+        "embed-0": {
+          "cmd": "/engine/llama-server --embeddings --memory --port 5901",
+          "proxy": "http://127.0.0.1:5901",
+          "ttl": 0,
+          "concurrencyLimit": 1024
+        },
+        "rerank-2": {
+          "cmd": "/engine/llama.cpp-server --port 5902",
+          "proxy": "http://127.0.0.1:5902",
+          "ttl": 0,
+          "concurrencyLimit": 1024
+        },
+        "rerank-3": {
+          "cmd": "/engine/ik_llama.cpp-server --port 5903",
+          "proxy": "http://127.0.0.1:5903",
+          "ttl": 0,
+          "concurrencyLimit": 1024
+        },
+        "rerank-4": {
+          "cmd": "/engine/mistral.rs-server --port 5904",
+          "proxy": "http://127.0.0.1:5904",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "useModelName": "default"
+        },
+        "rerank-5": {
+          "cmd": "/engine/tei-server --port 5905",
+          "proxy": "http://127.0.0.1:5905",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "checkEndpoint": "/health"
+        },
+        "rerank-6": {
+          "cmd": "/engine/mlx-server --port 5906",
+          "proxy": "http://127.0.0.1:5906",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "useModelName": "default_model"
+        },
+        "rerank-7": {
+          "cmd": "/engine/openvino-server --port 5907",
+          "proxy": "http://127.0.0.1:5907",
+          "ttl": 0,
+          "concurrencyLimit": 1024
+        },
+        "rerank-8": {
+          "cmd": "/engine/lemonade-server --port 5908",
+          "proxy": "http://127.0.0.1:5908",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "checkEndpoint": "/live",
+          "useModelName": "user.lilbee-chat"
+        },
+        "rerank-9": {
+          "cmd": "/engine/ovms-server --port 5909",
+          "proxy": "http://127.0.0.1:5909",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "checkEndpoint": "/v2/health/ready",
+          "useModelName": "default_model"
+        }
+      },
+      "groups": {
+        "lilbee": {
+          "swap": false,
+          "exclusive": false,
+          "persistent": true,
+          "members": [
+            "chat-0",
+            "embed-0",
+            "rerank-2",
+            "rerank-3",
+            "rerank-4",
+            "rerank-5",
+            "rerank-6",
+            "rerank-7",
+            "rerank-8",
+            "rerank-9"
+          ]
+        }
+      }
+    },
+    "resident-logs": {
+      "healthCheckTimeout": 600,
+      "logLevel": "info",
+      "logToStdout": "proxy",
+      "models": {
+        "chat-0": {
+          "cmd": "/engine/llama-server --model /m/chat.gguf --port 5900",
+          "proxy": "http://127.0.0.1:5900",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "env": [
+            "CUDA_VISIBLE_DEVICES=0,1",
+            "LLAMA_LOG_FILE=/engine/logs/chat-0.log",
+            "LLAMA_ARG_LOG_FILE=/engine/logs/chat-0.log",
+            "LLAMA_LOG_VERBOSITY=4",
+            "LLAMA_ARG_LOG_VERBOSITY=4"
+          ]
+        },
+        "embed-0": {
+          "cmd": "/engine/llama-server --embeddings --memory --port 5901",
+          "proxy": "http://127.0.0.1:5901",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "env": [
+            "LLAMA_LOG_FILE=/engine/logs/embed-0.log",
+            "LLAMA_ARG_LOG_FILE=/engine/logs/embed-0.log"
+          ]
+        },
+        "rerank-2": {
+          "cmd": "/engine/llama.cpp-server --port 5902",
+          "proxy": "http://127.0.0.1:5902",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "env": [
+            "LLAMA_LOG_FILE=/engine/logs/rerank-2.log",
+            "LLAMA_ARG_LOG_FILE=/engine/logs/rerank-2.log",
+            "LLAMA_LOG_VERBOSITY=4",
+            "LLAMA_ARG_LOG_VERBOSITY=4"
+          ]
+        },
+        "rerank-3": {
+          "cmd": "/engine/ik_llama.cpp-server --port 5903",
+          "proxy": "http://127.0.0.1:5903",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "env": [
+            "LLAMA_LOG_FILE=/engine/logs/rerank-3.log",
+            "LLAMA_ARG_LOG_FILE=/engine/logs/rerank-3.log",
+            "LLAMA_LOG_VERBOSITY=4",
+            "LLAMA_ARG_LOG_VERBOSITY=4"
+          ]
+        },
+        "rerank-4": {
+          "cmd": "/engine/mistral.rs-server --port 5904",
+          "proxy": "http://127.0.0.1:5904",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "env": [
+            "LLAMA_LOG_FILE=/engine/logs/rerank-4.log",
+            "LLAMA_ARG_LOG_FILE=/engine/logs/rerank-4.log",
+            "LLAMA_LOG_VERBOSITY=4",
+            "LLAMA_ARG_LOG_VERBOSITY=4"
+          ],
+          "useModelName": "default"
+        },
+        "rerank-5": {
+          "cmd": "/engine/tei-server --port 5905",
+          "proxy": "http://127.0.0.1:5905",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "env": [
+            "LLAMA_LOG_FILE=/engine/logs/rerank-5.log",
+            "LLAMA_ARG_LOG_FILE=/engine/logs/rerank-5.log",
+            "LLAMA_LOG_VERBOSITY=4",
+            "LLAMA_ARG_LOG_VERBOSITY=4"
+          ],
+          "checkEndpoint": "/health"
+        },
+        "rerank-6": {
+          "cmd": "/engine/mlx-server --port 5906",
+          "proxy": "http://127.0.0.1:5906",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "env": [
+            "LLAMA_LOG_FILE=/engine/logs/rerank-6.log",
+            "LLAMA_ARG_LOG_FILE=/engine/logs/rerank-6.log",
+            "LLAMA_LOG_VERBOSITY=4",
+            "LLAMA_ARG_LOG_VERBOSITY=4"
+          ],
+          "useModelName": "default_model"
+        },
+        "rerank-7": {
+          "cmd": "/engine/openvino-server --port 5907",
+          "proxy": "http://127.0.0.1:5907",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "env": [
+            "LLAMA_LOG_FILE=/engine/logs/rerank-7.log",
+            "LLAMA_ARG_LOG_FILE=/engine/logs/rerank-7.log",
+            "LLAMA_LOG_VERBOSITY=4",
+            "LLAMA_ARG_LOG_VERBOSITY=4"
+          ]
+        },
+        "rerank-8": {
+          "cmd": "/engine/lemonade-server --port 5908",
+          "proxy": "http://127.0.0.1:5908",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "env": [
+            "LLAMA_LOG_FILE=/engine/logs/rerank-8.log",
+            "LLAMA_ARG_LOG_FILE=/engine/logs/rerank-8.log",
+            "LLAMA_LOG_VERBOSITY=4",
+            "LLAMA_ARG_LOG_VERBOSITY=4"
+          ],
+          "checkEndpoint": "/live",
+          "useModelName": "user.lilbee-chat"
+        },
+        "rerank-9": {
+          "cmd": "/engine/ovms-server --port 5909",
+          "proxy": "http://127.0.0.1:5909",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "env": [
+            "LLAMA_LOG_FILE=/engine/logs/rerank-9.log",
+            "LLAMA_ARG_LOG_FILE=/engine/logs/rerank-9.log",
+            "LLAMA_LOG_VERBOSITY=4",
+            "LLAMA_ARG_LOG_VERBOSITY=4"
+          ],
+          "checkEndpoint": "/v2/health/ready",
+          "useModelName": "default_model"
+        }
+      },
+      "groups": {
+        "lilbee": {
+          "swap": false,
+          "exclusive": false,
+          "persistent": true,
+          "members": [
+            "chat-0",
+            "embed-0",
+            "rerank-2",
+            "rerank-3",
+            "rerank-4",
+            "rerank-5",
+            "rerank-6",
+            "rerank-7",
+            "rerank-8",
+            "rerank-9"
+          ]
+        }
+      }
+    },
+    "swap-ttl-some-logs": {
+      "healthCheckTimeout": 600,
+      "logLevel": "info",
+      "logToStdout": "proxy,upstream",
+      "models": {
+        "chat-0": {
+          "cmd": "/engine/llama-server --model /m/chat.gguf --port 5900",
+          "proxy": "http://127.0.0.1:5900",
+          "ttl": 300,
+          "concurrencyLimit": 1024,
+          "env": [
+            "CUDA_VISIBLE_DEVICES=0,1",
+            "LLAMA_LOG_FILE=/engine/logs/chat-0.log",
+            "LLAMA_ARG_LOG_FILE=/engine/logs/chat-0.log",
+            "LLAMA_LOG_VERBOSITY=4",
+            "LLAMA_ARG_LOG_VERBOSITY=4"
+          ]
+        },
+        "embed-0": {
+          "cmd": "/engine/llama-server --embeddings --memory --port 5901",
+          "proxy": "http://127.0.0.1:5901",
+          "ttl": 300,
+          "concurrencyLimit": 1024
+        },
+        "rerank-2": {
+          "cmd": "/engine/llama.cpp-server --port 5902",
+          "proxy": "http://127.0.0.1:5902",
+          "ttl": 300,
+          "concurrencyLimit": 1024
+        },
+        "rerank-3": {
+          "cmd": "/engine/ik_llama.cpp-server --port 5903",
+          "proxy": "http://127.0.0.1:5903",
+          "ttl": 300,
+          "concurrencyLimit": 1024
+        },
+        "rerank-4": {
+          "cmd": "/engine/mistral.rs-server --port 5904",
+          "proxy": "http://127.0.0.1:5904",
+          "ttl": 300,
+          "concurrencyLimit": 1024,
+          "useModelName": "default"
+        },
+        "rerank-5": {
+          "cmd": "/engine/tei-server --port 5905",
+          "proxy": "http://127.0.0.1:5905",
+          "ttl": 300,
+          "concurrencyLimit": 1024,
+          "checkEndpoint": "/health"
+        },
+        "rerank-6": {
+          "cmd": "/engine/mlx-server --port 5906",
+          "proxy": "http://127.0.0.1:5906",
+          "ttl": 300,
+          "concurrencyLimit": 1024,
+          "useModelName": "default_model"
+        },
+        "rerank-7": {
+          "cmd": "/engine/openvino-server --port 5907",
+          "proxy": "http://127.0.0.1:5907",
+          "ttl": 300,
+          "concurrencyLimit": 1024
+        },
+        "rerank-8": {
+          "cmd": "/engine/lemonade-server --port 5908",
+          "proxy": "http://127.0.0.1:5908",
+          "ttl": 300,
+          "concurrencyLimit": 1024,
+          "checkEndpoint": "/live",
+          "useModelName": "user.lilbee-chat"
+        },
+        "rerank-9": {
+          "cmd": "/engine/ovms-server --port 5909",
+          "proxy": "http://127.0.0.1:5909",
+          "ttl": 300,
+          "concurrencyLimit": 1024,
+          "checkEndpoint": "/v2/health/ready",
+          "useModelName": "default_model"
+        }
+      },
+      "groups": {
+        "lilbee-chat": {
+          "swap": false,
+          "exclusive": true,
+          "persistent": false,
+          "members": [
+            "chat-0"
+          ]
+        },
+        "lilbee-embed": {
+          "swap": false,
+          "exclusive": true,
+          "persistent": false,
+          "members": [
+            "embed-0"
+          ]
+        },
+        "lilbee-rerank-2": {
+          "swap": false,
+          "exclusive": true,
+          "persistent": false,
+          "members": [
+            "rerank-2"
+          ]
+        },
+        "lilbee-rerank-3": {
+          "swap": false,
+          "exclusive": true,
+          "persistent": false,
+          "members": [
+            "rerank-3"
+          ]
+        },
+        "lilbee-rerank-4": {
+          "swap": false,
+          "exclusive": true,
+          "persistent": false,
+          "members": [
+            "rerank-4"
+          ]
+        },
+        "lilbee-rerank-5": {
+          "swap": false,
+          "exclusive": true,
+          "persistent": false,
+          "members": [
+            "rerank-5"
+          ]
+        },
+        "lilbee-rerank-6": {
+          "swap": false,
+          "exclusive": true,
+          "persistent": false,
+          "members": [
+            "rerank-6"
+          ]
+        },
+        "lilbee-rerank-7": {
+          "swap": false,
+          "exclusive": true,
+          "persistent": false,
+          "members": [
+            "rerank-7"
+          ]
+        },
+        "lilbee-rerank-8": {
+          "swap": false,
+          "exclusive": true,
+          "persistent": false,
+          "members": [
+            "rerank-8"
+          ]
+        },
+        "lilbee-rerank-9": {
+          "swap": false,
+          "exclusive": true,
+          "persistent": false,
+          "members": [
+            "rerank-9"
+          ]
+        }
+      }
+    },
+    "older-router": {
+      "healthCheckTimeout": 600,
+      "logLevel": "info",
+      "logToStdout": "proxy",
+      "models": {
+        "chat-0": {
+          "cmd": "/engine/llama-server --model /m/chat.gguf --port 5900",
+          "proxy": "http://127.0.0.1:5900",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "env": [
+            "CUDA_VISIBLE_DEVICES=0,1"
+          ]
+        },
+        "embed-0": {
+          "cmd": "/engine/llama-server --embeddings --memory --port 5901",
+          "proxy": "http://127.0.0.1:5901",
+          "ttl": 0,
+          "concurrencyLimit": 1024
+        },
+        "rerank-2": {
+          "cmd": "/engine/llama.cpp-server --port 5902",
+          "proxy": "http://127.0.0.1:5902",
+          "ttl": 0,
+          "concurrencyLimit": 1024
+        },
+        "rerank-3": {
+          "cmd": "/engine/ik_llama.cpp-server --port 5903",
+          "proxy": "http://127.0.0.1:5903",
+          "ttl": 0,
+          "concurrencyLimit": 1024
+        },
+        "rerank-4": {
+          "cmd": "/engine/mistral.rs-server --port 5904",
+          "proxy": "http://127.0.0.1:5904",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "useModelName": "default"
+        },
+        "rerank-5": {
+          "cmd": "/engine/tei-server --port 5905",
+          "proxy": "http://127.0.0.1:5905",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "checkEndpoint": "/health"
+        },
+        "rerank-6": {
+          "cmd": "/engine/mlx-server --port 5906",
+          "proxy": "http://127.0.0.1:5906",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "useModelName": "default_model"
+        },
+        "rerank-7": {
+          "cmd": "/engine/openvino-server --port 5907",
+          "proxy": "http://127.0.0.1:5907",
+          "ttl": 0,
+          "concurrencyLimit": 1024
+        },
+        "rerank-8": {
+          "cmd": "/engine/lemonade-server --port 5908",
+          "proxy": "http://127.0.0.1:5908",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "checkEndpoint": "/live",
+          "useModelName": "user.lilbee-chat"
+        },
+        "rerank-9": {
+          "cmd": "/engine/ovms-server --port 5909",
+          "proxy": "http://127.0.0.1:5909",
+          "ttl": 0,
+          "concurrencyLimit": 1024,
+          "checkEndpoint": "/v2/health/ready",
+          "useModelName": "default_model"
+        }
+      },
+      "groups": {
+        "lilbee": {
+          "swap": false,
+          "exclusive": false,
+          "persistent": true,
+          "members": [
+            "chat-0",
+            "embed-0",
+            "rerank-2",
+            "rerank-3",
+            "rerank-4",
+            "rerank-5",
+            "rerank-6",
+            "rerank-7",
+            "rerank-8",
+            "rerank-9"
+          ]
+        }
+      }
+    }
+  }
+}
