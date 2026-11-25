@@ -46,6 +46,7 @@ from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES
 from lilbee.providers.fleet.placement import InstancePlan
 from lilbee.providers.gguf_meta import snapshot_entry_of_blob
 from lilbee.providers.roles import RoleTarget, WorkerRole
+from lilbee.server.route_names import name_routes
 from lilbee.server.routes import engines as routes
 from tests._gguf_fixture import cut_file_of
 from tests._litestar_test_client import create_test_client
@@ -1271,9 +1272,12 @@ def test_a_one_card_launch_of_a_cache_blob_with_no_snapshot_file_is_refused_with
     with pytest.raises(
         ProviderError,
         match=r"cannot launch this model: its model file is incomplete or damaged\. "
-        r"Run 'lilbee model list' \(or GET /api/models/installed\), remove that model with "
-        r"'lilbee model rm' \(or DELETE /api/models/\{model\}\), "
-        r"then pull it again \(POST /api/models/pull\)\.",
+        r"Run 'lilbee model list', remove that model with 'lilbee model rm', "
+        r"then pull it again\.",
     ) as refused:
         _one_card_argv(tmp_path, role, model_path=blob)
     assert blob.name not in str(refused.value)
+    # An HTTP caller gets the list route for the command, and no remove route.
+    served = name_routes(str(refused.value))
+    assert "GET /api/models/installed" in served
+    assert "DELETE" not in served

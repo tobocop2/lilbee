@@ -111,23 +111,23 @@ def test_a_cause_that_holds_for_every_role_names_no_role() -> None:
     with_role = choose_engine(**kwargs, role=WorkerRole.CHAT)
     assert with_role.notice == (
         "Engine mlx is not installed. Using llama.cpp. "
-        "Run lilbee engine list (or GET /api/engines) to see the installed engines."
+        "Run lilbee engine list to see the installed engines."
     )
     assert choose_engine(**kwargs).notice == (
         "Engine mlx is not installed. Using llama.cpp. "
-        "Run lilbee engine list (or GET /api/engines) to see the installed engines."
+        "Run lilbee engine list to see the installed engines."
     )
     none = choose_engine(**{**kwargs, "fmt": ModelFormat.MLX, "preferred": "auto"})
     assert none.notice == (
         "No installed engine loads the mlx format. "
-        "Run lilbee engine list (or GET /api/engines) to see the installed engines."
+        "Run lilbee engine list to see the installed engines."
     )
     with_model = choose_engine(
         **{**kwargs, "fmt": ModelFormat.MLX, "preferred": "auto"}, model="org/embedder#mlx"
     )
     assert with_model.notice == (
         "No installed engine loads the mlx format of org/embedder#mlx. "
-        "Run lilbee engine list (or GET /api/engines) to see the installed engines."
+        "Run lilbee engine list to see the installed engines."
     )
     named = choose_engine(
         **{**kwargs, "fmt": ModelFormat.MLX, "preferred": "auto"}, role=WorkerRole.EMBED
