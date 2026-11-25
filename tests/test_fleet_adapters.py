@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,7 +24,10 @@ from lilbee.providers.fleet.adapters import (
     rerank_spec,
     resolve_rerank_mode,
 )
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.fleet.engines.base import LaunchRequest
+from lilbee.providers.fleet.engines.choice import ADAPTERS
+from lilbee.providers.fleet.engines.llama import LLAMA
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 
 def test_every_worker_role_has_a_spec() -> None:
@@ -396,6 +400,55 @@ def test_build_argv_no_mmap_reads_help_on_stderr(monkeypatch) -> None:
         no_mmap=True,
     )
     assert _mmap_tokens(argv) == ["--load-mode", "none"]
+
+
+def _reaches_llama_argv(adapter) -> bool:
+    """Whether the adapter's module uses the shared argv builder, directly or through LLAMA."""
+    module_values = vars(sys.modules[type(adapter).__module__]).values()
+    return any(v is build_server_argv or v is LLAMA for v in module_values)
+
+
+_LLAMA_ARGV_ADAPTERS = {n: a for n, a in ADAPTERS.items() if _reaches_llama_argv(a)}
+
+
+@pytest.mark.parametrize(
+    "adapter", list(_LLAMA_ARGV_ADAPTERS.values()), ids=[n.value for n in _LLAMA_ARGV_ADAPTERS]
+)
+def test_no_mmap_help_read_targets_the_launched_binary(monkeypatch, adapter) -> None:
+    """With two builds side by side, an adapter's flag comes from the build its argv launches.
+
+    Every adapter whose module uses the shared argv builder runs, so a new one is covered.
+    Each must read help from the launched build and match its flag.
+    """
+    old_build, new_build = Path("/engines/old/llama-server"), Path("/engines/new/llama-server")
+    helps = {old_build: _HELP_NO_MMAP, new_build: _HELP_LOAD_MODE}
+    read: list[Path] = []
+
+    def _run(cmd, *_a, **_k):
+        read.append(Path(cmd[0]))
+        return SimpleNamespace(stdout=helps[Path(cmd[0])], stderr="")
+
+    monkeypatch.setattr(binary_mod.subprocess, "run", _run)
+    for launched, tokens in (
+        (old_build, ["--no-mmap"]),
+        (new_build, ["--load-mode", "none"]),
+    ):
+        binary_mod._read_help.cache_clear()
+        read.clear()
+        request = LaunchRequest(
+            binary=launched,
+            model_path=Path("/models/chat.gguf"),
+            devices=(0,),
+            n_gpu_layers=-1,
+            slots=1,
+            ctx_per_slot=4096,
+            no_mmap=True,
+            target=RoleTarget.CPU,
+        )
+        argv = adapter.launch_argv(adapter.role_spec(WorkerRole.CHAT, None, None), request)
+        assert read == [launched]
+        assert str(launched) in argv
+        assert _mmap_tokens(argv) == tokens
 
 
 def test_build_argv_defaults_to_mmap(monkeypatch) -> None:
