@@ -129,13 +129,19 @@ def _stub_build_summary(paths: list[str], count: int) -> dict:
     return {"paths": paths, "entities": 0, "count": count, "stats": BuildStats().as_dict()}
 
 
-def _partial_build_summary(path: str) -> dict:
-    """A run that wrote *path* and lost two pages to a failed model call."""
+def _partial_build_summary(
+    path: str | None, lost: int = 2, concept_calls: tuple[bool, ...] = ()
+) -> dict:
+    """A run that wrote *path* (if any), lost *lost* pages and made *concept_calls*."""
     stats = BuildStats()
-    stats.record_published(path, 1)
+    paths = [] if path is None else [path]
+    for written in paths:
+        stats.record_published(written, 1)
     stats.record_model_call("The chat model is not running.")
-    stats.record_failed_pages(2)
-    return {"paths": [path], "entities": 3, "count": 1, "stats": stats.as_dict()}
+    stats.record_failed_pages(lost)
+    for failed in concept_calls:
+        stats.record_concept_call(failed=failed)
+    return {"paths": paths, "entities": 3, "count": len(paths), "stats": stats.as_dict()}
 
 
 _PARTIAL_BUILD_ERROR = (
@@ -6082,6 +6088,49 @@ class TestWikiBuild:
         result = runner.invoke(app, ["--json", "wiki", "synthesize"])
         assert result.exit_code == 1
         assert json.loads(result.output)["stats"]["pages_failed"] == 2
+
+    @pytest.mark.parametrize(
+        ("path", "lost", "concept_calls", "lines"),
+        [
+            (None, 1, (), "1 of 1 page could not be written."),
+            ("ford.md", 1, (), "1 of 2 pages could not be written."),
+            (
+                "ford.md",
+                0,
+                (False, True),
+                "Concepts could not be extracted from 1 of 2 sources.",
+            ),
+        ],
+    )
+    def test_the_failure_lines_name_their_counts(
+        self, mock_svc, isolated_env, monkeypatch, path, lost, concept_calls, lines
+    ):
+        summary = _partial_build_summary(path, lost, concept_calls)
+        monkeypatch.setattr("lilbee.wiki.run_full_build", lambda *a, **kw: summary)
+        result = runner.invoke(app, ["wiki", "build"])
+        assert result.exit_code == 1
+        assert result.output.rstrip().endswith(
+            f"Error: {lines}\nLast error: The chat model is not running."
+        )
+
+    def test_a_failed_concept_call_gives_its_counts_as_json(
+        self, mock_svc, isolated_env, monkeypatch
+    ):
+        cfg.json_mode = True
+        summary = _partial_build_summary("ford.md", 0, (False, True))
+        monkeypatch.setattr("lilbee.wiki.run_full_build", lambda *a, **kw: summary)
+        result = runner.invoke(app, ["--json", "wiki", "build"])
+        assert result.exit_code == 1
+        stats = json.loads(result.output)["stats"]
+        assert (stats["concept_sources"], stats["concept_sources_failed"]) == (2, 1)
+
+    def test_the_gates_line_carries_the_lost_pages(self, mock_svc, isolated_env, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.wiki.run_full_build", lambda *a, **kw: _partial_build_summary("ford.md")
+        )
+        result = runner.invoke(app, ["wiki", "build"])
+        output = " ".join(result.output.split())
+        assert "citations verified, 2 of 3 pages could not be written" in output
 
     def test_prints_generated_paths(self, mock_svc, isolated_env, monkeypatch):
         out = isolated_env / "wiki" / "concepts" / "braking.md"

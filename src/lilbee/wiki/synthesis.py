@@ -347,6 +347,8 @@ def generate_source_batch(
     budgeted = truncate_chunks_to_budget(chunks, config, len(render("")))
     prompt = render(chunks_to_text(budgeted))
     text = _request_batch_sections(source, prompt, provider, config, stats)
+    if extract_concepts:
+        stats.record_concept_call(failed=text is None)
     if text is None:
         stats.record_failed_pages(len(entities))
         _write_pending_markers(entities, set(), source, drafts_dir, stats)

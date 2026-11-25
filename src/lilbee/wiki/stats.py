@@ -20,6 +20,8 @@ class BuildStatsDict(TypedDict):
     pages_drafted: int
     pending_markers: int
     pages_failed: int
+    concept_sources: int
+    concept_sources_failed: int
     last_model_failure: str
     citations_rendered: int
     citations_dropped_unverified: int
@@ -47,6 +49,10 @@ class BuildStats:
     ``pages_failed`` counts pages not written because the model call that
     would write them failed; a batched call that fails loses every page it
     covered, and those pages also leave PENDING markers.
+    ``concept_sources`` counts sources whose batched call also asked for
+    concepts, and ``concept_sources_failed`` those whose call failed. A
+    concept page is not known before its call, so a failed call is counted
+    by source, not by page.
     ``citations_dropped_unverified`` counts parsed footnotes that reached no
     page: excerpt not found in the source chunks, or no source to attribute
     them to. Footnotes skipped for citing a wiki page are in neither count.
@@ -59,6 +65,8 @@ class BuildStats:
     pages_drafted: int = 0
     pending_markers: int = 0
     pages_failed: int = 0
+    concept_sources: int = 0
+    concept_sources_failed: int = 0
     citations_rendered: int = 0
     citations_dropped_unverified: int = 0
     verified_by_page: dict[str, int] = field(default_factory=dict)
@@ -131,6 +139,12 @@ class BuildStats:
         """Count *count* pages lost because the model call that would write them failed."""
         self.pages_failed += count
 
+    def record_concept_call(self, *, failed: bool) -> None:
+        """Count one source whose batched call asked for concepts, and whether that call failed."""
+        self.concept_sources += 1
+        if failed:
+            self.concept_sources_failed += 1
+
     def record_citations(self, rendered: int, dropped: int) -> None:
         """Count one page's verified and rejected citation records."""
         self.citations_rendered += rendered
@@ -144,6 +158,8 @@ class BuildStats:
             pages_drafted=self.pages_drafted,
             pending_markers=self.pending_markers,
             pages_failed=self.pages_failed,
+            concept_sources=self.concept_sources,
+            concept_sources_failed=self.concept_sources_failed,
             last_model_failure=self.last_model_failure,
             citations_rendered=self.citations_rendered,
             citations_dropped_unverified=self.citations_dropped_unverified,
@@ -157,27 +173,51 @@ class BuildStats:
         return format_summary_line(self.as_dict())
 
 
-def failed_pages_message(stats: BuildStatsDict) -> str | None:
-    """The count of pages lost to failed model calls and the last cause, or None when none was lost.
+def _counted(count: int, noun: str) -> str:
+    """*noun* in the number *count* asks for: "1 page", "2 pages"."""
+    return noun if count == 1 else f"{noun}s"
 
-    The total is every page the run wrote plus every page it lost, so a run
-    that lost all its pages reads "N of N".
+
+def _model_failures(stats: BuildStatsDict) -> list[str]:
+    """One sentence per kind of work lost to failed model calls, without the final period.
+
+    The page total is every page the run wrote plus every page it lost, so a
+    run that lost all its pages reads "N of N". The source total is every
+    source whose call asked for concepts.
     """
+    failures = []
     failed = stats["pages_failed"]
-    if not failed:
+    if failed:
+        total = stats["pages_generated"] + failed
+        failures.append(f"{failed} of {total} {_counted(total, 'page')} could not be written")
+    concepts_failed = stats["concept_sources_failed"]
+    if concepts_failed:
+        sources = stats["concept_sources"]
+        failures.append(
+            f"Concepts could not be extracted from {concepts_failed} of {sources} "
+            f"{_counted(sources, 'source')}"
+        )
+    return failures
+
+
+def model_failures_message(stats: BuildStatsDict) -> str | None:
+    """What the run lost to failed model calls and the last cause, or None when it lost nothing."""
+    failures = _model_failures(stats)
+    if not failures:
         return None
-    total = stats["pages_generated"] + failed
-    return (
-        f"{failed} of {total} pages could not be written.\n"
-        f"Last error: {stats['last_model_failure']}."
-    )
+    return ".\n".join([*failures, f"Last error: {stats['last_model_failure']}"]) + "."
 
 
 def format_summary_line(stats: BuildStatsDict) -> str:
-    """One-line human summary of a run, for the CLI and ``wiki/log.md``."""
+    """One-line human summary of a run, for the CLI and ``wiki/log.md``.
+
+    Work lost to failed model calls is added only when there was some.
+    """
     total = stats["citations_rendered"] + stats["citations_dropped_unverified"]
-    return (
+    line = (
         f"{stats['pages_published']} published, {stats['pages_drafted']} drafted, "
         f"{stats['pending_markers']} markers, "
         f"{stats['citations_rendered']}/{total} citations verified"
     )
+    failures = [failure[0].lower() + failure[1:] for failure in _model_failures(stats)]
+    return ", ".join([line, *failures])
