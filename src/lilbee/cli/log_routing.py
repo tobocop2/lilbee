@@ -11,6 +11,7 @@ from pathlib import Path
 
 import typer
 
+from lilbee.app.services import reset_services_on_exit
 from lilbee.core.config import cfg
 
 _LOG_DIR_NAME = "logs"
@@ -116,8 +117,6 @@ def _restore_diagnostics(handlers_before: list[logging.Handler], capture_was_on:
     The teardown would run at interpreter exit, after the handlers are back, so its
     records would print after the answer. It runs here instead, under the log file.
     """
-    from lilbee.app.services import reset_services_on_exit
-
     try:
         reset_services_on_exit()
     finally:
