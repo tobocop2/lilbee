@@ -1942,9 +1942,8 @@ class _ProfileSource:
             name = read_profile_table(root).name
             label = f"the {name!r} profile" if name else "the applied profile"
             for key, reason in refused.items():
-                warn_on_load(
-                    f"{label}: {key} = {_shown(key, values[key])} {reason}; {key} {_USES_ITS_DEFAULT}"
-                )
+                shown = _shown(key, values[key])
+                warn_on_load(f"{label}: {key} = {shown} {reason}; {key} {_USES_ITS_DEFAULT}")
         return {key: value for key, value in values.items() if key not in refused}
 
 
