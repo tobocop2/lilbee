@@ -694,7 +694,7 @@ class LlamaServerClient:
         # on this client only: a bind, a replan or a rediscover builds a new client,
         # which checks again.
         self._load = load
-        self._device_ok = profile.device_check is None
+        self._device_ok = False
         self._device_refusal: str | None = None
         self._device_lock = threading.Lock()
         # The thread that runs the check; its own load request passes the gate.
@@ -1952,17 +1952,13 @@ class LlamaServerClient:
             ) from exc
         return check.refusal(body)
 
-    def confirm_device(self) -> None:
-        """Raise when the engine does not report the model on the device it was placed on.
+    def _confirm_device(self, check: UpstreamCheck) -> None:
+        """Raise when the engine's reply on the route of *check* names another device.
 
-        An engine whose profile names no device route is not asked. A reply that cannot
-        be read is read again within the gateway retry budget, and raises when it stays
-        unreadable: the claim stands only on the engine's own report. A reply that names
-        another device raises :class:`DeviceRefusedError`.
+        A reply that cannot be read is read again within the gateway retry budget, and
+        raises when it stays unreadable: the claim stands only on the engine's own
+        report. A reply that names another device raises :class:`DeviceRefusedError`.
         """
-        check = self._profile.device_check
-        if check is None:
-            return
         label = self._profile.label
         try:
             refusal = retry_on_gateway_error(lambda: self._read_check(check))
@@ -1986,7 +1982,8 @@ class LlamaServerClient:
         reaches the upstream. An unreadable reply raises, and the next request reads
         again.
         """
-        if self._device_ok or self._device_checker == threading.get_ident():
+        check = self._profile.device_check
+        if check is None or self._device_ok or self._device_checker == threading.get_ident():
             return
         self._raise_device_refusal()
         with self._device_lock:
@@ -2000,7 +1997,7 @@ class LlamaServerClient:
             try:
                 if self._load is not None:
                     self._load(self)
-                self.confirm_device()
+                self._confirm_device(check)
             except DeviceRefusedError as exc:
                 self._device_refusal = str(exc)
                 self.unload_upstream()
@@ -2013,7 +2010,7 @@ class LlamaServerClient:
     @property
     def needs_device_check(self) -> bool:
         """Whether a request must pass the device gate before it is sent."""
-        return not self._device_ok
+        return self._profile.device_check is not None and not self._device_ok
 
     def _raise_device_refusal(self) -> None:
         """Raise the stored device refusal of this client, when it has one."""
