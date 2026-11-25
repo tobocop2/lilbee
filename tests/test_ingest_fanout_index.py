@@ -623,6 +623,22 @@ class TestASourceRowWithNoChunks:
         assert len(library.chunk_sources()) == len(set(library.chunk_sources())) == 6
 
 
+class TestChunkTitlesOfAMixedBatch:
+    @pytest.mark.parametrize("archive_first", [True, False], ids=["archive-first", "note-first"])
+    async def test_every_chunk_keeps_the_title_of_its_own_source(self, tmp_path, archive_first):
+        """The title follows the chunk's source, never its place in the flush batch."""
+        library = Library(tmp_path / "lib", 1)
+        library.write_notes("note", 3)
+        _write_bundle(library.documents / ("0bundle.zip" if archive_first else "zbundle.zip"))
+        await library.sync()
+
+        table = Store(cfg).open_table("chunks")
+        assert table is not None
+        titles = table.to_arrow().column("title").to_pylist()
+        assert len(titles) == 3 + 2
+        assert None not in titles
+
+
 _STOPS = ("before_the_start", "first_report", "every_report", "in_a_write")
 
 
