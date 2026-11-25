@@ -760,7 +760,8 @@ def test_your_changes_treats_an_int_and_a_float_of_the_same_number_as_equal(stor
             "force_ocr_pages = [1, 2]", 'force_ocr_pages = ["1", "2"]', False, id="string-list"
         ),
         pytest.param("fts_language = 'English'", "fts_language = 'english'", False, id="case"),
-        pytest.param("force_ocr_pages = [1, 2]", "force_ocr_pages = [2, 1]", True, id="order"),
+        # The setting's own validator sorts the pages, so another order is the same value.
+        pytest.param("force_ocr_pages = [1, 2]", "force_ocr_pages = [2, 1]", False, id="sorted"),
         pytest.param("chunk_size = 512", "chunk_size = 384", True, id="different"),
     ],
 )

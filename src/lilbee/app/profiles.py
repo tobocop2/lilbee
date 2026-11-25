@@ -41,10 +41,10 @@ from lilbee.core.profile_files import (
     VALUES_TABLE,
     PlannedWrite,
     ProfileAuthor,
-    ProfileFileError,
     ProfileCatalog,
     ProfileEntry,
     ProfileFile,
+    ProfileFileError,
     ProfileFolder,
     ProfileStore,
     ProfileValidation,
@@ -424,8 +424,8 @@ def _same_setting(row: ChangeRow) -> bool:
         yours = normalized_values({row.key: row.yours})[row.key]
         theirs = normalized_values({row.key: row.profile_value})[row.key]
     except ProfileFileError:
-        return row.yours == row.profile_value
-    return yours == theirs
+        return bool(row.yours == row.profile_value)
+    return bool(yours == theirs)
 
 
 def _change_row(key: str, yours: Any, fallback: Resolved) -> ChangeRow:
