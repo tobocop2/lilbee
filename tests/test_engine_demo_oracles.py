@@ -698,10 +698,11 @@ def _run1() -> dict[str, Any]:
 
 def test_the_recording_fails_only_on_the_list_fields_it_predates() -> None:
     failures = judge(Transcript.from_json(_recorded_run1()))
-    assert failures
-    assert all(
-        "damaged" in failure.detail or "differs_from_pin" in failure.detail for failure in failures
-    )
+    details = [failure.detail for failure in failures]
+    assert len(details) == 4
+    # Each of the two list steps lacks `damaged`, and its one build lacks `differs_from_pin`.
+    assert sum("damaged" in d and " build keys" not in d for d in details) == 2
+    assert sum("differs_from_pin" in d and " build keys" in d for d in details) == 2
 
 
 def _run1_edited(step_names: tuple[str, ...], **fields: object) -> Transcript:
