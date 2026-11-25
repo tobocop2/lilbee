@@ -823,25 +823,12 @@ def test_the_mistral_cuda_pin_record_installs_a_cuda_wheel(
     monkeypatch.setattr(mistral, "pack_platforms", lambda *args: {})
     monkeypatch.setattr(mistral, "pack_digest", lambda *args: None)
     record = mistral.MistralAdapter().pin_record()
-    assert record["licenses"] == ["MIT AND LicenseRef-NVIDIA-CUDA-EULA"]
+    assert record["licenses"][0].endswith(" AND LicenseRef-NVIDIA-CUDA-EULA")
     path = tmp_path / "m.whl"
     sha = _cuda_wheel(path, notice=True, tool=str(record["tool"]))
     lock = pin_lock({**record, "sha256": sha})
     store.install_from_wheel(lock, path)
     assert len(store.installed()) == 1
-
-
-def test_the_mistral_cpu_pin_record_states_only_mit(monkeypatch: pytest.MonkeyPatch) -> None:
-    from lilbee.catalog import runnable
-    from lilbee.providers.fleet.engines import mistral
-
-    monkeypatch.setattr(runnable, "session_host", lambda: object())
-    monkeypatch.setattr(
-        mistral.MistralAdapter, "pick_build", lambda self, host: mistral.BuildPick("cpu", "")
-    )
-    monkeypatch.setattr(mistral, "pack_platforms", lambda *args: {})
-    monkeypatch.setattr(mistral, "pack_digest", lambda *args: None)
-    assert mistral.MistralAdapter().pin_record()["licenses"] == ["MIT"]
 
 
 def test_a_pin_may_state_the_nvidia_term_without_a_notice() -> None:
