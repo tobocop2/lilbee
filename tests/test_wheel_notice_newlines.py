@@ -113,7 +113,7 @@ def test_rust_notices(windows_newlines: Callable[[], Any], tmp_path: Path) -> No
         '[[package]]\nname = "a"\nversion = "1.0"\n'
         'source = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "abc"\n'
     )
-    tree =tmp_path / "tree"
+    tree = tmp_path / "tree"
     tree.mkdir()
     with windows_newlines():
         tool.write_notices(report, lock, tmp_path / "checkout", tmp_path / "registry", tree)
