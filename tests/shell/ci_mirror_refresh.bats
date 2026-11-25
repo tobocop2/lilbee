@@ -40,10 +40,18 @@ case "${method} ${url}" in
     name="${url##*name=}"
     cp "${data}" "${MIRROR}/${name}"
     echo "upload ${name}" >> "${CALLS}" ;;
-  "GET https://api.github.com/repos/o/r/releases/tags/"*) echo '{"id": 7}' ;;
+  "GET https://api.github.com/repos/o/r/releases/tags/"*)
+    [ -z "${NO_RELEASE:-}" ] || exit 22
+    echo '{"id": 7}' ;;
   "GET https://api.github.com/repos/o/r/releases/7/assets"*)
+    # Pages as the API does: per_page (default 30) and page (default 1).
+    per=30; page=1
+    [[ "${url}" =~ [?\&]per_page=([0-9]+) ]] && per="${BASH_REMATCH[1]}"
+    [[ "${url}" =~ [?\&]page=([0-9]+) ]] && page="${BASH_REMATCH[1]}"
+    files=()
+    for f in "${MIRROR}"/*; do [ -e "${f}" ] && files+=("${f##*/}"); done
     printf '['
-    for f in "${MIRROR}"/*; do [ -e "${f}" ] && printf '{"id":1,"name":"%s"},' "${f##*/}"; done
+    for name in "${files[@]:$(( (page - 1) * per )):${per}}"; do printf '{"id":1,"name":"%s"},' "${name}"; done
     printf '{}]' ;;
   *)
     asset="${url##*/}"
@@ -145,6 +153,43 @@ at_day() {  # day-number command...
   [ "$status" -eq 1 ]
   [[ "$output" == *"Mirror upload of k.b2.tar.gz failed: curl: (22) The requested URL returned error: 403"* ]]
   [ ! -e "${MIRROR}/k.b2.tar.gz" ]
+}
+
+@test "a pack that fails fails the publish and names the reason" {
+  printf '#!/bin/sh\nexit 1\n' > "${BATS_TEST_TMPDIR}/bin/tar"
+  chmod +x "${BATS_TEST_TMPDIR}/bin/tar"
+  run at_day 65 publish k "${SRC}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Could not pack ${SRC}; skipping the mirror upload."* ]]
+  [ "$(grep -c '^upload' "${CALLS}")" -eq 0 ]
+}
+
+@test "an asset over the release limit fails the publish and names the reason" {
+  # The packed size the script reads, 1 byte over 2 GiB.
+  printf '#!/bin/sh\necho 2147483649\n' > "${BATS_TEST_TMPDIR}/bin/wc"
+  chmod +x "${BATS_TEST_TMPDIR}/bin/wc"
+  run at_day 65 publish k "${SRC}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Packed k.b2.tar.gz is 2048 MB, over the 2048 MB release-asset limit; skipping the mirror upload."* ]]
+  [ "$(grep -c '^upload' "${CALLS}")" -eq 0 ]
+}
+
+@test "a release that cannot be found or made fails the publish and names the reason" {
+  NO_RELEASE=1 run at_day 65 publish k "${SRC}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Could not resolve or create engine-binaries; skipping the mirror upload."* ]]
+  [ "$(grep -c '^upload' "${CALLS}")" -eq 0 ]
+}
+
+# The live mirror holds several pages of assets. One already there past the
+# first page must count as carried, not be uploaded again.
+@test "a publish finds an asset past the first page of the release" {
+  for i in $(seq -w 1 150); do : > "${MIRROR}/a-${i}.tar.gz"; done
+  : > "${MIRROR}/k.b2.tar.gz"
+  run at_day 65 publish k "${SRC}"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Mirror already carries k.b2.tar.gz."* ]]
+  [ "$(grep -c '^upload' "${CALLS}")" -eq 0 ]
 }
 
 # The steps that run a publish: the engine action anywhere, and the Nuitka
