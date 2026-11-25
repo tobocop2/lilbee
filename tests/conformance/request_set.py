@@ -7,6 +7,9 @@ from typing import Any
 REQUEST_SET_VERSION = 2
 """The version of the requests every record answers; a change to a request bumps it."""
 
+PINNED_SAMPLING: dict[str, Any] = {"temperature": 0, "seed": 7}
+"""Sampling every chat request sends, so one model gives the same answer on every run."""
+
 NO_THINKING: dict[str, Any] = {"chat_template_kwargs": {"enable_thinking": False}}
 """The Qwen3 chat template switch that skips the thinking block; the JSON steps send it."""
 
