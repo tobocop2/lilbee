@@ -17,6 +17,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType, RerankerType
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import model_memory as model_memory_mod
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import vram as vram_mod
@@ -70,9 +71,7 @@ def host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
     def set_host(*, total: int, checkpoint_bytes: int = _CHECKPOINT) -> None:
         checkpoint["bytes"] = checkpoint_bytes
-        monkeypatch.setattr(
-            "lilbee.providers.model_cache.total_system_memory", lambda: total
-        )
+        monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: total)
 
     return set_host
 
@@ -108,7 +107,7 @@ class TestCheckpoints:
         host(total=_HELD // 2)
         assert _flag(_launch(), "--ctx-checkpoints") == 0
 
-    def test_a_model_that_makes_no_checkpoints_still_gets_the_flag_and_no_charge(
+    def test_a_model_that_makes_no_checkpoints_gets_the_flag_and_is_charged_only_its_cache(
         self, host
     ) -> None:
         host(total=_HELD + 2 * 500 * _MIB, checkpoint_bytes=0)
@@ -218,6 +217,38 @@ def _draft(role: WorkerRole, *, held: int, checkpoint: int, keeps: bool):
     return SimpleNamespace(
         launch=launch, held_bytes=held, checkpoint_bytes=checkpoint, keeps_prompts=keeps
     )
+
+
+class TestHeldMemory:
+    _REQUEST = MemoryRequest(
+        model_path=Path("m.gguf"),
+        ctx=4096,
+        slots=1,
+        gpu_layers=0,
+        flash_attn=True,
+        kv_cache_type=KvCacheType.F16,
+    )
+
+    @pytest.mark.parametrize("error", [ProviderError("no parser"), OSError("gone")])
+    def test_a_model_the_estimator_cannot_size_holds_its_weights_and_no_checkpoints(
+        self, error: Exception
+    ) -> None:
+        def fail(_request):
+            raise error
+
+        engine = SimpleNamespace(estimate_memory=fail)
+        held = planning_mod._held_host_memory(
+            engine, self._REQUEST, one_pool=True, weights_bytes=7 * _GIB
+        )
+        assert held == (7 * _GIB, 0)
+
+    def test_beside_a_card_an_instance_holds_only_its_host_half(self) -> None:
+        estimate = SimpleNamespace(host_bytes=3, checkpoint_bytes=5)
+        engine = SimpleNamespace(estimate_memory=lambda _r: estimate)
+        held = planning_mod._held_host_memory(
+            engine, self._REQUEST, one_pool=False, weights_bytes=9
+        )
+        assert held == (3, 5)
 
 
 class TestPlanWideRoom:
