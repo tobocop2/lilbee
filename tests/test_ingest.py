@@ -80,7 +80,7 @@ class _FakeIndex:
             "source_type": source_type,
         }
 
-    def write_batch(self, items, present=None):
+    def write_batch(self, items, present=None, chunk_settings=None):
         # Each batched doc upserts a source record so multi-sync tests see it via
         # get_sources(); the new row holds nothing out.
         items = [it for it in items if present is None or present(it.source)]

@@ -132,8 +132,9 @@ class ChunkType(StrEnum):
 # lilbee.retrieval.embedding_profiles doc_prefix_since).
 # 3: every table keys a source by ``source_id``; ``_sources`` alone holds its path.
 # 4: the meta row holds canary vectors (see lilbee.data.store.canary).
+# 5: the meta row holds the chunk settings the library's chunks were cut with.
 KEYED_SCHEMA_VERSION = 3
-META_SCHEMA_VERSION = 4
+META_SCHEMA_VERSION = 5
 
 
 class EntitySchemaState(TypedDict):

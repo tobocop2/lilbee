@@ -34,12 +34,12 @@ from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
 from lilbee.runtime.asyncio_loop import hold_exit
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping
 
     from lilbee.app.engine_choice import EngineBook
     from lilbee.catalog.hf_client import HfClient
@@ -63,6 +63,8 @@ if TYPE_CHECKING:
 
 
 log = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 _SIGNAL_EXIT_BASE = 128
 
@@ -509,23 +511,31 @@ def set_services(services: Services | None) -> None:
     _state.singleton = services
 
 
-def chunks_in_store() -> bool:
-    """True when the index holds a chunk, asked of the store alone.
+def _ask_store(question: Callable[[Store], _T]) -> _T:
+    """The answer of the bound store to *question*, or of a short-lived one when none is bound.
 
-    A bound container (scoped or cached) answers with its own store. Without
-    one, a short-lived store answers and no provider is built, so the check
-    starts no model warm-up.
+    The short-lived store builds no provider, so the question starts no model warm-up.
     """
     from lilbee.core.config import cfg
 
     bound = _state.override.get() or _state.singleton
     if bound is not None:
-        return bound.store.has_chunks()
+        return question(bound.store)
     store = _new_store(cfg)
     try:
-        return store.has_chunks()
+        return question(store)
     finally:
         store.close()
+
+
+def chunks_in_store() -> bool:
+    """True when the index holds a chunk, asked of the store alone."""
+    return _ask_store(lambda store: store.has_chunks())
+
+
+def chunk_drift_in_store(values: Mapping[str, Any]) -> list[str]:
+    """The keys of *values* that differ from the chunk settings the index records."""
+    return _ask_store(lambda store: store.chunk_drift(values))
 
 
 def peek_services() -> Services | None:
