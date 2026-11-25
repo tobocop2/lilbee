@@ -5218,7 +5218,7 @@ class TestDeviceProbeEmptyRetry:
         )
         with pytest.raises(ProviderError):
             planning_mod.resolve_devices(Path("/x"), engine=LLAMA)
-        assert calls["n"] == 4  # 1 initial + 3 retries, then fatal
+        assert calls["n"] == 5  # 1 initial + 4 retries, then fatal
 
     def test_healthy_probe_not_retried(self, monkeypatch):
         self._gpu_present(monkeypatch)
