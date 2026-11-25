@@ -1541,10 +1541,12 @@ class Config(BaseSettings):
         Every request to a local server builds its URL from this value, so an address that
         httpx cannot parse is refused here, before any request raises a raw URL error.
         """
+        if not v.strip():
+            return v.rstrip("/")
         import httpx
 
         try:
-            httpx.Request("GET", v)
+            httpx.Request("GET", v.strip())
         except (httpx.InvalidURL, ValueError):
             raise ValueError(
                 f"{info.field_name} is not a valid web address. "
