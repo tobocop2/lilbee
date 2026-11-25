@@ -16,7 +16,6 @@ import html
 import json
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 # A dated pack release. The pin tags (engine-packs-pin-N) and other releases do not match.
@@ -48,9 +47,14 @@ def fetch_wheels(repo: str) -> list[tuple[str, str, str]]:
                 continue
             digest = (asset.get("digest") or "").removeprefix("sha256:")
             if not digest:
-                raise SystemExit(f"asset {name} has no sha256 digest from the API")
+                raise SystemExit(
+                    f"asset {name} in release {release['tag_name']} has no sha256 digest"
+                )
             if name in wheels and wheels[name][2] != digest:
-                raise SystemExit(f"wheel {name} appears with two different digests")
+                raise SystemExit(
+                    f"wheel {name} appears with two different digests: "
+                    f"{wheels[name][2]} and {digest}"
+                )
             wheels[name] = (name, asset["browser_download_url"], digest)
     return list(wheels.values())
 
@@ -89,8 +93,7 @@ def main() -> int:
 
     wheels = fetch_wheels(args.repo)
     if not wheels:
-        print(f"no engine pack wheels found in {args.repo} releases", file=sys.stderr)
-        return 1
+        raise SystemExit(f"no public engine pack wheel found in the releases of {args.repo}")
     write_index(Path(args.out), wheels)
     print(f"pack index: {len(wheels)} wheels from {args.repo}")
     return 0

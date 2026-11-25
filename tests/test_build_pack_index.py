@@ -70,6 +70,10 @@ def test_project_name_is_pep503_normalized() -> None:
     assert bpi.project_of(_IK) == "lilbee-engine-ik-llama-cpp"
 
 
+def test_project_name_ignores_case() -> None:
+    assert bpi.project_of("Lilbee_Engine_TEI-1.9.4-1.cpu-py3-none-any.whl") == "lilbee-engine-tei"
+
+
 def test_fetch_keeps_wheels_of_dated_pack_releases(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_gh(
         monkeypatch,
@@ -83,6 +87,8 @@ def test_fetch_keeps_wheels_of_dated_pack_releases(monkeypatch: pytest.MonkeyPat
     wheels = bpi.fetch_wheels("tobocop2/lilbee")
     assert wheels == [(_TEI, f"{_BASE}/engine-packs-20261116-tei/{_TEI}", _SHA_A)]
     assert "repos/tobocop2/lilbee/releases" in calls[0]
+    # Without --paginate gh returns 30 releases and later packs drop out of the index.
+    assert "--paginate" in calls[0]
 
 
 def test_fetch_skips_draft_releases(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -117,7 +123,8 @@ def test_fetch_requires_a_sha256_digest(monkeypatch: pytest.MonkeyPatch) -> None
         monkeypatch,
         [_release("engine-packs-20261115", [_asset(_TEI, "engine-packs-20261115", sha=None)])],
     )
-    with pytest.raises(SystemExit, match="no sha256 digest"):
+    message = f"asset {_TEI} in release engine-packs-20261115 has no sha256 digest"
+    with pytest.raises(SystemExit, match=message):
         bpi.fetch_wheels("tobocop2/lilbee")
 
 
@@ -140,7 +147,7 @@ def test_fetch_rejects_one_filename_with_two_digests(monkeypatch: pytest.MonkeyP
             _release("engine-packs-20261116", [_asset(_TEI, "engine-packs-20261116", _SHA_B)]),
         ],
     )
-    with pytest.raises(SystemExit, match="two different digests"):
+    with pytest.raises(SystemExit, match=f"wheel {_TEI} appears with two different digests"):
         bpi.fetch_wheels("tobocop2/lilbee")
 
 
@@ -172,14 +179,23 @@ def test_main_writes_the_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert (tmp_path / "packs" / "lilbee-engine-tei" / "index.html").is_file()
 
 
-def test_main_fails_when_no_pack_is_public(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_main_fails_loudly_when_no_pack_is_public(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _patch_gh(monkeypatch, [])
     monkeypatch.setattr("sys.argv", ["build_pack_index.py", str(tmp_path)])
-    assert bpi.main() == 1
-    assert "no engine pack wheels" in capsys.readouterr().err
+    with pytest.raises(SystemExit, match="no public engine pack wheel found.*lilbee-engine-packs"):
+        bpi.main()
     assert not (tmp_path / "packs").exists()
+
+
+def test_pages_step_does_not_continue_on_error() -> None:
+    # An index that drops packs silently is worse than a failed publish.
+    pages = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "pages.yml"
+    workflow = yaml.safe_load(pages.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["build-wheel-indexes"]["steps"]
+    step = next(s for s in steps if "build_pack_index.py" in s.get("run", ""))
+    assert "continue-on-error" not in step
 
 
 def test_pages_workflow_builds_the_pack_index() -> None:
