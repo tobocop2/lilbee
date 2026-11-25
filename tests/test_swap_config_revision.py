@@ -95,7 +95,7 @@ def test_swap_config_changes_only_with_a_revision_bump() -> None:
         return
     recorded = _recorded()
     same_text = rendered == recorded["configs"]
-    same_revision = SWAP_CONFIG_REVISION == recorded["revision"]
+    same_revision = recorded["revision"] == SWAP_CONFIG_REVISION
     assert same_text or not same_revision, (
         "The config build_swap_config writes changed, and SWAP_CONFIG_REVISION is still "
         f"{SWAP_CONFIG_REVISION}. Raise it in swap_config.py, then run "
