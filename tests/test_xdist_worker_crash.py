@@ -275,6 +275,35 @@ def test_a_child_run_that_hits_its_limit_leaves_no_worker_alive(tmp_path: Path) 
             psutil.Process(worker_pid).kill()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="only POSIX has a process group to kill")
+def test_a_child_run_that_hits_its_limit_reports_its_output_and_process_tree(
+    tmp_path: Path,
+) -> None:
+    stalls = "import sys, time\nprint('last words of the child', flush=True)\ntime.sleep(600)\n"
+    with pytest.raises(subprocess.TimeoutExpired) as raised:
+        _run_bounded_child(
+            [sys.executable, "-c", stalls], cwd=tmp_path, env=dict(os.environ), timeout_s=3.0
+        )
+    message = str(raised.value)
+    assert "last words of the child" in message
+    assert "process tree of pid" in message
+    assert "status=sleeping" in message
+    assert "py-spy" in message
+    if sys.platform.startswith("linux"):
+        assert "wchan=" in message
+        assert "SigCgt" in message
+
+
+def test_a_child_run_that_ends_in_time_takes_no_snapshot(tmp_path: Path) -> None:
+    output, code = _run_bounded_child(
+        [sys.executable, "-c", "print('done')"],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout_s=_CHILD_START_LIMIT_S,
+    )
+    assert (output.strip(), code) == ("done", _EXIT_OK)
+
+
 def test_the_presets_target_reaches_the_toy_run_without_its_test_file() -> None:
     assert "tests/integration/test_preset_fixtures.py" in _make("-n", "test-presets")
     args = _XDIST_TARGETS["test-presets"]
