@@ -6,7 +6,6 @@ import contextlib
 import logging
 import os
 import sys
-import threading
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -25,16 +24,18 @@ from textual.screen import Screen
 from textual.signal import Signal
 from textual.widgets import Input, TextArea
 
-from lilbee.app.services import get_services, peek_services, set_config_refresh, watch_pool
+from lilbee.app.services import (
+    follow_config_long_running,
+    get_services,
+    peek_services,
+    watch_pool,
+)
 from lilbee.app.settings import (
     SettingsUpdateResult,
-    adopt_external_changes,
     apply_settings_update,
     config_write_failure_message,
-    reset_for_provider_switch,
     reset_settings,
     setting_sources,
-    start_config_reading,
 )
 from lilbee.app.setup_state import chat_ready, embedding_ready
 from lilbee.app.themes import DARK_THEMES
@@ -268,10 +269,9 @@ class LilbeeApp(App[None]):
         # so Footer / signal / worker wiring runs once per session.
         self._installed_screen_names: set[str] = set()
         self.settings_changed_signal: Signal[tuple[str, object]] = Signal(self, "settings_changed")
-        self._config_reading = start_config_reading()
-        # The app thread and the engine's retry thread both take config.toml changes.
-        self._config_lock = threading.Lock()
-        set_config_refresh(self.take_external_settings_now)
+        # The TUI runs until the user closes it and takes every key, a provider switch too.
+        self._config_follower = follow_config_long_running(frozenset(), keeper="the TUI")
+        self._config_follower.report_to(self._show_taken_settings_from_thread)
         self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
             self, "provider_availability_changed"
         )
@@ -728,37 +728,14 @@ class LilbeeApp(App[None]):
         state that lives outside cfg, such as the profile name. An editor the user is
         typing in keeps its text; saving it writes that value over the other process's.
         """
-        changed, result = self._take_external_changes()
+        changed, result = self._config_follower.check()
         if result is not None:
             self._show_taken_settings(result)
         return changed
 
-    def take_external_settings_now(self) -> None:
-        """Take config.toml changes from the thread the engine retries on.
-
-        The settings land on cfg in the calling thread. The app thread shows them;
-        on the app thread itself the take already happened and nothing is shown.
-        """
-        try:
-            _changed, result = self._take_external_changes()
-        except Exception:
-            log.exception("Could not take the changes in config.toml; the retry runs as before.")
-            return
-        if result is not None:
-            call_from_thread(self, self._show_taken_settings, result)
-
-    def _take_external_changes(self) -> tuple[bool, SettingsUpdateResult | None]:
-        """Take the outside changes under the lock every take shares; stop the fleet after it.
-
-        The reading moves with the values under the lock, so a take that waited finds the
-        file taken. A provider switch stops the fleet, seconds long, once the lock is free.
-        """
-        with self._config_lock:
-            before = self._config_reading
-            self._config_reading, result = adopt_external_changes(before, reset_providers=False)
-            changed = self._config_reading is not before
-        reset_for_provider_switch(result)
-        return changed, result
+    def _show_taken_settings_from_thread(self, result: SettingsUpdateResult) -> None:
+        """Show what the engine's retry took; the settings already landed on cfg in its thread."""
+        call_from_thread(self, self._show_taken_settings, result)
 
     def _show_taken_settings(self, result: SettingsUpdateResult) -> None:
         self.notify_warnings(result.warnings)

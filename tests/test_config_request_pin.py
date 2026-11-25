@@ -14,8 +14,8 @@ from unittest import mock
 import pytest
 
 from lilbee.app import settings as app_settings
-from lilbee.app.config_follow import ConfigFileFollower
-from lilbee.app.services import refresh_config, set_config_refresh, set_services
+from lilbee.app import services as svc_mod
+from lilbee.app.services import follow_config_long_running, set_services
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import CONFIG_FILE_NAME, Config, active_config, cfg, config_scope
 from lilbee.core.config.context import published_config_scope, request_config_scope
@@ -192,18 +192,15 @@ async def test_the_rag_stream_thread_reads_the_request_config(monkeypatch):
 
 
 def test_a_refresh_inside_a_request_reads_the_new_file_value():
-    # The fleet calls refresh_config before its last retry, to plan on the newest settings.
+    # The fleet takes through the process follower before its last retry, to plan on
+    # the newest settings.
     _write_from_another_process("top_k", 12, tick=1)
     cfg.top_k = 12
-    follower = ConfigFileFollower()
-    set_config_refresh(follower.refresh_now)
-    try:
-        with request_config_scope():
-            _write_from_another_process("top_k", 19, tick=2)
-            refresh_config()
-            seen = cfg.top_k
-    finally:
-        set_config_refresh(None)
+    follow_config_long_running(frozenset(), keeper="the server")
+    with request_config_scope():
+        _write_from_another_process("top_k", 19, tick=2)
+        svc_mod._take_through_the_process_follower()
+        seen = cfg.top_k
     assert (cfg.top_k, seen) == (19, 19)
 
 
