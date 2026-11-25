@@ -18,6 +18,7 @@ from lilbee.providers.fleet.gpu_backends.intel import (
     IntelHintKind,
     _parse_xpu_smi,
 )
+from tests.providers.fleet.gpu_backends import FakeTool
 
 # Real xpu-smi device_level shape.
 _XPU_JSON = """\
@@ -344,3 +345,9 @@ def test_util_hint_os_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(intel_mod.subprocess, "run", _raise)
     assert intel_mod.intel_util_hint() is None
+
+
+def test_xpu_smi_output_of_a_failed_run_is_dropped(fake_tool: FakeTool) -> None:
+    """xpu-smi sets a non-zero exit only when its document is an error (errno), never partial."""
+    fake_tool("xpu-smi", _XPU_JSON, 3)
+    assert intel_mod._xpu_smi_samples(frozenset({0})) == {}

@@ -8,6 +8,7 @@ from lilbee.providers.fleet import gpu_backends
 from lilbee.providers.fleet.gpu_backends import apple as apple_mod
 from lilbee.providers.fleet.gpu_backends.apple import BACKEND_KEY, AppleBackend
 from lilbee.providers.fleet.gpu_backends.base import UtilSample
+from tests.providers.fleet.gpu_backends import FakeTool
 
 _INDICES = frozenset({0})
 
@@ -86,3 +87,8 @@ def test_registry_returns_none_for_unknown() -> None:
     assert gpu_backends.resolve_backend("Vulkan") is None
     assert gpu_backends.resolve_backend("BLAS") is None
     assert gpu_backends.resolve_backend("") is None
+
+
+def test_ioreg_output_of_a_failed_run_is_dropped(fake_tool: FakeTool) -> None:
+    fake_tool("ioreg", _IOREG, 1)
+    assert apple_mod._ioreg_samples(_INDICES) == {}

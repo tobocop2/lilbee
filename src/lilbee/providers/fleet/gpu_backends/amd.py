@@ -67,8 +67,12 @@ def _amd_smi_output() -> str:
 
 
 def _rocm_smi_output() -> str:
-    """rocm-smi JSON stdout, or "" when it can't run."""
-    return run_smi(_TOOL_ROCM_SMI, list(_ROCM_SMI_ARGS), _TIMEOUT_S)
+    """rocm-smi JSON stdout, or "" when it can't run.
+
+    ROCm 5.2 and older exit 1 after it prints the JSON of the cards it could read; the
+    parser reads the card entries it can and drops the others.
+    """
+    return run_smi(_TOOL_ROCM_SMI, list(_ROCM_SMI_ARGS), _TIMEOUT_S, keeps_partial=True)
 
 
 def _parse_amd_smi(raw: str, indices: frozenset[int]) -> dict[int, UtilSample]:

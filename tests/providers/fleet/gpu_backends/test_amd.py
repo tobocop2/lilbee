@@ -7,6 +7,7 @@ import pytest
 from lilbee.providers.fleet import gpu_backends
 from lilbee.providers.fleet.gpu_backends import amd as amd_mod
 from lilbee.providers.fleet.gpu_backends.amd import AmdBackend, _parse_amd_smi, _parse_rocm_smi
+from tests.providers.fleet.gpu_backends import FakeTool
 
 _INDICES = frozenset({0, 1})
 
@@ -337,3 +338,48 @@ def test_parse_amd_smi_util_none_when_no_flat_or_nested() -> None:
 def test_parse_rocm_smi_skips_non_dict_card_value() -> None:
     """A card whose value is not a dict is skipped."""
     assert _parse_rocm_smi('{"card0": "x"}', frozenset({0})) == {}
+
+
+# ---------------------------------------------------------------------------
+# A tool that prints readings and then exits non-zero (a real child process)
+# rocm-smi 5.2 and older exit 1 after they print the JSON of the cards they read
+# (python_smi_tools/rocm_smi.py: RETCODE is not reset to 0 before exit); from 5.3 a
+# default log level exits 0. amd-smi prints an error document and no readings.
+# ---------------------------------------------------------------------------
+
+_ROCM_ONE_BROKEN_CARD = (
+    '{"card0": {"GPU use (%)": "35", "Temperature (Sensor edge) (C)": "52"}, "card1": "N/A"}'
+)
+
+
+def test_rocm_smi_cards_printed_before_a_failure_are_kept(
+    fake_tool: FakeTool, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_tool("rocm-smi", _ROCM_ONE_BROKEN_CARD, 1)
+    result = AmdBackend().sample(_INDICES)
+    assert set(result) == {0}  # card1 is broken and dropped
+    assert result[0].utilization_pct == 35
+    assert result[0].temperature_c == 52
+    assert len([r for r in caplog.records if "rocm-smi exit code 1" in r.getMessage()]) == 1
+
+
+def test_rocm_smi_failure_warns_once_over_repeated_samples(
+    fake_tool: FakeTool, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_tool("rocm-smi", _ROCM_ONE_BROKEN_CARD, 1)
+    for _ in range(3):
+        AmdBackend().sample(_INDICES)
+    assert len(caplog.records) == 1
+
+
+def test_rocm_smi_text_after_a_failure_reads_as_no_cards(fake_tool: FakeTool) -> None:
+    fake_tool("rocm-smi", "ERROR: no AMD GPUs detected\n", 1)
+    fake_tool("amd-smi", "", 1)
+    assert AmdBackend().sample(_INDICES) == {}
+
+
+def test_amd_smi_error_document_after_a_failure_reads_as_no_cards(fake_tool: FakeTool) -> None:
+    """amd-smi prints an error document, not readings, so a failed run is still dropped."""
+    fake_tool("rocm-smi", "", 1)
+    fake_tool("amd-smi", '[{"gpu": 0, "gfx_activity": 72, "temperature_c": 61}]', 1)
+    assert AmdBackend().sample(_INDICES) == {}

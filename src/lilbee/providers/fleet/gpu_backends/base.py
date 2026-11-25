@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import subprocess
@@ -11,6 +12,11 @@ from typing import Protocol
 
 from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.fleet.proc import run_bounded
+
+log = logging.getLogger(__name__)
+
+# (tool, exit code) pairs already warned of: a sampler that runs every second warns once.
+_warned_exits: set[tuple[str, int]] = set()
 
 _SMI_TIMEOUT_S = 5.0
 # Bounded wait for a timed-out smi tool to die before abandoning it: a driver-
@@ -54,13 +60,29 @@ def run_tool(tool: str, args: Sequence[str], timeout: float) -> tuple[str, int |
         return "", None
 
 
-def run_smi(tool: str, args: Sequence[str], timeout: float = _SMI_TIMEOUT_S) -> str:
+def run_smi(
+    tool: str,
+    args: Sequence[str],
+    timeout: float = _SMI_TIMEOUT_S,
+    *,
+    keeps_partial: bool = False,
+) -> str:
     """Resolve tool via shutil.which, run it, return stdout on rc==0 else "".
 
-    Returns "" when the tool is not found, exits non-zero, or raises.
+    Returns "" when the tool is not found, cannot start, or hits the time limit. A non-zero
+    exit returns "" too, unless ``keeps_partial`` says the tool prints the readings it
+    could take before it fails: then the output is returned and the parser drops what it
+    cannot read. That exit logs one warning per tool and exit code.
     """
     stdout, returncode = run_tool(tool, args, timeout)
-    return stdout if returncode == 0 else ""
+    if returncode == 0:
+        return stdout
+    if keeps_partial and returncode is not None and stdout:
+        if (tool, returncode) not in _warned_exits:
+            _warned_exits.add((tool, returncode))
+            log.warning("%s exit code %d after it printed readings; keeping them", tool, returncode)
+        return stdout
+    return ""
 
 
 def extract_int(obj: object, keys: tuple[str, ...]) -> int | None:

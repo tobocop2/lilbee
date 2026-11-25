@@ -11,6 +11,7 @@ from lilbee.providers.fleet.gpu_backends.base import (
     parse_device_index,
     run_smi,
 )
+from tests.providers.fleet.gpu_backends import FakeTool
 
 # ---------------------------------------------------------------------------
 # extract_int
@@ -198,3 +199,57 @@ def test_find_metric_unparseable_string_returns_none() -> None:
 def test_find_metric_non_scalar_value_returns_none() -> None:
     # A list value can't be coerced and isn't a dict to recurse into.
     assert find_metric({"gfx_activity": [1, 2, 3]}, ("gfx_activity",)) is None
+
+
+# ---------------------------------------------------------------------------
+# run_smi on a non-zero exit (a real child that prints, then fails)
+# ---------------------------------------------------------------------------
+
+
+def test_run_smi_drops_the_output_of_a_failed_run_by_default(fake_tool: FakeTool) -> None:
+    fake_tool("fake-smi", "rows\n", 1)
+    assert run_smi("fake-smi", []) == ""
+
+
+def test_run_smi_keeps_the_output_of_a_failed_run_when_asked(fake_tool: FakeTool) -> None:
+    fake_tool("fake-smi", "rows\n", 1)
+    assert run_smi("fake-smi", [], keeps_partial=True) == "rows\n"
+
+
+def test_run_smi_keeps_nothing_when_a_failed_run_printed_nothing(
+    fake_tool: FakeTool, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_tool("fake-smi", "", 1)
+    assert run_smi("fake-smi", [], keeps_partial=True) == ""
+    assert not caplog.records
+
+
+def test_run_smi_keeps_nothing_without_an_exit_code(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A tool that cannot start or hits the time limit has no exit code and no rows to keep."""
+    monkeypatch.setattr(base_mod, "run_tool", lambda *_a: ("half a row", None))
+    assert run_smi("fake-smi", [], keeps_partial=True) == ""
+    assert not caplog.records
+
+
+def test_run_smi_warns_once_per_tool_and_exit_code(
+    fake_tool: FakeTool, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_tool("fake-smi", "rows\n", 1)
+    for _ in range(3):
+        run_smi("fake-smi", [], keeps_partial=True)
+    assert [r.getMessage() for r in caplog.records] == [
+        "fake-smi exit code 1 after it printed readings; keeping them"
+    ]
+    fake_tool("fake-smi", "rows\n", 2)
+    run_smi("fake-smi", [], keeps_partial=True)
+    assert len(caplog.records) == 2
+
+
+def test_run_smi_warns_of_nothing_after_an_exit_zero(
+    fake_tool: FakeTool, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_tool("fake-smi", "rows\n", 0)
+    assert run_smi("fake-smi", [], keeps_partial=True) == "rows\n"
+    assert not caplog.records
