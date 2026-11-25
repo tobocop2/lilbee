@@ -41,7 +41,7 @@ from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import ENCODER_RUNTIME_BYTES, UNKNOWN_SIZE_RESERVE_BYTES
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from lilbee.providers.truncation import note_truncated, truncation_scope
-from tests._safetensors import safetensors_bytes
+from tests._safetensors import safetensors_bytes, safetensors_header
 
 FIXTURES = Path(__file__).parent / "conformance" / "fixtures" / "engines"
 L4 = ("NVIDIA L4", (8, 9))
@@ -193,6 +193,66 @@ def test_memory_is_the_weights_plus_the_runtime_allowance_on_a_cpu_build(
     assert estimate.kind is MemoryKind.FIXED_RESERVE
     assert estimate.device_bytes == estimate.shared_bytes == 4_000 + ENCODER_RUNTIME_BYTES
     assert estimate.size_known is True
+
+
+_MIB = 1024**2
+
+
+def _sparse_encoder_folder(
+    root: Path, weight_mib: float, vocab_size: int | None, dtype: str | None = None
+) -> Path:
+    """A folder whose whole safetensors file is sparse, so a large size costs no disk or memory."""
+    size = int(weight_mib * _MIB)
+    folder = root / "sparse-encoder"
+    folder.mkdir()
+    with (folder / "model.safetensors").open("wb") as handle:
+        handle.write(safetensors_header(size))
+        handle.truncate(size)
+    config: dict[str, Any] = {} if vocab_size is None else {"vocab_size": vocab_size}
+    if dtype is not None:
+        config["torch_dtype"] = dtype
+    (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    return folder
+
+
+def test_a_large_vocabulary_is_charged_its_load_peak_on_a_cpu_build(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps())
+    folder = _sparse_encoder_folder(tmp_path, 1060.7, 250_002)
+    charge = TEI.estimate_memory(_encoder_request(folder)).device_bytes
+    assert charge >= 4617 * _MIB
+
+
+def test_a_small_vocabulary_is_charged_within_a_third_of_its_load_peak_on_a_cpu_build(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps())
+    folder = _sparse_encoder_folder(tmp_path, 418, 30_522)
+    charge = TEI.estimate_memory(_encoder_request(folder)).device_bytes
+    assert 742 * _MIB <= charge <= 742 * _MIB * 1.3
+
+
+def test_a_config_with_no_vocabulary_is_charged_as_a_large_one_on_a_cpu_build(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps())
+    missing = TEI.estimate_memory(_encoder_request(_sparse_encoder_folder(tmp_path, 418, None)))
+    other = tmp_path / "other"
+    other.mkdir()
+    large = TEI.estimate_memory(_encoder_request(_sparse_encoder_folder(other, 418, 250_002)))
+    assert missing.device_bytes == large.device_bytes >= 418 * _MIB + 3584 * _MIB
+
+
+def test_a_cuda_build_keeps_the_weights_plus_allowance_charge_for_a_large_vocabulary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=L4))
+    folder = _sparse_encoder_folder(tmp_path, 1060.7, 250_002, "bfloat16")
+    weights = int(1060.7 * _MIB)
+    assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
+        weights + ENCODER_RUNTIME_BYTES
+    )
 
 
 def test_a_cuda_build_holds_float32_weights_as_float16(
