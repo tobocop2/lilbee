@@ -311,6 +311,7 @@ class TestAcceptDraft:
             source_names=["manual.pdf"],
             page_type=WikiSubdir.CONCEPTS,
             source_ids={},
+            live_ids=None,
         )
         store = MagicMock()
         with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
