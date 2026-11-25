@@ -409,11 +409,12 @@ def your_changes() -> tuple[ChangeRow, ...]:
 
 def _changes_in(layers: SettingLayers) -> tuple[ChangeRow, ...]:
     underneath = replace(layers, user={})
-    return tuple(
+    rows = (
         _change_row(key, layers.user[key], resolve(key, underneath))
         for key in _your_profile_keys(layers)
         if key not in layers.env
     )
+    return tuple(row for row in rows if row.yours != row.profile_value)
 
 
 def _change_row(key: str, yours: Any, fallback: Resolved) -> ChangeRow:
