@@ -402,7 +402,7 @@ class TestPrestartMpResourceTracker:
         assert events == ["prestart", "redirect", "run"]
 
     def _run_tui_with_return_code(
-        self, return_code: int | None
+        self, return_code: int | None, straggler_exit: mock.Mock | None = None
     ) -> tuple[mock.Mock, str | int | None]:
         """Run the real run_tui with an app that ends with *return_code*.
 
@@ -414,7 +414,7 @@ class TestPrestartMpResourceTracker:
         async def _run_async(_self: LilbeeApp) -> None:
             return None
 
-        straggler_exit = mock.Mock()
+        straggler_exit = straggler_exit or mock.Mock()
         raised: str | int | None = None
         with (
             mock.patch.object(tui, "_prestart_mp_resource_tracker"),
@@ -458,6 +458,52 @@ class TestPrestartMpResourceTracker:
                 root.removeHandler(handler)
                 handler.close()
         assert leaked == []
+
+    def test_run_tui_keeps_the_tui_log_for_records_of_the_straggler_wait(self) -> None:
+        import logging
+
+        from lilbee.cli.tui.log_routing import tui_log_path
+
+        root = logging.getLogger()
+        before = list(root.handlers)
+
+        def _straggler_logs(_status: int) -> None:
+            logging.getLogger("lilbee").error("straggler-record")
+
+        try:
+            self._run_tui_with_return_code(0, mock.Mock(side_effect=_straggler_logs))
+            leaked = [h for h in root.handlers if h not in before]
+            text = tui_log_path().read_text()
+        finally:
+            for handler in [h for h in root.handlers if h not in before]:
+                root.removeHandler(handler)
+                handler.close()
+        assert "straggler-record" in text
+        assert leaked == []
+
+    def test_run_tui_leaves_no_handler_to_fail_once_the_data_root_is_gone(self) -> None:
+        import logging
+        import shutil
+        from logging.handlers import RotatingFileHandler
+
+        from lilbee.core.config import cfg
+
+        root = logging.getLogger()
+        before = list(root.handlers)
+        try:
+            self._run_tui_with_return_code(0)
+            shutil.rmtree(cfg.data_root)
+            # Closing a handler that survived makes its next record reopen the missing file.
+            for handler in root.handlers:
+                if isinstance(handler, RotatingFileHandler):
+                    handler.close()
+            with mock.patch.object(logging.Handler, "handleError") as handle_error:
+                logging.getLogger("lilbee").error("after-the-data-root-is-gone")
+        finally:
+            for handler in [h for h in root.handlers if h not in before]:
+                root.removeHandler(handler)
+                handler.close()
+        handle_error.assert_not_called()
 
     @pytest.mark.parametrize("return_code", [0, None])
     def test_run_tui_returns_and_passes_zero_when_the_app_ends_cleanly(
