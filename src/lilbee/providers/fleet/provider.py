@@ -47,7 +47,6 @@ from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.binary import engine_pin, installed_llama_server
 from lilbee.providers.fleet.client import (
     ChatDeadlineError,
-    DeviceRefusedError,
     LlamaServerClient,
     StreamInterruptedError,
     StreamSilentError,
@@ -739,16 +738,27 @@ def _warm_chains(
 
 
 def _warm_role(role: WorkerRole, client: LlamaServerClient) -> None:
-    """Send the cheapest request that loads *role*'s upstream behind llama-swap.
+    """Load *role*'s upstream behind llama-swap.
 
-    Vision is skipped (its load is heavy and it warms on the first OCR); chat,
-    embed, and rerank each issue a minimal call to trigger the upstream start.
-    The chat warm ends when its client closes, so a shutdown never waits out a load.
-    A failed load raises the reason the engine reports for it, when it reports one. A
-    load that returns is checked against the engine's report of its device.
+    Vision is skipped (its load is heavy and it warms on the first OCR). A client
+    that has not read its device yet loads through its device gate, which reads the
+    device after the load.
     """
     if role is WorkerRole.VISION:
         return
+    if client.needs_device_check:
+        client.ensure_device()
+    else:
+        load_role(role, client)
+
+
+def load_role(role: WorkerRole, client: LlamaServerClient) -> None:
+    """Send the cheapest request that loads *role*'s upstream behind llama-swap.
+
+    Chat, embed, and rerank each issue a minimal call to trigger the upstream start.
+    The chat warm ends when its client closes, so a shutdown never waits out a load.
+    A failed load raises the reason the engine reports for it, when it reports one.
+    """
     try:
         if role is WorkerRole.CHAT:
             client.chat_abortable(
@@ -762,7 +772,6 @@ def _warm_role(role: WorkerRole, client: LlamaServerClient) -> None:
     except ProviderError as exc:
         client.explain_load_failure(exc)
         raise
-    client.confirm_device()
 
 
 def _tell_listeners(listeners: tuple[Callable[[WorkerRole], None], ...], role: WorkerRole) -> None:
@@ -1372,9 +1381,8 @@ class FleetProvider:
         # installed (role -> ref). The warm finalizer reads it to fail a not-installed
         # chat with a named reason instead of clearing to a silent "not ready" retry.
         self._skipped_not_installed: dict[WorkerRole, str] = {}
-        # Launches the last plan refused for an unusable window, and roles whose every
-        # replica a warm found on the wrong device (role -> reason); read by the warm
-        # finalizer and _require_clients. The next plan replaces it.
+        # Launches the last plan refused for an unusable window (role -> reason);
+        # read by the warm finalizer and _require_clients.
         self._refused_roles: dict[WorkerRole, str] = {}
         # Why the last acquisition left this process without a fleet because the
         # private dir has a live user; shown before any generic no-server line.
@@ -2021,6 +2029,7 @@ class FleetProvider:
                     engine_log=_output_log_of(engine, launch, swap.log_path),
                     model_ref=launch.model,
                     profile=profile,
+                    load=functools.partial(load_role, role),
                 )
                 for launch in role_launches
             ]
@@ -3331,8 +3340,6 @@ class FleetProvider:
                 # without anything having to remember it was bad.
                 client.mark_unhealthy()
                 self._warm_errors[role] = str(exc)
-                if isinstance(exc, DeviceRefusedError):
-                    self._remove_refused_replica(role, client, str(exc))
                 log.warning(
                     "The %s model failed to load: %s",
                     role.value,
@@ -3346,32 +3353,6 @@ class FleetProvider:
             if swap is not None:
                 swap.record_ready()
         return warmed
-
-    def _remove_refused_replica(
-        self, role: WorkerRole, client: LlamaServerClient, reason: str
-    ) -> None:
-        """Take a replica on the wrong device out of service until the next warm checks it.
-
-        llama-swap stops its upstream, so health no longer lists it as loaded. The client
-        leaves the pool, because llama-swap starts a stopped upstream on its next request.
-        A role left with no replica refuses its requests with *reason*. A replica that a
-        reload already replaced is left alone: its model id may now name the new upstream.
-        The reservation keeps the retired client open for the unload, so a reload on
-        another thread does not close it first.
-        """
-        with self._lock:
-            pool = self._clients.get(role, [])
-            if client not in pool:
-                return
-            self._clients[role] = [kept for kept in pool if kept is not client]
-            if not self._clients[role]:
-                self._refused_roles[role] = reason
-            client.reserve()
-            self._retire_clients([client])
-        try:
-            client.unload_upstream()
-        finally:
-            client.release()
 
     def _warm_chat_role(self, clients: list[LlamaServerClient]) -> None:
         """Warm the chat role, driving the tracker through read -> load -> ready/fail.
