@@ -1481,15 +1481,15 @@ async def _run_post_ingest_passes(
 
     The index pass only runs when this sync indexed something. The concept
     clusters are recomputed only when a source was added, updated or removed,
-    or the concept backfill wrote rows: a relocation changes no co-occurrence.
-    The backfill runs every sync and costs nothing once it is current, so
-    turning the concept setting on needs no separate operation. Every sync
-    renders again each wiki page that shows a path its cited source no longer
-    has, so the next sync repairs a page a stopped one left. The wiki hook and
-    the entity lifecycle run every sync (a cheap no-op when off or already
-    current): the wiki index
-    takes what any sync wrote and no refresh read, and turning the entity
-    setting on takes effect without a separate operation.
+    or the stored concept rows owe a recluster: a relocation changes no
+    co-occurrence. The concept backfill runs every sync and costs nothing once
+    it is current, so turning the concept setting on needs no separate
+    operation. Every sync renders again each wiki page that shows a path its
+    cited source no longer has, so the next sync repairs a page a stopped one
+    left. The wiki hook and the entity lifecycle run every sync (a cheap no-op
+    when off or already current): the wiki index takes what any sync wrote and
+    no refresh read, and turning the entity setting on takes effect without a
+    separate operation.
     """
     if indexed_anything:
         store.ensure_fts_index()

@@ -346,7 +346,7 @@ async def test_without_a_spacy_model_the_backfill_waits_for_one():
     assert library.sources_with_concepts() == {"a.txt"}
 
 
-async def test_a_sync_that_only_moves_a_document_loads_no_spacy_model():
+async def test_a_sync_that_only_moves_a_document_does_no_concept_work():
     library = _Library()
     library.add("a.txt", "b.txt")
     cfg.concept_graph = True
@@ -354,12 +354,16 @@ async def test_a_sync_that_only_moves_a_document_loads_no_spacy_model():
     before = library.store.sources_version()
     (cfg.documents_dir / "b.txt").rename(cfg.documents_dir / "moved.txt")
 
-    with patch.object(library.graph, "can_extract") as can_extract:
+    with (
+        patch.object(library.graph, "can_extract") as can_extract,
+        patch.object(ConceptGraph, "rebuild_clusters") as rebuild,
+    ):
         result = await sync(quiet=True)
 
     assert result.relocated == ["moved.txt"]
     assert library.store.sources_version() != before
     can_extract.assert_not_called()
+    rebuild.assert_not_called()
     assert library.store.concepts_covered().version == library.store.sources_version()
 
 
@@ -375,8 +379,6 @@ async def test_a_read_of_no_sources_reads_no_chunks():
 
 
 def test_a_read_of_many_sources_sends_bounded_in_lists():
-    from lilbee.retrieval.concepts.graph import _SOURCE_ID_BATCH
-
     store = MagicMock()
     table = store.open_table.return_value
     predicates: list[str] = []
@@ -389,12 +391,12 @@ def test_a_read_of_many_sources_sends_bounded_in_lists():
         return query
 
     table.search.return_value.where.side_effect = where
-    ids = [f"id-{i:04d}" for i in range(_SOURCE_ID_BATCH + 1)]
+    ids = [f"id-{i:04d}" for i in range(2001)]
 
     holding = ConceptGraph(cfg, store).sources_with_concepts(ids)
 
     assert holding == {"id-0000"}
-    assert [predicate.count("'") // 2 for predicate in predicates] == [_SOURCE_ID_BATCH, 1]
+    assert [predicate.count("'") // 2 for predicate in predicates] == [2000, 1]
 
 
 async def test_dropping_the_index_forgets_what_the_backfill_covered():
