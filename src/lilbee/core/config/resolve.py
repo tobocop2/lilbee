@@ -96,7 +96,7 @@ def _present(table: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in table.items() if value_is_set(key, value)}
 
 
-def _read_toml(path: Path) -> dict[str, Any] | None:
+def read_config_table(path: Path) -> dict[str, Any] | None:
     """The parsed config.toml; empty when skipped or missing, None when unreadable.
 
     The load and the overlay report an unreadable file; this read runs on every settings read.
@@ -108,11 +108,6 @@ def _read_toml(path: Path) -> dict[str, Any] | None:
             return tomllib.load(f)
     except (ValueError, OSError):
         return None
-
-
-def read_config_table(path: Path) -> dict[str, Any] | None:
-    """The parsed config.toml at *path*; empty when skipped or missing, None when unreadable."""
-    return _read_toml(path)
 
 
 def toml_is_readable(path: Path) -> bool:
@@ -145,7 +140,7 @@ def _profile_table(data: Mapping[str, Any], path: Path) -> ProfileTable:
 def read_profile_table(root: Path) -> ProfileTable:
     """The ``[profile]`` table of ``root/config.toml``."""
     path = root / CONFIG_FILE_NAME
-    return _profile_table(_read_toml(path) or {}, path)
+    return _profile_table(read_config_table(path) or {}, path)
 
 
 def read_layers(root: Path, data: Mapping[str, Any] | None = None) -> SettingLayers:
@@ -159,7 +154,7 @@ def read_table_and_layers(
     """The ``[profile]`` table and the setting layers, from one read of ``root/config.toml``."""
     path = root / CONFIG_FILE_NAME
     if data is None:
-        data = _read_toml(path) or {}
+        data = read_config_table(path) or {}
     table = _profile_table(data, path)
     user = _present({key: value for key, value in data.items() if key != PROFILE_TABLE})
     profile = _present(table.values)
