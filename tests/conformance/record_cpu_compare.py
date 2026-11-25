@@ -148,7 +148,8 @@ def _download(url: str, dest: Path) -> None:
 
 
 def _repo_files(repo: str) -> list[str]:
-    with urllib.request.urlopen(f"{_HF}/api/models/{repo}/tree/main", timeout=60) as answer:
+    url = f"{_HF}/api/models/{repo}/tree/main?recursive=true"
+    with urllib.request.urlopen(url, timeout=60) as answer:
         entries: list[dict[str, Any]] = json.load(answer)
     return [e["path"] for e in entries if e["type"] == "file"]
 
