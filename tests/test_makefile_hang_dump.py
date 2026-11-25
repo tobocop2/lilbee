@@ -74,7 +74,9 @@ def test_the_long_recipes_do_not_get_the_watchdog(recipe: str, tmp_path: Path) -
 
 @needs_make
 @pytest.mark.parametrize("recipe", LONG_RECIPES)
-def test_a_value_from_the_shell_does_not_reach_the_long_recipes(recipe: str, tmp_path: Path) -> None:
+def test_a_value_from_the_shell_does_not_reach_the_long_recipes(
+    recipe: str, tmp_path: Path
+) -> None:
     shell = {**_env(), SECONDS: "7", FOLDER: "/from/the/shell"}
     assert _seen_by(recipe, tmp_path, env=shell) == "/"
 
