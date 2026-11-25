@@ -123,10 +123,11 @@ def _restore_diagnostics(handlers_before: list[logging.Handler], capture_was_on:
     finally:
         root = logging.getLogger()
         # Detach first, close after: a handler closed while attached reopens its file on
-        # the next record from another thread.
-        with logging._lock:
-            added = [handler for handler in root.handlers if handler not in handlers_before]
-            root.handlers[:] = handlers_before
+        # the next record from another thread. removeHandler takes the logging lock.
+        added = [handler for handler in root.handlers if handler not in handlers_before]
+        for handler in added:
+            root.removeHandler(handler)
+        root.handlers[:] = handlers_before
         for handler in added:
             handler.close()
         if not capture_was_on:

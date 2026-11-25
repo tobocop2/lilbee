@@ -170,7 +170,7 @@ def test_a_record_logged_during_the_close_does_not_reopen_the_log_file(
     The close hook logs one record, as that thread would. The handler is detached by then,
     so the record misses it; a handler still attached would reopen its stream.
     """
-    app, seen = routed_app
+    app, _ = routed_app
     original_close = RotatingFileHandler.close
     closed: list[RotatingFileHandler] = []
 
