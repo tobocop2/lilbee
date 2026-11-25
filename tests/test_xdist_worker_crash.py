@@ -328,6 +328,4 @@ def test_a_dead_worker_fails_the_run_instead_of_hanging_it(target: str, tmp_path
 def test_a_slow_worker_start_does_not_fail_the_dead_worker_run(tmp_path: Path) -> None:
     # Every worker start costs _START_COST_S of a shared CPU, as on a host at load 40. With one
     # worker per CPU the starts alone pass the run budget on any host of 16 CPUs or more.
-    _assert_the_dead_worker_failed_the_run(
-        *_toy_run("test", tmp_path, start_cost_s=_START_COST_S)
-    )
+    _assert_the_dead_worker_failed_the_run(*_toy_run("test", tmp_path, start_cost_s=_START_COST_S))
