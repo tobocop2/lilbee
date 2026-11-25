@@ -604,11 +604,12 @@ class TestRemove:
     async def test_folder_name_expands_to_members(self, mock_svc):
         from lilbee.data.store import RemoveResult
 
-        mock_svc.store.get_sources.return_value = [
+        mock_svc.store.iter_source_heads.side_effect = lambda: iter([
             {"filename": "docs/a.md"},
             {"filename": "docs/b.md"},
             {"filename": "other.md"},
-        ]
+        ])
+        mock_svc.store.missing_sources.return_value = set()
         captured: dict = {}
 
         def _remove(names, held=None):
@@ -623,11 +624,12 @@ class TestRemove:
     async def test_glob_pattern_expands_to_matches(self, mock_svc):
         from lilbee.data.store import RemoveResult
 
-        mock_svc.store.get_sources.return_value = [
+        mock_svc.store.iter_source_heads.side_effect = lambda: iter([
             {"filename": "a.log"},
             {"filename": "b.log"},
             {"filename": "c.md"},
-        ]
+        ])
+        mock_svc.store.missing_sources.return_value = set()
         captured: dict = {}
 
         def _remove(names, held=None):
