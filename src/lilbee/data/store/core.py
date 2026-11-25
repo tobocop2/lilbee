@@ -1378,16 +1378,26 @@ class Store:
                 chunk_settings=values,
             )
 
-    def _stamp_first_chunks_unlocked(
-        self, embedding_model: str, embedding_dim: int, chunk_settings: Mapping[str, Any] | None
+    def _add_and_stamp_unlocked(
+        self,
+        add: Callable[[], object],
+        embedding_model: str,
+        embedding_dim: int,
+        chunk_settings: Mapping[str, Any] | None,
     ) -> None:
-        """Write the meta row on the first chunk write; record *chunk_settings* when unrecorded.
+        """Run *add*, then write the meta row on the first chunk write and record
+        *chunk_settings* when the library holds none.
 
-        An incremental write into a library that holds a record leaves it as it is.
-        Caller holds ``write_lock()``.
+        The settings are assumed for chunks already in the library, so the warning
+        fires only when chunks were there before *add*; a meta row a memory write made
+        holds none. An incremental write into a recorded library leaves the record as
+        it is. Caller holds ``write_lock()``.
         """
         row = self._meta_row()
         meta = _meta_of(row)
+        unrecorded = meta is not None and chunk_settings is not None and _stamp_of(row) is None
+        assumed = unrecorded and self._has_chunks()
+        add()
         if meta is None:
             self._write_meta_unlocked(
                 embedding_model=embedding_model,
@@ -1395,8 +1405,9 @@ class Store:
                 canary=self._new_baseline(verified=True),
                 chunk_settings=chunk_settings,
             )
-        elif chunk_settings is not None and _stamp_of(row) is None:
-            _warn_unrecorded_chunks()
+        elif unrecorded:
+            if assumed:
+                _warn_unrecorded_chunks()
             self._write_meta_unlocked(
                 embedding_model=meta["embedding_model"],
                 embedding_dim=meta["embedding_dim"],
@@ -2429,8 +2440,10 @@ class Store:
             (record["source"], _source_type_of(record[_CHUNK_TYPE])) for record in records
         )
         table = self._chunks_table()
-        table.add(_keyed(records, "source", ids))
-        self._stamp_first_chunks_unlocked(embedding_model, embedding_dim, chunk_settings)
+        keyed = _keyed(records, "source", ids)
+        self._add_and_stamp_unlocked(
+            lambda: table.add(keyed), embedding_model, embedding_dim, chunk_settings
+        )
         return len(records)
 
     def add_chunks(
@@ -3661,8 +3674,10 @@ class Store:
         """Add the batch's chunk rows, writing meta on first use. Caller holds ``write_lock()``."""
         if not all_records:
             return
-        self._chunks_table().add(all_records)
-        self._stamp_first_chunks_unlocked(embedding_model, embedding_dim, chunk_settings)
+        table = self._chunks_table()
+        self._add_and_stamp_unlocked(
+            lambda: table.add(all_records), embedding_model, embedding_dim, chunk_settings
+        )
 
     def _batch_source_writes(self, items: list[ChunkWrite]) -> list[_SourceWrite]:
         """One ``_sources`` row per batched document, of the type its item states."""
