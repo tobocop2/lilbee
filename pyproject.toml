@@ -135,6 +135,14 @@ packages = ["src/lilbee"]
 # lilbee downloads an engine pack. This source override is workspace metadata.
 [tool.uv.sources]
 lilbee-engine-llama-cpp = { path = "packaging/engine-wheel" }
+lancedb = { index = "lilbee-compat", marker = "sys_platform == 'darwin' and platform_machine == 'x86_64'" }
+
+# The pre-Haswell lancedb builds. explicit = true binds the index to the
+# packages whose source names it, so no other package resolves from it.
+[[tool.uv.index]]
+name = "lilbee-compat"
+url = "https://lilbee.sh/compat/"
+explicit = true
 
 [dependency-groups]
 # Builds the PEP 503 indexes behind lilbee.sh (tools/build_wheel_indexes.py).

@@ -206,7 +206,7 @@ jobs:
         shell: bash
         run: |
           uv pip install --reinstall --no-deps \
-            --extra-index-url https://lilbee.sh/compat/ \
+            --default-index https://lilbee.sh/compat/ \
             lancedb==0.40.0+compat
 
       # Build the self-contained CUDA llama-server (binary + ggml/llama/mtmd libs
