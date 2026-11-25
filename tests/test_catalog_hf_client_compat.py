@@ -68,6 +68,14 @@ def test_a_browse_with_no_engine_lists_the_rows_as_unknown(
     assert [m.compat for m in models] == [ModelCompat.UNKNOWN]
 
 
+def test_a_client_given_no_engine_lookup_lists_the_rows_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _mock_response([_hf_row("llama")]))
+    models = HfClient(cfg).fetch_models().models
+    assert [m.compat for m in models] == [ModelCompat.UNKNOWN]
+
+
 def test_fetch_populates_arch_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: _mock_response([_hf_row("qwen3")]))
     client = _client()
