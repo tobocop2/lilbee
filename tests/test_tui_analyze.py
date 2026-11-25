@@ -227,7 +227,7 @@ async def test_the_changes_scroll_into_view_by_keyboard_at_80x24() -> None:
 def test_fact_rows_read_like_the_mockup() -> None:
     rows = dict(fact_rows(_report()))
     assert rows[msg.ANALYZE_FACT_TYPES] == "10 pdf, 2 docx"
-    assert rows[msg.ANALYZE_FACT_SCANS] == "43% of pages"
+    assert rows[msg.ANALYZE_FACT_SCANS] == "43% of pages (a file outside a PDF counts as one page)"
     assert rows[msg.ANALYZE_FACT_TABLES] == "in 3 of 10 PDFs"
     assert rows[msg.ANALYZE_FACT_LANGUAGES] == "German 61%, English 39% (text files)"
     assert rows[msg.ANALYZE_FACT_PDF_LENGTH] == "14 pages"

@@ -190,7 +190,14 @@ def _notes_share(signals: CorpusSignals) -> float:
 
 
 def _tables_share(signals: CorpusSignals) -> float:
-    return signals.pdf.files_with_tables / signals.files_read if signals.files_read else 0.0
+    """PDFs with tables over every file, like the code and notes shares.
+
+    Tables are counted in the read sample, so the sample's rate is scaled up to every document.
+    """
+    if not (signals.files_read and signals.files_total):
+        return 0.0
+    in_sample = signals.pdf.files_with_tables / signals.files_read
+    return in_sample * signals.documents_total / signals.files_total
 
 
 _PICK_RULES: tuple[_PickRule, ...] = (
@@ -200,7 +207,7 @@ _PICK_RULES: tuple[_PickRule, ...] = (
     _PickRule(CODE_REPOSITORY, CODE_REPOSITORY_SHARE, lambda s: s.code_share, "of files are code"),
     _PickRule(NOTES_AND_MARKDOWN, NOTES_SHARE, _notes_share, "of files are Markdown or text"),
     _PickRule(
-        RESEARCH_PAPERS, RESEARCH_TABLES_SHARE, _tables_share, "of documents are PDFs with tables"
+        RESEARCH_PAPERS, RESEARCH_TABLES_SHARE, _tables_share, "of files are PDFs with tables"
     ),
 )
 
