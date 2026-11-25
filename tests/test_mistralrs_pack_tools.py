@@ -1151,7 +1151,22 @@ _MISTRAL_CPU_CELLS = {
     "mistralrs-windows-x86_64-cpu",
     "mistralrs-macos-arm64-metal",
 }
-_MISTRAL_CUDA_CELLS = {f"mistralrs-linux-x86_64-cuda-sm{cc}" for cc in (80, 86, 89, 90, 100, 120)}
+_MISTRAL_CUDA_CCS = (80, 86, 89, 90, 100, 120)
+_MISTRAL_CUDA_CELLS = {f"mistralrs-linux-x86_64-cuda-sm{cc}" for cc in _MISTRAL_CUDA_CCS}
+
+
+def test_the_pack_matrix_holds_the_six_cuda_cells_that_the_pick_names() -> None:
+    cells = {cell["cell"] for cell in pack_cells("mistralrs")}
+    assert cells == _MISTRAL_CPU_CELLS | _MISTRAL_CUDA_CELLS
+
+
+@pytest.mark.parametrize("cc", _MISTRAL_CUDA_CCS)
+def test_each_cuda_cell_repacks_the_archive_of_its_own_compute_capability(cc: int) -> None:
+    """All six archives hold the same libraries, so the pack step cannot tell a wrong archive."""
+    cells = {cell["cell"]: cell for cell in pack_cells("mistralrs")}
+    cell = cells[f"mistralrs-linux-x86_64-cuda-sm{cc}"]
+    assert cell["backend"] == f"cuda-sm{cc}"
+    assert cell["asset"] == f"mistralrs-cuda128-sm{cc}-x86_64-unknown-linux-gnu.tar.gz"
 
 
 def test_the_pack_matrix_holds_the_cpu_cells_and_either_no_cuda_cell_or_the_six() -> None:
