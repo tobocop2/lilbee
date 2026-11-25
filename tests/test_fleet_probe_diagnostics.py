@@ -331,6 +331,25 @@ class TestAnEmptyProbeIsRetriedByOneLadder:
         planning_mod.capture_plan_probe({WorkerRole.CHAT: engine})
         assert engine.probes == 10
 
+    @pytest.mark.parametrize(
+        ("incumbent", "probes"), [(True, 10), (False, 5)], ids=["stopped", "none"]
+    )
+    def test_the_capture_probes_again_only_after_an_incumbent_was_stopped(
+        self, monkeypatch, tmp_path, incumbent: bool, probes: int
+    ) -> None:
+        from lilbee.providers.fleet import planning as planning_mod
+        from lilbee.providers.fleet import provider as prov_mod
+
+        monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 1)
+        monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+        monkeypatch.setattr(prov_mod, "engine_record_exists", lambda _d: incumbent)
+        monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
+        engine = _FakeEngine([self._empty()])
+        planning_mod.assert_engine_probeable(engine)
+        prov_mod._clear_engine_dir(tmp_path)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: engine})
+        assert engine.probes == probes
+
     def test_an_empty_check_older_than_the_window_is_probed_again(self, monkeypatch) -> None:
         import time
         from types import SimpleNamespace
