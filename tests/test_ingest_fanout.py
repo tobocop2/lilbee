@@ -709,7 +709,8 @@ class TestRunWorkers:
             messages.put(
                 fanout.ShardDone(kind="done", index=spec.shard.index, result=None, error="x")
             )
-            stop.wait(5)
+            # Hung after its verdict: it leaves on the TERM, not on the stop event.
+            fake_context.processes[spec.shard.index].wait_terminated()
 
         monkeypatch.setattr(fanout, "run_shard", fake_shard)
         await fanout.run_workers(
