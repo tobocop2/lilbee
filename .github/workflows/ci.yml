@@ -7,7 +7,7 @@ on:
     # chore/engine-pin-sync is the rolling engine bump branch. The bot opens its
     # pull request, so GitHub holds that pull_request run for approval, and the
     # suite never ran on a bump. The push from the sync workflow's deploy key
-    # starts this run without approval, the same way it starts the engine build.
+    # starts this run without approval, with the engine build that gates the bump.
     branches: [main, chore/engine-pin-sync]
   pull_request:
   workflow_call:
@@ -32,6 +32,7 @@ jobs:
       # A run with no diff to read (dispatch, workflow_call) runs every job.
       code: ${{ steps.filter.outputs.code || 'true' }}
       flake: ${{ steps.filter.outputs.flake || 'true' }}
+      engine: ${{ steps.filter.outputs.engine || 'true' }}
     steps:
       - uses: actions/checkout@v7
         if: github.event_name == 'push'
@@ -70,6 +71,15 @@ jobs:
               - 'sources-compat.json'
               - 'sources-compat-cuda.json'
               - '.github/workflows/ci.yml'
+            # The files the engine key hashes, and the workflow that builds it.
+            engine:
+              - 'engine-versions.env'
+              - 'tools/wheel-build/build_llama_server.sh'
+              - 'tools/wheel-build/bundle_rocm_runtime.sh'
+              - 'tools/wheel-build/bundle_windows_runtime.sh'
+              - 'tools/wheel-build/cmake_args.sh'
+              - 'tools/wheel-build/install_gpu_toolkit.sh'
+              - '.github/workflows/build-multigpu.yml'
 
   lint:
     needs: [changes]
@@ -616,10 +626,27 @@ jobs:
         run: |
           nix eval --json .#packages --apply 'builtins.mapAttrs (_: builtins.mapAttrs (_: p: p.drvPath))'
 
+  # Compiles every engine backend, CUDA included, when an engine pin or build
+  # script changes. It runs here because ci-result is the only check that
+  # blocks a merge: a red CUDA cell in a separate workflow did not stop a pin
+  # that could not compile for sm_70. `required: true` makes a failed cell fail
+  # this job. A backend whose engine the mirror already holds is not rebuilt.
+  # A pull request run does not upload to the mirror, so the main push after
+  # a merged engine change compiles the changed backends again.
+  engine:
+    needs: [changes]
+    if: needs.changes.outputs.engine == 'true'
+    permissions:
+      contents: write  # build-multigpu publishes the engines it builds to the mirror release
+    uses: ./.github/workflows/build-multigpu.yml
+    with:
+      required: true
+    secrets: inherit
+
   # The one check branch protection requires.
   ci-result:
     if: always()
-    needs: [changes, lint, shell, npm-launcher, claude-plugin, fuzz-smoke, test, integration, flake]
+    needs: [changes, lint, shell, npm-launcher, claude-plugin, fuzz-smoke, test, integration, flake, engine]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

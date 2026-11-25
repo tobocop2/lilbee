@@ -46,7 +46,8 @@ A release is dominated by two things it should almost never do: compiling `llama
 ```mermaid
 flowchart TB
     subgraph WARM["on main · non-tag refs only"]
-        WEC["warm-engine-cache.yml<br/>weekly · on pin change"] --> BMG["build-multigpu.yml"]
+        WEC["warm-engine-cache.yml<br/>weekly"] --> BMG["build-multigpu.yml"]
+        CIE["ci.yml engine job<br/>on pin change · blocks the merge"] --> BMG
         WXC["warm-executables-cache.yml<br/>weekly · on demand"] --> REL["release.yml"]
         WXC --> BCE["build-gpu-executables.yml"]
     end
