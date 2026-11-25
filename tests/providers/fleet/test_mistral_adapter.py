@@ -724,6 +724,17 @@ def _no_read() -> list[NvidiaCard]:
     raise AssertionError("a CPU build read the driver")
 
 
+def test_a_host_with_no_card_offers_the_cpu_target_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64"))
+    assert MISTRAL.device_targets(Path("mistralrs")) == {RoleTarget.CPU}
+
+
+def test_the_swap_extras_name_the_one_served_model() -> None:
+    assert MISTRAL.swap_extras(None) == {"useModelName": "default"}  # type: ignore[arg-type]
+
+
 def test_a_cpu_build_reads_no_card_and_lists_no_device(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
