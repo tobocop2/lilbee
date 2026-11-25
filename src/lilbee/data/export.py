@@ -215,14 +215,15 @@ _RENAME_RETRY_WAIT_S = 0.2
 
 def _replace_when_free(partial: Path, target: Path) -> None:
     """Rename *partial* onto *target*, again on Windows while another handle holds it."""
-    for attempt in range(1, _RENAME_ATTEMPTS + 1):
+    for _ in range(_RENAME_ATTEMPTS - 1):
         try:
             os.replace(partial, target)
             return
         except PermissionError:
-            if sys.platform != "win32" or attempt == _RENAME_ATTEMPTS:
+            if sys.platform != "win32":
                 raise
         time.sleep(_RENAME_RETRY_WAIT_S)
+    os.replace(partial, target)
 
 
 def serialize_dataset(table: pa.Table, fmt: DatasetFormat) -> bytes:

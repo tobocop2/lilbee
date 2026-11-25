@@ -535,6 +535,23 @@ class TestReplaceCitationsForWiki:
             "other"
         ]
 
+    def test_an_empty_record_list_clears_the_page(self, store):
+        from tests.conftest import make_citation
+
+        store.add_citations(
+            [
+                make_citation(wiki_source="wiki/concepts/a.md", citation_key="old"),
+                make_citation(wiki_source="wiki/concepts/b.md", citation_key="other"),
+            ]
+        )
+
+        store.replace_citations_for_wiki("wiki/concepts/a.md", [])
+
+        assert store.get_citations_for_wiki("wiki/concepts/a.md") == []
+        assert [c["citation_key"] for c in store.get_citations_for_wiki("wiki/concepts/b.md")] == [
+            "other"
+        ]
+
 
 class TestEnsureFtsIndex:
     def test_noop_when_no_table(self, store):
@@ -2598,6 +2615,26 @@ class TestAdaptiveFilter:
         ]
         filtered = store._adaptive_filter(results, top_k=1, initial_threshold=0.3)
         assert len(filtered) == 1
+
+    def test_tiny_step_runs_out_the_iteration_cap_then_answers_at_the_cap(self, store, test_config):
+        # 20 steps of 0.001 never reach the cap, so the loop ends by its own bound.
+        test_config.adaptive_threshold_step = 0.001
+        results = [
+            SearchChunk(
+                source="a.md",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="far",
+                chunk_index=0,
+                vector=[0.1],
+                distance=0.9,
+            ),
+        ]
+        filtered = store._adaptive_filter(results, top_k=2, initial_threshold=0.3)
+        assert [c.chunk for c in filtered] == ["far"]
 
     def test_stops_at_max_threshold(self, store):
         results = [

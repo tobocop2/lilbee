@@ -210,6 +210,15 @@ class TestLintChangedSources:
         # Should only lint the page once
         store.get_citations_for_wiki.assert_called_once()
 
+    def test_an_explicit_config_is_used_for_the_lint(self, tmp_path: Path):
+        write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_source.return_value = [make_citation(source_filename="doc.md")]
+        store.get_citations_for_wiki.return_value = [make_citation(source_filename="doc.md")]
+        report = lint_changed_sources(["doc.md"], store, config=cfg.model_copy())
+        # The cited source does not exist, so the page lints with an error.
+        assert report.error_count >= 1
+
     def test_empty_sources_returns_empty_report(self):
         store = MagicMock(spec=Store)
         report = lint_changed_sources([], store)
@@ -307,6 +316,19 @@ class TestLintWritesLogEntry:
 
 
 class TestOrphanDetection:
+    def test_links_with_a_blank_target_count_for_no_page(self, tmp_path: Path):
+        write_wiki_page(tmp_path, "concepts", "braking", "# Braking\n\nText.\n")
+        write_wiki_page(tmp_path, "summaries", "doc", "Blank [[ ]] and [[ |label]] links.\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        report = lint_all(store)
+        orphans = {
+            i.wiki_source
+            for i in report.issues
+            if i.issue_type is not None and i.issue_type.value == "orphan"
+        }
+        assert orphans == {"wiki/concepts/braking.md"}
+
     def test_orphan_concept_flagged(self, tmp_path: Path):
         write_wiki_page(tmp_path, "concepts", "braking", "# Braking\n\nText.\n")
         write_wiki_page(tmp_path, "concepts", "linked", "# Linked\n\nText.\n")

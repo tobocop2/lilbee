@@ -127,20 +127,28 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
         config.load()
     server.lifespan = config.lifespan_class(config)
 
-    # `server.servers` is set inside `startup()`. The finally below must skip
-    # `shutdown()` when startup never ran: uvicorn dereferences `self.servers`
-    # there and the resulting AttributeError would mask the original failure.
-    started = False
-    try:
-        set_server_exit_hook(exit_request)
-        try:
-            await server.startup()
-        except SystemExit:
-            # uvicorn ends a failed start (lifespan or bind) with the status a lock refusal uses.
-            # A stop signal during the start has set its own nonzero status.
-            return exit_request.status or _STARTUP_FAILED_EXIT_STATUS
-        started = True
+    def release() -> None:
+        arm_exit_deadline(_EXIT_DEADLINE_S)
+        answer_provider_waiters()
+        set_server_exit_hook(None)
+        port_path.unlink(missing_ok=True)
 
+    # `server.servers` is set inside `startup()`. `shutdown()` runs only after a
+    # start that finished: uvicorn dereferences `self.servers` there and the
+    # resulting AttributeError would mask the original failure.
+    set_server_exit_hook(exit_request)
+    try:
+        await server.startup()
+    except SystemExit:
+        # uvicorn ends a failed start (lifespan or bind) with the status a lock refusal uses.
+        # A stop signal during the start has set its own nonzero status.
+        release()
+        return exit_request.status or _STARTUP_FAILED_EXIT_STATUS
+    except BaseException:
+        release()
+        raise
+
+    try:
         if server.servers:
             sock = server.servers[0].sockets[0]
             actual_port = sock.getsockname()[1]
@@ -150,15 +158,11 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
             console.print(f"Listening on http://{host}:{actual_port}")
         await server.main_loop()
     finally:
-        arm_exit_deadline(_EXIT_DEADLINE_S)
-        answer_provider_waiters()
-        set_server_exit_hook(None)
-        port_path.unlink(missing_ok=True)
-        if started:
-            # Suppress AttributeError from a partial uvicorn bring-up so any
-            # original exception from main_loop reaches the caller intact.
-            with contextlib.suppress(AttributeError):
-                await server.shutdown()
+        release()
+        # Suppress AttributeError from a partial uvicorn bring-up so any
+        # original exception from main_loop reaches the caller intact.
+        with contextlib.suppress(AttributeError):
+            await server.shutdown()
     return exit_request.status
 
 

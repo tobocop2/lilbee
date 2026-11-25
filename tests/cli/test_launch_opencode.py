@@ -813,6 +813,23 @@ def test_record_setup_leaves_existing_marker_intact_on_failure(tmp_path, monkeyp
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_record_setup_propagates_a_failure_to_create_the_temp_file(tmp_path, monkeypatch):
+    """No temp file exists yet when its creation fails: the error reaches the caller, no marker."""
+    from lilbee.cli.launchers import setup_gate
+
+    marker = tmp_path / "opencode-setup.json"
+
+    def _boom(*_a, **_k):
+        raise OSError("no space for a temp file")
+
+    monkeypatch.setattr(setup_gate, "_marker_path", lambda _name: marker)
+    monkeypatch.setattr(setup_gate.tempfile, "NamedTemporaryFile", _boom)
+    with pytest.raises(OSError, match="no space"):
+        setup_gate._record_setup("opencode-setup.json")
+    assert not marker.exists()
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 def test_launch_opencode_skips_prompt_when_marker_present(tmp_path):
     # A recorded marker means later launches do not re-print the setup plan.
     _write_server_session()

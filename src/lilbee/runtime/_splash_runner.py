@@ -322,7 +322,7 @@ def _animate_frames(
             time.sleep(POLL_INTERVAL)
 
         if not should_stop():
-            os.write(fd, move_up_and_clear(frame_height))  # pragma: no cover
+            os.write(fd, move_up_and_clear(frame_height))
 
         frame_idx += 1
 

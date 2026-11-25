@@ -244,6 +244,28 @@ class TestEnsureEntities:
         assert store.entity_value_counts("part_number") == (1, 1)  # regex still ran
         assert any("spaCy model unavailable" in r.message for r in caplog.records)
 
+    def test_spacy_types_skipped_when_concepts_unavailable(self, isolated):
+        store, _services = isolated
+        _index_chunks(store, ["part PX4471"])
+        save_schema(
+            EntitySchema(
+                types=[
+                    EntityType(name="person", kind=ExtractorKind.SPACY, pattern="PERSON"),
+                    EntityType(name="part_number", kind=ExtractorKind.REGEX, pattern=r"PX\d{4}"),
+                ]
+            ),
+            store,
+            applied=False,
+            source_count=1,
+        )
+        with (
+            mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=False),
+            mock.patch("lilbee.retrieval.concepts.nlp.load_spacy_pipeline") as load,
+        ):
+            ensure_entities()
+        load.assert_not_called()
+        assert store.entity_value_counts("part_number") == (1, 1)  # regex still ran
+
     def test_provider_failure_during_full_pass_leaves_schema_unapplied(self, isolated, caplog):
         """A pass whose LLM batches fail (chat model down) must not mark the
         schema applied: applied=True with zero rows would make every later

@@ -240,12 +240,12 @@ class Embedder:
                 batch_chars = 0
             batch.append(truncated)
             batch_chars += chunk_len
-        if batch:
-            vectors.extend(self._embed_batch_of(batch))
-            on_progress(
-                EventType.EMBED,
-                EmbedEvent(file=source, chunk=len(vectors), total_chunks=total_chunks),
-            )
+        # *texts* is non-empty, so the last text always leaves the final batch non-empty.
+        vectors.extend(self._embed_batch_of(batch))
+        on_progress(
+            EventType.EMBED,
+            EmbedEvent(file=source, chunk=len(vectors), total_chunks=total_chunks),
+        )
         for vec in vectors:
             self.validate_vector(vec)
         return vectors

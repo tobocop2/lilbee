@@ -311,6 +311,23 @@ class TestGetNlp:
         mock_ensure.assert_called_once()
         assert nlp1 is nlp2
 
+    @patch("lilbee.retrieval.concepts.graph._ensure_spacy_model")
+    def test_model_loaded_by_another_thread_is_not_reloaded(self, mock_ensure, cg):
+        """A first-caller that waited on the lock finds the model already loaded."""
+        loaded = MagicMock()
+
+        class _LoadsWhileWaiting:
+            def __enter__(self):
+                cg._nlp = loaded
+
+            def __exit__(self, *exc):
+                return False
+
+        cg.reset_nlp_cache()
+        cg._nlp_lock = _LoadsWhileWaiting()
+        assert cg._ensure_nlp() is loaded
+        mock_ensure.assert_not_called()
+
 
 class TestEnsureSpacyModel:
     def test_loads_existing(self):
@@ -672,6 +689,17 @@ class TestExpandQuery:
     def test_expand_query_no_concepts(self, mock_spacy, cg):
         mock_spacy.return_value = _make_mock_nlp({"???": []})
         assert cg.expand_query("???") == []
+
+    @patch("lilbee.retrieval.concepts.graph._ensure_spacy_model")
+    def test_expand_query_skips_neighbors_already_seen(self, mock_spacy, cg):
+        """A neighbor shared by two concepts, or equal to a query concept, appears once."""
+        mock_spacy.return_value = _make_mock_nlp({"python flask": ["python", "flask"]})
+        neighbors = {
+            "python": ["flask", "django"],
+            "flask": ["django", "jinja"],
+        }
+        with patch.object(cg, "get_related_concepts", side_effect=lambda c: neighbors[c]):
+            assert cg.expand_query("python flask") == ["django", "jinja"]
 
 
 class TestGetRelatedConcepts:
