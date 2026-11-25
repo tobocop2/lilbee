@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -150,10 +151,42 @@ async def test_an_http_mounted_tool_binds_no_pin_of_its_own(monkeypatch):
         return "ran"
 
     monkeypatch.setattr(server._tool_manager, "call_tool", record)
-    with request_config_scope():
-        cfg.top_k = 9
+    cfg.top_k = 9
+    with request_config_scope():  # the HTTP middleware's pin
+        with published_config_scope():
+            cfg.top_k = 4  # another request's change, published meanwhile
         assert await server.call_tool("settings_get", {}) == "ran"
     assert pins[0].top_k == 9
+
+
+async def test_the_rag_stream_thread_reads_the_request_config(monkeypatch):
+    from lilbee.server.handlers import rag
+
+    async def no_frames() -> list[str]:
+        return []
+
+    async def no_sources(*_args: Any) -> AsyncIterator[str]:
+        for frame in ():
+            yield frame
+
+    seen: list[str] = []
+    searcher = rag.get_services().searcher
+    searcher.search_unavailable.return_value = False
+    searcher.skip_retrieval.return_value = False
+    monkeypatch.setattr(rag, "_warming_frames", no_frames)
+    monkeypatch.setattr(rag, "_emit_sources_and_memories", no_sources)
+    monkeypatch.setattr(
+        rag, "_resolve_stream_context", lambda *_a, **_k: ([], [{"role": "user"}], [])
+    )
+    monkeypatch.setattr(rag, "_run_llm_stream", lambda *_args: seen.append(cfg.chat_model))
+    cfg.chat_model = "pinned/chat"
+    pinned = cfg.chat_model
+    with request_config_scope():
+        with published_config_scope():
+            cfg.chat_model = "later/chat"  # another request's change, published meanwhile
+        frames = [frame async for frame in rag.ask_stream("q")]
+    assert cfg.chat_model != pinned
+    assert seen == [pinned], frames
 
 
 def test_a_write_publishes_a_new_config_and_leaves_the_old_one_whole():
