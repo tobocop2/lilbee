@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -375,6 +376,9 @@ def spawn_server(
             stderr=stderr,
             env=child_env,
             start_new_session=os.name == "posix",
+            # Windows: a group of its own stops a console Ctrl-C reaching serve and
+            # lets CTRL_BREAK target serve alone. The flag is 0 elsewhere.
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
         )
     finally:
         # Popen dups the fd into the child; the parent's handle is no longer
@@ -387,7 +391,12 @@ def stop_spawned_server(proc: subprocess.Popen[bytes]) -> None:
     """Terminate *proc* gracefully, escalating to kill if it ignores SIGTERM."""
     if proc.poll() is not None:
         return
-    proc.terminate()
+    if sys.platform == "win32":
+        # terminate() is TerminateProcess there: serve's handlers never run. CTRL_BREAK
+        # reaches the one process group spawn_server made for serve and nothing else.
+        proc.send_signal(signal.CTRL_BREAK_EVENT)
+    else:
+        proc.terminate()
     try:
         proc.wait(timeout=_TERMINATE_GRACE_S)
     except subprocess.TimeoutExpired:

@@ -702,8 +702,10 @@ class _EngineLifecycle:
     @staticmethod
     def _hard_exit_signals() -> tuple[signal.Signals, ...]:  # pragma: no cover - platform split
         """Signals whose default disposition kills us without running atexit."""
-        if sys.platform == "win32":  # Windows has no SIGHUP
-            return (signal.SIGTERM,)
+        if sys.platform == "win32":
+            # No SIGHUP. Nothing delivers SIGTERM there either: the launcher's stop is
+            # CTRL_BREAK, which arrives as SIGBREAK.
+            return (signal.SIGTERM, signal.SIGBREAK)
         return (signal.SIGTERM, signal.SIGHUP)
 
     @staticmethod
