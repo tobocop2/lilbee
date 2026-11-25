@@ -783,7 +783,8 @@ async def test_the_catalog_install_of_a_format_nothing_loads_enqueues_it(
 def test_a_container_retries_on_the_engine_choice_the_file_now_holds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from lilbee.app.services import build_services, set_config_refresh
+    from lilbee.app.services import build_services, follow_config_long_running
+    from lilbee.core import settings as persistent_settings
     from lilbee.providers.fleet.provider import FleetProvider
     from lilbee.providers.routing_provider import RoutingProvider
     from tests.test_fleet_provider import _connection_error
@@ -796,10 +797,12 @@ def test_a_container_retries_on_the_engine_choice_the_file_now_holds(
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(cfg, "chat_model", GGUF_REF)
-    services = build_services(cfg)
+    # A long-running process (the TUI) takes a model choice; a one-off holds it.
+    follower = follow_config_long_running(frozenset(), keeper="the TUI")
+    services = build_services(cfg, config_refresh=follower.take_now)
     try:
-        # Another process writes the new choice; the surface takes it when asked.
-        set_config_refresh(lambda: monkeypatch.setattr(cfg, "chat_model", other_ref))
+        # Another process writes the new choice; the follower takes it at the retry.
+        persistent_settings.save(cfg.data_root, {"chat_model": other_ref})
         attempts: list[str] = []
 
         def call() -> str:
