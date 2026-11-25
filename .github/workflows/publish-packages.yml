@@ -312,15 +312,17 @@ jobs:
   # so it must publish after they are attached -- `resolve` is that gate.
   # It publishes packages/lilbee/package.json as committed at the tag, and refuses
   # a package.json whose version is not the npm form of the tag (release.sh and
-  # promote_release.sh stamp it). scripts/publish_npm.sh skips dev builds and a
-  # version already on npm. Auth is npm trusted publishing: the registry takes the
+  # promote_release.sh stamp it). scripts/publish_npm.sh skips a version already
+  # on npm, and fails when it cannot publish. Auth is npm trusted publishing: the registry takes the
   # job's OIDC token, so there is no npm token anywhere and provenance is
   # automatic. That trust is configured per package on npmjs.com and names
   # this filename, so renaming this workflow breaks the publish -- see
   # packages/lilbee/docs/publishing.md.
   npm:
     needs: resolve
-    if: inputs.channels == 'all' || contains(inputs.channels, 'npm')
+    # A dev tag never publishes to npm, so 'all' leaves npm out for one and the
+    # job shows as skipped. A run that names npm for a dev tag fails in the script.
+    if: (inputs.channels == 'all' && !contains(inputs.tag, '.dev')) || contains(inputs.channels, 'npm')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Mirrors the PyPI job: the `npm` environment name is pinned by npm's
