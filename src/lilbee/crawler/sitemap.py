@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from http import HTTPStatus
 from typing import TYPE_CHECKING
@@ -16,6 +17,8 @@ from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 if TYPE_CHECKING:
     import ada_url
     import httpx
+
+log = logging.getLogger(__name__)
 
 # Sitemap lookups are best-effort progress hints; never block the actual crawl.
 _SITEMAP_FETCH_TIMEOUT_SECONDS = 5.0
@@ -53,6 +56,9 @@ def _get(url: str, seed: ada_url.URL, user_agent: str, login: CrawlLogin) -> htt
             timeout=_SITEMAP_FETCH_TIMEOUT_SECONDS,
             follow_redirects=False,
         )
+    except httpx.InvalidURL as exc:
+        log.info("Skipping the sitemap lookup: httpx rejected %s (%s)", url, exc)
+        return None
     except (httpx.HTTPError, OSError):
         return None
 
