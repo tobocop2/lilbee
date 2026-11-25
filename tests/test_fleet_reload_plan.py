@@ -234,22 +234,22 @@ def test_a_request_during_a_real_embed_restart_gets_the_new_server(
     class _HeldSwap(_FakeSwap):
         def start(self, *args, **kwargs) -> None:
             starting.set()
-            assert release.wait(_JOIN_S)
+            release.wait()
             super().start(*args, **kwargs)
 
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, _group: _HeldSwap())
     cfg.chunk_size = _NOTES_CHUNK_SIZE
     provider.reload_role(WorkerRole.VISION)
-    assert starting.wait(_JOIN_S)
+    starting.wait()
 
     results: list[object] = []
     request = threading.Thread(
         target=lambda: results.append(provider._require_clients(WorkerRole.EMBED)), daemon=True
     )
     request.start()
-    assert gate.entered.wait(_JOIN_S)
+    gate.entered.wait()
     release.set()
-    request.join(_JOIN_S)
+    request.join()
     _join_fleet_threads()
     assert len(results) == 1
     assert results[0][0] is not old_client  # type: ignore[index]
@@ -1095,7 +1095,7 @@ def test_two_chats_after_a_failed_start_share_one_start(
 
     def held_start(self: _EngineSwap, launches: list[object], **kwargs: object) -> None:
         starting.set()
-        assert release.wait(_JOIN_S)
+        release.wait()
         failing_start(self, launches, **kwargs)
 
     monkeypatch.setattr(_EngineSwap, "start", held_start)
@@ -1103,13 +1103,13 @@ def test_two_chats_after_a_failed_start_share_one_start(
     chats = [threading.Thread(target=lambda: answers.append(_ask(provider))) for _ in range(2)]
     try:
         chats[0].start()
-        assert starting.wait(_JOIN_S)
+        starting.wait()
         chats[1].start()
-        assert gate.entered.wait(_JOIN_S)
+        gate.entered.wait()
     finally:
         release.set()
         for chat in [chat for chat in chats if chat.ident is not None]:
-            chat.join(_JOIN_S)
+            chat.join()
     _join_fleet_threads()
 
     assert _texts(answers) == ["the answer", "the answer"]

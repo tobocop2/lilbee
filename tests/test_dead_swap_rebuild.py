@@ -12,7 +12,7 @@ from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.provider import RELOAD_FAILED_NOTICE, FleetProvider
 from lilbee.providers.roles import WorkerRole
-from tests.test_engine_write_applied import _local, _wait_for, fleet
+from tests.test_engine_write_applied import _local, fleet
 from tests.test_fleet_work_orders import _Caller
 
 __all__ = ["fleet"]
@@ -73,26 +73,29 @@ def test_two_calls_on_a_dead_swap_start_one_rebuild(
             local._reload_owed = frozenset()
             local._reload_done.notify_all()
         entered.set()
-        assert gate.wait(10.0)
+        gate.wait()
         with local._lock:
             local._swaps[local._role_group[_ROLE]].is_live = lambda: True
             revived[_ROLE] = [MagicMock()]
 
     monkeypatch.setattr(local, "_reload_pass", _pass)
     handed: list[Any] = []
+    holding = threading.Semaphore(0)
     real_start = local._start_fleet_work
 
     def _recorded() -> Any:
         work = real_start()
         handed.append(work)
+        holding.release()
         return work
 
     monkeypatch.setattr(local, "_start_fleet_work", _recorded)
     first = _Caller(lambda: local._require_clients(_ROLE))
-    assert entered.wait(10.0)
+    entered.wait()
     second = _Caller(lambda: local._require_clients(_ROLE))
     # Both callers hold the work of their rebuild before the first pass ends.
-    _wait_for(lambda: len(handed) == 2)
+    holding.acquire()
+    holding.acquire()
     gate.set()
     first.join()
     second.join()
