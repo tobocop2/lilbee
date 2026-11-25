@@ -163,7 +163,7 @@ def _settings_gates_open():
             return_value=True,
         ),
         patch(
-            "lilbee.cli.tui.screens.settings_widgets.crawler_available",
+            "lilbee.cli.tui.screens.settings_widgets.crawler_installed",
             return_value=True,
         ),
     ):
