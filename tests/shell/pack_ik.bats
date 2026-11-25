@@ -153,6 +153,17 @@ bash
 /work/tools/wheel-build/ik_llama_manylinux.sh" ]
 }
 
+@test "the build container keeps the default isolation of the container engine" {
+  cuda
+  run bash "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  # The container builds a commit that it fetches from the network. No option may lower its isolation.
+  run grep -iE 'security-opt|seccomp|apparmor|unconfined|privileged|cap-add|--device|--pid|--ipc|--net|--userns|--cgroupns' "${DOCKER_LOG}"
+  [ "$status" -eq 1 ]
+  run grep -iE 'security-opt|seccomp|apparmor|unconfined|privileged|cap-add|setarch' "${SCRIPT}"
+  [ "$status" -eq 1 ]
+}
+
 @test "each variable that the build script requires reaches the container" {
   run bash "${SCRIPT}"
   [ "$status" -eq 0 ]
