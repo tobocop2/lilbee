@@ -26,9 +26,9 @@ The Machine column names the machine that the recording names. The Version colum
 
 | Recording | Roles | Machine | Result | Version | Fixture |
 |---|---|---|---|---|---|
-| llama.cpp-cpu | chat, embed, rerank, vision | CPU host | pass, 10 of 10 steps | 0.8.0-dev (build 1, commit dde879b) | `llama.cpp-cpu.json` |
+| llama.cpp-cpu | chat, embed, rerank, vision | CPU host | pass, 10 of 10 steps | 1.12032.1 | `llama.cpp-cpu.json` |
 | llama.cpp-cuda | chat, embed, rerank, vision | NVIDIA GeForce RTX 3090 | pass, 10 of 10 steps | memory-20261019-152820 62be051e9 llama-server 0.7.0-dev (build 1, commit 62be051) | `llama.cpp-cuda.json` |
-| llama.cpp-cpu-inline | chat | CPU host | pass, 7 of 7 steps | version: 0.8.0-dev (build 1, commit dde879b) | `llama.cpp-cpu-inline.json` |
+| llama.cpp-cpu-inline | chat | CPU host | pass, 7 of 7 steps | 1.12032.1 | `llama.cpp-cpu-inline.json` |
 | mistralrs-cpu | chat, embed, vision | CPU host | pass, 9 of 9 steps | mistralrs 0.9.5 v0.9.5 cpu | `mistralrs-cpu.json` |
 | tei-cpu | embed, rerank | CPU host | pass, 3 of 3 steps | 1.9.4 BAAI/bge-small-en-v1.5,BAAI/bge-reranker-base cpu-1.9 | `tei-cpu.json` |
 | tei-cuda | embed, rerank | NVIDIA GeForce RTX 3090 | pass, 3 of 3 steps | 1.9.4 BAAI/bge-small-en-v1.5,BAAI/bge-reranker-base cuda-source-1.9.4 | `tei-cuda.json` |
