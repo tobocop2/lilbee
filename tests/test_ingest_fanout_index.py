@@ -687,7 +687,11 @@ class TestARecordWithoutATitle:
                 file_hash=name,
                 records=[_chunk(name, **extra)],
             )
-            for name, extra in (("bare.txt", {}), ("one.txt", {"title": "One"}), ("two.txt", {"title": "Two"}))
+            for name, extra in (
+                ("bare.txt", {}),
+                ("one.txt", {"title": "One"}),
+                ("two.txt", {"title": "Two"}),
+            )
         ]
 
         pipeline_mod._flush_batch(results)
