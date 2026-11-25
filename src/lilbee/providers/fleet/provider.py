@@ -3519,13 +3519,16 @@ class FleetProvider:
             _tell_listeners(on_spawning, role)
             try:
                 if role is WorkerRole.CHAT:
-                    self._warm_chat_role(pools[role])
+                    warmed = self._warm_chat_role(pools[role])
                 else:
-                    self._warm_role_clients(role, pools[role])
+                    warmed = self._warm_role_clients(role, pools[role])
             except Exception as exc:
                 first_exc = first_exc or exc
             else:
                 _tell_listeners(on_spawned, role)
+                if warmed:
+                    # After READY and the listeners: a slow report read delays neither.
+                    self._read_reports(role, pools[role])
         if first_exc is not None:
             raise first_exc
 
@@ -3570,10 +3573,22 @@ class FleetProvider:
             with self._lock:
                 swap = self._swap_for(role)
             if swap is not None:
-                swap.engine_ready(role)
+                swap.record_ready()
         return warmed
 
-    def _warm_chat_role(self, clients: list[LlamaServerClient]) -> None:
+    def _read_reports(self, role: WorkerRole, clients: list[LlamaServerClient]) -> None:
+        """Read the engine memory report of each of *clients* that loaded.
+
+        Runs after the warm stamped its outcome, on the thread that warmed. A
+        replica a failed warm marked unhealthy is not read. The reads block.
+        """
+        loaded = [client.model_id for client in clients if client.healthy]
+        with self._lock:
+            swap = self._swap_for(role)
+        if swap is not None and loaded:
+            swap.check_loaded(loaded)
+
+    def _warm_chat_role(self, clients: list[LlamaServerClient]) -> bool:
         """Warm the chat role, driving the tracker through read -> load -> ready/fail.
 
         Readiness is decided by whether a warm request actually returned, not by
@@ -3592,6 +3607,7 @@ class FleetProvider:
                 self._warm_tracker.ready()
             else:
                 self._warm_tracker.fail(self._chat_load_failure())
+        return warmed
 
     @contextmanager
     def _lazy_warm_scope(self) -> Iterator[None]:
@@ -3631,6 +3647,10 @@ class FleetProvider:
             self._lazy_warming = False
         if error is None or self.role_ready(WorkerRole.CHAT):
             self._warm_tracker.ready()
+            # The owner's request returned from a load, with no poll behind it.
+            with self._lock:
+                clients = list(self._clients.get(WorkerRole.CHAT, []))
+            self._read_reports(WorkerRole.CHAT, clients)
         else:
             self._warm_tracker.fail(error)
 

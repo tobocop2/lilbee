@@ -111,6 +111,7 @@ class _FakeSwap:
         self.ready: set[WorkerRole] = set()
         self.running = True
         self.ready_records = 0
+        self.loaded_reads: list[list[str]] = []
         self.bound = False  # bound to a shared engine (set by the adopt/bind path)
         self.lifetime: EngineLifetime | None = None  # set by start()
         self.log_path = Path("/engine/logs/llama-swap-fake.log")
@@ -139,8 +140,11 @@ class _FakeSwap:
     def role_ready(self, role: WorkerRole) -> bool:
         return role in self.ready
 
-    def engine_ready(self, role: WorkerRole) -> None:
+    def record_ready(self) -> None:
         self.ready_records += 1
+
+    def check_loaded(self, model_ids) -> None:
+        self.loaded_reads.append(list(model_ids))
 
     def health_warnings(self) -> list:
         return []
@@ -9376,3 +9380,80 @@ class TestAStreamCutBeforeAnyText:
             assert server.streams == 2  # the first cut is retried once, the second is final
         finally:
             server.close()
+
+
+class TestReportsReadAfterTheLoad:
+    """A load the warm or a lazy request finished reads its engine report, after READY."""
+
+    def _provider(self, monkeypatch, swap: _FakeSwap) -> FleetProvider:
+        from lilbee.providers.fleet import provider as provider_mod
+
+        monkeypatch.setattr(provider_mod, "_warm_role", lambda _r, _c: None)
+        p = FleetProvider()
+        monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+        p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT, WorkerRole.EMBED: SwapGroup.CHAT}
+        p._swaps = {SwapGroup.CHAT: swap}
+        return p
+
+    def _client(self, model_id: str, healthy: bool = True) -> MagicMock:
+        client = _fake_client()
+        client.model_id = model_id
+        client.healthy = healthy
+        return client
+
+    def test_the_warm_reads_the_replicas_it_warmed_not_a_running_listing(
+        self, monkeypatch
+    ) -> None:
+        swap = _FakeSwap()
+        p = self._provider(monkeypatch, swap)
+        pools = {WorkerRole.EMBED: [self._client("embed-0"), self._client("embed-1", False)]}
+        p._warm_chain([WorkerRole.EMBED], pools, ((), ()))
+        assert swap.loaded_reads == [["embed-0"]]
+
+    def test_a_failed_warm_reads_nothing(self, monkeypatch) -> None:
+        from lilbee.providers.fleet import provider as provider_mod
+
+        swap = _FakeSwap()
+        p = self._provider(monkeypatch, swap)
+        monkeypatch.setattr(
+            provider_mod, "_warm_role", lambda _r, _c: (_ for _ in ()).throw(RuntimeError("x"))
+        )
+        pools = {WorkerRole.EMBED: [self._client("embed-0")]}
+        p._warm_chain([WorkerRole.EMBED], pools, ((), ()))
+        assert swap.loaded_reads == []
+
+    def test_chat_is_ready_before_its_report_is_read(self, monkeypatch) -> None:
+        from lilbee.providers.warm_progress import WarmPhase
+
+        swap = _FakeSwap()
+        p = self._provider(monkeypatch, swap)
+        phases: list[object] = []
+        swap.check_loaded = lambda ids: phases.append(p.warm_progress().phase)  # type: ignore[method-assign]
+        pools = {WorkerRole.CHAT: [self._client("chat-0")]}
+        p._warm_chain([WorkerRole.CHAT], pools, ((), ()))
+        assert phases == [WarmPhase.READY]
+
+    def test_the_listeners_hear_spawned_before_the_report_is_read(self, monkeypatch) -> None:
+        swap = _FakeSwap()
+        p = self._provider(monkeypatch, swap)
+        order: list[str] = []
+        swap.check_loaded = lambda ids: order.append("read")  # type: ignore[method-assign]
+        pools = {WorkerRole.EMBED: [self._client("embed-0")]}
+        p._warm_chain([WorkerRole.EMBED], pools, ((), (lambda _r: order.append("spawned"),)))
+        assert order == ["spawned", "read"]
+
+    def test_a_lazy_load_that_succeeds_reads_the_report(self, monkeypatch) -> None:
+        swap = _FakeSwap()
+        p = self._provider(monkeypatch, swap)
+        p._clients = {WorkerRole.CHAT: [self._client("chat-0")]}
+        p._lazy_warming = True
+        p._end_lazy_warm(None)
+        assert swap.loaded_reads == [["chat-0"]]
+
+    def test_a_lazy_load_that_fails_reads_nothing(self, monkeypatch) -> None:
+        swap = _FakeSwap()
+        p = self._provider(monkeypatch, swap)
+        p._clients = {WorkerRole.CHAT: [self._client("chat-0")]}
+        p._lazy_warming = True
+        p._end_lazy_warm("boom")
+        assert swap.loaded_reads == []

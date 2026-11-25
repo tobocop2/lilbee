@@ -358,9 +358,8 @@ class TestFailedReadyProbe:
 
         monkeypatch.setattr(engine, "get", recording_get)
         manager = self._manager(tmp_path, ["/bin/llama-server", MEMORY_FLAG])
-        manager._ready_at = None
         assert reads == []
-        manager.engine_ready(WorkerRole.CHAT)
+        manager.check_loaded(["chat-0"])
         assert [url.rsplit("/", 1)[1] for url in reads] == ["running", "memory"]
         reads.clear()
         assert [w.code for w in manager.health_warnings()] == [WarningCode.HOST_SPILL]
@@ -371,10 +370,12 @@ class TestFailedReadyProbe:
 
         self._engine(monkeypatch)
         manager = self._manager(tmp_path, ["/bin/llama-server"])
-        manager.engine_ready(WorkerRole.CHAT)
+        manager.check_loaded(["chat-0"])
         assert [w.code for w in manager.health_warnings()] == [WarningCode.HOST_SPILL]
 
-    def test_a_load_is_read_once(self, tmp_path: Path, monkeypatch) -> None:
+    def test_a_poll_after_the_load_does_not_read_it_again(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
         from lilbee.providers.fleet.readback import MEMORY_FLAG
 
         engine = self._engine(monkeypatch)
@@ -388,15 +389,38 @@ class TestFailedReadyProbe:
 
         monkeypatch.setattr(engine, "get", recording_get)
         manager = self._manager(tmp_path, ["/bin/llama-server", MEMORY_FLAG])
-        manager.engine_ready(WorkerRole.CHAT)
-        manager.engine_ready(WorkerRole.CHAT)
+        manager.check_loaded(["chat-0"])
+        manager.role_ready(WorkerRole.CHAT)
         assert [url.rsplit("/", 1)[1] for url in reads].count("memory") == 1
 
-    def test_an_unlisted_replica_is_not_read(self, tmp_path: Path, monkeypatch) -> None:
+    def test_a_load_with_an_empty_running_listing_is_still_read(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.core.health_warnings import WarningCode
+
         engine = self._engine(monkeypatch)
         engine.running = []
         manager = self._manager(tmp_path, ["/bin/llama-server"])
-        manager.engine_ready(WorkerRole.CHAT)
+        manager.check_loaded(["chat-0"])
+        assert [w.code for w in manager.health_warnings()] == [WarningCode.HOST_SPILL]
+
+    def test_a_reload_with_no_poll_between_is_read_again(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.core.health_warnings import WarningCode
+        from lilbee.providers.fleet.readback import MEMORY_FLAG
+
+        GIB = 1024**3
+        engine = self._engine(monkeypatch)
+        engine.memory = {
+            "data": [{"name": "CUDA0", "model": 4 * GIB}, {"name": "Host", "model": 6 * GIB}]
+        }
+        manager = self._manager(tmp_path, ["/bin/llama-server", MEMORY_FLAG])
+        manager.check_loaded(["chat-0"])
+        assert [w.code for w in manager.health_warnings()] == [WarningCode.HOST_SPILL]
+        # The model reloaded with every layer on the card: the old spill is gone.
+        engine.memory = {"data": [{"name": "CUDA0", "model": 4 * GIB}]}
+        manager.check_loaded(["chat-0"])
         assert manager.health_warnings() == []
 
     def test_health_warnings_makes_no_probe_read(self, tmp_path: Path, monkeypatch) -> None:

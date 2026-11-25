@@ -596,20 +596,27 @@ class SwapManager:
         self._ready_at = time.time()
         self._write_state()
 
-    def engine_ready(self, role: WorkerRole) -> None:
-        """Record that *role*'s engines loaded, and read their memory reports.
+    def check_loaded(self, model_ids: Iterable[str]) -> None:
+        """Read the memory report of each engine in *model_ids*, which a request just loaded.
 
-        Called by whoever saw the load finish (the warm request that returned),
-        so a serve that nothing polls still checks each engine once per load.
-        Only replicas that /running lists as ready are read, so a replica that failed
-        to load is not reported as one that did not answer. If the listing is empty or
-        fails, the next readiness poll reads them. The probes block: call this from a
-        worker thread.
+        The caller saw the load finish: a warm request returned for these replicas.
+        A serve that nothing polls still checks each engine this way. Each id is
+        read afresh, with its earlier findings dropped, because the warm is the one
+        event a reload after an idle unload gives the manager without a poll. The
+        unload itself is not seen: llama-swap's idle timer and the engine reaper
+        act outside this object. The probes block: call this from a worker thread.
         """
-        self.record_ready()
-        prefix = role_model_prefix(role)
-        loaded = self._ready_models() or set()
-        self._check_new({model for model in loaded if model.startswith(prefix)})
+        loaded = set(model_ids)
+        for model_id in loaded:
+            self._forget_estimate(model_id)
+        self._check_new(loaded)
+
+    def _forget_estimate(self, model_id: str) -> None:
+        """Drop *model_id*'s findings and mark it unread."""
+        self._estimate_checked.discard(model_id)
+        with self._warnings_lock:
+            self._placement_warnings.pop(model_id, None)
+            self._spill_warnings.pop(model_id, None)
 
     @property
     def log_path(self) -> Path:
@@ -645,10 +652,7 @@ class SwapManager:
         ready set has unloaded, so its findings go and its next load is read afresh.
         """
         for model_id in self._estimate_checked - ready:
-            self._estimate_checked.discard(model_id)
-            with self._warnings_lock:
-                self._placement_warnings.pop(model_id, None)
-                self._spill_warnings.pop(model_id, None)
+            self._forget_estimate(model_id)
         self._check_new(ready)
 
     def _check_new(self, loaded: set[str]) -> None:

@@ -342,7 +342,10 @@ class _Swap:
     def is_live(self) -> bool:
         return True
 
-    def engine_ready(self, role: WorkerRole) -> None:
+    def record_ready(self) -> None:
+        return None
+
+    def check_loaded(self, model_ids) -> None:
         return None
 
     def routes(self) -> dict[str, Reply]:
