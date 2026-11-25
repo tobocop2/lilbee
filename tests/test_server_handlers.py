@@ -1977,6 +1977,104 @@ class TestMemoryExtractedEvent:
         assert "memory_extracted" in _event_types(events)
 
 
+async def _frames_after_done(stream, done_sent: list[bool]) -> list[str]:
+    """Drain *stream* and return the frames it yields after the done frame.
+
+    Each frame after done must arrive in one step of the generator, with no
+    await in between. A stream that awaits anything once done is out, such as
+    an extraction pass or a worker thread, fails the assertion. *done_sent*
+    turns true once done is out, so a test can also refuse frame building.
+    """
+    async for frame in stream:
+        if frame.startswith("event: done"):
+            break
+    else:
+        raise AssertionError("the stream sent no done frame")
+    done_sent.append(True)
+    after: list[str] = []
+    while True:
+        step = stream.__anext__()
+        try:
+            step.send(None)
+        except StopIteration as yielded:
+            after.append(yielded.value)
+            continue
+        except StopAsyncIteration:
+            return after
+        step.close()
+        await stream.aclose()
+        raise AssertionError(f"the stream awaited work after the done frame; sent {after}")
+
+
+class TestNothingRunsAfterDone:
+    """Once done is sent, a chat or ask stream only yields frames it has already built."""
+
+    def _saved(self):
+        from lilbee.app.memory import SavedMemory
+        from lilbee.data.store import MemoryKind
+
+        return [SavedMemory(id="m1", kind=MemoryKind.FACT, text="the user drives a crown vic")]
+
+    def _chat(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        return handlers.chat_stream("q", [])
+
+    def _ask(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.return_value = iter(["noted"])
+        return handlers.ask_stream("q")
+
+    def _chat_refusal(self, mock_svc):
+        mock_svc.searcher.search_unavailable.return_value = True
+        return handlers.chat_stream("q", [])
+
+    def _ask_refusal(self, mock_svc):
+        mock_svc.searcher.search_unavailable.return_value = True
+        return handlers.ask_stream("q")
+
+    def _chat_direct_answer(self, mock_svc):
+        mock_svc.searcher.pre_retrieval_answer.return_value = "the library is empty"
+        return handlers.chat_stream("q", [])
+
+    def _ask_direct_answer(self, mock_svc):
+        mock_svc.searcher.pre_retrieval_answer.return_value = "the library is empty"
+        return handlers.ask_stream("q")
+
+    @pytest.mark.parametrize(
+        ("path", "trailer"),
+        [
+            ("_chat", ["memory_extracted"]),
+            ("_ask", ["memory_extracted"]),
+            ("_chat_refusal", []),
+            ("_ask_refusal", []),
+            ("_chat_direct_answer", []),
+            ("_ask_direct_answer", []),
+        ],
+    )
+    async def test_frames_after_done_are_prebuilt(self, mock_svc, path, trailer):
+        mock_svc.searcher.search_unavailable.return_value = False
+        mock_svc.searcher.skip_retrieval.return_value = False
+        mock_svc.searcher.pre_retrieval_answer.return_value = None
+        done_sent: list[bool] = []
+        real_sse_event = _rag_h.sse_event
+
+        def build_frame(event, data):
+            assert not done_sent, f"a {event} frame was built after the done frame"
+            return real_sse_event(event, data)
+
+        with (
+            patch.object(_rag_h, "sse_event", build_frame),
+            patch.object(
+                _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["noted"])
+            ),
+            patch.object(_rag_h, "_warming_frames", AsyncMock(return_value=[])),
+            patch.object(_rag_h, "auto_extract_enabled", return_value=True),
+            patch.object(_rag_h, "auto_extract", return_value=self._saved()),
+        ):
+            after = await _frames_after_done(getattr(self, path)(mock_svc), done_sent)
+        assert _event_types(after) == trailer
+
+
 class TestSyncStream:
     async def test_yields_progress_and_done(self):
         sync_result = SyncResult(added=["a.txt"], unchanged=0)

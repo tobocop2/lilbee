@@ -10,7 +10,7 @@ import threading
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
-from lilbee.app.memory import auto_extract, auto_extract_enabled
+from lilbee.app.memory import SavedMemory, auto_extract, auto_extract_enabled
 from lilbee.app.search import clean_results, resolve_vault_path, source_labels
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
@@ -304,7 +304,7 @@ def _run_llm_stream(
         put(None)
 
 
-async def _store_extracted_memories(question: str, answer: str) -> list[Any]:
+async def _store_extracted_memories(question: str, answer: str) -> list[SavedMemory]:
     """Run the auto-extraction LLM pass off the event loop and return stored memories.
 
     The pass is best effort and never raises: an empty list comes back when the
@@ -320,20 +320,22 @@ async def _store_extracted_memories(question: str, answer: str) -> list[Any]:
         return []
 
 
-async def _emit_extracted_memories(question: str, answer: str) -> AsyncGenerator[str, None]:
-    """Yield a ``memory_extracted`` SSE event if the turn auto-saved any memories.
+async def _done_frames(question: str, answer: str) -> list[str]:
+    """The ``done`` frame and the frames that trail it, all built before it is sent.
 
-    Silent (yields nothing) when the answer is empty, auto-extraction is off, or
-    nothing was extracted, so existing consumers are unaffected.
+    The trailer is the ``memory_extracted`` event, present only when the turn
+    auto-saved a memory. The extraction pass and the event's serialisation both
+    finish before this returns, so the stream sends done and its trailer without
+    running any work: nothing after done can fail and replace the answer.
     """
     stored = await _store_extracted_memories(question, answer)
     if not stored:
-        return
+        return [sse_done({})]
     event = MemoryExtractedEvent(
         count=len(stored),
         items=[MemoryExtractedItem(id=m.id, kind=m.kind, text=m.text) for m in stored],
     )
-    yield sse_event(SseEvent.MEMORY_EXTRACTED, event.model_dump(mode="json"))
+    return [sse_done({}), sse_event(SseEvent.MEMORY_EXTRACTED, event.model_dump(mode="json"))]
 
 
 def _mismatch_detail(exc: EmbeddingModelMismatchError) -> str | None:
@@ -352,9 +354,9 @@ async def _emit_sources_and_memories(
     SOURCES carries the cited subset (what the answer referenced), falling back to
     the full retrieved set when the answer cited nothing, mirroring
     ``Searcher.ask_stream``. Recalled memories always ride along: they were in the
-    prompt whether the answer cited a document or not. Auto-extraction trails
-    ``done``; it cannot fail the stream, so a client that drains past ``done``
-    still keeps the answer.
+    prompt whether the answer cited a document or not. The memory-extracted
+    event trails ``done`` on the wire, but it is built before ``done`` is sent,
+    so no work runs once the client has its answer.
     """
     answer = "".join(answer_parts)
     cited = cited_subset(answer, sources)
@@ -366,9 +368,8 @@ async def _emit_sources_and_memories(
         source_list = sources
     # clean_results reads the stored web titles, so it runs on a worker.
     yield sse_event(SseEvent.SOURCES, await asyncio.to_thread(clean_results, source_list, sources))
-    yield sse_done({})
-    async for event in _emit_extracted_memories(question, answer):
-        yield event
+    for frame in await _done_frames(question, answer):
+        yield frame
 
 
 async def _stream_rag_response(
