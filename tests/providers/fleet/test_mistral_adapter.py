@@ -1271,8 +1271,9 @@ def test_a_one_card_launch_of_a_cache_blob_with_no_snapshot_file_is_refused_with
     with pytest.raises(
         ProviderError,
         match=r"cannot launch this model: its model file is incomplete or damaged\. "
-        r"Run 'lilbee model list', remove that model with 'lilbee model rm', "
-        r"then pull it again\.",
+        r"Run 'lilbee model list' \(or GET /api/models/installed\), remove that model with "
+        r"'lilbee model rm' \(or DELETE /api/models/\{model\}\), "
+        r"then pull it again \(POST /api/models/pull\)\.",
     ) as refused:
         _one_card_argv(tmp_path, role, model_path=blob)
     assert blob.name not in str(refused.value)

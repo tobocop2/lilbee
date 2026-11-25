@@ -45,7 +45,7 @@ log = logging.getLogger(__name__)
 
 AUTO = "auto"
 # The command that shows the installed engines.
-LIST_HINT = "Run lilbee engine list to see the installed engines."
+LIST_HINT = "Run lilbee engine list (or GET /api/engines) to see the installed engines."
 
 # The module attribute through which a module of the engines package exports its adapter.
 _ADAPTER_ATTR = "ADAPTER"

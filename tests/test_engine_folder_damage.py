@@ -45,7 +45,10 @@ DENIED_IN_BUILD = [BUILD, f"{BUILD}/bin", f"{BUILD}/{RECORD_NAME}"]
 DENIED = [(ENGINE, ENGINE), *((name, BUILD) for name in DENIED_IN_BUILD)]
 
 
-def _error(folder: Path, install: str = " and run 'lilbee engine install tei'") -> str:
+def _error(
+    folder: Path,
+    install: str = " and run 'lilbee engine install tei' (or POST /api/engines/install)",
+) -> str:
     return (
         f"The engine folder {folder} holds no build that lilbee can read. If its "
         f"permissions deny a read, correct them. lilbee cannot remove it until then. "
