@@ -209,6 +209,7 @@ _CODE_FIXTURES: dict[str, tuple[str, str]] = {
 }
 
 
+@pytest.mark.usefixtures("code_parsers_ready")
 class TestSyncCode:
     @pytest.mark.parametrize("filename,fixture", list(_CODE_FIXTURES.items()))
     async def test_code_file_syncs(self, isolated_env, filename, fixture):

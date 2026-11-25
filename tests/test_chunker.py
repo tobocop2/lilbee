@@ -783,6 +783,7 @@ class TestMarkdownChunking:
         assert "cite_note" not in joined
 
 
+@pytest.mark.usefixtures("code_parsers_ready")
 @pytest.mark.xdist_group("tree_sitter")
 class TestCodeChunker:
     """Tree-sitter code chunker tests: grouped to avoid fork-unsafe C parser collisions."""
