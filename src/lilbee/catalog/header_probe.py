@@ -65,7 +65,17 @@ def probe_header(blob_url: str) -> GgufHeader:
         # 302-redirects to the CDN; without following it the probe reads the tiny
         # redirect body, the GGUF magic check fails, and every arch verdict is
         # silently UNKNOWN (so the unsupported-arch guard never fires).
-        resp = httpx.get(blob_url, headers=headers, timeout=_PROBE_TIMEOUT_S, follow_redirects=True)
+        try:
+            resp = httpx.get(
+                blob_url, headers=headers, timeout=_PROBE_TIMEOUT_S, follow_redirects=True
+            )
+        except (httpx.InvalidURL, ValueError):
+            # The blob URL is built from HF_ENDPOINT, the user's own setting.
+            log.warning(
+                "Cannot read the model header: HF_ENDPOINT is not a valid web address. "
+                "Set it to a form such as https://huggingface.co, or unset it."
+            )
+            return GgufHeader()
         if resp.status_code >= HTTPStatus.BAD_REQUEST:
             return GgufHeader()
         return _parse_header(resp.content)
