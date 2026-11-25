@@ -368,6 +368,18 @@ def _suppress_model_scan(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _cli_command_keeps_the_services(request, monkeypatch):
+    """Keep a CLI command that routes diagnostics from stopping the services at its end.
+
+    The command stops them under cli.log so the process-exit teardown logs there. A stop
+    runs once per process and refuses new containers, so a test that runs two commands
+    would fail on the second. Tests of the stop use ``@pytest.mark.real_cli_teardown``.
+    """
+    if "real_cli_teardown" not in {m.name for m in request.node.iter_markers()}:
+        monkeypatch.setattr("lilbee.cli.log_routing.reset_services_on_exit", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_engine_model_lists(request, monkeypatch):
     """Keep a catalog browse from reading an engine's published model list over the network.
 
