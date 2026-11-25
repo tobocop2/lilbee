@@ -679,6 +679,7 @@ def test_a_closed_stderr_and_a_closed_fault_descriptor_still_exit_at_the_deadlin
 def _provider_with(work: DaemonCall[object] | None) -> FleetProvider:
     provider = FleetProvider.__new__(FleetProvider)
     provider._lock = threading.Lock()
+    provider._reload_done = threading.Condition(provider._lock)
     provider._stop_waiting = False
     provider._fleet_work = work
     return provider
