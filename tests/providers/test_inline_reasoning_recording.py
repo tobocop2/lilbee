@@ -68,6 +68,13 @@ def test_the_recording_is_a_cpu_run_that_passed_every_step() -> None:
     assert setup.preset == "llama-cpp-cpu-inline"
 
 
+def test_the_log_names_the_server_flag_that_leaves_the_reasoning_inline() -> None:
+    lines = RECORDING.with_suffix(".log").read_text(encoding="utf-8").splitlines()
+    flags = [line for line in lines if line.startswith("server-flags: ")]
+    assert len(flags) == 1
+    assert "--reasoning-format none" in flags[0]
+
+
 def test_the_engine_put_the_reasoning_inline_and_sent_no_field() -> None:
     choice = _reasoning_choice()
     message = choice["message"]

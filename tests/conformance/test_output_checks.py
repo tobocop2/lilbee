@@ -591,3 +591,14 @@ def test_the_recorder_log_names_the_run(tmp_path: Path) -> None:
     assert "devices-from: memory" in log
     assert "models: chat=a,embed=b" in log
     assert "STEP e chat ok=True Rome" in log
+    assert "server-flags" not in log
+
+
+def test_the_recorder_log_names_the_server_flags(tmp_path: Path) -> None:
+    flags = "--jinja --reasoning-format none"
+    args = record_presets.build_parser().parse_args(
+        [*_ARGS[:-2], "--server-flags", flags, "--out", str(tmp_path / "e.json")]
+    )
+    results = {"chat": preset_check.Outcome(True, "Rome")}
+    log = record_presets.run_log(args, results, [], record_presets.DeviceSource.NONE)
+    assert f"server-flags: {flags}" in log.splitlines()
