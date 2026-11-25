@@ -55,11 +55,14 @@ git -C "${SRC_DIR}" init -q
 git -C "${SRC_DIR}" fetch -q --depth 1 "https://github.com/${UPSTREAM_REPO}.git" "${UPSTREAM_COMMIT}"
 git -C "${SRC_DIR}" checkout -q FETCH_HEAD
 test "$(git -C "${SRC_DIR}" rev-parse HEAD)" = "${UPSTREAM_COMMIT}"
-# nvcc -lineinfo writes the mtime of each source file into the GPU code, and the checkout stamps every file with
-# the time of the checkout. Two builds of one commit would differ. nvcc and ptxas ignore SOURCE_DATE_EPOCH, so set
-# the mtime of each file to the commit time.
-epoch="$(bash "$(dirname "${BASH_SOURCE[0]}")/source_date_epoch.sh" "${SRC_DIR}")"
-find "${SRC_DIR}" -name .git -prune -o -type f -exec touch -d "@${epoch#SOURCE_DATE_EPOCH=}" {} +
+# The engine compiles its GPU code with nvcc -lineinfo, which only helps a profiler. It puts the mtime of each source
+# file (the time of the checkout) and a process ID in the symbol names into the GPU code, so two builds of one commit
+# differ. nvcc has no flag to undo -lineinfo, so the build removes it from the CMake file and stops if it is still there.
+sed -i 's/ -lineinfo)/)/' "${SRC_DIR}/ggml/src/CMakeLists.txt"
+if grep -rq -e '-lineinfo' "${SRC_DIR}" --include=CMakeLists.txt --include='*.cmake'; then
+  echo "ik_llama_manylinux: -lineinfo is still in a CMake file of the source" >&2
+  exit 1
+fi
 
 # One CPU baseline for every host: AVX2, FMA and F16C, no -march=native. NCCL is off: the engine
 # links it when the image has it, and the wheel must not need it.
