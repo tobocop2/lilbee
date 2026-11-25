@@ -221,7 +221,7 @@ class TestValidateDiskAndPull:
             description="test",
         )
         result = models.validate_disk_and_pull(info, 50.0)
-        mock_pull.assert_called_once_with(ref, console=None)
+        mock_pull.assert_called_once_with(ref, console=None, report_no_engine=True)
         assert result == ref
 
     def test_insufficient_disk_raises(self):
@@ -242,7 +242,9 @@ class TestPullWithProgress:
 
         mock_manager = mock.MagicMock()
 
-        def fake_pull(model, source, *, on_bytes=None, on_notice=None, on_retry=None):
+        def fake_pull(
+            model, source, *, on_bytes=None, on_notice=None, on_retry=None, report_no_engine=True
+        ):
             if on_bytes:
                 on_bytes(100, 100)
             return
@@ -257,7 +259,9 @@ class TestPullWithProgress:
 
         mock_manager = mock.MagicMock()
 
-        def fake_pull(model, source, *, on_bytes=None, on_notice=None, on_retry=None):
+        def fake_pull(
+            model, source, *, on_bytes=None, on_notice=None, on_retry=None, report_no_engine=True
+        ):
             if on_bytes:
                 on_bytes(0, 0)
             return
