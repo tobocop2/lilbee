@@ -1539,7 +1539,10 @@ export LILBEE_CONCEPT_MAX_PER_CHUNK=5         # max concepts extracted per chunk
 ```
 
 The graph is built automatically during `lilbee sync`. No extra commands
-needed; search results are boosted transparently.
+needed; search results are boosted transparently. If you turn the graph on for
+a library that is already indexed, the next sync builds it for the documents
+already there. You do not need to rebuild the index. If that sync stops part
+way, the sync after it continues with the documents it did not reach.
 
 Based on: Microsoft Research's LazyGraphRAG technique, Church & Hanks 1990
 (PMI), Traag et al. 2019 (Leiden).

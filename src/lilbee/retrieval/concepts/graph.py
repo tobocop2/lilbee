@@ -37,6 +37,9 @@ log = logging.getLogger(__name__)
 # working set while the columnar Arrow data stays compact.
 _TABLE_SCAN_BATCH_ROWS = 50_000
 
+# Source ids per IN list when a read names many sources.
+_SOURCE_ID_BATCH = 2000
+
 _CONCEPT_TABLES = (CONCEPT_NODES_TABLE, CONCEPT_EDGES_TABLE, CHUNK_CONCEPTS_TABLE)
 
 
@@ -673,11 +676,17 @@ class ConceptGraph:
     def sources_with_concepts(self, source_ids: Collection[str]) -> set[str]:
         """The ids of *source_ids* that hold a concept row."""
         table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
-        if table is None or not source_ids:
+        if table is None:
             return set()
-        query = table.search().where(f"source_id IN ({_quoted(source_ids)})")
-        ids = query.select(["source_id"]).limit(None).to_arrow().column("source_id")
-        return set(pc.unique(ids).to_pylist())
+        wanted = sorted(source_ids)
+        holding: set[str] = set()
+        # Bounded IN lists: the first pass over a library names every source.
+        for start in range(0, len(wanted), _SOURCE_ID_BATCH):
+            batch = wanted[start : start + _SOURCE_ID_BATCH]
+            query = table.search().where(f"source_id IN ({_quoted(batch)})")
+            ids = query.select(["source_id"]).limit(None).to_arrow().column("source_id")
+            holding.update(pc.unique(ids).to_pylist())
+        return holding
 
     def get_graph(self) -> bool:
         """Check whether a concept graph exists in the store."""

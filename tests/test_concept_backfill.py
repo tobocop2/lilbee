@@ -239,6 +239,21 @@ async def test_without_a_spacy_model_the_backfill_waits_for_one():
     assert library.sources_with_concepts() == {"a.txt"}
 
 
+async def test_a_sync_that_only_removes_a_document_loads_no_spacy_model():
+    library = _Library()
+    library.add("a.txt", "b.txt")
+    cfg.concept_graph = True
+    await sync(quiet=True)
+    (cfg.documents_dir / "b.txt").unlink()
+
+    with patch.object(library.graph, "can_extract") as can_extract:
+        result = await sync(quiet=True)
+
+    assert result.removed == ["b.txt"]
+    can_extract.assert_not_called()
+    assert library.store.concepts_covered().version == library.store.sources_version()
+
+
 async def test_a_read_of_no_sources_reads_no_chunks():
     library = _Library()
     library.add("a.txt")
