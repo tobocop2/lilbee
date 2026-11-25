@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 
 from textual import events
@@ -184,11 +185,79 @@ def test_a_write_in_progress_reverts_nothing(monkeypatch):
     thread = threading.Thread(target=writer)
     thread.start()
     half_written.wait()
-    _after, _result = adopt_external_changes(reading)
+    after, _result = adopt_external_changes(reading)
     seen_top_k = cfg.top_k
     reader_waits.set()  # a reader that never took the lock leaves the writer waiting
     thread.join()
-    assert seen_top_k == 32
+    # The whole file is under a second old and written in place, so this check leaves it.
+    assert seen_top_k == 31
+    # The check after the quiet window (an injected clock) takes it.
+    later = time.time_ns() + 3_600_000_000_000
+    monkeypatch.setattr(persistent_settings, "_now_ns", lambda: later)
+    adopt_external_changes(after)
+    assert cfg.top_k == 32
+
+
+async def test_a_whole_in_place_save_shows_without_another_event(monkeypatch):
+    cfg.top_k = 12
+    _write_from_another_process("top_k", 12)
+    app = _App()
+    scheduled: list[tuple[float, object]] = []
+    real_set_timer = app.set_timer
+
+    def record_timer(delay, callback, **kwargs):
+        if callback != app._take_after_the_quiet_window:
+            return real_set_timer(delay, callback, **kwargs)
+        scheduled.append((delay, callback))
+        return object()
+
+    monkeypatch.setattr(app, "set_timer", record_timer)
+    async with app.run_test(size=SIZE) as pilot:
+        _screen, _field = await _open_retrieval(app, pilot)
+        path = cfg.data_root / "config.toml"
+        path.write_text("top_k = 31\n", encoding="utf-8")  # an editor's whole save, in place
+        written = path.stat().st_mtime_ns
+        monkeypatch.setattr(persistent_settings, "_now_ns", lambda: written + 100_000_000)
+        taken: list[str] = []
+        publish = app.publish_settings
+        monkeypatch.setattr(
+            app, "publish_settings", lambda keys: (taken.extend(keys), publish(keys))[1]
+        )
+        app.post_message(events.AppFocus())
+        assert await pump_until(pilot, lambda: len(scheduled) == 1), scheduled
+        delay, recheck = scheduled[0]
+        assert 0.0 < delay < 1.1
+        assert cfg.top_k == 12  # the first check left the file; nothing reverted
+        monkeypatch.setattr(persistent_settings, "_now_ns", lambda: written + 2_000_000_000)
+        recheck()  # the timer Textual runs after the quiet window
+        assert cfg.top_k == 31
+        assert "top_k" in taken
+        assert len(scheduled) == 1
+
+
+async def test_a_young_atomic_write_taken_by_the_tui_sets_no_timer(monkeypatch):
+    cfg.top_k = 12
+    _write_from_another_process("top_k", 12)
+    app = _App()
+    scheduled: list[object] = []
+    real_set_timer = app.set_timer
+
+    def record_timer(delay, callback, **kwargs):
+        if callback != app._take_after_the_quiet_window:
+            return real_set_timer(delay, callback, **kwargs)
+        scheduled.append(callback)
+        return object()
+
+    monkeypatch.setattr(app, "set_timer", record_timer)
+    async with app.run_test(size=SIZE) as pilot:
+        _screen, _field = await _open_retrieval(app, pilot)
+        _write_from_another_process("top_k", 31)  # atomic: a new inode, taken at once
+        written = (cfg.data_root / "config.toml").stat().st_mtime_ns
+        monkeypatch.setattr(persistent_settings, "_now_ns", lambda: written + 100_000_000)
+        app.post_message(events.AppFocus())
+        assert await pump_until(pilot, lambda: cfg.top_k == 31), cfg.top_k
+        await pilot.pause()
+        assert scheduled == []
 
 
 def test_a_value_this_process_already_holds_is_not_applied_again():
