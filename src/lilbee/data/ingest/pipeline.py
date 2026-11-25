@@ -331,11 +331,21 @@ async def produce_records(
             cancel=cancel,
         )
 
-    for record in records:
-        # NULL (not "") for an absent title, so chunk rows match the migration
-        # and the _sources table, which both persist absence as NULL.
-        record["title"] = meta.title or None
+    _stamp_title(records, meta)
     return DocumentRecords(records, meta, ocr)
+
+
+def _stamp_title(records: Iterable[ChunkRecord], meta: SourceMeta) -> None:
+    """Give every record of one source the title of that source's *meta*.
+
+    NULL (not "") for an absent title, so chunk rows match the migration and
+    the _sources table, which both persist absence as NULL. Every record
+    carries the key: the chunk table takes its columns from the first record
+    of a flush batch, so a record without it would drop the title column of
+    its neighbours.
+    """
+    for record in records:
+        record["title"] = meta.title or None
 
 
 def _disk_stat(path: Path) -> SourceStat | None:
@@ -2699,6 +2709,7 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
 
 def _member_write(member: MemberRecords, digest: str, stat: SourceStat | None) -> ChunkWrite:
     """A member's write item: its own source row, keyed to the archive's hash and stat."""
+    _stamp_title(member.records, member.meta)
     return ChunkWrite(
         source=member.name,
         file_hash=digest,
