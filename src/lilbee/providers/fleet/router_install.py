@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import stat
 import tarfile
@@ -33,6 +34,8 @@ from lilbee.providers.fleet.engine_store import (
 from lilbee.providers.fleet.first_use import RefusedInstalls
 from lilbee.providers.fleet.host_caps import HostCaps
 from lilbee.runtime.cancellation import CancelSignal
+
+log = logging.getLogger(__name__)
 
 ROUTER_DIRNAME = "router"
 ROUTER_VERSION = "v272"
@@ -260,7 +263,11 @@ def install_router(
             delete_tree(final)
             stage.rename(final)
         finally:
-            delete_tree(stage)
+            try:
+                delete_tree(stage)
+            except OSError:
+                # The step's own error is the one the caller needs; the stage is a leftover.
+                log.warning("The stage folder %s stays after the install.", stage, exc_info=True)
     _refusals.forget(_refusal_key())
     return final / asset.binary
 
