@@ -1113,7 +1113,7 @@ def test_the_pack_asks_a_cuda_cell_for_its_cuda_inputs(tmp_path: Path) -> None:
         "ABOUT_TARGET": "x86_64-unknown-linux-musl",
         "MISTRALRS_CHAT_MODEL": "m",
         "OUT": str(tmp_path / "out"),
-        "RUST_FEATURES": "cuda,nccl",
+        "RUST_FEATURES": "cuda,flash-attn,nccl",
         "CUDA_VERSION": "12.8.1",
         "NCCL_TAG": "v2.26.2-1",
     }
@@ -1158,5 +1158,113 @@ def test_the_pack_matrix_holds_the_cpu_cells_and_the_six_cuda_cells() -> None:
     }
     for cell in cells:
         if "cuda" in cell["cell"]:
-            assert cell["rust_features"] == "cuda,nccl"
+            # The features of the cuda128 archives in the linux-cuda matrix of the v0.9.5
+            # release.yml: features: "cuda flash-attn nccl".
+            assert cell["rust_features"] == "cuda,flash-attn,nccl"
             assert cell["asset"].startswith("mistralrs-cuda128-sm")
+
+
+def test_the_repack_takes_exactly_the_five_cuda_libraries() -> None:
+    assert repack.CUDA_LIBS == frozenset(CUDA_LIBS)
+
+
+# The Attachment A list of the CUDA EULA, cut to the lines the four EULA libraries need.
+_NOTICE_EULA = (
+    "Attachment A\nThe following CUDA Toolkit files may be distributed with applications "
+    "developed by you.\nLinux\nlibcudart.so, libcublas.so, libcublasLt.so, libcurand.so\n"
+    "Attachment B\n"
+)
+_EULA_LIBS = "libcublas.so, libcublasLt.so, libcudart.so, libcurand.so."
+_SHA256SUM = pytest.mark.skipif(
+    shutil.which("sha256sum") is None, reason="the notice step runs sha256sum"
+)
+
+
+def _offline_notice_writer(root: Path) -> None:
+    """Make the notice writer in the tree read a fixed EULA instead of the NVIDIA page."""
+    writer = TOOLS / "write_cuda_notice.py"
+    (root / "tools" / "wheel-build" / "write_cuda_notice.py").write_text(
+        "import importlib.util, sys\n"
+        f"spec = importlib.util.spec_from_file_location('writer', {str(writer)!r})\n"
+        "writer = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(writer)\n"
+        f"writer.eula_text = lambda version: ('https://eula.test', {_NOTICE_EULA!r})\n"
+        "writer.main(sys.argv)\n",
+        encoding="utf-8",
+    )
+
+
+def _notice_stage(tmp_path: Path, backend: str) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Run the notice step on a tree whose bin/lib holds the five libraries; curl is a stub."""
+    root = _tree(tmp_path)
+    _offline_notice_writer(root)
+    lib = root / "packaging" / PACKAGING.name / "lilbee_engine_mistral_rs" / "bin" / "lib"
+    lib.mkdir(parents=True)
+    for name in CUDA_LIBS:
+        (lib / name).write_bytes(name.encode())
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    curl = stubs / "curl"
+    curl.write_text(
+        f'#!/bin/sh\necho "$@" > {str(tmp_path / "curl-args")!r}\necho nccl-bsd-text\n',
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    done = _pack_stage(
+        tmp_path, "add_cuda_notices", BACKEND=backend, CUDA_VERSION="12.8.1", NCCL_TAG="v2.25.1-1"
+    )
+    return done, root / "packaging" / PACKAGING.name
+
+
+@_SHA256SUM
+def test_the_notice_step_names_the_four_eula_libraries_and_fetches_the_nccl_licence(
+    tmp_path: Path,
+) -> None:
+    done, tree = _notice_stage(tmp_path, "cuda-sm86")
+    assert done.returncode == 0, done.stderr
+    notice = (tree / "NOTICE-NVIDIA-CUDA").read_text(encoding="utf-8")
+    assert f"carries NVIDIA CUDA 12.8.1 shared libraries without change: {_EULA_LIBS}" in notice
+    assert (tree / "LICENSE-NCCL").read_text(encoding="utf-8") == "nccl-bsd-text\n"
+    assert (tmp_path / "curl-args").read_text(encoding="utf-8").split() == [
+        "-fsSL",
+        "--retry",
+        "3",
+        "https://raw.githubusercontent.com/NVIDIA/nccl/v2.25.1-1/LICENSE.txt",
+    ]
+
+
+@_SHA256SUM
+def test_the_notice_step_of_a_cpu_cell_writes_no_nvidia_notice(tmp_path: Path) -> None:
+    done, tree = _notice_stage(tmp_path, "cpu")
+    assert done.returncode == 0, done.stderr
+    assert not (tree / "NOTICE-NVIDIA-CUDA").exists()
+    assert not (tree / "LICENSE-NCCL").exists()
+    assert not (tmp_path / "curl-args").exists()
+
+
+@_SHA256SUM
+@pytest.mark.parametrize("mode", [["-b"], []], ids=["binary", "text"])
+def test_the_notice_writer_reads_a_sha256sum_list_of_either_mode(
+    tmp_path: Path, mode: list[str]
+) -> None:
+    """sha256sum writes '<digest> *<name>' with -b and '<digest>  <name>' without it."""
+    four = [name for name in CUDA_LIBS if name != "libnccl.so.2"]
+    lib = _libs(tmp_path, four)
+    sums = tmp_path / "cuda-libs.sha256"
+    sums.write_text(
+        subprocess.run(
+            ["sha256sum", *mode, *four], cwd=lib, capture_output=True, text=True, check=True
+        ).stdout,
+        encoding="utf-8",
+    )
+    root = _tree(tmp_path)
+    _offline_notice_writer(root)
+    writer = root / "tools" / "wheel-build" / "write_cuda_notice.py"
+    notice = tmp_path / "NOTICE"
+    done = subprocess.run(
+        [sys.executable, str(writer), str(notice), "12.8.1", str(sums)],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    assert _EULA_LIBS in notice.read_text(encoding="utf-8")
