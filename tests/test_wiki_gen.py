@@ -1723,7 +1723,9 @@ class TestDeleteDriftDraftIfPresent:
 class TestLiveIdsIsRequired:
     """A default would let a new caller skip the rebuild check without notice."""
 
-    @pytest.mark.parametrize("writer", [write_page, divert_to_drafts, delete_drift_draft_if_present])
+    @pytest.mark.parametrize(
+        "writer", [write_page, divert_to_drafts, delete_drift_draft_if_present]
+    )
     def test_the_writer_has_no_default_for_live_ids(self, writer):
         assert inspect.signature(writer).parameters["live_ids"].default is inspect.Parameter.empty
 
