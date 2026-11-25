@@ -653,49 +653,90 @@ def _no_dns(monkeypatch):
 class TestCrawlerAvailable:
     """Exercises the un-patched ``crawler_available`` install probe.
 
-    Uses ``importlib.util.find_spec`` so the check stays cheap on the UI
-    thread; the Settings screen calls this synchronously during compose
-    via ``_FEATURE_GATED_GROUPS``.
+    The probe imports each module of the extra once and caches the answer, so a
+    crawlberg that is installed but cannot load counts as unavailable, with the
+    reason.
     """
 
-    def test_returns_true_when_installed(self):
-        from lilbee.crawler import crawler_available
+    @pytest.fixture(autouse=True)
+    def _fresh_probe(self):
+        from lilbee.crawler import availability
 
-        crawler_available.cache_clear()
-        with patch(
-            "importlib.util.find_spec",
-            return_value=MagicMock(name="crawlberg_spec"),
+        availability.crawler_unavailable_reason.cache_clear()
+        yield
+        availability.crawler_unavailable_reason.cache_clear()
+
+    def test_returns_true_when_installed(self):
+        from lilbee.crawler import crawler_available, crawler_unavailable_message
+
+        with (
+            patch("importlib.util.find_spec", return_value=MagicMock(name="spec")),
+            patch("importlib.import_module"),
         ):
             assert crawler_available() is True
-        crawler_available.cache_clear()
+        assert crawler_unavailable_message() == CRAWLER_MISSING_MESSAGE
 
     def test_returns_false_when_not_installed(self):
-        from lilbee.crawler import crawler_available
+        from lilbee.crawler import crawler_available, crawler_unavailable_message
 
-        crawler_available.cache_clear()
         with patch("importlib.util.find_spec", return_value=None):
             assert crawler_available() is False
-        crawler_available.cache_clear()
+            assert crawler_unavailable_message() == CRAWLER_MISSING_MESSAGE
 
-    def test_does_not_execute_module_init(self):
-        """Regression guard: probe must not actually import ``crawlberg``.
+    def test_broken_install_is_unavailable_with_the_reason(self, broken_crawlberg):
+        from lilbee.crawler import crawler_available, crawler_unavailable_message
 
-        crawlberg loads a native library. The Settings screen calls this on
-        the UI thread, so executing the module here would block the TUI.
-        """
-        import sys as _sys
+        assert crawler_available() is False
+        message = crawler_unavailable_message()
+        assert broken_crawlberg in message
+        assert message != CRAWLER_MISSING_MESSAGE
+        assert "pip install --force-reinstall 'lilbee[crawler]'" in message
 
+    def test_broken_install_names_no_internal_word(self, broken_crawlberg):
+        from lilbee.crawler import crawler_unavailable_message
+
+        message = crawler_unavailable_message()
+        for word in ("find_spec", "importlib", "ImportError", "OSError", "cache"):
+            assert word not in message
+
+    def test_import_error_inside_the_crawler_is_unavailable_with_the_reason(self, monkeypatch):
+        from lilbee.crawler import crawler_available, crawler_unavailable_message
+
+        def _fail(name):
+            raise ImportError("DLL load failed")
+
+        monkeypatch.setattr("importlib.util.find_spec", lambda name: MagicMock(name="spec"))
+        monkeypatch.setattr("importlib.import_module", _fail)
+        assert crawler_available() is False
+        assert "DLL load failed" in crawler_unavailable_message()
+
+    def test_another_error_is_not_swallowed(self, monkeypatch):
         from lilbee.crawler import crawler_available
 
-        crawler_available.cache_clear()
-        with patch(
-            "importlib.util.find_spec",
-            return_value=MagicMock(name="crawlberg_spec"),
-        ):
-            had_module = "crawlberg" in _sys.modules
+        def _fail(name):
+            raise RuntimeError("bug")
+
+        monkeypatch.setattr("importlib.util.find_spec", lambda name: MagicMock(name="spec"))
+        monkeypatch.setattr("importlib.import_module", _fail)
+        with pytest.raises(RuntimeError, match="bug"):
             crawler_available()
-            assert ("crawlberg" in _sys.modules) is had_module
-        crawler_available.cache_clear()
+
+    def test_the_answer_is_probed_once(self):
+        from lilbee.crawler import crawler_available
+
+        with (
+            patch("importlib.util.find_spec", return_value=MagicMock(name="spec")),
+            patch("importlib.import_module") as import_module,
+        ):
+            crawler_available()
+            crawler_available()
+        assert import_module.call_count == 2  # crawlberg and ada_url, once each
+
+    async def test_crawl_single_raises_the_reason(self, broken_crawlberg):
+        from lilbee.crawler import CrawlerBackendError
+
+        with pytest.raises(CrawlerBackendError, match=re.escape(broken_crawlberg)):
+            await crawl_single("https://example.com")
 
 
 class TestIsUrl:

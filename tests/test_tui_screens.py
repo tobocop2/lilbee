@@ -8921,6 +8921,17 @@ async def test_chat_slash_crawl_unavailable():
         notify.assert_called_once_with(CRAWLER_MISSING_MESSAGE, severity="error")
 
 
+async def test_chat_slash_crawl_with_a_crawler_that_cannot_load(broken_crawlberg):
+    """_cmd_crawl tells the user why an installed crawler cannot run."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as notify:
+            app.screen._cmd_crawl("https://example.com")
+        message = notify.call_args.args[0]
+    assert broken_crawlberg in message
+    assert "pip install --force-reinstall 'lilbee[crawler]'" in message
+
+
 async def test_chat_slash_crawl_no_args():
     """Cover /crawl with no URL showing usage hint."""
     app = ChatTestApp()

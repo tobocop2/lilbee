@@ -1704,3 +1704,38 @@ def index_is_empty() -> Iterator[None]:
         mock.patch("lilbee.app.profiles.index_has_chunks", return_value=False),
     ):
         yield
+
+
+BROKEN_CRAWLBERG_REASON = "libcrawlberg.so: cannot open shared object file"
+
+
+class _BrokenCrawlbergFinder:
+    """A meta-path finder whose ``crawlberg`` is found but raises ``OSError`` when it loads."""
+
+    def find_spec(self, name: str, path: object = None, target: object = None) -> object:
+        if name != "crawlberg":
+            return None
+        import importlib.abc
+        import importlib.machinery
+
+        class _Loader(importlib.abc.Loader):
+            def exec_module(self, module: object) -> None:
+                raise OSError(BROKEN_CRAWLBERG_REASON)
+
+        return importlib.machinery.ModuleSpec("crawlberg", _Loader())
+
+
+@pytest.fixture
+def broken_crawlberg(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """The crawler extra is installed, but crawlberg raises ``OSError`` on import.
+
+    Yields the error text. The availability probe starts empty before and after the test.
+    """
+    from lilbee.crawler import availability
+
+    for name in [n for n in sys.modules if n == "crawlberg" or n.startswith("crawlberg.")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(sys, "meta_path", [_BrokenCrawlbergFinder(), *sys.meta_path])
+    availability.crawler_unavailable_reason.cache_clear()
+    yield BROKEN_CRAWLBERG_REASON
+    availability.crawler_unavailable_reason.cache_clear()
