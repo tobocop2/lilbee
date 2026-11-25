@@ -368,39 +368,72 @@ class _SlotOwed(NamedTuple):
     states: dict[SwapGroup, SwapState]
 
 
-def _plan_origin() -> PlanOrigin:
-    """This config root and what its config.toml sets for a fleet plan, as a state records them.
+def _origin(*, planned: bool, followed: frozenset[str] | None = None) -> PlanOrigin:
+    """This config root and the fleet reload keys config.toml sets, as a state records them.
 
     Only the keys whose change makes the fleet owner rebuild count, so a write of any
-    other key never makes a fleet look older than the file. A torn or unreadable file
-    gives no view.
+    other key never makes a fleet look older than the file. With *planned*, a key this
+    process runs on another value of (a flag, or a start value it holds) records that
+    value. A torn or unreadable file gives no view.
     """
     _stamp, values = read_persisted(cfg.data_root)
     view = None
     if values is not None:
-        picked = {key: value for key, value in values.items() if key in FLEET_RELOAD_KEYS}
+        picked = {
+            key: getattr(cfg, key) if planned and value != getattr(cfg, key) else value
+            for key, value in values.items()
+            if key in FLEET_RELOAD_KEYS
+        }
         view = json.dumps(picked, sort_keys=True, default=str)
-    return PlanOrigin(str(cfg.data_root), view)
+    return PlanOrigin(str(cfg.data_root), view, followed)
+
+
+def _plan_origin(followed: frozenset[str]) -> PlanOrigin:
+    """The origin a fleet this process plans now is stamped with; *followed* is its builder's."""
+    return _origin(planned=True, followed=followed)
+
+
+def _file_origin() -> PlanOrigin:
+    """The origin a fleet planned on config.toml as it is now would carry."""
+    return _origin(planned=False)
 
 
 def _owner_owes_the_file(states: dict[SwapGroup, SwapState]) -> bool:
-    """True when a fleet of this config root was planned before config.toml's last plan write.
+    """True when a fleet of this config root differs from config.toml on a key its builder takes.
 
-    Its builder has still to take the write and rebuild, so a peer on the new value waits
-    for that rather than load a second fleet beside it.
+    Its builder takes the write and rebuilds soon, so a peer on the new value waits for
+    that rather than load a second fleet beside it. A key the builder holds never moves
+    its fleet, so a change of it gives no wait.
     """
-    now = _plan_origin()
-    return now.fleet_view is not None and any(
+    now = _file_origin()
+    if now.fleet_view is None:
+        return False
+    file_values = json.loads(now.fleet_view)
+    return any(
         state.origin is not None
         and state.origin.config_root == now.config_root
-        and state.origin.fleet_view not in (None, now.fleet_view)
+        and state.origin.fleet_view is not None
+        and _differs_on_a_followed_key(state.origin, file_values)
         for state in states.values()
+    )
+
+
+def _differs_on_a_followed_key(origin: PlanOrigin, file_values: Mapping[str, object]) -> bool:
+    """Whether *origin*'s planned values differ from *file_values* on a key its builder takes.
+
+    A key set on one side only differs; a key set on neither does not.
+    """
+    planned = json.loads(origin.fleet_view or "{}")
+    followed = FLEET_RELOAD_KEYS if origin.followed is None else origin.followed
+    return any(
+        (key in planned, planned.get(key)) != (key in file_values, file_values.get(key))
+        for key in followed
     )
 
 
 def _planned_on_the_file_now(states: dict[SwapGroup, SwapState]) -> bool:
     """True when a fleet of this config root was planned on config.toml as it is now."""
-    now = _plan_origin()
+    now = _file_origin()
     return now.fleet_view is not None and any(state.origin == now for state in states.values())
 
 
@@ -1388,6 +1421,7 @@ class FleetProvider:
         hold_warm: bool = False,
         config_refresh: Callable[[], None] | None = None,
         held_writes: Callable[[], Mapping[str, object]] | None = None,
+        followed_keys: Callable[[], frozenset[str]] | None = None,
     ) -> None:
         # Takes config.toml changes now. The process that follows the file injects it,
         # so a retry plans on the settings an owner restarted its fleet with.
@@ -1396,6 +1430,10 @@ class FleetProvider:
         # injects it, so a fleet this process cannot bind only for such a write ends
         # the command with an error instead of a private fleet beside it.
         self._held_writes = held_writes
+        # Names the fleet reload keys this process takes from config.toml. The same process
+        # injects it; a fleet's stamp records it, so a peer waits only for a rebuild that
+        # comes. With no follower, this process takes none.
+        self._followed_keys = followed_keys
         # An interactive session (the TUI) owns this process for its whole
         # lifetime, so a fleet bound to it stays resident instead of idle-unloading
         # under a user who is still in the app; closing lilbee releases it. A
@@ -1780,8 +1818,8 @@ class FleetProvider:
     ) -> bool | None:
         """Bind or build one engine dir; ``None`` on the slot means overflow next.
 
-        When the live fleet there was planned for this config root before config.toml's
-        last plan write, its builder rebuilds on that write soon. The ladder then lets the
+        When the live fleet there is of this config root and differs from config.toml on
+        a key its builder takes, its builder rebuilds on that write soon. The ladder then lets the
         build lock go, waits until the fleet changes or *wait_until*, and runs once more,
         so this process does not load a second fleet beside the rebuilt one. The caller
         holds this provider's in-process build lock across the wait, so this process's
@@ -1894,6 +1932,11 @@ class FleetProvider:
             starting.end()
         _watch_bound_engine(engine_dir)
         return True
+
+    def _stamp_origin(self) -> PlanOrigin:
+        """The origin a fleet this process plans now carries, with the keys it follows."""
+        followed = self._followed_keys() if self._followed_keys is not None else frozenset()
+        return _plan_origin(followed)
 
     def _refuse_live_engine(
         self,
@@ -2132,7 +2175,7 @@ class FleetProvider:
             # (a wedged GPU probe, an unusable CUDA runtime) propagates so the
             # warm tracker and the caller report the real reason instead of a
             # silent never-ready fleet.
-            origin = _plan_origin()
+            origin = self._stamp_origin()
             engines = self._engines()
             planning.capture_plan_probe(engines)
             plan = planning.plan_all_launches(engines=engines)
@@ -3799,7 +3842,7 @@ class FleetProvider:
             with build_lock(reload_dir):
                 # Reap dead engines in our dirs before re-planning, as a build would.
                 _reap_stale_engines(reload_dir)
-                origin = _plan_origin()
+                origin = self._stamp_origin()
                 # A planning failure (a missing engine binary, a wedged GPU probe, an
                 # unusable CUDA runtime) propagates: the change was not applied, and a
                 # caller that wrote the choice must hear that. The raise lands before

@@ -206,6 +206,7 @@ def test_get_services_pins_the_width_before_the_store_is_built(
         interactive=False,
         config_refresh=None,
         held_writes=None,
+        followed_keys=None,
     ):
         seen.append(config.embedding_dim)
         return make_mock_services()

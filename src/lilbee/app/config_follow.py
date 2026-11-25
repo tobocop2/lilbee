@@ -73,6 +73,14 @@ class ConfigFileFollower:
         """Give each take that ``take_now`` makes to *on_taken*, such as a screen that shows it."""
         self._on_taken = on_taken
 
+    def followed_reload_keys(self) -> frozenset[str]:
+        """The fleet reload keys this process takes from config.toml: each one it does not hold.
+
+        A long-running process takes every reload key but its hold. A one-off takes only
+        the engine tuning keys that no flag set.
+        """
+        return FLEET_RELOAD_KEYS - self.hold
+
     def held_writes(self) -> dict[str, object]:
         """Each held fleet reload key config.toml changed since the start, with its new value.
 

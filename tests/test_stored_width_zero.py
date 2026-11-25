@@ -135,6 +135,7 @@ def _build_recording_width(monkeypatch) -> list[int]:
         interactive=False,
         config_refresh=None,
         held_writes=None,
+        followed_keys=None,
     ):
         built.append(config.embedding_dim)
         return make_mock_services(store=Store(config))

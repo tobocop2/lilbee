@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import json
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -36,6 +37,7 @@ from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.fleet.swap_manager import PlanOrigin, SwapState
+from lilbee.providers.reload_keys import ENGINE_TUNING_KEYS, FLEET_RELOAD_KEYS
 from tests._fleet_engines import engines_for_all_roles
 from tests.test_fleet_provider import _connection_error, _FakeSwap
 from tests.test_fleet_reload_plan import _CHAT_REF, _OTHER_CHAT_REF, real_planner
@@ -118,7 +120,7 @@ def _owner_switched_chat_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, 
         planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
     ).items():
         _record(states, group, list(launches))
-    _stamp(states, prov_mod._plan_origin())
+    _stamp(states, prov_mod._plan_origin(FLEET_RELOAD_KEYS))
     # The one-off holds its start model.
     monkeypatch.setattr(cfg, "chat_model", _CHAT_REF)
 
@@ -145,7 +147,7 @@ def test_retry_after_a_held_chat_model_write_ends_with_a_clear_error(
     follow_config_one_off(frozenset())
     kwargs = _one_off_provider_kwargs(monkeypatch)
     _owner_provider, states = _owner(monkeypatch, tmp_path)
-    _stamp(states, prov_mod._plan_origin())
+    _stamp(states, prov_mod._plan_origin(FLEET_RELOAD_KEYS))
     peer, built = _peer_beside_the_slot(monkeypatch, tmp_path, states, kwargs)
     assert peer._ensure_fleet() is True and built == [], "the peer did not bind at the start"
     _owner_switched_chat_model(monkeypatch, tmp_path, states)
@@ -190,7 +192,7 @@ def test_a_fleet_of_another_config_root_overflows_on_a_held_write(
     monkeypatch.setattr(cfg, "chat_model", _OTHER_CHAT_REF)
     _owner_provider, states = _owner(monkeypatch, tmp_path)
     other_root = tmp_path / "another-root"
-    _stamp(states, PlanOrigin(str(other_root), prov_mod._plan_origin().fleet_view))
+    _stamp(states, PlanOrigin(str(other_root), prov_mod._file_origin().fleet_view))
     monkeypatch.setattr(cfg, "chat_model", _CHAT_REF)
     assert services_mod._held_writes_of_the_process_follower() == {"chat_model": _OTHER_CHAT_REF}
     peer, built = _peer_beside_the_slot(monkeypatch, tmp_path, states, kwargs)
@@ -207,7 +209,7 @@ def test_a_model_this_command_chose_by_flag_still_overflows(
     follow_config_one_off(frozenset({"chat_model"}))
     kwargs = _one_off_provider_kwargs(monkeypatch)
     _owner_provider, states = _owner(monkeypatch, tmp_path)
-    _stamp(states, prov_mod._plan_origin())
+    _stamp(states, prov_mod._plan_origin(FLEET_RELOAD_KEYS))
     monkeypatch.setattr(cfg, "chat_model", _OTHER_CHAT_REF)
     peer, built = _peer_beside_the_slot(monkeypatch, tmp_path, states, kwargs)
     message = _outcome(peer._ensure_fleet)
@@ -234,13 +236,13 @@ def test_the_error_names_each_written_key_with_its_own_value() -> None:
 _THIRD_CHAT_REF = "Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q8_0.gguf"
 
 
-def test_a_slot_fleet_on_a_flagged_model_after_the_write_gets_a_true_error(
+def test_a_slot_fleet_on_a_flagged_model_after_the_write_overflows_with_no_error(
     real_planner, monkeypatch, tmp_path: Path
 ) -> None:
-    """The slot runs `ask --model X`, planned after the write: the error claims nothing it serves.
+    """The slot runs `ask --model X`, planned after the write: it does not serve the file.
 
-    The fleet carries the file's view, so the one-off stops. The error must not say the
-    engine serves the written model, because it serves X.
+    Its stamp records X, which differs from config.toml, so the held write is no reason
+    to stop: the one-off overflows to a private fleet with no error and no wait.
     """
     persistent_settings.save(cfg.data_root, {"chat_model": _CHAT_REF})
     follow_config_one_off(frozenset())
@@ -248,7 +250,26 @@ def test_a_slot_fleet_on_a_flagged_model_after_the_write_gets_a_true_error(
     persistent_settings.save(cfg.data_root, {"chat_model": _THIRD_CHAT_REF})
     monkeypatch.setattr(cfg, "chat_model", _OTHER_CHAT_REF)  # the other command's flag
     _owner_provider, states = _owner(monkeypatch, tmp_path)
-    _stamp(states, prov_mod._plan_origin())
+    _stamp(states, prov_mod._plan_origin(ENGINE_TUNING_KEYS))
+    monkeypatch.setattr(cfg, "chat_model", _CHAT_REF)  # this one-off holds its start model
+    assert services_mod._held_writes_of_the_process_follower() == {"chat_model": _THIRD_CHAT_REF}
+    peer, built = _peer_beside_the_slot(monkeypatch, tmp_path, states, kwargs)
+    message = _outcome(peer._ensure_fleet) or (peer._engine_refusal or "")
+    assert message == "", message
+    assert len(built) == 1 and built[0] != tmp_path, built
+
+
+def test_a_slot_fleet_planned_on_the_file_gets_the_held_write_error(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    """The slot's stamp equals config.toml on every reload key: the one-off stops."""
+    persistent_settings.save(cfg.data_root, {"chat_model": _CHAT_REF})
+    follow_config_one_off(frozenset())
+    kwargs = _one_off_provider_kwargs(monkeypatch)
+    persistent_settings.save(cfg.data_root, {"chat_model": _THIRD_CHAT_REF})
+    monkeypatch.setattr(cfg, "chat_model", _THIRD_CHAT_REF)  # another one-off on the file
+    _owner_provider, states = _owner(monkeypatch, tmp_path)
+    _stamp(states, prov_mod._plan_origin(ENGINE_TUNING_KEYS))
     monkeypatch.setattr(cfg, "chat_model", _CHAT_REF)  # this one-off holds its start model
     peer, built = _peer_beside_the_slot(monkeypatch, tmp_path, states, kwargs)
     message = _outcome(peer._ensure_fleet) or (peer._engine_refusal or "")
@@ -310,7 +331,7 @@ def test_the_services_report_no_write_of_a_key_a_flag_set(monkeypatch) -> None:
     assert services_mod._held_writes_of_the_process_follower() == {}
 
 
-def test_the_factory_hands_the_held_writes_to_the_local_engine() -> None:
+def test_the_factory_hands_the_held_writes_and_the_followed_keys_to_the_local_engine() -> None:
     from lilbee.core.config.enums import LlmProvider
     from lilbee.providers.factory import create_provider
     from lilbee.providers.routing_provider import RoutingProvider
@@ -318,10 +339,65 @@ def test_the_factory_hands_the_held_writes_to_the_local_engine() -> None:
     def held_writes() -> dict[str, object]:
         return {}
 
+    def followed_keys() -> frozenset[str]:
+        return frozenset()
+
     config = cfg.model_copy(update={"llm_provider": LlmProvider.AUTO})
-    provider = create_provider(config, held_writes=held_writes)
+    provider = create_provider(config, held_writes=held_writes, followed_keys=followed_keys)
     assert isinstance(provider, RoutingProvider)
     assert provider._held_writes is held_writes
+    assert provider._followed_keys is followed_keys
+
+
+def test_a_stamp_records_the_planned_values_and_the_keys_its_builder_follows(
+    monkeypatch,
+) -> None:
+    """Rule 1: `ask --model X` stamps X, not the file's model, and the keys it takes."""
+    persistent_settings.save(cfg.data_root, {"chat_model": _CHAT_REF, "flash_attention": True})
+    monkeypatch.setattr(cfg, "chat_model", _OTHER_CHAT_REF)  # the command's flag
+    monkeypatch.setattr(cfg, "flash_attention", True)
+    followed = ENGINE_TUNING_KEYS - {"num_ctx"}
+    origin = FleetProvider(followed_keys=lambda: followed)._stamp_origin()
+    assert json.loads(origin.fleet_view or "") == {
+        "chat_model": _OTHER_CHAT_REF,
+        "flash_attention": True,
+    }
+    assert origin.followed == followed
+
+
+def test_a_one_off_follows_only_the_tuning_keys_no_flag_set(monkeypatch) -> None:
+    """Rule 2, a one-off: the services hand its followed keys to the engine."""
+    persistent_settings.save(cfg.data_root, {"chat_model": _CHAT_REF})
+    follow_config_one_off(frozenset({"chat_model", "num_ctx"}))
+    kwargs = _one_off_provider_kwargs(monkeypatch)
+    followed_keys = kwargs["followed_keys"]
+    assert callable(followed_keys)
+    assert followed_keys() == ENGINE_TUNING_KEYS - {"num_ctx"}
+
+
+def test_a_long_running_process_follows_every_reload_key_it_does_not_hold(monkeypatch) -> None:
+    """Rule 2, serve and the TUI: every reload key but the held ones."""
+    monkeypatch.setattr(services_mod._state, "follower", None)
+    services_mod.follow_config_long_running(frozenset({"chunk_size"}), keeper="the server")
+    followed = services_mod._followed_keys_of_the_process_follower()
+    assert followed == FLEET_RELOAD_KEYS - {"chunk_size"}
+
+
+def test_a_process_with_no_follower_follows_no_key(monkeypatch) -> None:
+    """Rule 2, the library API: no follower, so its fleets record no followed key."""
+    monkeypatch.setattr(services_mod._state, "follower", None)
+    assert services_mod._followed_keys_of_the_process_follower() == frozenset()
+    assert FleetProvider()._stamp_origin().followed == frozenset()
+
+
+def test_the_bind_ignores_the_stamp(real_planner, monkeypatch, tmp_path: Path) -> None:
+    """Rule 6: a slot fleet whose launches fit binds, whatever its stamp says."""
+    persistent_settings.save(cfg.data_root, {"chat_model": _CHAT_REF})
+    _owner_provider, states = _owner(monkeypatch, tmp_path)
+    _stamp(states, PlanOrigin(str(cfg.data_root), '{"chat_model": "x"}', FLEET_RELOAD_KEYS))
+    peer, built = _peer_beside_the_slot(monkeypatch, tmp_path, states, {})
+    assert peer._ensure_fleet() is True
+    assert built == []
 
 
 def test_a_long_running_process_reports_no_held_write() -> None:

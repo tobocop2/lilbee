@@ -359,7 +359,7 @@ def test_a_restarted_group_spawns_with_the_origin_lifetime_and_warm_hold(
     _join_fleet_threads()
 
     swap = provider._swap_for(CHAT)
-    assert swap.origin == prov_mod._plan_origin()
+    assert swap.origin == prov_mod._file_origin()
     assert swap.origin is not None
     assert swap.origin.config_root == str(cfg.data_root)
     assert swap.lifetime is EngineLifetime.BUILDER

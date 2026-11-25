@@ -2343,6 +2343,21 @@ class TestStateFilePersistenceKeys:
         assert restamped is not None and restamped.origin == later
         assert restamped.pid == state.pid and restamped.launches == state.launches
 
+    @pytest.mark.parametrize("followed", [None, frozenset(), frozenset({"num_ctx", "cpu_moe"})])
+    def test_the_followed_keys_round_trip_and_none_writes_no_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, followed: frozenset[str] | None
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        origin = sm.PlanOrigin("/root/a", "{}", followed)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA), origin=origin)
+        payload = json.loads(mgr._state_path.read_text(encoding="utf-8"))
+        assert ("followed_keys" in payload) is (followed is not None)
+        state = sm._load_state(mgr._state_path)
+        assert state is not None and state.origin is not None
+        assert state.origin.followed == followed
+
     def test_a_start_with_no_origin_writes_none(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
