@@ -24,6 +24,10 @@ from tests.conftest import child_pythonpath
 RESERVE = mm.UNKNOWN_SIZE_RESERVE_BYTES
 
 
+def _large_vocab_charge(weights: int) -> int:
+    return weights * 11 // 10 + 3584 * 1024**2
+
+
 def _request(path: Path, **overrides: object) -> MemoryRequest:
     fields: dict[str, object] = {
         "model_path": path,
@@ -312,7 +316,7 @@ class TestInstalledEncoder:
         narrow = mm.estimate_installed_encoder(tmp_path, narrow_f32=True)
         plain = mm.estimate_installed_encoder(tmp_path, narrow_f32=False)
         assert narrow.device_bytes == 2000 + mm.ENCODER_RUNTIME_BYTES
-        assert plain.device_bytes == 4000 + mm.ENCODER_RUNTIME_BYTES
+        assert plain.device_bytes == _large_vocab_charge(4000)
 
     def test_a_float32_text_section_halves_the_weights_when_narrowing(self, tmp_path: Path) -> None:
         _write(tmp_path, "model.safetensors", 4000)
@@ -334,6 +338,41 @@ class TestInstalledEncoder:
             4000 + mm.ENCODER_RUNTIME_BYTES
         )
 
+    @pytest.mark.parametrize(
+        ("vocab", "charge"),
+        [
+            (30_522, 4000 * 3 // 2 + 128 * 1024**2),
+            (99_999, 4000 * 3 // 2 + 128 * 1024**2),
+            (100_000, 4000 * 11 // 10 + 3584 * 1024**2),
+            (250_002, 4000 * 11 // 10 + 3584 * 1024**2),
+            (None, 4000 * 11 // 10 + 3584 * 1024**2),
+        ],
+    )
+    def test_a_cpu_build_charges_by_the_vocabulary(
+        self, vocab: int | None, charge: int, tmp_path: Path
+    ) -> None:
+        _write(tmp_path, "model.safetensors", 4000)
+        config = {} if vocab is None else {"vocab_size": vocab}
+        (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        assert mm.estimate_installed_encoder(tmp_path, narrow_f32=False).device_bytes == charge
+
+    @pytest.mark.parametrize("vocab", ['"30522"', "true", "[30522]"])
+    def test_a_vocabulary_that_is_not_a_number_is_charged_as_a_large_one(
+        self, vocab: str, tmp_path: Path
+    ) -> None:
+        _write(tmp_path, "model.safetensors", 4000)
+        (tmp_path / "config.json").write_text(f'{{"vocab_size": {vocab}}}', encoding="utf-8")
+        assert mm.estimate_installed_encoder(tmp_path, narrow_f32=False).device_bytes == (
+            _large_vocab_charge(4000)
+        )
+
+    def test_a_cuda_build_ignores_the_vocabulary(self, tmp_path: Path) -> None:
+        _write(tmp_path, "model.safetensors", 4000)
+        (tmp_path / "config.json").write_text('{"vocab_size": 250002}', encoding="utf-8")
+        assert mm.estimate_installed_encoder(tmp_path, narrow_f32=True).device_bytes == (
+            4000 + mm.ENCODER_RUNTIME_BYTES
+        )
+
     def test_a_folder_with_no_weights_is_unknown(self, tmp_path: Path) -> None:
         est = mm.estimate_installed_encoder(tmp_path, narrow_f32=True)
         assert (est.device_bytes, est.size_known) == (RESERVE, False)
@@ -347,14 +386,14 @@ class TestInstalledEncoder:
     @pytest.mark.parametrize("size", [10, 11, 135, 136, 4000])
     def test_a_whole_weight_file_is_known_at_its_size(self, size: int, tmp_path: Path) -> None:
         _write(tmp_path, "model.safetensors", size)
-        est = mm.estimate_installed_encoder(tmp_path, narrow_f32=False)
+        est = mm.estimate_installed_encoder(tmp_path, narrow_f32=True)
         assert (est.device_bytes, est.size_known) == (size + mm.ENCODER_RUNTIME_BYTES, True)
 
     def test_tensors_in_any_order_and_a_metadata_entry_make_a_whole_file(
         self, tmp_path: Path
     ) -> None:
         (tmp_path / "model.safetensors").write_bytes(_WHOLE_FILE)
-        est = mm.estimate_installed_encoder(tmp_path, narrow_f32=False)
+        est = mm.estimate_installed_encoder(tmp_path, narrow_f32=True)
         assert (est.device_bytes, est.size_known) == (
             len(_WHOLE_FILE) + mm.ENCODER_RUNTIME_BYTES,
             True,

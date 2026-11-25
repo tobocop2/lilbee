@@ -65,6 +65,7 @@ _F32 = "F32"
 _CONFIG_TEXT_KEY = "text_config"
 _CONFIG_DTYPE_KEYS = ("dtype", "torch_dtype")
 _CONFIG_FLOAT32 = "float32"
+_CONFIG_VOCAB_KEY = "vocab_size"
 _KV_ELEMENT_BYTES = 2
 """The chat engines for safetensors hold each cache element at the model's 2 byte dtype."""
 _KV_MLA_KEY = "kv_lora_rank"
@@ -75,7 +76,15 @@ _MIB = 1024**2
 CHAT_RUNTIME_BYTES = 512 * _MIB
 """What a safetensors chat engine holds beyond weights and cache: device context and workspace."""
 ENCODER_RUNTIME_BYTES = 500 * _MIB
-"""What a safetensors encoder server holds beyond its weights (500 MiB measured on CUDA)."""
+"""What a safetensors encoder server holds beyond its weights on CUDA and XDNA (500 MiB measured on
+CUDA). A CPU build is charged by vocabulary size instead."""
+_CPU_ENCODER_VOCAB_CUT = 100_000
+"""A CPU encoder with a vocabulary of this size or more, or an unstated one, peaks far above its
+weights at load."""
+_CPU_SMALL_VOCAB_WEIGHTS_FACTOR = (3, 2)
+_CPU_SMALL_VOCAB_BYTES = 128 * _MIB
+_CPU_LARGE_VOCAB_WEIGHTS_FACTOR = (11, 10)
+_CPU_LARGE_VOCAB_BYTES = 3584 * _MIB
 
 CPU_RUNTIME_ALLOWANCE_BYTES = 96 * _MIB
 """What a CPU chat server holds beyond the priced parts: heap, libraries and the compute the
@@ -277,6 +286,21 @@ def encoder_estimate(weights: int | None) -> MemoryEstimate:
     return _sized_estimate(weights + ENCODER_RUNTIME_BYTES)
 
 
+def cpu_encoder_estimate(weights: int, vocab_size: int | None) -> MemoryEstimate:
+    """The load peak of a CPU encoder server, which follows the vocabulary and not the task.
+
+    A vocabulary under 100 000 charges 1.5 times the weights plus 128 MiB. A larger or unstated
+    one charges 1.1 times the weights plus 3584 MiB.
+    """
+    if vocab_size is not None and vocab_size < _CPU_ENCODER_VOCAB_CUT:
+        numerator, denominator = _CPU_SMALL_VOCAB_WEIGHTS_FACTOR
+        extra = _CPU_SMALL_VOCAB_BYTES
+    else:
+        numerator, denominator = _CPU_LARGE_VOCAB_WEIGHTS_FACTOR
+        extra = _CPU_LARGE_VOCAB_BYTES
+    return _sized_estimate(weights * numerator // denominator + extra)
+
+
 def _ir_pairs(sizes: Mapping[str, int]) -> list[tuple[str, str]]:
     """The ``(xml, bin)`` pair of each IR part in the listing, or none if any part lacks its bin."""
     pairs = [(part, ir_weights_file(part)) for part in ir_parts(sizes)]
@@ -444,13 +468,20 @@ def _is_float32(config: Mapping[str, Any] | None) -> bool:
 
 
 def estimate_installed_encoder(model_path: Path, *, narrow_f32: bool) -> MemoryEstimate:
-    """The encoder figure of an installed folder, its float32 weights halved when *narrow_f32*."""
+    """The encoder figure of an installed folder.
+
+    *narrow_f32* is true for a CUDA build, which holds float32 weights as float16 and is charged
+    the weights plus the runtime allowance. Any other build is charged by the vocabulary in
+    ``config.json``.
+    """
     weights = whole_safetensors_bytes(model_path)
     if not weights:
         return _unknown_estimate(installed_safetensors_bytes(model_path))
-    if narrow_f32 and _is_float32(installed_config(model_path)):
-        weights //= 2
-    return encoder_estimate(weights)
+    config = installed_config(model_path)
+    if narrow_f32:
+        return encoder_estimate(weights // 2 if _is_float32(config) else weights)
+    vocab_size = _whole_number((config or {}).get(_CONFIG_VOCAB_KEY))
+    return cpu_encoder_estimate(weights, vocab_size)
 
 
 def _estimate_installed_chat(request: MemoryRequest) -> MemoryEstimate:

@@ -238,7 +238,7 @@ class TeiAdapter:
         return frozenset({RoleTarget.GPU, RoleTarget.CPU})
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
-        """The weights plus a runtime allowance; a CUDA build holds float32 weights as float16."""
+        """The load peak: by vocabulary on a CPU build, weights plus an allowance on CUDA."""
         from lilbee.catalog.runnable import session_host
 
         backend = self.pick_build(session_host()).backend

@@ -184,14 +184,15 @@ def _encoder_request(model_path: Path, ctx: int = 512) -> MemoryRequest:
     )
 
 
-def test_memory_is_the_weights_plus_the_runtime_allowance_on_a_cpu_build(
+def test_memory_is_the_large_vocabulary_charge_for_a_config_with_no_vocabulary_on_a_cpu_build(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps())
     folder = _encoder_folder(tmp_path, 4_000, "float32")
     estimate = TEI.estimate_memory(_encoder_request(folder))
     assert estimate.kind is MemoryKind.FIXED_RESERVE
-    assert estimate.device_bytes == estimate.shared_bytes == 4_000 + ENCODER_RUNTIME_BYTES
+    charge = 4_000 * 11 // 10 + 3584 * _MIB
+    assert estimate.device_bytes == estimate.shared_bytes == charge
     assert estimate.size_known is True
 
 
@@ -275,23 +276,23 @@ def test_a_cuda_build_leaves_bfloat16_weights_whole(
     )
 
 
-def test_a_metal_build_holds_float32_weights_whole(
+def test_a_metal_build_is_charged_by_vocabulary_like_a_cpu_build(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps("Darwin", "arm64"))
     folder = _encoder_folder(tmp_path, 4_000, "float32")
     assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
-        4_000 + ENCODER_RUNTIME_BYTES
+        4_000 * 11 // 10 + 3584 * _MIB
     )
 
 
-def test_a_host_with_no_build_holds_float32_weights_whole(
+def test_a_host_with_no_build_is_charged_by_vocabulary_like_a_cpu_build(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps("Windows"))
     folder = _encoder_folder(tmp_path, 4_000, "float32")
     assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
-        4_000 + ENCODER_RUNTIME_BYTES
+        4_000 * 11 // 10 + 3584 * _MIB
     )
 
 
