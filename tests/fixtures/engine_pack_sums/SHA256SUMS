@@ -8,6 +8,8 @@
 # asset gave the same sum.
 # In the blocks of engine-packs-20261119-llama and engine-packs-20261121-llama, each line is the digest that GitHub gives the
 # release asset. The sha256sum of an anonymous download of each asset gave the same sum.
+# In the block of engine-packs-20261125-mistralrs, each line is the digest that GitHub gives the release asset.
+# The build log of each wheel printed the same sum. An anonymous download of the Linux CPU and Metal wheels gave the same sum.
 # release engine-packs-20261118
 # source release engine-packs-20261104
 8bba9afef14daa860692e6011f5cee892c544e9e0f43bb774dbe39ec83e575b5  lilbee_engine_ik_llama_cpp-0+git13cffc006b82-1.cpu-py3-none-manylinux_2_34_x86_64.whl
@@ -65,3 +67,13 @@ db9cffd80df56eb2d3f6c245844e99271c0103881d092d687aae3ed071106e03  lilbee_engine_
 3ada06318c4b2d4a63b2ac772a0ccc90bb7de23b48f2e87bcf52d427711a0cd6  lilbee_engine_llama_cpp-1.12032.1-4.cpu-py3-none-win_amd64.whl
 ae205af3bfd9224760884630cfb0bde328597cf4f6378c9631fd28fc01a377fd  lilbee_engine_llama_cpp-1.12032.1-4.cuda-py3-none-win_amd64.whl
 6285fad074767caebc53dd5ed42ca522d28ddabbef3240f3d53968927b74a987  lilbee_engine_llama_cpp-1.12032.1-4.vulkan-py3-none-win_amd64.whl
+# release engine-packs-20261125-mistralrs
+35c70ed067923c185a5275d57c8582c9efac087022fc2b7d5486f6385e9b7ee6  lilbee_engine_mistral_rs-0.9.5-2.cpu-py3-none-manylinux_2_35_x86_64.whl
+f4c22d36171ff99d9e8ec9a11fd46cc0d2edb84fd31bc6194e981304ee377cd7  lilbee_engine_mistral_rs-0.9.5-2.cpu-py3-none-win_amd64.whl
+a027766de06b18e2ede8234c08f17d1d4236e5034e62a9eb4950aa7f20402f81  lilbee_engine_mistral_rs-0.9.5-2.cuda_sm100-py3-none-manylinux_2_35_x86_64.whl
+83bbfc1c7e20780707b5990fba0386df3a625abf6dd6ca60341efe0cbb42de01  lilbee_engine_mistral_rs-0.9.5-2.cuda_sm120-py3-none-manylinux_2_35_x86_64.whl
+07976991691ce2188eaa4a43293ae7fbb85dac253e8f79bc3cc3fc2f3ee43eae  lilbee_engine_mistral_rs-0.9.5-2.cuda_sm80-py3-none-manylinux_2_35_x86_64.whl
+74f15bf25cb9112947175b513533a6438d87016a66c5edaa4dc9de19813b3e2f  lilbee_engine_mistral_rs-0.9.5-2.cuda_sm86-py3-none-manylinux_2_35_x86_64.whl
+fbd58aa532ba8f1a6491b4be9c90a247534e25f97d7474f0b0c2fc4d41c3629e  lilbee_engine_mistral_rs-0.9.5-2.cuda_sm89-py3-none-manylinux_2_35_x86_64.whl
+9547e8afe2ddcb8a94eea4ac20cc2ba76222adc324d2aa51491b90110173cb44  lilbee_engine_mistral_rs-0.9.5-2.cuda_sm90-py3-none-manylinux_2_35_x86_64.whl
+f21ef879a4072e4ba3a98910eb87908ae7a219c8d8c0cfbe4a715de3e5f1019a  lilbee_engine_mistral_rs-0.9.5-2.metal-py3-none-macosx_15_0_arm64.whl
