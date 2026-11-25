@@ -1354,11 +1354,12 @@ class Store:
 
     def _pin_chunk_settings(self, values: Mapping[str, Any]) -> None:
         """Record *values* for a library that holds chunks and no record of their settings."""
-        if self.get_meta() is None or not self._has_chunks():
+        if not self._has_chunks():
             return
         with self._write_lock():
             row = self._meta_row()
             meta = _meta_of(row)
+            # A store with no meta row gets one from its first search or sync, not here.
             if meta is None or _stamp_of(row) is not None:
                 return
             log.warning(
