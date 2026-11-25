@@ -109,6 +109,32 @@ def test_the_launch_binds_loopback_and_serves_the_one_model_name() -> None:
     assert argv[argv.index("--rest_bind_address") + 1] == "127.0.0.1"
 
 
+def test_a_chat_launch_caps_the_sequences_at_the_slots() -> None:
+    request = LaunchRequest(
+        binary=BINARY,
+        model_path=MODEL,
+        devices=(),
+        n_gpu_layers=0,
+        slots=3,
+        ctx_per_slot=2048,
+        target=RoleTarget.CPU,
+    )
+    argv = OVMS.launch_argv(OVMS.role_spec(WorkerRole.CHAT, None, None), request)
+    assert argv[argv.index("--max_num_seqs") + 1] == "3"
+
+
+@pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
+def test_an_encoder_launch_sets_no_sequence_cap(role: WorkerRole) -> None:
+    assert "--max_num_seqs" not in _argv(role)
+
+
+@pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK])
+def test_no_launch_sets_a_cache_size_or_a_plugin_config(role: WorkerRole) -> None:
+    argv = _argv(role)
+    assert "--cache_size" not in argv
+    assert "--plugin_config" not in argv
+
+
 def test_the_target_sets_the_device() -> None:
     cpu = _argv(WorkerRole.CHAT, RoleTarget.CPU)
     gpu = _argv(WorkerRole.CHAT, RoleTarget.GPU)
