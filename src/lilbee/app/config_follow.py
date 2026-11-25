@@ -16,6 +16,7 @@ from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from lilbee.core.config.context import published_config_scope
 from lilbee.core.config.keys import PROVIDER_SWITCHING_KEYS
+from lilbee.core.config.model import follow_published_config
 
 log = logging.getLogger(__name__)
 
@@ -65,11 +66,14 @@ class ConfigFileFollower:
     def take_now(self) -> None:
         """Take the changes another process made to config.toml, and log what was taken.
 
-        The check compares against the published Config and publishes a new one. It
-        leaves every pin as it is; ``refresh_config`` then moves its caller's pin.
+        The check compares against the published Config and publishes a new one. The
+        caller asked for the newest settings, so its pin then moves to the published
+        Config. The config-reload middleware runs the check before it binds the
+        request's pin, so no other request's pin moves.
         """
         with published_config_scope():
             result = self._adopt()
+        follow_published_config()
         if result is None:
             return
         log.info("Took %s from config.toml.", ", ".join(result.updated))
