@@ -125,6 +125,14 @@ class TestPickDefaultModel:
         with pytest.raises(RuntimeError, match="Could not reach HuggingFace"):
             models.pick_default_model(16.0)
 
+    def test_empty_catalog_message_names_the_command_and_the_route(self, monkeypatch):
+        """An HTTP consumer has no command line, so the message names the route too."""
+        monkeypatch.setattr(models, "_get_model_catalog", lambda: ())
+        with pytest.raises(RuntimeError) as err:
+            models.pick_default_model(16.0)
+        assert "lilbee model pull" in str(err.value)
+        assert "POST /api/models/pull" in str(err.value)
+
     def test_tiny_ram_picks_smallest(self):
         """No repo id is stable any more, so assert the fit rule, not a name."""
         result = models.pick_default_model(2.0)
@@ -207,6 +215,12 @@ class TestPromptModelChoice:
             pytest.raises(RuntimeError, match="lilbee model pull"),
         ):
             models.prompt_model_choice(8.0)
+
+
+def test_no_chat_model_guidance_names_the_command_and_the_route():
+    """The server surfaces this text, so a consumer without a terminal needs the route."""
+    assert "lilbee model pull" in models.NO_CHAT_MODEL_GUIDANCE
+    assert "POST /api/models/pull" in models.NO_CHAT_MODEL_GUIDANCE
 
 
 class TestValidateDiskAndPull:
