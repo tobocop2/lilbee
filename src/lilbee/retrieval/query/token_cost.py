@@ -45,7 +45,7 @@ class TokenCost:
     def warm(self, texts: Iterable[str]) -> None:
         """Count the uncounted *texts* at once, up to COUNT_WORKERS requests in flight."""
         todo = [t for t in dict.fromkeys(texts) if t not in self._counted]
-        if not self._measuring or len(todo) < 2:
+        if not self._measuring or not todo:
             return
         with ThreadPoolExecutor(max_workers=min(COUNT_WORKERS, len(todo))) as pool:
             futures = [pool.submit(contextvars.copy_context().run, self._measure, t) for t in todo]
