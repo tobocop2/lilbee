@@ -10,45 +10,80 @@ import httpx
 import numpy as np
 import pytest
 
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.fleet import client as client_mod
 from lilbee.providers.fleet import provider as provider_mod
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName, RequestProfile
 from lilbee.providers.fleet.engines.lemonade import LEMONADE
 from lilbee.providers.fleet.engines.llama import LLAMA
+from lilbee.providers.fleet.groups import SwapGroup
+from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import WorkerRole
+from lilbee.providers.warm_progress import WarmPhase
+from lilbee.server.handlers import _chat_status
 
 REPLIES = Path(__file__).parent / "fixtures" / "lemonade"
 MODEL_ID = "chat-0"
 NOT_FOUND = 404
 """The status of the recorded load refusal; tests/fixtures/lemonade/sources.txt."""
+RUNNING = "/running"
+HEALTH = f"/upstream/{MODEL_ID}/v1/health"
+SYSTEM_INFO = f"/upstream/{MODEL_ID}/v1/system-info"
+UNLOAD = f"/api/models/unload/{MODEL_ID}"
 VECTOR = base64.b64encode(np.array([0.5, 0.5], dtype=np.float32).tobytes()).decode()
 EMBEDDING = {"data": [{"index": 0, "embedding": VECTOR}], "object": "list"}
 CHAT_DONE = b'data: {"choices": [{"index": 0, "delta": {"content": "hi"}}]}\n\ndata: [DONE]\n\n'
 ON_NPU = {"all_models_loaded": [{"model_name": "user.lilbee-embed", "device": "npu"}]}
+CHAT_ON_NPU = {"all_models_loaded": [{"model_name": "user.lilbee-chat", "device": "npu"}]}
+CHAT_ON_CPU = {"all_models_loaded": [{"model_name": "user.lilbee-chat", "device": "cpu"}]}
+READY = {"running": [{"model": MODEL_ID, "state": "ready"}]}
+NOTHING_RUNNING: dict[str, list[object]] = {"running": []}
+NPU_FIX = (
+    "Check that the XDNA driver is installed and that `lemonade system-info` lists the npu device."
+)
+
+Reply = object
+"""A route's answer: an httpx.Response, raw bytes, a JSON value, or a callable of the request."""
+
+
+@pytest.fixture(autouse=True)
+def _no_backoff_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The gateway retry sleeps between attempts; the tests count the attempts instead."""
+    monkeypatch.setattr(client_mod.time, "sleep", lambda _s: None)
 
 
 def _reply(name: str) -> bytes:
     return (REPLIES / name).read_bytes()
 
 
+def _answer(reply: Reply, request: httpx.Request) -> httpx.Response:
+    if callable(reply):
+        reply = reply(request)
+    if isinstance(reply, httpx.Response):
+        return reply
+    if isinstance(reply, bytes):
+        return httpx.Response(200, content=reply)
+    return httpx.Response(200, json=reply)
+
+
 def _client(
     role: WorkerRole,
     profile_of: Callable[[WorkerRole], RequestProfile],
-    routes: dict[str, object],
+    routes: dict[str, Reply],
 ) -> tuple[LlamaServerClient, list[str]]:
-    """A client whose server answers each path in *routes*; it records every path it is asked."""
+    """A client whose llama-swap answers each path in *routes*; it records every path asked.
+
+    llama-swap lists the model as running and ready unless *routes* answers ``/running``.
+    """
     asked: list[str] = []
+    routes = {RUNNING: READY, **routes}
 
     def answer(request: httpx.Request) -> httpx.Response:
         asked.append(request.url.path)
         reply = routes.get(request.url.path, httpx.Response(NOT_FOUND, content=b"no route"))
-        if isinstance(reply, httpx.Response):
-            return reply
-        if isinstance(reply, bytes):
-            return httpx.Response(200, content=reply)
-        return httpx.Response(200, json=reply)
+        return _answer(reply, request)
 
     transport = httpx.MockTransport(answer)
     client = LlamaServerClient(
@@ -59,6 +94,16 @@ def _client(
         profile=profile_of(role),
     )
     return client, asked
+
+
+def _replies(*replies: Reply) -> Callable[[httpx.Request], Reply]:
+    """Answer each request with the next of *replies*, and with the last one after that."""
+    queue = list(replies)
+
+    def next_reply(_request: httpx.Request) -> Reply:
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    return next_reply
 
 
 def test_d1_engines_without_a_health_route_skip_the_check() -> None:
@@ -73,38 +118,72 @@ def test_d1_engines_without_a_health_route_skip_the_check() -> None:
 
 
 def test_d1_the_warm_reads_health_through_the_upstream_route() -> None:
-    health = f"/upstream/{MODEL_ID}/v1/health"
     client, asked = _client(
-        WorkerRole.EMBED, LEMONADE.request_profile, {"/v1/embeddings": EMBEDDING, health: ON_NPU}
+        WorkerRole.EMBED, LEMONADE.request_profile, {"/v1/embeddings": EMBEDDING, HEALTH: ON_NPU}
     )
     provider_mod._warm_role(WorkerRole.EMBED, client)
-    assert asked == ["/v1/embeddings", health]
+    assert asked == ["/v1/embeddings", RUNNING, HEALTH]
+
+
+def test_d1_a_warm_whose_model_lemond_lists_on_the_cpu_fails_with_the_fix() -> None:
+    client, _ = _client(
+        WorkerRole.CHAT,
+        LEMONADE.request_profile,
+        {"/v1/chat/completions": CHAT_DONE, HEALTH: CHAT_ON_CPU},
+    )
+    with pytest.raises(ProviderError) as caught:
+        provider_mod._warm_role(WorkerRole.CHAT, client)
+    assert str(caught.value) == f"Lemonade loaded the model on the CPU, not the NPU. {NPU_FIX}"
 
 
 def test_d1_a_reply_that_lists_only_another_model_fails_the_chat_warm() -> None:
     client, _ = _client(
         WorkerRole.CHAT,
         LEMONADE.request_profile,
-        {
-            "/v1/chat/completions": CHAT_DONE,
-            f"/upstream/{MODEL_ID}/v1/health": _reply("health-cpu-v2026.44.1.json"),
-        },
+        {"/v1/chat/completions": CHAT_DONE, HEALTH: _reply("health-cpu-v2026.44.1.json")},
     )
     with pytest.raises(ProviderError, match="does not list the model as loaded"):
         provider_mod._warm_role(WorkerRole.CHAT, client)
 
 
-def test_d1_an_unreadable_health_reply_fails_the_warm() -> None:
-    client, _ = _client(
+def test_d1_one_unreadable_health_reply_is_read_again() -> None:
+    gateway_down = httpx.Response(502, content=b"upstream restarting")
+    client, asked = _client(
         WorkerRole.EMBED,
         LEMONADE.request_profile,
-        {
-            "/v1/embeddings": EMBEDDING,
-            f"/upstream/{MODEL_ID}/v1/health": httpx.Response(200, content=b"not json"),
-        },
+        {"/v1/embeddings": EMBEDDING, HEALTH: _replies(gateway_down, ON_NPU)},
+    )
+    provider_mod._warm_role(WorkerRole.EMBED, client)
+    assert asked.count(HEALTH) == 2
+
+
+@pytest.mark.parametrize(
+    "unreadable",
+    [httpx.Response(200, content=b"not json"), httpx.Response(503, content=b"down")],
+    ids=["not-json", "gateway-503"],
+)
+def test_d1_a_health_reply_unreadable_until_the_retries_end_fails_the_warm(
+    unreadable: httpx.Response,
+) -> None:
+    client, asked = _client(
+        WorkerRole.EMBED,
+        LEMONADE.request_profile,
+        {"/v1/embeddings": EMBEDDING, HEALTH: unreadable},
     )
     with pytest.raises(ProviderError, match="Lemonade did not report the device of the model"):
         provider_mod._warm_role(WorkerRole.EMBED, client)
+    assert asked.count(HEALTH) > 1
+
+
+def test_d1_health_is_never_read_from_an_upstream_that_is_not_running() -> None:
+    client, asked = _client(
+        WorkerRole.EMBED,
+        LEMONADE.request_profile,
+        {"/v1/embeddings": EMBEDDING, RUNNING: NOTHING_RUNNING, HEALTH: ON_NPU},
+    )
+    with pytest.raises(ProviderError, match="Lemonade did not report the device of the model"):
+        provider_mod._warm_role(WorkerRole.EMBED, client)
+    assert HEALTH not in asked
 
 
 def test_e2_a_refused_load_on_a_host_without_the_npu_gives_the_no_npu_error() -> None:
@@ -115,17 +194,36 @@ def test_e2_a_refused_load_on_a_host_without_the_npu_gives_the_no_npu_error() ->
             "/v1/chat/completions": httpx.Response(
                 NOT_FOUND, content=_reply("load-refused-no-npu-v2026.44.1.json")
             ),
-            f"/upstream/{MODEL_ID}/v1/system-info": _reply("system-info-no-npu-v2026.44.1.json"),
+            SYSTEM_INFO: _reply("system-info-no-npu-v2026.44.1.json"),
         },
     )
     with pytest.raises(ProviderError) as caught:
         provider_mod._warm_role(WorkerRole.CHAT, client)
-    assert str(caught.value) == (
-        "Lemonade cannot run this model: this computer has no AMD XDNA2 NPU that Lemonade "
-        "can use. Lemonade reports: Requires AMD XDNA 2 AMD NPU"
+    text = str(caught.value)
+    assert text.startswith(
+        "This machine has no NPU that Lemonade can use: Requires AMD XDNA 2 AMD NPU. "
+        "Choose a CPU or GPU engine for this role. Lemonade said: "
     )
+    # The stored warm error is str(exc): it keeps Lemonade's own detail.
+    assert "Detected processor: AMD EPYC 7B12" in text
     assert isinstance(caught.value.__cause__, ProviderError)
-    assert asked == ["/v1/chat/completions", f"/upstream/{MODEL_ID}/v1/system-info"]
+    assert asked == ["/v1/chat/completions", RUNNING, SYSTEM_INFO]
+
+
+def test_e2_the_reason_is_never_read_from_an_upstream_that_is_not_running() -> None:
+    client, asked = _client(
+        WorkerRole.CHAT,
+        LEMONADE.request_profile,
+        {
+            "/v1/chat/completions": httpx.Response(NOT_FOUND, content=b"upstream did not start"),
+            RUNNING: NOTHING_RUNNING,
+            SYSTEM_INFO: _reply("system-info-no-npu-v2026.44.1.json"),
+        },
+    )
+    with pytest.raises(ProviderError) as caught:
+        provider_mod._warm_role(WorkerRole.CHAT, client)
+    assert caught.value.__cause__ is None
+    assert SYSTEM_INFO not in asked
 
 
 def test_e2_an_unreadable_system_info_keeps_the_engine_failure() -> None:
@@ -136,7 +234,7 @@ def test_e2_an_unreadable_system_info_keeps_the_engine_failure() -> None:
         {
             "/v1/chat/completions": httpx.Response(NOT_FOUND, content=refused),
             # An error status with a body that would refuse: the status alone decides.
-            f"/upstream/{MODEL_ID}/v1/system-info": httpx.Response(
+            SYSTEM_INFO: httpx.Response(
                 500, content=_reply("system-info-no-npu-v2026.44.1.json")
             ),
         },
@@ -157,7 +255,7 @@ def test_e2_a_system_info_that_shows_no_refusal_keeps_the_engine_failure() -> No
             "/v1/chat/completions": httpx.Response(
                 NOT_FOUND, content=_reply("load-refused-no-npu-v2026.44.1.json")
             ),
-            f"/upstream/{MODEL_ID}/v1/system-info": runnable,
+            SYSTEM_INFO: runnable,
         },
     )
     with pytest.raises(ProviderError) as caught:
@@ -181,3 +279,85 @@ def test_a_vision_warm_sends_nothing() -> None:
     client, asked = _client(WorkerRole.VISION, LEMONADE.request_profile, {})
     provider_mod._warm_role(WorkerRole.VISION, client)
     assert asked == []
+
+
+class _Swap:
+    """llama-swap as the provider sees it: the chat role is ready while its upstream runs."""
+
+    def __init__(self, running: set[str]) -> None:
+        self._running = running
+
+    def role_ready(self, role: WorkerRole) -> bool:
+        return role is WorkerRole.CHAT and MODEL_ID in self._running
+
+    def is_live(self) -> bool:
+        return True
+
+    def record_ready(self) -> None:
+        return None
+
+
+def _chat_fleet(
+    monkeypatch: pytest.MonkeyPatch, health: Reply
+) -> tuple[FleetProvider, LlamaServerClient, list[str]]:
+    """A provider with one Lemonade chat replica behind a llama-swap that can unload it."""
+    running = {MODEL_ID}
+
+    def listing(_request: httpx.Request) -> Reply:
+        return {"running": [{"model": m, "state": "ready"} for m in sorted(running)]}
+
+    def unload(_request: httpx.Request) -> Reply:
+        running.discard(MODEL_ID)
+        return httpx.Response(200, content=b"OK")
+
+    client, asked = _client(
+        WorkerRole.CHAT,
+        LEMONADE.request_profile,
+        {"/v1/chat/completions": CHAT_DONE, RUNNING: listing, HEALTH: health, UNLOAD: unload},
+    )
+    provider = FleetProvider()
+    group = SwapGroup(WorkerRole.CHAT.value)
+    provider._role_group = {WorkerRole.CHAT: group}
+    provider._swaps = {group: _Swap(running)}  # type: ignore[dict-item]
+    provider._clients = {WorkerRole.CHAT: [client]}
+    monkeypatch.setattr(provider, "_prewarm_chat_weights", lambda: None)
+    return provider, client, asked
+
+
+def test_d1_a_cpu_device_unloads_the_upstream_and_the_role_serves_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider, client, asked = _chat_fleet(monkeypatch, CHAT_ON_CPU)
+    provider._warm_chat_role([client])
+    assert UNLOAD in asked
+    assert provider.role_ready(WorkerRole.CHAT) is False
+    status, error = _chat_status(provider)
+    assert status == "error"
+    assert error is not None
+    assert "Lemonade loaded the model on the CPU, not the NPU." in error
+    asked_before = len(asked)
+    with pytest.raises(ProviderError) as caught:
+        provider._require_clients(WorkerRole.CHAT)
+    assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
+    assert "not the NPU" in str(caught.value)
+    assert len(asked) == asked_before
+
+
+def test_d1_a_later_good_warm_clears_the_error_of_an_unreadable_health_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unreadable = httpx.Response(503, content=b"down")
+    health = _replies(*[unreadable] * (client_mod._GATEWAY_RETRIES + 1), CHAT_ON_NPU)
+    provider, client, asked = _chat_fleet(monkeypatch, health)
+    provider._warm_chat_role([client])
+    first = provider.warm_progress()
+    assert first is not None
+    assert first.phase is WarmPhase.ERROR
+    assert UNLOAD not in asked
+    assert provider._clients[WorkerRole.CHAT] == [client]
+    provider._warm_chat_role([client])
+    second = provider.warm_progress()
+    assert second is not None
+    assert second.phase is WarmPhase.READY
+    assert provider._warm_errors == {}
+    assert _chat_status(provider) == ("ready", None)
