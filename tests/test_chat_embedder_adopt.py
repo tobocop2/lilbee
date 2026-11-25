@@ -8,6 +8,7 @@ a generic stream error, and explains the rebuild path when the dims differ.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import MagicMock, PropertyMock, patch
 
 from lilbee.cli.tui import messages as msg
@@ -282,3 +283,22 @@ class TestDoAdoptAndRetry:
             screen._do_adopt_and_retry("orgA/repoA/built.gguf", "q")
         screen._send_message.assert_not_called()
         assert any("boom" in str(c.args) for c in screen.notify.call_args_list)
+
+    def test_the_no_engine_notice_of_an_installed_embedder_is_shown(self):
+        screen = _bare_screen()
+        screen._send_message = MagicMock()  # type: ignore[method-assign]
+        notice = "No installed engine loads this model."
+        manager = MagicMock()
+        manager.is_installed.return_value = True
+        update = SimpleNamespace(reindex_required=False, warnings=(notice,))
+        with (
+            patch("lilbee.app.models.get_services", return_value=SimpleNamespace(model_manager=manager)),
+            patch("lilbee.app.settings.apply_settings_update", return_value=update),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+            ),
+        ):
+            screen._do_adopt_and_retry("orgA/repoA/built.gguf", "q")
+        warned = [c for c in screen.notify.call_args_list if c.kwargs.get("severity") == "warning"]
+        assert [c.args[0] for c in warned] == [notice]
