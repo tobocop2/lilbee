@@ -439,7 +439,9 @@ class TestEnsureChatModel:
             mock.patch("builtins.input", return_value="1"),
         ):
             models.ensure_chat_model()
-        mock_pull.assert_called_once_with(models.MODEL_CATALOG[0].ref, console=None)
+        mock_pull.assert_called_once_with(
+            models.MODEL_CATALOG[0].ref, console=None, report_no_engine=True
+        )
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=0.01)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
