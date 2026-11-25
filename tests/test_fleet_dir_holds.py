@@ -325,6 +325,53 @@ def test_a_client_that_goes_idle_during_a_retry_keeps_the_dir_until_the_retry_en
     assert p._engine_holds == {}
 
 
+def test_a_retry_counts_a_dir_that_only_a_busy_retired_client_holds() -> None:
+    # The group left before the call, so no group runs in the dir at the retry's
+    # entry; the dir is held only by the retired client's request.
+    p, hold, client = _provider_with_busy_chat()
+    p._drop_swap_refs()
+    calls = {"n": 0}
+    held_after_idle: list[bool] = []
+
+    def _call() -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _connection_error()
+        client.release()
+        held_after_idle.append(_DIR in p._engine_holds)
+        return "ok"
+
+    assert p._with_rediscover(_call) == "ok"
+    assert held_after_idle == [True]
+    hold.release_and_check_last.assert_called_once()
+    assert p._engine_holds == {}
+
+
+def test_a_retired_client_with_two_requests_keeps_the_dir_until_both_end() -> None:
+    p, hold, client = _provider_with_busy_chat()
+    client.reserve()
+    p._drop_swap_refs()
+    client.release()
+    hold.release_and_check_last.assert_not_called()
+    assert _DIR in p._engine_holds
+    client.release()
+    hold.release_and_check_last.assert_called_once()
+    assert _DIR not in p._engine_holds
+
+
+def test_a_release_that_raises_still_ends_every_other_use() -> None:
+    p, holds = _provider(_DIR, _OTHER)
+    _bound(p, SwapGroup.CHAT, _DIR)
+    _bound(p, SwapGroup.EMBED, _OTHER)
+    for hold in holds.values():
+        hold.release_and_check_last.side_effect = RuntimeError("release failed")
+    p._drop_swap_refs()
+    assert p._dir_users == {}
+    assert p._engine_holds == {}
+    for hold in holds.values():
+        hold.release_and_check_last.assert_called_once()
+
+
 def test_a_start_that_fails_on_a_held_dir_gives_its_use_back(monkeypatch) -> None:
     # The dir was held before the start, so the start did not take it freshly.
     p, holds = _provider(_DIR)

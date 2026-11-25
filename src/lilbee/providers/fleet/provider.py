@@ -2037,9 +2037,10 @@ class FleetProvider:
                 return
             try:
                 hold.release_and_check_last()
-            except OSError:
+            except Exception:
                 # The process still ends with its lock released; the caller's own
-                # result or error must not be replaced by a failed file call.
+                # result or error must not be replaced by a failed release, and a
+                # caller that ends several uses in a loop must end every one.
                 log.warning("Releasing the engine hold at %s failed", use.engine_dir, exc_info=True)
 
     @contextmanager
