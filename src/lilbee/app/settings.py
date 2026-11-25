@@ -27,7 +27,6 @@ from lilbee.config_meta import (
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
 from lilbee.core.config.defaults import SKIP_TOML_ENV
-from lilbee.core.config.model import commit_config
 from lilbee.core.config.enums import OcrMode, SettingSource
 from lilbee.core.config.keys import (
     LOAD_AFFECTING_KEYS,
@@ -37,6 +36,7 @@ from lilbee.core.config.login_host import refuse_unless_host
 from lilbee.core.config.model import (
     canonical_model_ref,
     checked_write,
+    commit_config,
     default_refusal,
     refusal_sentence,
     root_folders,
