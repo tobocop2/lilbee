@@ -25,7 +25,7 @@ from lilbee.data.store.canary import (
     canary_distance,
 )
 from lilbee.data.store.schema import _meta_schema
-from lilbee.data.store.types import ChunkWrite
+from lilbee.data.store.types import META_SCHEMA_VERSION, ChunkWrite
 from lilbee.providers.base import ProviderError
 from lilbee.runtime.lock import write_lock
 from tests.test_store import _make_records
@@ -527,7 +527,7 @@ class TestOldIndex:
         state = old.canary_state()
         assert state is not None
         assert state.verified is False
-        assert old.get_meta()["schema_version"] == 4
+        assert old.get_meta()["schema_version"] == META_SCHEMA_VERSION
         assert "canary check starts" in caplog.text
 
     def test_the_second_process_embeds_no_canary(self, test_config, engine):
@@ -837,7 +837,7 @@ class TestMetaReplaceHasNoGap:
         meta = old.get_meta()
         assert meta["embedding_model"] == test_config.embedding_model
         assert meta["embedding_dim"] == test_config.embedding_dim
-        assert meta["schema_version"] == 4
+        assert meta["schema_version"] == META_SCHEMA_VERSION
         assert old.canary_state() == baseline
         assert old.open_table(META_TABLE).schema.names == _meta_schema().names
         assert old.open_table(META_TABLE).count_rows() == 1
