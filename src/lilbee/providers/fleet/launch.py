@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from lilbee.providers.fleet.rerank_pair import RerankPair
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 # Separator between a role and its replica index in a llama-swap model id.
@@ -45,6 +46,9 @@ class InstanceLaunch:
     built_slots_target: int = 0
     replica: int = 0  # index within the role's data-parallel pool (0 = single server)
     rerank_mode: RerankMode | None = None  # set only for RERANK; picks the client scoring path
+    # The special tokens a cross-encoder reranker reads around a query and a
+    # document, from its GGUF; None for every other launch and pre-field records.
+    rerank_pair: RerankPair | None = None
     # GPU bytes placement charged this instance. Carried so the engine's own
     # startup report can be checked against it once the server is up; 0 for a
     # model the estimator could not size, where there is nothing to compare.
@@ -110,6 +114,7 @@ class InstanceLaunch:
             "built_slots_target": self.built_slots_target,
             "replica": self.replica,
             "rerank_mode": self.rerank_mode.value if self.rerank_mode else None,
+            "rerank_pair": self.rerank_pair.to_state() if self.rerank_pair else None,
             "est_vram_bytes": self.est_vram_bytes,
             "est_vram_by_device": dict(self.est_vram_by_device),
             "est_unreported_bytes": self.est_unreported_bytes,
@@ -126,6 +131,7 @@ class InstanceLaunch:
     def from_state(cls, payload: dict) -> InstanceLaunch:
         """Rebuild a launch from :meth:`to_state` output; raises on a foreign shape."""
         raw_mode = payload.get("rerank_mode")
+        raw_pair = payload.get("rerank_pair")
         return cls(
             role=WorkerRole(payload["role"]),
             argv=list(payload["argv"]),
@@ -146,6 +152,7 @@ class InstanceLaunch:
             built_slots_target=int(payload.get("built_slots_target") or 0),
             replica=int(payload.get("replica") or 0),
             rerank_mode=RerankMode(raw_mode) if raw_mode else None,
+            rerank_pair=RerankPair.from_state(raw_pair) if raw_pair else None,
             settings=str(payload.get("settings") or ""),
             swap_extras=dict(payload.get("swap_extras") or {}),
             server_binary=str(payload.get("server_binary") or ""),

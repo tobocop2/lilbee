@@ -308,6 +308,18 @@ def test_the_rerank_mode_moves_the_settings() -> None:
     assert _settings(role, RerankMode.LLM, None) != _settings(role, None, None)
 
 
+def test_the_cross_encoder_pair_layout_moves_the_rerank_settings_only() -> None:
+    # A running reranker recorded with no pair layout must not bind: its client
+    # would have no layout to build pairs with.
+    bert = {"tokenizer_model": "bert", "bos_token_id": "101", "eos_token_id": "102"}
+    xlmr = {"tokenizer_model": "t5", "bos_token_id": "0", "eos_token_id": "2"}
+    rerank, cross = WorkerRole.RERANK, RerankMode.CROSS_ENCODER
+    assert "rerank_pair=RerankPair(" in _settings(rerank, cross, bert)
+    assert _settings(rerank, cross, bert) != _settings(rerank, cross, xlmr)
+    assert "rerank_pair=None" in _settings(rerank, RerankMode.LLM, xlmr)
+    assert "rerank_pair" not in _settings(WorkerRole.EMBED, None, xlmr)
+
+
 @pytest.mark.parametrize("role", list(WorkerRole))
 def test_gpu_devices_moves_every_role_and_ctx_sizing_moves_none(monkeypatch, role) -> None:
     before = _settings(role, None, None)
