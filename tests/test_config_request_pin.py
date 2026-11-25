@@ -171,8 +171,8 @@ async def test_the_rag_stream_thread_reads_the_request_config(monkeypatch):
 
     seen: list[str] = []
     searcher = rag.get_services().searcher
-    searcher.search_unavailable.return_value = False
-    searcher.skip_retrieval.return_value = False
+    monkeypatch.setattr(searcher, "search_unavailable", lambda: False)
+    monkeypatch.setattr(searcher, "skip_retrieval", lambda: False)
     monkeypatch.setattr(rag, "_warming_frames", no_frames)
     monkeypatch.setattr(rag, "_emit_sources_and_memories", no_sources)
     monkeypatch.setattr(
