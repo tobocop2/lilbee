@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO
 
@@ -337,6 +337,11 @@ class SwapManager:
         # Instances whose engine report has already been compared to the estimate,
         # so a readiness poll reads each load once. Guarded by ``_warnings_lock``.
         self._estimate_checked: set[str] = set()
+        # Each instance's load generation, raised by each load the caller saw, each
+        # unload a poll saw and each stop. A read records only under the generation
+        # it began in, so a read that outlived its load writes nothing.
+        # Guarded by ``_warnings_lock``.
+        self._load_generation: dict[str, int] = {}
         self._launch_by_model: dict[str, InstanceLaunch] = {}
         # The file each member's engine writes its own log to; a member with none has
         # its output in this group's llama-swap log.
@@ -625,46 +630,73 @@ class SwapManager:
 
         The plan is otherwise open-loop, and a wrong estimate only ever surfaces
         as a failed request much later. Once per load: readiness is polled, and the
-        answer does not change while the engine stays loaded. An engine that left the
-        ready set has unloaded, so its findings go and its next load is read afresh.
+        answer does not change while the engine stays loaded. An engine the listing
+        does not show has unloaded, so every finding it has goes, whichever read
+        recorded it, and its next load is read afresh.
         """
         with self._warnings_lock:
-            for model_id in self._estimate_checked - ready:
-                self._estimate_checked.discard(model_id)
-                self._placement_warnings.pop(model_id, None)
-                self._spill_warnings.pop(model_id, None)
-            fresh = ready - self._estimate_checked
-            self._estimate_checked |= fresh
-        for model_id in fresh:
-            self._read_estimate(model_id)
+            known = self._estimate_checked.union(self._placement_warnings, self._spill_warnings)
+            for model_id in known - ready:
+                self._forget_locked(model_id)
+            generations = self._claim_locked(ready - self._estimate_checked)
+        self._read_estimates(generations)
 
-    def check_loaded(self, model_ids: Iterable[str]) -> None:
-        """Read the report of each engine in *model_ids*, which the caller saw load.
+    def claim_loaded(self, model_ids: Iterable[str]) -> Callable[[], None]:
+        """Note that the caller saw *model_ids* load; return the read of their reports.
 
-        Each id is read again even when an earlier load was read: a reload after
-        an idle unload looks the same as an engine that stayed loaded. A read with
-        no result keeps the earlier findings. The reads block on the engines.
+        Each id starts a new load, so it is read again even when an earlier load
+        was read, and a read begun for an earlier load records nothing. The returned
+        read blocks on the engines: run it off the caller's thread.
         """
         loaded = set(model_ids)
         with self._warnings_lock:
-            self._estimate_checked |= loaded
-        for model_id in loaded:
-            self._read_estimate(model_id)
+            for model_id in loaded:
+                self._bump_locked(model_id)
+            generations = self._claim_locked(loaded)
+        return partial(self._read_estimates, generations)
 
-    def _read_estimate(self, model_id: str) -> None:
+    def _bump_locked(self, model_id: str) -> None:
+        """Start a new load generation for *model_id*; a read of an older one records nothing."""
+        self._load_generation[model_id] = self._load_generation.get(model_id, 0) + 1
+
+    def _forget_locked(self, model_id: str) -> None:
+        """Drop *model_id*'s read and findings, because it unloaded; caller holds the lock."""
+        self._bump_locked(model_id)
+        self._estimate_checked.discard(model_id)
+        self._placement_warnings.pop(model_id, None)
+        self._spill_warnings.pop(model_id, None)
+
+    def _claim_locked(self, model_ids: set[str]) -> dict[str, int]:
+        """Mark *model_ids* read and return the load generation each read records under.
+
+        Ready means the role's context loaded, so any reduction taken to get here
+        has done its job and must not follow the role into the next plan, a freed
+        machine, or a model the user switched to. It is cleared here, at the load,
+        so a read that runs later cannot clear a reduction recorded after the load.
+        The caller holds the lock.
+        """
+        self._estimate_checked |= model_ids
+        for model_id in model_ids:
+            launch = self._launch_by_model.get(model_id)
+            if launch is not None:
+                clear_ctx_downshift(launch.role)
+        return {model_id: self._load_generation.setdefault(model_id, 0) for model_id in model_ids}
+
+    def _read_estimates(self, generations: Mapping[str, int]) -> None:
+        """Read the report of each id in *generations*, recorded under its generation."""
+        for model_id, generation in generations.items():
+            self._read_estimate(model_id, generation)
+
+    def _read_estimate(self, model_id: str, generation: int) -> None:
         """Compare *model_id*'s own report with its plan; only a result replaces its findings."""
         launch = self._launch_by_model.get(model_id)
         if launch is None:
             return
-        # Ready means this role's context loaded, so any reduction taken to
-        # get here has done its job and must not follow the role into the
-        # next plan, a freed machine, or a model the user switched to.
-        clear_ctx_downshift(launch.role)
         # A launch carrying --memory serves its own report on GET /memory
         # and writes a log at the default verbosity, with no load report
         # (swap_config), so the log-side checks would misfire on it by construction.
         if MEMORY_FLAG in launch.argv:
-            self._check_memory_estimate(model_id, launch)
+            self._check_memory_estimate(model_id, launch, generation)
             return
         # An engine that writes no log of its own has no file to read back.
         if model_id not in self._engine_logs:
@@ -686,9 +718,11 @@ class SwapManager:
             launch.est_host_bytes,
             spills,
         )
-        self._record_findings(model_id, warning, spills)
+        self._record_findings(model_id, generation, warning, spills)
 
-    def _check_memory_estimate(self, model_id: str, launch: InstanceLaunch) -> None:
+    def _check_memory_estimate(
+        self, model_id: str, launch: InstanceLaunch, generation: int
+    ) -> None:
         """Run the estimate check off the engine's own ``GET /memory``.
 
         Straight to the member's port rather than through llama-swap: the model
@@ -726,13 +760,23 @@ class SwapManager:
             launch.est_host_bytes,
             spills,
         )
-        self._record_findings(model_id, warning, spills)
+        self._record_findings(model_id, generation, warning, spills)
 
     def _record_findings(
-        self, model_id: str, placement: HealthWarning | None, spills: list[HealthWarning]
+        self,
+        model_id: str,
+        generation: int,
+        placement: HealthWarning | None,
+        spills: list[HealthWarning],
     ) -> None:
-        """Replace *model_id*'s findings with what a read found, for :meth:`health_warnings`."""
+        """Replace *model_id*'s findings with what a read of *generation* found.
+
+        A read whose load a newer load, an unload or a stop has passed records
+        nothing: its report describes an engine that is no longer the one loaded.
+        """
         with self._warnings_lock:
+            if self._load_generation.get(model_id, 0) != generation:
+                return
             self._placement_warnings.pop(model_id, None)
             self._spill_warnings.pop(model_id, None)
             if placement is not None:
@@ -743,6 +787,8 @@ class SwapManager:
     def _clear_placement_warnings(self) -> None:
         """Forget every read and finding; the engines they describe are gone or restarting."""
         with self._warnings_lock:
+            for model_id in self._load_generation:
+                self._bump_locked(model_id)
             self._estimate_checked.clear()
             self._placement_warnings.clear()
             self._spill_warnings.clear()
