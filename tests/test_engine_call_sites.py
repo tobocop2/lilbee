@@ -997,6 +997,34 @@ class TestProviderCallersAskTheRoleEngine:
         assert asked == {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: spy}
         assert totals == [LLAMA]
 
+    @pytest.mark.parametrize("role", list(WorkerRole), ids=lambda role: role.value)
+    def test_a_placed_role_that_is_not_placeable_is_refused_with_a_message(
+        self,
+        role: WorkerRole,
+        spy: SpyEngine,
+        mixed: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import lilbee.providers.fleet.provider as prov_mod
+
+        plan = SimpleNamespace(
+            launches=[SimpleNamespace(role=role, settings={})],
+            skipped_not_installed={},
+            refused_roles={},
+        )
+        monkeypatch.setattr(planning, "plan_all_launches", lambda **_k: plan)
+        monkeypatch.setattr(planning, "role_model_placeable", lambda *_a, **_k: False)
+        monkeypatch.setattr(planning, "placeable_total_vram", lambda engine: 1)
+        monkeypatch.setattr(prov_mod, "_configured_model_for", lambda _role: "org/model")
+        with caplog.at_level("WARNING"):
+            demand = prov_mod._placeable_demand(LLAMA, engines_for_all_roles(spy))
+        assert demand.pairs == set()
+        assert list(demand.refused_roles) == [role]
+        assert role.value in demand.refused_roles[role]
+        assert "org/model" in demand.refused_roles[role]
+        assert demand.refused_roles[role] in caplog.messages
+
 
 class TestSelfCheck:
     def test_the_self_check_client_carries_the_engine_request_profile(
