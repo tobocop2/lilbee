@@ -92,6 +92,7 @@ from lilbee.app.settings import (
 from lilbee.catalog.runnable import hidden_summary
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg, validate_ocr_timeout
+from lilbee.core.config.context import request_config_scope
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
 from lilbee.core.health_warnings import HealthWarning, warnings_payload
 from lilbee.core.profile_files import ProfileFolder, ProfileStore, ProfileValidation
@@ -1950,10 +1951,16 @@ class LilbeeMCP(MCPServer):
         arguments: dict[str, Any],
         context: Context[Any, Any] | None = None,
     ) -> Any:
-        """Run a tool after the config.toml check; every tool call passes through here."""
-        if self._config_follower is not None:
-            await self._config_follower.take()
-        return await super().call_tool(name, arguments, context)
+        """Run a tool after the config.toml check; every tool call passes through here.
+
+        The tool reads the Config published by its check, plus its own writes. Over
+        HTTP the server's middleware runs the check and binds the pin instead.
+        """
+        if self._config_follower is None:
+            return await super().call_tool(name, arguments, context)
+        await self._config_follower.take()
+        with request_config_scope():
+            return await super().call_tool(name, arguments, context)
 
     async def list_tools(self) -> list[MCPTool]:
         """The registered tools with schema noise stripped and flat descriptions.
