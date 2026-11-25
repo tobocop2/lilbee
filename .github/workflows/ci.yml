@@ -13,9 +13,13 @@ on:
   workflow_call:
   workflow_dispatch:
 
+# A newer run on the same branch or pull request cancels the older one. Runs on
+# main and on the integration branch never cancel and are never cancelled: their
+# group holds the run id, so each run has its own group. A shared group would
+# also drop a pending run when a newer one queues.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/integration/engine-foundations') && format('ci-{0}-{1}', github.ref, github.run_id) || format('ci-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/integration/engine-foundations' }}
 
 jobs:
   changes:
