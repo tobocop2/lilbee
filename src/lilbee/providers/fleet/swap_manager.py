@@ -539,6 +539,8 @@ class SwapManager:
         """Whether at least one of *role*'s replica servers is loaded and ready."""
         prefix = role_model_prefix(role)
         ready = self._ready_models()
+        if ready is None:
+            return False  # a failed read says nothing about the engines, so no finding changes
         self._check_estimates(ready)
         if ready:
             self.record_ready()
@@ -752,12 +754,13 @@ class SwapManager:
             time.sleep(_BOOT_POLL_S)
         self._fail("The local model engine did not start in time.")
 
-    def _ready_models(self) -> set[str]:
+    def _ready_models(self) -> set[str] | None:
         """Model ids whose upstream is loaded and ready, per llama-swap's /running.
 
         A read-only probe: a concurrent shutdown can clear ``_port`` between the
         caller's check and ``endpoint()``, raising ProviderError, so that is
-        suppressed too and the probe reports "nothing ready" rather than throwing.
+        suppressed too and the probe reports None rather than throwing. None means
+        the read failed; an empty set means llama-swap answered with nothing ready.
         """
         with contextlib.suppress(httpx.HTTPError, ValueError, KeyError, TypeError, ProviderError):
             payload = (
@@ -770,7 +773,7 @@ class SwapManager:
                 for entry in payload[_KEY_RUNNING]
                 if entry.get(_KEY_STATE) == _STATE_READY
             }
-        return set()
+        return None
 
     def _boot_log_tail(self) -> str:
         """The current boot's captured llama-swap output, capped for an error message."""
