@@ -200,7 +200,8 @@ def _refuse_environment(json_output: bool) -> None:
 class RefusingCommand(TyperCommand):
     """A command that refuses the environment when it runs, after its --help is parsed."""
 
-    def invoke(self, ctx: typer.Context) -> Any:
+    # Typer 0.12 passes a click.Context, newer Typer its own class; no public name fits both.
+    def invoke(self, ctx: Any) -> Any:
         _refuse_environment(cfg.json_mode)
         return super().invoke(ctx)
 
