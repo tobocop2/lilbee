@@ -1976,8 +1976,9 @@ class LlamaServerClient:
     def ensure_device(self) -> None:
         """Raise unless the engine reports the model on the device it was placed on.
 
-        Every request runs this first (see :meth:`_track`), so the check holds wherever
-        a client is built. The first request of a client whose profile names a device
+        Every request counted in flight runs this first (see :meth:`_track`), so the
+        check holds wherever a client is built. The token routes are not counted; no
+        engine with a device route serves them. The first request of a client whose profile names a device
         route loads the model, reads the device, and only then goes on. A refusal stops
         the upstream and stays on this client: every later request raises it and none
         reaches the upstream. An unreadable reply raises, and the next request reads
