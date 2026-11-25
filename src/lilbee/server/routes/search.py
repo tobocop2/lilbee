@@ -44,6 +44,7 @@ from lilbee.server.models import (
     decode_chunk_type,
 )
 from lilbee.server.provider_status import CLIENT_FAULT_STATUSES, retry_after_headers
+from lilbee.server.route_names import name_routes, name_warnings
 
 _BAD_REQUEST_STATUS = 400
 _NOT_FOUND_STATUS = 404
@@ -182,7 +183,11 @@ async def search_route(
     try:
         outcome = await handlers.search(q, top_k=top_k, chunk_type=parsed_chunk_type)
         headers = (
-            {SEARCH_WARNINGS_HEADER: json.dumps(warnings_payload(outcome.warnings))}
+            {
+                SEARCH_WARNINGS_HEADER: json.dumps(
+                    warnings_payload(name_warnings(outcome.warnings, name_routes))
+                )
+            }
             if outcome.warnings
             else {}
         )
