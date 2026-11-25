@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.fleet.client import LlamaServerClient
+from lilbee.providers.fleet.client import LlamaServerClient, _message_text
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.ovms import OVMS
 from lilbee.providers.roles import WorkerRole
@@ -133,3 +133,32 @@ def test_an_engine_that_bounds_the_prompt_itself_is_not_counted() -> None:
     server = _Server(tokens=WINDOW + 1)
     _client(server, engine=LLAMA).chat(_messages(OVER_ESTIMATE))
     assert (len(server.chats), server.tokenized) == (1, [])
+
+
+@pytest.mark.parametrize(
+    ("message", "text"),
+    [
+        ({"role": "user", "content": "plain"}, "plain"),
+        (
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "image_url", "image_url": {"url": "data:x"}},
+                    {"type": "text", "text": "here"},
+                ],
+            },
+            "look\nhere",
+        ),
+        ({"role": "assistant", "content": None}, ""),
+        (
+            {"role": "assistant", "content": "a", "tool_calls": [{"id": "1"}]},
+            'a\n[{"id": "1"}]',
+        ),
+    ],
+    ids=["string", "text-parts", "no-content", "tool-calls"],
+)
+def test_the_text_counted_for_a_message_holds_its_text_parts_and_tool_calls(
+    message: dict[str, Any], text: str
+) -> None:
+    assert _message_text(message) == text
