@@ -213,6 +213,20 @@ def test_a_fleet_planned_on_a_flag_is_not_stamped_with_the_file_view(monkeypatch
     assert json.loads(stamped.fleet_view or "{}")["chat_model"] == _OTHER_CHAT_REF
 
 
+def test_the_factory_hands_the_held_writes_to_the_local_engine() -> None:
+    from lilbee.core.config.enums import LlmProvider
+    from lilbee.providers.factory import create_provider
+    from lilbee.providers.routing_provider import RoutingProvider
+
+    def held_writes() -> dict[str, object]:
+        return {}
+
+    config = cfg.model_copy(update={"llm_provider": LlmProvider.AUTO})
+    provider = create_provider(config, held_writes=held_writes)
+    assert isinstance(provider, RoutingProvider)
+    assert provider._held_writes is held_writes
+
+
 def test_a_long_running_process_reports_no_held_write() -> None:
     """serve, the TUI and the stdio MCP server take or keep a write; none ends them."""
     persistent_settings.save(cfg.data_root, {"chat_model": _CHAT_REF})
