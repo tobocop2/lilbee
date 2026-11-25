@@ -912,10 +912,6 @@ async def test_the_tip_stays_away_when_the_project_does_not_need_it(
     assert [call.args for call in read.call_args_list] == [(cfg.data_root,)]
 
 
-def _no_task_worker_alive() -> bool:
-    return not any(t.name.startswith("task-") and t.is_alive() for t in threading.enumerate())
-
-
 async def _tip_read_settled(app: LilbeeApp, pilot: Pilot) -> None:
     """Wait until no tip read is still running, so the hint shows what it read."""
     assert await _until(
@@ -954,6 +950,7 @@ async def test_the_tip_leaves_when_the_command_is_no_longer_add(chat_app, tmp_pa
         assert msg.ANALYZE_TIP_LABEL not in _hint_text(chat)
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 async def test_the_tip_stays_while_an_add_is_queued_for_indexing(chat_app, tmp_path) -> None:
     folder = _write_notes(tmp_path / "docs")
     release = threading.Event()
@@ -978,8 +975,6 @@ async def test_the_tip_stays_while_an_add_is_queued_for_indexing(chat_app, tmp_p
                 assert msg.ANALYZE_TIP_LABEL in _hint_text(chat)
             finally:
                 release.set()
-            # The worker ends through the loop (call_from_thread): pump it until the thread is gone.
-            assert await _until(pilot, _no_task_worker_alive), "the add worker outlived the test"
 
 
 @pytest.mark.parametrize("size", [(120, 36), (80, 24)])
