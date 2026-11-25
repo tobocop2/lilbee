@@ -278,11 +278,12 @@ class OpenvinoAdapter:
         return DeviceProbe(devices=[], output="", spoke_protocol=False, has_listing=False)
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
-        """The GGUF figure without the repacked copy.
+        """The GGUF figure without the repacked copy, for every OpenVINO request.
 
-        Measured on the AVX2 CPU device, chat role: the resident memory of llama-server on
-        OpenVINO does not grow with the Q4_0 weights that the llama.cpp CPU build repacks.
-        The embed and rerank roles, AVX-512 and ARM are not measured.
+        The flag is cleared whatever the device. Measured on the AVX2 CPU device only, chat
+        role: the resident memory of llama-server on OpenVINO does not grow with the Q4_0
+        weights that the llama.cpp CPU build repacks. Other devices, the embed and rerank
+        roles, AVX-512 and ARM are not measured.
         """
         return estimate_memory(ModelFormat.GGUF, replace(request, cpu_repack=False))
 
