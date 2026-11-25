@@ -1074,7 +1074,7 @@ class TestClientWording:
 
     def test_overflow_is_recognised_by_the_engine_pattern(self, client: LlamaServerClient) -> None:
         error = self._raise(client, 400, "SPY_CTX_FULL")
-        assert error.provider == "spy-server"
+        assert error.kind is ProviderErrorKind.CONTEXT_OVERFLOW
 
     def test_the_llama_overflow_body_is_not_an_overflow(self, client: LlamaServerClient) -> None:
         overflow = self._raise(client, 400, "SPY_CTX_FULL")
