@@ -88,9 +88,7 @@ _HEALTH_PATH = "/v1/health"
 _SYSTEM_INFO_PATH = "/v1/system-info"
 _DEVICE_NPU = "npu"
 _STATE_UNSUPPORTED = "unsupported"
-_NPU_FIX = (
-    "Check that the XDNA driver is installed and that `lemonade system-info` lists the npu device."
-)
+_NPU_FIX = "Check that the AMD XDNA driver is installed, then restart lilbee."
 _NO_NPU = "This machine has no NPU that Lemonade can use"
 _NO_NPU_FIX = "Choose a CPU or GPU engine for this role."
 
