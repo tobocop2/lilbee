@@ -1,4 +1,4 @@
-"""The starting state and the stop steps of the signal code, one assertion per value a mutant changed."""
+"""The starting state and the stop steps of the signal code, one assertion per mutated value."""
 
 from __future__ import annotations
 
