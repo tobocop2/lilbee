@@ -5226,9 +5226,7 @@ class TestOpenTimeMigration:
         assert store.get_meta() is None
 
     @pytest.mark.parametrize("name", ["entities", PAGE_TEXTS_TABLE, "chunk_concepts"])
-    def test_a_half_made_table_the_library_lacks_does_not_stop_the_upgrade(
-        self, test_config, name
-    ):
+    def test_a_half_made_table_the_library_lacks_does_not_stop_the_upgrade(self, test_config, name):
         tables = _path_keyed_tables(test_config)
         tables.pop(name, None)
         _half_made_folder(test_config, name)
