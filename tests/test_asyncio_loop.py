@@ -6,6 +6,7 @@ import asyncio
 import concurrent.futures
 import contextlib
 import contextvars
+import gc
 import os
 import selectors
 import signal
@@ -584,6 +585,7 @@ def _block_the_loop_thread() -> tuple[asyncio.AbstractEventLoop, threading.Threa
     return loop, thread, release
 
 
+@pytest.mark.filterwarnings("error::RuntimeWarning")
 def test_shutdown_with_a_stuck_loop_thread_stays_within_its_budget() -> None:
     loop, thread, release = _block_the_loop_thread()
     try:
@@ -599,8 +601,10 @@ def test_shutdown_with_a_stuck_loop_thread_stays_within_its_budget() -> None:
     thread.join(5.0)
     assert not thread.is_alive()
     assert loop.is_closed(), "the loop thread closes the loop it stopped"
+    gc.collect()  # a drain that was dropped unscheduled warns here
 
 
+@pytest.mark.filterwarnings("error::RuntimeWarning")
 def test_get_loop_after_a_shutdown_that_timed_out_gives_a_working_loop() -> None:
     old, thread, release = _block_the_loop_thread()
     try:
@@ -615,6 +619,7 @@ def test_get_loop_after_a_shutdown_that_timed_out_gives_a_working_loop() -> None
     finally:
         release.set()
         thread.join(5.0)
+    gc.collect()  # a drain that was dropped unscheduled warns here
 
 
 def test_run_from_multiple_threads() -> None:
