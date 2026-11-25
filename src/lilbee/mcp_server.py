@@ -138,7 +138,7 @@ from lilbee.runtime.progress import (
     ProgressEvent,
     SseErrorCode,
 )
-from lilbee.server.route_names import name_damaged_folders, name_tools
+from lilbee.server.route_names import name_damaged_folders, name_tools, name_warnings
 from lilbee.sessions import (
     AGENT_SESSIONS_DISABLED_HINT,
     MessageRole,
@@ -410,7 +410,7 @@ def _search_result(
     ]
     structured: dict[str, Any] = {"result": result}
     if warnings is not None:
-        shown = list(warnings)
+        shown = name_warnings(warnings, _name_tools)
         content.extend(TextContent(type="text", text=w.line) for w in shown)
         structured["warnings"] = warnings_payload(shown)
     return CallToolResult(content=content, structured_content=structured)

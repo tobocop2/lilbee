@@ -92,7 +92,7 @@ from lilbee.server.models import (
     ShutdownResponse,
     StatusResponse,
 )
-from lilbee.server.route_names import name_routes
+from lilbee.server.route_names import name_routes, name_warnings
 
 if TYPE_CHECKING:
     from lilbee.app.placement import GpuInfo, PlacementView
@@ -156,7 +156,7 @@ async def health() -> HealthResponse:
         chat_prefill_processed=prefill[0] if prefill else None,
         chat_prefill_total=prefill[1] if prefill else None,
         embed_token_cap=provider.embed_token_cap(),
-        warnings=[*store_warnings, *provider.health_warnings()],
+        warnings=name_warnings([*store_warnings, *provider.health_warnings()], name_routes),
         upgrade=upgrade,
     )
 
