@@ -439,7 +439,7 @@ class MistralAdapter:
     def discover_devices(self, binary: Path) -> DeviceProbe:
         from lilbee.catalog.runnable import session_host
 
-        if self.pick_build(session_host()).backend in (None, _CPU):
+        if self.pick_build(session_host()).backend in (None, _CPU, _METAL):
             return DeviceProbe(devices=[], output="", has_listing=False)
         return DeviceProbe(devices=visible_nvidia_cards(), output="", has_listing=False)
 
