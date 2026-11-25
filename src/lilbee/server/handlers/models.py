@@ -283,7 +283,11 @@ async def set_embedding_model(model: str) -> SetModelResponse:
     """
     normalized = await asyncio.to_thread(_require_model_for_task, model, ModelTask.EMBEDDING)
     result = await asyncio.to_thread(apply_settings_update, {"embedding_model": normalized})
-    return SetModelResponse(model=normalized, reindex_required=result.reindex_required)
+    return SetModelResponse(
+        model=normalized,
+        reindex_required=result.reindex_required,
+        warnings=list(result.warnings),
+    )
 
 
 async def set_vision_model(model: str) -> SetModelResponse:

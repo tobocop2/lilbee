@@ -230,12 +230,11 @@ def adopt_embedder(ref: str) -> AdoptResult:
     already_active = cfg.embedding_model == ref and installed
     pull_warning = None if installed else pull_model_data(ref, ModelSource.NATIVE).warning
     result = apply_settings_update({"embedding_model": ref})
-    warnings = [w for w in (pull_warning, *result.warnings) if w]
     return AdoptResult(
         model=ref,
         status=AdoptStatus.ALREADY_ACTIVE if already_active else AdoptStatus.ADOPTED,
         reindex_required=result.reindex_required,
-        warning=" ".join(warnings) or None,
+        warning=join_warnings(pull_warning, *result.warnings),
     )
 
 
@@ -420,8 +419,11 @@ def ensure_vision_projector(
 
 
 def join_warnings(*parts: str | None) -> str | None:
-    """The notices in *parts* as one warning text, or ``None`` when there are none."""
-    texts = [part for part in parts if part]
+    """The notices in *parts* as one warning text, or ``None`` when there are none.
+
+    A notice that two sources both report shows once, in the order it first appears.
+    """
+    texts = list(dict.fromkeys(part for part in parts if part))
     return " ".join(texts) if texts else None
 
 
