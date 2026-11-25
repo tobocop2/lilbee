@@ -352,7 +352,7 @@ def show_model_data(ref: str) -> ShowModelResult:
         raise ModelNotFoundError(
             f"model not found: {ref}. Its ticket is unreadable. Pull it again."
         )
-    entry = find_pick(ref)
+    entry = find_pick(ref, hf_client=get_services().hf_client)
     source = get_services().model_manager.get_source(ref)
     if entry is None and source is None:
         raise ModelNotFoundError(f"model not found: {ref}")
@@ -407,7 +407,7 @@ def ensure_vision_projector(
     from lilbee.catalog import download_mmproj, resolve_pull_target
     from lilbee.catalog.download import ProjectorListingError
 
-    entry = resolve_pull_target(ref)
+    entry = resolve_pull_target(ref, hf_client=get_services().hf_client)
     if entry is None or not _vision_projector_missing(ref):
         return None
     try:

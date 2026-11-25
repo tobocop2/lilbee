@@ -902,6 +902,7 @@ class CatalogScreen(Screen[None]):
             featured=False,
             limit=_HF_PAGE_SIZE,
             offset=offset,
+            hf_client=get_services().hf_client,
         )
         self._hf_has_more_by_task[task] = result.has_more
         self._hf_truncated_by_task[task] = result.truncated
@@ -927,7 +928,7 @@ class CatalogScreen(Screen[None]):
         catalog on open for as long as HuggingFace took to answer.
         """
         try:
-            return get_families()
+            return get_families(hf_client=get_services().hf_client)
         except Exception:
             log.debug("get_families failed in worker", exc_info=True)
             return []
@@ -976,6 +977,7 @@ class CatalogScreen(Screen[None]):
             search=query,
             limit=_HF_SEARCH_LIMIT,
             offset=offset,
+            hf_client=get_services().hf_client,
         )
         self._search_has_more = result.has_more
         self._search_truncated = result.truncated
