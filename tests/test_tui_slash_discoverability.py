@@ -105,8 +105,12 @@ class _ChatHostApp(LilbeeAppHost):
         self.push_screen(_CHAT_SCREEN_NAME)
 
 
-async def _set_chat_input(pilot: Pilot, value: str) -> None:
-    """Assign the chat input, then pump until the dropdown and arg hint reflect *value*."""
+async def _set_chat_input(pilot: Pilot, value: str, *, await_listing: bool = False) -> None:
+    """Assign the chat input, then pump until the dropdown and arg hint reflect *value*.
+
+    A model argument starts a listing on a thread worker; pass ``await_listing`` to wait
+    for that worker by its end rather than by a clock.
+    """
     from lilbee.cli.tui.widgets.autocomplete import (
         _MAX_VISIBLE,
         CompletionOverlay,
@@ -115,6 +119,8 @@ async def _set_chat_input(pilot: Pilot, value: str) -> None:
 
     screen = pilot.app.screen
     screen.query_one("#chat-input").value = value
+    if await_listing:
+        await settle_workers(pilot)
     overlay = screen.query_one("#completion-overlay", CompletionOverlay)
     hint = screen.query_one("#arg-hint", ArgHintLine)
     options = get_completions(value)[:_MAX_VISIBLE]
@@ -1150,6 +1156,22 @@ class TestOverlayBackoutAsync:
 
 _LIVE_FILTER_MODELS = ["qwen3:8b", "mistral:7b"]
 
+# A busy host: the first listing outlasts the 5 s window of pump_until.
+_LISTING_DELAYS_S = [0.0, 5.5]
+
+
+def _slow_first_listing(models: list[str], delay_s: float):
+    """Return a listing stand-in whose first call sleeps *delay_s* seconds."""
+    import time
+
+    delays = [delay_s]
+
+    def _listing() -> list[str]:
+        time.sleep(delays.pop(0) if delays else 0.0)
+        return list(models)
+
+    return _listing
+
 
 class TestArgCompletionsLiveFilterAsync:
     """Argument completion (after the space) auto-shows and re-filters on
@@ -1158,26 +1180,9 @@ class TestArgCompletionsLiveFilterAsync:
 
     _MODELS = _LIVE_FILTER_MODELS
 
-    async def test_typing_arg_partial_auto_shows(self, _mock_resolve, _mock_services) -> None:
-        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
-
-        app = _ChatHostApp()
-        async with app.run_test() as pilot:
-            from lilbee.cli.tui.screens.chat import ChatScreen
-
-            screen = app.screen
-            assert isinstance(screen, ChatScreen)
-            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
-            with mock.patch(
-                "lilbee.modelhub.models.list_installed_models", return_value=self._MODELS
-            ):
-                # Land in arg-completion mode without going through any Tab.
-                await _set_chat_input(pilot, "/model ")
-                assert overlay.is_visible
-                assert set(overlay._options) == set(self._MODELS)
-
-    async def test_arg_overlay_filters_live_as_user_types(
-        self, _mock_resolve, _mock_services
+    @pytest.mark.parametrize("listing_delay_s", _LISTING_DELAYS_S)
+    async def test_typing_arg_partial_auto_shows(
+        self, _mock_resolve, _mock_services, listing_delay_s
     ) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
@@ -1189,16 +1194,18 @@ class TestArgCompletionsLiveFilterAsync:
             assert isinstance(screen, ChatScreen)
             overlay = screen.query_one("#completion-overlay", CompletionOverlay)
             with mock.patch(
-                "lilbee.modelhub.models.list_installed_models", return_value=self._MODELS
+                "lilbee.modelhub.models.list_installed_models",
+                side_effect=_slow_first_listing(self._MODELS, listing_delay_s),
             ):
+                # Land in arg-completion mode without going through any Tab.
                 await _set_chat_input(pilot, "/model ")
-                full = list(overlay._options)
-                await _set_chat_input(pilot, "/model qw")
                 assert overlay.is_visible
-                assert overlay._options == ["qwen3:8b"]
-                assert len(overlay._options) < len(full)
+                assert set(overlay._options) == set(self._MODELS)
 
-    async def test_fully_typed_arg_collapses_overlay(self, _mock_resolve, _mock_services) -> None:
+    @pytest.mark.parametrize("listing_delay_s", _LISTING_DELAYS_S)
+    async def test_arg_overlay_filters_live_as_user_types(
+        self, _mock_resolve, _mock_services, listing_delay_s
+    ) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         app = _ChatHostApp()
@@ -1209,7 +1216,32 @@ class TestArgCompletionsLiveFilterAsync:
             assert isinstance(screen, ChatScreen)
             overlay = screen.query_one("#completion-overlay", CompletionOverlay)
             with mock.patch(
-                "lilbee.modelhub.models.list_installed_models", return_value=self._MODELS
+                "lilbee.modelhub.models.list_installed_models",
+                side_effect=_slow_first_listing(self._MODELS, listing_delay_s),
+            ):
+                await _set_chat_input(pilot, "/model ")
+                full = list(overlay._options)
+                await _set_chat_input(pilot, "/model qw")
+                assert overlay.is_visible
+                assert overlay._options == ["qwen3:8b"]
+                assert len(overlay._options) < len(full)
+
+    @pytest.mark.parametrize("listing_delay_s", _LISTING_DELAYS_S)
+    async def test_fully_typed_arg_collapses_overlay(
+        self, _mock_resolve, _mock_services, listing_delay_s
+    ) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            with mock.patch(
+                "lilbee.modelhub.models.list_installed_models",
+                side_effect=_slow_first_listing(self._MODELS, listing_delay_s),
             ):
                 await _set_chat_input(pilot, "/model qw")
                 assert overlay.is_visible
@@ -1217,7 +1249,10 @@ class TestArgCompletionsLiveFilterAsync:
                 await _set_chat_input(pilot, "/model qwen3:8b")
                 assert not overlay.is_visible
 
-    async def test_ctrl_n_in_arg_mode_previews_model(self, _mock_resolve, _mock_services) -> None:
+    @pytest.mark.parametrize("listing_delay_s", _LISTING_DELAYS_S)
+    async def test_ctrl_n_in_arg_mode_previews_model(
+        self, _mock_resolve, _mock_services, listing_delay_s
+    ) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         app = _ChatHostApp()
@@ -1229,7 +1264,8 @@ class TestArgCompletionsLiveFilterAsync:
             overlay = screen.query_one("#completion-overlay", CompletionOverlay)
             inp = screen.query_one("#chat-input")
             with mock.patch(
-                "lilbee.modelhub.models.list_installed_models", return_value=self._MODELS
+                "lilbee.modelhub.models.list_installed_models",
+                side_effect=_slow_first_listing(self._MODELS, listing_delay_s),
             ):
                 await _set_chat_input(pilot, "/model ")
                 first = overlay.get_current()
@@ -1240,8 +1276,9 @@ class TestArgCompletionsLiveFilterAsync:
                 assert inp.value == f"/model {first}"
                 assert overlay.is_visible
 
+    @pytest.mark.parametrize("listing_delay_s", _LISTING_DELAYS_S)
     async def test_tab_in_arg_mode_completes_unique_model(
-        self, _mock_resolve, _mock_services
+        self, _mock_resolve, _mock_services, listing_delay_s
     ) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
@@ -1254,7 +1291,8 @@ class TestArgCompletionsLiveFilterAsync:
             overlay = screen.query_one("#completion-overlay", CompletionOverlay)
             inp = screen.query_one("#chat-input")
             with mock.patch(
-                "lilbee.modelhub.models.list_installed_models", return_value=self._MODELS
+                "lilbee.modelhub.models.list_installed_models",
+                side_effect=_slow_first_listing(self._MODELS, listing_delay_s),
             ):
                 await _set_chat_input(pilot, "/model qw")
                 # "qw" matches only qwen3:8b; Tab fills the shared (full) prefix,
@@ -1271,10 +1309,12 @@ class TestModelCompletionsOffTheLoopAsync:
 
     _MODELS = _LIVE_FILTER_MODELS
 
+    @pytest.mark.parametrize("listing_delay_s", _LISTING_DELAYS_S)
     async def test_typing_a_model_argument_lists_models_once_and_off_the_event_loop(
-        self, _mock_resolve, _mock_services
+        self, _mock_resolve, _mock_services, listing_delay_s
     ) -> None:
         import threading
+        import time
 
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -1287,6 +1327,7 @@ class TestModelCompletionsOffTheLoopAsync:
         def _installed() -> list[str]:
             lookup_threads.append(threading.get_ident())
             assert typed.wait(timeout=30)
+            time.sleep(listing_delay_s)
             return list(self._MODELS)
 
         app = _ChatHostApp()
@@ -1310,10 +1351,12 @@ class TestModelCompletionsOffTheLoopAsync:
         assert len(lookup_threads) == 1
         assert lookup_threads[0] != loop_thread
 
+    @pytest.mark.parametrize("listing_delay_s", _LISTING_DELAYS_S)
     async def test_a_lookup_that_ends_after_the_input_changed_is_dropped(
-        self, _mock_resolve, _mock_services
+        self, _mock_resolve, _mock_services, listing_delay_s
     ) -> None:
         import threading
+        import time
 
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -1324,6 +1367,7 @@ class TestModelCompletionsOffTheLoopAsync:
         def _installed() -> list[str]:
             calls.append(1)
             assert release.wait(timeout=30)
+            time.sleep(listing_delay_s)
             return list(self._MODELS)
 
         app = _ChatHostApp()
@@ -1352,9 +1396,12 @@ class TestModelCompletionsOffTheLoopAsync:
             release.set()
         assert len(calls) == 2
 
+    @pytest.mark.parametrize("listing_delay_s", _LISTING_DELAYS_S)
     async def test_tab_reopens_the_model_dropdown_from_the_listed_models(
-        self, _mock_resolve, _mock_services
+        self, _mock_resolve, _mock_services, listing_delay_s
     ) -> None:
+        import time
+
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
@@ -1362,6 +1409,7 @@ class TestModelCompletionsOffTheLoopAsync:
 
         def _installed() -> list[str]:
             calls.append(1)
+            time.sleep(listing_delay_s)
             return list(self._MODELS)
 
         app = _ChatHostApp()
