@@ -1050,9 +1050,11 @@ def _describe_failures(store: Store, names: Iterable[str]) -> list[SkippedSource
 def _overflow_inputs() -> str:
     """The settings that decide whether a piece of a file fits the embedding window."""
     c = active_config()
+    # An embedder with a token cap cuts to it and never reads max_embed_chars.
+    capped = get_services().provider.embed_token_cap(known_only=True) is not None
+    chars = "" if capped else f"max_embed_chars={c.max_embed_chars};"
     return (
-        f"chunk_size={c.chunk_size};max_embed_chars={c.max_embed_chars};"
-        f"embedding_model={c.embedding_model};num_ctx={c.num_ctx}"
+        f"chunk_size={c.chunk_size};{chars}embedding_model={c.embedding_model};num_ctx={c.num_ctx}"
     )
 
 
