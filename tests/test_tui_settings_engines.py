@@ -626,6 +626,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         EngineName.OPENVINO: _Missing(),
     }
     monkeypatch.setattr(choice, "ADAPTERS", adapters)
+    monkeypatch.setattr(engine_service, "experimental_devices", lambda *_a, **_k: ())
     views = [
         engine_service.RoleView(WorkerRole.CHAT, "m", "gguf", "ik_llama.cpp", None),
         engine_service.RoleView(WorkerRole.EMBED, "e", "gguf", "llama.cpp", None),
