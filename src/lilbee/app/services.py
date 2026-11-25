@@ -290,6 +290,7 @@ def build_services(
     interactive: bool = False,
     config_refresh: Callable[[], None] | None = None,
     held_writes: Callable[[], Mapping[str, object]] | None = None,
+    followed_keys: Callable[[], frozenset[str]] | None = None,
 ) -> Services:
     """Build a full Services container bound to *config*, without caching it.
 
@@ -297,8 +298,9 @@ def build_services(
     ``get_services`` passes a take through the process's current config.toml
     follower. *held_writes* is what the engine asks before it starts a private
     fleet beside a fleet it cannot bind: the held keys config.toml changed during
-    this run. A container of the library API gets neither, so its engine takes
-    nothing from the file.
+    this run. *followed_keys* names the fleet reload keys the follower takes, which
+    the engine records on the fleets it plans. A container of the library API gets
+    none of them, so its engine takes nothing from the file.
 
     ``get_services()`` calls this with the process-global cfg; the library API
     calls it per instance. Service modules are imported inside the function to
@@ -336,6 +338,7 @@ def build_services(
         hold_warm=interactive,
         config_refresh=config_refresh,
         held_writes=held_writes,
+        followed_keys=followed_keys,
     )
     store: Store | None = None
     try:
@@ -431,6 +434,7 @@ def get_services() -> Services:
             interactive=_state.interactive,
             config_refresh=_take_through_the_process_follower,
             held_writes=_held_writes_of_the_process_follower,
+            followed_keys=_followed_keys_of_the_process_follower,
         )
         # A stop asked for during the build may already have swapped the singleton
         # out, so this container is shut down here instead of outliving the stop.
@@ -524,6 +528,12 @@ def _held_writes_of_the_process_follower() -> dict[str, object]:
     """The held keys config.toml changed during this run, by this process's follower."""
     follower = _state.follower
     return {} if follower is None else follower.held_writes()
+
+
+def _followed_keys_of_the_process_follower() -> frozenset[str]:
+    """The fleet reload keys this process's follower takes from config.toml; none without one."""
+    follower = _state.follower
+    return frozenset() if follower is None else follower.followed_reload_keys()
 
 
 def follow_config_long_running(hold: frozenset[str], *, keeper: str) -> ConfigFileFollower:
