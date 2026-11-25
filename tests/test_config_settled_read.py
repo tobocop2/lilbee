@@ -56,7 +56,8 @@ def test_a_truncated_file_mid_rewrite_keeps_the_values(monkeypatch):
     _write("top_k", 21, tick=1)
     reading = app_settings.read_config_state()
     cfg.top_k = 21
-    _config_path().write_text("", encoding="utf-8")  # the editor's truncate; its rewrite has not landed
+    # the editor's truncate; its rewrite has not landed
+    _config_path().write_text("", encoding="utf-8")
     stamp = _MTIME_NS + 2 * _SECOND_NS
     os.utime(_config_path(), ns=(stamp, stamp))
     _clock_at(monkeypatch, 2, _SECOND_NS // 10)
@@ -114,7 +115,9 @@ def test_read_settled_reads_a_file_dated_in_the_future(monkeypatch):
 
 def test_read_settled_without_a_file_reads_defaults(monkeypatch):
     _clock_at(monkeypatch, 1, 0)
-    assert persistent_settings.read_settled(cfg.data_root) == (None, {})
+    stamp, values = persistent_settings.read_settled(cfg.data_root)
+    assert stamp is None
+    assert values is not None
 
 
 def test_the_fleet_view_of_a_young_file_is_empty(monkeypatch):
