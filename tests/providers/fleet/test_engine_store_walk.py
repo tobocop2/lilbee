@@ -17,6 +17,7 @@ import stat
 import sys
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -366,6 +367,30 @@ def test_a_leftover_that_goes_mid_sweep_is_gone_and_the_sweep_goes_on(
     monkeypatch.setattr(engine_store, "_entries", listed_then_gone)
     assert sorted(p.name for p in store.sweep()) == [".stage-a", ".trash-b"]
     assert names(engine) == []
+
+
+def test_a_folder_that_stays_is_reported_false_and_is_not_listed_as_swept(
+    store: EngineStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    engine = store.root / ENGINE
+    stuck = engine / ".trash-stuck"
+    stuck.mkdir(parents=True)
+    (stuck / "keep.txt").write_text("x", encoding="utf-8")
+    (engine / ".stage-ok").mkdir()
+    real_unlink = os.unlink
+
+    def refuse_keep(path: str | Path, *args: Any, **kwargs: Any) -> None:
+        if str(path).endswith("keep.txt"):
+            raise PermissionError(13, "Permission denied", str(path))
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", refuse_keep)
+    with caplog.at_level(logging.WARNING, logger=engine_store.log.name):
+        assert engine_store.delete_tree(stuck) is False
+        assert any(str(stuck) in r.getMessage() for r in caplog.records)
+        swept = store.sweep()
+    assert swept == [engine / ".stage-ok"]
+    assert stuck.exists()
 
 
 def test_a_cleanup_failure_never_hides_the_first_error(
