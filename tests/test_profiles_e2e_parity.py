@@ -66,7 +66,13 @@ from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import SettingSource
-from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileStore
+from lilbee.core.profile_files import (
+    PROFILE_SUFFIX,
+    PROFILES_DIRNAME,
+    ProfileFolder,
+    ProfileStore,
+    profile_key,
+)
 from lilbee.mcp_server import ProfileAction as McpAction
 from lilbee.mcp_server import profile_apply as mcp_profile_apply
 from lilbee.server.routes.profiles import profiles_apply_route
@@ -107,6 +113,7 @@ class Scenario(StrEnum):
     DELETE = "delete"
     EXPORT = "export"
     IMPORT = "import"
+    SHARE = "share"
     VALIDATE = "validate"
     SHOW = "show"
     LIST = "list"
@@ -165,6 +172,8 @@ VISION = "acme/vision-model"
 SHARED_NAME = "Shared set"
 SHARED_FILE = "shared-set.toml"
 SHARED_TEXT = f'[profile]\nname = "{SHARED_NAME}"\n[values]\ntop_k = 12\nhyde = true\n'
+# Sharing, as the user docs describe it: export a profile to a file, then import that file.
+EXPORTED_FILE = f"{profile_key(COURT)}{PROFILE_SUFFIX}"
 BROKEN_FILE = "broken.toml"
 BROKEN_TEXT = '[profile]\nname = "Broken one"\nfoo = 1\n[values]\nchat_model = "x"\ntop_kk = 3\n'
 RECOMMENDED = derived_name(NOTES_AND_MARKDOWN, "project")
@@ -284,6 +293,7 @@ SEEDS: dict[Scenario, Callable[[World], None]] = {
     Scenario.DELETE: _seeded(_seed_court),
     Scenario.EXPORT: _seeded(_seed_court),
     Scenario.IMPORT: _seeded(_seed_inbox),
+    Scenario.SHARE: _seeded(_seed_court),
     Scenario.VALIDATE: _seeded(_seed_inbox),
     Scenario.SHOW: _seeded(_seed_court),
     Scenario.LIST: _seeded(_seed_listing),
@@ -363,6 +373,12 @@ def _as_json(value: Any) -> Any:
     return to_jsonable_python(value)
 
 
+def _share(store: ProfileStore, world: World) -> None:
+    """Export the global profile, then import the exported file into the project folder."""
+    profiles.export(store, COURT, world.outbox)
+    profiles.import_profile(store, world.outbox / EXPORTED_FILE, ProfileFolder.PROJECT)
+
+
 def _apply_and_rebuild(store: ProfileStore, rebuilds: list[str]) -> Any:
     result = profiles.apply(store, COURT)
     rebuilds.append("app")
@@ -385,6 +401,7 @@ async def _oracle(scenario: Scenario, world: World, rebuilds: list[str]) -> Outc
         Scenario.IMPORT: lambda: profiles.import_profile(
             store, world.inbox / SHARED_FILE, ProfileFolder.GLOBAL
         ),
+        Scenario.SHARE: lambda: _share(store, world),
     }
     if scenario in writes:
         writes[scenario]()
@@ -470,6 +487,10 @@ def _cli_steps(scenario: Scenario, world: World) -> list[list[str]]:
         Scenario.DELETE: [["profile", "delete", COURT]],
         Scenario.EXPORT: [["profile", "export", COURT, str(world.outbox)]],
         Scenario.IMPORT: [["profile", "import", shared, "--target", "global"]],
+        Scenario.SHARE: [
+            ["profile", "export", COURT, str(world.outbox)],
+            ["profile", "import", str(world.outbox / EXPORTED_FILE), "--target", "project"],
+        ],
         Scenario.VALIDATE: [["profile", "validate", str(world.inbox / BROKEN_FILE)]],
         Scenario.SHOW: [["profile", "show", COURT]],
         Scenario.LIST: [["profile", "list"]],
@@ -568,6 +589,17 @@ def _http_export(client: TestClient[Any], world: World) -> None:
     (world.outbox / filename).write_text(response.text, encoding="utf-8")
 
 
+def _http_share(client: TestClient[Any], world: World) -> Any:
+    _http_export(client, world)
+    exported = world.outbox / EXPORTED_FILE
+    body = {
+        "content": exported.read_text(encoding="utf-8"),
+        "filename": exported.name,
+        "target": "project",
+    }
+    return _json(client.post("/api/profiles/import", json=body))
+
+
 def _http_apply_and_rebuild(client: TestClient[Any], _world: World) -> Any:
     applied = _done(client.post(_url(COURT, "/apply?reindex=true")))
     assert applied.pop("rebuild") is not None
@@ -607,6 +639,7 @@ HTTP_CALLS: dict[Scenario, Callable[[TestClient[Any], World], Any]] = {
             json={"content": SHARED_TEXT, "filename": SHARED_FILE, "target": "global"},
         )
     ),
+    Scenario.SHARE: _http_share,
     Scenario.VALIDATE: lambda c, _w: _json(
         c.post(
             "/api/profiles/validate",
@@ -670,6 +703,8 @@ MCP_CALLS: dict[Scenario, Callable[[World], list[tuple[str, dict[str, Any]]]]] =
     Scenario.IMPORT: lambda _w: [
         _manage(McpAction.IMPORT, content=SHARED_TEXT, filename=SHARED_FILE, folder="global")
     ],
+    # The import that follows carries the export's content, so the driver makes that call.
+    Scenario.SHARE: lambda _w: [_manage(McpAction.EXPORT, name=COURT)],
     Scenario.VALIDATE: lambda _w: [
         _manage(McpAction.VALIDATE, content=BROKEN_TEXT, filename=BROKEN_FILE)
     ],
@@ -699,8 +734,12 @@ async def _drive_mcp(scenario: Scenario, world: World) -> Outcome:
     results = [await mcp_call(tool, args) for tool, args in MCP_CALLS[scenario](world)]
     for result in results:
         assert "error" not in result, result
-    if scenario is Scenario.EXPORT:
+    if scenario in (Scenario.EXPORT, Scenario.SHARE):
         (world.outbox / results[0]["filename"]).write_text(results[0]["content"], encoding="utf-8")
+    if scenario is Scenario.SHARE:
+        exported = {k: results[0][k] for k in ("content", "filename")}
+        imported = await mcp_call(*_manage(McpAction.IMPORT, **exported, folder="project"))
+        assert "error" not in imported, imported
     payload = MCP_PAYLOAD.get(scenario, lambda found: found[0])(results)
     return _payload_outcome(scenario, payload)
 
@@ -786,9 +825,13 @@ async def _name_and_save(
     await _pill_then_toast(app, pilot, "save-save")
 
 
-async def _path_and_ok(app: LilbeeApp, pilot: Pilot, path: Path) -> None:
+async def _path_and_ok(
+    app: LilbeeApp, pilot: Pilot, path: Path, folder: ProfileFolder | None = None
+) -> None:
     dialog = await _top(app, pilot, ProfilePathDialog)
     dialog.query_one("#path-input", Input).value = str(path)
+    if folder is not None:
+        dialog.query_one("#path-folder", Select).value = folder
     await _pill_then_toast(app, pilot, "path-ok")
 
 
@@ -910,6 +953,15 @@ async def _tui_import(app: LilbeeApp, pilot: Pilot, world: World) -> Outcome:
     return Outcome()
 
 
+async def _tui_share(app: LilbeeApp, pilot: Pilot, world: World) -> Outcome:
+    await _tui_export(app, pilot, world)
+    library = await _top(app, pilot, ProfileLibrary)
+    listing = library.query_one("#library-list", OptionList)
+    await press(pilot, listing, _LIBRARY_KEYS[LibraryAction.IMPORT])
+    await _path_and_ok(app, pilot, world.outbox / EXPORTED_FILE, ProfileFolder.PROJECT)
+    return Outcome()
+
+
 def _text(widget: Static) -> str | None:
     return str(widget.render()) if widget.display else None
 
@@ -1008,6 +1060,7 @@ SETTINGS_DRIVERS: dict[Scenario, TuiDriver] = {
     Scenario.DELETE: _tui_delete,
     Scenario.EXPORT: _tui_export,
     Scenario.IMPORT: _tui_import,
+    Scenario.SHARE: _tui_share,
     Scenario.SHOW: _tui_show,
     Scenario.LIST: _tui_list,
     Scenario.DIFF: _tui_diff,
