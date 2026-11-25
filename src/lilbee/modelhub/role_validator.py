@@ -3,6 +3,7 @@
 import logging
 import os
 import sys
+from collections.abc import Callable
 from typing import cast
 
 from lilbee.catalog import CatalogModel, find_pick
@@ -123,9 +124,12 @@ def _not_installed(ref: str) -> ValueError:
 
 
 def validate_model_task_assignment(
-    field_name: str, ref: str, *, hf_client: HfClient, allow_bypass: bool = True
+    field_name: str, ref: str, *, hf_client_for: Callable[[], HfClient], allow_bypass: bool = True
 ) -> str:
     """Check *ref* is assignable to *field_name*; return the canonical ref.
+
+    *hf_client_for* gives the HF client. It runs only when the ref needs a remote
+    lookup, so an installed or bypass ref never builds the client's owner.
 
     A current pick carries its own task, so it can be role-checked before it is
     installed, which is what the catalog UI offers. Anything else is checked
@@ -149,7 +153,7 @@ def validate_model_task_assignment(
         if installed_task != want:
             raise TaskMismatchError(installed_ref, ModelTask(installed_task), want)
         return installed_ref
-    entry = find_pick(ref, hf_client=hf_client)
+    entry = find_pick(ref, hf_client=hf_client_for())
     if entry is not None:
         return _canonical_pick_ref(ref, entry, want)
     raise _not_installed(installed_ref)

@@ -277,7 +277,10 @@ def _require_model_for_task(model: str, expected: ModelTask, *, allow_empty: boo
         return ""
     normalized = _require_model_available(model)
     return validate_model_task_assignment(
-        _TASK_TO_FIELD[expected], normalized, allow_bypass=False, hf_client=get_services().hf_client
+        _TASK_TO_FIELD[expected],
+        normalized,
+        allow_bypass=False,
+        hf_client_for=lambda: get_services().hf_client,
     )
 
 

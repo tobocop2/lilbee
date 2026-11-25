@@ -99,7 +99,7 @@ class TestManifestLabel:
             "vision_model",
             smolvlm_stored_as_chat,
             allow_bypass=False,
-            hf_client=get_services().hf_client,
+            hf_client_for=lambda: get_services().hf_client,
         )
         assert got == smolvlm_stored_as_chat
 
@@ -109,7 +109,7 @@ class TestManifestLabel:
                 "chat_model",
                 smolvlm_stored_as_chat,
                 allow_bypass=False,
-                hf_client=get_services().hf_client,
+                hf_client_for=lambda: get_services().hf_client,
             )
         assert caught.value.entry_task == ModelTask.VISION
 

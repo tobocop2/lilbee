@@ -14,7 +14,10 @@ class TestPickRefs:
         """A bare repo that is a current pick resolves without being installed."""
         pick = PICKS_CHAT[0]
         result = validate_model_task_assignment(
-            "chat_model", pick.hf_repo, allow_bypass=False, hf_client=get_services().hf_client
+            "chat_model",
+            pick.hf_repo,
+            allow_bypass=False,
+            hf_client_for=lambda: get_services().hf_client,
         )
         assert result == pick.ref
 
@@ -24,7 +27,10 @@ class TestPickRefs:
         full = f"{pick.hf_repo}/some-quant-Q4_K_M.gguf"
         assert (
             validate_model_task_assignment(
-                "chat_model", full, allow_bypass=False, hf_client=get_services().hf_client
+                "chat_model",
+                full,
+                allow_bypass=False,
+                hf_client_for=lambda: get_services().hf_client,
             )
             == full
         )
@@ -34,7 +40,10 @@ class TestPickRefs:
         pick = PICKS_EMBEDDING[0]
         with pytest.raises(TaskMismatchError):
             validate_model_task_assignment(
-                "chat_model", pick.hf_repo, allow_bypass=False, hf_client=get_services().hf_client
+                "chat_model",
+                pick.hf_repo,
+                allow_bypass=False,
+                hf_client_for=lambda: get_services().hf_client,
             )
 
 
@@ -46,13 +55,13 @@ class TestNonPickRefs:
                 "chat_model",
                 "nobody/Not-A-Pick-GGUF",
                 allow_bypass=False,
-                hf_client=get_services().hf_client,
+                hf_client_for=lambda: get_services().hf_client,
             )
 
     def test_installed_non_pick_is_accepted_for_its_task(self) -> None:
         ref = install_fake_model("other/Chat-Model-GGUF", "chat-Q4_K_M.gguf", "chat")
         result = validate_model_task_assignment(
-            "chat_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+            "chat_model", ref, allow_bypass=False, hf_client_for=lambda: get_services().hf_client
         )
         assert result == ref
 
@@ -60,7 +69,10 @@ class TestNonPickRefs:
         ref = install_fake_model("other/Chat-Model-GGUF", "chat-Q4_K_M.gguf", "chat")
         with pytest.raises(TaskMismatchError):
             validate_model_task_assignment(
-                "embedding_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+                "embedding_model",
+                ref,
+                allow_bypass=False,
+                hf_client_for=lambda: get_services().hf_client,
             )
 
     def test_installed_bare_repo_resolves_to_its_quant(self) -> None:
@@ -69,7 +81,7 @@ class TestNonPickRefs:
             "chat_model",
             "other/Chat-Model-GGUF",
             allow_bypass=False,
-            hf_client=get_services().hf_client,
+            hf_client_for=lambda: get_services().hf_client,
         )
         assert result == ref
 
@@ -88,7 +100,10 @@ class TestNoNetworkOnTheWritePath:
         picks_mod.reset_picks()
         assert (
             validate_model_task_assignment(
-                "chat_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+                "chat_model",
+                ref,
+                allow_bypass=False,
+                hf_client_for=lambda: get_services().hf_client,
             )
             == ref
         )
@@ -151,7 +166,10 @@ class TestRecoveredModelLabelByName:
         assert manifest.task == ModelTask.VISION
         assert (
             validate_model_task_assignment(
-                "vision_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+                "vision_model",
+                ref,
+                allow_bypass=False,
+                hf_client_for=lambda: get_services().hf_client,
             )
             == ref
         )
@@ -162,7 +180,10 @@ class TestUnknownTaskRole:
         ref = install_fake_model("other/Plain-Chat-GGUF", "plain-Q4_K_M.gguf", "bogus")
         with pytest.raises(ValueError, match="unknown task 'bogus'") as caught:
             validate_model_task_assignment(
-                "chat_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+                "chat_model",
+                ref,
+                allow_bypass=False,
+                hf_client_for=lambda: get_services().hf_client,
             )
         assert ref in str(caught.value)
         assert not isinstance(caught.value, TaskMismatchError)
@@ -189,7 +210,10 @@ class TestRecoveredModelWithProjector:
 
     def test_vision_role_accepts_it(self, recovered_vlm: str) -> None:
         result = validate_model_task_assignment(
-            "vision_model", recovered_vlm, allow_bypass=False, hf_client=get_services().hf_client
+            "vision_model",
+            recovered_vlm,
+            allow_bypass=False,
+            hf_client_for=lambda: get_services().hf_client,
         )
         assert result == recovered_vlm
 
@@ -205,5 +229,47 @@ class TestRecoveredModelWithProjector:
         ref = install_fake_model("other/Plain-Chat-GGUF", "plain-Q4_K_M.gguf", "chat")
         with pytest.raises(TaskMismatchError):
             validate_model_task_assignment(
-                "vision_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+                "vision_model",
+                ref,
+                allow_bypass=False,
+                hf_client_for=lambda: get_services().hf_client,
             )
+
+
+def _services_unavailable() -> None:
+    raise RuntimeError("services cannot be built")
+
+
+class TestRoleWriteNeedsNoServicesUnlessRemote:
+    """A role write reaches the HF client only for a ref that needs a remote lookup."""
+
+    def test_an_installed_ref_never_asks_for_the_client(self) -> None:
+        ref = install_fake_model("other/Chat-Model-GGUF", "chat-Q4_K_M.gguf", "chat")
+        result = validate_model_task_assignment(
+            "chat_model", ref, allow_bypass=False, hf_client_for=_services_unavailable
+        )
+        assert result == ref
+
+    def test_a_bypass_ref_never_asks_for_the_client(self, monkeypatch) -> None:
+        monkeypatch.setenv("LILBEE_SKIP_MODEL_TASK_VALIDATION", "1")
+        result = validate_model_task_assignment(
+            "chat_model", "nobody/Not-A-Pick-GGUF", hf_client_for=_services_unavailable
+        )
+        assert result == "nobody/Not-A-Pick-GGUF"
+
+    def test_a_remote_lookup_asks_for_the_client(self) -> None:
+        with pytest.raises(RuntimeError, match="services cannot be built"):
+            validate_model_task_assignment(
+                "chat_model",
+                "nobody/Not-A-Pick-GGUF",
+                allow_bypass=False,
+                hf_client_for=_services_unavailable,
+            )
+
+    def test_the_settings_write_of_an_installed_ref_builds_no_services(self, monkeypatch) -> None:
+        from lilbee.app import services as services_module
+        from lilbee.app.settings import _coerce_value
+
+        ref = install_fake_model("other/Chat-Model-GGUF", "chat-Q4_K_M.gguf", "chat")
+        monkeypatch.setattr(services_module, "get_services", _services_unavailable)
+        assert _coerce_value("chat_model", ref) == ref

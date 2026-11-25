@@ -62,7 +62,10 @@ class TestSetModelBoundary:
     def test_installed_exact_file_persists_the_plain_ref(self) -> None:
         ref = install_fake_model("other/Chat-Model-GGUF", "chat-Q4_K_M.gguf", "chat")
         result = validate_model_task_assignment(
-            "chat_model", f"{ref}#gguf", allow_bypass=False, hf_client=get_services().hf_client
+            "chat_model",
+            f"{ref}#gguf",
+            allow_bypass=False,
+            hf_client_for=lambda: get_services().hf_client,
         )
         assert result == ref
 
@@ -72,7 +75,7 @@ class TestSetModelBoundary:
             "chat_model",
             "other/Chat-Model-GGUF#gguf",
             allow_bypass=False,
-            hf_client=get_services().hf_client,
+            hf_client_for=lambda: get_services().hf_client,
         )
         assert result == ref
 
@@ -82,7 +85,7 @@ class TestSetModelBoundary:
             "chat_model",
             f"{pick.hf_repo}#gguf",
             allow_bypass=False,
-            hf_client=get_services().hf_client,
+            hf_client_for=lambda: get_services().hf_client,
         )
         assert result == pick.ref
 
@@ -92,7 +95,7 @@ class TestSetModelBoundary:
                 "chat_model",
                 "nobody/Repo#nosuch",
                 allow_bypass=False,
-                hf_client=get_services().hf_client,
+                hf_client_for=lambda: get_services().hf_client,
             )
 
 

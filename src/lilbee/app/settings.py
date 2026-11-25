@@ -429,7 +429,9 @@ def _coerce_value(key: str, value: Any) -> Any:
         from lilbee.app.services import get_services
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
-        return validate_model_task_assignment(key, value, hf_client=get_services().hf_client)
+        return validate_model_task_assignment(
+            key, value, hf_client_for=lambda: get_services().hf_client
+        )
     return checked_write(key, value)
 
 
