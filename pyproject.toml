@@ -40,7 +40,7 @@ dependencies = [
     # and the SoftFileLock fallback; the ceiling is the line verified against it.
     "filelock>=4.2.9,<4.3",
     "tree-sitter-language-pack>=1.8.0,<2.0",
-    "typer>=0.13",
+    "typer>=0.16.0",
     "tiktoken",
     "textual>=0.75",
     # Floor is 2.2.0: it bounds StreamableHTTP sessions (CVE-2026-59951); 1.x lacks mcp.server.mcpserver.
