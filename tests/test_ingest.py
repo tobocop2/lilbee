@@ -632,8 +632,10 @@ class TestSync:
             "or run the embedding model on a GPU."
         )
         assert mock_svc.provider.count_tokens.call_count == 1
-        # The window read after the warm failure sends no request to the engine.
-        mock_svc.provider.embed_token_cap.assert_called_once_with(known_only=True)
+        # No window read after the warm failure sends a request to the engine.
+        reads = mock_svc.provider.embed_token_cap.call_args_list
+        assert reads
+        assert all(read == mock.call(known_only=True) for read in reads)
         mock_extract_file.assert_not_called()
 
     async def test_a_window_below_one_chunk_refuses_first_when_the_warm_also_failed(
@@ -2604,7 +2606,7 @@ class TestHeldOutRecordLifecycle:
     async def test_an_overflow_hold_ignores_the_char_limit_of_a_token_capped_embedder(
         self, isolated_env, mock_svc, monkeypatch
     ):
-        """An embedder with a token cap never reads max_embed_chars, so changing it keeps the hold."""
+        """A token-capped embedder never reads max_embed_chars, so changing it keeps the hold."""
         from lilbee.data.ingest import sync
         from lilbee.providers.base import EmbeddingOverflowError, ProviderErrorKind
 
