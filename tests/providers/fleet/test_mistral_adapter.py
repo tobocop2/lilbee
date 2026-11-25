@@ -778,6 +778,22 @@ def test_a_cpu_build_reads_no_card_and_lists_no_device(
     assert (probe.devices, probe.spoke_protocol) == ([], False)
 
 
+def test_a_metal_build_reads_no_card_and_lists_no_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Darwin", "arm64"))
+    monkeypatch.setattr(nvidia_mod, "cards", _no_read)
+    probe = MISTRAL.discover_devices(tmp_path / "never-run")
+    assert (probe.devices, probe.spoke_protocol) == ([], False)
+
+
+def test_the_metal_pin_record_declares_the_mit_licence_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Darwin", "arm64"))
+    assert MISTRAL.pin_record()["licenses"] == ["MIT"]
+
+
 def test_a_cuda_build_reads_the_cards_from_the_driver(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2056,6 +2072,10 @@ def test_a_one_card_launch_of_a_cache_blob_with_no_snapshot_file_is_refused_with
     ) as refused:
         _one_card_argv(tmp_path, role, model_path=blob)
     assert blob.name not in str(refused.value)
+    # An HTTP caller gets the list route for the command, and no remove route.
+    served = name_routes(str(refused.value))
+    assert "GET /api/models/installed" in served
+    assert "DELETE" not in served
 
 
 @pytest.mark.parametrize("shard", [None, "9b"])

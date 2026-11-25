@@ -275,6 +275,8 @@ class TestCpuRoleArgvFromRealAdapter:
         [
             ("cuda-sm89", RoleTarget.CPU, ["--cpu"]),
             ("cuda-sm89", RoleTarget.GPU, ["--paged-attn", "off"]),
+            ("metal", RoleTarget.CPU, ["--cpu"]),
+            ("metal", RoleTarget.GPU, ["--paged-attn", "off"]),
             ("cpu", RoleTarget.CPU, ["--cpu"]),
             ("cpu", RoleTarget.GPU, ["--cpu"]),
         ],
@@ -348,6 +350,7 @@ class TestDeviceTargets:
         ("adapter", "engine", "backend", "offered"),
         [
             (MistralAdapter, MISTRAL, "cuda-sm89", {RoleTarget.CPU, RoleTarget.GPU}),
+            (MistralAdapter, MISTRAL, "metal", {RoleTarget.CPU, RoleTarget.GPU}),
             (MistralAdapter, MISTRAL, "cpu", {RoleTarget.CPU}),
             (MistralAdapter, MISTRAL, None, {RoleTarget.CPU}),
             (TeiAdapter, TEI, "cuda", {RoleTarget.CPU, RoleTarget.GPU}),
