@@ -111,6 +111,19 @@ _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 _LINK_CODE_RE = re.compile("\x1b\\]8;[^\x1b]*\x1b\\\\")
 
 
+def _real_wiki_build_error() -> Exception:
+    """The error a run raises when every model call failed, built by the real check."""
+    from lilbee.wiki.stats import BuildStats
+
+    stats = BuildStats()
+    stats.record_model_call("The chat model is not running.")
+    try:
+        stats.raise_if_nothing_written(0)
+    except RuntimeError as exc:
+        return exc
+    raise AssertionError("the run did not raise")
+
+
 def _stub_build_summary(paths: list[str], count: int) -> dict:
     """``run_full_build`` result shape for tests that stub the whole run."""
     return {"paths": paths, "entities": 0, "count": count, "stats": BuildStats().as_dict()}
@@ -5969,16 +5982,14 @@ class TestWikiBuild:
     def test_a_build_with_no_pages_exits_1_with_the_error(
         self, mock_svc, isolated_env, monkeypatch, command
     ):
-        from lilbee.wiki.stats import WikiBuildError
-
         def fail(*a, **kw):
-            raise WikiBuildError("No wiki pages were written: all 2 model calls failed.")
+            raise _real_wiki_build_error()
 
         monkeypatch.setattr("lilbee.wiki.run_full_build", fail)
         result = runner.invoke(app, ["wiki", command])
         assert result.exit_code == 1
         assert "Error:" in result.output
-        assert "No wiki pages were written" in result.output
+        assert " ".join(result.output.split()) == f"Error: {_real_wiki_build_error()}"
 
     @pytest.mark.parametrize(
         ("command", "target"),
@@ -5990,31 +6001,25 @@ class TestWikiBuild:
     def test_synthesize_and_generate_with_no_pages_exit_1_with_the_error(
         self, mock_svc, isolated_env, monkeypatch, command, target
     ):
-        from lilbee.wiki.stats import WikiBuildError
-
         def fail(*a, **kw):
-            raise WikiBuildError("No wiki pages were written: every model call failed (1).")
+            raise _real_wiki_build_error()
 
         monkeypatch.setattr(target, fail)
         result = runner.invoke(app, command)
         assert result.exit_code == 1
-        assert "No wiki pages were written" in result.output
+        assert " ".join(result.output.split()) == f"Error: {_real_wiki_build_error()}"
 
     def test_a_build_with_no_pages_gives_the_error_as_json(
         self, mock_svc, isolated_env, monkeypatch
     ):
-        from lilbee.wiki.stats import WikiBuildError
-
         def fail(*a, **kw):
-            raise WikiBuildError("No wiki pages were written: all 2 model calls failed.")
+            raise _real_wiki_build_error()
 
         cfg.json_mode = True
         monkeypatch.setattr("lilbee.wiki.run_full_build", fail)
         result = runner.invoke(app, ["--json", "wiki", "build"])
         assert result.exit_code == 1
-        assert json.loads(result.output) == {
-            "error": "No wiki pages were written: all 2 model calls failed."
-        }
+        assert json.loads(result.output) == {"error": str(_real_wiki_build_error())}
 
     def test_prints_generated_paths(self, mock_svc, isolated_env, monkeypatch):
         out = isolated_env / "wiki" / "concepts" / "braking.md"
