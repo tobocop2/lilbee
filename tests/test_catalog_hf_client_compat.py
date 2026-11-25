@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from lilbee.app.engine_choice import engine_for_page
+from conftest import make_hf_client
 from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.types import ModelCompat
 from lilbee.core.config import cfg
@@ -14,8 +14,7 @@ pytestmark = pytest.mark.real_hf_client
 
 
 def _client() -> HfClient:
-    """A client with the engine lookup the services container injects."""
-    return HfClient(cfg, engine_for_format=lambda fmt: engine_for_page(fmt, cfg))
+    return make_hf_client(cfg)
 
 
 def _hf_row(architecture: str | None) -> dict[str, object]:
