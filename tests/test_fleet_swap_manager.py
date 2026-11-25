@@ -135,11 +135,14 @@ class _FakeResource:
 
     def __init__(self, soft: int, hard: int) -> None:
         self.limits = (soft, hard)
+        self.refuse: Exception | None = None
 
     def getrlimit(self, _which: int) -> tuple[int, int]:
         return self.limits
 
     def setrlimit(self, _which: int, limits: tuple[int, int]) -> None:
+        if self.refuse is not None:
+            raise self.refuse
         self.limits = limits
 
 
@@ -184,6 +187,27 @@ class TestOpenFileLimit:
         assert res.limits == (512, 512)
         warnings = [r for r in caplog.records if "open-file" in r.getMessage()]
         assert len(warnings) == 1
+
+    @pytest.mark.parametrize("error", [OSError("not permitted"), ValueError("bad limit")])
+    def test_a_refused_raise_warns_once_and_the_start_goes_on(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        error: Exception,
+    ) -> None:
+        res = _FakeResource(soft=256, hard=65536)
+        res.refuse = error
+        monkeypatch.setattr(sm, "resource", res)
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        with caplog.at_level(logging.WARNING, logger=sm.log.name):
+            mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
+        assert mgr.running
+        warnings = [r for r in caplog.records if "open-file" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "1088" in warnings[0].getMessage()
 
     def test_a_platform_without_the_resource_module_starts(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -95,7 +95,10 @@ def _raise_open_file_limit() -> None:
             _OPEN_FILE_FLOOR,
         )
     if target > soft:
-        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        except (OSError, ValueError) as exc:
+            log.warning("The open-file limit stays at %d, not the %d wanted: %s", soft, target, exc)
 
 
 _HOST = "127.0.0.1"
