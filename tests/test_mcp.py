@@ -1387,24 +1387,22 @@ class TestMain:
     def test_main_gives_the_terminate_handler_back_when_the_loop_ends(self, mock_build):
         """The loop takes SIGTERM while it serves, and its close returns the handler it found."""
         previous = signal.getsignal(signal.SIGTERM)
-
-        def handler(signum: int, frame: object) -> None:
-            raise AssertionError("never delivered")
-
         seen: list[object] = []
 
         async def serve() -> None:
             seen.append(signal.getsignal(signal.SIGTERM))
 
-        signal.signal(signal.SIGTERM, handler)
         try:
+            # The loop takes only the signals the process routed, as mcp_cmd does before main.
+            routed = svc_mod._lifecycle._on_hard_exit
+            signal.signal(signal.SIGTERM, routed)
             mock_build.return_value.run_stdio_async = serve
             main()
             after = signal.getsignal(signal.SIGTERM)
         finally:
             signal.signal(signal.SIGTERM, previous)
-        assert seen != [handler]
-        assert after is handler
+        assert seen != [routed]
+        assert after is routed
 
     @pytest.mark.skipif(sys.platform == "win32", reason="The proactor loop sets its own wakeup fd")
     @mock.patch("lilbee.mcp_server.build_mcp_server")
@@ -1419,8 +1417,16 @@ class TestMain:
             signal.set_wakeup_fd(held)
             seen.append(held)
 
-        mock_build.return_value.run_stdio_async = serve
-        main()
+        saved = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP)}
+        try:
+            # The loop takes only the signals the process routed, as mcp_cmd does before main.
+            for sig in saved:
+                signal.signal(sig, svc_mod._lifecycle._on_hard_exit)
+            mock_build.return_value.run_stdio_async = serve
+            main()
+        finally:
+            for sig, handler in saved.items():
+                signal.signal(sig, handler)
 
         assert seen[0] not in (-1, before)
         after = signal.set_wakeup_fd(before)
