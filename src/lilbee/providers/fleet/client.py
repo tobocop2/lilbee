@@ -1978,11 +1978,11 @@ class LlamaServerClient:
 
         Every request counted in flight runs this first (see :meth:`_track`), so the
         check holds wherever a client is built. The token routes are not counted; no
-        engine with a device route serves them. The first request of a client whose profile names a device
-        route loads the model, reads the device, and only then goes on. A refusal stops
-        the upstream and stays on this client: every later request raises it and none
-        reaches the upstream. An unreadable reply raises, and the next request reads
-        again.
+        engine with a device route serves them. The first request of a client whose
+        profile names a device route loads the model, reads the device, and only then
+        goes on. A refusal stops the upstream and stays on this client: every later
+        request raises it and none reaches the upstream. An unreadable reply raises,
+        and the next request reads again.
         """
         check = self._profile.device_check
         if check is None or self._device_ok or self._device_checker == threading.get_ident():
