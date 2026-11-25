@@ -25,6 +25,12 @@ runner = CliRunner()
 REF = "org/embedder#safetensors"
 HINT = "Choose tei with lilbee engine prefer. It applies to every model without its own choice."
 NOTICE = f"No engine is chosen by default for the safetensors format of {REF}. {HINT}"
+# The adopt shows the settings notice of the embedding role, once, instead of the pull notice.
+ROLE_NOTICE = (
+    f"For embed: No engine is chosen by default for the safetensors format of {REF}. "
+    "Choose tei with lilbee engine use for this model, or with lilbee engine prefer "
+    "for every model without its own choice."
+)
 
 
 class _SafetensorsEngine(BundledFakeAdapter):
@@ -84,14 +90,14 @@ def test_use_embedder_with_no_engine_chosen_downloads_and_warns_on_stdout(
 ) -> None:
     code, out = _stdout(["use-embedder", REF])
     assert (code, downloads) == (0, [REF])
-    assert f"Now embedding with {REF}. Warning: {NOTICE}" in out
-    assert "engine use" not in out
+    assert f"Now embedding with {REF}. Warning: {ROLE_NOTICE}" in out
+    assert out.count("No engine is chosen") == 1
 
 
 def test_use_embedder_json_carries_the_warning(downloads: list[str]) -> None:
     result = runner.invoke(app, ["--json", "use-embedder", REF])
     assert (result.exit_code, downloads) == (0, [REF])
-    assert json.loads(result.stdout)["warning"] == NOTICE
+    assert json.loads(result.stdout)["warning"] == ROLE_NOTICE
 
 
 def test_the_environment_variable_does_not_choose_the_engine_for_a_pull(
