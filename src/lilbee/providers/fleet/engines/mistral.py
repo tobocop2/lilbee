@@ -52,7 +52,9 @@ _TEXT_CONFIG_KEY = "text_config"
 _SPLIT_FIX = f"Use the {EngineName.LLAMA.value} engine for this role, or a smaller model."
 _DAMAGED_MODEL = (
     "its model file is incomplete or damaged. "
-    "Run 'lilbee model list', remove that model with 'lilbee model rm', then pull it again."
+    "Run 'lilbee model list' (or GET /api/models/installed), remove that model with "
+    "'lilbee model rm' (or DELETE /api/models/{model}), "
+    "then pull it again (POST /api/models/pull)."
 )
 _VERSION = "0.9.5"
 _TOOL = "mistralrs"

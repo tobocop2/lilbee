@@ -5,7 +5,7 @@ from __future__ import annotations
 from lilbee._frozen import is_frozen
 
 _INSTALL_COMMAND = (
-    "To download the engine, run 'lilbee engine install'. "
+    "To download the engine, run 'lilbee engine install' (or POST /api/engines/install). "
     "To use a pack on a computer with no network, copy it into the packs folder "
     "of the engines folder first."
 )
