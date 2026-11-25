@@ -9,6 +9,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NoReturn
 
 import httpx
 import numpy as np
@@ -612,7 +613,11 @@ def test_a_request_that_waits_for_the_check_ends_when_the_client_closes() -> Non
 
 
 def test_the_check_does_not_hold_its_lock_while_the_load_runs() -> None:
-    """A load that fans out to worker threads can take the gate's condition."""
+    """The gate's lock is free while the load runs: another thread can take it.
+
+    This does not say a load request sent from a worker thread passes the gate. The
+    checker is found by thread identity, so such a request still waits for the check.
+    """
     client, _ = _client(WorkerRole.EMBED, LEMONADE.request_profile, {HEALTH: ON_NPU})
     free_during_load: list[bool] = []
 
@@ -695,6 +700,45 @@ def test_a_refused_replica_hands_a_failover_call_to_its_sibling() -> None:
     pool, _ = _two_replicas(CHAT_ON_CPU, CHAT_ON_CPU)
     with pytest.raises(ProviderError, match="not the NPU"):
         provider_mod._call_with_failover(pool, lambda c: c.chat_abortable(MESSAGES))
+
+
+def test_a_refused_chat_replica_gives_its_slot_back_before_the_sibling_runs() -> None:
+    _, (bad, good) = _two_replicas(CHAT_ON_CPU, CHAT_ON_NPU)
+    pool = provider_mod._LivePool(threading.RLock(), lambda: [bad, good], lambda: None)
+    seen: list[int] = []
+
+    def call(client: LlamaServerClient) -> str:
+        text = client.chat_abortable(MESSAGES)
+        seen.append(bad.in_flight)
+        return text
+
+    assert provider_mod._call_reserved(pool, call) == "hi"
+    assert seen == [0]
+    assert bad.in_flight == good.in_flight == 0
+
+
+@pytest.mark.parametrize("path", ["reserved", "failover", "stream"])
+def test_a_plain_bad_request_on_the_first_replica_does_not_reach_the_sibling(path: str) -> None:
+    """Only a device refusal or a dead replica fails over; other errors surface as they are."""
+    _, clients = _two_replicas(CHAT_ON_NPU, CHAT_ON_NPU)
+    pool = provider_mod._LivePool(threading.RLock(), lambda: list(clients), lambda: None)
+    called: list[LlamaServerClient] = []
+    error = ProviderError("bad body", provider="p", kind=ProviderErrorKind.BAD_REQUEST)
+
+    def call(client: LlamaServerClient) -> NoReturn:
+        called.append(client)
+        raise error
+
+    with pytest.raises(ProviderError) as caught:
+        if path == "reserved":
+            provider_mod._call_reserved(pool, call)
+        elif path == "failover":
+            provider_mod._call_with_failover(pool, call)
+        else:
+            provider_mod._stream_reserved(pool, call)
+    assert caught.value is error
+    assert called == [clients[0]]
+    assert clients[0].in_flight == clients[1].in_flight == 0
 
 
 def _vision_pool(clients: list[LlamaServerClient]) -> provider_mod._LivePool:
