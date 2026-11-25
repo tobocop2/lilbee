@@ -1023,10 +1023,19 @@ class TestACancelledAdd:
 
     async def test_a_cancel_after_the_parent_indexed_a_file_keeps_the_parent(self, library, notes):
         await _add(notes / "work")
-        result = register_sources([notes])
-        await sync(quiet=True)
+        import asyncio
+        import threading
 
-        _cancel_the_add([notes], result)
+        result = register_sources([notes])
+        cancel = threading.Event()
+
+        with (
+            pytest.raises(asyncio.CancelledError),
+            forget_unfinished_on_cancel([notes], result, cancel, lambda: True),
+        ):
+            await sync(quiet=True)
+            cancel.set()
+            raise asyncio.CancelledError
 
         assert _registry() == {"notes": str(notes.resolve())}
         assert _keys(library) == ["notes/loose.md", "notes/work/budget.md", "notes/work/plan.md"]
