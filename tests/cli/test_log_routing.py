@@ -65,11 +65,15 @@ def routed_app(tmp_path: Path):
     seen: dict[str, Any] = {}
 
     @app.command()
-    def run(fail: bool = False) -> None:
+    def run(ctx: typer.Context, fail: bool = False) -> None:
         set_explicit_verbosity(False)
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        logging.getLogger().addHandler(stderr_handler)
+        seen["stderr_handler"] = stderr_handler
+        seen["before"] = list(logging.getLogger().handlers)
         with mock.patch("lilbee.cli.log_routing.cfg") as m_cfg:
             m_cfg.data_root = tmp_path
-            seen["path"] = route_diagnostics_to_log_file()
+            seen["path"] = route_diagnostics_to_log_file(ctx)
         seen["handlers_during"] = list(logging.getLogger().handlers)
         seen["capture_during"] = _capture_is_on()
         if fail:
@@ -100,16 +104,12 @@ def test_a_command_that_routes_diagnostics_leaves_the_root_handlers_as_it_found_
     routed_app, restored_logging, fail: bool
 ):
     app, seen = routed_app
-    root = logging.getLogger()
-    stderr_handler = logging.StreamHandler(sys.stderr)
-    root.addHandler(stderr_handler)
-    before = list(root.handlers)
     result = CliRunner().invoke(app, ["--fail"] if fail else [])
     assert result.exit_code == (1 if fail else 0)
     assert seen["path"] is not None
-    assert stderr_handler not in seen["handlers_during"]
+    assert seen["stderr_handler"] not in seen["handlers_during"]
     assert any(isinstance(h, RotatingFileHandler) for h in seen["handlers_during"])
-    assert root.handlers == before
+    assert logging.getLogger().handlers == seen["before"]
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -135,10 +135,3 @@ def test_the_log_file_handler_is_closed_when_the_command_ends(routed_app, restor
     CliRunner().invoke(app, [])
     (file_handler,) = [h for h in seen["handlers_during"] if isinstance(h, RotatingFileHandler)]
     assert file_handler.stream is None
-
-
-def test_a_direct_call_outside_a_command_still_routes(restored_logging, tmp_path: Path):
-    set_explicit_verbosity(False)
-    with mock.patch("lilbee.cli.log_routing.cfg") as m_cfg:
-        m_cfg.data_root = tmp_path
-        assert route_diagnostics_to_log_file() == tmp_path / "logs" / "cli.log"

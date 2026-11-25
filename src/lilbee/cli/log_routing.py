@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 import sys
 import warnings
+from functools import partial
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-import click
+import typer
 
 from lilbee.core.config import cfg
 
@@ -79,7 +80,7 @@ def warnings_reach_terminal() -> bool:
     )
 
 
-def route_diagnostics_to_log_file() -> Path | None:
+def route_diagnostics_to_log_file(ctx: typer.Context) -> Path | None:
     """Send log records and Python warnings to ``cfg.data_root/logs/cli.log``.
 
     Answer-facing commands (ask, search, chat) call this after their overrides
@@ -88,8 +89,8 @@ def route_diagnostics_to_log_file() -> Path | None:
     filtered and no logger level changes. Skipped entirely when --log-level or
     LILBEE_LOG_LEVEL was given: diagnostics then stay on stderr as usual.
 
-    The routing lasts as long as the running command: Click's context undoes it
-    when the command ends, whatever way it ends.
+    The routing lasts as long as the running command: *ctx* undoes it when the
+    command ends, however it ends.
     """
     if _router.explicit_verbosity:
         return None
@@ -100,29 +101,27 @@ def route_diagnostics_to_log_file() -> Path | None:
         return None
     log_path = log_dir / _CLI_LOG_FILE_NAME
     root = logging.getLogger()
-    handlers_before = list(root.handlers)
-    capture_was_on = _warnings_are_captured()
+    ctx.call_on_close(partial(_restore_diagnostics, list(root.handlers), _warnings_are_captured()))
     attach_rotating_file_handler(log_path)
     for handler in list(root.handlers):
         if _is_terminal_handler(handler):
             root.removeHandler(handler)
     logging.captureWarnings(True)
-
-    def restore() -> None:
-        for handler in list(root.handlers):
-            if handler not in handlers_before:
-                root.removeHandler(handler)
-                handler.close()
-        for handler in handlers_before:
-            if handler not in root.handlers:
-                root.addHandler(handler)
-        if not capture_was_on:
-            logging.captureWarnings(False)
-
-    context = click.get_current_context(silent=True)
-    if context is not None:
-        context.call_on_close(restore)
     return log_path
+
+
+def _restore_diagnostics(handlers_before: list[logging.Handler], capture_was_on: bool) -> None:
+    """Put the root handlers and the warnings hook back as they were."""
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if handler not in handlers_before:
+            root.removeHandler(handler)
+            handler.close()
+    for handler in handlers_before:
+        if handler not in root.handlers:
+            root.addHandler(handler)
+    if not capture_was_on:
+        logging.captureWarnings(False)
 
 
 def _warnings_are_captured() -> bool:

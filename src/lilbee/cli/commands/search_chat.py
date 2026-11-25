@@ -222,6 +222,7 @@ def _display_score(result: dict[str, Any]) -> float:
 
 
 def search(
+    ctx: typer.Context,
     query: str = typer.Argument(..., help="Search query"),
     top_k: int = typer.Option(None, "--top-k", "-k", min=1, help="Number of results"),
     scope: SearchScope = _scope_option,
@@ -230,7 +231,7 @@ def search(
 ) -> None:
     """Search the knowledge base for relevant chunks."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    route_diagnostics_to_log_file()
+    route_diagnostics_to_log_file(ctx)
 
     _reject_if_empty(query, "query")
 
@@ -310,6 +311,7 @@ def _prepare_ask(*, no_sync: bool) -> None:
 
 
 def ask(
+    ctx: typer.Context,
     question: str = typer.Argument(..., help="Question to ask"),
     scope: SearchScope = _scope_option,
     data_dir: Path | None = data_dir_option,
@@ -337,7 +339,7 @@ def ask(
         num_ctx=num_ctx,
         seed=seed,
     )
-    route_diagnostics_to_log_file()
+    route_diagnostics_to_log_file(ctx)
     _reject_if_empty(question, "question")
 
     try:
