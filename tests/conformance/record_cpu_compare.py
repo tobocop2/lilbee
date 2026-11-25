@@ -52,9 +52,11 @@ class Model:
 
 # The weights of the record of commit 3df1d204f. A safetensors model is a folder: the run
 # also fetches the small files at the top of its repo, and the pooling config of an embedder.
+# mistral.rs answers with its model folder as the model name, so the engine folders keep the
+# names of that run. The record refuses a path under /home: keep --models under /var/tmp.
 _ENGINE_MODELS = {
     WorkerRole.CHAT: Model(
-        "qwen3-1.7b-gguf",
+        "chat17",
         "Qwen/Qwen3-1.7B-GGUF",
         "Qwen3-1.7B-Q8_0.gguf",
         "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
@@ -62,7 +64,7 @@ _ENGINE_MODELS = {
         16384,
     ),
     WorkerRole.EMBED: Model(
-        "qwen3-embedding-0.6b",
+        "st_embed",
         "Qwen/Qwen3-Embedding-0.6B",
         "model.safetensors",
         "0437e45c94563b09e13cb7a64478fc406947a93cb34a7e05870fc8dcd48e23fd",
@@ -70,7 +72,7 @@ _ENGINE_MODELS = {
         16384,
     ),
     WorkerRole.VISION: Model(
-        "smolvlm-256m-instruct",
+        "st_vision",
         "HuggingFaceTB/SmolVLM-256M-Instruct",
         "model.safetensors",
         "74dea5904032e5ae99a2e0eef5179e6ac0f1dedc3ab0c7c2a5d4d387c843203e",
