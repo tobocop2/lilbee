@@ -30,16 +30,41 @@ def _make(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-@needs_make
-def test_every_recipe_inherits_the_watchdog_variables(tmp_path: Path) -> None:
-    """A recipe sees the variables the way pytest does: through its environment."""
+UNIT_RECIPES = ("test", "test-ci", "test-ci-split", "test-ci-serial", "test-ci-forked")
+# The watchdog ignores a test's own timeout, so these must not run under it.
+LONG_RECIPES = ("test-integration", "test-presets")
+
+
+def _seen_by(recipe: str, tmp_path: Path) -> str:
+    """The watchdog variables as the recipe's own environment holds them.
+
+    A prerequisite inherits the target-specific variables of its target. The ``+`` prefix
+    runs its line under ``-n``, so nothing else of the recipe runs.
+    """
     probe = tmp_path / "probe.mk"
-    probe.write_text(f"show:\n\t@echo $${SECONDS} $${FOLDER}\n", encoding="utf-8")
-    shown = _make("-f", "Makefile", "-f", str(probe), "show")
+    probe.write_text(
+        f"probe-{recipe}:\n\t+@echo PROBE $${SECONDS}/$${FOLDER}\n{recipe}: probe-{recipe}\n",
+        encoding="utf-8",
+    )
+    shown = _make("-n", "-f", "Makefile", "-f", str(probe), recipe)
     assert shown.returncode == 0, shown.stderr
-    seconds, folder = shown.stdout.split()
-    assert int(seconds) > 0
+    (line,) = [line for line in shown.stdout.splitlines() if line.startswith("PROBE ")]
+    return line.removeprefix("PROBE ")
+
+
+@needs_make
+@pytest.mark.parametrize("recipe", UNIT_RECIPES)
+def test_every_recipe_inherits_the_watchdog_variables(recipe: str, tmp_path: Path) -> None:
+    """A unit recipe sees the variables the way pytest does: through its environment."""
+    seconds, folder = _seen_by(recipe, tmp_path).split("/", 1)
+    assert seconds == "90"
     assert folder
+
+
+@needs_make
+@pytest.mark.parametrize("recipe", LONG_RECIPES)
+def test_the_long_recipes_do_not_get_the_watchdog(recipe: str, tmp_path: Path) -> None:
+    assert _seen_by(recipe, tmp_path) == "/"
 
 
 @needs_make
