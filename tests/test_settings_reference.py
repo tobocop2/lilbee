@@ -154,8 +154,8 @@ _SAMPLE_OVERRIDES = {
 # Settings for which `lilbee settings set` alone accepts one text only, so no sample can differ
 # from the value they hold. The reason is the refusal the CLI prints for any other text.
 _VALUE_BEFORE_THE_SET: dict[str, object] = {
-    # Every lilbee command starts by turning this off, so a sample of false would never differ.
-    "worker_pool_eager_start": False,
+    # The test fixtures turn this off, but a command starts from the setting's default of true.
+    "worker_pool_eager_start": True,
 }
 _ONE_LEGAL_VALUE: dict[str, str] = {
     "crawl_password": "",  # a password needs a username, and one set call writes one setting
