@@ -1984,7 +1984,9 @@ class LlamaServerClient:
     def unload_upstream(self) -> None:
         """Stop this model's upstream through llama-swap, so it is no longer listed as loaded."""
         try:
-            resp = self._http.post(f"{UNLOAD_PATH}/{self._model}", timeout=_UPSTREAM_CHECK_TIMEOUT_S)
+            resp = self._http.post(
+                f"{UNLOAD_PATH}/{self._model}", timeout=_UPSTREAM_CHECK_TIMEOUT_S
+            )
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             log.warning("Could not stop the upstream of %s: %s", self._model, exc)

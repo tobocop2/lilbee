@@ -261,9 +261,7 @@ def test_e2_an_unreadable_system_info_keeps_the_engine_failure() -> None:
         {
             "/v1/chat/completions": httpx.Response(NOT_FOUND, content=refused),
             # An error status with a body that would refuse: the status alone decides.
-            SYSTEM_INFO: httpx.Response(
-                500, content=_reply("system-info-no-npu-v2026.44.1.json")
-            ),
+            SYSTEM_INFO: httpx.Response(500, content=_reply("system-info-no-npu-v2026.44.1.json")),
         },
     )
     with pytest.raises(ProviderError) as caught:
