@@ -554,7 +554,8 @@ class TestRunWorkersRefusal:
                     )
                 )
             else:
-                stop.wait(_CANCEL_BOUND_S)
+                # A worker busy in its sync leaves on the TERM, not on the stop event.
+                fake_context.processes[spec.shard.index].wait_terminated()
 
         monkeypatch.setattr(fanout, "run_shard", fake_shard)
         with pytest.raises(EmbedWarmError) as raised:
