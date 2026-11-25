@@ -144,7 +144,7 @@ def test_d1_a_reply_that_lists_only_another_model_fails_the_chat_warm() -> None:
         LEMONADE.request_profile,
         {"/v1/chat/completions": CHAT_DONE, HEALTH: _reply("health-cpu-v2026.44.1.json")},
     )
-    with pytest.raises(ProviderError, match="does not list user.lilbee-chat as loaded"):
+    with pytest.raises(ProviderError, match=r"does not list user\.lilbee-chat as loaded"):
         provider_mod._warm_role(WorkerRole.CHAT, client)
 
 
