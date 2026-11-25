@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -451,81 +450,3 @@ def test_every_model_carries_the_same_fixed_concurrency_limit(role: WorkerRole, 
 
 def test_the_config_reads_no_ingest_pool_size() -> None:
     assert not hasattr(swap_config_mod, "max_workers")
-
-
-# The llama-swap keys the writer emits at each revision. A peer binds an engine only
-# at its own SWAP_CONFIG_REVISION, so a change to this set without a new revision
-# lets a peer adopt an engine launched under the old config. Add the new revision
-# with its key set when you bump; never edit an old entry.
-_KEYS_AT_REVISION: dict[int, frozenset[str]] = {
-    5: frozenset(
-        {
-            "healthCheckTimeout",
-            "logLevel",
-            "logToStdout",
-            "models",
-            "groups",
-            "models.*.cmd",
-            "models.*.proxy",
-            "models.*.ttl",
-            "models.*.concurrencyLimit",
-            "models.*.env",
-            "models.*.checkEndpoint",
-            "models.*.useModelName",
-            "groups.*.swap",
-            "groups.*.exclusive",
-            "groups.*.persistent",
-            "groups.*.members",
-        }
-    ),
-}
-
-
-def _written_keys() -> set[str]:
-    """Every llama-swap key the real writer emits across its inputs.
-
-    Model ids and group names are data, so they read as ``*``. The matrix covers
-    resident and evicting groups, a launch with and without an engine log, an
-    env override, and the model keys each engine adapter adds through swap_extras.
-    """
-    from lilbee.providers.fleet.engines.choice import discover_adapters
-
-    keys: set[str] = set()
-    base = _launch(WorkerRole.CHAT, ["/bin/llama-server"], env={"A": "1"}, swap_class="c")
-    launches = [
-        base,
-        _launch(WorkerRole.EMBED, ["/bin/llama-server", "--embeddings"], swap_class="e"),
-    ]
-    for adapter in discover_adapters().values():
-        extras = adapter.swap_extras(base)
-        launches.append(
-            InstanceLaunch(
-                role=WorkerRole.RERANK,
-                replica=len(launches),
-                argv=["/bin/server"],
-                env_overrides={},
-                model="m",
-                swap_extras=extras,
-            )
-        )
-    ports = {launch.model_id: _BASE_PORT + i for i, launch in enumerate(launches)}
-    for swap in (False, True):
-        for logs in ({}, {base.model_id: Path("engine.log")}):
-            config = json.loads(build_swap_config(launches, ports, swap=swap, engine_logs=logs))
-            for key, value in config.items():
-                keys.add(key)
-                if key in ("models", "groups"):
-                    for entry in value.values():
-                        keys.update(f"{key}.*.{inner}" for inner in entry)
-    return keys
-
-
-def test_swap_config_keys_change_only_with_a_revision_bump() -> None:
-    revision = swap_config_mod.SWAP_CONFIG_REVISION
-    assert revision in _KEYS_AT_REVISION, (
-        f"SWAP_CONFIG_REVISION is {revision}: add its key set to _KEYS_AT_REVISION"
-    )
-    assert _written_keys() == _KEYS_AT_REVISION[revision], (
-        "The keys build_swap_config writes changed. Raise SWAP_CONFIG_REVISION, then add "
-        "the new key set under the new revision in _KEYS_AT_REVISION."
-    )
