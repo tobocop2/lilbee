@@ -632,6 +632,9 @@ def test_plan_write_refuses_a_name_or_stem_held_without_parsing_the_values(
     tmp_path, monkeypatch, stem, text, name
 ):
     _write(tmp_path, stem, text)
+    # The built-in names are read once and cached. Warm that cache first, so the patched
+    # reader below only sees the folder under test, whatever test ran before this one.
+    profile_files.builtin_keys()
 
     def parsed(*_args):
         raise AssertionError("the clash check validated a file")
