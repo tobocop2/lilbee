@@ -26,6 +26,7 @@ from lilbee.mcp_server import (
     model_show,
 )
 from lilbee.modelhub.model_manager import ModelNotFoundError
+from lilbee.server.route_names import name_tools
 
 
 class TestMcpList:
@@ -139,11 +140,13 @@ class TestMcpPull:
 
         with patch("lilbee.app.models.pull_model_data", side_effect=fake_pull):
             result = await model_pull("org/embedder", source="native", ctx=None)
-        assert result == {
-            "error": "No GGUF model weights found in org/embedder. It holds safetensors weights: "
+        refusal = (
+            "No GGUF model weights found in org/embedder. It holds safetensors weights: "
             "pull them with 'lilbee model pull org/embedder#safetensors' "
             "(or POST /api/models/pull)."
-        }
+        )
+        assert result == {"error": name_tools(refusal)}
+        assert "the model_pull tool" in result["error"]
 
     @pytest.mark.asyncio
     async def test_streams_progress_and_returns_final_dict(self):
