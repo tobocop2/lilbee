@@ -430,6 +430,7 @@ async def _all_work_ended(app: LilbeeAppHost, pilot: Pilot) -> bool:
     )
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 @pytest.mark.parametrize("start", _WORK.values(), ids=_WORK.keys())
 async def test_a_rebuild_asked_during_running_work_runs_once_when_the_work_ends(
     start: Callable[[ChatScreen], None],
@@ -462,6 +463,7 @@ async def test_a_rebuild_asked_during_running_work_runs_once_when_the_work_ends(
             patch.stop()
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 async def test_yes_during_a_running_sync_starts_the_rebuild_when_the_sync_ends(
     services: mock.MagicMock,
 ) -> None:
@@ -494,6 +496,7 @@ async def test_yes_during_a_running_sync_starts_the_rebuild_when_the_sync_ends(
             patch.stop()
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 async def test_a_plain_sync_during_running_work_is_refused_and_owes_nothing() -> None:
     work = _BlockedWork()
     patches = work.patches()
@@ -518,6 +521,7 @@ async def test_a_plain_sync_during_running_work_is_refused_and_owes_nothing() ->
             patch.stop()
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 async def test_a_rebuild_asked_while_a_cancelled_sync_unwinds_waits_for_its_worker() -> None:
     """A cancelled row has left the queue, but its worker still writes until it ends."""
     work = _BlockedWork()
@@ -745,6 +749,7 @@ class _ChatRun:
         await self.pilot.pause()
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 async def test_an_owed_rebuild_never_queues_behind_the_ending_worker() -> None:
     """At the end of a sync's worker, no rebuild row exists for the user to cancel and strand."""
     async with _ChatRun() as run:
@@ -880,6 +885,7 @@ _ENDS: dict[str, tuple[Callable[..., Awaitable[str]], Any, int]] = {
 }
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 @pytest.mark.parametrize(("end", "arg", "ends"), _ENDS.values(), ids=_ENDS.keys())
 async def test_the_work_end_hook_runs_once_per_end(
     end: Callable[..., Awaitable[str]], arg: Any, ends: int
@@ -914,6 +920,7 @@ async def test_a_raising_work_end_listener_is_logged_and_the_next_one_still_runs
     assert len(raised) == 2
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 async def test_a_cancel_whose_row_was_cleared_still_stops_the_worker() -> None:
     """The Task Center's C between a cancel and the worker's next checkpoint keeps the cancel."""
     async with _ChatRun() as run:
@@ -939,6 +946,7 @@ async def test_a_cancel_whose_row_was_cleared_still_stops_the_worker() -> None:
         assert steps == []
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 async def test_a_worker_whose_row_was_cleared_counts_as_live_for_its_own_type_only() -> None:
     async with _ChatRun() as run:
         controller = run.app.task_bar

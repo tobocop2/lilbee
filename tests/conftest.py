@@ -8,6 +8,7 @@ import signal
 import sys
 import tempfile
 import threading
+import time
 import warnings
 from collections.abc import Callable, Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -916,6 +917,35 @@ def _no_leaked_task_workers():
             "target (often a model download) must be mocked or joined before "
             "the test returns, or it will starve later TUI tests on this worker."
         )
+
+
+# Longer than the leak check's 2 s join, so a worker still in its final call fails the check.
+_FINAL_CALL_DELAY_S = 3.0
+
+
+@pytest.fixture
+def slow_worker_final_call() -> Iterator[list[str]]:
+    """Make each task-bar worker sleep 3 s before its last call into the app.
+
+    The worker pops itself from the worker map, then reports its end through
+    ``call_from_thread``. This delay widens that window, so a test that leaves the
+    app when the map is empty, or the work looks over, fails at once instead of
+    only on a loaded host. The fixture fails the test if no worker reached the delay.
+    """
+    from lilbee.cli.tui.widgets import task_bar_controller
+
+    real = task_bar_controller.call_from_thread
+    delayed: list[str] = []
+
+    def slow(node, fn, *args, **kwargs):
+        if getattr(fn, "__name__", "") == "_work_ended":
+            delayed.append(args[0])
+            time.sleep(_FINAL_CALL_DELAY_S)
+        return real(node, fn, *args, **kwargs)
+
+    with mock.patch.object(task_bar_controller, "call_from_thread", slow):
+        yield delayed
+    assert delayed, "no task-bar worker reached its final call, so the delay proved nothing"
 
 
 @pytest.fixture(scope="session")
