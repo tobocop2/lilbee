@@ -273,8 +273,8 @@ class TestCpuRoleArgvFromRealAdapter:
     @pytest.mark.parametrize(
         ("backend", "target", "flags"),
         [
-            ("metal", RoleTarget.CPU, ["--cpu"]),
-            ("metal", RoleTarget.GPU, ["--paged-attn", "off"]),
+            ("cuda-sm89", RoleTarget.CPU, ["--cpu"]),
+            ("cuda-sm89", RoleTarget.GPU, ["--paged-attn", "off"]),
             ("cpu", RoleTarget.CPU, ["--cpu"]),
             ("cpu", RoleTarget.GPU, ["--cpu"]),
         ],
@@ -314,7 +314,7 @@ class TestCpuRoleArgvFromRealAdapter:
     def test_a_request_with_no_target_runs_on_the_gpu_flags(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        _build(monkeypatch, MistralAdapter, "metal")
+        _build(monkeypatch, MistralAdapter, "cuda-sm89")
         request = LaunchRequest(
             binary=tmp_path / "tool",
             model_path=tmp_path / "model",
@@ -347,7 +347,7 @@ class TestDeviceTargets:
     @pytest.mark.parametrize(
         ("adapter", "engine", "backend", "offered"),
         [
-            (MistralAdapter, MISTRAL, "metal", {RoleTarget.CPU, RoleTarget.GPU}),
+            (MistralAdapter, MISTRAL, "cuda-sm89", {RoleTarget.CPU, RoleTarget.GPU}),
             (MistralAdapter, MISTRAL, "cpu", {RoleTarget.CPU}),
             (MistralAdapter, MISTRAL, None, {RoleTarget.CPU}),
             (TeiAdapter, TEI, "cuda", {RoleTarget.CPU, RoleTarget.GPU}),

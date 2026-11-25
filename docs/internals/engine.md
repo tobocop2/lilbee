@@ -219,15 +219,31 @@ Header math (`model_cache.compute_dynamic_ctx`) is the fallback
   hard-freezes the machine, so refusing is the safe outcome; chat slot count
   (`--parallel`) steps down the same way before refusing.
 
-- **A role that mistral.rs serves**: the launch never splits a model over several
-  cards. A host with NVIDIA cards runs the CUDA pack that its weakest card runs (CUDA
-  12.8 driver or newer), and a Metal host has one device. A launch over two or more cards is
-  refused with a message that names the model and the llama.cpp engine as the fix.
-  The launch sets no card environment variable. The estimate is for one device: for a
-  model folder it is the weights, the cache at the launch context and the runtime
-  allowance, and for a GGUF file it is the weights only. Every chat or vision launch
-  also passes `--max-model-len` with the context of the launch: the `num_ctx` pin,
-  else `chat_n_ctx_target` within the trained window and `num_ctx_max`.
+- **A role that mistral.rs serves**: a host with NVIDIA cards runs the CUDA pack that
+  its weakest card runs (CUDA 12.8 driver or newer). A Metal or CPU build never splits
+  a model over several cards: such a launch is refused with a message that names the
+  model and the llama.cpp engine as the fix.
+- **A role that a tensor-parallel engine splits over several cards**: the launch runs as equal tensor-parallel
+  shards and carries no layer flag. Placement offers such an engine only equal
+  shares, so on cards of different sizes the smallest card must hold its equal share
+  or the role is refused. The card order is the order of
+  `CUDA_VISIBLE_DEVICES`. A launch that is not a split turns the card collectives off: one
+  card, no card pinned, or the CPU target. A split sets `NCCL_P2P_LEVEL=NVL`, so
+  peer-to-peer runs only over NVLink and a PCIe pair does not stall at start. To
+  choose otherwise, set `NCCL_P2P_LEVEL` or `NCCL_P2P_DISABLE` in the environment;
+  the launch then adds neither. The engine drops a layer map when
+  collectives are on, and the map it keeps with collectives off answered wrongly on
+  two cards. So the launch refuses an uneven ratio (every entry must be the same
+  number) and a model whose attention heads do not divide over the card count (the
+  GGUF `head_count` and `head_count_kv`, or `num_attention_heads` and
+  `num_key_value_heads` in `config.json`). The message names the model and the
+  llama.cpp engine as the fix, as it does for a Metal or CPU build. Placement charges
+  each card its layer share of the estimate. For a model folder the estimate is the
+  weights, the cache at the launch context and the runtime allowance. For a GGUF file
+  it is the weights only. Every chat or vision launch, split or not, also passes
+  `--max-model-len` with the context of the launch: the `num_ctx` pin, else
+  `chat_n_ctx_target` within the trained window and `num_ctx_max`. A split passes the
+  largest context that fits each card, never more.
 
 - **Reload and the plan snapshot** (`planning.capture_plan_probe`,
   `provider._reload_pass`): each swap group runs behind its own llama-swap process

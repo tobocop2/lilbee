@@ -57,7 +57,7 @@ def folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         type(MISTRAL), "_device_flags", lambda self, target: ["--paged-attn", "off"]
     )
     monkeypatch.setattr(
-        type(MISTRAL), "pick_build", lambda self, host: SimpleNamespace(backend="metal")
+        type(MISTRAL), "pick_build", lambda self, host: SimpleNamespace(backend="cuda-sm89")
     )
     monkeypatch.setattr(cfg, "chat_n_ctx_target", _TARGET)
     monkeypatch.setattr(cfg, "num_ctx", None)
@@ -85,8 +85,17 @@ def _verdict_ctx(monkeypatch: pytest.MonkeyPatch, engine) -> int:
     return chat_pull_fit("org/model", engine).ctx
 
 
-def test_a_mistral_launch_below_the_floor_passes_the_target_as_its_window(folder: Path) -> None:
-    launch = _chat_launch(MISTRAL, 1)
+@pytest.mark.parametrize("cards", [1, 2])
+def test_a_mistral_launch_below_the_floor_passes_the_target_as_its_window(
+    folder: Path, cards: int
+) -> None:
+    devices = {i: FleetDevice("CUDA", i, f"gpu{i}", 24 * _GB, 23 * _GB) for i in range(cards)}
+    plan = InstancePlan(
+        role=WorkerRole.CHAT,
+        devices=tuple(devices),
+        tensor_split=(1,) * cards if cards > 1 else (),
+    )
+    launch = planning._launch_for(plan, "ref", devices, engine=MISTRAL)
     assert _flag(list(launch.argv), "--max-model-len") == _TARGET
 
 
