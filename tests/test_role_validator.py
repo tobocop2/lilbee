@@ -107,6 +107,35 @@ def recovered_vlm() -> str:
     return ref
 
 
+class TestRecoveredModelLabelByName:
+    def test_a_recovered_vision_named_model_with_a_projector_is_vision(self) -> None:
+        from lilbee.catalog.refs import format_native_gguf_ref
+        from lilbee.catalog.types import ModelTask
+        from lilbee.core.config import cfg
+        from lilbee.modelhub.registry import ModelRegistry
+
+        repo, filename = "ggml-org/SmolVLM-256M-Instruct-GGUF", "SmolVLM-256M-Instruct-Q8_0.gguf"
+        cfg.models_dir.mkdir(parents=True, exist_ok=True)
+        _seed_cache_file(repo, filename, b"GGUF\x00\x00")
+        _seed_cache_file(repo, "mmproj-SmolVLM-256M-Instruct-f16.gguf", b"GGUF\x01")
+        ref = format_native_gguf_ref(repo, filename)
+        registry = ModelRegistry(cfg.models_dir)
+        registry.resolve(ref)  # recovery writes the manifest
+        manifest = registry.get_manifest(ref)
+        assert manifest is not None
+        assert manifest.task == ModelTask.VISION
+        assert validate_model_task_assignment("vision_model", ref, allow_bypass=False) == ref
+
+
+class TestUnknownTaskRole:
+    def test_assigning_a_model_with_an_unknown_task_names_the_model(self) -> None:
+        ref = install_fake_model("other/Plain-Chat-GGUF", "plain-Q4_K_M.gguf", "bogus")
+        with pytest.raises(ValueError, match="unknown task 'bogus'") as caught:
+            validate_model_task_assignment("chat_model", ref, allow_bypass=False)
+        assert ref in str(caught.value)
+        assert not isinstance(caught.value, TaskMismatchError)
+
+
 class TestRecoveredModelWithProjector:
     def test_recovery_keeps_the_chat_label(self, recovered_vlm: str) -> None:
         from lilbee.core.config import cfg
