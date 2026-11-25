@@ -168,8 +168,9 @@ class RequestProfile:
     rerank_model: str | None = None
     """The model name the rerank request body carries, or None for a route that takes none."""
     device_check: UpstreamCheck | None = None
-    """Read once after a warm loads the model; an error fails the warm, because the engine
-    does not run the model on the device that the role was placed on. None skips the read."""
+    """Read after a warm loads the model. A refusal fails the warm and takes the replica out
+    of the role, because the engine does not run the model on the device that the role was
+    placed on. None skips the read."""
     load_failure_check: UpstreamCheck | None = None
     """Read once after a warm fails; an error replaces the engine's own failure with a reason
     the user can act on. None keeps the engine's failure."""

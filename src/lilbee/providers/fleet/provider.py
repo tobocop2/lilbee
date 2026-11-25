@@ -1372,8 +1372,9 @@ class FleetProvider:
         # installed (role -> ref). The warm finalizer reads it to fail a not-installed
         # chat with a named reason instead of clearing to a silent "not ready" retry.
         self._skipped_not_installed: dict[WorkerRole, str] = {}
-        # Launches the last plan refused for an unusable window (role -> reason);
-        # read by the warm finalizer and _require_clients.
+        # Launches the last plan refused for an unusable window, and roles whose every
+        # replica a warm found on the wrong device (role -> reason); read by the warm
+        # finalizer and _require_clients. The next plan replaces it.
         self._refused_roles: dict[WorkerRole, str] = {}
         # Why the last acquisition left this process without a fleet because the
         # private dir has a live user; shown before any generic no-server line.
