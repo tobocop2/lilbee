@@ -381,7 +381,7 @@ def test_a_cleanup_failure_never_hides_the_first_error(
     def refuse(path: Path) -> bool:
         raise PermissionError(13, "denied", str(path))
 
-    monkeypatch.setattr(engine_store, "_delete", refuse)
+    monkeypatch.setattr(engine_store, "delete_tree", refuse)
     with caplog.at_level(logging.WARNING), pytest.raises(ChecksumError):
         store.install_from_wheel(lock, wheel)
     assert any(r.levelno == logging.WARNING for r in caplog.records)
@@ -401,6 +401,27 @@ def test_the_retry_adds_the_write_bit_only_inside_the_tree(tmp_path: Path) -> No
     engine_store._retry_writable(str(top), os.rmdir, str(top / "gone"), None)
     assert outside == 0o555, oct(outside)
     assert stat.S_IMODE(os.lstat(top).st_mode) & stat.S_IWUSR
+
+
+@posix_only
+def test_the_retry_adds_the_write_bit_to_the_file_and_never_through_a_link(
+    tmp_path: Path,
+) -> None:
+    top = tmp_path / "trash"
+    top.mkdir()
+    held = top / "held.txt"
+    held.write_text("x", encoding="utf-8")
+    held.chmod(0o444)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("y", encoding="utf-8")
+    outside.chmod(0o444)
+    link = top / "link"
+    link.symlink_to(outside)
+    engine_store._retry_writable(str(top), os.unlink, str(held), None)
+    engine_store._retry_writable(str(top), os.unlink, str(link), None)
+    assert not held.exists()
+    assert not link.exists()
+    assert stat.S_IMODE(os.lstat(outside).st_mode) == 0o444
 
 
 # K ruling 3: an engine folder that is a link inside the root is damage.
