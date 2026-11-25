@@ -76,7 +76,7 @@ An engine that is not bundled needs a pack. These packs are published:
 |---|---|
 | `llama.cpp` | Linux x86_64 (CPU, CUDA, ROCm, Vulkan), Windows x86_64 (CPU, CUDA, Vulkan), macOS 14 on Apple Silicon (Metal) |
 | `ik_llama.cpp` | Linux x86_64 (CPU, CUDA) |
-| `mistral.rs` | Linux x86_64 (CPU, CUDA on Ampere to Blackwell cards), macOS on Apple Silicon (Metal) |
+| `mistral.rs` | Linux x86_64 (CPU), macOS on Apple Silicon (Metal) |
 | `tei` | Linux x86_64 (CPU, and CUDA for each card generation from compute capability 7.5), macOS 14 on Apple Silicon (Metal) |
 
 No pack of `mlx`, `openvino`, `lemonade` or `ovms` is published yet, so those engines
