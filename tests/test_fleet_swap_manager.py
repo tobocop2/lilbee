@@ -423,7 +423,10 @@ class TestStart:
 
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        monkeypatch.setattr(planning_mod, "engine_build_id", lambda: "wheel:0.6.91")
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.engine_binary_identity",
+            lambda binary: f"{binary}@digest",
+        )
         monkeypatch.setattr(planning_mod, "engine_backend", lambda engine: EngineBackend.VULKAN)
         monkeypatch.setattr(
             planning_mod,
@@ -440,9 +443,11 @@ class TestStart:
         launched = [r.message for r in caplog.records if r.message.startswith("Launched")]
         assert launched == [
             "Launched chat-0 serving chat-model on /bin/llama-server "
-            "(build wheel:0.6.91, backend vulkan, devices: Vulkan0: NVIDIA GeForce RTX 3090)",
+            "(engine llama.cpp, build /bin/llama-server@digest, backend vulkan, "
+            "devices: Vulkan0: NVIDIA GeForce RTX 3090)",
             "Launched embed-0 serving embed-model on /bin/llama-server "
-            "(build wheel:0.6.91, backend vulkan, devices: Vulkan0: NVIDIA GeForce RTX 3090)",
+            "(engine llama.cpp, build /bin/llama-server@digest, backend vulkan, "
+            "devices: Vulkan0: NVIDIA GeForce RTX 3090)",
         ]
 
     def test_redirects_llama_swap_stdio_to_a_log_file(
