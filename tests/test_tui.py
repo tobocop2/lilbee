@@ -23,6 +23,7 @@ from lilbee.core.config import cfg
 from lilbee.data.store import Store
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests._lilbee_app_test_host import ready_services as _ready_services
+from tests._signals import child_preexec
 
 
 @pytest.fixture(autouse=True)
@@ -176,8 +177,15 @@ def _run_in_a_terminal(argv: list[str], env: dict[str, str]) -> tuple[int, str]:
 
     reader = threading.Thread(target=read_terminal, daemon=True)
     reader.start()
+    # A worker that ignores SIGHUP would pass the ignore on, and the child would never end.
     child = subprocess.Popen(
-        argv, env=env, stdin=terminal, stdout=terminal, stderr=terminal, start_new_session=True
+        argv,
+        env=env,
+        stdin=terminal,
+        stdout=terminal,
+        stderr=terminal,
+        start_new_session=True,
+        preexec_fn=child_preexec(),
     )
     os.close(terminal)
     try:
