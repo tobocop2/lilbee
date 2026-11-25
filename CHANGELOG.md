@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+When an engine has a second build on disk that is not the build its pin names, `lilbee engine list`, the `/engine list` command and the Engines tab in Settings now mark that build as "differs from the pin". lilbee runs only the pin build, and Remove stays on the row of the other build. Each build in the `builds` field of `GET /api/engines` and the `engine_list` MCP tool has a new field, `differs_from_pin`.
+
 `lilbee placement show`, `lilbee placement preview` and `GET /api/placement` now show how much memory the planner charges for each role. The figure is for one instance of the role. It is card memory for a GPU role and system memory for a CPU role. The API field is `charge_bytes`, and it is `null` when the planner has no charge for the role.
 
 The `[engine]` extra is gone. `pip install lilbee[engine]` no longer installs an engine. Run `pip install --pre lilbee`, then run `lilbee engine install` to get the llama.cpp engine pack. If you skip the command, lilbee installs the pack the first time a model needs it.
