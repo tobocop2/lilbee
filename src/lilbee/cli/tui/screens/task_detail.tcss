@@ -1,0 +1,40 @@
+TaskDetailModal {
+    align: center middle;
+    background: black 50%;
+}
+
+#task-detail-root {
+    width: 80%;
+    height: 80%;
+    max-width: 100;
+    max-height: 30;
+    background: $surface;
+    border: $rail-heavy $warning;
+    padding: 1 2;
+}
+
+#task-detail-title {
+    text-style: bold;
+    color: $warning;
+}
+
+#task-detail-counts {
+    color: $text-muted;
+    padding: 0 0 1 0;
+}
+
+#task-detail-body {
+    height: 1fr;
+    min-height: 0;
+    padding: 0 0 1 0;
+}
+
+#task-detail-text {
+    background: $surface;
+    padding: 0;
+}
+
+#task-detail-hint {
+    color: $text-muted;
+    text-align: center;
+}

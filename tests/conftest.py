@@ -1253,6 +1253,7 @@ def _default_store_mock():
     store.get_sources.return_value = []
     store.web_titles.return_value = {}
     store.source_summary.return_value = SourceSummary(0, 0, {}, [])
+    store.partly_read_sources.return_value = ({}, 0)
     store.count_sources.return_value = 0
     store.get_page_texts.return_value = []
     store.add_chunks.side_effect = len

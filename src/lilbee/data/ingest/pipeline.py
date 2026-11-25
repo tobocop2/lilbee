@@ -23,7 +23,7 @@ from collections.abc import (
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from itertools import count
+from itertools import accumulate, count
 from pathlib import Path
 from typing import Any, ParamSpec, TypeVar, cast
 
@@ -97,6 +97,7 @@ from lilbee.data.store import (
     SOURCE_STAT_UNKNOWN,
     ChunkWrite,
     ConceptRecords,
+    FailedPage,
     HeldOut,
     HeldRecord,
     IndexMismatch,
@@ -119,10 +120,12 @@ from lilbee.data.types import (
     FileToProcess,
     MemberRecords,
     OcrReport,
+    PartialFile,
     ShardId,
     SkippedSource,
     SyncResult,
     _IngestResult,
+    failed_page_lines,
 )
 from lilbee.providers.base import ProviderError, ProviderErrorKind, WarmTimeoutError
 from lilbee.providers.fleet.gpu_stats import DeviceLike
@@ -148,6 +151,7 @@ from lilbee.runtime.progress import (
     ExtractEvent,
     FileDoneEvent,
     FileStartEvent,
+    FileStatus,
     OcrBackendUsed,
     OcrStartEvent,
     ProgressEvent,
@@ -325,10 +329,12 @@ async def produce_records(
     dataset rows land in ``page_texts_out`` and are written by the same flush.
     The returned metadata (extraction-provided when available, stem-derived title
     otherwise) stamps every record's ``title`` and updates the source row. The OCR
-    report is ``None`` for code and markdown, which never reach OCR.
+    report is ``None`` for code and markdown, which never reach OCR. The failed
+    pages are the ones whose OCR failed.
     """
     records: list[ChunkRecord]
     ocr: OcrReport | None = None
+    failed_pages: tuple[FailedPage, ...] = ()
     page_texts: list[PageTextRecord] = page_texts_out if page_texts_out is not None else []
     if content_type == CODE_CONTENT_TYPE:
         records = await to_ingest_thread(ingest_code_sync, path, source_name, on_progress)
@@ -338,7 +344,7 @@ async def produce_records(
             path, source_name, on_progress, page_texts_out=page_texts
         )
     else:
-        records, meta, ocr = await ingest_document(
+        records, meta, ocr, failed_pages = await ingest_document(
             path,
             source_name,
             content_type,
@@ -349,7 +355,7 @@ async def produce_records(
         )
 
     _stamp_title(records, meta)
-    return DocumentRecords(records, meta, ocr)
+    return DocumentRecords(records, meta, ocr, failed_pages)
 
 
 def _stamp_title(records: Iterable[ChunkRecord], meta: SourceMeta) -> None:
@@ -895,6 +901,8 @@ class _StreamedPlan:
     unchanged: int = 0
     # Files a held-out record held out of this run, in plan order (ordered set).
     held_out: dict[str, None] = field(default_factory=dict)
+    # Planned file → the sources it wrote with pages whose OCR failed.
+    partial: dict[str, list[PartialFile]] = field(default_factory=dict)
     planned: int = 0
     # Files this pass's slice holds, from the discovery walk. Fixed before the
     # first batch is planned, so it is what progress is measured against: the
@@ -1103,6 +1111,43 @@ def _held_hashes(store: Store) -> dict[str, str]:
         for path, record in store.held_records().items()
         if record.kind is not HeldOut.RETRY and (not record.inputs or record.inputs == inputs)
     }
+
+
+def _sources_to_plan(
+    existing: dict[str, SourceRecord], disk_files: Mapping[str, Path], *, reread_partial: bool
+) -> dict[str, SourceRecord]:
+    """The source rows to plan against; *reread_partial* makes partly read files plan as changed.
+
+    An archive member's row names its archive as a path prefix, so the archive
+    is read again when any member was partly read.
+    """
+    if not reread_partial:
+        return existing
+    reread = {
+        prefix
+        for row in existing.values()
+        if row.get("ocr_page_failures")
+        for prefix in accumulate(row["filename"].split("/"), "{}/{}".format)
+    } & disk_files.keys()
+    return {name: _as_changed(row) if name in reread else row for name, row in existing.items()}
+
+
+def _as_changed(row: SourceRecord) -> SourceRecord:
+    """*row* with no stored hash or stat, so the plan processes its file as an update."""
+    changed: SourceRecord = {**row, "file_hash": "", "size_bytes": SOURCE_STAT_UNKNOWN}
+    return changed
+
+
+def _written_partial(
+    partial: dict[str, list[PartialFile]], added: Collection[str], updated: Collection[str]
+) -> list[PartialFile]:
+    """The partly read sources whose planned file reached the index."""
+    return [
+        source
+        for name, sources in partial.items()
+        if name in added or name in updated
+        for source in sources
+    ]
 
 
 async def _corpus_root(store: Store, shard: ShardId | None, *, retry_skipped: bool) -> Path:
@@ -1615,6 +1660,7 @@ async def _sync_across_workers(
             failed=len(result.failed),
             skipped=len(result.skipped),
             relocated=len(result.relocated),
+            partial=len(result.partial),
         ),
     )
     return result
@@ -1705,7 +1751,8 @@ async def sync(
     When *cancel* is set, planning and processing stop between files without
     data loss (completed work is flushed) and CancelledError is raised.
     When *retry_skipped* is set, the records of failed files are released so this
-    sync attempts those files again; *force_rebuild* clears removals too.
+    sync attempts those files again, and partly read files are read again;
+    *force_rebuild* clears removals too.
     When *prune_ignored* is set, sources a ``.lilbeeignore`` now excludes are
     dropped from the index. Off by default: the patterns govern what sync takes
     in, and removing what a past sync already indexed is the caller's decision.
@@ -1762,7 +1809,9 @@ async def _sync(
             specs,
             _store,
             prune_ignored=prune_ignored,
-            options=ShardOptions(parent_pid=os.getpid(), rebuild=force_rebuild),
+            options=ShardOptions(
+                parent_pid=os.getpid(), rebuild=force_rebuild, retry_skipped=retry_skipped
+            ),
             rebuild=in_place,
             quiet=quiet,
             on_progress=on_progress,
@@ -1802,7 +1851,14 @@ async def _sync(
     # add: repointed in place so its chunks and embeddings are reused, not rebuilt.
     state = _StreamedPlan(corpus_total=len(disk_files))
     added, updated, pending_hashes = state.added, state.updated, state.pending_hashes
-    plan_batches = _plan_batches(disk_files, existing_sources, held_hashes, moves, state, cancel)
+    plan_batches = _plan_batches(
+        disk_files,
+        _sources_to_plan(existing_sources, disk_files, reread_partial=retry_skipped),
+        held_hashes,
+        moves,
+        state,
+        cancel,
+    )
 
     # Ingest files (with optional progress bar). Only non-empty batches are yielded,
     # so the first one arriving is what proves there is work to do.
@@ -1829,6 +1885,7 @@ async def _sync(
                     cancel=cancel,
                     retry_next=retry_next,
                     reasons=reasons,
+                    partial=state.partial,
                 )
         if cancel is not None and cancel.is_set():
             # The stream stops feeding on cancel, so ingest can drain its
@@ -1887,6 +1944,8 @@ async def _sync(
         relocated=relocated,
         failed=list(failed),
         skipped=list(skipped),
+        partial=_written_partial(state.partial, added, updated),
+        reasons={name: reasons[name] for name in (*failed, *skipped) if name in reasons},
         skipped_ocr={name: ocr for name, ocr in skipped.items() if ocr is not None},
         held_out=held_out,
         truncated=cut_inputs_in_scope(),
@@ -1903,6 +1962,7 @@ async def _sync(
             failed=len(result.failed),
             skipped=len(result.skipped),
             relocated=len(result.relocated),
+            partial=len(result.partial),
         ),
     )
     return result
@@ -2001,6 +2061,11 @@ def _build_admission(
     return gate, permit_max * _TASK_WINDOW_MULTIPLIER, task
 
 
+def _done_status(has_failed_pages: bool) -> FileStatus:
+    """The FILE_DONE status of an indexed file: partial when OCR failed on some pages."""
+    return FileStatus.PARTIAL if has_failed_pages else FileStatus.OK
+
+
 def _failed_result(
     exc: Exception,
     entry: FileToProcess,
@@ -2022,7 +2087,9 @@ def _failed_result(
     # cancelled, and re-raising here would strand sibling tasks awaiting in
     # _collect_results.
     with contextlib.suppress(TaskCancelledError):
-        on_progress(EventType.FILE_DONE, FileDoneEvent(file=entry.name, status="error", chunks=0))
+        on_progress(
+            EventType.FILE_DONE, FileDoneEvent(file=entry.name, status=FileStatus.ERROR, chunks=0)
+        )
     pages_done[0] += 1  # cleared the gate (as a failure); still a throughput tick
     return _IngestResult(entry.name, entry.path, 0, error=exc)
 
@@ -2042,8 +2109,9 @@ async def _archive_result(
         row for m in members for row in (await build_entity_records(m.records, m.name) or [])
     ]
     chunk_total = sum(len(m.records) for m in members)
+    status = _done_status(any(m.failed_pages and m.records for m in members))
     on_progress(
-        EventType.FILE_DONE, FileDoneEvent(file=entry.name, status="ok", chunks=chunk_total)
+        EventType.FILE_DONE, FileDoneEvent(file=entry.name, status=status, chunks=chunk_total)
     )
     pages_done[0] += max(1, sum(len(m.page_texts) for m in members))
     found = [batch for batch in concept_batches if batch is not None]
@@ -2074,7 +2142,10 @@ def _over_limit_result(
     """A file over the per-file chunk limit, recorded as skipped and held out at its hash."""
     log.warning("Skipped %s: %s", entry.name, exc)
     with contextlib.suppress(TaskCancelledError):
-        on_progress(EventType.FILE_DONE, FileDoneEvent(file=entry.name, status="skipped", chunks=0))
+        on_progress(
+            EventType.FILE_DONE,
+            FileDoneEvent(file=entry.name, status=FileStatus.SKIPPED, chunks=0),
+        )
     pages_done[0] += 1
     return _IngestResult(
         entry.name,
@@ -2119,6 +2190,7 @@ async def ingest_stream(
     cancel: CancelSignal | None = None,
     retry_next: dict[str, str] | None = None,
     reasons: dict[str, str] | None = None,
+    partial: dict[str, list[PartialFile]] | None = None,
 ) -> None:
     """Ingest a stream of planned file batches, optionally showing a Rich progress bar.
 
@@ -2130,6 +2202,9 @@ async def ingest_stream(
     *plan* is the bookkeeping the batches were planned into; it carries the corpus
     the run is measured against. Without it progress is reported with no total,
     since a bare stream of batches does not say what corpus it came from.
+
+    When *partial* is given, each planned file with pages whose OCR failed is
+    recorded there with the sources it wrote and their failed pages.
     """
     # Honor LILBEE_INGEST_TRACE once per batch: it raises the trace loggers above
     # the default WARNING so per-file extraction lines actually surface.
@@ -2178,7 +2253,7 @@ async def ingest_stream(
                 if entry.content_type in archive_content_types():
                     return await _archive_result(entry, on_progress, pages_done, cancel)
                 page_texts: list[PageTextRecord] = []
-                records, meta, ocr = await produce_records(
+                records, meta, ocr, failed_pages = await produce_records(
                     entry.path,
                     name,
                     entry.content_type,
@@ -2191,7 +2266,11 @@ async def ingest_stream(
                 entity_rows = await build_entity_records(records, name)
                 on_progress(
                     EventType.FILE_DONE,
-                    FileDoneEvent(file=name, status="ok", chunks=len(records)),
+                    FileDoneEvent(
+                        file=name,
+                        status=_done_status(bool(failed_pages and records)),
+                        chunks=len(records),
+                    ),
                 )
                 pages_done[0] += max(1, len(page_texts))  # OCR pages cleared: the throughput signal
                 return _IngestResult(
@@ -2208,6 +2287,7 @@ async def ingest_stream(
                     entity_rows=entity_rows,
                     meta=meta,
                     ocr=ocr,
+                    failed_pages=list(failed_pages),
                 )
             except ChunkLimitError as exc:
                 return _over_limit_result(
@@ -2243,6 +2323,7 @@ async def ingest_stream(
                     retry_next=retry_next,
                     reasons=reasons,
                     cancel=cancel,
+                    partial=partial,
                 )
     finally:
         # Stop the adaptive controller (if any) before returning: its background
@@ -2386,6 +2467,7 @@ async def _collect_results(
     retry_next: dict[str, str] | None = None,
     reasons: dict[str, str] | None = None,
     cancel: CancelSignal | None = None,
+    partial: dict[str, list[PartialFile]] | None = None,
 ) -> None:
     """Run *feed* through a bounded task window, batching writes and progress.
 
@@ -2425,7 +2507,7 @@ async def _collect_results(
                     saw_cancel = True
                     continue
                 completed_count += 1
-                status = _classify_result(result, added, updated, failed, skipped, reasons)
+                status = _classify_result(result, added, updated, failed, skipped, reasons, partial)
                 if (
                     retry_next is not None
                     and isinstance(result.error, ProviderError)
@@ -2433,7 +2515,7 @@ async def _collect_results(
                 ):
                     # The model engine failed, not the file: a later sync tries it again.
                     retry_next[result.name] = error_reason(result.error)
-                if status is BatchStatus.INGESTED:
+                if status in _WRITTEN_STATUSES:
                     buffered_chunks = await _buffer_and_maybe_flush(
                         result,
                         buffer,
@@ -2578,6 +2660,48 @@ def _report_file_progress(
         )
 
 
+# Statuses whose result is buffered for the batched store write.
+_WRITTEN_STATUSES = frozenset({BatchStatus.INGESTED, BatchStatus.PARTIAL})
+
+
+def _partial_files(result: _IngestResult) -> list[PartialFile]:
+    """The sources an indexed *result* wrote with chunks and with failed pages.
+
+    The file itself, or the archive members that have records. A member with
+    failed pages and no records is not partly read: nothing of it is searchable.
+    """
+    own = [PartialFile(result.name, result.failed_pages)] if result.failed_pages else []
+    members = [
+        PartialFile(m.name, list(m.failed_pages))
+        for m in result.members or []
+        if m.failed_pages and m.records
+    ]
+    return own + members
+
+
+def _classify_indexed(
+    result: _IngestResult, partial: dict[str, list[PartialFile]] | None
+) -> BatchStatus:
+    """``PARTIAL`` when OCR failed on pages of an indexed file, else ``INGESTED``."""
+    partial_files = _partial_files(result)
+    if not partial_files:
+        return BatchStatus.INGESTED
+    if partial is not None:
+        partial[result.name] = partial_files
+    return BatchStatus.PARTIAL
+
+
+def _zero_chunk_reason(result: _IngestResult) -> str:
+    """Why a file with no chunks is skipped, followed by its failed pages when it has any."""
+    if result.page_texts:
+        reason = "stored page text only (0 searchable chunks)"
+    elif result.ocr is not None and result.ocr.backend is OcrBackendUsed.NONE:
+        reason = "no text extracted, OCR is off (0 chunks)"
+    else:
+        reason = "no text extracted (0 chunks)"
+    return "; ".join([reason, *failed_page_lines(result.failed_pages)])
+
+
 def _classify_result(
     result: _IngestResult,
     added: dict[str, None],
@@ -2585,13 +2709,16 @@ def _classify_result(
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
     reasons: dict[str, str] | None = None,
+    partial: dict[str, list[PartialFile]] | None = None,
 ) -> BatchStatus:
     """Record a completed file's outcome and return its batch status.
 
     Failures, refusals and zero-chunk files are tracked here; a successful file is
-    reported as ``INGESTED`` and its chunks are persisted by the batched flush, so
-    it stays in ``added`` / ``updated`` until then. When *reasons* is given, the
-    human-readable cause is recorded there (filename → reason) for reporting.
+    reported as ``INGESTED``, or ``PARTIAL`` when OCR failed on some of its pages,
+    and its chunks are persisted by the batched flush, so it stays in ``added`` /
+    ``updated`` until then. When *reasons* is given, the human-readable cause is
+    recorded there (filename → reason) for reporting. When *partial* is given, a
+    partly read file's sources and failed pages are recorded there under its name.
     """
     if result.skip_reason is not None:
         added.pop(result.name, None)
@@ -2619,14 +2746,9 @@ def _classify_result(
         updated.pop(result.name, None)
         skipped[result.name] = result.ocr
         if reasons is not None:
-            if result.page_texts:
-                reasons[result.name] = "stored page text only (0 searchable chunks)"
-            elif result.ocr is not None and result.ocr.backend is OcrBackendUsed.NONE:
-                reasons[result.name] = "no text extracted, OCR is off (0 chunks)"
-            else:
-                reasons[result.name] = "no text extracted (0 chunks)"
+            reasons[result.name] = _zero_chunk_reason(result)
         return BatchStatus.SKIPPED if not result.page_texts else BatchStatus.INGESTED
-    return BatchStatus.INGESTED
+    return _classify_indexed(result, partial)
 
 
 # Back off briefly before the single flush retry: the usual contender is a
@@ -2696,6 +2818,7 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
                 stat=r.stat,
                 page_texts=cast(list[dict], r.page_texts or []),
                 meta=r.meta,
+                ocr_page_failures=r.failed_pages if r.records else [],
             )
         )
         if r.members is None:
@@ -2737,6 +2860,7 @@ def _member_write(member: MemberRecords, digest: str, stat: SourceStat | None) -
         stat=stat,
         page_texts=cast(list[dict], member.page_texts),
         meta=member.meta,
+        ocr_page_failures=list(member.failed_pages) if member.records else [],
     )
 
 

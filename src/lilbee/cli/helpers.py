@@ -19,7 +19,13 @@ from lilbee.cli import theme
 from lilbee.core.config import cfg
 from lilbee.core.health_warnings import HealthWarning
 from lilbee.core.text import strip_control_characters
-from lilbee.data.types import rebuild_advice
+from lilbee.data.types import (
+    PARTLY_READ_FILE_COLUMN,
+    PARTLY_READ_PAGES_COLUMN,
+    PARTLY_READ_TITLE,
+    failed_page_lines,
+    rebuild_advice,
+)
 from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.lock import LibraryUnlockableError
@@ -178,6 +184,8 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
         )
         yield ""
 
+    yield from _render_partly_read(status)
+
     if not status.document_count:
         yield (
             "No documents indexed. Drop files into the documents directory and run 'lilbee sync'."
@@ -221,6 +229,25 @@ def print_source_listing() -> None:
         print(json.dumps(head) if cfg.json_mode else strip_control_characters(head["filename"]))
 
 
+def _render_partly_read(status: StatusResult) -> Generator[RenderableType, None, None]:
+    """Yield the table of indexed sources with pages whose OCR failed, when there are any."""
+    if not status.partly_read:
+        return
+    table = Table(title=PARTLY_READ_TITLE)
+    table.add_column(PARTLY_READ_FILE_COLUMN, style=theme.ACCENT)
+    table.add_column(PARTLY_READ_PAGES_COLUMN, style=theme.MUTED)
+    for source in status.partly_read:
+        table.add_row(
+            Text(strip_control_characters(source.name)),
+            Text("\n".join(failed_page_lines(source.pages))),
+        )
+    yield table
+    hidden = status.partial_total - len(status.partly_read)
+    more = f" ({hidden} more not shown)" if hidden > 0 else ""
+    yield styled((str(status.partial_total), theme.LABEL), PARTLY_READ_RETRY_HINT.format(more=more))
+    yield ""
+
+
 def render_status(con: PlainConsole) -> None:
     """Print status info (documents, paths, chunk counts)."""
     from lilbee.app.status import gather_status
@@ -242,6 +269,8 @@ NOW_INCLUDES = "{parent} now includes {children}"
 """Said of a new source that took in the registered sources inside it."""
 SEARCHING_FOR = "Searching for: {query}"
 """The stderr line ``ask`` prints when retrieval ran on a rewritten follow-up."""
+PARTLY_READ_RETRY_HINT = " partly read{more}; 'lilbee sync --retry-skipped' reads them again"
+"""Follows the count under the partly read table of ``status``."""
 
 
 def print_prefixed(con: PlainConsole, prefix: str, detail: object, *, style: str) -> None:

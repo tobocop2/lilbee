@@ -8,6 +8,7 @@ from rich.text import Text
 
 from lilbee.app.status import StatusConfig, StatusResult
 from lilbee.cli.helpers import render_status_result
+from lilbee.data.store import FailedPage
 from lilbee.data.types import SkippedSource
 from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
 
@@ -120,3 +121,114 @@ def test_a_held_out_filename_shows_without_a_control_character(name: str) -> Non
     cell = next(col._cells[0] for col in table.columns)
     assert TERMINAL_CONTROL_RE.search(cell.plain) is None
     assert cell.plain.strip()
+
+
+def _partly_read_status(partial_total: int = 1) -> StatusResult:
+    from lilbee.data.types import PartialFile
+
+    status = _status()
+    status.partly_read = [
+        PartialFile(
+            "scan[1].pdf",
+            [
+                FailedPage(page=number, error="[timeout]", recovered=number == 2)
+                for number in range(1, 8)
+            ],
+        )
+    ]
+    status.partial_total = partial_total
+    return status
+
+
+def test_partly_read_files_are_listed_with_one_line_for_each_failed_page() -> None:
+    tables, strings = _texts(_partly_read_status())
+    table = next(t for t in tables if t.title == "Partly read")
+    files, pages = (list(column.cells) for column in table.columns)
+    assert [cell.plain for cell in files] == ["scan[1].pdf"]
+    lines = pages[0].plain.splitlines()
+    assert lines[0] == "page 1: [timeout]"
+    assert lines[1] == "page 2: [timeout] (other text kept)"
+    assert lines[-1] == "and 2 more"
+    assert len(lines) == 6
+    assert any("1 partly read" in line and "--retry-skipped" in line for line in strings)
+
+
+def test_the_partly_read_line_counts_the_files_the_table_leaves_out() -> None:
+    _, strings = _texts(_partly_read_status(partial_total=4))
+    assert any("4 partly read (3 more not shown)" in line for line in strings)
+
+
+def test_no_partly_read_table_when_every_file_was_read_in_full() -> None:
+    tables, strings = _texts(_status())
+    assert "Partly read" not in [table.title for table in tables]
+    assert not any("partly read" in line for line in strings)
+
+
+def test_sync_result_text_counts_partly_read_files_and_caps_their_failed_pages() -> None:
+    from lilbee.data.types import PartialFile, SyncResult
+
+    result = SyncResult(
+        added=["scan.pdf"],
+        partial=[
+            PartialFile(
+                "scan.pdf",
+                [FailedPage(page=number, error="boom", recovered=False) for number in range(1, 8)],
+            )
+        ],
+    )
+    lines = str(result).splitlines()
+    assert "Partly read: 1" in lines
+    start = lines.index("  [yellow]scan.pdf[/yellow]: partly read")
+    assert lines[start + 1 : start + 7] == [
+        *(f"    page {number}: boom" for number in range(1, 6)),
+        "    and 2 more",
+    ]
+    assert "partial=1" in repr(result)
+    assert "scan.pdf: partly read" in result.partial_summary().plain
+
+
+def test_failed_page_lines_at_the_display_cap_adds_no_count_line() -> None:
+    from lilbee.data.types import FAILED_PAGES_SHOWN, failed_page_lines
+
+    pages = [
+        FailedPage(page=number, error="boom", recovered=False)
+        for number in range(1, FAILED_PAGES_SHOWN + 1)
+    ]
+    assert failed_page_lines(pages) == [
+        f"page {number}: boom" for number in range(1, FAILED_PAGES_SHOWN + 1)
+    ]
+
+
+def test_failed_page_line_marks_only_a_page_that_kept_other_text() -> None:
+    from lilbee.data.types import failed_page_line
+
+    lost = FailedPage(page=3, error="timed out", recovered=False)
+    kept = FailedPage(page=4, error="timed out", recovered=True)
+    assert failed_page_line(lost) == "page 3: timed out"
+    assert failed_page_line(kept) == "page 4: timed out (other text kept)"
+
+
+def test_gather_status_lists_the_partly_read_files_and_counts_them_all() -> None:
+    from unittest.mock import patch
+
+    from lilbee.app.services import set_services
+    from lilbee.app.status import STATUS_SKIPPED_LIMIT, gather_status
+    from tests.conftest import make_mock_services
+
+    page = FailedPage(page=2, error="timed out", recovered=False)
+    services = make_mock_services()
+    services.store.partly_read_sources.return_value = ({"b.pdf": [page]}, 3)
+    services.store.get_meta.return_value = None
+    set_services(services)
+    try:
+        with patch("lilbee.app.status.held_out_sources", return_value=([], 0)):
+            status = gather_status()
+    finally:
+        set_services(None)
+
+    services.store.partly_read_sources.assert_called_once_with(STATUS_SKIPPED_LIMIT)
+    assert status.partial_total == 3
+    assert [(source.name, source.pages) for source in status.partly_read] == [("b.pdf", [page])]
+    assert status.model_dump()["partly_read"] == [
+        {"name": "b.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+    ]

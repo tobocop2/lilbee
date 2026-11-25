@@ -1026,7 +1026,7 @@ class TestRunShardPins:
     """What a worker hands to its pin, its services, its sync and its parent."""
 
     @staticmethod
-    def _run(monkeypatch, fake_sync, *, stop=None, build=None, pins=None):
+    def _run(monkeypatch, fake_sync, *, stop=None, build=None, pins=None, retry_skipped=False):
         monkeypatch.setattr("lilbee.data.ingest.pipeline.sync", fake_sync)
         monkeypatch.setattr(fanout, "_pin_shard", (pins if pins is not None else []).append)
         if build is not None:
@@ -1035,7 +1035,7 @@ class TestRunShardPins:
         spec = _spec(1)
         fanout.run_shard(
             spec,
-            fanout.ShardOptions(parent_pid=os.getppid()),
+            fanout.ShardOptions(parent_pid=os.getppid(), retry_skipped=retry_skipped),
             messages,
             stop if stop is not None else threading.Event(),
         )
@@ -1077,6 +1077,16 @@ class TestRunShardPins:
         self._run(monkeypatch, fake_sync, stop=stop)
         assert seen["cancel"] is stop
 
+    def test_a_worker_is_told_to_retry_when_the_run_retries_skipped(self, monkeypatch):
+        seen = {}
+
+        async def fake_sync(**kwargs):
+            seen.update(kwargs)
+            return SyncResult()
+
+        self._run(monkeypatch, fake_sync, retry_skipped=True)
+        assert seen["retry_skipped"] is True
+
     def test_a_worker_reports_its_counters_under_its_own_index(self, monkeypatch):
         monkeypatch.setattr(fanout, "_REPORT_INTERVAL_S", 0.0)
 
@@ -1106,3 +1116,50 @@ class TestRunShardPins:
         verdict = sent[-1]
         assert isinstance(verdict, fanout.ShardDone)
         assert (verdict.kind, verdict.index) == ("done", 1)
+
+
+class TestPartlyReadFanOut:
+    def test_partly_read_files_and_reasons_from_every_worker_reach_the_one_result(self):
+        from lilbee.data.store import FailedPage
+        from lilbee.data.types import PartialFile
+
+        verdicts = [
+            fanout.ShardDone(
+                kind="done",
+                index=0,
+                result=SyncResult(
+                    added=["a.pdf"],
+                    partial=[
+                        PartialFile(
+                            "a.pdf", [FailedPage(page=3, error="timed out", recovered=False)]
+                        )
+                    ],
+                    failed=["x.pdf"],
+                    reasons={"x.pdf": "the file is encrypted"},
+                ),
+                error=None,
+            ),
+            fanout.ShardDone(
+                kind="done",
+                index=1,
+                result=SyncResult(
+                    updated=["b.pdf"],
+                    partial=[
+                        PartialFile(
+                            "b.pdf", [FailedPage(page=1, error="timed out", recovered=False)]
+                        )
+                    ],
+                    skipped=["y.pdf"],
+                    reasons={"y.pdf": "no text extracted (0 chunks)"},
+                ),
+                error=None,
+            ),
+        ]
+
+        result = fanout.aggregate_results(verdicts)
+
+        assert [partial.name for partial in result.partial] == ["a.pdf", "b.pdf"]
+        assert result.reasons == {
+            "x.pdf": "the file is encrypted",
+            "y.pdf": "no text extracted (0 chunks)",
+        }

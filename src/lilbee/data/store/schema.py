@@ -54,8 +54,21 @@ def _sources_schema() -> pa.Schema:
             pa.field("held_hash", pa.utf8()),
             pa.field("held_reason", pa.utf8()),
             pa.field("held_inputs", pa.utf8()),
+            _sources_failed_pages_field(),
         ]
     )
+
+
+def _sources_failed_pages_field() -> pa.Field:
+    """The ``_sources`` column of the pages whose OCR failed; NULL when none."""
+    failed_page = pa.struct(
+        [
+            pa.field("page", pa.int32()),
+            pa.field("error", pa.utf8()),
+            pa.field("recovered", pa.bool_()),
+        ]
+    )
+    return pa.field("ocr_page_failures", pa.list_(failed_page))
 
 
 def _page_texts_schema() -> pa.Schema:
