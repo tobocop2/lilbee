@@ -1031,6 +1031,45 @@ class TestACancelledAdd:
         assert _registry() == {"notes": str(notes.resolve())}
         assert _keys(library) == ["notes/loose.md", "notes/work/budget.md", "notes/work/plan.md"]
 
+    async def test_a_parent_named_like_its_source_gives_the_label_back(self, library, tmp_path):
+        outer = tmp_path / "src" / "work"
+        inner = outer / "work"
+        _write(inner / "README.md", "# Inner\n\nThe inner readme about the spring release.\n")
+        _write(outer / "README.md", "# Outer\n\nThe outer readme about the harbour schedule.\n")
+        await _add(inner)
+        before = _snapshot(library.store)
+
+        result = register_sources([outer])
+        assert result.absorbed_into == {"work": ["work"]}
+        _cancel_the_add([outer], result)
+
+        assert _snapshot(library.store) == before
+        assert _registry() == {"work": str(inner.resolve())}
+
+    async def test_a_label_another_root_took_meanwhile_is_not_overwritten(
+        self, library, notes, tmp_path
+    ):
+        await _add(notes / "work")
+        result = register_sources([notes])
+        elsewhere = _write(tmp_path / "src" / "else" / "e.md", "# E\n\nAnother page.\n").parent
+        _register_as({**{k: Path(v) for k, v in _registry().items()}, "work": elsewhere})
+
+        _cancel_the_add([notes], result)
+
+        assert _registry() == {"work": str(elsewhere.resolve())}
+
+    async def test_a_path_that_holds_another_path_of_the_call_passes_on_what_it_took(
+        self, library, notes
+    ):
+        await _add(notes / "work")
+        before = _snapshot(library.store)
+
+        result = register_sources([notes, notes.parent])
+        assert result.registered == ["src"] and result.absorbed_into == {"src": ["work"]}
+        _cancel_the_add([notes.parent], result)
+
+        assert _snapshot(library.store) == before
+
     async def test_the_cli_cancel_restores_the_source_the_parent_took_in(self, library, notes):
         import asyncio
         import threading
@@ -1113,7 +1152,7 @@ class TestEveryEntryPoint:
         assert "Registered 1 source(s); notes now includes work" in capsys.readouterr().out
         assert rollback_labels == [[]]
 
-    async def test_the_cli_command_hands_the_rollback_no_absorbing_parent(self, library, notes):
+    async def test_the_cli_command_hands_the_rollback_the_absorbing_parent(self, library, notes):
         import threading
 
         from lilbee.app.ingest import AddRollback
@@ -1145,9 +1184,10 @@ class TestEveryEntryPoint:
         assert payload["copied"] == ["notes"] and payload["absorbed"] == ["work"]
         assert payload["overlapping"] == []
         assert json.loads(json.dumps(payload)) == payload
-        assert rollback._roots == []
+        assert rollback._registration.registered == ["notes"]
+        assert rollback._registration.absorbed_roots == {"work": str((notes / "work").resolve())}
 
-    async def test_the_tui_names_the_source_and_its_rollback_spares_the_parent(
+    async def test_the_tui_names_the_source_and_its_rollback_restores_it(
         self, library, notes
     ):
         from lilbee.cli.tui import messages as msg
@@ -1171,7 +1211,7 @@ class TestEveryEntryPoint:
         assert "notes now includes the source work." in toasts
         assert msg.CMD_ADD_ABSORBED.format(parent="notes", children="work") in toasts
         assert msg.CMD_ADD_CONTAINING.format(names="notes") not in toasts
-        assert rollback.call_args.args[1] == []
+        assert rollback.call_args.args[1].absorbed_into == {"notes": ["work"]}
 
     async def test_a_failed_tui_sync_keeps_a_parent_that_absorbed(self, library, notes):
         from lilbee.cli.tui.screens.chat import ChatScreen
