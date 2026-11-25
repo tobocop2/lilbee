@@ -66,7 +66,13 @@ def test_list_shows_each_build_as_json(models_dir: Path) -> None:
     result = runner.invoke(app, ["--json", "engine", "list"])
     assert result.exit_code == 0
     assert json.loads(result.output)["builds"] == [
-        {"engine": "fx", "version": "1", "backend": "cpu", "not_run_on": []}
+        {
+            "engine": "fx",
+            "version": "1",
+            "backend": "cpu",
+            "not_run_on": [],
+            "differs_from_pin": False,
+        }
     ]
 
 

@@ -75,7 +75,13 @@ def listing() -> dict[str, object]:
         []
         if MODE == "no-build"
         else [
-            {"engine": engine, "version": PIN, "backend": "cpu", "not_run_on": []}
+            {
+                "engine": engine,
+                "version": PIN,
+                "backend": "cpu",
+                "not_run_on": [],
+                "differs_from_pin": False,
+            }
             for engine in installed()
         ]
     )

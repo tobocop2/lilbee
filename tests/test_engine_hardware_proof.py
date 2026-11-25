@@ -164,7 +164,13 @@ def test_l2_every_json_row_has_not_run_on(unproven: None, wheel: Path) -> None:
     listed = _cli_json("list")
     rows = listed["builds"]
     assert rows == [
-        {"engine": ENGINE.value, "version": VERSION, "backend": "cpu", "not_run_on": [DEVICE]}
+        {
+            "engine": ENGINE.value,
+            "version": VERSION,
+            "backend": "cpu",
+            "not_run_on": [DEVICE],
+            "differs_from_pin": False,
+        }
     ]
     assert listed["experimental"] == {ENGINE.value: [DEVICE]}
     with create_test_client(ROUTES, debug=False) as client:

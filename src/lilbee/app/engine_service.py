@@ -7,7 +7,7 @@ import logging
 import os
 import zipfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
@@ -80,6 +80,8 @@ STORE_REFUSALS = (
     StorePathError,
 )
 NO_BUILDS = "No engine builds are installed."
+DIFFERS_FROM_PIN_TEXT = "differs from the pin"
+"""The words for a build on disk that is not the build the pin names; every surface shows them."""
 FOLDER_LINE = (
     "Engines folder: {folder} (shared by every data directory; LILBEE_MODELS_DIR moves it)"
 )
@@ -275,11 +277,16 @@ def _check_embed_identity(candidate: Config, confirmed: bool) -> None:
 
 @dataclass(frozen=True)
 class BuildView:
-    """What a surface shows of one installed engine build."""
+    """What a surface shows of one installed engine build.
+
+    ``differs_from_pin`` is True for a build that is not the build the pin names for this
+    host: lilbee runs the pin build only, so this build stays on disk and runs nothing.
+    """
 
     engine: str
     version: str
     backend: str
+    differs_from_pin: bool = False
 
     @property
     def not_run_on(self) -> tuple[str, ...]:
@@ -293,8 +300,9 @@ class BuildView:
 
     @property
     def label(self) -> str:
-        """The line a person reads: the plain label, then the experimental clause."""
-        return f"{self.plain_label}{experimental_clause(self.not_run_on)}"
+        """The line a person reads: the plain label, the pin clause, then the experimental clause."""
+        pin = f", {DIFFERS_FROM_PIN_TEXT}" if self.differs_from_pin else ""
+        return f"{self.plain_label}{pin}{experimental_clause(self.not_run_on)}"
 
 
 def engines_folder(config: Config = cfg) -> Path:
@@ -302,11 +310,29 @@ def engines_folder(config: Config = cfg) -> Path:
     return engines_root(config.models_dir)
 
 
+def _pin_build(name: EngineName, adapter: EngineAdapter) -> tuple[str, str] | None:
+    """The (version, backend) of the build the pin names for this host; None when it names none."""
+    pin = adapter.pin_record()
+    if name is EngineName.LLAMA:
+        return pin["version"], _bundled_backend(name)
+    try:
+        lock = choice.pin_lock(pin)
+    except choice.PinError:
+        return None
+    return lock.version, lock.backend
+
+
 def builds(config: Config = cfg) -> list[BuildView]:
     """Every engine build installed beside the models that the host gate lets this host run."""
     store = EngineStore(engines_root(config.models_dir))
+    pins = {str(name): _pin_build(name, adapter) for name, adapter in choice.ADAPTERS.items()}
     return [
-        BuildView(b.engine, b.version, b.backend)
+        BuildView(
+            b.engine,
+            b.version,
+            b.backend,
+            differs_from_pin=b.engine in pins and pins[b.engine] != (b.version, b.backend),
+        )
         for b in store.installed()
         if choice.host_answer(b.engine, runnable.session_host).ok
     ]
@@ -344,6 +370,7 @@ class EngineListView:
                     "version": b.version,
                     "backend": b.backend,
                     "not_run_on": list(b.not_run_on),
+                    "differs_from_pin": b.differs_from_pin,
                 }
                 for b in self.builds
             ],
@@ -355,10 +382,16 @@ class EngineListView:
 
 
 def engine_list(config: Config = cfg) -> EngineListView:
-    """The installed builds, the damaged folders and the engines with no installed build."""
-    return EngineListView(
-        builds(config), damaged_folders(config), not_installed(), engines_folder(config)
-    )
+    """The installed builds, the damaged folders and the engines with no installed build.
+
+    Every build of an engine with no installed build differs from the pin, because the
+    pin build is the one that is missing.
+    """
+    absent = not_installed()
+    listed = [
+        replace(b, differs_from_pin=True) if b.engine in absent else b for b in builds(config)
+    ]
+    return EngineListView(listed, damaged_folders(config), absent, engines_folder(config))
 
 
 def _removal_changes_embedder(
@@ -667,7 +700,15 @@ def engine_rows(config: Config = cfg, listed: EngineListView | None = None) -> l
             rows.extend(_build_row(store, b, EngineState.DIFFERS_FROM_PIN) for b in mine)
             continue
         users = tuple(used.get(key, ()))
-        rows.extend(_build_row(store, b, EngineState.INSTALLED, users) for b in mine)
+        rows.extend(
+            _build_row(
+                store,
+                b,
+                EngineState.DIFFERS_FROM_PIN if b.differs_from_pin else EngineState.INSTALLED,
+                users,
+            )
+            for b in mine
+        )
         if adapter.bundled:
             rows.append(
                 EngineRow(key, EngineState.BUNDLED, backend=_bundled_backend(name), roles=users)

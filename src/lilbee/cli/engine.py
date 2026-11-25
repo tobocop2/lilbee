@@ -86,7 +86,7 @@ def list_builds() -> None:
             old = stale[name]
             console.print(
                 f"{name} not installed: the installed build {old.version} ({old.backend}) "
-                f"differs from the pin{clause}",
+                f"{engine_service.DIFFERS_FROM_PIN_TEXT}{clause}",
                 soft_wrap=True,
             )
         else:
