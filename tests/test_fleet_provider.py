@@ -9401,9 +9401,7 @@ class TestReportsReadAfterTheLoad:
         client.healthy = healthy
         return client
 
-    def test_the_warm_reads_the_replicas_it_warmed_not_a_running_listing(
-        self, monkeypatch
-    ) -> None:
+    def test_the_warm_reads_the_replicas_it_warmed_not_a_running_listing(self, monkeypatch) -> None:
         swap = _FakeSwap()
         p = self._provider(monkeypatch, swap)
         pools = {WorkerRole.EMBED: [self._client("embed-0"), self._client("embed-1", False)]}

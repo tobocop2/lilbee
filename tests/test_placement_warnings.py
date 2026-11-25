@@ -360,7 +360,7 @@ class TestFailedReadyProbe:
         manager = self._manager(tmp_path, ["/bin/llama-server", MEMORY_FLAG])
         assert reads == []
         manager.check_loaded(["chat-0"])
-        assert [url.rsplit("/", 1)[1] for url in reads] == ["running", "memory"]
+        assert [url.rsplit("/", 1)[1] for url in reads] == ["memory"]
         reads.clear()
         assert [w.code for w in manager.health_warnings()] == [WarningCode.HOST_SPILL]
         assert reads == []
@@ -404,9 +404,7 @@ class TestFailedReadyProbe:
         manager.check_loaded(["chat-0"])
         assert [w.code for w in manager.health_warnings()] == [WarningCode.HOST_SPILL]
 
-    def test_a_reload_with_no_poll_between_is_read_again(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_a_reload_with_no_poll_between_is_read_again(self, tmp_path: Path, monkeypatch) -> None:
         from lilbee.core.health_warnings import WarningCode
         from lilbee.providers.fleet.readback import MEMORY_FLAG
 
