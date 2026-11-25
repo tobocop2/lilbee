@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Generator, Iterable
+from collections.abc import Callable, Generator, Iterable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,7 +14,7 @@ from rich.text import Text
 
 from lilbee.app.ingest import RegisterResult, register_sources
 from lilbee.app.settings import SCANNED_PAGES_LABEL
-from lilbee.app.status import StatusResult
+from lilbee.app.status import IndexStatus, StatusResult
 from lilbee.cli import theme
 from lilbee.core.config import cfg
 from lilbee.core.health_warnings import HealthWarning
@@ -132,6 +132,15 @@ def _label_line(label: str, value: object) -> Text:
     return Text.assemble((f"{label}:", theme.LABEL), gap, str(value))
 
 
+def _index_lines(index: IndexStatus) -> Iterator[Text]:
+    """The lines that describe the persisted index: its embedder, and any drift from cfg."""
+    yield _label_line("Index built with", f"{index.embedding_model} ({index.embedding_dim} dims)")
+    if index.engine_mismatch is not None:
+        yield _label_line("Index mismatch", index.engine_mismatch)
+    if index.chunk_drift:
+        yield _label_line("Rebuild advised", rebuild_advice(index.chunk_drift))
+
+
 def render_status_result(status: StatusResult) -> Generator[RenderableType, None, None]:
     """Yield Rich renderables for a :class:`StatusResult`."""
     yield _label_line("Documents", status.config.documents_dir)
@@ -139,14 +148,7 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
     yield _label_line("Chat model", status.config.chat_model)
     yield _label_line("Embeddings", status.config.embedding_model)
     if status.index is not None:
-        yield _label_line(
-            "Index built with",
-            f"{status.index.embedding_model} ({status.index.embedding_dim} dims)",
-        )
-        if status.index.engine_mismatch is not None:
-            yield _label_line("Index mismatch", status.index.engine_mismatch)
-        if status.index.chunk_drift:
-            yield _label_line("Rebuild advised", rebuild_advice(status.index.chunk_drift))
+        yield from _index_lines(status.index)
     vision = status.config.vision_model or "(disabled)"
     reranker = status.config.reranker_model or "(disabled)"
     yield _label_line("Vision", vision)
