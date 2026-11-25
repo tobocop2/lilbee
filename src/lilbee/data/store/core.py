@@ -86,6 +86,7 @@ from .locations import SourceLocations, root_location, under_sql
 from .ranking import mmr_rerank
 from .schema import (
     CANARY_VECTORS_COLUMN,
+    CHUNK_SETTINGS_COLUMN,
     _citations_schema,
     _entity_schema_state_schema,
     _meta_schema,
@@ -499,6 +500,25 @@ def _check_vector_dims(records: list[dict], embedding_dim: int) -> None:
                 f"Vector dimension mismatch: expected {embedding_dim}, "
                 f"got {len(vec)} (source={rec.get('source', '?')})"
             )
+
+
+def _meta_of(row: dict[str, Any] | None) -> StoreMeta | None:
+    """The identity a ``_meta`` *row* holds, or ``None`` when there is no row or no width."""
+    width = None if row is None else stored_width(row["embedding_dim"])
+    if row is None or width is None:
+        return None
+    return StoreMeta(
+        embedding_model=row["embedding_model"],
+        embedding_dim=width,
+        schema_version=int(row["schema_version"]),
+        updated_at=row["updated_at"],
+    )
+
+
+def _stamp_of(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The chunk settings a ``_meta`` *row* records; a row older than the record has none."""
+    text = None if row is None else row.get(CHUNK_SETTINGS_COLUMN)
+    return None if text is None else cast("dict[str, Any]", json.loads(text))
 
 
 def _meta_drift(
@@ -1304,28 +1324,81 @@ class Store:
                 exc_info=True,
             )
 
+    def _meta_row(self) -> dict[str, Any] | None:
+        """The newest ``_meta`` row as stored, or ``None`` when there is none."""
+        table = self.open_table(META_TABLE)
+        return None if table is None else newest_meta_row(table)
+
     def get_meta(self) -> StoreMeta | None:
         """Return the persisted store metadata row, or ``None`` if unset or holding no width."""
-        table = self.open_table(META_TABLE)
-        if table is None:
-            return None
-        row = newest_meta_row(table)
-        if row is None:
-            return None
-        width = stored_width(row["embedding_dim"])
-        if width is None:
-            return None
-        return StoreMeta(
-            embedding_model=row["embedding_model"],
-            embedding_dim=width,
-            schema_version=int(row["schema_version"]),
-            updated_at=row["updated_at"],
-        )
+        return _meta_of(self._meta_row())
+
+    def chunk_stamp(self) -> dict[str, Any] | None:
+        """The chunk settings the library's chunks were cut with, or ``None`` when unrecorded."""
+        return _stamp_of(self._meta_row())
+
+    def chunk_drift(self, values: Mapping[str, Any]) -> list[str]:
+        """The keys of *values* that differ from the chunk settings the library recorded.
+
+        An empty library has no record and no drift. A library whose chunks carry no
+        record (one built before the record existed) records *values* now, so it
+        reports no drift until a setting changes after this call.
+        """
+        if self._library_absent():
+            return []
+        stamp = self.chunk_stamp()
+        if stamp is None:
+            self._pin_chunk_settings(values)
+            return []
+        return sorted(key for key, value in values.items() if key in stamp and stamp[key] != value)
+
+    def _pin_chunk_settings(self, values: Mapping[str, Any]) -> None:
+        """Record *values* for a library that holds chunks and no record of their settings."""
+        if self.get_meta() is None or not self._has_chunks():
+            return
+        with self._write_lock():
+            row = self._meta_row()
+            meta = _meta_of(row)
+            if meta is None or _stamp_of(row) is not None:
+                return
+            log.warning(
+                "The index records no chunk settings. Recording the settings in force "
+                "as the ones its chunks were cut with. If you changed a chunk setting "
+                "since the last full sync, run `lilbee rebuild`."
+            )
+            self._write_meta_unlocked(
+                embedding_model=meta["embedding_model"],
+                embedding_dim=meta["embedding_dim"],
+                chunk_settings=values,
+            )
+
+    def _stamp_first_chunks_unlocked(
+        self, embedding_model: str, embedding_dim: int, chunk_settings: Mapping[str, Any] | None
+    ) -> None:
+        """Write the meta row on the first chunk write; record *chunk_settings* when unrecorded.
+
+        An incremental write into a library that holds a record leaves it as it is.
+        Caller holds ``write_lock()``.
+        """
+        row = self._meta_row()
+        meta = _meta_of(row)
+        if meta is None:
+            self._write_meta_unlocked(
+                embedding_model=embedding_model,
+                embedding_dim=embedding_dim,
+                canary=self._new_baseline(verified=True),
+                chunk_settings=chunk_settings,
+            )
+        elif chunk_settings is not None and _stamp_of(row) is None:
+            self._write_meta_unlocked(
+                embedding_model=meta["embedding_model"],
+                embedding_dim=meta["embedding_dim"],
+                chunk_settings=chunk_settings,
+            )
 
     def canary_state(self) -> CanaryState | None:
         """The canary baseline in the ``_meta`` row, or ``None`` when the row holds none."""
-        table = self.open_table(META_TABLE)
-        row = None if table is None else newest_meta_row(table)
+        row = self._meta_row()
         if row is None:
             return None
         vectors = row.get(CANARY_VECTORS_COLUMN)
@@ -1343,15 +1416,18 @@ class Store:
         embedding_model: str,
         embedding_dim: int,
         canary: CanaryState | None | Literal["keep"] = "keep",
+        chunk_settings: Mapping[str, Any] | None | Literal["keep"] = "keep",
     ) -> None:
         """Overwrite the single ``_meta`` row with the supplied identity.
 
         Caller must hold ``write_lock()``. Args are passed explicitly rather than
         re-read from ``self._config`` so the caller can snapshot cfg at a coherent
         instant and not race with a concurrent ``set_embedding_model``. The canary
-        baseline stays as the row holds it unless *canary* replaces it.
+        baseline and the chunk settings stay as the row holds them unless *canary*
+        or *chunk_settings* replaces them.
         """
         state = self.canary_state() if isinstance(canary, str) else canary
+        stamp = self.chunk_stamp() if isinstance(chunk_settings, str) else chunk_settings
         row = {
             "embedding_model": embedding_model,
             "embedding_dim": embedding_dim,
@@ -1360,18 +1436,24 @@ class Store:
             CANARY_VECTORS_COLUMN: state.vectors if state else None,
             "canary_trigger": state.trigger if state else None,
             "canary_verified": state.verified if state else None,
+            CHUNK_SETTINGS_COLUMN: None if stamp is None else json.dumps(dict(stamp)),
         }
         self.get_db().create_table(META_TABLE, [row], schema=_meta_schema(), mode="overwrite")
         # A rebuild is the remedy the prefix warning names, so the next query
         # re-decides instead of logging a mismatch this write just resolved.
         self._doc_prefix_warned = False
 
-    def restamp_meta(self) -> None:
-        """Record the current embedding identity and schema version after a full rebuild."""
+    def restamp_meta(self, chunk_settings: Mapping[str, Any] | None = None) -> None:
+        """Record the current embedding identity and schema version after a full rebuild.
+
+        *chunk_settings*, when given, replaces the recorded chunk settings: the
+        rebuild cut every chunk with them.
+        """
         with self._write_lock():
             self._write_meta_unlocked(
                 embedding_model=self._config.embedding_model,
                 embedding_dim=self._config.embedding_dim,
+                chunk_settings="keep" if chunk_settings is None else chunk_settings,
             )
 
     def _library_absent(self) -> bool:
@@ -2324,7 +2406,9 @@ class Store:
             )
             return False
 
-    def _add_chunks_unlocked(self, records: list[dict]) -> int:
+    def _add_chunks_unlocked(
+        self, records: list[dict], chunk_settings: Mapping[str, Any] | None = None
+    ) -> int:
         """Add chunk records and return the count. Caller must hold ``write_lock()``."""
         embedding_model = self._config.embedding_model
         embedding_dim = self._config.embedding_dim
@@ -2339,20 +2423,19 @@ class Store:
         )
         table = self._chunks_table()
         table.add(_keyed(records, "source", ids))
-        if self.get_meta() is None:
-            self._write_meta_unlocked(
-                embedding_model=embedding_model,
-                embedding_dim=embedding_dim,
-                canary=self._new_baseline(verified=True),
-            )
+        self._stamp_first_chunks_unlocked(embedding_model, embedding_dim, chunk_settings)
         return len(records)
 
-    def add_chunks(self, records: list[dict]) -> int:
+    def add_chunks(
+        self, records: list[dict], chunk_settings: Mapping[str, Any] | None = None
+    ) -> int:
         """Add chunk records to the store. Returns count added.
 
         Raises ``EmbeddingModelMismatchError`` if the persisted ``_meta`` row was
         written under a different embedding model than the current ``cfg``. On the
         first write to a fresh store, ``_meta`` is initialized from the current cfg.
+        *chunk_settings* are the settings the records were cut with; the library
+        records them when it holds no record yet.
 
         The gate runs inside the write lock and uses a single cfg snapshot so a
         concurrent ``set_embedding_model`` cannot slip a write in past a stale
@@ -2360,7 +2443,7 @@ class Store:
         """
         self._ensure_embedding_servable()
         with self._write_lock():
-            return self._add_chunks_unlocked(records)
+            return self._add_chunks_unlocked(records, chunk_settings)
 
     def replace_chunks(self, source: str, chunk_type: ChunkType, records: list[dict]) -> int:
         """Replace *source*'s chunk rows of *chunk_type* with *records* under one write lock.
@@ -3478,7 +3561,10 @@ class Store:
                 log.debug("Sources table optimize failed", exc_info=True)
 
     def write_chunks_batch(
-        self, items: list[ChunkWrite], present: Callable[[str], bool] | None = None
+        self,
+        items: list[ChunkWrite],
+        present: Callable[[str], bool] | None = None,
+        chunk_settings: Mapping[str, Any] | None = None,
     ) -> int:
         """Write several documents' chunks in one locked transaction. Returns chunks added.
 
@@ -3492,7 +3578,7 @@ class Store:
         the whole batch is rejected. Under the lock, an item whose source
         *present* says is gone is left out: a crawl that retired the file after
         the sync read it removes its source under this lock, so the source never
-        comes back.
+        comes back. *chunk_settings* are as :meth:`add_chunks` takes them.
         """
         if not items:
             return 0
@@ -3520,7 +3606,7 @@ class Store:
                 table = ensure_table(db, PAGE_TEXTS_TABLE, _page_texts_schema())
                 table.add(_keyed(page_rows, "source", ids))
             keyed = _keyed(all_records, "source", ids)
-            self._add_chunk_records_unlocked(keyed, embedding_model, embedding_dim)
+            self._add_chunk_records_unlocked(keyed, embedding_model, embedding_dim, chunk_settings)
             self._put_sources_unlocked(self._sources_table(), self._batch_source_writes(items))
         self._invalidate_source_cache()
         return len(all_records)
@@ -3563,17 +3649,13 @@ class Store:
         all_records: list[dict],
         embedding_model: str,
         embedding_dim: int,
+        chunk_settings: Mapping[str, Any] | None,
     ) -> None:
         """Add the batch's chunk rows, writing meta on first use. Caller holds ``write_lock()``."""
         if not all_records:
             return
         self._chunks_table().add(all_records)
-        if self.get_meta() is None:
-            self._write_meta_unlocked(
-                embedding_model=embedding_model,
-                embedding_dim=embedding_dim,
-                canary=self._new_baseline(verified=True),
-            )
+        self._stamp_first_chunks_unlocked(embedding_model, embedding_dim, chunk_settings)
 
     def _batch_source_writes(self, items: list[ChunkWrite]) -> list[_SourceWrite]:
         """One ``_sources`` row per batched document, of the type its item states."""

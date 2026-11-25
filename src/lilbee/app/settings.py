@@ -806,6 +806,10 @@ def _settle(
     """
     effective = keys if changed is None else changed
     reindex_effective = effective if reindex_changed is None else reindex_changed
+    if REINDEX_FIELDS & reindex_effective:
+        # Asked before the change, an index built before it recorded chunk settings
+        # records the ones in force now, so the change shows as drift afterwards.
+        chunk_drift()
 
     def change(draft: Config) -> None:
         if values is None:
@@ -996,12 +1000,26 @@ def inert_reindex_keys() -> set[str]:
     return inert
 
 
-def reindex_values() -> dict[str, Any]:
-    """The value in force of each setting that changes what the index holds.
+def reindex_values(config: Config | None = None) -> dict[str, Any]:
+    """The value in *config* (default cfg) of each setting that changes what the index holds.
 
     That is each of ``REINDEX_FIELDS`` and the chunk limit, which holds files out.
     """
-    return {key: getattr(cfg, key) for key in REINDEX_FIELDS | {CHUNK_LIMIT_KEY}}
+    source = cfg if config is None else config
+    return {key: getattr(source, key) for key in REINDEX_FIELDS | {CHUNK_LIMIT_KEY}}
+
+
+def chunk_drift(config: Config | None = None) -> list[str]:
+    """The settings in force that differ from the ones the index's chunks were cut with.
+
+    The index records the settings of the sync that wrote its first chunks, so a change
+    that lands while that sync runs shows here once its write lands. A setting that is
+    inert under the effective config does not count, as for a single save.
+    """
+    from lilbee.app.services import chunk_drift_in_store
+
+    live = REINDEX_FIELDS - inert_reindex_keys()
+    return [key for key in chunk_drift_in_store(reindex_values(config)) if key in live]
 
 
 def chunk_limit_loosened(before: Mapping[str, Any]) -> bool:
