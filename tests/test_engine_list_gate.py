@@ -228,7 +228,8 @@ def test_an_engine_with_no_build_that_the_host_passes_points_to_the_list(
     with pytest.raises(engine_service.EngineRefusedError) as raised:
         engine_service.prefer("tei")
     assert str(raised.value) == (
-        "Engine tei is not installed. Run lilbee engine list (or GET /api/engines) to see the installed engines."
+        "Engine tei is not installed. "
+        "Run lilbee engine list (or GET /api/engines) to see the installed engines."
     )
 
 
