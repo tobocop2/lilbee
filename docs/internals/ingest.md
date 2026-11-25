@@ -452,8 +452,11 @@ carries the seconds since the upgrade began. The TUI start screen and a CLI comm
 a terminal redraw that time each second with Textual's and Rich's own timers; piped,
 under `--json`, and in `serve` and `mcp`, each event is one plain line on stderr. While
 it runs, `GET /api/health` carries an `upgrade` object (phase, work, table, rows, tables
-done and total, elapsed seconds), a held request's 503 body carries the same object,
-and the MCP `status` tool answers with it at once.
+done and total, elapsed seconds, and `text`, the display line). The `work` value is
+`updating`, `checking` or `adding_ids`. The `table` value is `sources`, `chunks`,
+`page_texts`, `chunk_concepts`, `entities`, `citations` or `wiki_mentions`, and is null
+while no table is named. A held request's 503 body carries the same object, and the MCP
+`status` tool answers with it at once.
 
 **Stored locations, computed names.** The `path` of a source under an added folder is
 the folder's path from the registry plus the path below it, in POSIX spelling. The name

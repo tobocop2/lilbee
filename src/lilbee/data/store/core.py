@@ -54,6 +54,7 @@ from lilbee.runtime.progress import (
     LibraryUpgradeEvent,
     TableWork,
     UpgradePhase,
+    UpgradeTable,
     noop_callback,
 )
 
@@ -349,15 +350,15 @@ _PATH_KEY_COLUMNS = (
 _PATH_KEY_BY_TABLE = dict(_PATH_KEY_COLUMNS)
 # The tables an upgrade visits, in its order: ``_sources`` first.
 _UPGRADE_ORDER = (SOURCES_TABLE, *_PATH_KEY_BY_TABLE)
-# The name an upgrade shows each table by.
-_UPGRADE_LABELS = {
-    SOURCES_TABLE: "source list",
-    CHUNKS_TABLE: "search chunks",
-    PAGE_TEXTS_TABLE: "page text",
-    CHUNK_CONCEPTS_TABLE: "concept links",
-    ENTITIES_TABLE: "entities",
-    CITATIONS_TABLE: "citations",
-    WIKI_MENTIONS_TABLE: "wiki mentions",
+# The machine name an upgrade reports each table by.
+_UPGRADE_TABLES = {
+    SOURCES_TABLE: UpgradeTable.SOURCES,
+    CHUNKS_TABLE: UpgradeTable.CHUNKS,
+    PAGE_TEXTS_TABLE: UpgradeTable.PAGE_TEXTS,
+    CHUNK_CONCEPTS_TABLE: UpgradeTable.CHUNK_CONCEPTS,
+    ENTITIES_TABLE: UpgradeTable.ENTITIES,
+    CITATIONS_TABLE: UpgradeTable.CITATIONS,
+    WIKI_MENTIONS_TABLE: UpgradeTable.WIKI_MENTIONS,
 }
 # The path column of ``_sources`` before it was renamed.
 _OLD_PATH = "filename"
@@ -669,7 +670,7 @@ class _TableStep(NamedTuple):
     """What an upgrade does to the table in progress, and how many tables of all are done."""
 
     work: TableWork
-    table: str
+    table: UpgradeTable
     rows: int
     tables_done: int
     tables_total: int
@@ -1902,7 +1903,7 @@ class Store:
             for name, table in steps:
                 rows[name] = table.count_rows()
                 work = TableWork.UPDATING if name == SOURCES_TABLE else TableWork.CHECKING
-                step = _TableStep(work, _UPGRADE_LABELS[name], rows[name], done, len(steps))
+                step = _TableStep(work, _UPGRADE_TABLES[name], rows[name], done, len(steps))
                 self._report_upgrade(UpgradePhase.TABLE, step)
                 if name == SOURCES_TABLE:
                     _migrate_sources_table(table)
@@ -1911,7 +1912,7 @@ class Store:
                     self._hold_missing_paths(db, table, _PATH_KEY_BY_TABLE[name])
             for (name, column), column_added in zip(keyed, added, strict=True):
                 step = _TableStep(
-                    TableWork.ADDING_IDS, _UPGRADE_LABELS[name], rows[name], done, len(steps)
+                    TableWork.ADDING_IDS, _UPGRADE_TABLES[name], rows[name], done, len(steps)
                 )
                 self._report_upgrade(UpgradePhase.TABLE, step)
                 column_added.result()
