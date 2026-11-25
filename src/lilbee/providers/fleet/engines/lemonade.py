@@ -88,16 +88,18 @@ _HEALTH_PATH = "/v1/health"
 _SYSTEM_INFO_PATH = "/v1/system-info"
 _DEVICE_NPU = "npu"
 _STATE_UNSUPPORTED = "unsupported"
-_NO_NPU = (
-    "Lemonade cannot run this model: this computer has no AMD XDNA2 NPU that Lemonade can use."
+_NPU_FIX = (
+    "Check that the XDNA driver is installed and that `lemonade system-info` lists the npu device."
 )
+_NO_NPU = "This machine has no NPU that Lemonade can use"
+_NO_NPU_FIX = "Choose a CPU or GPU engine for this role."
 
 
 def npu_refusal(health: Any, name: str) -> str | None:
     """None when the ``/v1/health`` reply *health* lists *name* loaded on the NPU.
 
-    Otherwise the error says what the reply shows instead: another device, or no such
-    model. ``device`` is a space-separated list, such as ``gpu npu``.
+    Otherwise the error says what the reply shows instead, another device or no such
+    model, and how to fix it. ``device`` is a space-separated list, such as ``gpu npu``.
     """
     # isinstance: the reply is untyped JSON from the network
     loaded = health.get("all_models_loaded") if isinstance(health, dict) else None
@@ -106,24 +108,28 @@ def npu_refusal(health: Any, name: str) -> str | None:
             device = entry.get("device")
             if isinstance(device, str) and _DEVICE_NPU in device.split():
                 return None
-            return f"Lemonade runs the model on {device!r}, not on the NPU."
-    return "Lemonade does not list the model as loaded, so it is not known to run on the NPU."
+            where = f"the {device.upper()}" if isinstance(device, str) else "another device"
+            return f"Lemonade loaded the model on {where}, not the NPU. {_NPU_FIX}"
+    return f"Lemonade does not list the model as loaded, so it cannot confirm the NPU. {_NPU_FIX}"
 
 
 def no_npu_refusal(info: Any) -> str | None:
     """The no-NPU error when the ``/v1/system-info`` reply *info* says flm cannot run here.
 
-    The error ends with Lemonade's own message. None when the reply does not say so.
+    The error carries Lemonade's own message and names the fix. None when the reply does
+    not say so.
     """
     try:
         backend = info["recipes"][_RECIPE]["backends"][_BACKEND]
         state, message = backend["state"], backend.get("message")
-    except (KeyError, TypeError, AttributeError):
+    except (KeyError, TypeError):
         return None
     if state != _STATE_UNSUPPORTED:
         return None
     # isinstance: the reply is untyped JSON from the network
-    return f"{_NO_NPU} Lemonade reports: {message}" if isinstance(message, str) else _NO_NPU
+    if isinstance(message, str) and message.strip():
+        return f"{_NO_NPU}: {message.strip().rstrip('.')}. {_NO_NPU_FIX}"
+    return f"{_NO_NPU}. {_NO_NPU_FIX}"
 
 
 def data_root() -> Path:

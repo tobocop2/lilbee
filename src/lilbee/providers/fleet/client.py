@@ -44,6 +44,7 @@ from lilbee.providers.base import (
 from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
 from lilbee.providers.fleet.engines.base import RequestProfile, UpstreamCheck
 from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
+from lilbee.providers.fleet.swap_manager import RUNNING_PATH, UNLOAD_PATH, ready_model_ids
 from lilbee.providers.reasoning import ThinkInliner, inline_reasoning
 from lilbee.providers.roles import RerankMode
 from lilbee.providers.truncation import note_cut_to_limit, note_truncated
@@ -207,8 +208,6 @@ log = logging.getLogger(__name__)
 _TRUNCATION_CHECK_FAILURES = (httpx.HTTPError, ProviderError, KeyError, TypeError, ValueError)
 # The longest the advisory limit or count request may hold an embed, in seconds.
 _TRUNCATION_CHECK_TIMEOUT_S = 5.0
-# What a failed read of a device or load-failure route raises.
-_UPSTREAM_CHECK_FAILURES = (httpx.HTTPError, ProviderError, ValueError)
 # The longest a read of a device or load-failure route may take, in seconds; the model is loaded.
 _UPSTREAM_CHECK_TIMEOUT_S = 10.0
 
@@ -613,6 +612,10 @@ class StreamSilentError(httpx.ReadTimeout):
 
 class _SideRouteRefusalError(ProviderError):
     """A side route that is up refused one request, with a status that blames the request."""
+
+
+class DeviceRefusedError(ProviderError):
+    """The engine reports the model on a device other than the one the role was placed on."""
 
 
 def retry_on_gateway_error(
@@ -1900,47 +1903,92 @@ class LlamaServerClient:
         """
         return f"{_UPSTREAM_PREFIX}/{self._model}{suffix}"
 
-    def _read_check(self, check: UpstreamCheck) -> str | None:
-        """The error that the engine's reply on the route of *check* shows, or None."""
-        resp = self._http.get(self._native_route(check.path), timeout=_UPSTREAM_CHECK_TIMEOUT_S)
+    def _ready_upstreams(self) -> set[str]:
+        """The model ids that llama-swap lists as running and ready."""
+        resp = self._http.get(RUNNING_PATH, timeout=_UPSTREAM_CHECK_TIMEOUT_S)
         self._raise_for_side_route(resp)
-        return check.refusal(resp.json())
+        try:
+            return ready_model_ids(resp.json())
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise ValueError(f"llama-swap sent a running list of another shape: {exc}") from exc
+
+    def _read_check(self, check: UpstreamCheck) -> str | None:
+        """The error that the engine's reply on the route of *check* shows, or None.
+
+        The route is read only while llama-swap lists the model as running, because a
+        request through the upstream route of a stopped model starts it. A reply that
+        cannot be read raises a SERVER-kind error, which the gateway retry reads again.
+        """
+        label = self._profile.label
+        try:
+            if self._model not in self._ready_upstreams():
+                raise ProviderError(
+                    f"{label} is not running the model.",
+                    provider=label,
+                    kind=ProviderErrorKind.SERVER,
+                )
+            route = self._native_route(check.path)
+            resp = self._http.get(route, timeout=_UPSTREAM_CHECK_TIMEOUT_S)
+            self._raise_for_side_route(resp)
+            body = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise ProviderError(
+                str(exc) or type(exc).__name__, provider=label, kind=ProviderErrorKind.SERVER
+            ) from exc
+        return check.refusal(body)
 
     def confirm_device(self) -> None:
         """Raise when the engine does not report the model on the device it was placed on.
 
-        An engine whose profile names no device route is not asked. An unreadable reply
-        raises too: the claim stands only on the engine's own report.
+        An engine whose profile names no device route is not asked. A reply that cannot
+        be read is read again within the gateway retry budget, and raises when it stays
+        unreadable: the claim stands only on the engine's own report. A reply that names
+        another device raises :class:`DeviceRefusedError`.
         """
         check = self._profile.device_check
         if check is None:
             return
         label = self._profile.label
         try:
-            refusal = self._read_check(check)
-        except _UPSTREAM_CHECK_FAILURES as exc:
+            refusal = retry_on_gateway_error(lambda: self._read_check(check))
+        except ProviderError as exc:
             raise ProviderError(
-                f"{label} did not report the device of the model: {exc}", provider=label
+                f"{label} did not report the device of the model: {exc} Check that the "
+                f"{label} server is running, then restart lilbee.",
+                provider=label,
             ) from exc
         if refusal is not None:
-            raise ProviderError(refusal, provider=label)
+            raise DeviceRefusedError(refusal, provider=label)
 
     def explain_load_failure(self, failure: ProviderError) -> None:
         """Raise the reason the engine reports for the failed load *failure*, when it has one.
 
-        Returns when the profile names no route for it, the reply shows no reason, or the
-        read fails; the caller then raises *failure* as it is.
+        The raised text ends with the engine's own text of *failure*. Returns when the
+        profile names no route for it, the reply shows no reason, or the read fails; the
+        caller then raises *failure* as it is.
         """
         check = self._profile.load_failure_check
         if check is None:
             return
         try:
             refusal = self._read_check(check)
-        except _UPSTREAM_CHECK_FAILURES as exc:
+        except ProviderError as exc:
             log.debug("The reason of the failed load is unreadable: %s", exc)
             return
         if refusal is not None:
-            raise ProviderError(refusal, provider=failure.provider, kind=failure.kind) from failure
+            raise ProviderError(
+                f"{refusal} {self._profile.label} said: {failure}",
+                provider=failure.provider,
+                kind=failure.kind,
+            ) from failure
+
+    def unload_upstream(self) -> None:
+        """Stop this model's upstream through llama-swap, so it is no longer listed as loaded."""
+        try:
+            resp = self._http.post(f"{UNLOAD_PATH}/{self._model}", timeout=_UPSTREAM_CHECK_TIMEOUT_S)
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            log.warning("Could not stop the upstream of %s: %s", self._model, exc)
 
     def _tokenize(self, text: str, *, parse_special: bool = _TOKENIZE_PARSE_SPECIAL) -> list[int]:
         """Token ids for *text*; a gateway error is retried like an embedding."""
