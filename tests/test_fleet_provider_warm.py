@@ -186,6 +186,18 @@ def test_d1_health_is_never_read_from_an_upstream_that_is_not_running() -> None:
     assert HEALTH not in asked
 
 
+@pytest.mark.parametrize("listing", [{"running": "x"}, {"running": ["x"]}, []])
+def test_d1_a_running_list_of_another_shape_reads_as_unreadable(listing: object) -> None:
+    client, asked = _client(
+        WorkerRole.EMBED,
+        LEMONADE.request_profile,
+        {"/v1/embeddings": EMBEDDING, RUNNING: listing, HEALTH: ON_NPU},
+    )
+    with pytest.raises(ProviderError, match="Lemonade did not report the device of the model"):
+        provider_mod._warm_role(WorkerRole.EMBED, client)
+    assert HEALTH not in asked
+
+
 def test_e2_a_refused_load_on_a_host_without_the_npu_gives_the_no_npu_error() -> None:
     client, asked = _client(
         WorkerRole.CHAT,
@@ -298,7 +310,7 @@ class _Swap:
 
 
 def _chat_fleet(
-    monkeypatch: pytest.MonkeyPatch, health: Reply
+    monkeypatch: pytest.MonkeyPatch, health: Reply, *, unload_status: int = 200
 ) -> tuple[FleetProvider, LlamaServerClient, list[str]]:
     """A provider with one Lemonade chat replica behind a llama-swap that can unload it."""
     running = {MODEL_ID}
@@ -307,8 +319,9 @@ def _chat_fleet(
         return {"running": [{"model": m, "state": "ready"} for m in sorted(running)]}
 
     def unload(_request: httpx.Request) -> Reply:
-        running.discard(MODEL_ID)
-        return httpx.Response(200, content=b"OK")
+        if unload_status == 200:
+            running.discard(MODEL_ID)
+        return httpx.Response(unload_status, content=b"OK")
 
     client, asked = _client(
         WorkerRole.CHAT,
@@ -341,6 +354,25 @@ def test_d1_a_cpu_device_unloads_the_upstream_and_the_role_serves_nothing(
     assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
     assert "not the NPU" in str(caught.value)
     assert len(asked) == asked_before
+
+
+def test_d1_a_refused_unload_is_logged_and_the_replica_still_leaves(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    provider, client, _ = _chat_fleet(monkeypatch, CHAT_ON_CPU, unload_status=500)
+    with caplog.at_level("WARNING", logger="lilbee.providers.fleet.client"):
+        provider._warm_chat_role([client])
+    assert "Could not stop the upstream of chat-0" in caplog.text
+    assert provider._clients[WorkerRole.CHAT] == []
+
+
+def test_a_replica_that_a_reload_already_replaced_changes_nothing() -> None:
+    provider = FleetProvider()
+    client, asked = _client(WorkerRole.CHAT, LEMONADE.request_profile, {UNLOAD: b"OK"})
+    provider._remove_refused_replica(WorkerRole.CHAT, client, "refused")
+    assert asked == []
+    assert WorkerRole.CHAT not in provider._refused_roles
+    assert WorkerRole.CHAT not in provider._clients
 
 
 def test_d1_a_later_good_warm_clears_the_error_of_an_unreadable_health_reply(
