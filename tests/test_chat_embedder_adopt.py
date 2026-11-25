@@ -205,7 +205,7 @@ class TestDoAdoptAndRetry:
         with (
             patch(
                 "lilbee.app.models.adopt_embedder",
-                return_value=MagicMock(reindex_required=False),
+                return_value=MagicMock(reindex_required=False, warning=None),
             ) as adopt,
             patch(
                 "lilbee.cli.tui.screens.chat.call_from_thread",
@@ -257,7 +257,7 @@ class TestDoAdoptAndRetry:
         with (
             patch(
                 "lilbee.app.models.adopt_embedder",
-                return_value=MagicMock(reindex_required=True),
+                return_value=MagicMock(reindex_required=True, warning=None),
             ),
             patch(
                 "lilbee.cli.tui.screens.chat.call_from_thread",
