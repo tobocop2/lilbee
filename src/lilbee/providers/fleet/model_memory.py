@@ -84,9 +84,9 @@ _CPU_ENCODER_VOCAB_CUT = 100_000
 """A CPU encoder with a vocabulary of this size or more, or an unstated one, peaks far above its
 weights at load."""
 _CPU_SMALL_VOCAB_WEIGHTS_FACTOR = (3, 2)
-_CPU_SMALL_VOCAB_BYTES = 128 * _MIB
-_CPU_LARGE_VOCAB_WEIGHTS_FACTOR = (11, 10)
-_CPU_LARGE_VOCAB_BYTES = 3584 * _MIB
+_CPU_SMALL_VOCAB_BYTES = 64 * _MIB
+_CPU_LARGE_VOCAB_WEIGHTS_FACTOR = (5, 4)
+_CPU_LARGE_VOCAB_BYTES = 1280 * _MIB
 
 CPU_RUNTIME_ALLOWANCE_BYTES = 96 * _MIB
 """What a CPU chat server holds beyond the priced parts: heap, libraries and the compute the
@@ -311,8 +311,8 @@ def encoder_estimate(weights: int | None) -> MemoryEstimate:
 def cpu_encoder_estimate(weights: int, vocab_size: int | None) -> MemoryEstimate:
     """The load peak of a CPU encoder server, which follows the vocabulary and not the task.
 
-    A vocabulary of 1 to 99 999 charges 1.5 times the weights plus 128 MiB. A larger one, or one
-    that is unstated or below 1, charges 1.1 times the weights plus 3584 MiB.
+    A vocabulary of 1 to 99 999 charges 1.5 times the weights plus 64 MiB. A larger one, or one
+    that is unstated or below 1, charges 1.25 times the weights plus 1280 MiB.
     """
     if vocab_size is not None and 0 < vocab_size < _CPU_ENCODER_VOCAB_CUT:
         numerator, denominator = _CPU_SMALL_VOCAB_WEIGHTS_FACTOR
