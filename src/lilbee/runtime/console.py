@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import IO, TYPE_CHECKING, Any, TextIO
+from typing import IO, TYPE_CHECKING, Any, TextIO, TypeAlias
 
 from rich.console import Console, RenderableType
 from rich.highlighter import ReprHighlighter
@@ -14,7 +14,11 @@ if TYPE_CHECKING:
     from rich.status import Status
 
 
-def live_progress(*columns: str | ProgressColumn, console: Console, **options: Any) -> Progress:
+ProgressDisplay: TypeAlias = Progress
+"""The type of a progress display; build one with ``live_progress`` or ``stdout_progress``."""
+
+
+def live_progress(*columns: str | ProgressColumn, console: Console, **options: Any) -> ProgressDisplay:
     """A progress display that leaves ``sys.stdout`` and ``sys.stderr`` alone.
 
     Rich redirects both streams into the display's console by default. A stderr display would
@@ -23,6 +27,15 @@ def live_progress(*columns: str | ProgressColumn, console: Console, **options: A
     return Progress(
         *columns, console=console, redirect_stdout=False, redirect_stderr=False, **options
     )
+
+
+def stdout_progress(*columns: str | ProgressColumn, console: Console, **options: Any) -> ProgressDisplay:
+    """A progress display on a stdout console, with Rich's default stream redirects.
+
+    The display shows text another part of the program writes to ``sys.stderr`` above the bar.
+    *options* go to ``Progress``.
+    """
+    return Progress(*columns, console=console, **options)
 
 
 class PlainConsole(Console):

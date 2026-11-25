@@ -29,7 +29,6 @@ from typing import Any, ParamSpec, TypeVar, cast
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
-    Progress,
     SpinnerColumn,
     TimeElapsedColumn,
 )
@@ -130,7 +129,7 @@ from lilbee.providers.roles import WorkerRole
 from lilbee.providers.truncation import cut_inputs_in_scope, one_truncation_warning
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
-from lilbee.runtime.console import PlainConsole
+from lilbee.runtime.console import PlainConsole, ProgressDisplay, stdout_progress
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
 from lilbee.runtime.lock import (
     LockTimeoutError,
@@ -1838,7 +1837,7 @@ async def sync(
 
 
 def _phase_progress_callback(
-    progress: Progress, ptask: Any, chain: DetailedProgressCallback
+    progress: ProgressDisplay, ptask: Any, chain: DetailedProgressCallback
 ) -> DetailedProgressCallback:
     """Wrap *chain*, updating the bar's description on per-page / per-chunk events.
 
@@ -1865,9 +1864,9 @@ def _phase_progress_callback(
     return _callback
 
 
-def _ingest_progress_bar(quiet: bool) -> Progress:
+def _ingest_progress_bar(quiet: bool) -> ProgressDisplay:
     """The transient bar an in-process ingest reports on, disabled when *quiet*."""
-    return Progress(
+    return stdout_progress(
         SpinnerColumn(),
         literal_text_column("{task.description}"),
         BarColumn(),
@@ -2310,7 +2309,7 @@ async def _collect_results(
     *,
     window: int,
     on_progress: DetailedProgressCallback = noop_callback,
-    progress: Progress | None = None,
+    progress: ProgressDisplay | None = None,
     ptask: Any = None,
     retry_next: dict[str, str] | None = None,
     reasons: dict[str, str] | None = None,
@@ -2481,7 +2480,7 @@ def _report_file_progress(
     completed_count: int,
     total: int,
     on_progress: DetailedProgressCallback,
-    progress: Progress | None,
+    progress: ProgressDisplay | None,
     ptask: Any,
 ) -> None:
     """Advance the Rich bar (when present) and emit one BATCH_PROGRESS event.

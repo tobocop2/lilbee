@@ -16,7 +16,6 @@ import httpx
 from rich.progress import (
     BarColumn,
     DownloadColumn,
-    Progress,
     SpinnerColumn,
     TaskID,
     TimeElapsedColumn,
@@ -25,6 +24,7 @@ from rich.progress import (
 from lilbee.catalog.formatting import display_label_for_ref
 from lilbee.cli.app import console
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+from lilbee.runtime.console import ProgressDisplay, stdout_progress
 from lilbee.runtime.progress.columns import literal_text_column
 
 _WARM_STREAM_PATH = "/api/warm/stream"
@@ -63,7 +63,7 @@ def _iter_warm_events(base_url: str, timeout_s: float) -> Iterator[WarmProgress]
                 yield WarmProgress.model_validate(data)
 
 
-def _apply(progress: Progress, task_id: TaskID, snap: WarmProgress) -> None:
+def _apply(progress: ProgressDisplay, task_id: TaskID, snap: WarmProgress) -> None:
     """Reflect one warm snapshot onto the rich progress task."""
     if snap.phase is WarmPhase.READING_WEIGHTS:
         progress.update(
@@ -108,7 +108,7 @@ def render_warm(base_url: str, timeout_s: float) -> bool | None:
     )
     saw_event = False
     try:
-        with Progress(*columns, console=console, transient=True) as progress:
+        with stdout_progress(*columns, console=console, transient=True) as progress:
             task_id = progress.add_task("Preparing chat model", total=None, detail="")
             reached_ready = False
             for snap in _iter_warm_events(base_url, timeout_s):
