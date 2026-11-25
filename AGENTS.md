@@ -339,6 +339,11 @@ correctness depends on updating multiple parallel dispatch / validation sites.
   Alias fallbacks in resolvers are a code smell: they mean canonicalization
   landed in some places but not others. A non-canonical value works until it
   shows up in a log, UI, or diff and confuses the next reader.
+- **Messages that can leave the CLI name the command and the REST route.** An
+  error or hint raised below `cli/` can reach the server, the TUI, or MCP. The
+  Obsidian plugin and other HTTP consumers have no command line, so write
+  "install it with 'lilbee model pull <ref>' (or POST /api/models/pull)", as
+  `role_validator.py` does. A message under `cli/` may name only the command.
 - **Front-load the match-arm and entry-point audit.** Before writing the
   first line, grep every dispatch site for the existing variants (`grep -rn
   "ModelTask\.\|ModelRole\.\|SomeEnum\." src/ tests/`). List every

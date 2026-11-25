@@ -119,7 +119,8 @@ def pick_default_model(ram_gb: float) -> ModelInfo:
     if not catalog:
         raise RuntimeError(
             "Could not reach HuggingFace to choose a chat model. "
-            "Check your connection, or pull one explicitly with 'lilbee model pull <ref>'."
+            "Check your connection, or pull one explicitly with 'lilbee model pull <ref>' "
+            "(or POST /api/models/pull)."
         )
     eligible = [m for m in catalog if m.min_ram_gb <= ram_gb]
     if not eligible:
@@ -171,8 +172,8 @@ def display_model_picker(
 
 
 NO_CHAT_MODEL_GUIDANCE = (
-    "No chat model is installed. Run 'lilbee model pull <model>' to install one, "
-    "or run 'lilbee' in a terminal to pick from the model catalog."
+    "No chat model is installed. Install one with 'lilbee model pull <model>' "
+    "(or POST /api/models/pull), or run 'lilbee' in a terminal to pick from the model catalog."
 )
 
 
