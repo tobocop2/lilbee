@@ -211,7 +211,7 @@ def _classify(
         result.registered = [name for name in result.registered if name not in reached] + [label]
         if taken:
             result.absorbed_into[label] = taken
-            result.absorbed_roots.update((child, was[child]) for child in taken)
+            result.absorbed_roots.update((child, was[child]) for child in taken if child in was)
     result.outside_corpus = list(outside.values())
     return result
 

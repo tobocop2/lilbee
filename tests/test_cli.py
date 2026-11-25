@@ -8925,12 +8925,12 @@ class TestSyncCancelledExit:
         assert cfg.linked_roots == {"held.txt": str(holder.resolve())}
 
     @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["plain", "json"])
-    def test_a_cancelled_add_of_the_parent_of_a_registered_folder_keeps_the_parent(
+    def test_a_cancelled_add_of_the_parent_of_a_registered_folder_restores_the_folder(
         self, isolated_env, tmp_path, mock_svc, flags
     ):
         from lilbee.app.ingest import register_sources
-        from lilbee.cli.commands.ingest_sync import _SYNC_CANCELLED_MESSAGE
 
+        stopped_message = "Add cancelled. parent was not added."
         sub = tmp_path / "parent" / "sub"
         sub.mkdir(parents=True)
         (sub.parent / "loose.txt").write_text("loose", encoding="utf-8")
@@ -8940,17 +8940,16 @@ class TestSyncCancelledExit:
         assert stopped.exit_code == 130, stopped.output
         if flags:
             assert json.loads(stopped.output) == {
-                "error": _SYNC_CANCELLED_MESSAGE,
-                "copied": ["parent"],
-                "absorbed": ["sub"],
+                "error": stopped_message,
+                "not_added": ["parent"],
             }
         else:
             printed = " ".join(stopped.output.split())
-            assert printed.endswith(_SYNC_CANCELLED_MESSAGE)
+            assert printed.endswith(stopped_message)
             assert "Registered 1 source(s); parent now includes sub" in printed
             assert "contains a source" not in printed
-        # The parent took in the rows of sub, so the cancel leaves it registered.
-        assert cfg.linked_roots == {"parent": str(sub.parent.resolve())}
+        # The cancel gives sub back as its own source and drops the parent.
+        assert cfg.linked_roots == {"sub": str(sub.resolve())}
         mock_svc.store.fill_locations.assert_called()
 
     @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["plain", "json"])
