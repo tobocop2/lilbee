@@ -322,7 +322,7 @@ class TestInstall:
 
         monkeypatch.setattr(os, "unlink", windows_unlink)
         install_router()
-        assert sorted(p.name for p in stale.iterdir()) == [LICENCE_FILE, "llama-swap"]
+        assert sorted(p.name for p in stale.iterdir()) == [IN_USE_NAME, LICENCE_FILE, "llama-swap"]
 
     def test_an_inner_entry_that_goes_during_the_delete_does_not_stop_the_install(
         self, release: list[str], monkeypatch: pytest.MonkeyPatch
@@ -340,7 +340,7 @@ class TestInstall:
 
         monkeypatch.setattr(os, "unlink", goes_first)
         install_router()
-        assert sorted(p.name for p in stale.iterdir()) == [LICENCE_FILE, "llama-swap"]
+        assert sorted(p.name for p in stale.iterdir()) == [IN_USE_NAME, LICENCE_FILE, "llama-swap"]
 
     def test_removing_a_folder_that_is_already_gone_logs_nothing(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
