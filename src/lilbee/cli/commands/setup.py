@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import importlib
 import json
 import shutil
@@ -186,6 +187,7 @@ def _self_check_server(
     from lilbee.providers.fleet.client import LlamaServerClient
     from lilbee.providers.fleet.groups import SwapGroup
     from lilbee.providers.fleet.planning import build_single_role_launch
+    from lilbee.providers.fleet.provider import load_role
     from lilbee.providers.fleet.swap_manager import SwapManager
 
     engine = resolve_engines(cfg).for_role(role).adapter
@@ -205,6 +207,7 @@ def _self_check_server(
         launch.model_id,
         inline_reasoning=role is WorkerRole.CHAT,
         profile=engine.request_profile(role),
+        load=functools.partial(load_role, role),
     )
     return swap, client, work_dir
 

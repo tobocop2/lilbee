@@ -666,6 +666,7 @@ class LlamaServerClient:
         engine_log: Path | None = None,
         model_ref: str | None = None,
         profile: RequestProfile,
+        load: Callable[[LlamaServerClient], None] | None = None,
     ) -> None:
         # The request fields and native paths of this server's engine.
         self._profile = profile
@@ -689,6 +690,16 @@ class LlamaServerClient:
         self._closing = threading.Event()
         self._async_transport = async_transport
         self._owns_http = http is None
+        # The device gate (see ensure_device). *load* sends the cheapest request that
+        # loads the model; the gate runs it before it reads the device. The state stays
+        # on this client only: a bind, a replan or a rediscover builds a new client,
+        # which checks again.
+        self._load = load
+        self._device_ok = profile.device_check is None
+        self._device_refusal: str | None = None
+        self._device_lock = threading.Lock()
+        # The thread that runs the check; its own load request passes the gate.
+        self._device_checker: int | None = None
         # Chat-role clients re-inline server-extracted reasoning as <think> text;
         # the other roles (vision OCR) keep dropping it, as their servers already did.
         self._inline_reasoning = inline_reasoning
@@ -749,7 +760,12 @@ class LlamaServerClient:
 
     @property
     def healthy(self) -> bool:
-        """Routable: healthy, or unhealthy past the ``_UNHEALTHY_RETRY_S`` cool-down."""
+        """Routable: healthy, or unhealthy past the ``_UNHEALTHY_RETRY_S`` cool-down.
+
+        A client whose engine reported the model on another device is never routable.
+        """
+        if self._device_refusal is not None:
+            return False
         with self._in_flight_lock:
             if self._healthy:
                 return True
@@ -1959,7 +1975,55 @@ class LlamaServerClient:
                 provider=label,
             ) from exc
         if refusal is not None:
-            raise DeviceRefusedError(refusal, provider=label)
+            raise DeviceRefusedError(refusal, provider=label, kind=ProviderErrorKind.BAD_REQUEST)
+
+    def ensure_device(self) -> None:
+        """Raise unless the engine reports the model on the device it was placed on.
+
+        Every request runs this first (see :meth:`_track`), so the check holds wherever
+        a client is built. The first request of a client whose profile names a device
+        route loads the model, reads the device, and only then goes on. A refusal stops
+        the upstream and stays on this client: every later request raises it and none
+        reaches the upstream. An unreadable reply raises, and the next request reads
+        again.
+        """
+        if self._device_ok or self._device_checker == threading.get_ident():
+            return
+        self._raise_device_refusal()
+        with self._device_lock:
+            self._raise_device_refusal()
+            if self._device_ok:
+                return
+            # The reservation keeps a reload on another thread from closing this
+            # client between the requests of the check.
+            self.reserve()
+            self._device_checker = threading.get_ident()
+            try:
+                if self._load is not None:
+                    self._load(self)
+                self.confirm_device()
+            except DeviceRefusedError as exc:
+                self._device_refusal = str(exc)
+                self.unload_upstream()
+                raise
+            finally:
+                self._device_checker = None
+                self.release()
+            self._device_ok = True
+
+    @property
+    def needs_device_check(self) -> bool:
+        """Whether a request must pass the device gate before it is sent."""
+        return not self._device_ok
+
+    def _raise_device_refusal(self) -> None:
+        """Raise the stored device refusal of this client, when it has one."""
+        if self._device_refusal is not None:
+            raise DeviceRefusedError(
+                self._device_refusal,
+                provider=self._profile.label,
+                kind=ProviderErrorKind.BAD_REQUEST,
+            )
 
     def explain_load_failure(self, failure: ProviderError) -> None:
         """Raise the reason the engine reports for the failed load *failure*, when it has one.
@@ -2142,6 +2206,8 @@ class LlamaServerClient:
             self._http.close()
 
     def _track(self) -> _InFlight:
+        """Count one request in flight; the device gate runs first."""
+        self.ensure_device()
         return _InFlight(self)
 
 
