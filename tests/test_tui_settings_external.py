@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import threading
-import time
 from contextlib import contextmanager
 
-import pytest
 from textual import events
 from textual.app import ComposeResult
 from textual.screen import Screen
@@ -18,12 +16,6 @@ from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import LilbeeAppHost, pump_until
 from tests.test_tui_settings_perf import _make_eager_settings_screen
-
-@pytest.fixture(autouse=True)
-def _files_are_old(monkeypatch):
-    """Every write here counts as settled: the quiet window has its own tests."""
-    monkeypatch.setattr(persistent_settings, "_now_ns", lambda: time.time_ns() + 3_600_000_000_000)
-
 
 SIZE = (80, 24)
 RETRIEVAL = "settings-tab-retrieval"

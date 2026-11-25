@@ -1289,7 +1289,8 @@ def adopt_external_changes(
     startup value. The source registry is read by ``refresh_registry``: while a sync
     holds it, it keeps its folders, and a later check takes the change. The keys go
     through the same settle step as an update made here. A file that does not parse
-    changes nothing and keeps *last*, as at startup. A key in *hold* is never taken: a
+    changes nothing and keeps *last*, as at startup. A file that an in-place write
+    changed under a second ago is left for the next check (see ``read_settled``). A key in *hold* is never taken: a
     warning says the process takes it at its next start. With *reset_providers* False a
     provider switch leaves the fleet running: the caller stops it with
     ``reset_for_provider_switch`` once the lock it holds around this call is free.
@@ -1299,7 +1300,7 @@ def adopt_external_changes(
     if persistent_settings.overlay_stamp(cfg.data_root) == last.stamp and not roots_changed:
         return last, None
     with _settings_transaction() as txn:
-        stamp, values = persistent_settings.read_settled(cfg.data_root)
+        stamp, values = persistent_settings.read_settled(cfg.data_root, last.stamp)
         now = last if values is None else replace(last, stamp=stamp, values=values)
         targets: dict[str, Any] = {}
         for key in _RELOADED_KEYS:

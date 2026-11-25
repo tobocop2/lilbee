@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import dataclasses
 import threading
-import time
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,12 +37,6 @@ from tests.test_fleet_settings_bind import (
     _peer_mid_call_over_an_owner_restart,
     _record,
 )
-
-
-@pytest.fixture(autouse=True)
-def _files_are_old(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every write here counts as settled: the quiet window has its own tests."""
-    monkeypatch.setattr(persistent_settings, "_now_ns", lambda: time.time_ns() + 3_600_000_000_000)
 
 __all__ = ["real_planner"]
 _WAIT_S = 10.0
@@ -224,7 +217,7 @@ def _peer_is_stale(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Gap:
 def _unreadable_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Gap:
     gap = _gap(monkeypatch, tmp_path)
     _write_flash_attention_off(monkeypatch)
-    monkeypatch.setattr(prov_mod, "read_settled", lambda _root: (None, None))
+    monkeypatch.setattr(prov_mod, "read_persisted", lambda _root: (None, None))
     return gap
 
 
