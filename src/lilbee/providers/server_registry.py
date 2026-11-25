@@ -14,7 +14,6 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 
-from lilbee.catalog.types import ModelSource
 from lilbee.providers.base import ProviderError, ProviderErrorKind, is_header_safe
 from lilbee.providers.local_servers import LOCAL_SERVER_KEYS
 from lilbee.providers.roles import WorkerRole
@@ -238,14 +237,12 @@ def check_role(ref: ProviderModelRef, role: WorkerRole) -> ServerRoute:
     if route is None:
         raise ProviderError(
             f"No server preset is named {ref.provider!r}. Add the preset or change the model.",
-            
             kind=ProviderErrorKind.NOT_FOUND,
         )
     if role not in route.roles:
         raise ProviderError(
             f"The server preset {route.name!r} does not serve the {role.value} role. "
             "Add the role to the preset or choose another model.",
-            
             kind=ProviderErrorKind.BAD_REQUEST,
         )
     return route

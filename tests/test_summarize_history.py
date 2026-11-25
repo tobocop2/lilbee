@@ -102,9 +102,7 @@ def test_an_overflowing_batch_splits_instead_of_stranding() -> None:
         content = messages[0]["content"]
         calls.append(len(content))
         if len(content) > 2000:
-            raise ProviderError(
-                "too big", kind=ProviderErrorKind.CONTEXT_OVERFLOW
-            )
+            raise ProviderError("too big", kind=ProviderErrorKind.CONTEXT_OVERFLOW)
         return MagicMock(text="notes for a slice")
 
     provider.chat.side_effect = chat
@@ -121,9 +119,7 @@ def test_a_single_message_overflow_still_fails_safe() -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     provider = MagicMock()
-    provider.chat.side_effect = ProviderError(
-        "too big", kind=ProviderErrorKind.CONTEXT_OVERFLOW
-    )
+    provider.chat.side_effect = ProviderError("too big", kind=ProviderErrorKind.CONTEXT_OVERFLOW)
     result = _searcher(provider).summarize_history(_msgs(1, size=99999), "")
     assert result.condensed == 0
     assert result.stranded == 1

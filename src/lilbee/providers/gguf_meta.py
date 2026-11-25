@@ -407,7 +407,6 @@ def find_mmproj_for_model(model_path: Path) -> Path:
         f"No mmproj (CLIP projection) file found for vision model {model_path.name}. "
         f"Download the mmproj file to {model_path.parent} or re-download the vision "
         "model through the catalog to get both files.",
-        
     )
 
 

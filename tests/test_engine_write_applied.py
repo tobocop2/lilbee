@@ -320,7 +320,6 @@ def test_a_write_that_cannot_find_the_engine_binary_is_not_reported_as_applied(
     def _no_binary(*, engines: Any) -> None:
         raise ProviderError(
             "llama-server binary not found.",
-            
             kind=ProviderErrorKind.NOT_FOUND,
         )
 

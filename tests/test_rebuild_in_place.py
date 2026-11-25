@@ -91,9 +91,7 @@ async def test_rebuild_where_every_embed_fails_keeps_the_index_and_reports_the_f
     embedder = _embedder()
     store = await _indexed(embedder)
     chunks = store.count_chunks()
-    embedder.embed_batch.side_effect = ProviderError(
-        "No embed model server is running."
-    )
+    embedder.embed_batch.side_effect = ProviderError("No embed model server is running.")
     result = await sync(force_rebuild=True, quiet=True)
     assert store.count_chunks() == chunks
     assert sorted(result.failed) == ["a.txt", "b.txt", "c.txt"]

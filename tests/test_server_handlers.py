@@ -991,7 +991,6 @@ class TestAskStream:
         mock_svc.provider.chat.side_effect = ProviderError(
             "gemini/m is rate-limited or out of quota. That's a limit on your "
             "provider API key, not a lilbee problem.",
-            
             kind=ProviderErrorKind.RATE_LIMIT,
         )
         events = [e async for e in handlers.ask_stream("question")]
@@ -1022,9 +1021,7 @@ class TestAskStream:
     async def test_unclassified_provider_error_has_message_but_no_code(self, mock_svc):
         # An UNKNOWN-kind ProviderError still surfaces its message, with no code.
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.side_effect = ProviderError(
-            "Chat failed: something odd"
-        )
+        mock_svc.provider.chat.side_effect = ProviderError("Chat failed: something odd")
         events = [e async for e in handlers.ask_stream("question")]
 
         error_events = [e for e in events if e and e.startswith("event: error")]
@@ -1769,7 +1766,6 @@ class TestChatStream:
             async def _gen():
                 raise ProviderError(
                     "gemini/m rejected your API key.",
-                    
                     kind=ProviderErrorKind.AUTH,
                 )
                 yield  # pragma: no cover

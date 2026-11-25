@@ -199,9 +199,7 @@ class Embedder:
             return self._provider.embed(batch)
         except ProviderError as exc:
             if exc.repeats_on_retry:
-                raise EmbeddingOverflowError(
-                    str(exc), kind=exc.kind
-                ) from exc
+                raise EmbeddingOverflowError(str(exc), kind=exc.kind) from exc
             raise
 
     def _embed_with(
