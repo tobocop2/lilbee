@@ -1766,7 +1766,7 @@ def _sweep_calls(refuse_every: int, message: str = "refused") -> tuple[int, int]
 
     remaining = {idx: float((40 + idx) * GIB) for idx in range(30)}
     chat = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=30 * GIB)
-    assert _place_split(chat, remaining, estimate) is None
+    assert _place_split(chat, remaining, estimate, misses={}) is None
     return seen["estimated"], seen["refused"]
 
 
@@ -1801,7 +1801,7 @@ def test_a_refused_ratio_leaves_the_other_ratios_of_that_card_count_to_try() -> 
 
     remaining = {0: float(24 * GIB), 1: float(16 * GIB)}
     chat = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=30 * GIB)
-    placed = _place_split(chat, remaining, estimate)
+    placed = _place_split(chat, remaining, estimate, misses={})
     assert placed is not None
     assert placed.plan.devices == (0, 1)
     assert placed.plan.tensor_split == asked[1]
@@ -1820,16 +1820,41 @@ def _saved_chat_placement(
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
     _staged_chat_peak(tmp_path, monkeypatch, (24, 16), model_gib=model_gib)
-    chat = planning._estimate_role(WorkerRole.CHAT, "ref", engine=MISTRAL, device_count=2, slots=1)
     return planning._placement_or_auto(
         PlacementSpec.from_json(raw),
-        [chat],
+        [_planner_chat_input(2)],
         {WorkerRole.CHAT: "ref"},
         _unequal_cards(),
         engines={WorkerRole.CHAT: MISTRAL},
         unified_budget=None,
         host_cards=planning.HostCards(_unequal_cards()),
     )
+
+
+@_stated
+def test_a_saved_placement_without_a_split_gets_an_equal_split_on_unequal_cards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    placed, applied, why = _saved_chat_placement(
+        tmp_path, monkeypatch, '{"chat": {"devices": [0, 1]}}', model_gib=26
+    )
+    assert applied is True
+    assert why == ""
+    (instance,) = placed.instances
+    assert instance.devices == (0, 1)
+    assert instance.tensor_split == (1, 1)
+
+
+@_stated
+def test_a_saved_placement_without_a_split_is_refused_when_half_exceeds_the_small_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("WARNING")
+    _placed, applied, _why = _saved_chat_placement(
+        tmp_path, monkeypatch, '{"chat": {"devices": [0, 1]}}', model_gib=36
+    )
+    assert applied is False
+    assert "device 1 has" in caplog.text
 
 
 @_stated
@@ -1853,7 +1878,7 @@ def test_a_saved_placement_with_a_role_off_the_cards_refuses_that_role_alone(
     from lilbee.providers.fleet.placement_spec import TargetRefusedError
 
     raw = '{"chat": {"devices": [0, 1], "tensor_split": [3, 2]}, "embed": {"target": "cpu"}}'
-    with pytest.raises(TargetRefusedError, match=r"mistral\.rs cannot split m\.gguf") as caught:
+    with pytest.raises(TargetRefusedError, match="only evenly across cards") as caught:
         _saved_chat_placement(tmp_path, monkeypatch, raw)
     assert list(caught.value.reasons) == [WorkerRole.CHAT]
 

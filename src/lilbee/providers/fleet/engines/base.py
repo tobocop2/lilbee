@@ -346,6 +346,9 @@ class SplitRefusedError(ProviderError):
 class SplitChecked(Protocol):
     """An engine whose launch refuses some tensor splits; placement asks the same rule."""
 
+    equal_split_only: bool
+    """True when the launch accepts only an equal share on each card."""
+
     def check_split(self, model_path: Path, ratio: tuple[int, ...]) -> None:
         """Raise ``SplitRefusedError`` naming why *ratio* cannot launch over its cards."""
         ...
