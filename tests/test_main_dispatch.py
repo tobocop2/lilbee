@@ -442,6 +442,23 @@ class TestPrestartMpResourceTracker:
         assert raised == return_code
         straggler_exit.assert_called_once_with(return_code)
 
+    @pytest.mark.parametrize("return_code", [0, 1])
+    def test_run_tui_leaves_no_log_handler_on_the_tui_log_when_it_ends(
+        self, return_code: int
+    ) -> None:
+        import logging
+
+        root = logging.getLogger()
+        before = list(root.handlers)
+        try:
+            self._run_tui_with_return_code(return_code)
+            leaked = [h for h in root.handlers if h not in before]
+        finally:
+            for handler in [h for h in root.handlers if h not in before]:
+                root.removeHandler(handler)
+                handler.close()
+        assert leaked == []
+
     @pytest.mark.parametrize("return_code", [0, None])
     def test_run_tui_returns_and_passes_zero_when_the_app_ends_cleanly(
         self, return_code: int | None
