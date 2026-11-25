@@ -55,7 +55,8 @@ def _py_spy_dump(pid: int, py_spy: str | None) -> str:
     if py_spy is None:
         return f"{_PY_SPY} is not on PATH"
     try:
-        done = subprocess.run(            [py_spy, "dump", "--pid", str(pid)],
+        done = subprocess.run(
+            [py_spy, "dump", "--pid", str(pid)],
             capture_output=True,
             encoding="utf-8",
             errors="replace",
@@ -64,7 +65,8 @@ def _py_spy_dump(pid: int, py_spy: str | None) -> str:
     except (OSError, subprocess.TimeoutExpired) as err:
         return f"{_PY_SPY} failed: {err!r}"
     text = done.stdout[-_PY_SPY_TAIL_CHARS:] if done.returncode == 0 else done.stderr
-    return text.strip() or f"{_PY_SPY} exited {done.returncode} with no output"
+    text = text.strip() or f"exited {done.returncode} with no output"
+    return f"{_PY_SPY} dump of pid {pid}: {text}"
 
 
 def _describe(proc: psutil.Process, *, on_linux: bool, with_stacks: bool) -> list[str]:
