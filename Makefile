@@ -59,12 +59,17 @@ ENGINE_PACKS_CELLS ?= $(abspath $(wildcard ../lilbee-engine-packs/cells.yml))
 export ENGINE_PACKS_CELLS
 
 # The hang watchdog (tests/_hang_watchdog.py) prints every stack when a test runs long,
-# so a lost worker leaves a trace in the job log. The seconds are CI's own value.
-HANG_DUMP_S := $(shell sed -n 's/^ *LILBEE_TEST_HANG_DUMP_S: "\([0-9]*\)".*/\1/p' .github/workflows/ci.yml)
-HANG_DUMP_DIR := $(or $(TMPDIR),/tmp)/lilbee-hang-dumps
+# so a lost worker leaves a trace in the job log. This Makefile owns the seconds for
+# every test recipe, and CI sets only the folder. An empty value would switch the
+# watchdog off without a word, so make stops instead.
+export LILBEE_TEST_HANG_DUMP_S ?= 90
+export LILBEE_TEST_HANG_DUMP_DIR ?= $(or $(TMPDIR),/tmp)/lilbee-hang-dumps
+ifeq ($(strip $(LILBEE_TEST_HANG_DUMP_S)),)
+$(error LILBEE_TEST_HANG_DUMP_S is empty: the hang watchdog would be off)
+endif
 
 test:
-	LILBEE_TEST_HANG_DUMP_S=$(HANG_DUMP_S) LILBEE_TEST_HANG_DUMP_DIR=$(HANG_DUMP_DIR) uv run pytest --cov=lilbee --cov-report=term-missing -v $(XDIST)
+	uv run pytest --cov=lilbee --cov-report=term-missing -v $(XDIST)
 
 test-ci:
 	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html $(COV_FLAGS) -v $(XDIST)

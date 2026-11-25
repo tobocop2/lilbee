@@ -325,7 +325,7 @@ jobs:
           # instead of hanging to timeout-minutes. A Python timer at 75% of each
           # test's timeout also prints every stack to this log before
           # pytest-timeout ends a stuck test. See tests/_hang_watchdog.py.
-          LILBEE_TEST_HANG_DUMP_S: "90"
+          # The Makefile sets LILBEE_TEST_HANG_DUMP_S (90); CI sets only the folder.
           LILBEE_TEST_HANG_DUMP_DIR: ${{ runner.temp }}/hang-dumps
           # When py-spy is installed, a stalled child run in a test attaches it to each
           # descendant; Ubuntu's ptrace scope allows that for root only. The runner has
