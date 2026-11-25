@@ -7,6 +7,7 @@
 #   TEI_REPO, TEI_TAG          the router source
 #   RUSTC_VERSION              the Rust toolchain, which rust-toolchain.toml of the tag must name
 #   WHEEL_VERSION              the version of the wheel
+#   BUILD_NUMBER               the build number of the wheel
 #   BACKEND, PLATFORM          the backend and the platform tag of the wheel
 #   CUDA_CC                    the CUDA compute capability of a Linux cell; empty for the CPU cell
 #   CUDA_VERSION, CUDA_PACKAGE_SUFFIX   the CUDA toolkit of the Linux cells
@@ -37,7 +38,7 @@ metal_work() {
 require_inputs() {
   local os name names tools used=(out wheel pack-venv check-venv)
   os="$(host_os)"
-  names=(TEI_REPO TEI_TAG RUSTC_VERSION WHEEL_VERSION BACKEND PLATFORM OUT)
+  names=(TEI_REPO TEI_TAG RUSTC_VERSION WHEEL_VERSION BUILD_NUMBER BACKEND PLATFORM OUT)
   case "${os}" in
     Linux)
       names+=(CUDA_VERSION CUDA_PACKAGE_SUFFIX MANYLINUX_IMAGE)
@@ -67,7 +68,7 @@ require_inputs() {
 # Build the repaired wheel in the manylinux image. tei_manylinux.sh installs the pinned build tools there.
 build_linux() {
   docker run --rm -v "${PWD}:/work" -w /work \
-    -e TEI_REPO -e TEI_TAG -e RUSTC_VERSION -e WHEEL_VERSION -e BACKEND -e CUDA_CC -e CUDA_PACKAGE_SUFFIX -e CUDA_VERSION \
+    -e TEI_REPO -e TEI_TAG -e RUSTC_VERSION -e WHEEL_VERSION -e BUILD_NUMBER -e BACKEND -e CUDA_CC -e CUDA_PACKAGE_SUFFIX -e CUDA_VERSION \
     -e WORK=/work -e OUT=/work/out -e "OWNER=$(id -u):$(id -g)" \
     "${MANYLINUX_IMAGE}" \
     bash /work/tools/wheel-build/tei_manylinux.sh
@@ -117,9 +118,9 @@ check_tag() {  # wheel
   local name info
   name="$(basename "$1")"
   case "${name}" in
-    lilbee_engine_tei-"${WHEEL_VERSION}"-1."${BACKEND//-/_}"-py3-none-"${PLATFORM}".whl) ;;
+    lilbee_engine_tei-"${WHEEL_VERSION}-${BUILD_NUMBER}.${BACKEND//-/_}-py3-none-${PLATFORM}.whl") ;;
     *)
-      echo "pack_tei: wrong tag on ${name}: expected version ${WHEEL_VERSION}, backend ${BACKEND} and platform ${PLATFORM}" >&2
+      echo "pack_tei: wrong tag on ${name}: expected version ${WHEEL_VERSION}, build ${BUILD_NUMBER}.${BACKEND//-/_} and platform ${PLATFORM}" >&2
       return 1
       ;;
   esac

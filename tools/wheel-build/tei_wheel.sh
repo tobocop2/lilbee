@@ -3,7 +3,7 @@
 #
 # Usage: tei_wheel.sh <tei-source-dir> <router-binary> <cargo-features> <target-triple> <backend> <platform-tag> <out-dir>
 #
-# Reads WHEEL_VERSION (for example 1.9.4) and PYTHON (default python3). NOTICE-NVIDIA-CUDA must
+# Reads WHEEL_VERSION (for example 1.9.4), BUILD_NUMBER (the build number of the cell) and PYTHON (default python3). NOTICE-NVIDIA-CUDA must
 # already sit in the project when the build holds NVIDIA files; the wheel then names the NVIDIA
 # licence. OPENSSL_LICENSE names a licence file to ship as LICENSE-openssl (a Linux wheel that
 # grafts the system OpenSSL). The licence expression is Apache-2.0 (the router) and every licence
@@ -19,7 +19,7 @@ test "$#" -eq 7 || {
   exit 2
 }
 src="$1" binary="$2" features="$3" target="$4" backend="$5" platform="$6" out="$7"
-: "${WHEEL_VERSION:?}"
+: "${WHEEL_VERSION:?}" "${BUILD_NUMBER:?}"
 python="${PYTHON:-python3}"
 here="$(cd "$(dirname "$0")" && pwd)"
 project="$(cd "${here}/../../packaging/engine-wheel-tei" && pwd)"
@@ -51,7 +51,7 @@ chmod 755 "${project}/lilbee_engine_tei/bin/text-embeddings-router"
 "${python}" "${here}/stamp_engine_wheel.py" "${project}/pyproject.toml" "${WHEEL_VERSION}" "${expression}"
 # The build and the retag stamp every wheel entry with the commit time of the source.
 export "$(bash "${here}/source_date_epoch.sh" "${src}")"
-(cd "${project}" && build_wheel_with_tools "${python}" -C--build-option="--build-number=1.${backend//-/_}" \
+(cd "${project}" && build_wheel_with_tools "${python}" -C--build-option="--build-number=${BUILD_NUMBER}.${backend//-/_}" \
   --outdir "${out}/dist")
 "${python}" -m wheel tags --remove --platform-tag "${platform}" "${out}"/dist/*.whl
 ls -l "${out}/dist"
