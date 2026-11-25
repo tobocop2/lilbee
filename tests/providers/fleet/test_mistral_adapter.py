@@ -146,7 +146,7 @@ def test_a_newer_driver_than_the_floor_still_picks_the_cuda_cell() -> None:
         ([L4, A40], "cuda-sm86"),
         ([A40, L4], "cuda-sm86"),
         ([A40, A40], "cuda-sm86"),
-        ([H100, A100, L4], "cuda-sm80"),
+        ([A100, A40, L4], "cuda-sm80"),
     ],
 )
 def test_cards_take_the_cell_that_the_weakest_card_runs(
@@ -154,6 +154,17 @@ def test_cards_take_the_cell_that_the_weakest_card_runs(
 ) -> None:
     pick = MISTRAL.pick_build(caps("Linux", "x86_64", gpus=gpus, cuda=(12, 8)))
     assert pick.backend == backend
+
+
+@pytest.mark.parametrize("gpus", [[L4, H100], [H100, L4], [A100, B200]])
+def test_cards_of_different_generations_pick_cpu_and_say_so(
+    gpus: list[tuple[str, tuple[int, int]]],
+) -> None:
+    """Machine code of one major version does not run on another."""
+    pick = MISTRAL.pick_build(caps("Linux", "x86_64", gpus=gpus, cuda=(12, 8)))
+    assert pick.backend == "cpu"
+    assert "different generations" in pick.reason
+    assert all(name in pick.reason for name, _ in gpus)
 
 
 def test_a_card_below_every_cell_picks_cpu_and_says_why() -> None:
