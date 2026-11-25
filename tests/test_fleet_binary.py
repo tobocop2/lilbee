@@ -394,7 +394,9 @@ def test_install_hint_indexes_are_documented() -> None:
 
     The bug this guards was the two disagreeing: the docs shipped install commands
     that produced no engine while the message that fired blamed the model. A reader
-    who follows the error and then checks the README has to find the same set.
+    who follows the error and then checks the install docs has to find the same set.
+    The README leads with the one-file install and links to docs/install.md, which
+    holds the per-index pip and uv commands.
     """
     import re
 
@@ -406,7 +408,7 @@ def test_install_hint_indexes_are_documented() -> None:
     assert hint_indexes, "the hint must name at least one index"
 
     root = Path(__file__).resolve().parents[1]
-    for doc in ("README.md", "docs/usage.md"):
+    for doc in ("docs/install.md", "docs/usage.md"):
         # Explicit utf-8: both files carry non-cp1252 characters, so the locale
         # default would decode-error on Windows.
         text = (root / doc).read_text(encoding="utf-8")
