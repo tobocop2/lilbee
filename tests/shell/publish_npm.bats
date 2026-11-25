@@ -105,6 +105,11 @@ npm_requested() {  # channels tag
   [ "$output" = true ]
   run npm_requested homebrew,nix v1.2.3b1000
   [ "$output" = false ]
+  # GitHub's contains() and == ignore case, and so does the step.
+  run npm_requested NPM v1.2.3b1000
+  [ "$output" = true ]
+  run npm_requested ALL v1.2.3b1000
+  [ "$output" = true ]
   # The npm job runs on that decision and on nothing else.
   run yq -r '.jobs.npm.if' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
   [ "$output" = "needs.resolve.outputs.npm == 'true'" ]
