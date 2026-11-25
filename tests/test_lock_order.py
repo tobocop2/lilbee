@@ -177,7 +177,15 @@ class _Builds:
         svc_mod.set_services(None)
         monkeypatch.setattr(svc_mod._state, "singleton", None)
 
-    def _build(self, config, provider=None, registry=None, interactive=False, config_refresh=None):
+    def _build(
+        self,
+        config,
+        provider=None,
+        registry=None,
+        interactive=False,
+        config_refresh=None,
+        held_writes=None,
+    ):
         self.held_at_build.append(self._takes.held())
         self.held_anywhere_at_build.append(self._takes.held_anywhere())
         for callback in self.on_build:
