@@ -77,7 +77,7 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_THEME = "rose-pine"  # muted, low-glare; easier on the eyes than the warmer themes
 _CHAT_SCREEN_NAME = "chat"
-# Seconds the unmount waits for task-bar workers that ended their task to make their last call.
+# Seconds the unmount waits for the started task-bar workers to return.
 _UNWIND_WAIT_S = 5.0
 _UNWIND_POLL_S = 0.01
 # Textual's default screen, then the current view; anything higher is pushed over the view.
