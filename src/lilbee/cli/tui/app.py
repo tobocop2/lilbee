@@ -558,7 +558,7 @@ class LilbeeApp(App[None]):
 
             # A rejected swap (validation or disk error) must not be fatal at startup.
             try:
-                apply_settings_update({field: canon.effective})
+                result = apply_settings_update({field: canon.effective})
             except (ValueError, OSError, ConfigReadError):
                 log.warning(
                     msg.MODEL_FALLBACK_FAILED.format(
@@ -570,6 +570,8 @@ class LilbeeApp(App[None]):
                     exc_info=True,
                 )
                 continue
+            for warning in result.warnings:
+                self._warn_with_toast(warning)
             if not canon.original:
                 # Adopting an installed model into an unconfigured role is the
                 # expected path (models pulled before the TUI ever ran), not a
