@@ -31,7 +31,7 @@ class WarningCode(StrEnum):
     """The engine allocated materially more or less GPU memory than planned."""
     HOST_SPILL = "host_spill"
     """The engine keeps part of a model's weights in system memory, where it runs slower."""
-    LIBRARY_UPGRADING ="library_upgrading"
+    LIBRARY_UPGRADING = "library_upgrading"
     """A first open is upgrading the library's format; requests that need it wait."""
     ENGINE_FALLBACK = "engine_fallback"
     """A role runs on another engine than the one chosen, or the stored choices are unreadable."""
