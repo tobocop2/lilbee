@@ -9,6 +9,7 @@ records the fields it received so a test can assert what went on the wire.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import types
 from collections.abc import AsyncIterator, Iterator
@@ -305,6 +306,9 @@ class FakeSdk:
     count_error: BaseException | None = None
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     clients: list[dict[str, Any]] = field(default_factory=list)
+    # The address the endpoint resolves to; a chat call from a client that carries a
+    # blocked-network rule covering it fails like the real client's connect check.
+    server_address: str | None = None
     _module: types.ModuleType | None = field(default=None, repr=False)
 
     def last(self, name: str) -> dict[str, Any]:
@@ -342,14 +346,25 @@ class FakeSdk:
         if self.require_key and not options["api_key"] and options["base_url"] is None:
             raise self.error("AuthenticationError", "no API key provided")
 
+    def _check_connect(self, client: Any) -> None:
+        """Refuse the connect when the client's blocked-network rule covers the server."""
+        rule = client.options.get("blocked_networks")
+        if self.server_address is None or not rule:
+            return
+        address = ipaddress.ip_address(self.server_address)
+        if any(address in ipaddress.ip_network(network) for network in rule):
+            raise self.error("OutboundForbiddenError", f"{address} is blocked")
+
     async def _chat(self, client: Any, req: Any) -> Any:
         self._check_key(client)
+        self._check_connect(client)
         self.calls.append(("chat", req.fields))
         if self.chat_error is not None:
             raise self.chat_error
         return self.chat_result
 
     async def _chat_stream(self, client: Any, req: Any) -> AsyncIterator[Any]:
+        self._check_connect(client)
         self.calls.append(("chat_stream", req.fields))
         if self.stream_open_error is not None:
             raise self.stream_open_error

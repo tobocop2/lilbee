@@ -120,6 +120,60 @@ class TestRuleForPresets:
         assert [rule is None for rule in rules] == [False, True]
 
 
+METADATA_ADDRESS = "169.254.169.254"
+PRIVATE_ADDRESS = "10.1.2.3"
+PNG = b"\x89PNG\r\n"
+TOOLS = [{"type": "function", "function": {"name": "look", "parameters": {"type": "object"}}}]
+
+
+def _vision(provider: SdkLLMProvider) -> None:
+    provider.vision_ocr(PNG, "wired/m")
+
+
+def _tools(provider: SdkLLMProvider) -> None:
+    provider.chat(MESSAGES, model="wired/m", tools=TOOLS)
+
+
+def _streamed_tools(provider: SdkLLMProvider) -> None:
+    list(provider.chat(MESSAGES, model="wired/m", tools=TOOLS, stream=True))
+
+
+WORK_PATHS = [_vision, _tools, _streamed_tools]
+WORK_IDS = ["vision", "tools", "streamed-tools"]
+
+
+class TestRuleOnVisionAndToolCalls:
+    """Vision and tool calls reach liter-llm through the chat client; the rule must follow."""
+
+    @pytest.fixture(autouse=True)
+    def _preset_serves_vision(self) -> None:
+        settings.set_value(
+            cfg.data_root,
+            "server_presets",
+            json.dumps([{"name": "wired", "url": URL, "roles": ["chat", "vision"]}]),
+        )
+
+    @pytest.mark.parametrize("path", WORK_PATHS, ids=WORK_IDS)
+    def test_a_blocked_address_is_refused(
+        self, sdk: fakes.FakeSdk, path: Callable[[SdkLLMProvider], None]
+    ) -> None:
+        sdk.server_address = METADATA_ADDRESS
+        with pytest.raises(ProviderError) as err:
+            path(SdkLLMProvider(LiterLlmBackend()))
+        assert err.value.kind is ProviderErrorKind.BAD_REQUEST
+        assert REFUSAL in str(err.value)
+        assert sdk.calls == []
+
+    @pytest.mark.parametrize("path", WORK_PATHS, ids=WORK_IDS)
+    def test_an_allowed_address_is_reached(
+        self, sdk: fakes.FakeSdk, path: Callable[[SdkLLMProvider], None]
+    ) -> None:
+        sdk.server_address = PRIVATE_ADDRESS
+        path(SdkLLMProvider(LiterLlmBackend()))
+        assert len(sdk.calls) == 1
+        assert sdk.clients[-1]["blocked_networks"]
+
+
 class TestNoPreCallLookup:
     def test_a_preset_call_does_not_resolve_the_host_before_the_client_connects(
         self, sdk: fakes.FakeSdk, monkeypatch: pytest.MonkeyPatch
