@@ -7,6 +7,7 @@ import io
 import os
 import re
 import shutil
+import stat
 import sys
 import tarfile
 import threading
@@ -22,7 +23,7 @@ from lilbee.catalog import runnable
 from lilbee.core.config import Config, cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import binary as binary_mod
-from lilbee.providers.fleet import first_use, router_install
+from lilbee.providers.fleet import engine_store, first_use, router_install
 from lilbee.providers.fleet.binary import EngineTool, resolve_llama_swap
 from lilbee.providers.fleet.build_use import IN_USE_NAME, BuildHolds
 from lilbee.providers.fleet.engine_store import (
@@ -262,7 +263,7 @@ class TestInstall:
         (target / "keep.txt").write_text("mine", encoding="utf-8")
         link = tmp_path / "link"
         link.symlink_to(target, target_is_directory=True)
-        router_install._remove_folder(link)
+        router_install.delete_tree(link)
         assert not link.is_symlink()
         assert list(target.iterdir()) == [target / "keep.txt"]
 
@@ -292,61 +293,95 @@ class TestInstall:
         stale.mkdir()
         (stale / "stale.txt").write_text("old", encoding="utf-8")
 
-        def refuse(path: str | Path, *args: Any, **kwargs: Any) -> None:
-            raise PermissionError(13, "Permission denied", str(path))
+        real_unlink = os.unlink
 
-        monkeypatch.setattr(router_install.shutil, "rmtree", refuse)
-        with caplog.at_level("WARNING", logger=router_install.log.name):
-            router_install._remove_folder(stale)
+        def refuse(path: str | Path, *args: Any, **kwargs: Any) -> None:
+            if str(path).endswith("stale.txt"):
+                raise PermissionError(13, "Permission denied", str(path))
+            real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", refuse)
+        with caplog.at_level("WARNING", logger=engine_store.log.name):
+            assert router_install.delete_tree(stale) is False
         assert any(str(stale) in r.getMessage() for r in caplog.records)
+
+    def test_a_read_only_file_inside_the_router_folder_is_replaced(
+        self, release: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Windows unlink refuses a read-only file; the stand-in does the same on any host."""
+        stale = engines_root(cfg.models_dir) / "router" / ROUTER_VERSION
+        stale.mkdir(parents=True)
+        (stale / "stale.txt").write_text("old", encoding="utf-8")
+        (stale / "stale.txt").chmod(0o444)
+        real_unlink = os.unlink
+
+        def windows_unlink(path: str | Path, *args: Any, **kwargs: Any) -> None:
+            if not os.stat(path, dir_fd=kwargs.get("dir_fd")).st_mode & stat.S_IWUSR:
+                raise PermissionError(13, "Access is denied", str(path))
+            real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", windows_unlink)
+        install_router()
+        assert sorted(p.name for p in stale.iterdir()) == [LICENCE_FILE, "llama-swap"]
+
+    def test_an_inner_entry_that_goes_during_the_delete_does_not_stop_the_install(
+        self, release: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stale = engines_root(cfg.models_dir) / "router" / ROUTER_VERSION
+        stale.mkdir(parents=True)
+        for name in ("stale.txt", "other.txt"):
+            (stale / name).write_text("old", encoding="utf-8")
+        real_unlink = os.unlink
+
+        def goes_first(path: str | Path, *args: Any, **kwargs: Any) -> None:
+            real_unlink(path, *args, **kwargs)
+            if str(path).endswith(".txt"):
+                raise FileNotFoundError(2, "No such file", str(path))
+
+        monkeypatch.setattr(os, "unlink", goes_first)
+        install_router()
+        assert sorted(p.name for p in stale.iterdir()) == [LICENCE_FILE, "llama-swap"]
 
     def test_removing_a_folder_that_is_already_gone_logs_nothing(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        with caplog.at_level("WARNING", logger=router_install.log.name):
-            router_install._remove_folder(tmp_path / "absent")
+        with caplog.at_level("WARNING", logger=engine_store.log.name):
+            assert router_install.delete_tree(tmp_path / "absent") is True
         assert caplog.records == []
 
-    def test_a_link_that_cannot_be_unlinked_is_logged_with_its_path(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
+    def test_a_link_that_cannot_be_unlinked_raises_with_its_path_and_keeps_its_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "keep.txt").write_text("mine", encoding="utf-8")
         link = tmp_path / "link"
-        link.symlink_to(tmp_path, target_is_directory=True)
+        link.symlink_to(target, target_is_directory=True)
 
         def refuse(self: Path, missing_ok: bool = False) -> None:
             raise PermissionError(13, "Permission denied", str(self))
 
         monkeypatch.setattr(Path, "unlink", refuse)
-        with caplog.at_level("WARNING", logger=router_install.log.name):
-            router_install._remove_folder(link)
-        assert any(str(link) in r.getMessage() for r in caplog.records)
+        with pytest.raises(PermissionError) as raised:
+            router_install.delete_tree(link)
+        assert str(link) in str(raised.value)
+        assert (target / "keep.txt").exists()
 
     def test_a_folder_that_goes_after_the_walk_listed_it_is_skipped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         folder = tmp_path / "router"
         (folder / "inner").mkdir(parents=True)
+        real_rmdir = os.rmdir
 
-        class GoneAfterListing:
-            """The os module as the router code sees it, with each folder gone at its chmod."""
-
-            def __getattr__(self, name: str) -> Any:
-                return getattr(os, name)
-
-            @staticmethod
-            def access(path: str | Path, mode: int) -> bool:
-                return False
-
-            @staticmethod
-            def stat(path: str | Path) -> os.stat_result:
+        def goes_first(path: str | Path, *args: Any, **kwargs: Any) -> None:
+            real_rmdir(path, *args, **kwargs)
+            if str(path).endswith("inner"):
                 raise FileNotFoundError(2, "No such file", str(path))
 
-        monkeypatch.setattr(router_install, "os", GoneAfterListing())
-        with caplog.at_level("WARNING", logger=router_install.log.name):
-            router_install._remove_folder(folder)
+        monkeypatch.setattr(os, "rmdir", goes_first)
+        with caplog.at_level("WARNING", logger=engine_store.log.name):
+            assert router_install.delete_tree(folder) is True
         assert not folder.exists()
         assert caplog.records == []
 
@@ -378,23 +413,21 @@ class TestInstall:
         (stale / "old").mkdir(parents=True)
         (stale / "old" / "stale.txt").write_text("old", encoding="utf-8")
         stale.chmod(0o555)
+        (stale / "old").chmod(0o555)
+        real_chmod = os.chmod
 
-        class ChmodRefused:
-            """The os module as the router code sees it, with chmod refused."""
-
-            def __getattr__(self, name: str) -> Any:
-                return getattr(os, name)
-
-            @staticmethod
-            def chmod(path: str | Path, mode: int) -> None:
+        def refuse(path: str | Path, mode: int, *args: Any, **kwargs: Any) -> None:
+            if str(path).startswith(str(stale)):
                 raise PermissionError(1, "Operation not permitted", str(path))
+            real_chmod(path, mode, *args, **kwargs)
 
-        monkeypatch.setattr(router_install, "os", ChmodRefused())
+        monkeypatch.setattr(os, "chmod", refuse)
         try:
-            with caplog.at_level("WARNING", logger=router_install.log.name):
-                router_install._remove_folder(stale)
+            with caplog.at_level("WARNING", logger=engine_store.log.name):
+                assert router_install.delete_tree(stale) is False
         finally:
-            stale.chmod(0o755)
+            real_chmod(stale / "old", 0o755)
+            real_chmod(stale, 0o755)
         assert any(str(stale) in r.getMessage() for r in caplog.records)
 
     def test_a_folder_a_running_router_holds_is_not_replaced(self, release: list[str]) -> None:
@@ -453,6 +486,27 @@ class TestInstall:
             old.chmod(0o755)
         assert sorted(p.name for p in old.iterdir()) == [IN_USE_NAME, LICENCE_FILE, "llama-swap"]
         assert [p.name for p in old.parent.iterdir()] == [ROUTER_VERSION]
+
+    def test_a_stage_that_cannot_be_deleted_does_not_hide_the_install_error(
+        self,
+        release: list[str],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        def broken(*_a: object, **_k: object) -> None:
+            raise RuntimeError("unpack broke")
+
+        def cannot_delete(path: Path) -> bool:
+            raise PermissionError(13, "Permission denied", str(path))
+
+        monkeypatch.setattr(router_install, "_unpack", broken)
+        monkeypatch.setattr(router_install, "delete_tree", cannot_delete)
+        with (
+            caplog.at_level("WARNING", logger=router_install.log.name),
+            pytest.raises(RuntimeError, match="unpack broke"),
+        ):
+            install_router()
+        assert any("stage folder" in r.getMessage() for r in caplog.records)
 
     def test_the_install_holds_the_router_lock_for_the_whole_install(
         self, release: list[str], monkeypatch: pytest.MonkeyPatch

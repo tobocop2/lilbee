@@ -663,24 +663,30 @@ def _builds(engine: Path) -> list[_Slot]:
 
 
 def _retry_writable(top: str, function: Callable[..., object], path: str, _error: object) -> None:
-    """The rmtree error hook: add the owner write bit to the parent, then delete once more.
+    """The rmtree error hook: add the owner write bit to the entry and its parent, then retry.
 
-    Only a parent inside the tree *top* gets the bit; the engine folder keeps its mode.
+    A read-only file blocks its own delete on Windows; a read-only folder blocks the delete of
+    its members on POSIX. Only an entry inside the tree *top* gets the bit, and a link keeps its
+    mode, because a chmod would follow it out of the tree. The engine folder keeps its mode.
     """
     parent = os.path.dirname(path)
     if function not in (os.unlink, os.rmdir) or os.path.commonpath((top, parent)) != top:
         return
     try:
-        os.chmod(parent, stat.S_IMODE(os.lstat(parent).st_mode) | stat.S_IWUSR)
+        for entry in (parent, path):
+            mode = os.lstat(entry).st_mode
+            if not stat.S_ISLNK(mode):
+                os.chmod(entry, stat.S_IMODE(mode) | stat.S_IWUSR)
         function(path)
     except OSError:
-        return  # _delete names what stays
+        return  # delete_tree names what stays
 
 
-def _delete(path: Path) -> bool:
+def delete_tree(path: Path) -> bool:
     """Unlink a file or a link, never its target, or remove a folder; False when part stays.
 
-    An entry that is already gone counts as deleted.
+    An entry that is already gone counts as deleted, also when an inner entry goes during the
+    delete. A part that stays is logged as a warning that names the path.
     """
     try:
         folder = stat.S_ISDIR(os.lstat(path).st_mode)
@@ -707,7 +713,7 @@ def _clean_up(folder: Path) -> None:
     """Delete the scratch or stage folder of a step; a failure is logged, so the step's own
     error is the one raised."""
     try:
-        _delete(folder)
+        delete_tree(folder)
     except OSError as exc:
         log.warning(_STAYS, folder, exc_info=exc)
 
@@ -727,12 +733,12 @@ def discard_build(build: Path, retry: str) -> None:
     """
     try:
         if not stat.S_ISDIR(os.lstat(build).st_mode):
-            _delete(build)
+            delete_tree(build)
             return
         with removing(build):
             trash = build.with_name(f"{_TRASH_PREFIX}{uuid.uuid4().hex}")
             build.rename(trash)
-            _delete(trash)
+            delete_tree(trash)
     except BuildInUseError as exc:
         raise _in_use_error(build_label(build), retry) from exc
     except PermissionError as exc:
@@ -1105,7 +1111,7 @@ class EngineStore:
         lock_path = self.root / LOCK_DIR / scratch.name
         try:
             with file_lock(lock_path, _NO_WAIT_S):
-                gone = _delete(scratch)
+                gone = delete_tree(scratch)
         except FileLockUnavailableError:
             return []
         _unlink_lock_file(lock_path)
@@ -1120,7 +1126,7 @@ class EngineStore:
                     for entry in _entries(engine, engine.name)
                     if entry.name.startswith((STAGE_PREFIX, _TRASH_PREFIX))
                 ]
-                return [child for child in leftovers if _delete(child)]
+                return [child for child in leftovers if delete_tree(child)]
         except FileLockUnavailableError:
             return []
 
@@ -1245,6 +1251,7 @@ __all__ = [
     "StorePathError",
     "UnsafeWheelError",
     "UnsupportedPlatformError",
+    "delete_tree",
     "discard_build",
     "engines_root",
     "fetch_frozen",
