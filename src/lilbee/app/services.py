@@ -959,13 +959,19 @@ def reset_services_on_exit() -> None:
             _wait_for_stop()
 
 
-def _straggler_threads() -> list[threading.Thread]:
-    """Non-daemon threads the interpreter would join at shutdown, besides us."""
+def straggler_threads() -> list[threading.Thread]:
+    """The threads the interpreter's exit would join, besides us.
+
+    The exit joins every non-daemon thread, and the thread pools' exit hook joins
+    every pool worker. A pool worker takes the daemon flag of the thread that started
+    it, so a worker of a run on a daemon thread is joined although it is a daemon.
+    """
+    pool_workers = concurrent.futures.thread._threads_queues
     return [
         thread
         for thread in _all_threads()
         if thread.is_alive()
-        and not thread.daemon
+        and (not thread.daemon or thread in pool_workers)
         and thread is not threading.main_thread()
         and thread is not threading.current_thread()
     ]
@@ -987,14 +993,14 @@ def exit_when_stragglers_would_hang(status: int) -> None:
 
 
 def _exit_if_stragglers(status: int, deadline: float) -> None:
-    """Join leftover non-daemon threads before *deadline*, else exit with *status*.
+    """Join the leftover threads the exit would join before *deadline*, else exit with *status*.
 
     A signal that joined the stop meanwhile sets the status instead.
     """
     with _interrupt_force_quits():
-        for thread in _straggler_threads():
+        for thread in straggler_threads():
             thread.join(max(0.0, deadline - time.monotonic()))
-        if _straggler_threads():
+        if straggler_threads():
             _exit_now(exit_status_after_stop(status), _STRAGGLER_NOTE)
 
 
@@ -1043,17 +1049,17 @@ def exit_code_of(stop: SystemExit) -> int:
 def end_command(stop: SystemExit) -> NoReturn:
     """End a one-shot command with *stop*, past a leftover thread that would hang the exit.
 
-    The interpreter joins every non-daemon thread before atexit, with no bound, and a
-    signal during that join loses its status. With such a thread left, the pools' own
+    The interpreter joins every non-daemon thread and every pool worker before atexit,
+    with no bound, and a signal during that join loses its status. With such a thread left, the pools' own
     exit hook first ends their idle workers (``_end_pool_workers``). A thread still
     busy after that takes the bounded exit: the engine stop, the straggler budget, then
     the end of the process. A signal meanwhile sets the status. With no thread left, it
     raises *stop*, so the interpreter's exit and atexit run as before.
     """
-    if _straggler_threads():
+    if straggler_threads():
         code = exit_code_of(stop)
         status = _end_pool_workers(code)
-        if _straggler_threads():
+        if straggler_threads():
             exit_after_signal(status)
         owed = exit_status_after_stop(status)
         if owed != code:

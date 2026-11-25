@@ -1,6 +1,7 @@
 """Tests for the CLI interface using typer's test runner."""
 
 import _thread
+import concurrent.futures
 import contextlib
 import errno
 import functools
@@ -6409,16 +6410,28 @@ class TestSigintCancel:
         assert signal.getsignal(signal.SIGINT) is previous
 
     @staticmethod
-    def _left_thread(release: threading.Event, *, daemon: bool = False) -> threading.Thread:
-        """A thread that waits for *release*, as a stuck worker of a run does."""
-        thread = threading.Thread(target=release.wait, daemon=daemon)
-        thread.start()
-        return thread
+    def _left_thread(release: threading.Event, *, pooled: bool = False) -> threading.Thread:
+        """A thread that waits for *release*, as a stuck worker of a run does.
 
-    # The exit joins an executor's workers also when they are daemon threads.
-    @pytest.mark.parametrize("daemon", [False, True])
+        *pooled* starts it as a pool worker from a daemon thread, as the run's
+        thread does: the worker is a daemon thread that the exit still joins.
+        """
+        if not pooled:
+            thread = threading.Thread(target=release.wait)
+            thread.start()
+            return thread
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        submitter = threading.Thread(target=pool.submit, args=(release.wait,), daemon=True)
+        submitter.start()
+        submitter.join(timeout=5)
+        pool.shutdown(wait=False)
+        (worker,) = pool._threads
+        assert worker.daemon
+        return worker
+
+    @pytest.mark.parametrize("pooled", [False, True])
     def test_a_sigint_after_a_cancel_force_quits_while_a_left_thread_lives(
-        self, monkeypatch, daemon: bool
+        self, monkeypatch, pooled: bool
     ) -> None:
         from lilbee.runtime.cancellation import sigint_cancel
 
@@ -6435,7 +6448,7 @@ class TestSigintCancel:
         try:
             with sigint_cancel():
                 signal.raise_signal(signal.SIGINT)
-                thread = self._left_thread(release, daemon=daemon)
+                thread = self._left_thread(release, pooled=pooled)
             with pytest.raises(_Quit):
                 signal.raise_signal(signal.SIGINT)
             assert outer_calls == []
