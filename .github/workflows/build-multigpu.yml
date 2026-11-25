@@ -36,8 +36,13 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: write  # publish freshly built engines to the engine-binaries mirror release
+# No permissions here: the token is the caller's. A called workflow that asks
+# for contents: write fails at startup when the caller's token is read-only,
+# as on a fork or Dependabot pull request, and then ci-result never reports.
+# The job reads the repo (checkout, mirror fetch) and, on a push, schedule or
+# dispatch, writes the mirror release; each caller job grants contents: write.
+# A dispatch of this workflow alone gets the repo's read-only default, so it
+# builds but does not mirror; dispatch warm-engine-cache to mirror.
 
 jobs:
   build-multigpu:
@@ -215,8 +220,13 @@ jobs:
       # Actions cache as well cost ~2.5 GiB of a 10 GiB cap to duplicate what the
       # mirror already holds durably, and that cap is what the Nuitka object
       # caches need: those cannot live on a release, engines can.
+      #
+      # Never from a pull request. The mirror keeps the first upload under a
+      # key, and main and the release fetch it without compiling, so an
+      # unreviewed tree must not write one. A merged engine change compiles
+      # again on the main push and uploads from there.
       - name: Mirror the built engine
-        if: steps.engine.outputs.needs-build == 'true' && github.ref_type != 'tag'
+        if: steps.engine.outputs.needs-build == 'true' && github.ref_type != 'tag' && github.event_name != 'pull_request'
         continue-on-error: true
         uses: ./.github/actions/publish-engine-asset
         with:
