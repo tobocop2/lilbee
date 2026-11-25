@@ -1002,6 +1002,21 @@ class TestSemanticChunkingConfig:
         assert getattr(Config(**{key: "  http://h:1/  "}), key) == "http://h:1"
 
     @pytest.mark.parametrize(
+        ("key", "default"),
+        [
+            ("ollama_base_url", "http://localhost:11434"),
+            ("lm_studio_base_url", "http://localhost:1234/v1"),
+        ],
+    )
+    def test_the_refusal_example_is_the_default_of_the_refused_setting(self, key, default) -> None:
+        with pytest.raises(ValidationError) as refused:
+            Config(**{key: "http://ollama:abc"})
+        text = str(refused.value)
+        assert f"for example {default}" in text
+        assert "with a scheme and a host," in text
+        assert "host and port" not in text
+
+    @pytest.mark.parametrize(
         "address",
         [
             "http://localhost:11434",
