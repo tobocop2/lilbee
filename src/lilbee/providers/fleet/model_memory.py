@@ -311,10 +311,10 @@ def encoder_estimate(weights: int | None) -> MemoryEstimate:
 def cpu_encoder_estimate(weights: int, vocab_size: int | None) -> MemoryEstimate:
     """The load peak of a CPU encoder server, which follows the vocabulary and not the task.
 
-    A vocabulary under 100 000 charges 1.5 times the weights plus 128 MiB. A larger or unstated
-    one charges 1.1 times the weights plus 3584 MiB.
+    A vocabulary of 1 to 99 999 charges 1.5 times the weights plus 128 MiB. A larger one, or one
+    that is unstated or below 1, charges 1.1 times the weights plus 3584 MiB.
     """
-    if vocab_size is not None and vocab_size < _CPU_ENCODER_VOCAB_CUT:
+    if vocab_size is not None and 0 < vocab_size < _CPU_ENCODER_VOCAB_CUT:
         numerator, denominator = _CPU_SMALL_VOCAB_WEIGHTS_FACTOR
         extra = _CPU_SMALL_VOCAB_BYTES
     else:
