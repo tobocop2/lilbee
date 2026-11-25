@@ -521,6 +521,15 @@ def _stamp_of(row: dict[str, Any] | None) -> dict[str, Any] | None:
     return None if text is None else cast("dict[str, Any]", json.loads(text))
 
 
+def _warn_unrecorded_chunks() -> None:
+    """Warn that a library whose chunks carry no record now gets one, assumed, not known."""
+    log.warning(
+        "The index records no chunk settings. Recording the settings in force "
+        "as the ones its chunks were cut with. If you changed a chunk setting "
+        "since the last full sync, run `lilbee rebuild`."
+    )
+
+
 def _meta_drift(
     meta: StoreMeta | None, current_model: str, current_dim: int
 ) -> EmbeddingModelMismatchError | None:
@@ -1362,11 +1371,7 @@ class Store:
             # A store with no meta row gets one from its first search or sync, not here.
             if meta is None or _stamp_of(row) is not None:
                 return
-            log.warning(
-                "The index records no chunk settings. Recording the settings in force "
-                "as the ones its chunks were cut with. If you changed a chunk setting "
-                "since the last full sync, run `lilbee rebuild`."
-            )
+            _warn_unrecorded_chunks()
             self._write_meta_unlocked(
                 embedding_model=meta["embedding_model"],
                 embedding_dim=meta["embedding_dim"],
@@ -1391,6 +1396,7 @@ class Store:
                 chunk_settings=chunk_settings,
             )
         elif chunk_settings is not None and _stamp_of(row) is None:
+            _warn_unrecorded_chunks()
             self._write_meta_unlocked(
                 embedding_model=meta["embedding_model"],
                 embedding_dim=meta["embedding_dim"],

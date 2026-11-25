@@ -21,7 +21,7 @@ from lilbee.app.status import gather_status
 from lilbee.cli.helpers import render_status_result
 from lilbee.core.config import cfg
 from lilbee.data.extract.chunk import chunk_text
-from lilbee.data.ingest import sync
+from lilbee.data.ingest import pipeline, sync
 from lilbee.data.store import Store
 from lilbee.data.store.schema import _meta_schema
 from lilbee.data.types import SyncResult
@@ -228,12 +228,28 @@ def test_a_change_to_a_library_built_before_the_record_shows_as_drift():
     assert app_settings.chunk_drift() == ["chunk_size"]
 
 
-def test_a_sync_into_a_library_built_before_the_record_records_its_settings():
+def test_a_sync_into_a_legacy_library_records_its_settings_and_warns_once(caplog):
     store = get_services().store
     store.add_chunks(_records(["a"]))
     _legacy_meta(store)
-    store.add_chunks(_records(["b"], source="other.md"), chunk_settings=reindex_values())
+    with caplog.at_level(logging.WARNING, logger="lilbee.data.store.core"):
+        store.add_chunks(_records(["b"], source="other.md"), chunk_settings=reindex_values())
+        store.add_chunks(_records(["c"], source="third.md"), chunk_settings=reindex_values())
+    pins = [r for r in caplog.records if "records no chunk settings" in r.getMessage()]
+    assert len(pins) == 1
+    assert "lilbee rebuild" in pins[0].getMessage()
     assert store.chunk_stamp()["chunk_size"] == OLD_SIZE
+
+
+async def test_a_sync_clears_its_settings_snapshot_when_it_ends(monkeypatch):
+    async def fails(*_args, **_kwargs):
+        assert pipeline._SYNC_CHUNK_SETTINGS.get() == reindex_values()
+        raise RuntimeError("sync failed")
+
+    monkeypatch.setattr(pipeline, "_sync", fails)
+    with pytest.raises(RuntimeError, match="sync failed"):
+        await sync(quiet=True)
+    assert pipeline._SYNC_CHUNK_SETTINGS.get() is None
 
 
 def test_a_library_with_a_meta_row_and_no_chunks_records_nothing_on_a_check():
