@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import NoReturn
 from types import SimpleNamespace
+from typing import NoReturn
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
