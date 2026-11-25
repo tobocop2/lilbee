@@ -308,16 +308,24 @@ class TestSettingsFeatureGating:
         from lilbee.cli.tui.screens import settings as settings_mod
 
         with mock.patch(
-            "lilbee.cli.tui.screens.settings_widgets.crawler_available", return_value=False
+            "lilbee.cli.tui.screens.settings_widgets.crawler_installed", return_value=False
         ):
             groups = settings_mod.group_settings()
         assert "Crawling" not in groups
+
+    def test_crawling_group_visible_with_a_crawler_that_cannot_load(
+        self, broken_crawlberg: str
+    ) -> None:
+        from lilbee.cli.tui.screens import settings as settings_mod
+
+        groups = settings_mod.group_settings()
+        assert "Crawling" in groups
 
     def test_crawling_group_visible_with_crawler(self) -> None:
         from lilbee.cli.tui.screens import settings as settings_mod
 
         with mock.patch(
-            "lilbee.cli.tui.screens.settings_widgets.crawler_available", return_value=True
+            "lilbee.cli.tui.screens.settings_widgets.crawler_installed", return_value=True
         ):
             groups = settings_mod.group_settings()
         assert "Crawling" in groups
