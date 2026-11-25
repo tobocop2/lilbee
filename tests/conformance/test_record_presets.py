@@ -359,7 +359,9 @@ class TestReplayMatching:
         plain = tmp_path / "plain.json"
         plain.write_text(json.dumps(doc), encoding="utf-8")
         marked = tmp_path / "marked.json"
-        marked.write_text(json.dumps({**doc, SAMPLING_KNOBS_KEY: KNOBS_NOT_RECORDED}))
+        marked.write_text(
+            json.dumps({**doc, SAMPLING_KNOBS_KEY: KNOBS_NOT_RECORDED}), encoding="utf-8"
+        )
         assert type(load_fixture(plain)[2][0]) is Exchange
         assert type(load_fixture(marked)[2][0]) is UnrecordedKnobsExchange
 
