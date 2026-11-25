@@ -19,6 +19,8 @@ class BuildStatsDict(TypedDict):
     pages_published: int
     pages_drafted: int
     pending_markers: int
+    pages_failed: int
+    last_model_failure: str
     citations_rendered: int
     citations_dropped_unverified: int
     verified_by_page: dict[str, int]
@@ -42,6 +44,9 @@ class BuildStats:
     by the faithfulness or drift gate). ``pending_markers`` counts sections
     that produced no page at all and left a PENDING marker under ``drafts/``,
     from a parse failure or a concept-slug collision.
+    ``pages_failed`` counts pages not written because the model call that
+    would write them failed; a batched call that fails loses every page it
+    covered, and those pages also leave PENDING markers.
     ``citations_dropped_unverified`` counts parsed footnotes that reached no
     page: excerpt not found in the source chunks, or no source to attribute
     them to. Footnotes skipped for citing a wiki page are in neither count.
@@ -53,6 +58,7 @@ class BuildStats:
     pages_published: int = 0
     pages_drafted: int = 0
     pending_markers: int = 0
+    pages_failed: int = 0
     citations_rendered: int = 0
     citations_dropped_unverified: int = 0
     verified_by_page: dict[str, int] = field(default_factory=dict)
@@ -121,6 +127,10 @@ class BuildStats:
         """Count a section left as a PENDING marker under ``drafts/``."""
         self.pending_markers += 1
 
+    def record_failed_pages(self, count: int) -> None:
+        """Count *count* pages lost because the model call that would write them failed."""
+        self.pages_failed += count
+
     def record_citations(self, rendered: int, dropped: int) -> None:
         """Count one page's verified and rejected citation records."""
         self.citations_rendered += rendered
@@ -133,6 +143,8 @@ class BuildStats:
             pages_published=self.pages_published,
             pages_drafted=self.pages_drafted,
             pending_markers=self.pending_markers,
+            pages_failed=self.pages_failed,
+            last_model_failure=self.last_model_failure,
             citations_rendered=self.citations_rendered,
             citations_dropped_unverified=self.citations_dropped_unverified,
             verified_by_page=dict(self.verified_by_page),
@@ -143,6 +155,22 @@ class BuildStats:
     def summary_line(self) -> str:
         """One-line human summary of the run."""
         return format_summary_line(self.as_dict())
+
+
+def failed_pages_message(stats: BuildStatsDict) -> str | None:
+    """The count of pages lost to failed model calls and the last cause, or None when none was lost.
+
+    The total is every page the run wrote plus every page it lost, so a run
+    that lost all its pages reads "N of N".
+    """
+    failed = stats["pages_failed"]
+    if not failed:
+        return None
+    total = stats["pages_generated"] + failed
+    return (
+        f"{failed} of {total} pages could not be written.\n"
+        f"Last error: {stats['last_model_failure']}."
+    )
 
 
 def format_summary_line(stats: BuildStatsDict) -> str:

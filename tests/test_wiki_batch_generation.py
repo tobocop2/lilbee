@@ -30,7 +30,7 @@ from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_PARSE,
     WikiSubdir,
 )
-from lilbee.wiki.stats import BuildStats
+from lilbee.wiki.stats import BuildStats, failed_pages_message
 from lilbee.wiki.synthesis import (
     _MAX_REUSE_CONCEPT_LABELS,
     _existing_concept_labels,
@@ -1450,6 +1450,77 @@ class TestFullBuildWhenTheModelFails:
         assert "No wiki pages were written" in message
         assert "every model call failed (1)" in message
         assert "The chat model is not running." in message
+
+    def test_a_build_that_lost_every_page_counts_them_all(self, stub_embedder):
+        provider = MagicMock()
+        provider.chat.side_effect = ConnectionError("The chat model is not running.")
+        provider.get_capabilities.return_value = []
+        stats = BuildStats()
+        generate_source_batch(
+            source="s.txt",
+            entities=[
+                _entity("henry-ford", "Henry Ford", ["s.txt"]),
+                _entity("edsel-ford", "Edsel Ford", ["s.txt"]),
+            ],
+            chunks=[_chunk("s.txt", 0, _EXCERPT)],
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert failed_pages_message(stats.as_dict()) == (
+            "2 of 2 pages could not be written.\nLast error: The chat model is not running."
+        )
+
+    def test_a_build_that_lost_some_pages_counts_them_and_names_the_cause(
+        self, stub_embedder, monkeypatch
+    ):
+        from lilbee.providers.base import ChatResult, FinishReason
+        from lilbee.wiki.generation import run_full_build
+
+        lost_excerpt = "Edsel Ford ran Ford Motor."
+        written = (
+            _section("Henry Ford", "> Henry Ford founded Ford Motor. [^src1]\n")
+            + _valid_citation_block()
+        )
+
+        def chat(messages, **kwargs):
+            if any(lost_excerpt in str(m["content"]) for m in messages):
+                raise ConnectionError("The chat model is not running.")
+            return ChatResult(text=written, tool_calls=(), finish_reason=FinishReason.STOP)
+
+        provider = MagicMock()
+        provider.chat.side_effect = chat
+        provider.get_capabilities.return_value = []
+        chunks = {
+            "s.txt": [_chunk("s.txt", 0, _EXCERPT)],
+            "t.txt": [_chunk("t.txt", 0, lost_excerpt)],
+        }
+        services = MagicMock()
+        services.store.get_chunks_by_source.side_effect = lambda name: chunks.get(name, [])
+        services.store.get_sources.return_value = [
+            {"filename": name, "chunk_count": 1} for name in chunks
+        ]
+        services.provider = provider
+        extractor = MagicMock()
+        extractor.extract.return_value = [
+            _entity("henry-ford", "Henry Ford", ["s.txt"]),
+            _entity("edsel-ford", "Edsel Ford", ["t.txt"]),
+        ]
+        monkeypatch.setattr("lilbee.wiki.generation.get_services", lambda: services)
+        monkeypatch.setattr(
+            "lilbee.wiki.generation.get_entity_extractor", lambda *a, **kw: extractor
+        )
+
+        result = run_full_build(cfg)
+
+        assert result["count"] == 1
+        assert result["stats"]["pages_failed"] == 1
+        assert failed_pages_message(result["stats"]) == (
+            "1 of 2 pages could not be written.\nLast error: The chat model is not running."
+        )
 
     def test_a_build_that_wrote_a_page_does_not_raise(self, stub_embedder, monkeypatch):
         text = (
