@@ -186,6 +186,21 @@ def test_d1_health_is_never_read_from_an_upstream_that_is_not_running() -> None:
     assert HEALTH not in asked
 
 
+def test_d1_a_running_list_with_an_error_status_is_not_trusted() -> None:
+    client, asked = _client(
+        WorkerRole.EMBED,
+        LEMONADE.request_profile,
+        {
+            "/v1/embeddings": EMBEDDING,
+            RUNNING: httpx.Response(500, json=READY),
+            HEALTH: ON_NPU,
+        },
+    )
+    with pytest.raises(ProviderError, match="Lemonade did not report the device of the model"):
+        provider_mod._warm_role(WorkerRole.EMBED, client)
+    assert HEALTH not in asked
+
+
 @pytest.mark.parametrize("listing", [{"running": "x"}, {"running": ["x"]}, []])
 def test_d1_a_running_list_of_another_shape_reads_as_unreadable(listing: object) -> None:
     client, asked = _client(
