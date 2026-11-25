@@ -52,7 +52,35 @@ engine_paths() {
 @test "a pull request run never uploads an engine to the mirror" {
   run yq -r '.jobs["build-multigpu"].steps[] | select(.name == "Mirror the built engine") | .if' "${BUILD}"
   [ "$status" -eq 0 ]
-  [ "$output" = "steps.engine.outputs.needs-build == 'true' && github.ref_type != 'tag' && github.event_name != 'pull_request'" ]
+  [ "$output" = "inputs.mirror && steps.engine.outputs.needs-build == 'true' && github.ref_type != 'tag' && github.event_name != 'pull_request'" ]
+}
+
+# A dispatch of the build alone gets a read-only token, so its upload cannot
+# succeed. The mirror step must show as skipped there, not as a green step that
+# uploaded nothing.
+# YAML 1.1 readers (the jq based yq) read `on:` as true, YAML 1.2 readers as
+# "on", so the queries take whichever exists.
+@test "a dispatch of the engine build alone skips the mirror step" {
+  run yq -r '(.["on"] // .["true"]).workflow_dispatch.inputs | has("mirror")' "${BUILD}"
+  [ "$status" -eq 0 ]
+  [ "$output" = "false" ]
+  run yq -r '(.["on"] // .["true"]).workflow_call.inputs.mirror.default' "${BUILD}"
+  [ "$output" = "false" ]
+  run yq -r '.jobs["build-multigpu"].steps[] | select(.name == "Mirror the built engine") | .if' "${BUILD}"
+  [[ "$output" == "inputs.mirror && "* ]]
+}
+
+@test "every caller of the engine build asks for the mirror upload" {
+  found=0
+  for wf in "${REPO_ROOT}"/.github/workflows/*.yml; do
+    asks=$(yq -r '.jobs[] | select(.uses == "./.github/workflows/build-multigpu.yml") | .with.mirror // "none"' "${wf}")
+    for a in ${asks}; do
+      echo "$(basename "${wf}"): mirror=${a}"
+      [ "${a}" = "true" ]
+      found=$((found + 1))
+    done
+  done
+  [ "${found}" -eq 3 ]
 }
 
 @test "the mirror upload is the only step that swallows a failure" {

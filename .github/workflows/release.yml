@@ -382,9 +382,9 @@ jobs:
       # for the key, and that guarantee should not rest on an implicit default.
       #
       # continue-on-error because this is a pure optimisation sitting between a
-      # finished compile and the artifact upload. ci_mirror.sh soft-fails on its
-      # own errors, but mktemp and wc run under set -euo pipefail and can still
-      # hard-exit; on a soft cell that would go green with the asset missing.
+      # finished compile and the artifact upload. ci_mirror.sh exits non-zero
+      # when the upload does not happen, so the step shows red and the build
+      # goes on.
       - name: Publish the Nuitka cache to the mirror
         if: success() && runner.os == 'Windows' && steps.nuitka-mirror.outputs.current != 'true' && inputs.only_asset == ''
         continue-on-error: true
