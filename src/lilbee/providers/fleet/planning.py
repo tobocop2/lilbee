@@ -28,7 +28,7 @@ from lilbee.providers.fleet.adapters import (
     RankPoolingMissingError,
     resolve_rerank_mode,
 )
-from lilbee.providers.fleet.binary import engine_binary_identity
+from lilbee.providers.fleet.binary import engine_binary_identity, engine_build_id
 from lilbee.providers.fleet.devices import (
     MIB,
     VULKAN_BACKEND,
@@ -39,8 +39,9 @@ from lilbee.providers.fleet.devices import (
     visible_env,
 )
 from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest
-from lilbee.providers.fleet.engines.base import SplitChecked, engine_label
+from lilbee.providers.fleet.engines.base import EngineName, SplitChecked, engine_label
 from lilbee.providers.fleet.engines.choice import install_any_advice
+from lilbee.providers.fleet.engines.ik_llama import VERSION as IK_LLAMA_VERSION
 from lilbee.providers.fleet.gpu_backends import resolve_backend, util_backend_name
 from lilbee.providers.fleet.gpu_backends.nvidia import card_rows as nvidia_card_rows
 from lilbee.providers.fleet.gpu_env import (
@@ -157,16 +158,27 @@ def log_role_launches(
 def _engine_id(launch: InstanceLaunch, engine: EngineAdapter) -> str:
     """*launch*'s binary with its engine, the build of that binary, backend, and probed devices.
 
-    The build is the engine's own identity of the binary the process runs, never the
-    llama.cpp pack the host resolves.
+    The build is the engine's own identity of the binary the process runs. The two
+    engines whose identity is a bare digest also show their release pin in front.
     """
     devices = probed_devices(engine)
     names = ", ".join(f"{d.backend}{d.index}: {d.name}" for d in devices) or _NO_DEVICES
+    identity = engine.identity(Path(launch.binary))
+    pin = _release_pin(engine)
+    build = f"{pin} {identity}" if pin else identity
     return (
-        f"{launch.binary} (engine {engine.name}, "
-        f"build {engine.identity(Path(launch.binary))}, "
+        f"{launch.binary} (engine {engine.name}, build {build}, "
         f"backend {engine_backend(engine).value}, devices: {names})"
     )
+
+
+def _release_pin(engine: EngineAdapter) -> str | None:
+    """The release of a llama.cpp or ik_llama.cpp engine, whose identity holds only a digest."""
+    if engine.name == EngineName.LLAMA:
+        return engine_build_id()
+    if engine.name == EngineName.IK_LLAMA:
+        return IK_LLAMA_VERSION
+    return None
 
 
 def warn_when_embed_window_below_chunk(launch: InstanceLaunch) -> None:

@@ -5377,46 +5377,56 @@ class TestLogEngineLaunch:
             ),
         )
 
+    @pytest.fixture(autouse=True)
+    def _known_build(self, monkeypatch) -> None:
+        monkeypatch.setattr(planning_mod, "engine_build_id", lambda: "wheel:0.6.91")
+        monkeypatch.setattr(
+            llama_mod, "engine_binary_identity", lambda binary: f"{binary}@sha256-of-bytes"
+        )
+
+    _DEVICES = "backend vulkan, devices: Vulkan0: NVIDIA GeForce RTX 3090)"
+
     def test_a_fresh_launch_names_the_engine_it_started(self, caplog) -> None:
         with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
             planning_mod.log_engine_launch(self._launch(), engine=LLAMA)
-        message = caplog.records[0].message
-        assert message.startswith("Launched embed-0 serving org/repo/embed.gguf")
-        assert "/opt/lilbee/llama-server" in message
-        assert f"engine {LLAMA.name.value}" in message
-        assert f"build {LLAMA.identity(Path('/opt/lilbee/llama-server'))}" in message
-        assert "backend vulkan" in message
-        assert "Vulkan0: NVIDIA GeForce RTX 3090" in message
+        assert caplog.records[0].message == (
+            "Launched embed-0 serving org/repo/embed.gguf on /opt/lilbee/llama-server "
+            "(engine llama.cpp, build wheel:0.6.91 /opt/lilbee/llama-server@sha256-of-bytes, "
+            f"{self._DEVICES}"
+        )
 
     def test_an_openvino_launch_names_its_own_build_not_the_llama_pack(self, caplog) -> None:
         from lilbee.providers.fleet.engines.openvino import OpenvinoAdapter
 
-        engine = OpenvinoAdapter()
-        launch = self._launch()
         with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
-            planning_mod.log_engine_launch(launch, engine=engine)
-        message = caplog.records[0].message
-        assert f"engine {engine.name.value}" in message
-        assert f"build {engine.identity(Path(launch.binary))}" in message
+            planning_mod.log_engine_launch(self._launch(), engine=OpenvinoAdapter())
+        assert caplog.records[0].message == (
+            "Launched embed-0 serving org/repo/embed.gguf on /opt/lilbee/llama-server "
+            "(engine openvino, build openvino 1.12032.1 /opt/lilbee/llama-server, "
+            f"{self._DEVICES}"
+        )
 
-    def test_the_engine_label_follows_the_engine_that_runs_the_process(self, caplog) -> None:
+    def test_an_ik_llama_launch_shows_the_ik_release_not_the_llama_pin(self, caplog) -> None:
         from lilbee.providers.fleet.engines.ik_llama import IkLlamaAdapter
 
-        engine = IkLlamaAdapter()
         with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
-            planning_mod.log_engine_launch(self._launch(), engine=engine)
-        assert f"engine {engine.name.value}" in caplog.records[0].message
+            planning_mod.log_engine_launch(self._launch(), engine=IkLlamaAdapter())
+        assert caplog.records[0].message == (
+            "Launched embed-0 serving org/repo/embed.gguf on /opt/lilbee/llama-server "
+            "(engine ik_llama.cpp, build 0+git13cffc006b82 "
+            "/opt/lilbee/llama-server@sha256-of-bytes, "
+            f"{self._DEVICES}"
+        )
 
     def test_an_adopted_launch_names_the_engine_owner(self, caplog) -> None:
         with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
             planning_mod.log_engine_launch(self._launch(), owner_pid=4242, engine=LLAMA)
-        message = caplog.records[0].message
-        assert message.startswith(
-            "Adopted embed-0 serving org/repo/embed.gguf from engine pid 4242"
+        assert caplog.records[0].message == (
+            "Adopted embed-0 serving org/repo/embed.gguf from engine pid 4242 on "
+            "/opt/lilbee/llama-server "
+            "(engine llama.cpp, build wheel:0.6.91 /opt/lilbee/llama-server@sha256-of-bytes, "
+            f"{self._DEVICES}"
         )
-        assert "/opt/lilbee/llama-server" in message
-        assert f"build {LLAMA.identity(Path('/opt/lilbee/llama-server'))}" in message
-        assert "backend vulkan" in message
 
     def test_an_unreadable_host_still_logs(self, caplog, monkeypatch) -> None:
         # An unreadable host still names its binary and build, and says the
