@@ -39,6 +39,9 @@ readonly DEFAULT_RELEASE_TAG="engine-binaries"
 readonly STALE_RESTORE_STATUS=3
 # GitHub rejects release assets over 2 GiB.
 readonly MAX_ASSET_BYTES=$((2 * 1024 * 1024 * 1024))
+# The most assets the GitHub API lists per page, and a stop for the page loop.
+readonly ASSET_PAGE_SIZE=100
+readonly MAX_ASSET_PAGES=100
 release_tag="${MIRROR_RELEASE_TAG:-${DEFAULT_RELEASE_TAG}}"
 repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 
@@ -76,11 +79,21 @@ resolve_release_id() {
         2>/dev/null | first_id || true
 }
 
+# The assets endpoint returns at most ASSET_PAGE_SIZE per page, and the mirror
+# holds several pages, so read pages until the asset turns up or a page comes
+# back short. MAX_ASSET_PAGES stops a response that never comes back short.
 mirror_carries() {
-    local release_id="${1}" asset="${2}"
-    api_get "https://api.github.com/repos/${repo}/releases/${release_id}/assets?per_page=100" 2>/dev/null \
-        | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        | grep -qF "\"${asset}\""
+    local release_id="${1}" asset="${2}" page names count
+    for ((page = 1; page <= MAX_ASSET_PAGES; page++)); do
+        names="$(api_get "https://api.github.com/repos/${repo}/releases/${release_id}/assets?per_page=${ASSET_PAGE_SIZE}&page=${page}" 2>/dev/null \
+            | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' || true)"
+        if printf '%s\n' "${names}" | grep -qF "\"${asset}\""; then
+            return 0
+        fi
+        count="$(printf '%s' "${names}" | grep -c . || true)"
+        [ "${count}" -ge "${ASSET_PAGE_SIZE}" ] || return 1
+    done
+    return 1
 }
 
 cmd_asset_name() {
