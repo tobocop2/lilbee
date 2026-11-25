@@ -1122,9 +1122,7 @@ class TestServerShowsTheUpgrade:
             "tables_total": 6,
             "text": upgrade["text"],
         }
-        assert re.fullmatch(
-            r"Tables done: 0 of 6 · updating source list · \d+ s", upgrade["text"]
-        )
+        assert re.fullmatch(r"Tables done: 0 of 6 · updating source list · \d+ s", upgrade["text"])
         assert upgrade["elapsed_s"] >= 0
         assert after["upgrade"] is None
         assert status.status_code == 200
