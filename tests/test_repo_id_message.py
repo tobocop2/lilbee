@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from lilbee.catalog.hf_client import HfClient
+from conftest import make_hf_client
 from lilbee.catalog.refs import REPO_ID_HINT, invalid_repo_id_message
 from lilbee.catalog.types import ModelFormat, ModelSource
 from lilbee.cli import app
@@ -28,7 +28,7 @@ _runner = CliRunner()
 @pytest.fixture
 def real_manager(tmp_path: Path) -> Iterator[ModelManager]:
     """A real manager over an empty models dir; the engine and arch checks are stubbed."""
-    manager = ModelManager(tmp_path, MagicMock(), hf_client=HfClient(MagicMock()))
+    manager = ModelManager(tmp_path, MagicMock(), hf_client=make_hf_client(MagicMock()))
     with (
         patch.object(ModelManager, "require_engine", return_value=MagicMock()),
         patch.object(ModelManager, "enforce_arch_compat"),

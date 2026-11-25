@@ -10,12 +10,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from conftest import PICKS_CHAT, install_fake_model
+from conftest import PICKS_CHAT, install_fake_model, make_hf_client
 from lilbee.app import engine_choice, engine_service
 from lilbee.app import models as app_models
 from lilbee.app.engine_service import EngineRefusedError
 from lilbee.app.services import get_services
-from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.refs import canonical_ref
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg
@@ -192,7 +191,7 @@ class TestPullEngineChoice:
     def test_a_qualified_pull_reads_the_choice_stored_under_the_plain_ref(
         self, overrides: list[str | None], tmp_path: Path
     ) -> None:
-        manager = ModelManager(tmp_path / "models", cfg, hf_client=HfClient(cfg))
+        manager = ModelManager(tmp_path / "models", cfg, hf_client=make_hf_client(cfg))
         with pytest.raises(_StopAtChoice):
             manager.pull("org/repo/f.gguf#gguf", ModelSource.NATIVE)
         assert overrides == ["llama"]
@@ -201,7 +200,7 @@ class TestPullEngineChoice:
         self, overrides: list[str | None], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         services = SimpleNamespace(
-            model_manager=ModelManager(tmp_path / "models", cfg, hf_client=HfClient(cfg))
+            model_manager=ModelManager(tmp_path / "models", cfg, hf_client=make_hf_client(cfg))
         )
         monkeypatch.setattr(handlers, "get_services", lambda: services)
         with pytest.raises(_StopAtChoice):
@@ -261,7 +260,7 @@ class TestAdoptEmbedder:
         from lilbee.app import settings as app_settings
 
         ref = "org/repo#safetensors"
-        manager = ModelManager(tmp_path / "models", cfg, hf_client=HfClient(cfg))
+        manager = ModelManager(tmp_path / "models", cfg, hf_client=make_hf_client(cfg))
         services = SimpleNamespace(model_manager=manager)
         monkeypatch.setattr(app_models, "get_services", lambda: services)
         monkeypatch.setattr(cfg, "embedding_model", ref)
@@ -294,7 +293,7 @@ def _pull_with_no_engine(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **kwargs: bool
 ) -> app_models.PullResult:
     """Run a real pull of a non-GGUF model that no engine loads, with the download stubbed."""
-    manager = ModelManager(tmp_path / "models", cfg, hf_client=HfClient(cfg))
+    manager = ModelManager(tmp_path / "models", cfg, hf_client=make_hf_client(cfg))
     services = SimpleNamespace(model_manager=manager)
     monkeypatch.setattr(app_models, "get_services", lambda: services)
     monkeypatch.setattr(engine_choice, "installed_engines", dict)

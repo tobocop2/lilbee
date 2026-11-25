@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 import pytest
 
-from conftest import stub_hf_listing
+from conftest import make_hf_client, stub_hf_listing
 from lilbee.app.services import get_services
 from lilbee.catalog import query as _query
 from lilbee.catalog import runnable
@@ -320,8 +320,8 @@ def test_the_list_is_read_once_from_the_pinned_tag_and_cached(router: _Router) -
 
 @pytest.mark.real_engine_model_lists
 def test_a_new_client_reads_the_list_again(router: _Router) -> None:
-    HfClient(get_services().hf_client._config).fetch_engine_models(LEMONADE)
-    HfClient(get_services().hf_client._config).fetch_engine_models(LEMONADE)
+    make_hf_client(get_services().hf_client._config).fetch_engine_models(LEMONADE)
+    make_hf_client(get_services().hf_client._config).fetch_engine_models(LEMONADE)
     assert len(router.urls) == 2
 
 
