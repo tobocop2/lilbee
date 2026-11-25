@@ -38,12 +38,15 @@ def test_config_import_leaves_the_app_services_unloaded(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("path", sorted(_CATALOG_DIR.glob("*.py")), ids=lambda p: p.name)
-def test_catalog_module_imports_nothing_from_app_at_module_level(path: Path) -> None:
-    """catalog is layer 1: app is layer 4, so a caller passes app's objects in."""
+def test_catalog_module_imports_nothing_from_app(path: Path) -> None:
+    """catalog is layer 1: app is layer 4, so a caller passes app's objects in.
+
+    Every node counts, so an import inside a function is an upward import too.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"))
     upward = [
         node.lineno
-        for node in tree.body
+        for node in ast.walk(tree)
         if (isinstance(node, ast.ImportFrom) and (node.module or "").startswith("lilbee.app"))
         or (
             isinstance(node, ast.Import)

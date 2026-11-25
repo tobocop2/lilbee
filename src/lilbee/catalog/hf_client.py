@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from http import HTTPStatus
@@ -367,8 +367,14 @@ class HfClient:
     # repeats within the window stay at DEBUG.
     FETCH_FAILURE_WARN_INTERVAL_S: float = 300.0
 
-    def __init__(self, config: Config) -> None:
+    def __init__(
+        self,
+        config: Config,
+        *,
+        engine_for_format: Callable[[ModelFormat], EngineAdapter | None] | None = None,
+    ) -> None:
         self._config = config
+        self._engine_for_format = engine_for_format
         self._cache: dict[str, tuple[float, HfPage]] = {}
         self._cache_lock = threading.Lock()
         self._arch_cache: dict[str, str] = {}
@@ -390,18 +396,11 @@ class HfClient:
         """The engine for the verdict on a page: only GGUF rows get one.
 
         With no engine the rows stay unknown, because browsing needs none and a
-        pull refuses on its own.
+        pull refuses on its own. The caller's layer supplies the engine lookup.
         """
-        # Local import to avoid a cycle with the engine choice module.
-        from lilbee.app.engine_choice import engine_for_format
-        from lilbee.providers.fleet.engines.choice import NoEngineError
-
-        if fmt != ModelFormat.GGUF:
+        if fmt != ModelFormat.GGUF or self._engine_for_format is None:
             return None
-        try:
-            return engine_for_format(fmt, self._config)
-        except NoEngineError:
-            return None
+        return self._engine_for_format(fmt)
 
     def fetch_models(
         self,

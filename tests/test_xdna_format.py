@@ -187,7 +187,10 @@ class TestInstalledList:
         assert [m.ref for m in ModelRegistry(tmp_path).list_installed()] == [self.REF]
         assert (
             validate_model_task_assignment(
-                "chat_model", self.REF, allow_bypass=False, hf_client=get_services().hf_client
+                "chat_model",
+                self.REF,
+                allow_bypass=False,
+                hf_client_for=lambda: get_services().hf_client,
             )
             == self.REF
         )
@@ -212,13 +215,19 @@ class TestInstalledList:
             mp.setattr(cfg, "models_dir", tmp_path)
             assert (
                 validate_model_task_assignment(
-                    "embedding_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+                    "embedding_model",
+                    ref,
+                    allow_bypass=False,
+                    hf_client_for=lambda: get_services().hf_client,
                 )
                 == ref
             )
             with pytest.raises(ValueError, match="embedding"):
                 validate_model_task_assignment(
-                    "chat_model", ref, allow_bypass=False, hf_client=get_services().hf_client
+                    "chat_model",
+                    ref,
+                    allow_bypass=False,
+                    hf_client_for=lambda: get_services().hf_client,
                 )
 
     def test_a_missing_ticket_is_not_listed_and_not_assignable(
@@ -229,7 +238,10 @@ class TestInstalledList:
         assert ModelRegistry(tmp_path).get_manifest(self.REF) is None
         with pytest.raises(ValueError, match="not installed"):
             validate_model_task_assignment(
-                "chat_model", self.REF, allow_bypass=False, hf_client=get_services().hf_client
+                "chat_model",
+                self.REF,
+                allow_bypass=False,
+                hf_client_for=lambda: get_services().hf_client,
             )
 
     def _old_ticket(self, tmp_path: Path) -> None:

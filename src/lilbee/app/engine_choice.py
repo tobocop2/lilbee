@@ -94,6 +94,14 @@ def engine_for_format(fmt: ModelFormat, config: Config) -> EngineAdapter:
     return ADAPTERS[choice.require()]
 
 
+def engine_for_page(fmt: ModelFormat, config: Config) -> EngineAdapter | None:
+    """The adapter that gives a catalog page its verdicts, ``None`` when no engine loads *fmt*."""
+    try:
+        return engine_for_format(fmt, config)
+    except NoEngineError:
+        return None
+
+
 def engine_for_ref(ref: str, config: Config) -> EngineAdapter:
     """The adapter for the model *ref* under *config*: the same choice a run makes."""
     return ADAPTERS[_choice_for(config, ref, installed_engines()).require()]
