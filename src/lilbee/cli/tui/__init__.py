@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from lilbee.app.services import (
     exit_code_of,
     exit_when_stragglers_would_hang,
+    loop_takes_signals,
     reset_services_on_exit,
 )
 from lilbee.cli.tui.log_routing import setup_tui_log_file
 from lilbee.core.security import OWNER_ONLY_MODE
 from lilbee.runtime.asyncio_loop import run_without_join
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
 
 
 def _silence_stderr_log_handlers() -> None:
@@ -114,6 +120,17 @@ def _prestart_mp_resource_tracker() -> None:
         pass
 
 
+async def _run_app(app: LilbeeApp) -> None:
+    """Run *app* while its loop takes the routed signals.
+
+    A plain handler raises the exit inside whatever task step runs, such as a
+    timer's tick, and that task keeps it as an exception nobody reads. A loop
+    callback runs between steps, so the exit leaves the loop and no task holds it.
+    """
+    with loop_takes_signals(asyncio.get_running_loop()):
+        await app.run_async()
+
+
 def run_tui(*, initial_view: str | None = None) -> None:
     """Launch the full-screen Textual TUI.
 
@@ -137,7 +154,7 @@ def run_tui(*, initial_view: str | None = None) -> None:
     try:
         # Textual's run would use asyncio.run, which joins a stuck worker with no bound on
         # 3.11; this leaves it to the straggler exit below.
-        run_without_join(app.run_async())
+        run_without_join(_run_app(app))
         # None means the app never reached its exit.
         status = app.return_code or 0
     except KeyboardInterrupt:
