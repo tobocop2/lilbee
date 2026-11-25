@@ -34,10 +34,18 @@ def windows_newlines(monkeypatch: pytest.MonkeyPatch) -> Callable[[], Any]:
     """Return a context manager in which a text file opened for writing with no newline argument gets "\\r\\n"."""
     real_open = io.open
 
-    def windows_open(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
-        if "w" in mode and "b" not in mode and kwargs.get("newline") is None:
-            kwargs["newline"] = "\r\n"
-        return real_open(file, mode, *args, **kwargs)
+    def windows_open(
+        file: Any,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+        *args: Any,
+    ) -> Any:
+        if "w" in mode and "b" not in mode and newline is None:
+            newline = "\r\n"
+        return real_open(file, mode, buffering, encoding, errors, newline, *args)
 
     @contextmanager
     def active() -> Iterator[None]:
@@ -98,8 +106,11 @@ def test_rust_notices(windows_newlines: Callable[[], Any], tmp_path: Path) -> No
             {"id": "OpenSSL", "used_by": uses},
         ]
     }
-    lock = '[[package]]\nname = "a"\nversion = "1.0"\nchecksum = "abc"\n'
-    tree = tmp_path / "tree"
+    lock = (
+        '[[package]]\nname = "a"\nversion = "1.0"\n'
+        'source = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "abc"\n'
+    )
+    tree =tmp_path / "tree"
     tree.mkdir()
     with windows_newlines():
         tool.write_notices(report, lock, tmp_path / "checkout", tmp_path / "registry", tree)
