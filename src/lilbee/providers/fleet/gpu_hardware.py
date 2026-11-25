@@ -32,6 +32,11 @@ if TYPE_CHECKING:
 # PCI base class 0x03 is "display controller"; sysfs writes the full 24-bit
 # class code (0x030000 for VGA), so the base class is its high byte.
 _PCI_DISPLAY_CONTROLLER_CLASS = 0x03
+# AMD Instinct cards enumerate as base class 0x12 (processing accelerator), not 0x03, yet they
+# run the Mesa Vulkan driver. Only AMD is read from this class: Intel's 0x12 device is the NPU,
+# which has no Vulkan driver, and counting it would pick the Vulkan pack for a host with no GPU.
+_PCI_ACCELERATOR_CLASS = 0x12
+_PCI_AMD_VENDOR = 0x1002
 _PCI_CLASS_CODE_BASE_SHIFT = 16
 _SYSFS_PCI_DEVICE_DIR = Path("/sys/bus/pci/devices")
 _SYSFS_CLASS_FILE = "class"
@@ -94,10 +99,13 @@ def _linux_display_controllers() -> Iterator[tuple[int, bool]]:
         class_code = _read_sysfs_hex(device / _SYSFS_CLASS_FILE)
         if class_code is None:
             continue
-        if class_code >> _PCI_CLASS_CODE_BASE_SHIFT != _PCI_DISPLAY_CONTROLLER_CLASS:
+        base_class = class_code >> _PCI_CLASS_CODE_BASE_SHIFT
+        if base_class not in (_PCI_DISPLAY_CONTROLLER_CLASS, _PCI_ACCELERATOR_CLASS):
             continue
         vendor_id = _read_sysfs_hex(device / _SYSFS_VENDOR_FILE)
         if vendor_id is None:
+            continue
+        if base_class == _PCI_ACCELERATOR_CLASS and vendor_id != _PCI_AMD_VENDOR:
             continue
         try:
             bound = (device / _SYSFS_DRIVER_LINK).exists()
