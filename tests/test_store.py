@@ -2619,51 +2619,50 @@ class TestAdaptiveFilter:
 
 
 class TestRemoveDocuments:
+    @staticmethod
+    def _seed(store, *names):
+        for name in names:
+            store.upsert_source(name, f"h-{name}", 1)
+
     def test_removes_known_files(self, store):
-        with (
-            mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "_remove_many_unlocked") as mock_del,
-        ):
+        self._seed(store, "a.md")
+        with mock.patch.object(store, "_remove_many_unlocked") as mock_del:
             result = store.remove_documents(["a.md"])
             assert result.removed == ["a.md"]
             assert result.not_found == []
             mock_del.assert_called_once_with(["a.md"], None)
 
     def test_removes_an_archive_with_its_members(self, store):
-        rows = [{"filename": n} for n in ("docs.zip", "docs.zip/a.pdf", "docs.zip.bak", "other.md")]
-        with (
-            mock.patch.object(store, "get_sources", return_value=rows),
-            mock.patch.object(store, "_remove_many_unlocked") as mock_del,
-        ):
+        self._seed(store, "docs.zip", "docs.zip/a.pdf", "docs.zip.bak", "other.md")
+        with mock.patch.object(store, "_remove_many_unlocked") as mock_del:
             result = store.remove_documents(["docs.zip"])
             assert result.removed == ["docs.zip", "docs.zip/a.pdf"]
             assert result.not_found == []
             mock_del.assert_called_once_with(["docs.zip", "docs.zip/a.pdf"], None)
 
-    def test_removing_many_names_reads_the_source_table_once(self, store):
-        names = [f"n{index}.md" for index in range(500)]
-        rows = [{"filename": n} for n in (*names, "n7.md/inside.txt", "a/b.zip", "a/b.zip/c/d.txt")]
+    def test_removing_many_names_reads_no_full_record(self, store):
+        names = [f"n{index}.md" for index in range(40)]
+        self._seed(store, *names, "n7.md/inside.txt", "a/b.zip", "a/b.zip/c/d.txt", "keep.md")
         with (
-            mock.patch.object(store, "get_sources", return_value=rows) as reads,
+            mock.patch.object(store, "get_sources", side_effect=AssertionError("full read")),
             mock.patch.object(store, "_remove_many_unlocked") as mock_del,
         ):
-            result = store.remove_documents([*names, "a/b.zip"])
-        assert reads.call_count == 1
-        assert result.removed == [*names, "a/b.zip", "n7.md/inside.txt", "a/b.zip/c/d.txt"]
+            result = store.remove_documents([*names, "a/b.zip", "missing.md"])
+        assert sorted(result.removed) == sorted(
+            [*names, "a/b.zip", "n7.md/inside.txt", "a/b.zip/c/d.txt"]
+        )
+        assert result.not_found == ["missing.md"]
         mock_del.assert_called_once_with(result.removed, None)
 
     def test_not_found(self, store):
-        with mock.patch.object(store, "get_sources", return_value=[]):
-            result = store.remove_documents(["missing.md"])
-            assert result.removed == []
-            assert result.not_found == ["missing.md"]
+        result = store.remove_documents(["missing.md"])
+        assert result.removed == []
+        assert result.not_found == ["missing.md"]
 
     def test_never_deletes_physical_file(self, store, tmp_path):
         # Store removal is index-only; the source file on disk is never touched.
-        with (
-            mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "_remove_many_unlocked"),
-        ):
+        self._seed(store, "a.md")
+        with mock.patch.object(store, "_remove_many_unlocked"):
             f = tmp_path / "a.md"
             f.write_text("content")
             result = store.remove_documents(["a.md"])
@@ -2671,10 +2670,8 @@ class TestRemoveDocuments:
             assert f.exists()
 
     def test_nonexistent_file_still_removes_from_store(self, store):
-        with (
-            mock.patch.object(store, "get_sources", return_value=[{"filename": "gone.md"}]),
-            mock.patch.object(store, "_remove_many_unlocked") as mock_del,
-        ):
+        self._seed(store, "gone.md")
+        with mock.patch.object(store, "_remove_many_unlocked") as mock_del:
             result = store.remove_documents(["gone.md"])
             assert result.removed == ["gone.md"]
             mock_del.assert_called_once()
@@ -2692,10 +2689,8 @@ class TestRemoveDocuments:
             acquisitions.append("acquire")
             yield
 
+        self._seed(store, "a.md", "b.md")
         with (
-            mock.patch.object(
-                store, "get_sources", return_value=[{"filename": "a.md"}, {"filename": "b.md"}]
-            ),
             mock.patch.object(store, "source_ids", return_value={"a.md": "ida", "b.md": "idb"}),
             mock.patch.object(store, "_delete_rows_of_unlocked") as mock_chunks,
             mock.patch.object(store, "_drop_source_rows_unlocked") as mock_sources,
@@ -3045,6 +3040,22 @@ class TestSourceNames:
 
     def test_a_library_with_no_sources_reads_empty(self, store):
         assert store.source_names("x", limit=3) == []
+
+    def test_names_beginning_with_the_term_come_first_whatever_the_store_order(self, store):
+        for i in range(10):
+            store.upsert_source(f"zz/{i:02d}-rep.md", f"h{i}", 1)
+        store.upsert_source("report.md", "hr", 1)
+        store.upsert_source("reports/q1.md", "hq", 1)
+        names = store.source_names("rep", limit=4)
+        assert sorted(names[:2]) == ["report.md", "reports/q1.md"]
+        assert len(names) == 4
+
+    def test_a_name_in_both_reads_is_listed_once(self, store):
+        store.upsert_source("report.md", "h1", 1)
+        store.upsert_source("a-rep.md", "h2", 1)
+        names = store.source_names("rep", limit=5)
+        assert names[0] == "report.md"
+        assert sorted(names) == ["a-rep.md", "report.md"]
 
 
 class TestCountSources:

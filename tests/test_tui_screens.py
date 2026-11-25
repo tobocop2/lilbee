@@ -3707,19 +3707,23 @@ async def test_chat_slash_delete_store_error(mock_svc):
 async def test_chat_slash_delete_lists_a_page_and_counts_the_rest(mock_svc):
     from lilbee.cli.tui.screens.chat import _DELETE_LISTED
 
-    names = [f"doc-{i:04d}.md" for i in range(_DELETE_LISTED + 7)]
+    # Store order is the reverse of alphabetical; a failure that is also listed counts once.
+    names = [f"doc-{i:04d}.md" for i in reversed(range(_DELETE_LISTED + 7))]
     _delete_library(mock_svc, names)
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
-        with patch.object(app.screen, "notify") as mock_notify:
+        with (
+            patch.object(app.screen, "notify") as mock_notify,
+            patch("lilbee.app.ingest.held_failures", return_value={"doc-0003.md": object()}),
+        ):
             app.screen._cmd_delete("")
             await app.screen.workers.wait_for_complete()
             await _pilot.pause()
             text = mock_notify.call_args[0][0]
-            assert "doc-0000.md" in text
-            assert f"doc-{_DELETE_LISTED:04d}.md" not in text
-            assert ", and 7 more" in text
+            listed = text.split("\n")[0].removeprefix("Documents: ").split(", and ")[0]
+            assert listed.split(", ") == [f"doc-{i:04d}.md" for i in range(_DELETE_LISTED)]
+            assert text.split("\n")[0].endswith(", and 7 more")
 
 
 async def test_chat_slash_delete_suggests_a_close_spelling(mock_svc):
