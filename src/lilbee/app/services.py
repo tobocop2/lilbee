@@ -870,7 +870,7 @@ _FORCE_QUIT_NOTE = "lilbee: force quit. The engine stops with it.\n"
 _FORCE_QUIT_NOTE_BYTES = _FORCE_QUIT_NOTE.encode()
 
 _STRAGGLER_BUDGET_S = 5.0
-"""Seconds every leftover non-daemon thread gets, together, before the exit."""
+"""Seconds every leftover thread that the exit joins gets, together, before the exit."""
 
 _STRAGGLER_NOTE = "lilbee: a background task would not stop; exiting anyway.\n"
 
@@ -1007,15 +1007,18 @@ def straggler_threads() -> list[threading.Thread]:
 def exit_when_stragglers_would_hang(status: int) -> None:
     """Exit rather than let interpreter shutdown join a wedged thread forever.
 
-    threading joins every non-daemon thread after atexit, so one worker
+    The exit joins every non-daemon thread and every pool worker, so one worker
     blocked in an unbounded network read hangs the process after all real
-    work is done. Stragglers share a short budget; whatever remains cannot
+    work is done. The pools' own exit hook first ends their idle workers, as
+    ``end_command`` does. Stragglers share a short budget; whatever remains cannot
     finish, and the child guard reaps the engine when the process dies, with
     *status*. Called from the TUI's own exit path and inert elsewhere: a test process
     or embedding host owns its threads, and an exit would take them with it.
     """
     if not _state.interactive:
         return
+    if straggler_threads():
+        status = _end_pool_workers(status)
     _exit_if_stragglers(status, time.monotonic() + _STRAGGLER_BUDGET_S)
 
 
@@ -1077,8 +1080,9 @@ def end_command(stop: SystemExit) -> NoReturn:
     """End a one-shot command with *stop*, past a leftover thread that would hang the exit.
 
     The interpreter joins every non-daemon thread and every pool worker before atexit,
-    with no bound, and a signal during that join loses its status. With such a thread left, the pools' own
-    exit hook first ends their idle workers (``_end_pool_workers``). A thread still
+    with no bound, and a signal during that join loses its status. With such a thread
+    left, the pools' own exit hook first ends their idle workers (``_end_pool_workers``).
+    A thread still
     busy after that takes the bounded exit: the engine stop, the straggler budget, then
     the end of the process. A signal meanwhile sets the status. With no thread left, it
     raises *stop*, so the interpreter's exit and atexit run as before.
