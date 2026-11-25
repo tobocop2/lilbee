@@ -14,6 +14,7 @@ import socket
 import sys
 import threading
 import time
+import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -585,41 +586,49 @@ def _block_the_loop_thread() -> tuple[asyncio.AbstractEventLoop, threading.Threa
     return loop, thread, release
 
 
-@pytest.mark.filterwarnings("error::RuntimeWarning")
+@contextmanager
+def _no_runtime_warning() -> Iterator[None]:
+    """Fail when the block, or a garbage collection after it, warns, as "never awaited" does."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        yield
+        gc.collect()
+    assert [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)] == []
+
+
 def test_shutdown_with_a_stuck_loop_thread_stays_within_its_budget() -> None:
-    loop, thread, release = _block_the_loop_thread()
-    try:
-        started = time.monotonic()
-        asyncio_loop.shutdown(drain_budget_s=0.5)
-        elapsed = time.monotonic() - started
-        assert elapsed < 1.5, "the drain and the join each took a budget"
-        assert thread.is_alive()
-        assert thread.daemon
-        assert not loop.is_closed()
-    finally:
-        release.set()
-    thread.join(5.0)
-    assert not thread.is_alive()
-    assert loop.is_closed(), "the loop thread closes the loop it stopped"
-    gc.collect()  # a drain that was dropped unscheduled warns here
-
-
-@pytest.mark.filterwarnings("error::RuntimeWarning")
-def test_get_loop_after_a_shutdown_that_timed_out_gives_a_working_loop() -> None:
-    old, thread, release = _block_the_loop_thread()
-    try:
-        asyncio_loop.shutdown(drain_budget_s=0.3)
-        new = asyncio_loop.get_loop()
-        assert new is not old
-
-        async def answer() -> int:
-            return 7
-
-        assert asyncio_loop.run(answer()) == 7
-    finally:
-        release.set()
+    with _no_runtime_warning():
+        loop, thread, release = _block_the_loop_thread()
+        try:
+            started = time.monotonic()
+            asyncio_loop.shutdown(drain_budget_s=0.5)
+            elapsed = time.monotonic() - started
+            assert elapsed < 1.5, "the drain and the join each took a budget"
+            assert thread.is_alive()
+            assert thread.daemon
+            assert not loop.is_closed()
+        finally:
+            release.set()
         thread.join(5.0)
-    gc.collect()  # a drain that was dropped unscheduled warns here
+        assert not thread.is_alive()
+        assert loop.is_closed(), "the loop thread closes the loop it stopped"
+
+
+def test_get_loop_after_a_shutdown_that_timed_out_gives_a_working_loop() -> None:
+    with _no_runtime_warning():
+        old, thread, release = _block_the_loop_thread()
+        try:
+            asyncio_loop.shutdown(drain_budget_s=0.3)
+            new = asyncio_loop.get_loop()
+            assert new is not old
+
+            async def answer() -> int:
+                return 7
+
+            assert asyncio_loop.run(answer()) == 7
+        finally:
+            release.set()
+            thread.join(5.0)
 
 
 def test_run_from_multiple_threads() -> None:
