@@ -349,6 +349,26 @@ def test_a_run_takes_the_main_threads_context() -> None:
 
 
 @posix_only
+def test_run_interruptible_cancels_and_awaits_the_tasks_a_run_leaves() -> None:
+    cleaned: list[str] = []
+    tasks: list[asyncio.Task[None]] = []
+
+    async def left() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned.append("left")
+
+    async def leaves_a_task() -> str:
+        tasks.append(asyncio.get_running_loop().create_task(left()))
+        await asyncio.sleep(0)
+        return "done"
+
+    assert asyncio_loop.run_interruptible(leaves_a_task(), SignalFlag()) == "done"
+    assert cleaned == ["left"]
+
+
+@posix_only
 def test_a_ctrl_c_that_stops_the_run_cancels_its_task() -> None:
     flag = SignalFlag()
 
