@@ -361,6 +361,7 @@ def test_win32_cmd_wrapper_falls_back_to_sys_executable(
     monkeypatch.setattr(cfg, "data_dir", tmp_path)
     monkeypatch.setattr(server_mod.shutil, "which", lambda _name: r"C:\Python\Scripts\lilbee.cmd")
     monkeypatch.setattr(server_mod.sys, "platform", "win32")
+    monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", _NEW_GROUP, raising=False)
     server_mod.spawn_server(8080)
     cmd = _capture_popen["cmd"]
     assert cmd[0] == server_mod.sys.executable
@@ -374,6 +375,7 @@ def test_non_cmd_bin_on_win32_is_used_directly(monkeypatch, tmp_path: Path, _cap
     monkeypatch.setattr(cfg, "data_dir", tmp_path)
     monkeypatch.setattr(server_mod.shutil, "which", lambda _name: r"C:\Python\Scripts\lilbee.exe")
     monkeypatch.setattr(server_mod.sys, "platform", "win32")
+    monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", _NEW_GROUP, raising=False)
     server_mod.spawn_server(8080)
     cmd = _capture_popen["cmd"]
     assert cmd[0] == r"C:\Python\Scripts\lilbee.exe"
