@@ -296,7 +296,9 @@ async def _open_picker(
     started = _record_downloads(app)
     installs: list[tuple[str, Callable[[], object]]] = []
     monkeypatch.setattr(screen, "notify", lambda message, **_kw: None)
-    monkeypatch.setattr("lilbee.cli.tui.screens.catalog.disk_shortfall", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        "lilbee.cli.tui.screens.catalog.reclaimed_shortfall", lambda *_a, **_kw: None
+    )
     monkeypatch.setattr(
         "lilbee.cli.tui.screens.catalog.install_then",
         lambda _app, name, then: installs.append((name, then)),
