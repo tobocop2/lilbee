@@ -56,7 +56,7 @@ def _serve(loop: asyncio.AbstractEventLoop) -> None:
         loop.close()
 
 
-def get_loop() ->asyncio.AbstractEventLoop:
+def get_loop() -> asyncio.AbstractEventLoop:
     """Return the background loop, starting it on a daemon thread if needed."""
     global _loop, _thread, _atexit_registered
     with _lock:
