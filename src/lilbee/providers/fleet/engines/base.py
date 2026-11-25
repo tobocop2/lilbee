@@ -183,6 +183,12 @@ class RequestProfile:
     load_failure_check: UpstreamCheck | None = None
     """Read once after a warm fails; an error replaces the engine's own failure with a reason
     the user can act on. None keeps the engine's failure."""
+    window_tokenize_path: str | None = None
+    """The route that counts the tokens of a chat prompt, or None for an engine that bounds a prompt
+    at the served window itself. An engine with a route has the client refuse a prompt past the
+    window, because the engine accepts any prompt up to the model's own length."""
+    window_tokenize_model: str | None = None
+    """The model name the count request body carries."""
 
     def __post_init__(self) -> None:
         if self.tokenize_path is not None and self.input_limit_path is not None:

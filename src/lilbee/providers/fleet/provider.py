@@ -2185,6 +2185,7 @@ class FleetProvider:
                     endpoint,
                     launch.model_id,
                     token_cap=launch.token_cap,
+                    chat_ctx=launch.ctx if role is WorkerRole.CHAT else None,
                     timeout=_request_timeout_s(launch),
                     rerank_mode=launch.rerank_mode,
                     inline_reasoning=role is WorkerRole.CHAT,

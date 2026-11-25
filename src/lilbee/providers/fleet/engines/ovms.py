@@ -92,6 +92,11 @@ _RERANK_PROFILE = replace(
     rerank_model=_SERVED_NAME,
     batch_limit=OVMS_RERANK_BATCH,
 )
+_CHAT_PROFILE = replace(
+    _PROFILE,
+    window_tokenize_path="/v3/tokenize",
+    window_tokenize_model=_SERVED_NAME,
+)
 
 
 def _position_limit(model_dir: Path) -> int | None:
@@ -270,7 +275,9 @@ class OvmsAdapter:
         return {"checkEndpoint": "/v2/health/ready", "useModelName": _SERVED_NAME}
 
     def request_profile(self, role: WorkerRole) -> RequestProfile:
-        return _RERANK_PROFILE if role is WorkerRole.RERANK else _PROFILE
+        if role is WorkerRole.RERANK:
+            return _RERANK_PROFILE
+        return _CHAT_PROFILE if role is WorkerRole.CHAT else _PROFILE
 
 
 OVMS = OvmsAdapter()
