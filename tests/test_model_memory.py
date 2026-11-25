@@ -649,7 +649,7 @@ class TestInstalledEstimate:
         _write(tmp_path, "pytorch_model.bin", 9000)
         _write_small_config(tmp_path)
         est = mm.estimate_memory(ModelFormat.OPENVINO, _request(tmp_path))
-        charge = 2 * 410 + SMALL_KV_BYTES // 2 * 4096 * 2 + 928 * 1024**2
+        charge = 2 * 410 + SMALL_KV_BYTES * 4096 * 2 + 928 * 1024**2
         assert (est.kind, est.device_bytes, est.shared_bytes) == (
             MemoryKind.FIXED_RESERVE,
             charge,
@@ -692,7 +692,7 @@ class TestInstalledEstimate:
         _write(tmp_path, "openvino_model_qint8_quantized.bin", 400)
         _write_small_config(tmp_path)
         est = mm.estimate_memory(ModelFormat.OPENVINO, _request(tmp_path))
-        assert est.shared_bytes == 2 * 400 + SMALL_KV_BYTES // 2 * 4096 * 2 + 928 * 1024**2
+        assert est.shared_bytes == 2 * 400 + SMALL_KV_BYTES * 4096 * 2 + 928 * 1024**2
 
     def test_the_reserve_is_eight_gibibytes(self) -> None:
         assert RESERVE == 8 * 1024**3
