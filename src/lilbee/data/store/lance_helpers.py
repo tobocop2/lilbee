@@ -108,9 +108,8 @@ def prune_old_versions(table: LanceTable, keep_version: int | None = None) -> No
 
 
 def ensure_table(db: LanceDBConnection, name: str, schema: pa.Schema) -> LanceTable:
-    table: LanceTable
-    if name in table_names(db):
-        table = db.open_table(name)
+    table = open_committed(db, name)
+    if table is not None:
         return table
     try:
         table = db.create_table(name, schema=schema)
