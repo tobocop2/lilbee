@@ -52,10 +52,19 @@ def _model_task_validation_bypassed() -> bool:
 
 
 def _resolve_installed_task(registry: ModelRegistry, ref: str) -> ModelTask | None:
-    """Return the manifest's ``ModelTask`` for *ref*, or ``None``."""
+    """Return the manifest's ``ModelTask`` for *ref*, or ``None``.
+
+    Raises ``ValueError`` when the manifest names a task this lilbee does not know.
+    """
     manifest = registry.get_manifest(ref)
     if manifest is None:
         return None
+    if manifest.task not in tuple(ModelTask):
+        raise ValueError(
+            f"Model '{ref}' has an unknown task '{manifest.task}', so it cannot be "
+            "assigned to a role. Update lilbee, or remove the model with "
+            "'lilbee model rm <ref>'."
+        )
     return ModelTask(manifest.task)
 
 
