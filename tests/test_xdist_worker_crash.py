@@ -307,7 +307,7 @@ def test_a_child_run_that_hits_its_limit_reports_its_output_and_process_tree(
         assert "SigCgt" in message
 
 
-def test_a_child_run_that_ends_in_time_takes_no_snapshot(tmp_path: Path) -> None:
+def test_a_child_run_that_ends_in_time_returns_its_output_and_exit_code(tmp_path: Path) -> None:
     output, code = _run_bounded_child(
         [sys.executable, "-c", "print('done')"],
         cwd=tmp_path,
