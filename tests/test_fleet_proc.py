@@ -35,7 +35,7 @@ def test_stderr_sink_receives_stderr_and_stdout_stays_clean() -> None:
 
 
 def test_stderr_tail_that_starts_inside_a_character_decodes_with_a_replacement() -> None:
-    """The euro sign is three bytes; the cut falls after its first byte."""
+    """The euro sign is three bytes; the cut falls after its second byte."""
     code = (
         "import sys; sys.stderr.buffer.write(b'\\xe2\\x82\\xac' + b'x' * "
         f"{proc.STDERR_TAIL_BYTES - 1})"
