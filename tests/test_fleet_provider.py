@@ -9467,6 +9467,7 @@ class TestReportsReadAfterTheLoad:
 
         p, swap = self._warming(monkeypatch)
         order: list[object] = []
+
         def read() -> None:
             order.append(p.warm_progress().phase)
             swap.read_done.set()
@@ -9497,6 +9498,7 @@ class TestReportsReadAfterTheLoad:
 
         p, swap = self._cold(self._replica("chat-0"))
         phases: list[object] = []
+
         def read() -> None:
             phases.append(p.warm_progress().phase)
             swap.read_done.set()
