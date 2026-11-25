@@ -111,17 +111,23 @@ def route_diagnostics_to_log_file(ctx: typer.Context) -> Path | None:
 
 
 def _restore_diagnostics(handlers_before: list[logging.Handler], capture_was_on: bool) -> None:
-    """Put the root handlers and the warnings hook back as they were."""
-    root = logging.getLogger()
-    for handler in list(root.handlers):
-        if handler not in handlers_before:
-            root.removeHandler(handler)
-            handler.close()
-    for handler in handlers_before:
-        if handler not in root.handlers:
-            root.addHandler(handler)
-    if not capture_was_on:
-        logging.captureWarnings(False)
+    """Run the service teardown, then put the root handlers and the warnings hook back.
+
+    The teardown would run at interpreter exit, after the handlers are back, so its
+    records would print after the answer. It runs here instead, under the log file.
+    """
+    from lilbee.app.services import reset_services_on_exit
+
+    try:
+        reset_services_on_exit()
+    finally:
+        root = logging.getLogger()
+        for handler in root.handlers:
+            if handler not in handlers_before:
+                handler.close()
+        root.handlers[:] = handlers_before
+        if not capture_was_on:
+            logging.captureWarnings(False)
 
 
 def _warnings_are_captured() -> bool:
