@@ -355,6 +355,15 @@ _PRESET = PresetCall("http://box:8080/v1", WorkerRole.EMBED)
             id="a-type-message-wins-over-the-kind-message",
         ),
         pytest.param(
+            "SerializationError",
+            None,
+            ProviderErrorKind.UNKNOWN,
+            "The server for m sent a reply that lilbee cannot read: "
+            "a field of the OpenAI reply format is missing. "
+            "Check that the server answers in the OpenAI reply format.",
+            id="a-reply-the-sdk-cannot-read-gets-a-plain-sentence",
+        ),
+        pytest.param(
             "InternalError",
             None,
             ProviderErrorKind.UNKNOWN,

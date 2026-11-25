@@ -72,8 +72,14 @@ _ERROR_KINDS: dict[str, ProviderErrorKind] = {
 }
 
 # Messages for single exception types that need their own wording. The SDK refuses a
-# preset's connection to a blocked network with ``OutboundForbiddenError``.
+# preset's connection to a blocked network with ``OutboundForbiddenError``. It raises
+# ``SerializationError`` when a reply lacks a field of the OpenAI reply format.
 _TYPE_MESSAGES: dict[str, str] = {
+    "SerializationError": (
+        "The server for {model} sent a reply that lilbee cannot read: "
+        "a field of the OpenAI reply format is missing. "
+        "Check that the server answers in the OpenAI reply format."
+    ),
     "OutboundForbiddenError": (
         "The server for {model} resolves to an address that a server preset cannot use. "
         "Fix the URL of the preset or pick a different model."
