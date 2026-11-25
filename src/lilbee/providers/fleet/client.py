@@ -1951,8 +1951,9 @@ class LlamaServerClient:
         try:
             refusal = retry_on_gateway_error(lambda: self._read_check(check))
         except ProviderError as exc:
+            reason = str(exc).rstrip(".")
             raise ProviderError(
-                f"{label} did not report the device of the model: {exc} Check that the "
+                f"{label} did not report the device of the model: {reason}. Check that the "
                 f"{label} server is running, then restart lilbee.",
                 provider=label,
             ) from exc

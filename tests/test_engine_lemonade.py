@@ -415,7 +415,7 @@ NPU_FIX = (
 
 def test_d1_the_parser_reads_a_model_lemond_lists_on_the_cpu_as_a_refusal() -> None:
     refusal = lemonade.npu_refusal(_reply("health-cpu-v2026.44.1.json"), "Qwen3-0.6B-GGUF")
-    assert refusal == f"Lemonade loaded the model on the CPU, not the NPU. {NPU_FIX}"
+    assert refusal == f"Lemonade loaded Qwen3-0.6B-GGUF on the CPU, not the NPU. {NPU_FIX}"
 
 
 def test_d1_a_model_lemond_lists_on_the_npu_confirms_the_claim() -> None:
@@ -429,7 +429,8 @@ def test_d1_a_model_lemond_lists_on_the_npu_confirms_the_claim() -> None:
 def test_d1_a_model_absent_from_the_reply_is_not_confirmed(reply: str) -> None:
     refusal = lemonade.npu_refusal(_reply(reply), lemonade.model_name(WorkerRole.CHAT))
     assert refusal == (
-        f"Lemonade does not list the model as loaded, so it cannot confirm the NPU. {NPU_FIX}"
+        "Lemonade does not list user.lilbee-chat as loaded, so it cannot confirm the NPU. "
+        f"{NPU_FIX}"
     )
 
 
@@ -441,7 +442,7 @@ def test_d1_a_reply_with_no_model_list_is_not_confirmed(reply: object) -> None:
 def test_d1_a_listed_model_with_no_device_text_is_not_confirmed() -> None:
     reply = {"all_models_loaded": ["x", {"model_name": "user.lilbee-chat", "device": None}]}
     assert lemonade.npu_refusal(reply, "user.lilbee-chat") == (
-        f"Lemonade loaded the model on another device, not the NPU. {NPU_FIX}"
+        f"Lemonade loaded user.lilbee-chat on another device, not the NPU. {NPU_FIX}"
     )
 
 
