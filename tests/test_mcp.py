@@ -2284,7 +2284,7 @@ class TestWikiProviderFailure:
 class TestWikiBuildWithNoPages:
     @pytest.mark.parametrize("tool", [wiki_build, wiki_update])
     def test_a_build_with_no_pages_returns_a_tool_error(self, mock_svc, monkeypatch, tool):
-        from lilbee.wiki.generation import WikiBuildError
+        from lilbee.wiki.stats import WikiBuildError
 
         cfg.wiki = True
         message = "No wiki pages were written: all 2 model calls failed."
@@ -2295,6 +2295,30 @@ class TestWikiBuildWithNoPages:
         monkeypatch.setattr("lilbee.wiki.run_full_build", _fail)
 
         assert tool() == {"error": message}
+
+    def test_synthesize_with_no_pages_returns_a_tool_error(self, mock_svc, monkeypatch):
+        from lilbee.wiki.stats import WikiBuildError
+
+        cfg.wiki = True
+
+        def _fail(*a, **kw):
+            raise WikiBuildError("every model call failed")
+
+        monkeypatch.setattr("lilbee.wiki.run_full_synthesize", _fail)
+
+        assert wiki_synthesize() == {"error": "every model call failed"}
+
+    def test_generate_with_no_page_returns_a_tool_error(self, mock_svc, monkeypatch):
+        from lilbee.wiki.stats import WikiBuildError
+
+        cfg.wiki = True
+
+        def _fail(*a, **kw):
+            raise WikiBuildError("every model call failed")
+
+        monkeypatch.setattr("lilbee.wiki.lazy.generate_stub_page", _fail)
+
+        assert wiki_generate("ford") == {"error": "every model call failed"}
 
 
 class TestWikiUpdateTool:

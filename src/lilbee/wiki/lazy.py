@@ -37,6 +37,7 @@ from .page import (
     truncate_chunks_to_budget,
 )
 from .shared import WIKI_BUILD_LOCK
+from .stats import BuildStats
 from .stubs import WikiStub, load_stub_index
 
 if TYPE_CHECKING:
@@ -46,7 +47,6 @@ if TYPE_CHECKING:
     from lilbee.data.store import CitationRecord, SearchChunk, Store
 
     from .citations import ParsedCitation
-    from .stats import BuildStats
 
 log = logging.getLogger(__name__)
 
@@ -130,6 +130,7 @@ def generate_stub_page(
     if config is None:
         config = cfg
     provider = get_services().provider
+    stats = BuildStats.ensure(stats)
     with (
         suppress(SyncMarkWaitCancelledError),
         source_keys_in_use(config.data_root, cancel),
@@ -184,6 +185,7 @@ def generate_stub_page(
             # them. Pruning here would delete every document that named it.
             supersedes_sources=False,
         )
+        stats.raise_if_nothing_written(0 if path is None else 1)
         if path is not None:
             # The link pass a build runs; without it the page has no [[links]]
             # and sits alone in the graph. No entities: the surface map is then

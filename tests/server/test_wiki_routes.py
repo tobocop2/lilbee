@@ -848,7 +848,7 @@ class TestWikiEnabled:
         assert events == [("error", {"message": "provider unreachable"})]
 
     async def test_build_stream_reports_a_build_with_no_pages_as_an_error_event(self, monkeypatch):
-        from lilbee.wiki.generation import WikiBuildError
+        from lilbee.wiki.stats import WikiBuildError
 
         def fake_build(config, on_progress, cancel):
             raise WikiBuildError("No wiki pages were written: all 2 model calls failed.")

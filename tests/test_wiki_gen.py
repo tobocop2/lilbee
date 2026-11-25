@@ -2361,6 +2361,39 @@ class TestRunFullSynthesize:
         assert result["paths"][0].endswith("typing.md")
 
 
+class TestRunFullSynthesizeWhenTheModelFails:
+    def test_a_run_where_every_call_fails_raises_with_the_cause(self, monkeypatch):
+        from lilbee.retrieval.clustering import SourceCluster
+        from lilbee.wiki.generation import run_full_synthesize
+
+        store = _mock_store()
+        store.get_chunks_by_source.side_effect = lambda name: [_make_chunk("text", source=name)]
+        services = MagicMock()
+        services.store = store
+        services.clusterer = _FakeClusterer(
+            [
+                SourceCluster(
+                    cluster_id="x", label="topic", sources=frozenset({"a.md", "b.md", "c.md"})
+                )
+            ]
+        )
+        services.provider.chat.side_effect = ConnectionError("The chat model is not running.")
+        services.provider.get_capabilities.return_value = []
+        monkeypatch.setattr("lilbee.wiki.generation.get_services", lambda: services)
+
+        with pytest.raises(RuntimeError, match="The chat model is not running."):
+            run_full_synthesize(cfg)
+
+    def test_a_run_with_no_clusters_does_not_raise(self, monkeypatch):
+        from lilbee.wiki.generation import run_full_synthesize
+
+        services = MagicMock()
+        services.clusterer = _FakeClusterer([])
+        monkeypatch.setattr("lilbee.wiki.generation.get_services", lambda: services)
+
+        assert run_full_synthesize(cfg)["count"] == 0
+
+
 class TestRunSummaryStats:
     """Both run entry points report what their gates did, in the summary and log.md."""
 

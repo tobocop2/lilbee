@@ -396,7 +396,7 @@ class TestGenerateSourceBatchEdgeCases:
             written_concept_slugs={},
         )
         assert pages == []
-        assert any("Batched LLM call failed" in r.message for r in caplog.records)
+        assert any("Model call failed for s.txt" in r.message for r in caplog.records)
         marker = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS / "henry.md"
         assert PENDING_MARKER_KEYWORD_PARSE in marker.read_text()
 
@@ -1396,19 +1396,22 @@ class TestModelCallOutcomes:
     def test_a_run_with_no_calls_did_not_fail(self):
         assert not BuildStats().every_model_call_failed
 
+    def test_failed_calls_with_a_page_written_do_not_raise(self):
+        stats = BuildStats()
+        stats.record_model_call("engine down")
+        stats.raise_if_nothing_written(1)
+
 
 class TestFullBuildWhenTheModelFails:
     def test_a_build_where_every_call_fails_raises_with_the_cause(self, stub_embedder, monkeypatch):
-        from lilbee.wiki.generation import WikiBuildError
-
         provider = MagicMock()
         provider.chat.side_effect = ConnectionError("The chat model is not running.")
         provider.get_capabilities.return_value = []
-        with pytest.raises(WikiBuildError) as err:
+        with pytest.raises(RuntimeError) as err:
             _run_full_build_with(monkeypatch, provider)
         message = str(err.value)
         assert "No wiki pages were written" in message
-        assert "all 1 model calls failed" in message
+        assert "every model call failed (1)" in message
         assert "The chat model is not running." in message
 
     def test_a_build_that_wrote_a_page_does_not_raise(self, stub_embedder, monkeypatch):
