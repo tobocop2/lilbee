@@ -268,9 +268,11 @@ def test_preset_chat_steps_send_the_pinned_sampling(
     monkeypatch.setattr(preset_check, "create_sdk_provider", lambda: provider)
     preset_check._STEP_FUNCTIONS[step](Setup(("chat",), dict(_MODELS), strict=True))
     assert len(provider.options) == 1
-    assert {k: provider.options[0].get(k) for k in request_set.PINNED_SAMPLING} == (
-        request_set.PINNED_SAMPLING
-    )
+    assert request_set.PINNED_SAMPLING == {"temperature": 0, "seed": 7}
+    assert {k: provider.options[0].get(k) for k in ("temperature", "seed")} == {
+        "temperature": 0,
+        "seed": 7,
+    }
 
 
 def test_harness_chat_sends_the_pinned_sampling() -> None:
@@ -282,7 +284,7 @@ def test_harness_chat_sends_the_pinned_sampling() -> None:
             return 200, b"{}"
 
     _Spy("http://unused", {"chat": "m"}, 1.0).chat("chat", [{"role": "user", "content": "x"}])
-    assert {k: sent[0][k] for k in request_set.PINNED_SAMPLING} == request_set.PINNED_SAMPLING
+    assert (sent[0]["temperature"], sent[0]["seed"]) == (0, 7)
 
 
 def _reasoning_outcome(

@@ -1,6 +1,6 @@
 {
  "server": "llama.cpp-cpu-inline",
- "version": "version: 0.8.0-dev (build 1, commit dde879b)",
+ "version": "1.12032.1",
  "roles": [
   "chat"
  ],

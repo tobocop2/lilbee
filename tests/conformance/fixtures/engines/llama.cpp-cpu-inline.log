@@ -1,5 +1,5 @@
 engine: llama.cpp-cpu-inline
-version: version: 0.8.0-dev (build 1, commit dde879b)
+version: 1.12032.1
 host: Linux-7.0.0-1017-gcp-x86_64-with-glibc2.39
 backend: cpu
 reported-backend: none
