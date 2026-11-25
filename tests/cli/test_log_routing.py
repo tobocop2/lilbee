@@ -135,6 +135,7 @@ def test_a_command_that_routes_diagnostics_turns_warning_capture_back_off(
     assert _capture_is_on() is False
 
 
+@pytest.mark.real_cli_teardown
 def test_a_record_of_the_service_teardown_reaches_cli_log_and_not_the_console(
     routed_app, restored_logging, tmp_path: Path
 ):

@@ -200,6 +200,7 @@ timeout_method = "thread"
 markers = [
     "slow: integration tests that download models or take >10s",
     "real_model_classify: opt out of the global _classify_installed_models mock",
+    "real_cli_teardown: opt out of the stub for the service stop at the end of a CLI command",
     "real_provider_sdk_probe: opt out of the global provider_sdk_available True override",
     "real_engine_model_lists: opt out of the seal on the model lists that engines publish",
     "real_engine_resolution: opt out of the engine-binary seal (host PATH and LILBEE_LLAMA_SERVER_PATH resolve again)",
