@@ -988,8 +988,12 @@ class TestSemanticChunkingConfig:
         self, tmp_path, key
     ) -> None:
         variable = f"LILBEE_{key.upper()}"
-        with pytest.raises(RefusedVariableError) as refused:
-            _build_with(tmp_path, "", **{variable: _SECRET_ADDRESS})
+        env = {**clean_env(tmp_path), variable: _SECRET_ADDRESS}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            pytest.raises(RefusedVariableError) as refused,
+        ):
+            Config()
         assert variable in str(refused.value)
         assert "s3cret" not in str(refused.value)
 
