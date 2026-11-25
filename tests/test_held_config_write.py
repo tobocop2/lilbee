@@ -352,14 +352,22 @@ def test_the_factory_hands_the_held_writes_and_the_followed_keys_to_the_local_en
 def test_a_stamp_records_the_planned_values_and_the_keys_its_builder_follows(
     monkeypatch,
 ) -> None:
-    """Rule 1: `ask --model X` stamps X, not the file's model, and the keys it takes."""
-    persistent_settings.save(cfg.data_root, {"chat_model": _CHAT_REF, "flash_attention": True})
+    """Rule 1: `ask --model X` stamps X, not the file's model, and the keys it takes.
+
+    A held key records the value the process runs on; a followed key records the
+    file's value, which the process takes.
+    """
+    persistent_settings.save(
+        cfg.data_root, {"chat_model": _CHAT_REF, "flash_attention": True, "num_ctx": 4096}
+    )
     monkeypatch.setattr(cfg, "chat_model", _OTHER_CHAT_REF)  # the command's flag
-    monkeypatch.setattr(cfg, "flash_attention", True)
+    monkeypatch.setattr(cfg, "num_ctx", 2048)  # another flag
+    monkeypatch.setattr(cfg, "flash_attention", False)  # not yet taken from the file
     followed = ENGINE_TUNING_KEYS - {"num_ctx"}
     origin = FleetProvider(followed_keys=lambda: followed)._stamp_origin()
     planned = json.loads(origin.fleet_view or "")
-    assert (planned["chat_model"], planned["flash_attention"]) == (_OTHER_CHAT_REF, True)
+    assert (planned["chat_model"], planned["num_ctx"]) == (_OTHER_CHAT_REF, 2048)
+    assert planned["flash_attention"] is True
     assert origin.followed == followed
 
 
