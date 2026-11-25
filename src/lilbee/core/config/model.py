@@ -1904,22 +1904,22 @@ class _TomlSource:
             if f"{CONFIG_FILE_NAME}: {_not_a_setting(key, key)}" not in self._reported:
                 self._warn(f"{self._label}: {_not_a_setting(key, key)}")
 
-    def read(self) -> dict[str, Any] | None:
-        """The parsed file, or None, reported once, when it does not open or parse."""
+    def report_unreadable(self) -> None:
+        """Report, once, that the file does not open or parse."""
+        unreadable = f"Failed to read {self._path}, ignoring"
+        if unreadable not in self._reported:
+            self._warn(unreadable)
+
+    def __call__(self) -> dict[str, Any]:
         import tomllib
 
         try:
             with self._path.open("rb") as f:
-                return tomllib.load(f)
+                data = tomllib.load(f)
         except (ValueError, OSError):
-            unreadable = f"Failed to read {self._path}, ignoring"
-            if unreadable not in self._reported:
-                self._warn(unreadable)
-            return None
-
-    def __call__(self) -> dict[str, Any]:
-        data = self.read()
-        return {} if data is None else self.accept(data)
+            self.report_unreadable()
+            return {}
+        return self.accept(data)
 
     def accept(self, data: dict[str, Any]) -> dict[str, Any]:
         """The values in *data*, the parsed file, that Config accepts; reports each it refuses."""
@@ -2049,10 +2049,11 @@ def toml_values(path: Path, only: str | None = None) -> dict[str, Any]:
     and a refused value are each reported once per change of the file, less
     what the load reported when the file is the one cfg is built from.
     """
-    return _overlay_source(path, only)()
+    return overlay_source(path, only)()
 
 
-def _overlay_source(path: Path, only: str | None = None) -> _TomlSource:
+def overlay_source(path: Path, only: str | None = None) -> _TomlSource:
+    """The reader ``toml_values`` runs, to feed it a table that is already parsed."""
     return _TomlSource(
         Config,
         path,
@@ -2062,16 +2063,6 @@ def _overlay_source(path: Path, only: str | None = None) -> _TomlSource:
         only=only,
         per_change=True,
     )
-
-
-def read_toml_values(path: Path) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    """The parsed config.toml at *path*, None when it does not parse, and ``toml_values`` of it.
-
-    One read of the file serves both; the reports are those of ``toml_values``.
-    """
-    source = _overlay_source(path)
-    data = source.read()
-    return data, ({} if data is None else source.accept(data))
 
 
 def toml_value(path: Path, key: str) -> Any:

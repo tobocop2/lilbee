@@ -96,10 +96,11 @@ def _present(table: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in table.items() if value_is_set(key, value)}
 
 
-def _read_toml(path: Path) -> dict[str, Any]:
+def _read_toml(path: Path, *, strict: bool = False) -> dict[str, Any]:
     """The parsed config.toml; empty when skipped, missing or unreadable.
 
     The load and the overlay report an unreadable file; this read runs on every settings read.
+    With *strict*, an unreadable file raises ``ValueError`` or ``OSError`` instead.
     """
     if os.environ.get(SKIP_TOML_ENV) == "1" or not path.exists():
         return {}
@@ -107,7 +108,14 @@ def _read_toml(path: Path) -> dict[str, Any]:
         with path.open("rb") as f:
             return tomllib.load(f)
     except (ValueError, OSError):
+        if strict:
+            raise
         return {}
+
+
+def read_config_table(path: Path) -> dict[str, Any]:
+    """The parsed config.toml at *path*; raises ``ValueError`` or ``OSError`` when unreadable."""
+    return _read_toml(path, strict=True)
 
 
 def toml_is_readable(path: Path) -> bool:
