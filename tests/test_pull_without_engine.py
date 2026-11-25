@@ -187,7 +187,7 @@ async def _install(model: CatalogModel) -> tuple[mock.MagicMock, mock.MagicMock]
         with (
             mock.patch.object(screen, "_enqueue_download") as enqueue,
             mock.patch.object(screen, "notify") as notify,
-            mock.patch("lilbee.cli.tui.screens.catalog.disk_shortfall", return_value=None),
+            mock.patch("lilbee.cli.tui.screens.catalog.reclaimed_shortfall", return_value=None),
         ):
             screen._install_format(model)
         return enqueue, notify
