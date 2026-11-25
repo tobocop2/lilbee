@@ -806,6 +806,17 @@ def test_a_windows_system_dll_import_needs_no_bundled_copy(tmp_path: Path) -> No
     assert acb.check(wheel) == []
 
 
+def test_the_system_dlls_of_the_rust_runtime_need_no_bundled_copy(tmp_path: Path) -> None:
+    # Rust std imports ProcessPrng from bcryptprimitives.dll (Windows 8 and later, per
+    # learn.microsoft.com/en-us/windows/win32/seccng/processprng); mistralrs.exe imports
+    # the Performance Data Helper pdh.dll (Windows XP and later, per
+    # learn.microsoft.com/en-us/windows/win32/api/pdh/nf-pdh-pdhopenquerya).
+    wheel = _windows_wheel(
+        tmp_path, _windows_files(ggml_base=_pe(("bcryptprimitives.dll", "PDH.dll")))
+    )
+    assert acb.check(wheel) == []
+
+
 @pytest.mark.parametrize("bundled", ["Zlib1.DLL", "sub/zlib1.dll"], ids=["case", "folder"])
 def test_a_bundled_dll_import_is_satisfied_whatever_its_case_or_folder(
     tmp_path: Path, bundled: str
