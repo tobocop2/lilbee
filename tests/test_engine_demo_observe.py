@@ -43,7 +43,7 @@ _FAKE = Path(__file__).parent / "engine_demo_fake_cli.py"
 _CLI = (sys.executable, str(_FAKE))
 _ROLES = (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK)
 _MODELS = {r: f"org/{r}-GGUF" for r in (*_ROLES, WorkerRole.VISION)}
-# What the model routes store for a bare repo ref: the full file ref.
+# What model use stores for a bare repo ref: the full file ref.
 _STORED = {r: f"{ref}/{ref.rsplit('/', 1)[1]}.gguf" for r, ref in _MODELS.items()}
 _IMAGE_PDF = Path("scan.pdf")
 
@@ -73,7 +73,7 @@ def _step(t: Transcript, name: StepName) -> list[Step]:
 def test_a_good_run_passes_the_oracles(tmp_path: Path) -> None:
     t = observe(_plan(), tmp_path)
     assert judge(t) == []
-    assert [s.stdout for s in _step(t, StepName.ENGINES_LEFT_RUNNING)] == ["", ""]
+    assert [s.stdout for s in _step(t, StepName.ENGINES_LEFT_RUNNING)] == [""]
     assert (t.backend, t.pins) == ("cpu", {"llama.cpp": "b6123"})
     assert t.claimed_roles == _ROLES
     assert set(t.role_engines.values()) == {"llama.cpp"}
@@ -197,10 +197,8 @@ def test_each_log_line_belongs_to_the_step_that_wrote_it(tmp_path: Path) -> None
         if step.command[: len(_CLI)] == _CLI:
             assert started == [" ".join(step.command[len(_CLI) :])], step.name
     serving = [ln for s in t.steps for ln in s.log_lines if "fake: start serve" in ln]
-    assert len(serving) == 2  # one server session for the model routes, one for chat
-    (first_put, *_) = (s for s in t.steps if s.command[0] == "PUT")
+    assert len(serving) == 1  # the chat step's server session only
     (chat,) = _step(t, StepName.CHAT)
-    assert any("start serve" in ln for ln in first_put.log_lines)
     assert any("start serve" in ln for ln in chat.log_lines)
     (sync,) = _step(t, StepName.SYNC)
     assert [line.split(": ", 1)[1] for line in sync.log_lines] == [
@@ -236,9 +234,9 @@ def test_the_chat_step_is_one_turn_over_the_chat_route(tmp_path: Path) -> None:
 
 
 def _set_refs(t: Transcript) -> dict[int, str]:
-    """The model ref each set-model step sent, by step index, from a route body or the CLI."""
+    """The model ref each set-model step sent, by step index; each is a CLI command."""
     return {
-        i: json.loads(s.command[2])["model"] if s.command[0] == "PUT" else s.command[-1]
+        i: s.command[-1]
         for i, s in enumerate(t.steps)
         if s.name is StepName.SET_MODEL
     }
@@ -254,28 +252,29 @@ def test_every_role_model_is_set_before_its_engine_is_chosen(tmp_path: Path) -> 
     assert max(refs) < min(i for i, _ in uses)
     models = json.loads((tmp_path / "lilbee" / "models.json").read_text(encoding="utf-8"))
     assert models == {str(r): _STORED[r] for r in _ROLES}
-    # engine use gets the ref the route stored, not the bare repo ref the demo sent
+    # engine use gets the ref model use stored, not the bare repo ref the demo sent
     used = {s.command[len(_CLI) + 2]: s.command[len(_CLI) + 3] for _, s in uses}
     assert used == {str(r): _STORED[r] for r in _ROLES}
 
 
-def test_the_model_routes_carry_every_role_the_cli_cannot_set(tmp_path: Path) -> None:
+def test_model_use_sets_every_role_but_embed(tmp_path: Path) -> None:
     roles = (*_ROLES, WorkerRole.VISION)
     t = observe(_plan(roles), tmp_path)
-    puts = [s for s in t.steps if s.command[0] == "PUT"]
-    routes = [s.command[1].rsplit("/", 1)[1] for s in puts]
-    assert routes == ["chat", "reranker", "vision"]
-    assert all(s.exit_code == 0 for s in puts)
+    prefix = (*_CLI, "--json", "model", "use")
+    uses = [s for s in _step(t, StepName.SET_MODEL) if s.command[: len(prefix)] == prefix]
+    assert [s.command[len(prefix)] for s in uses] == ["chat", "rerank", "vision"]
+    assert all(s.exit_code == 0 and s.json_output for s in uses)
+    assert not [s for s in t.steps if s.command[0] == "PUT"]
 
 
 @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION])
-def test_a_role_without_a_cli_setter_is_set_by_its_model_route(
+def test_a_role_without_use_embedder_is_set_by_model_use(
     tmp_path: Path, role: WorkerRole
 ) -> None:
     t = observe(_plan((role,)), tmp_path)
     (set_step,) = _step(t, StepName.SET_MODEL)
-    assert set_step.command[0] == "PUT"
-    assert len(_step(t, StepName.ENGINES_LEFT_RUNNING)) == 2  # the model routes, then chat
+    assert set_step.command[len(_CLI) :] == ("--json", "model", "use", str(role), _MODELS[role])
+    assert len(_step(t, StepName.ENGINES_LEFT_RUNNING)) == 1  # chat only: no set-model session
     assert [s.exit_code for s in _step(t, StepName.USE)] == [0]
 
 
@@ -290,7 +289,7 @@ def test_the_embed_model_is_set_by_use_embedder_and_read_back_from_engine_roles(
     assert read.command[len(_CLI) :] == ("--json", "engine", "roles")
     assert read.json_output
     assert t.steps.index(set_step) + 1 == t.steps.index(read)
-    assert len(_step(t, StepName.ENGINES_LEFT_RUNNING)) == 1  # chat only: no model route ran
+    assert len(_step(t, StepName.ENGINES_LEFT_RUNNING)) == 1  # chat only: no set-model session
     (use,) = _step(t, StepName.USE)
     # engine use gets the file ref engine roles shows, not the bare repo ref use-embedder got
     assert use.command[len(_CLI) :] == (
@@ -368,7 +367,7 @@ def test_a_server_child_left_running_is_recorded(
     left = [s for s in _step(t, StepName.ENGINES_LEFT_RUNNING) if s.stdout]
     pids = [int(line.split()[0]) for s in left for line in s.stdout.splitlines()]
     try:
-        assert len(left) == 2
+        assert len(left) == 1
         # each record carries the pid and the command line, and no verdict reads it
         assert all("time.sleep(30)" in s.stdout for s in left)
         assert judge(t) == []
@@ -477,11 +476,9 @@ def test_the_observer_ignores_the_port_file_of_an_earlier_server(tmp_path: Path)
         (data / "server.json").write_text(json.dumps({"token": "old"}), encoding="utf-8")
         (data / "server.port").write_text(str(taken), encoding="utf-8")
         t = observe(_plan(), tmp_path)
-    set_models = _step(t, StepName.SET_MODEL)
-    assert set_models
-    assert [s.exit_code for s in (*set_models, *_step(t, StepName.CHAT))] == [0] * (
-        len(set_models) + 1
-    )
+    (chat,) = _step(t, StepName.CHAT)
+    assert chat.exit_code == 0
+    assert [s.exit_code for s in _step(t, StepName.SET_MODEL)] == [0] * 3
 
 
 def test_a_server_that_never_comes_up_times_out(
