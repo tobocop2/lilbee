@@ -363,7 +363,6 @@ def _run_parser(argv: list[str], path_str: str) -> str:
     """Run gguf-parser, returning its JSON stdout or a user-facing error."""
     failed = ProviderError(
         f"Could not size the model '{path_str}': the memory estimator failed to run.",
-        
         kind=ProviderErrorKind.SERVER,
     )
     try:
@@ -405,7 +404,6 @@ def _cached_repacked_bytes(_engine_id: str, path_str: str, _mtime_ns: int) -> in
     except (ValueError, KeyError, TypeError) as exc:
         raise ProviderError(
             f"Could not size the model '{path_str}': the estimator returned unreadable output.",
-            
             kind=ProviderErrorKind.SERVER,
         ) from exc
 
@@ -476,7 +474,6 @@ def _cached_attention_shape(
     except (ValueError, KeyError, TypeError) as exc:
         raise ProviderError(
             f"Could not size the model '{path_str}': the estimator returned unreadable output.",
-            
             kind=ProviderErrorKind.SERVER,
         ) from exc
 
@@ -553,6 +550,5 @@ def _parse_estimate(
         raise ProviderError(
             f"Could not size the model '{path_str}': unexpected estimator output "
             f"({type(exc).__name__}: {exc}).",
-            
             kind=ProviderErrorKind.SERVER,
         ) from exc

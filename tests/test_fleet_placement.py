@@ -967,9 +967,7 @@ class TestUnsizableModelPlacement:
         model = ModelPlacementInput(WorkerRole.CHAT, 40 * _GB)
 
         def boom(_role: WorkerRole, _ratio: tuple[int, ...]) -> tuple[int, ...]:
-            raise ProviderError(
-                "unparseable", kind=ProviderErrorKind.SERVER
-            )
+            raise ProviderError("unparseable", kind=ProviderErrorKind.SERVER)
 
         plan = plan_placement([model], [(0, 24 * _GB), (1, 24 * _GB)], estimate_peak=boom)
         assert len(plan.instances) == 1

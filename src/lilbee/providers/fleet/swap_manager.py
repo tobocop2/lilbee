@@ -591,7 +591,6 @@ class SwapManager:
         if self._port is None:
             raise ProviderError(
                 "The local model engine is not running.",
-                
                 kind=ProviderErrorKind.SERVER,
             )
         return f"http://{_HOST}:{self._port}"

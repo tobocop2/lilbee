@@ -808,9 +808,7 @@ def test_reload_propagates_a_probe_failure_on_the_resurrect_path(monkeypatch) ->
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
 
     def _wedged(engine) -> None:
-        raise ProviderError(
-            "device probe wedged", kind=ProviderErrorKind.CONNECTION
-        )
+        raise ProviderError("device probe wedged", kind=ProviderErrorKind.CONNECTION)
 
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _wedged)
     p = FleetProvider()  # no swaps: the resurrect path recaptures the probe
@@ -853,9 +851,7 @@ def test_reload_fails_loud_when_the_engine_binary_is_missing(monkeypatch) -> Non
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
 
     def _no_binary(engine) -> None:
-        raise ProviderError(
-            "no engine binary", kind=ProviderErrorKind.NOT_FOUND
-        )
+        raise ProviderError("no engine binary", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
     p = FleetProvider()
@@ -8604,9 +8600,7 @@ def test_non_connection_errors_do_not_rediscover(monkeypatch, tmp_path: Path) ->
 
     def _client_factory(_endpoint, _model, **_kw):
         client = _fake_client()
-        client.embed.side_effect = ProviderError(
-            "boom", kind=ProviderErrorKind.SERVER
-        )
+        client.embed.side_effect = ProviderError("boom", kind=ProviderErrorKind.SERVER)
         calls.append(1)
         return client
 
@@ -8812,9 +8806,7 @@ def test_can_build_engine_false_when_binary_unresolvable(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     def _boom(engine):
-        raise ProviderError(
-            "no engine binary", kind=ProviderErrorKind.NOT_FOUND
-        )
+        raise ProviderError("no engine binary", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "assert_engine_probeable", _boom)
     assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}, engine=LLAMA) is False
@@ -8841,9 +8833,7 @@ def test_can_build_engine_propagates_a_wedged_probe(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     def _wedged(engine):
-        raise ProviderError(
-            "cuda init failed", kind=ProviderErrorKind.CONNECTION
-        )
+        raise ProviderError("cuda init failed", kind=ProviderErrorKind.CONNECTION)
 
     monkeypatch.setattr(planning_mod, "assert_engine_probeable", _wedged)
     with pytest.raises(ProviderError) as excinfo:
@@ -8871,9 +8861,7 @@ def test_ladder_does_not_kill_a_replaceable_incumbent_when_the_probe_is_wedged(
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
 
     def _wedged(engine) -> None:
-        raise ProviderError(
-            "cuda init failed", kind=ProviderErrorKind.CONNECTION
-        )
+        raise ProviderError("cuda init failed", kind=ProviderErrorKind.CONNECTION)
 
     monkeypatch.setattr(planning_mod, "assert_engine_probeable", _wedged)
     # A recorded incumbent with no live users: replaceable, so without the pre-stop

@@ -646,9 +646,7 @@ def _raise_no_healthy_replica(cause: Exception) -> NoReturn:
     if isinstance(cause, ProviderError):
         raise cause
     message = str(cause) if isinstance(cause, StreamSilentError) else _NOT_RESPONDING_MESSAGE
-    raise ProviderError(
-        message, kind=ProviderErrorKind.CONNECTION
-    ) from cause
+    raise ProviderError(message, kind=ProviderErrorKind.CONNECTION) from cause
 
 
 def _restart_message(role: WorkerRole) -> str:
@@ -1009,7 +1007,6 @@ def _vision_call(
     except ChatDeadlineError:
         raise ProviderError(
             f"Vision OCR timed out after {timeout:g}s.",
-            
         ) from None
     except StreamInterruptedError as exc:
         # No part of a page reaches the user, so a page cut after a frame fails over
@@ -1566,13 +1563,11 @@ class FleetProvider:
         if self._stop_waiting and not finished:
             raise ProviderError(
                 SERVER_STOPPING_MESSAGE,
-                
                 kind=ProviderErrorKind.STARTING,
             )
         if not finished:
             raise ProviderError(
                 f"The engines are still starting after {_FLEET_WAIT_S:.0f} s.",
-                
                 kind=ProviderErrorKind.STARTING,
             )
         work.result()
@@ -2224,7 +2219,6 @@ class FleetProvider:
         engine_reason = self._unusable_engine_reason()
         raise ProviderError(
             _no_server_message(role, engine_reason),
-            
             kind=(
                 ProviderErrorKind.NOT_FOUND
                 if engine_reason is None
@@ -2259,7 +2253,6 @@ class FleetProvider:
                 if now >= deadline:
                     raise ProviderError(
                         "The vision model did not come back from its reload in time.",
-                        
                         kind=ProviderErrorKind.STARTING,
                     )
                 # Each slice re-checks the cancel and never runs past the deadline.
@@ -2409,9 +2402,7 @@ class FleetProvider:
             with self._lock:
                 if self._failed_starts.get(role) is not err:
                     raise
-            raise ProviderError(
-                _failed_start_message(role, str(err)), kind=err.kind
-            ) from err
+            raise ProviderError(_failed_start_message(role, str(err)), kind=err.kind) from err
 
     def _force_restart(
         self, role: WorkerRole, *, stopped_answering: bool
@@ -2732,7 +2723,6 @@ class FleetProvider:
         if model and canonical_ref(model) != configured:
             raise ProviderError(
                 configured_model_message(role, configured, model),
-                
                 kind=ProviderErrorKind.BAD_REQUEST,
             )
 
@@ -2897,7 +2887,6 @@ class FleetProvider:
                 f"{budget}-token prompt budget for '{model}' "
                 f"({self._chat_ctx}-token window minus reserve and margin). "
                 "Shorten the conversation or the system prompt.",
-                
                 kind=ProviderErrorKind.CONTEXT_OVERFLOW,
             )
         return result.messages
@@ -3004,7 +2993,6 @@ class FleetProvider:
         except _PageBudgetExhausted:
             raise ProviderError(
                 "Vision OCR timed out waiting for a free vision slot.",
-                
             ) from None
 
     def vision_slot_capacity(self) -> int | None:

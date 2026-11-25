@@ -111,17 +111,13 @@ class LiterLlmBackend:
         if ref.provider != _OWN_TOKENIZER_PROVIDER or not ref.name.startswith(_OWN_TOKENIZER):
             raise NotImplementedError(f"liter-llm has no tokenizer of {ref.for_display()}'s own")
         if ref.name in self._failed_tokenizers:
-            raise ProviderError(
-                f"Token count for {ref.for_display()} failed earlier"
-            )
+            raise ProviderError(f"Token count for {ref.for_display()} failed earlier")
         liter_llm = _require_sdk()
         try:
             return int(liter_llm.count_tokens(ref.name, text))
         except liter_llm.LiterLlmError as exc:
             self._failed_tokenizers.add(ref.name)
-            raise ProviderError(
-                f"Token count for {ref.for_display()} failed: {exc}"
-            ) from exc
+            raise ProviderError(f"Token count for {ref.for_display()} failed: {exc}") from exc
 
     def configure_logging(self, *, suppress_debug: bool) -> None:
         """Do nothing: liter-llm prints no debug banner, so there is nothing to suppress."""
@@ -258,7 +254,6 @@ class LiterLlmBackend:
                 f"Embedding response does not match the request: expected {expected} "
                 f"vectors indexed 0-{expected - 1}, got {len(ordered)}. The endpoint "
                 "returned an incomplete or misindexed batch.",
-                
                 kind=ProviderErrorKind.SERVER,
             )
         return EmbeddingResult(
@@ -373,7 +368,6 @@ class LiterLlmBackend:
         raise ProviderError(
             f"{server} doesn't download models over the network. "
             f"Add the model in its own app, then pick it here.",
-            
         )
 
     def show_model(self, model: str, *, base_url: str) -> dict[str, Any] | None:
