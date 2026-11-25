@@ -210,7 +210,9 @@ def test_a_cancel_keeps_a_folder_with_a_finished_file(tmp_path, library, gate):
     body = {"paths": [str(notes)], "add_id": "t539o-folder"}
 
     def fast_done(events: list[tuple[str, dict]]) -> bool:
-        return any(e == "file_done" and str(d.get("file", "")).endswith("fast.md") for e, d in events)
+        return any(
+            e == "file_done" and str(d.get("file", "")).endswith("fast.md") for e, d in events
+        )
 
     with _served(gate) as http:
         stream = _Stream(http, "POST", "/api/add", json=body, headers=_auth_headers())
