@@ -378,11 +378,11 @@ class TestEnginePin:
         # tar extraction and OCI layers restore whole-second times, so two builds of
         # equal size can share size and mtime. The inode tells the files apart.
         exe = tmp_path / "llama-server"
-        exe.write_text("build-A\n")
+        exe.write_text("build-A\n", encoding="utf-8")
         os.utime(exe, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
         sig_a = binary_mod._binary_signature(exe)
         staged = tmp_path / "staged"
-        staged.write_text("build-B\n")
+        staged.write_text("build-B\n", encoding="utf-8")
         os.utime(staged, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
         staged.replace(exe)
         assert binary_mod._binary_signature(exe) != sig_a
@@ -393,11 +393,11 @@ class TestEnginePin:
         # The same inode rewritten to the same size, with the time put back: only the
         # change time, which a caller cannot set, moves.
         exe = tmp_path / "llama-server"
-        exe.write_text("build-A\n")
+        exe.write_text("build-A\n", encoding="utf-8")
         os.utime(exe, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
         sig_a = binary_mod._binary_signature(exe)
         time.sleep(0.05)  # the kernel stamps the change time on a coarse clock tick
-        exe.write_text("build-B\n")
+        exe.write_text("build-B\n", encoding="utf-8")
         os.utime(exe, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
         assert binary_mod._binary_signature(exe) != sig_a
 
