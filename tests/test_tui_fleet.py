@@ -1974,3 +1974,30 @@ async def test_a_clear_the_planner_cannot_read_names_the_models_still_running(mo
         assert notice in str(line.render())
 
     assert notes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("backend", "expected"),
+    [("cpu", "Engine backend: cpu"), ("unknown", "lilbee engine install")],
+)
+async def test_the_fleet_names_the_engine_backend(monkeypatch, backend, expected):
+    """A CPU host and a probe that never answered no longer draw the same empty table."""
+    from dataclasses import replace
+
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import EngineBackend
+
+    view = replace(_make_view(), gpus=(), engine_backend=EngineBackend(backend))
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        note = app.screen.query_one("#placement-skipped", Static)
+        assert note.display is True
+        assert expected in str(note.render())

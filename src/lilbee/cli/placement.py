@@ -21,9 +21,11 @@ from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
 from lilbee.cli.helpers import json_output
 from lilbee.core.config import cfg
+from lilbee.cli.tui.messages import backend_line
 from lilbee.providers.fleet.groups import swap_summary
 from lilbee.providers.fleet.model_memory import memory_size_text
 from lilbee.providers.fleet.placement_spec import PlacementSpec
+from lilbee.providers.roles import EngineBackend
 
 placement_app = typer.Typer(
     name="placement",
@@ -75,6 +77,10 @@ def _guard(action: Callable[[], PlacementView]) -> None:
         _render_view(view)
 
 
+def _backend_style(view: PlacementView) -> str:
+    return theme.WARNING if view.engine_backend is EngineBackend.UNKNOWN else theme.MUTED
+
+
 def _render_view(view: PlacementView) -> None:
     """Print a Rich table of GPU rows plus per-role and unplaceable lines."""
     title = "Placement (manual)" if view.manual else "Placement (auto)"
@@ -97,6 +103,7 @@ def _render_view(view: PlacementView) -> None:
             Text(", ".join(placed.get(g.index, [])) or "-"),
         )
     console.print(table)
+    console.print(Text(f"  {backend_line(view.engine_backend)}"), style=_backend_style(view))
 
     for role_view in view.roles:
         split_info = f" split={list(role_view.tensor_split)}" if role_view.tensor_split else ""

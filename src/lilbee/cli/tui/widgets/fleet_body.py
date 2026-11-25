@@ -416,6 +416,7 @@ class FleetBody(MountWhenAttached, Widget):
             msg.FLEET_ROLE_WITHOUT_ENGINE.format(role=skipped.role.value, notice=skipped.notice)
             for skipped in view.skipped_no_engine
         )
+        lines.append(msg.backend_line(view.engine_backend))
         lines.extend(unknown.notice for unknown in view.size_unknown)
         lines.extend(tight.notice for tight in view.tight)
         if view.refusal:
