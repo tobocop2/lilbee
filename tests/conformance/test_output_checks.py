@@ -204,7 +204,7 @@ class _Provider:
     """A stand-in for the SDK provider that returns one canned answer."""
 
     def __init__(self, **answers: Any) -> None:
-        self.answers = {k: list(v) if isinstance(v, list) else v for k, v in answers.items()}
+        self.answers = answers
 
     def chat(self, *_args: Any, **_kwargs: Any) -> ChatResult:
         return self.answers["chat"]
@@ -216,6 +216,14 @@ class _Provider:
         return self.answers["vision"].pop(0)
 
 
+def _own(answers: dict[str, Any]) -> dict[str, Any]:
+    """Copy the answer lists, so a run drains its own copy and not the parametrized one.
+
+    The steps build a provider per request, so the copy is shared by those providers of one run.
+    """
+    return {k: list(v) if isinstance(v, list) else v for k, v in answers.items()}
+
+
 def _result(
     text: str = "", finish: FinishReason = FinishReason.STOP, calls: tuple[ToolCall, ...] = ()
 ) -> ChatResult:
@@ -223,7 +231,8 @@ def _result(
 
 
 def _outcome(monkeypatch: pytest.MonkeyPatch, step: str, **answers: Any) -> bool:
-    monkeypatch.setattr(preset_check, "create_sdk_provider", lambda: _Provider(**answers))
+    own = _own(answers)
+    monkeypatch.setattr(preset_check, "create_sdk_provider", lambda: _Provider(**own))
     monkeypatch.setattr(cfg, "embedding_model", cfg.embedding_model)
     setup = Setup(("chat", "embed", "vision"), dict(_MODELS), embed_dim=2, strict=True)
     return preset_check._STEP_FUNCTIONS[step](setup).ok
@@ -450,7 +459,8 @@ def test_a_recording_without_the_strict_flag_keeps_its_steps() -> None:
 def _named_outcome(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, roles: tuple[str, ...], **answers: Any
 ) -> preset_check.Outcome:
-    monkeypatch.setattr(RoutingProvider, "_get_sdk_provider", lambda _self: _Provider(**answers))
+    own = _own(answers)
+    monkeypatch.setattr(RoutingProvider, "_get_sdk_provider", lambda _self: _Provider(**own))
     setup = Setup(roles, dict(_MODELS), embed_dim=2, strict=True)
     with preset_check.configured("http://127.0.0.1:1", setup, tmp_path):
         return preset_check._STEP_FUNCTIONS["named"](setup)
