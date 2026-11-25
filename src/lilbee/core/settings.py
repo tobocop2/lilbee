@@ -18,6 +18,7 @@ from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
 from lilbee.core.config.defaults import SKIP_TOML_ENV
 from lilbee.core.config.enums import SettingSource
 from lilbee.core.config.load_warnings import warn_on_load
+from lilbee.core.config import resolve as resolve_mod
 from lilbee.core.config.model import overlay_source, refusal_sentence, toml_value
 from lilbee.core.config.resolve import (
     PROFILE_NAME_KEY,
@@ -25,7 +26,6 @@ from lilbee.core.config.resolve import (
     PROFILE_VALUES_KEY,
     ROOT_DERIVED_FIELDS,
     Resolved,
-    read_config_table,
     read_layers,
     resolve_all,
     sanitize_soft_fields,
@@ -362,7 +362,7 @@ def persisted_values(root: Path) -> dict[str, Any] | None:
     if path.exists():
         harden_private_file(path)
         source = overlay_source(path)
-        table = read_config_table(path)
+        table = resolve_mod.read_config_table(path)
         if table is None:
             source.report_unreadable()
             return None

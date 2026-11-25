@@ -29,13 +29,13 @@ _HOME_AT_COLLECTION = Path(os.environ["HOME"])
 def config_reads(monkeypatch) -> list[Path]:
     """Every config.toml path the resolver reads during the test."""
     reads: list[Path] = []
-    real_read = resolve_mod._read_toml
+    real_read = resolve_mod.read_config_table
 
     def _spy(path: Path) -> dict:
         reads.append(path)
         return real_read(path)
 
-    monkeypatch.setattr(resolve_mod, "_read_toml", _spy)
+    monkeypatch.setattr(resolve_mod, "read_config_table", _spy)
     return reads
 
 
