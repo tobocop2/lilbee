@@ -773,8 +773,16 @@ class _EngineLifecycle:
         signal.signal(signal.SIGINT, self._on_hard_exit)
 
     def routed_in_loop(self) -> tuple[signal.Signals, ...]:
-        """Signals a running loop takes over: the ones install and route_interrupt route."""
-        return self._routed_signals(interrupt=True)
+        """Signals a running loop takes over: the ones install and route_interrupt routed.
+
+        A signal they left alone keeps its handler, so the TUI's Ctrl-C stays a
+        KeyboardInterrupt.
+        """
+        return tuple(
+            sig
+            for sig in (signal.SIGINT, *self._hard_exit_signals())
+            if signal.getsignal(sig) == self._on_hard_exit
+        )
 
     def on_loop_signal(self, signum: int) -> None:  # pragma: posix only - no loop signals
         """Run the handler of *signum* as a loop callback, with no interrupted frame."""
