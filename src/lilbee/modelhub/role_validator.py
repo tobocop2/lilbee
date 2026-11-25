@@ -6,6 +6,7 @@ import sys
 from typing import cast
 
 from lilbee.catalog import CatalogModel, find_pick
+from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.refs import canonical_ref, is_bare_hf_repo
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import Config, cfg
@@ -121,7 +122,9 @@ def _not_installed(ref: str) -> ValueError:
     )
 
 
-def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
+def validate_model_task_assignment(
+    field_name: str, ref: str, *, hf_client: HfClient, allow_bypass: bool = True
+) -> str:
     """Check *ref* is assignable to *field_name*; return the canonical ref.
 
     A current pick carries its own task, so it can be role-checked before it is
@@ -146,7 +149,7 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
         if installed_task != want:
             raise TaskMismatchError(installed_ref, ModelTask(installed_task), want)
         return installed_ref
-    entry = find_pick(ref)
+    entry = find_pick(ref, hf_client=hf_client)
     if entry is not None:
         return _canonical_pick_ref(ref, entry, want)
     raise _not_installed(installed_ref)

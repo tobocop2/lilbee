@@ -9,8 +9,8 @@ from typing import Any
 
 from huggingface_hub.utils import HFValidationError, validate_repo_id
 
-from lilbee.app.services import get_services
 from lilbee.catalog import runnable
+from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.models import (
     CatalogModel,
     CatalogResult,
@@ -78,6 +78,7 @@ def size_bucket(params: int) -> CatalogSize | None:
 def get_catalog(
     task: ModelTask | None = None,
     *,
+    hf_client: HfClient,
     search: str = "",
     size: CatalogSize | None = None,
     installed: bool | None = None,
@@ -95,7 +96,7 @@ def get_catalog(
     makes no HuggingFace request. The browse total is unknown because
     HuggingFace exposes no count, so it is None.
     """
-    all_picks = get_picks()
+    all_picks = get_picks(hf_client=hf_client)
     host, offers = runnable.session_host(), default_offers()
     refused: list[tuple[CatalogModel, HiddenModel]] = []
     picks = list(_runnable_rows(all_picks, host, offers, refused))
@@ -109,7 +110,7 @@ def get_catalog(
     )
     leading = _sort_models([m for m in picks if keep(m)], sort)
     if not featured:
-        engine_rows = _engine_rows(offers)
+        engine_rows = _engine_rows(offers, hf_client=hf_client)
         leading += [m for m in _runnable_rows(engine_rows, host, offers, refused) if keep(m)]
     wanted = offset + limit + 1 - len(leading)
     hf_matches: list[CatalogModel] = []
@@ -117,6 +118,7 @@ def get_catalog(
         task,
         search,
         sorted({ModelFormat(f) for o in offers for f in o.adapter.formats} - {ModelFormat.XDNA}),
+        hf_client=hf_client,
     )
     if not featured and wanted > 0:
         pick_repos = {m.hf_repo for m in all_picks}
@@ -139,9 +141,8 @@ def get_catalog(
     )
 
 
-def _engine_rows(offers: Sequence[EngineOffer]) -> list[CatalogModel]:
+def _engine_rows(offers: Sequence[EngineOffer], *, hf_client: HfClient) -> list[CatalogModel]:
     """The rows of the model lists that the offered engines publish, in file order."""
-    hf_client = get_services().hf_client
     # isinstance: only some engines publish a model list, so the offers are narrowed by capability
     return [
         m
@@ -169,7 +170,15 @@ def _runnable_rows(
 class _HfScan:
     """A lazy read of the HuggingFace rows for one browse, bounded per pipeline tag."""
 
-    def __init__(self, task: ModelTask | None, search: str, formats: Sequence[ModelFormat]) -> None:
+    def __init__(
+        self,
+        task: ModelTask | None,
+        search: str,
+        formats: Sequence[ModelFormat],
+        *,
+        hf_client: HfClient,
+    ) -> None:
+        self._hf_client = hf_client
         self._task = task
         self._formats = formats
         self._search = search
@@ -189,10 +198,9 @@ class _HfScan:
         self, pipeline_tag: str, library: str | None, fmt: ModelFormat
     ) -> Iterator[CatalogModel]:
         """Rows for one pipeline tag; sets ``truncated`` when the bound leaves pages unread."""
-        hf_client = get_services().hf_client
         cursor: str | None = None
         for _ in range(_HF_SCAN_MAX_PAGES):
-            page = hf_client.fetch_models(
+            page = self._hf_client.fetch_models(
                 pipeline_tag=pipeline_tag,
                 limit=_HF_SCAN_PAGE_SIZE,
                 library=library,
@@ -348,19 +356,22 @@ def build_adhoc_entry(
     )
 
 
-def _format_pull_target(hf_repo: str, fmt: ModelFormat) -> CatalogModel | None:
+def _format_pull_target(
+    hf_repo: str, fmt: ModelFormat, *, hf_client: HfClient
+) -> CatalogModel | None:
     """The pullable entry for ``<repo>#<format>``, or None when the repo id is malformed."""
     if fmt is not ModelFormat.XDNA and not _is_hf_repo_id(hf_repo):
         return None
     if fmt is ModelFormat.XDNA:
-        listed = next((m for m in _engine_rows(default_offers()) if m.hf_repo == hf_repo), None)
+        rows = _engine_rows(default_offers(), hf_client=hf_client)
+        listed = next((m for m in rows if m.hf_repo == hf_repo), None)
         if listed is not None:
             return listed
     task = ModelTask(reclassify_by_name(hf_repo, ModelTask.CHAT))
     return build_adhoc_entry(hf_repo, task=task, fmt=fmt)
 
 
-def resolve_pull_target(model: str) -> CatalogModel | None:
+def resolve_pull_target(model: str, *, hf_client: HfClient) -> CatalogModel | None:
     """Resolve *model* to a pullable entry, HF-first.
 
     A ref naming a concrete ``.gguf`` file (flat or in a repo subdir) is honored
@@ -375,7 +386,7 @@ def resolve_pull_target(model: str) -> CatalogModel | None:
     except ValueError:
         return None
     if parsed.format is not ModelFormat.GGUF:
-        return _format_pull_target(parsed.hf_repo, parsed.format)
+        return _format_pull_target(parsed.hf_repo, parsed.format, hf_client=hf_client)
     if parsed.filename:
         try:
             hf_repo, gguf_filename = parse_hf_ref(model)

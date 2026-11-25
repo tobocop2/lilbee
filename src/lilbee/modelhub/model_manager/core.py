@@ -24,6 +24,7 @@ from lilbee.runtime.cancellation import CancelSignal
 
 if TYPE_CHECKING:
     from lilbee.catalog.download import RetryCallback
+    from lilbee.catalog.hf_client import HfClient
     from lilbee.core.config import Config
     from lilbee.providers.fleet.engines.base import EngineAdapter
 
@@ -64,9 +65,10 @@ def _pull_refusal(model: str) -> ModelNotFoundError:
 class ModelManager:
     """Manages model lifecycle with distinct sources."""
 
-    def __init__(self, models_dir: Path, config: "Config") -> None:
+    def __init__(self, models_dir: Path, config: "Config", *, hf_client: "HfClient") -> None:
         self._models_dir = models_dir
         self._config = config
+        self._hf_client = hf_client
         self._registry = ModelRegistry(self._models_dir)
         # Memoize list_installed results to avoid walking the registry
         # filesystem and hitting the backend HTTP endpoint on every call.
@@ -288,7 +290,6 @@ class ModelManager:
         if parsed.format is not ModelFormat.GGUF:
             return
         ref = parsed.canonical
-        from lilbee.app.services import get_services
         from lilbee.catalog.compat import (
             ModelCompat,
             UnsupportedArchError,
@@ -296,7 +297,7 @@ class ModelManager:
             resolve_arch_for_pull,
         )
 
-        arch = resolve_arch_for_pull(ref, get_services().hf_client)
+        arch = resolve_arch_for_pull(ref, self._hf_client)
         if classify(arch, self.require_engine(ref)) is ModelCompat.UNSUPPORTED:
             raise UnsupportedArchError(ref, arch)
 
@@ -316,7 +317,7 @@ class ModelManager:
         from lilbee.catalog import download_model, resolve_pull_target
         from lilbee.modelhub.registry import register_downloaded_model
 
-        entry = resolve_pull_target(model)
+        entry = resolve_pull_target(model, hf_client=self._hf_client)
         if entry is None:
             raise _pull_refusal(model)
         entry = self._resolved_entry(entry, engine, verify=not allow_unsupported)

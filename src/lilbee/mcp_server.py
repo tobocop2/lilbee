@@ -1674,6 +1674,7 @@ def catalog_browse(
             limit=limit,
             offset=offset,
             model_manager=get_services().model_manager,
+            hf_client=get_services().hf_client,
         )
     except ValueError as exc:
         return _error(str(exc))

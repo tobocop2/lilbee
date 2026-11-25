@@ -164,13 +164,27 @@ async def list_models() -> ModelsResponse:
     # Resolving the picks hits HuggingFace on the first call of the process, so
     # offload it too rather than stalling the event loop. The four picks_for
     # reads below are served from the memo this fills.
-    await asyncio.to_thread(get_picks)
+    await asyncio.to_thread(get_picks, hf_client=get_services().hf_client)
 
     return ModelsResponse(
-        chat=_catalog_section(picks_for(ModelTask.CHAT), cfg.chat_model, installed),
-        embedding=_catalog_section(picks_for(ModelTask.EMBEDDING), cfg.embedding_model, installed),
-        vision=_catalog_section(picks_for(ModelTask.VISION), cfg.vision_model, installed),
-        reranker=_catalog_section(picks_for(ModelTask.RERANK), cfg.reranker_model, installed),
+        chat=_catalog_section(
+            picks_for(ModelTask.CHAT, hf_client=get_services().hf_client), cfg.chat_model, installed
+        ),
+        embedding=_catalog_section(
+            picks_for(ModelTask.EMBEDDING, hf_client=get_services().hf_client),
+            cfg.embedding_model,
+            installed,
+        ),
+        vision=_catalog_section(
+            picks_for(ModelTask.VISION, hf_client=get_services().hf_client),
+            cfg.vision_model,
+            installed,
+        ),
+        reranker=_catalog_section(
+            picks_for(ModelTask.RERANK, hf_client=get_services().hf_client),
+            cfg.reranker_model,
+            installed,
+        ),
     )
 
 
@@ -262,7 +276,9 @@ def _require_model_for_task(model: str, expected: ModelTask, *, allow_empty: boo
     if allow_empty and not model.strip():
         return ""
     normalized = _require_model_available(model)
-    return validate_model_task_assignment(_TASK_TO_FIELD[expected], normalized, allow_bypass=False)
+    return validate_model_task_assignment(
+        _TASK_TO_FIELD[expected], normalized, allow_bypass=False, hf_client=get_services().hf_client
+    )
 
 
 async def set_chat_model(model: str) -> SetModelResponse:
@@ -330,7 +346,7 @@ def _row_fit(enriched: EnrichedModel, available_bytes: int | None) -> FitLevel |
 def _families_by_repo() -> dict[str, ModelFamily]:
     """Index featured ModelFamilies by every variant's ``hf_repo`` for size-variant lookup."""
     index: dict[str, ModelFamily] = {}
-    for family in get_families():
+    for family in get_families(hf_client=get_services().hf_client):
         for variant in family.variants:
             index[variant.hf_repo] = family
     return index
@@ -493,6 +509,7 @@ async def models_catalog(
         # get_catalog resolves the picks, which is HTTP on the first call.
         result = await asyncio.to_thread(
             get_catalog,
+            hf_client=get_services().hf_client,
             task=parsed_task,
             search=search,
             size=parsed_size,
