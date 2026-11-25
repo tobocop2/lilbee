@@ -2039,6 +2039,8 @@ async def test_settings_tab_does_not_turn_unreadable_bool_text_into_false():
 async def test_chat_slash_set_nullable_none():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._cmd_set("temperature 0.5")
+        assert cfg.temperature == 0.5
         app.screen._cmd_set("temperature none")
         assert cfg.temperature is None  # the built-in, as a fresh Config() gives
 
