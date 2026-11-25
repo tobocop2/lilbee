@@ -248,7 +248,11 @@ class EngineFolderError(OSError):
                 f"permissions and run the command again."
             )
         offered = install_offered(self.engine, session_host())
-        install = f" and run 'lilbee engine install {self.engine}'" if offered else ""
+        install = (
+            f" and run 'lilbee engine install {self.engine}' (or POST /api/engines/install)"
+            if offered
+            else ""
+        )
         return (
             f"The engine folder {self.folder} holds no build that lilbee can read. If its "
             f"permissions deny a read, correct them. lilbee cannot remove it until then. "

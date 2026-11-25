@@ -90,6 +90,11 @@ def test_a_damaged_engine_folder_names_the_install_route(monkeypatch, tmp_path: 
     assert ENGINE_INSTALL in text
 
 
+def test_the_engine_list_hint_names_the_list_route() -> None:
+    assert "lilbee engine list" in choice.LIST_HINT
+    assert "GET /api/engines" in choice.LIST_HINT
+
+
 def test_the_missing_browser_message_names_the_crawler_setup_route() -> None:
     assert "lilbee setup crawler" in CHROMIUM_MISSING_MESSAGE
     assert CRAWLER_SETUP in CHROMIUM_MISSING_MESSAGE
