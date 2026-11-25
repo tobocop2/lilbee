@@ -651,7 +651,7 @@ def _two_replicas(
 def test_a_refused_unchecked_replica_hands_the_request_to_its_sibling() -> None:
     pool, (bad, good) = _two_replicas(CHAT_ON_CPU, CHAT_ON_NPU)
     assert bad.needs_device_check
-    assert provider_mod._call_reserved(pool, lambda c: c.chat(MESSAGES, stream=False)) == "hi"
+    assert provider_mod._call_reserved(pool, lambda c: c.chat_abortable(MESSAGES)) == "hi"
     assert bad.healthy is False
     assert good.needs_device_check is False
     assert bad.in_flight == good.in_flight == 0
@@ -668,33 +668,33 @@ def test_a_refused_unchecked_replica_hands_the_stream_to_its_sibling() -> None:
 def test_with_every_replica_refused_the_request_gets_the_device_error() -> None:
     pool, _ = _two_replicas(CHAT_ON_CPU, CHAT_ON_CPU)
     with pytest.raises(ProviderError, match="not the NPU"):
-        provider_mod._call_reserved(pool, lambda c: c.chat(MESSAGES, stream=False))
+        provider_mod._call_reserved(pool, lambda c: c.chat_abortable(MESSAGES))
     pool, _ = _two_replicas(CHAT_ON_CPU, CHAT_ON_CPU)
     with pytest.raises(ProviderError, match="not the NPU"):
         provider_mod._stream_reserved(pool, lambda c: c.chat_stream_items(MESSAGES))
 
 
-def test_a_lone_refused_replica_gives_the_device_error() -> None:
-    for open_it in (
-        lambda pool: provider_mod._call_reserved(pool, lambda c: c.chat(MESSAGES, stream=False)),
-        lambda pool: provider_mod._stream_reserved(pool, lambda c: c.chat_stream_items(MESSAGES)),
-    ):
-        pool, (bad, _) = _two_replicas(CHAT_ON_CPU, CHAT_ON_CPU)
-        alone = provider_mod._LivePool(threading.RLock(), lambda: [bad], lambda: None)
-        with pytest.raises(ProviderError, match="not the NPU"):
-            open_it(alone)
-        assert bad.in_flight == 0
+@pytest.mark.parametrize("streamed", [False, True])
+def test_a_lone_refused_replica_gives_the_device_error(streamed: bool) -> None:
+    _, (bad, _) = _two_replicas(CHAT_ON_CPU, CHAT_ON_CPU)
+    alone = provider_mod._LivePool(threading.RLock(), lambda: [bad], lambda: None)
+    with pytest.raises(ProviderError, match="not the NPU"):
+        if streamed:
+            provider_mod._stream_reserved(alone, lambda c: c.chat_stream_items(MESSAGES))
+        else:
+            provider_mod._call_reserved(alone, lambda c: c.chat_abortable(MESSAGES))
+    assert bad.in_flight == 0
 
 
 def test_a_refused_replica_hands_a_failover_call_to_its_sibling() -> None:
     """The embed, count and rerank calls retry on a sibling for a refusal as for a dead replica."""
     pool, (bad, good) = _two_replicas(CHAT_ON_CPU, CHAT_ON_NPU)
-    assert provider_mod._call_with_failover(pool, lambda c: c.chat(MESSAGES, stream=False)) == "hi"
+    assert provider_mod._call_with_failover(pool, lambda c: c.chat_abortable(MESSAGES)) == "hi"
     assert bad.healthy is False
     assert good.needs_device_check is False
     pool, _ = _two_replicas(CHAT_ON_CPU, CHAT_ON_CPU)
     with pytest.raises(ProviderError, match="not the NPU"):
-        provider_mod._call_with_failover(pool, lambda c: c.chat(MESSAGES, stream=False))
+        provider_mod._call_with_failover(pool, lambda c: c.chat_abortable(MESSAGES))
 
 
 def _vision_pool(clients: list[LlamaServerClient]) -> provider_mod._LivePool:
@@ -708,13 +708,11 @@ def _vision_pool(clients: list[LlamaServerClient]) -> provider_mod._LivePool:
 def test_a_refused_vision_replica_hands_the_request_to_its_sibling() -> None:
     _, (bad, good) = _two_replicas(CHAT_ON_CPU, CHAT_ON_NPU)
     pool = _vision_pool([bad, good])
-    assert provider_mod._dispatch_vision(pool, lambda c: c.chat(MESSAGES, stream=False)) == "hi"
+    assert provider_mod._dispatch_vision(pool, lambda c: c.chat_abortable(MESSAGES)) == "hi"
     assert bad.healthy is False
     _, refused = _two_replicas(CHAT_ON_CPU, CHAT_ON_CPU)
     with pytest.raises(ProviderError, match="not the NPU"):
-        provider_mod._dispatch_vision(
-            _vision_pool(refused), lambda c: c.chat(MESSAGES, stream=False)
-        )
+        provider_mod._dispatch_vision(_vision_pool(refused), lambda c: c.chat_abortable(MESSAGES))
 
 
 def test_d1_a_later_good_warm_clears_the_error_of_an_unreadable_health_reply(
