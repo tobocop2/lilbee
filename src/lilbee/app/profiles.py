@@ -41,6 +41,7 @@ from lilbee.core.profile_files import (
     VALUES_TABLE,
     PlannedWrite,
     ProfileAuthor,
+    ProfileFileError,
     ProfileCatalog,
     ProfileEntry,
     ProfileFile,
@@ -414,7 +415,17 @@ def _changes_in(layers: SettingLayers) -> tuple[ChangeRow, ...]:
         for key in _your_profile_keys(layers)
         if key not in layers.env
     )
-    return tuple(row for row in rows if row.yours != row.profile_value)
+    return tuple(row for row in rows if not _same_setting(row))
+
+
+def _same_setting(row: ChangeRow) -> bool:
+    """Whether your value and the profile's are one value once the setting's validator runs."""
+    try:
+        yours = normalized_values({row.key: row.yours})[row.key]
+        theirs = normalized_values({row.key: row.profile_value})[row.key]
+    except ProfileFileError:
+        return row.yours == row.profile_value
+    return yours == theirs
 
 
 def _change_row(key: str, yours: Any, fallback: Resolved) -> ChangeRow:
