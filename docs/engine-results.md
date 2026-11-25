@@ -37,7 +37,7 @@ The Machine column names the machine that the recording names. The Version colum
 | openvino-gpu-no-runtime | none | Intel i7-10750H | fail: the server aborts and does not fall back to the CPU | llama.cpp b12020 ubuntu-openvino-2026.4.1-x64 | `openvino-gpu-no-runtime.log` |
 | openvino-two-gpu | none | AMD Ryzen 5 8645HS | pass: `--list-devices` shows one CPU and two GPU devices |  | `openvino-two-gpu.list-devices.log` |
 | lemonade-ryzen-ai | chat, embed | Ryzen AI machine with an XDNA2 NPU | not recorded, no machine |  |  |
-| ik-llama-cuda | chat, embed | NVIDIA GPU | not recorded |  |  |
+| ik-llama-cuda | chat, embed | NVIDIA GeForce RTX 4090 | pass, 7 of 7 compared steps against llama.cpp | 0+git13cffc006b82 cuda | `ik_llama.cpp-linux-x86_64-cuda/0+git13cffc006b82.json` |
 | mlx-embed-rerank-metal | embed, rerank | Apple M3 Pro | pass, 3 of 3 steps | 0.32.2 | `mlx-embed-rerank-metal.json` |
 | mlx-metal | chat, embed, rerank | Apple M3 Pro | pass, 9 of 9 steps | 0.32.2 | `mlx-metal.json` |
 | llama-metal | chat, embed, rerank | Apple M3 Pro | pass, 9 of 9 steps | 1.12032.1 | `llama-metal.json` |
