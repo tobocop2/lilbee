@@ -274,6 +274,52 @@ class TestHostSpillWarning:
         assert len(spills) == 1
         assert "keeps 5.8 GiB of it in system memory" in spills[0]
 
+    def test_host_kv_and_compute_buffers_are_not_a_weight_spill_in_the_memory_report(
+        self, caplog
+    ) -> None:
+        payload = {
+            "data": [
+                {"name": "CUDA0", "model": 10 * GIB},
+                {"name": "Host", "model": 0, "context": 8 * GIB, "compute": 2 * GIB, "mmproj": GIB},
+            ]
+        }
+        with caplog.at_level(logging.WARNING):
+            check_memory_report(WorkerRole.CHAT, "qwen-32b", 0, None, payload, est_host_bytes=GIB)
+        assert not [r for r in caplog.records if "system memory" in r.getMessage()]
+
+    def test_host_kv_and_compute_buffers_are_not_a_weight_spill_in_the_log(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        readback.engine_log_path(tmp_path, "chat-0").write_text(
+            "load_tensors:        CUDA0 model buffer size = 10547.92 MiB\n"
+            "llama_kv_cache:  CUDA_Host KV buffer size =  8192.00 MiB\n"
+            "sched_reserve:  CUDA_Host compute buffer size =  2048.00 MiB\n"
+            "llama_context:  CUDA_Host  output buffer size =     0.58 MiB\n",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            check_launch(
+                tmp_path, "chat-0", WorkerRole.CHAT, "qwen-32b", 10 * GIB, est_host_bytes=GIB
+            )
+        assert not [r for r in caplog.records if "system memory" in r.getMessage()]
+
+    def test_a_weight_spill_names_the_weights_and_not_the_host_kv_beside_them(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        readback.engine_log_path(tmp_path, "chat-0").write_text(
+            "load_tensors:   CPU_Mapped model buffer size =  5894.48 MiB\n"
+            "load_tensors:        CUDA0 model buffer size = 10547.92 MiB\n"
+            "llama_kv_cache:  CUDA_Host KV buffer size =  8192.00 MiB\n",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            check_launch(
+                tmp_path, "chat-0", WorkerRole.CHAT, "qwen-32b", 10 * GIB, est_host_bytes=GIB
+            )
+        spills = [r.getMessage() for r in caplog.records if "system memory" in r.getMessage()]
+        assert len(spills) == 1
+        assert "keeps 5.8 GiB of it in system memory" in spills[0]
+
     def test_the_spill_is_said_once_per_start(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
     ) -> None:
