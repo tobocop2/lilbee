@@ -1643,9 +1643,7 @@ class TestDeleteDriftDraftIfPresent:
         )
         assert draft.is_file()
 
-    def test_removes_an_id_keyed_draft_whose_ids_are_all_gone_from_the_store(
-        self, tmp_path: Path
-    ):
+    def test_removes_an_id_keyed_draft_whose_ids_are_all_gone_from_the_store(self, tmp_path: Path):
         """A rebuild gives every source a new id: the draft then matches by names."""
         draft = divert_to_drafts(
             '---\nsources: ["a.md"]\n---\n\nbody\n',
