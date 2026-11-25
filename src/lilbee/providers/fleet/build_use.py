@@ -37,7 +37,6 @@ from lilbee.providers.base import ProviderError, ProviderErrorKind
 IN_USE_NAME = ".in-use"
 _OWNER_ONLY_MODE = 0o600
 _BUILD_PATH_PARTS = 3  # engine folder, build folder, a file inside the build
-_PROVIDER = "llama-server"
 # The errors of a create in a folder that refuses writes.
 _UNWRITABLE = (errno.EACCES, errno.EPERM, errno.EROFS)
 
@@ -210,7 +209,6 @@ class BuildHolds:
             raise ProviderError(
                 f"Engine {build_label(build)} is being removed. Install it again "
                 f"before you start it.",
-                provider=_PROVIDER,
                 kind=ProviderErrorKind.SERVER,
             ) from exc
         except OSError:

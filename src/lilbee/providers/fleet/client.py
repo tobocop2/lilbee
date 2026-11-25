@@ -1935,7 +1935,6 @@ class LlamaServerClient:
             if self._model not in self._ready_upstreams():
                 raise ProviderError(
                     f"{label} is not running the model.",
-                    provider=label,
                     kind=ProviderErrorKind.SERVER,
                 )
             route = self._native_route(check.path)
@@ -1944,7 +1943,7 @@ class LlamaServerClient:
             body = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
             raise ProviderError(
-                str(exc) or type(exc).__name__, provider=label, kind=ProviderErrorKind.SERVER
+                str(exc) or type(exc).__name__, kind=ProviderErrorKind.SERVER
             ) from exc
         return check.refusal(body)
 
@@ -1963,10 +1962,9 @@ class LlamaServerClient:
             raise ProviderError(
                 f"{label} did not report the device of the model: {reason}. Check that the "
                 f"{label} server is running, then restart lilbee.",
-                provider=label,
             ) from exc
         if refusal is not None:
-            raise DeviceRefusedError(refusal, provider=label, kind=ProviderErrorKind.BAD_REQUEST)
+            raise DeviceRefusedError(refusal, kind=ProviderErrorKind.BAD_REQUEST)
 
     def ensure_device(self, cancel: CancelSignal | None = None) -> None:
         """Raise unless the engine reports the model on the device it was placed on.
@@ -2025,7 +2023,6 @@ class LlamaServerClient:
         if self._device_refusal is not None:
             raise DeviceRefusedError(
                 self._device_refusal,
-                provider=self._profile.label,
                 kind=ProviderErrorKind.BAD_REQUEST,
             )
 
@@ -2047,7 +2044,6 @@ class LlamaServerClient:
         if refusal is not None:
             raise ProviderError(
                 f"{refusal} {self._profile.label} said: {failure}",
-                provider=failure.provider,
                 kind=failure.kind,
             ) from failure
 
