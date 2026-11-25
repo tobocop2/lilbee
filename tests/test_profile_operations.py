@@ -736,6 +736,15 @@ def test_your_changes_lists_your_profile_settings_against_the_profile(store, mon
     assert profiles.your_changes() == ()
 
 
+def test_your_changes_lists_only_the_values_that_differ_from_the_profile(store):
+    profiles.apply(store, "Notes and markdown")
+    _prepend_config("chunk_size = 384\ntop_k = 7\n")
+    assert [row.key for row in profiles.your_changes()] == ["top_k"]
+    assert [row.key for row in profiles.active(store).changes] == ["top_k"]
+    _write_config("chunk_size = 384\n")
+    assert profiles.your_changes() == ()
+
+
 def test_your_changes_under_default_compare_with_the_built_in_value():
     _write_config("chunk_size = 900\n")
     assert profiles.your_changes() == (
