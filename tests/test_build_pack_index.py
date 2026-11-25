@@ -157,12 +157,14 @@ def test_write_index_layout_and_links(tmp_path: Path) -> None:
 
 
 def test_main_writes_the_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_gh(
+    calls = _patch_gh(
         monkeypatch,
         [_release("engine-packs-20261116-tei", [_asset(_TEI, "engine-packs-20261116-tei")])],
     )
     monkeypatch.setattr("sys.argv", ["build_pack_index.py", str(tmp_path)])
     assert bpi.main() == 0
+    # The packs live in their own repository, which is the default source.
+    assert "repos/tobocop2/lilbee-engine-packs/releases" in calls[0]
     assert (tmp_path / "packs" / "lilbee-engine-tei" / "index.html").is_file()
 
 

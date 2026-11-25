@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Generate the lilbee.sh/packs/ PEP 503 index for the public engine packs.
 
-Each engine pack is a wheel attached to a ``engine-packs-<date>[-<name>]`` release
-of the lilbee repository. This writes one simple-repository page per project under
-``<out>/packs/``, linking to those release assets with their sha256, so
+Each engine pack is a wheel attached to an ``engine-packs-<date>[-<name>]`` release
+of the tobocop2/lilbee-engine-packs repository. This writes one simple-repository
+page per project under ``<out>/packs/``, linking to those release assets with their sha256, so
 ``pip download lilbee-engine-tei --index-url https://lilbee.sh/packs/`` resolves
 them. Draft releases answer 404 to the public and are skipped. Run by pages.yml at
 deploy time next to build_compat_index.py.
@@ -81,7 +81,7 @@ def write_index(out_dir: Path, wheels: list[tuple[str, str, str]]) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("out", help="output site dir; writes <out>/packs/")
-    ap.add_argument("--repo", default="tobocop2/lilbee")
+    ap.add_argument("--repo", default="tobocop2/lilbee-engine-packs")
     args = ap.parse_args()
 
     wheels = fetch_wheels(args.repo)

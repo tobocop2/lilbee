@@ -147,13 +147,12 @@ jobs:
 
       - name: Build engine pack index
         # Serves lilbee.sh/packs/: the wheels of the public engine-packs-<date>
-        # releases of this repo. Independent of the wheel set above.
+        # releases of the tobocop2/lilbee-engine-packs repo. Independent of the wheel set above.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
         run: |
           rm -f wheel-indexes/.empty
-          python3 tools/build_pack_index.py wheel-indexes --repo "${REPO}"
+          python3 tools/build_pack_index.py wheel-indexes --repo tobocop2/lilbee-engine-packs
 
       - name: Upload wheel-indexes artifact
         uses: actions/upload-artifact@v7
