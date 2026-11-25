@@ -193,11 +193,23 @@ class TestTheStreamHoldsTheId:
         assert [data for event, data in events if event == "done"] == [summary.model_dump()]
 
 
+async def _started_task() -> asyncio.Task[None]:
+    """A task that has taken its first step and waits until it is cancelled."""
+    started = asyncio.Event()
+
+    async def run() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(run())
+    await started.wait()
+    return task
+
+
 class TestAStopByTheUser:
     async def test_the_stop_cancels_a_running_task(self):
         sse = SseStream()
-        task = asyncio.create_task(asyncio.Event().wait())
-        await asyncio.sleep(0)
+        task = await _started_task()
 
         sse.stop_by_user(task)
 
@@ -220,8 +232,7 @@ class TestAStopByTheUser:
     async def test_the_stop_leaves_a_run_that_already_stops_alone(self):
         sse = SseStream()
         sse.cancel.set()
-        task = asyncio.create_task(asyncio.Event().wait())
-        await asyncio.sleep(0)
+        task = await _started_task()
 
         sse.stop_by_user(task)
 
