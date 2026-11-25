@@ -249,3 +249,23 @@ async def test_a_page_that_comes_back_empty_ends_the_paging():
         table.scroll_end(animate=False)
         assert await wait_until(pilot, lambda: _hint(app).display is False)
         assert table.row_count == PAGE
+
+
+async def test_a_one_row_last_page_shows_and_ends_the_paging():
+    total = 2 * PAGE + 1
+    library = _Library(total)
+    _install(library)
+    app = _StatusApp()
+    async with app.run_test(size=SIZE) as pilot:
+        table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
+        await _loaded(pilot, table, PAGE)
+
+        table.scroll_end(animate=False)
+        await _loaded(pilot, table, 2 * PAGE)
+        assert str(_hint(app).render()) == msg.STATUS_DOCS_MORE.format(count=2 * PAGE)
+
+        table.scroll_end(animate=False)
+        await _loaded(pilot, table, total)
+        assert await wait_until(pilot, lambda: _hint(app).display is False)
+        assert _names(table) == [r["filename"] for r in library.records]
+        assert [r["offset"] for r in library.reads] == [0, PAGE, 2 * PAGE]
