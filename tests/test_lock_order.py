@@ -185,6 +185,7 @@ class _Builds:
         interactive=False,
         config_refresh=None,
         held_writes=None,
+        followed_keys=None,
     ):
         self.held_at_build.append(self._takes.held())
         self.held_anywhere_at_build.append(self._takes.held_anywhere())
