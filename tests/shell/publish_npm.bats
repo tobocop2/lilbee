@@ -89,7 +89,8 @@ npm_requested() {  # channels tag
   : > "${out}"
   step=$(yq -r '.jobs.resolve.steps[] | select(.id == "npm") | .run' "${wf}")
   [ -n "${step}" ] || return 2
-  CHANNELS="$1" TAG="$2" GITHUB_OUTPUT="${out}" bash -c "${step}" || return
+  # The step's log line goes to the job log; only its output counts here.
+  CHANNELS="$1" TAG="$2" GITHUB_OUTPUT="${out}" bash -c "${step}" > /dev/null || return
   sed -n 's/^requested=//p' "${out}"
 }
 
