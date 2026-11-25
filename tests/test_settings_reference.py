@@ -148,10 +148,14 @@ _SAMPLE_OVERRIDES = {
     "placement": '{"chat": {"devices": [0]}}',
     "gpu_devices": "0",
     "num_ctx_max": "4096",
+    "ocr_language": "deu",  # a Tesseract language code; any other text is refused
 }
 
-# Settings that accept one text only, so no sample can differ from the value they hold.
-_ONE_LEGAL_VALUE: dict[str, str] = {}
+# Settings for which `lilbee settings set` alone accepts one text only, so no sample can differ
+# from the value they hold. The reason is the refusal the CLI prints for any other text.
+_ONE_LEGAL_VALUE: dict[str, str] = {
+    "crawl_password": "",  # a password needs a username, and one set call writes one setting
+}
 
 
 def _as_text(value: object) -> str:
@@ -197,7 +201,7 @@ def _sample_cli_value(key: str, current: object = None) -> str:
     if key in _SAMPLE_OVERRIDES:
         candidates = [_SAMPLE_OVERRIDES[key]]
     else:
-        candidates = _candidate_samples(key, builtin_value(key))
+        candidates = _candidate_samples(key, builtin_value(key) if current is None else current)
     fresh = [text for text in candidates if text not in avoid]
     accepted = [text for text in fresh if not _refusals(Config, {key: text})]
     return (accepted or fresh or candidates)[0]
