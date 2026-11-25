@@ -555,12 +555,12 @@ class TestThePlannerKeepsTheOnDiskSumOfACutFile:
 
 _IR_XML = '<net><layer><data element_type="f16" shape="8" offset="0" size="100"/></layer></net>'
 _IR_CONFIG = '{"num_hidden_layers": 1, "num_attention_heads": 1, "head_dim": 1}'
-"""A cache of two bytes a token: one layer, one head of width one, a key and a value, one byte."""
+"""A cache of four bytes a token: one layer, one head of width one, a key and a value, two bytes."""
 
 
 def _chat_charge(weights: int) -> int:
     """What an OVMS chat role holds: its weights twice, the 4096-token cache, and the runtime."""
-    return 2 * weights + 2 * 4096 + 928 * 1024**2
+    return 2 * weights + 4 * 4096 + 928 * 1024**2
 
 
 def _openvino_folder(folder: Path, *, bin_bytes: int, xml: str = _IR_XML) -> MemoryRequest:

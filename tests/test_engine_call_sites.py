@@ -37,7 +37,7 @@ from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, Memo
 from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES, fixed_weights_estimate
 from lilbee.providers.fleet.placement import InstancePlan
 from lilbee.providers.fleet.provider import FleetProvider
-from lilbee.providers.roles import EngineBackend, WorkerRole
+from lilbee.providers.roles import EngineBackend, RoleTarget, WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
 from tests._fleet_engines import engines_for_all_roles
 from tests.conformance.fake_adapter import BundledFakeAdapter
@@ -586,6 +586,17 @@ class TestEveryEstimateNamesItsRole:
         plan = InstancePlan(role=role, devices=(SPY_DEVICE.index,))
         planning._launch_for(plan, "ref", device, engine=spy)
         assert spy.sized[-1].role is role
+
+    @pytest.mark.parametrize(
+        ("target", "on_cpu"),
+        [(RoleTarget.CPU, True), (RoleTarget.GPU, False), (RoleTarget.NPU, False)],
+    )
+    def test_the_declared_reserve_of_a_launch_names_its_device(
+        self, spy: SpyEngine, target: RoleTarget, on_cpu: bool
+    ) -> None:
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(SPY_DEVICE.index,), target=target)
+        planning._launch_for(plan, "ref", {SPY_DEVICE.index: SPY_DEVICE}, engine=spy)
+        assert spy.sized[-1].on_cpu is on_cpu
 
     def test_the_single_context_fit_names_chat(self, spy: SpyEngine, model_file: Path) -> None:
         fleet_ctx.fit_single_ctx(
