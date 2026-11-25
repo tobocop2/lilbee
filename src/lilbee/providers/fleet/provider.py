@@ -258,7 +258,6 @@ def _least_in_flight(clients: Sequence[LlamaServerClient]) -> LlamaServerClient:
     return min(healthy or clients, key=lambda c: c.in_flight)
 
 
-@dataclasses.dataclass(frozen=True)
 class _DirLease:
     """One user of an engine dir's hold. The last lease to end releases the hold.
 
@@ -275,6 +274,7 @@ class _DirLease:
         self._owner._end_lease(self)
 
 
+@dataclasses.dataclass(frozen=True)
 class _LivePool(Generic[_Item]):
     """A role's replicas, read fresh at each pick under the lock that retires them.
 

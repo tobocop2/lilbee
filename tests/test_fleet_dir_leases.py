@@ -110,7 +110,7 @@ def test_closing_a_retired_client_ends_its_lease_once() -> None:
 
 
 def test_giving_a_client_back_to_dispatch_ends_its_lease() -> None:
-    p, holds = _provider(_DIR)
+    p, _holds = _provider(_DIR)
     client = _client()
     client.reserve()
     with p._lock:
