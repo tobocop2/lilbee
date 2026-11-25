@@ -98,8 +98,10 @@ async def test_aextract_batch_maps_errors_back_to_their_input_slot():
 @pytest.mark.asyncio
 async def test_aextract_batch_passes_per_file_ocr_override():
     """Each item's OCR config rides on that input's FileExtractionConfig."""
+    from xberg import OcrConfig
+
     captured = {}
-    ocr = object()
+    ocr = OcrConfig(backend="lilbee-vision")
 
     async def fake_batch(inputs, _config, _on_progress):
         captured["configs"] = [inp.config for inp in inputs]
@@ -111,7 +113,7 @@ async def test_aextract_batch_passes_per_file_ocr_override():
     ]
     with mock.patch("xberg.progress.extract_batch", fake_batch):
         await xberg_extract.aextract_batch(items, ExtractionConfig())
-    assert captured["configs"][0].ocr is ocr
+    assert captured["configs"][0].ocr.backend == "lilbee-vision"
     assert captured["configs"][1] is None
 
 
@@ -305,3 +307,134 @@ async def test_extract_document_in_a_running_loop_reads_the_scoped_config():
     with mock.patch("xberg.progress.extract", _capture_extract(captured)), config_scope(scoped):
         xberg_extract.extract_document(b"x", "text/plain", config=ExtractionConfig())
     assert captured["config"].concurrency == ConcurrencyConfig(max_threads=3)
+
+
+class TestTessdataFetch:
+    """The first Tesseract OCR in a process fetches language data once, under a shared lock."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_process(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(xberg_extract, "_fetched_languages", set())
+        monkeypatch.setattr(xberg_extract, "default_state_dir", lambda: tmp_path / "state")
+
+    @staticmethod
+    def _tesseract(*languages):
+        from xberg import OcrConfig
+
+        from lilbee.data.types import OcrBackendName
+
+        return OcrConfig(backend=OcrBackendName.TESSERACT, language=list(languages))
+
+    def _recording_extract(self, calls, *, lock_probe=None, fail_first=False):
+        async def fake_extract(_input, config, _on_progress):
+            calls.append(config)
+            if lock_probe is not None and len(calls) == 1:
+                lock_probe()
+            if fail_first and len(calls) == 1:
+                return _FakeResult([], errors=[_FakeError(0, "download failed")])
+            return _FakeResult([object()])
+
+        return fake_extract
+
+    def test_languages_are_the_tesseract_ones_not_yet_fetched(self):
+        from xberg import OcrConfig
+
+        vision = OcrConfig(backend="lilbee-vision")
+        assert xberg_extract._unfetched_languages(
+            None, vision, self._tesseract("fra", "eng"), self._tesseract("eng")
+        ) == ["eng", "fra"]
+        xberg_extract._fetched_languages.add("eng")
+        assert xberg_extract._unfetched_languages(self._tesseract("eng", "fra")) == ["fra"]
+
+    @pytest.mark.asyncio
+    async def test_first_ocr_fetches_once_and_later_ones_do_not(self):
+        calls = []
+        config = ExtractionConfig(ocr=self._tesseract("eng"))
+        with mock.patch("xberg.progress.extract", self._recording_extract(calls)):
+            await xberg_extract.aextract_document(b"a", "image/png", config=config)
+            await xberg_extract.aextract_document(b"b", "image/png", config=config)
+        warm, first, second = calls
+        assert warm.ocr.language == ["eng"]
+        assert warm.force_ocr is True
+        assert first.ocr.language == second.ocr.language == ["eng"]
+        assert first.force_ocr is False
+
+    @pytest.mark.asyncio
+    async def test_no_fetch_when_ocr_is_not_tesseract(self):
+        calls = []
+        with mock.patch("xberg.progress.extract", self._recording_extract(calls)):
+            await xberg_extract.aextract_document(b"a", "text/plain", config=ExtractionConfig())
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_download_lock_is_held_while_xberg_fetches(self):
+        from filelock import FileLock
+        from filelock import Timeout as FileLockTimeout
+
+        def other_process_cannot_take_the_lock():
+            other = FileLock(str(xberg_extract.default_state_dir() / "tessdata-download.lock"))
+            with pytest.raises(FileLockTimeout):
+                other.acquire(timeout=0)
+
+        calls = []
+        fake = self._recording_extract(calls, lock_probe=other_process_cannot_take_the_lock)
+        config = ExtractionConfig(ocr=self._tesseract("eng"))
+        with mock.patch("xberg.progress.extract", fake):
+            await xberg_extract.aextract_document(b"a", "image/png", config=config)
+        free = FileLock(str(xberg_extract.default_state_dir() / "tessdata-download.lock"))
+        free.acquire(timeout=0)
+        free.release()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_fetch_logs_and_the_document_still_extracts(self, caplog):
+        calls = []
+        config = ExtractionConfig(ocr=self._tesseract("eng"))
+        fake = self._recording_extract(calls, fail_first=True)
+        with (
+            mock.patch("xberg.progress.extract", fake),
+            caplog.at_level("WARNING", logger=xberg_extract.log.name),
+        ):
+            doc = await xberg_extract.aextract_document(b"a", "image/png", config=config)
+        assert doc is not None
+        assert len(calls) == 2
+        assert "eng not fetched: download failed" in caplog.text
+        assert xberg_extract._fetched_languages == {"eng"}
+
+    @pytest.mark.asyncio
+    async def test_a_held_lock_logs_and_extraction_goes_on(self, caplog):
+        from filelock import FileLock
+        from filelock import Timeout as FileLockTimeout
+
+        calls = []
+        config = ExtractionConfig(ocr=self._tesseract("eng"))
+        with (
+            mock.patch.object(FileLock, "acquire", side_effect=FileLockTimeout("x")),
+            mock.patch("xberg.progress.extract", self._recording_extract(calls)),
+            caplog.at_level("WARNING", logger=xberg_extract.log.name),
+        ):
+            await xberg_extract.aextract_document(b"a", "image/png", config=config)
+        assert len(calls) == 1
+        assert "download lock" in caplog.text
+        assert xberg_extract._fetched_languages == set()
+
+    @pytest.mark.asyncio
+    async def test_batch_fetches_the_languages_of_the_per_file_overrides(self):
+        calls = []
+
+        async def fake_batch(inputs, _config, _on_progress):
+            return _FakeResult([object() for _ in inputs])
+
+        async def fake_extract(_input, config, _on_progress):
+            calls.append(config)
+            return _FakeResult([object()])
+
+        items = [
+            xberg_extract.BatchItem(b"a", "image/png", "a.png", self._tesseract("deu")),
+            xberg_extract.BatchItem(b"b", "image/png", "b.png", None),
+        ]
+        with (
+            mock.patch("xberg.progress.extract_batch", fake_batch),
+            mock.patch("xberg.progress.extract", fake_extract),
+        ):
+            await xberg_extract.aextract_batch(items, ExtractionConfig())
+        assert [c.ocr.language for c in calls] == [["deu"]]
