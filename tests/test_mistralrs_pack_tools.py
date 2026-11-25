@@ -1028,9 +1028,7 @@ def _cuda_licence_check(
     wheel = _wheel(
         tmp_path, drop=drop, name_tag=_CUDA_SM86, expression=expression, more=_CUDA_NOTICES
     )
-    return _check(
-        tmp_path, wheel, "check_licences", expression=expression, BACKEND="cuda-sm86"
-    )
+    return _check(tmp_path, wheel, "check_licences", expression=expression, BACKEND="cuda-sm86")
 
 
 def test_the_check_passes_a_cuda_wheel_that_holds_the_nvidia_licences(tmp_path: Path) -> None:
@@ -1165,7 +1163,7 @@ def test_the_pack_matrix_holds_the_cpu_cells_and_the_six_cuda_cells() -> None:
 
 
 def test_the_repack_takes_exactly_the_five_cuda_libraries() -> None:
-    assert repack.CUDA_LIBS == frozenset(CUDA_LIBS)
+    assert frozenset(CUDA_LIBS) == repack.CUDA_LIBS
 
 
 # The Attachment A list of the CUDA EULA, cut to the lines the four EULA libraries need.
