@@ -14,6 +14,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
+from lilbee.providers.fleet import model_memory
 from lilbee.providers.fleet.engines.ovms import OVMS
 from lilbee.providers.fleet.memory_types import MemoryRequest
 from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES
@@ -24,7 +25,9 @@ XML_BYTES = 6
 BIN_BYTES = 4096
 WEIGHTS = XML_BYTES + BIN_BYTES
 KV_PER_TOKEN = 16
-"""2 layers x 1 key-value head x head width 4 x 2 (key and value) x 1 byte (u8)."""
+"""On the CPU: 2 layers x 1 key-value head x head width 4 x 2 (key and value) x 1 byte (u8)."""
+KV_PER_TOKEN_OFF_CPU = 32
+"""Off the CPU the cache default is f16: the same shape at 2 bytes an element."""
 HIDDEN = 8
 CTX = 1000
 SLOTS = 2
@@ -50,7 +53,9 @@ _FULL_CONFIG = {
 }
 
 
-def _request(path: Path, role: WorkerRole | None, ctx: int = CTX) -> MemoryRequest:
+def _request(
+    path: Path, role: WorkerRole | None, ctx: int = CTX, *, on_cpu: bool = True
+) -> MemoryRequest:
     fields: dict[str, object] = {
         "model_path": path,
         "ctx": ctx,
@@ -58,6 +63,7 @@ def _request(path: Path, role: WorkerRole | None, ctx: int = CTX) -> MemoryReque
         "gpu_layers": 0,
         "flash_attn": False,
         "kv_cache_type": KvCacheType.F16,
+        "on_cpu": on_cpu,
     }
     if role is not None:
         fields["role"] = role
@@ -70,8 +76,10 @@ def _batch_sizes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "chunk_size", CHUNK)
 
 
-def _charge(path: Path, role: WorkerRole | None, ctx: int = CTX) -> int:
-    return OVMS.estimate_memory(_request(path, role, ctx)).shared_bytes
+def _charge(
+    path: Path, role: WorkerRole | None, ctx: int = CTX, *, on_cpu: bool = True
+) -> int:
+    return OVMS.estimate_memory(_request(path, role, ctx, on_cpu=on_cpu)).shared_bytes
 
 
 def test_a_chat_role_holds_its_weights_twice_plus_the_cache_and_the_runtime(
@@ -79,6 +87,22 @@ def test_a_chat_role_holds_its_weights_twice_plus_the_cache_and_the_runtime(
 ) -> None:
     path = _folder(tmp_path, config=_FULL_CONFIG)
     assert _charge(path, WorkerRole.CHAT) == (2 * WEIGHTS + KV_PER_TOKEN * CTX * SLOTS + 928 * MIB)
+
+
+def test_a_chat_role_off_the_cpu_holds_a_two_byte_cache(tmp_path: Path) -> None:
+    path = _folder(tmp_path, config=_FULL_CONFIG)
+    assert _charge(path, WorkerRole.CHAT, on_cpu=False) == (
+        2 * WEIGHTS + KV_PER_TOKEN_OFF_CPU * CTX * SLOTS + 928 * MIB
+    )
+
+
+def test_the_cache_bytes_do_not_change_the_charge_of_an_encoder(tmp_path: Path) -> None:
+    path = _folder(tmp_path, config=_FULL_CONFIG)
+    assert _charge(path, WorkerRole.EMBED, on_cpu=False) == _charge(path, WorkerRole.EMBED)
+
+
+def test_the_charge_reads_the_config_at_module_level() -> None:
+    assert model_memory.cfg is cfg
 
 
 def test_a_request_with_no_role_is_charged_as_chat(tmp_path: Path) -> None:
