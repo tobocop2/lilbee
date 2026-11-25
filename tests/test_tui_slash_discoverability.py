@@ -1220,7 +1220,7 @@ class TestArgCompletionsLiveFilterAsync:
                 side_effect=_slow_first_listing(self._MODELS, listing_delay_s),
             ):
                 await _set_chat_input(pilot, "/model ", await_listing=True)
-                full =list(overlay._options)
+                full = list(overlay._options)
                 await _set_chat_input(pilot, "/model qw")
                 assert overlay.is_visible
                 assert overlay._options == ["qwen3:8b"]
@@ -1268,7 +1268,7 @@ class TestArgCompletionsLiveFilterAsync:
                 side_effect=_slow_first_listing(self._MODELS, listing_delay_s),
             ):
                 await _set_chat_input(pilot, "/model ", await_listing=True)
-                first =overlay.get_current()
+                first = overlay.get_current()
                 await pilot.press("ctrl+n")
                 await pilot.pause()
                 # Ctrl+N previews the highlighted model into the input,
