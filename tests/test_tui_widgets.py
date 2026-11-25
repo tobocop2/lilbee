@@ -3077,13 +3077,11 @@ class TestDocumentOptionsOnALargeLibrary:
     """On a real store the dropdown reads a bounded page of names and never every source."""
 
     def _fill(self, store, count: int) -> None:
-        from lilbee.data.store.types import SourceMeta
-
         for i in range(count):
             store.upsert_source(f"corpus/doc-{i:04d}.txt", f"h{i}", 1)
-        store.upsert_source("corpus/plain.txt", "hp", 1, meta=SourceMeta(title="Quarterly report"))
 
-    def test_a_keystroke_reads_a_bounded_page_by_name_only(self, held_store) -> None:
+    def test_a_keystroke_reads_a_bounded_page(self, held_store) -> None:
+        """The names-only rule is guarded by tests/test_store.py::TestSourceNames."""
         from lilbee.cli.tui.widgets.autocomplete import _NAME_CANDIDATES, get_completions
 
         self._fill(held_store, 3 * _NAME_CANDIDATES)
@@ -3095,12 +3093,43 @@ class TestDocumentOptionsOnALargeLibrary:
         ):
             empty = get_completions("/delete ")
             typed = get_completions("/delete doc-00")
-            by_title = get_completions("/delete quarterly")
 
         assert 0 < len(empty) <= _NAME_CANDIDATES
         assert typed and all("doc-00" in name for name in typed)
         assert len(typed) <= _NAME_CANDIDATES
-        assert by_title == []  # a title is not a name: it must not fill the page
+
+    def test_a_short_prefix_finds_its_match_among_many_contains_matches(self, held_store) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import _MAX_VISIBLE, get_completions
+
+        for i in range(40):
+            held_store.upsert_source(f"zz/{i:02d}-rep.md", f"h{i}", 1)
+        held_store.upsert_source("report.md", "hr", 1)
+        held_store.upsert_source("reports/q1.md", "hq", 1)
+
+        shown = get_completions("/delete rep")[:_MAX_VISIBLE]
+
+        assert shown[:2] == ["report.md", "reports/q1.md"]
+
+
+class TestRemoveOnALargeLibrary:
+    """A remove by name, folder or glob on a real store reads no full source record."""
+
+    def test_a_removal_reads_no_full_record(self, held_store) -> None:
+        from lilbee.app.ingest import remove_documents_durably
+
+        for name in ("docs/a.md", "docs/b.md", "keep.md", "other/c.md", "other/d.txt", "z.zip"):
+            held_store.upsert_source(name, f"h-{name}", 1)
+        held_store.upsert_source("z.zip/inner.txt", "hz", 1)
+        with mock.patch.object(held_store, "get_sources", side_effect=AssertionError("full read")):
+            by_folder = remove_documents_durably(["docs"])
+            by_glob = remove_documents_durably(["other/*.txt"])
+            by_name = remove_documents_durably(["z.zip", "nope.md"])
+
+        assert sorted(by_folder.removed) == ["docs/a.md", "docs/b.md"]
+        assert by_glob.removed == ["other/d.txt"]
+        assert sorted(by_name.removed) == ["z.zip", "z.zip/inner.txt"]
+        assert by_name.not_found == ["nope.md"]
+        assert sorted(s["filename"] for s in held_store.get_sources()) == ["keep.md", "other/c.md"]
 
 
 class TestThemeOptions:
