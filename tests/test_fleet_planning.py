@@ -947,9 +947,7 @@ class TestBuildFleetWiring:
 
         def _estimate(role, ref, **_k):
             if role is WorkerRole.CHAT:
-                raise ProviderError(
-                    "not installed", kind=ProviderErrorKind.NOT_FOUND
-                )
+                raise ProviderError("not installed", kind=ProviderErrorKind.NOT_FOUND)
             return ModelPlacementInput(role, _GB)
 
         monkeypatch.setattr(planning_mod, "_estimate_role", _estimate)
@@ -979,12 +977,10 @@ class TestBuildFleetWiring:
             if role is WorkerRole.EMBED:
                 raise ProviderError(
                     "no file for ref",
-                    
                     kind=ProviderErrorKind.NOT_FOUND,
                 )
             raise ProviderError(
                 "unexpected estimator output",
-                
                 kind=ProviderErrorKind.SERVER,
             )
 
@@ -4146,7 +4142,6 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
             if role is WorkerRole.CHAT:
                 raise ProviderError(
                     "unexpected estimator output",
-                    
                     kind=ProviderErrorKind.SERVER,
                 )
             return ModelPlacementInput(role, 512)
@@ -4236,14 +4231,11 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
         def boom(role, ref, **_k):
             raise ProviderError(
                 "unexpected estimator output",
-                
                 kind=ProviderErrorKind.SERVER,
             )
 
         def no_path(_r):
-            raise ProviderError(
-                "no file", kind=ProviderErrorKind.NOT_FOUND
-            )
+            raise ProviderError("no file", kind=ProviderErrorKind.NOT_FOUND)
 
         monkeypatch.setattr(planning_mod, "_estimate_role", boom)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", no_path)
@@ -4272,7 +4264,6 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
             if role is WorkerRole.VISION:
                 raise ProviderError(
                     "unexpected estimator output",
-                    
                     kind=ProviderErrorKind.SERVER,
                 )
             return ModelPlacementInput(role, 512)
@@ -4298,9 +4289,7 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
         from lilbee.providers.base import ProviderError, ProviderErrorKind
 
         def boom(*_a, **_k):
-            raise ProviderError(
-                "unparseable", kind=ProviderErrorKind.SERVER
-            )
+            raise ProviderError("unparseable", kind=ProviderErrorKind.SERVER)
 
         monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", boom)
         slots = planning_mod._fit_slots(

@@ -44,9 +44,7 @@ def test_model_supports_tools_returns_false_on_provider_error(
     # ProviderError from the probe (model file unavailable, backend down) is
     # the safe-default-False path so callers see a clean 400, not a 500.
     # Other exceptions are intentionally NOT caught here; see capability.py.
-    _isolated_services.supports_tools.side_effect = ProviderError(
-        "backend down"
-    )
+    _isolated_services.supports_tools.side_effect = ProviderError("backend down")
     assert model_supports_tools("nonexistent/model::Q4") is False
 
 
