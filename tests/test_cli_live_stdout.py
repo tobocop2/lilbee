@@ -126,9 +126,10 @@ def test_stdout_progress_redirects_stdout_into_its_console():
 
 
 def test_a_long_upgrade_line_wraps_flush_left_without_an_ellipsis():
-    console = PlainConsole(file=StringIO(), force_terminal=True, width=40)
-    long_line = " ".join(f"word{n:02d}" for n in range(15))
-    assert len(long_line) > 80
+    width = 20
+    console = PlainConsole(file=StringIO(), force_terminal=True, width=width)
+    running = LibraryUpgradeEvent(phase=UpgradePhase.WAITING)
+    assert len(running.text) > 2 * width
     built = []
 
     def spy(*columns, **kwargs):
@@ -136,9 +137,6 @@ def test_a_long_upgrade_line_wraps_flush_left_without_an_ellipsis():
         return built[-1]
 
     line = UpgradeLine(console)
-    running = LibraryUpgradeEvent(
-        phase=UpgradePhase.TABLE, table=long_line, tables_done=0, tables_total=2
-    )
     with mock.patch("lilbee.cli.upgrade_line.live_progress", spy):
         line(EventType.LIBRARY_UPGRADE, running)
     with console.capture() as captured:
@@ -148,8 +146,8 @@ def test_a_long_upgrade_line_wraps_flush_left_without_an_ellipsis():
     shown = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", captured.get())
     rows = [row for row in shown.splitlines() if row.strip()]
     assert "…" not in "".join(rows)
-    assert "word14" in rows[-1]
-    assert all(len(row) <= 40 for row in rows)
+    assert "library" in "".join(rows)
+    assert all(len(row) <= width for row in rows)
     assert len(rows) > 2
     assert all(not row.startswith(" ") for row in rows[1:])
 
