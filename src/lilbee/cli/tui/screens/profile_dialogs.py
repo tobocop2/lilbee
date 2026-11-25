@@ -23,6 +23,7 @@ from lilbee.app.profiles import DiffRow, ProfileDiff, ProfileEffect
 from lilbee.app.services import get_services
 from lilbee.app.settings import index_has_chunks
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.mount_guard import GuardedSelect
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.settings_widgets import user_pill
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -177,7 +178,7 @@ def _folder_choice(select_id: str, folders: Sequence[ProfileFolder]) -> ComposeR
         return
     yield Static(msg.PROFILE_SAVE_TO, classes="profile-section-title")
     options = [(msg.PROFILE_SAVE_FOLDER_TEXT[folder], folder) for folder in folders]
-    yield Select(options, value=next(iter(folders)), allow_blank=False, id=select_id)
+    yield GuardedSelect(options, value=next(iter(folders)), allow_blank=False, id=select_id)
 
 
 def _chosen_folder(
