@@ -154,7 +154,9 @@ def test_write_index_layout_and_links(tmp_path: Path) -> None:
     page = (tmp_path / "packs" / "lilbee-engine-tei" / "index.html").read_text(encoding="utf-8")
     assert f'href="{url_tei}#sha256={_SHA_A}"' in page
     assert _IK not in page
-    ik_page = (tmp_path / "packs" / "lilbee-engine-ik-llama-cpp" / "index.html").read_text(encoding="utf-8")
+    ik_page = (tmp_path / "packs" / "lilbee-engine-ik-llama-cpp" / "index.html").read_text(
+        encoding="utf-8"
+    )
     assert f'href="{url_ik}#sha256={_SHA_B}"' in ik_page
 
 
