@@ -95,6 +95,15 @@ passed() {
 }
 
 @test "the release gate asks this script" {
-  run grep -c 'bash scripts/release_ci_passed.sh' "${REPO_ROOT}/.github/workflows/release.yml"
-  [ "$output" = "1" ]
+  # Run the real step body against a sentinel script, so a comment that names
+  # the script does not pass.
+  work="${BATS_TEST_TMPDIR}/work"
+  mkdir -p "${work}/scripts"
+  printf '#!/usr/bin/env bash\necho "ci_passed=sentinel"\n' > "${work}/scripts/release_ci_passed.sh"
+  yq -r '.jobs.gate.steps[] | select(.id == "check") | .run' "${REPO_ROOT}/.github/workflows/release.yml" > "${work}/step.sh"
+  : > "${work}/out"
+  cd "${work}"
+  GITHUB_OUTPUT="${work}/out" GITHUB_REPOSITORY=tobocop2/lilbee REF=v1.0.0 run bash step.sh
+  [ "$status" -eq 0 ]
+  [ "$(cat "${work}/out")" = "ci_passed=sentinel" ]
 }
