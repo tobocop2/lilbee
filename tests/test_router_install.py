@@ -234,7 +234,7 @@ class TestInstall:
         stale.mkdir(parents=True)
         (stale / "stale.txt").write_text("old", encoding="utf-8")
         install_router()
-        assert sorted(p.name for p in stale.iterdir()) == [LICENCE_FILE, "llama-swap"]
+        assert sorted(p.name for p in stale.iterdir()) == [IN_USE_NAME, LICENCE_FILE, "llama-swap"]
 
     def test_a_router_folder_that_is_a_link_is_unlinked_and_its_target_kept(
         self, release: list[str]
