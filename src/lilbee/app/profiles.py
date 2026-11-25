@@ -403,7 +403,7 @@ def _your_profile_keys(layers: SettingLayers) -> tuple[str, ...]:
 
 
 def your_changes() -> tuple[ChangeRow, ...]:
-    """Your config.toml values of profile settings against the profile's; env-set keys stay out."""
+    """Your config.toml values that differ from the profile's; env-set and equal keys stay out."""
     return _changes_in(read_layers(cfg.data_root))
 
 
