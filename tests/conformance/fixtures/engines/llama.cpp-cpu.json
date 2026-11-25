@@ -1,7 +1,6 @@
 {
  "server": "llama.cpp-cpu",
- "sampling_knobs": "not_recorded",
- "version": "memory-20261019-152820 62be051e9 llama-server 0.7.0-dev (build 1, commit 62be051)",
+ "version": "0.8.0-dev (build 1, commit dde879b)",
  "roles": [
   "chat",
   "embed",
@@ -59,11 +58,18 @@
    "detail": "log=['served by engine=llama-cpp-cpu version=preset build=none role=chat model=llama-cpp-cpu/Qwen3-0.6B'] status={<WorkerRole.CHAT: 'chat'>: 'llama-cpp-cpu', <WorkerRole.EMBED: 'embed'>: 'llama-cpp-cpu', <WorkerRole.RERANK: 'rerank'>: 'llama-cpp-cpu'}"
   }
  },
+ "error_answers": [
+  [
+   400,
+   "{\"error\":{\"code\":400,\"message\":\"request (60009 tokens) exceeds the available context size (4096 tokens), try increasing it\",\"type\":\"exceed_context_size_error\",\"n_prompt_tokens\":60009,\"n_ctx\":4096}}"
+  ]
+ ],
  "exchanges": [
   {
    "method": "POST",
    "path": "/v1/chat/completions",
    "request": {
+    "max_tokens": 1024,
     "messages": [
      {
       "content": "You answer in one short sentence.",
@@ -83,16 +89,19 @@
      }
     ],
     "model": "Qwen3-0.6B",
-    "stream": false
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Rome.\",\"reasoning_content\":\"Okay, the user first asked about the capital of France, which I correctly answered with Paris. Now they're asking about Italy's capital. I need to make sure I recall the correct answer here. Italy's capital is Rome, right? I don't think there's any confusion here. Let me double-check. Yes, Rome is the capital. No need for any additional information. Just confirm the answer once more to avoid any mistakes.\\n\"}}],\"created\":1793447328,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-62be051\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":96,\"prompt_tokens\":43,\"total_tokens\":139,\"prompt_tokens_details\":{\"cached_tokens\":0}},\"id\":\"chatcmpl-I9UsxjCV15Z7bl9vXNoEuIXVvyIWZNHP\",\"timings\":{\"cache_n\":0,\"prompt_n\":43,\"prompt_ms\":122.092,\"prompt_per_token_ms\":2.839348837209302,\"prompt_per_second\":352.19342790682435,\"predicted_n\":96,\"predicted_ms\":1608.92,\"predicted_per_token_ms\":16.936,\"predicted_per_second\":59.045819555975434}}"
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Rome.\",\"reasoning_content\":\"Okay, the user first asked about the capital of France, and I correctly answered Paris. Now they're asking about Italy. I need to make sure I provide the correct information. Italy's capital is Rome, right? Let me confirm that. Yes, Rome is the capital. I should state that clearly in one sentence. No need for extra details, just the answer. Let me check if there's any other capital mentioned, but I think Rome is the correct one. Alright, time to put it together.\\n\"}}],\"created\":1795575553,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-dde879b\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":111,\"prompt_tokens\":43,\"total_tokens\":154,\"prompt_tokens_details\":{\"cached_tokens\":0}},\"id\":\"chatcmpl-lEcTJis2ZjRHExMQp5qLI4qE77EWgUKQ\",\"timings\":{\"cache_n\":0,\"prompt_n\":43,\"prompt_ms\":182.444,\"prompt_per_token_ms\":4.242883720930232,\"prompt_per_second\":235.68875929052203,\"predicted_n\":111,\"predicted_ms\":2055.528,\"predicted_per_token_ms\":18.68661818181818,\"predicted_per_second\":53.5142308934736}}"
   },
   {
    "method": "POST",
    "path": "/v1/chat/completions",
    "request": {
+    "max_tokens": 1024,
     "messages": [
      {
       "content": "What is the weather in Paris? Use the tool.",
@@ -100,7 +109,9 @@
      }
     ],
     "model": "Qwen3-0.6B",
+    "seed": 7,
     "stream": false,
+    "temperature": 0.0,
     "tool_choice": "auto",
     "tools": [
      {
@@ -125,12 +136,13 @@
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_content\":\"Okay, the user is asking about the weather in Paris. I need to use the get_weather function here. Let me check the parameters required. The function needs a city parameter, and Paris is the city they mentioned. So I should call the function with \\\"Paris\\\" as the argument. Make sure the JSON is correctly formatted and enclosed within the tool_call tags. Alright, that should do it.\\n\",\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"Paris\\\"}\"},\"id\":\"WWkTzoDSldIWJt91NOjM678mr5jTcQ6O\"}]}}],\"created\":1793447331,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-62be051\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":104,\"prompt_tokens\":157,\"total_tokens\":261,\"prompt_tokens_details\":{\"cached_tokens\":0}},\"id\":\"chatcmpl-48STdGyRdH6DwEccgPpOQ0AOQmAadV4O\",\"timings\":{\"cache_n\":0,\"prompt_n\":157,\"prompt_ms\":443.488,\"prompt_per_token_ms\":2.824764331210191,\"prompt_per_second\":354.011833465618,\"predicted_n\":104,\"predicted_ms\":2057.052,\"predicted_per_token_ms\":19.9713786407767,\"predicted_per_second\":50.071655942581906}}"
+   "body": "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_content\":\"Okay, the user is asking for the weather in Paris. I need to use the get_weather function. The function requires the city parameter, so I'll set the city to Paris. Let me make sure the arguments are correctly formatted as JSON. Alright, that should do it.\\n\",\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"Paris\\\"}\"},\"id\":\"xw1iXQkOd74W1p0KYeWpPtRsaTAyZjmn\"}]}}],\"created\":1795575555,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-dde879b\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":80,\"prompt_tokens\":157,\"total_tokens\":237,\"prompt_tokens_details\":{\"cached_tokens\":3}},\"id\":\"chatcmpl-QXxsh9EKcjFpxaGHDjgBSYvFBhL5tYOQ\",\"timings\":{\"cache_n\":3,\"prompt_n\":154,\"prompt_ms\":598.839,\"prompt_per_token_ms\":3.8885649350649354,\"prompt_per_second\":257.1642795475912,\"predicted_n\":80,\"predicted_ms\":1664.961,\"predicted_per_token_ms\":21.075455696202532,\"predicted_per_second\":47.44855885513234}}"
   },
   {
    "method": "POST",
    "path": "/v1/chat/completions",
    "request": {
+    "max_tokens": 16,
     "messages": [
      {
       "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
@@ -138,7 +150,9 @@
      }
     ],
     "model": "Qwen3-0.6B",
-    "stream": false
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
    },
    "status": 400,
    "content_type": "application/json",
@@ -148,6 +162,7 @@
    "method": "POST",
    "path": "/v1/chat/completions",
    "request": {
+    "max_tokens": 256,
     "messages": [
      {
       "content": "Reply with a JSON object for Paris: city is the name and pop is the population.",
@@ -158,16 +173,19 @@
     "response_format": {
      "type": "json_object"
     },
-    "stream": false
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"{\\n  \\\"city\\\": \\\"Paris\\\",\\n  \\\"pop\\\": \\\"2,160,000\\\"\\n}\",\"reasoning_content\":\"Okay, the user wants a JSON object with the name of the city Paris and its population. Let me start by recalling the correct data. Paris is a city in France, and its population is around 2,160,000. I need to make sure the JSON structure is right. The keys should be \\\"city\\\" and \\\"pop\\\", and the values should be the respective strings. Let me check if there are any typos or errors. Also, the population number might need to be formatted as a string without commas. Finally, ensuring the JSON is valid with proper syntax.\\n\"}}],\"created\":1793447334,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-62be051\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":154,\"prompt_tokens\":26,\"total_tokens\":180,\"prompt_tokens_details\":{\"cached_tokens\":0}},\"id\":\"chatcmpl-AEnRLoMCL8fRtab8Crcpht8khrmZtTfr\",\"timings\":{\"cache_n\":0,\"prompt_n\":26,\"prompt_ms\":75.837,\"prompt_per_token_ms\":2.9168076923076924,\"prompt_per_second\":342.8405659506573,\"predicted_n\":154,\"predicted_ms\":2907.343,\"predicted_per_token_ms\":19.00224183006536,\"predicted_per_second\":52.625369624430284}}"
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"{\\n  \\\"city\\\": \\\"Paris\\\",\\n  \\\"pop\\\": 2100000\\n}\",\"reasoning_content\":\"Okay, the user wants a JSON object for Paris with \\\"city\\\" and \\\"pop\\\" as the keys. Let me start by recalling the correct information about Paris. The capital city is indeed Paris, so the \\\"city\\\" key should be \\\"Paris\\\". Now, the population. I need to make sure I get the right number. I think Paris has a population of around 2.1 million. Let me check that again. Yes, that seems accurate. So the JSON should have those two values. I need to structure it properly, making sure there are no typos. Let me double-check the keys and values. Alright, that should do it.\\n\"}}],\"created\":1795575559,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-dde879b\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":160,\"prompt_tokens\":26,\"total_tokens\":186,\"prompt_tokens_details\":{\"cached_tokens\":1}},\"id\":\"chatcmpl-ODvLCEqJD5ilG2a02BQAjnyjnsFygGEf\",\"timings\":{\"cache_n\":1,\"prompt_n\":25,\"prompt_ms\":114.338,\"prompt_per_token_ms\":4.573519999999999,\"prompt_per_second\":218.64996763980483,\"predicted_n\":160,\"predicted_ms\":3857.185,\"predicted_per_token_ms\":24.259025157232703,\"predicted_per_second\":41.22177183619661}}"
   },
   {
    "method": "POST",
    "path": "/v1/chat/completions",
    "request": {
+    "max_tokens": 256,
     "messages": [
      {
       "content": "Reply with a JSON object for Paris: city is the name and pop is the population.",
@@ -198,11 +216,13 @@
      },
      "type": "json_schema"
     },
-    "stream": false
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"{\\n  \\\"city\\\": \\\"Paris\\\",\\n  \\\"pop\\\": 2111460\\n}\",\"reasoning_content\":\"Okay, the user wants me to create a JSON object for Paris with \\\"city is the name and pop is the population\\\". Let me start by recalling the correct information about Paris. The city name is Paris, and the population is approximately 2,111,460. I need to make sure the JSON structure is correct. The keys should be \\\"city\\\" and \\\"pop\\\". So the JSON should look like { \\\"city\\\": \\\"Paris\\\", \\\"pop\\\": 2111460 }. I need to double-check the numbers to avoid any errors. The user didn't specify the exact population, so using the commonly accepted figure is safe. No other details are required here. Just a simple JSON object with the two fields.\\n\"}}],\"created\":1793447338,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-62be051\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":183,\"prompt_tokens\":26,\"total_tokens\":209,\"prompt_tokens_details\":{\"cached_tokens\":25}},\"id\":\"chatcmpl-WiD4NoldqYoTA5LQ0BwmLvEC3xCso364\",\"timings\":{\"cache_n\":25,\"prompt_n\":1,\"prompt_ms\":19.163,\"prompt_per_token_ms\":19.163,\"prompt_per_second\":52.18389604967907,\"predicted_n\":183,\"predicted_ms\":3502.655,\"predicted_per_token_ms\":19.245357142857145,\"predicted_per_second\":51.960584185425056}}"
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"{\\n  \\\"city\\\": \\\"Paris\\\",\\n  \\\"pop\\\": 2100000\\n}\",\"reasoning_content\":\"Okay, the user wants a JSON object for Paris with \\\"city\\\" and \\\"pop\\\" as the keys. Let me start by recalling the correct information about Paris. The capital city is indeed Paris, so the \\\"city\\\" key should be \\\"Paris\\\". Now, the population. I need to make sure I get the right number. I think Paris has a population of around 2.1 million. Let me check that again. Yes, that seems accurate. So the JSON should have those two values. I need to structure it properly, making sure there are no typos. Let me double-check the keys and values. Alright, that should do it.\\n\"}}],\"created\":1795575563,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-dde879b\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":160,\"prompt_tokens\":26,\"total_tokens\":186,\"prompt_tokens_details\":{\"cached_tokens\":25}},\"id\":\"chatcmpl-BNypdUY8oUunzqkRIPmfNx9NZosTqmlr\",\"timings\":{\"cache_n\":25,\"prompt_n\":1,\"prompt_ms\":22.284,\"prompt_per_token_ms\":22.284,\"prompt_per_second\":44.87524681385748,\"predicted_n\":160,\"predicted_ms\":3652.609,\"predicted_per_token_ms\":22.972383647798743,\"predicted_per_second\":43.5305284524021}}"
   },
   {
    "method": "POST",
@@ -215,11 +235,13 @@
      }
     ],
     "model": "Qwen3-0.6B",
-    "stream": false
+    "stream": false,
+    "temperature": 0,
+    "seed": 7
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"17 plus 25 is calculated by adding the two numbers together. Breaking it down:  \\n17 + 25 = (10 + 7) + (20 + 5) = 10 + 20 + 7 + 5 = 30 + 12 = **42**.  \\n\\nSo, the final answer is **42**.\",\"reasoning_content\":\"Okay, so the question is asking what is 17 plus 25. Let me think about how to solve this. Hmm, addition is straightforward. I just need to add the two numbers together.\\n\\nFirst, let me write them down to visualize it better: 17 and 25. Now, adding the ones place first. 17 has a 7 in the ones place, and 25 has a 5 in the ones place. So, 7 plus 5 should be... 12. Let me check that again. Yeah, 7 + 5 is 12. Okay, that part seems right.\\n\\nNow, the tens place. 17 has a 1 in the tens place, and 25 also has a 2 in the tens place. So, adding those together, 1 plus 2 is 3. So now, putting it all together, the result should be 12 plus 3, which is 15. Wait, is that correct?\\n\\nLet me verify. If I add 17 and 25, I can break it down. 17 + 20 is 37, and then adding the remaining 5 more would make it 37 + 5 = 42. Wait, that's conflicting with my previous result. What's going on here?\\n\\nOh no, I think I made a mistake in the breakdown. Let me redo that. If 17 is the same as 10 + 7, and 25 is 20 + 5, then adding them together would be (10 + 7) + (20 + 5) = 10 + 20 + 7 + 5 = 30 + 12 = 42. So that gives 42. But earlier, I thought it was 15. So I must have made an error in my first calculation.\\n\\nLet me check again. Maybe I confused the numbers. 17 plus 25. Let me add them in a column-wise way. 17 + 25. Let's add the ones first: 7 + 5 = 12. Then the tens: 1 + 2 = 3. So 3 + 12 is 15? Wait, but that would mean that 17 + 25 is 15. But that's conflicting with the other method. Where is the mistake here?\\n\\nOh no, I think I messed up the tens place. When you add 17 (10 + 7) and 25 (20 + 5), you should add the tens first: 10 + 20 = 30. Then add the ones: 7 + 5 = 12. So total is 30 + 12 = 42. So the correct answer is 42. So why did I get 15 earlier? Because I incorrectly added the tens first as 1 + 2 and then added the ones as 7 + 5, but that's not the correct way. The correct way is to add the tens together first and then the ones. So I need to correct that mistake.\\n\\nSo, the correct result is 42. Let me confirm once more. If I add 17 + 25, let's think of 17 + 25 as (10 + 7) + (20 + 5) = 10 + 20 + 7 + 5 = 30 + 12 = 42. Yes, that's correct. So the answer should be 42.\\n\"}}],\"created\":1793447354,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-62be051\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":862,\"prompt_tokens\":25,\"total_tokens\":887,\"prompt_tokens_details\":{\"cached_tokens\":3}},\"id\":\"chatcmpl-2o0Zc1WSGZi4k8ercGZl1VXwr4YeCBCG\",\"timings\":{\"cache_n\":3,\"prompt_n\":22,\"prompt_ms\":65.068,\"prompt_per_token_ms\":2.9576363636363636,\"prompt_per_second\":338.10782565931027,\"predicted_n\":862,\"predicted_ms\":16029.763,\"predicted_per_token_ms\":18.617610917537746,\"predicted_per_second\":53.71258452168008}}"
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"17 plus 25 equals 42. \\n\\n**Step-by-Step Explanation:**  \\n1. Break down the numbers:  \\n   - 17 = 10 + 7  \\n   - 25 = 20 + 5  \\n\\n2. Add the parts separately:  \\n   - 10 + 20 = 30  \\n   - 7 + 5 = 12  \\n\\n3. Combine the results:  \\n   - 30 + 12 = 42  \\n\\n**Answer:** 42\",\"reasoning_content\":\"Okay, so I need to figure out what 17 plus 25 is. Let me start by recalling how to add numbers. I think when you add two numbers, you just add their digits one by one. Let me check that.\\n\\nFirst, I should break down the numbers to make it easier. 17 is the same as 10 + 7, and 25 is 20 + 5. Adding those together would be 10 + 20 and 7 + 5. That gives me 30 + 12, which is 42. Wait, is that right? Let me add them again. 17 + 25. Let's do it vertically to make sure.\\n\\nStarting with the ones place: 7 + 5 equals 12. Write down 2 and carry over 1. Then the tens place: 1 + 2 is 3, plus the carried 1 makes 4. So the total is 42. Yeah, that seems correct.\\n\\nAlternatively, I can think of 17 + 25 as 17 + 20 + 5. 17 + 20 is 37, plus 5 is 42. Same result. So both methods give me 42. I don't think I made any mistakes here. The answer should be 42.\\n\"}}],\"created\":1795575571,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-dde879b\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":412,\"prompt_tokens\":25,\"total_tokens\":437,\"prompt_tokens_details\":{\"cached_tokens\":3}},\"id\":\"chatcmpl-5d3l77jUaZDYmPA89q6JIcugqBnC1kJN\",\"timings\":{\"cache_n\":3,\"prompt_n\":22,\"prompt_ms\":91.823,\"prompt_per_token_ms\":4.173772727272727,\"prompt_per_second\":239.59138777866116,\"predicted_n\":412,\"predicted_ms\":7969.808,\"predicted_per_token_ms\":19.391260340632602,\"predicted_per_second\":51.569623760070506}}"
   },
   {
    "method": "POST",
@@ -277,7 +299,7 @@
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\" Red.\"}}],\"created\":1793447358,\"model\":\"SmolVLM-256M-Instruct\",\"system_fingerprint\":\"b1-62be051\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":3,\"prompt_tokens\":154,\"total_tokens\":157,\"prompt_tokens_details\":{\"cached_tokens\":0}},\"id\":\"chatcmpl-DyAFXq4zAjWaUNjisbnZN0UwTOI9XjcX\",\"timings\":{\"cache_n\":0,\"prompt_n\":154,\"prompt_ms\":1417.226,\"prompt_per_token_ms\":9.202766233766235,\"prompt_per_second\":108.66297965179865,\"predicted_n\":3,\"predicted_ms\":10.341,\"predicted_per_token_ms\":5.1705,\"predicted_per_second\":193.40489314379656}}"
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\" Red\"}}],\"created\":1795575574,\"model\":\"SmolVLM-256M-Instruct\",\"system_fingerprint\":\"b1-dde879b\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":2,\"prompt_tokens\":154,\"total_tokens\":156,\"prompt_tokens_details\":{\"cached_tokens\":0}},\"id\":\"chatcmpl-IZL3JoIhnaoahlIqabU1mi14ODnrwoF3\",\"timings\":{\"cache_n\":0,\"prompt_n\":154,\"prompt_ms\":2377.926,\"prompt_per_token_ms\":15.441077922077922,\"prompt_per_second\":64.76231808727438,\"predicted_n\":2,\"predicted_ms\":6.639,\"predicted_per_token_ms\":6.639,\"predicted_per_second\":150.62509414068384}}"
   },
   {
    "method": "POST",
@@ -305,12 +327,13 @@
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\" Blue.\"}}],\"created\":1793447359,\"model\":\"SmolVLM-256M-Instruct\",\"system_fingerprint\":\"b1-62be051\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":3,\"prompt_tokens\":154,\"total_tokens\":157,\"prompt_tokens_details\":{\"cached_tokens\":0}},\"id\":\"chatcmpl-Q4v3FucyPcl9W7TLs3dic7w5Otu2Floq\",\"timings\":{\"cache_n\":0,\"prompt_n\":154,\"prompt_ms\":1406.139,\"prompt_per_token_ms\":9.130772727272726,\"prompt_per_second\":109.51975587050784,\"predicted_n\":3,\"predicted_ms\":10.37,\"predicted_per_token_ms\":5.185,\"predicted_per_second\":192.86403085824494}}"
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\" Blue.\"}}],\"created\":1795575577,\"model\":\"SmolVLM-256M-Instruct\",\"system_fingerprint\":\"b1-dde879b\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":3,\"prompt_tokens\":154,\"total_tokens\":157,\"prompt_tokens_details\":{\"cached_tokens\":0}},\"id\":\"chatcmpl-UL8iEsWCGxE31KlPVFedJwHDc3FDpAsl\",\"timings\":{\"cache_n\":0,\"prompt_n\":154,\"prompt_ms\":2984.915,\"prompt_per_token_ms\":19.382564935064934,\"prompt_per_second\":51.59275892278339,\"predicted_n\":3,\"predicted_ms\":12.353,\"predicted_per_token_ms\":6.1765,\"predicted_per_second\":161.90399093337652}}"
   },
   {
    "method": "POST",
    "path": "/v1/chat/completions",
    "request": {
+    "max_tokens": 1024,
     "messages": [
      {
       "content": "You answer in one short sentence.",
@@ -330,11 +353,13 @@
      }
     ],
     "model": "Qwen3-0.6B",
-    "stream": false
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Paris, France. Rome, Italy.\",\"reasoning_content\":\"Okay, the user asked about the capital of France and then Italy. I need to provide the correct answers in one sentence each. Let me start with France. The capital is Paris, which is correct. Then for Italy, the capital is Rome. I should make sure both answers are concise and directly answer the questions. I don't see any errors here. Just a quick check to confirm the capitals. Yep, that's right. So the final answer should be both countries' capitals in one sentence.\\n\"}}],\"created\":1793447361,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-62be051\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":114,\"prompt_tokens\":43,\"total_tokens\":157,\"prompt_tokens_details\":{\"cached_tokens\":42}},\"id\":\"chatcmpl-PcJdoN1WFvnKocO5g5YbIzqkPRbIIuxf\",\"timings\":{\"cache_n\":42,\"prompt_n\":1,\"prompt_ms\":17.788,\"prompt_per_token_ms\":17.788,\"prompt_per_second\":56.21767483696874,\"predicted_n\":114,\"predicted_ms\":2051.388,\"predicted_per_token_ms\":18.15387610619469,\"predicted_per_second\":55.084654877575574}}"
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Rome.\",\"reasoning_content\":\"Okay, the user first asked about the capital of France, and I correctly answered Paris. Now they're asking about Italy. I need to make sure I provide the correct information. Italy's capital is Rome, right? Let me confirm that. Yes, Rome is the capital. I should state that clearly in one sentence. No need for extra details, just the answer. Let me check if there's any other capital mentioned, but I think Rome is the correct one. Alright, time to put it together.\\n\"}}],\"created\":1795575579,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-dde879b\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":111,\"prompt_tokens\":43,\"total_tokens\":154,\"prompt_tokens_details\":{\"cached_tokens\":42}},\"id\":\"chatcmpl-taAhEmgsqZTMCPfGAxvvhDsDARNn9HJk\",\"timings\":{\"cache_n\":42,\"prompt_n\":1,\"prompt_ms\":127.873,\"prompt_per_token_ms\":127.873,\"prompt_per_second\":7.820259163388674,\"predicted_n\":111,\"predicted_ms\":1868.185,\"predicted_per_token_ms\":16.9835,\"predicted_per_second\":58.88067830541408}}"
   }
  ]
 }
