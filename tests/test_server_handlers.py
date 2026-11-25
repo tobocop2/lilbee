@@ -4192,6 +4192,20 @@ class TestModelHandlersRunBlockingWorkOffLoop:
 
         assert threads and all(tid != loop_tid for tid in threads)
 
+    async def test_set_embedding_model_returns_the_settings_warnings(self, tmp_path, mock_svc):
+        from lilbee.app.settings import SettingsUpdateResult
+
+        mock_svc.provider.list_models.return_value = [_EMBED_REF]
+        update = SettingsUpdateResult(
+            updated=["embedding_model"],
+            reindex_required=False,
+            warnings=("No installed engine loads this model.",),
+        )
+        with patch("lilbee.server.handlers.models.apply_settings_update", return_value=update):
+            result = await handlers.set_embedding_model(_EMBED_REF)
+
+        assert result.warnings == ["No installed engine loads this model."]
+
 
 class TestPlacementHandlersRunOffTheLoop:
     """Placement actions and the Intel util notice shell out to GPU probes,
