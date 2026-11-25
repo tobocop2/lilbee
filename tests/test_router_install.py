@@ -312,12 +312,13 @@ class TestInstall:
     ) -> None:
         stale = engines_root(cfg.models_dir) / "router" / ROUTER_VERSION
         stale.mkdir(parents=True)
-        (stale / "stale.txt").write_text("old", encoding="utf-8")
+        for name in ("stale.txt", "other.txt"):
+            (stale / name).write_text("old", encoding="utf-8")
         real_unlink = os.unlink
 
         def goes_first(path: str | Path, *args: Any, **kwargs: Any) -> None:
             real_unlink(path, *args, **kwargs)
-            if str(path).endswith("stale.txt"):
+            if str(path).endswith(".txt"):
                 raise FileNotFoundError(2, "No such file", str(path))
 
         monkeypatch.setattr(os, "unlink", goes_first)
