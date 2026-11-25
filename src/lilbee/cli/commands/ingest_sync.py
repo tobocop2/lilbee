@@ -75,7 +75,10 @@ _ocr_option = typer.Option(
 _retry_skipped_option = typer.Option(
     False,
     "--retry-skipped",
-    help="Retry files that were skipped on a previous sync (clears the failed-file markers).",
+    help=(
+        "Retry files that failed on a previous sync, and read partly read files again "
+        "(releases the records of failed files)."
+    ),
 )
 _prune_ignored_option = typer.Option(
     False,
@@ -643,12 +646,15 @@ def rebuild(
             "command": "rebuild",
             "ingested": len(result.added),
             "failed": len(result.failed),
+            **result.model_dump(include={"partial", "reasons"}),
         }
         if result.failed:
             payload["error"] = rebuild_failure_message(result.failed)
         json_output(payload)
     else:
         console.print(f"Rebuilt: {len(result.added)} documents ingested")
+        if result.partial:
+            console.print(result.partial_summary())
         if result.failed:
             print_prefixed(
                 console, "Error: ", rebuild_failure_message(result.failed), style=theme.ERROR

@@ -24,7 +24,7 @@ from textual.worker import Worker, WorkerState
 
 from lilbee.app.services import get_services
 from lilbee.app.settings import SCANNED_PAGES_LABEL, scanned_pages_state
-from lilbee.app.status import held_out_sources, serving_roles
+from lilbee.app.status import STATUS_SKIPPED_LIMIT, held_out_sources, serving_roles
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.engine_mark import engine_mark
@@ -32,8 +32,8 @@ from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.cli.tui.pill import pill
 from lilbee.core.config import cfg
 from lilbee.core.text import strip_control_characters
-from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, SourceRecord
-from lilbee.data.types import SkippedSource
+from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, FailedPage, SourceRecord
+from lilbee.data.types import SkippedSource, failed_page_lines
 from lilbee.modelhub.model_info import ModelArchInfo, get_model_architecture
 
 log = logging.getLogger(__name__)
@@ -62,6 +62,8 @@ class _DocsResult:
     document_count: int = 0
     held_out: list[SkippedSource] = field(default_factory=list)
     held_out_total: int = 0
+    partly_read: dict[str, list[FailedPage]] = field(default_factory=dict)
+    partly_read_total: int = 0
 
 
 @dataclass
@@ -260,6 +262,12 @@ class StatusScreen(MountWhenAttached, Screen[None]):
                     collapsed=True,
                 ),
                 Collapsible(
+                    DataTable(id="partly-read-table"),
+                    title=msg.STATUS_PARTLY_READ_TITLE,
+                    id="partly-read-section",
+                    collapsed=True,
+                ),
+                Collapsible(
                     Static(id="arch-info"),
                     title="Model Architecture",
                     id="arch-section",
@@ -323,12 +331,15 @@ class StatusScreen(MountWhenAttached, Screen[None]):
         try:
             held_out, held_out_total = held_out_sources()
             store = get_services().store
+            partly_read, partly_read_total = store.partly_read_sources(STATUS_SKIPPED_LIMIT)
             return _DocsResult(
                 sources=store.get_sources(limit=_DOCS_PAGE_SIZE, offset=0),
                 load_failed=False,
                 document_count=store.count_sources(),
                 held_out=held_out,
                 held_out_total=held_out_total,
+                partly_read=partly_read,
+                partly_read_total=partly_read_total,
             )
         except Exception:
             log.debug("Failed to read store for status screen", exc_info=True)
@@ -377,6 +388,7 @@ class StatusScreen(MountWhenAttached, Screen[None]):
         """Render *docs* into the Documents table + storage section."""
         self._load_documents(docs)
         self._load_held_out(docs)
+        self._load_partly_read(docs)
         self._load_storage(docs.document_count)
 
     def _load_held_out(self, docs: _DocsResult) -> None:
@@ -396,6 +408,27 @@ class StatusScreen(MountWhenAttached, Screen[None]):
             if hidden > 0:
                 table.add_row(msg.STATUS_HELD_OUT_MORE.format(count=hidden), "")
             self.query_one("#held-out-section", Collapsible).collapsed = False
+
+    def _load_partly_read(self, docs: _DocsResult) -> None:
+        """Fill the partly read table; the section opens only when OCR failed on a page."""
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
+            table = self.query_one("#partly-read-table", DataTable)
+            table.clear(columns=True)
+            table.add_columns(msg.STATUS_PARTLY_READ_FILE, msg.STATUS_PARTLY_READ_PAGES)
+            if not docs.partly_read:
+                table.add_row(msg.STATUS_PARTLY_READ_EMPTY, "")
+                return
+            for name, pages in docs.partly_read.items():
+                lines = failed_page_lines(pages)
+                table.add_row(
+                    Text(strip_control_characters(name)), Text("\n".join(lines)), height=len(lines)
+                )
+            hidden = docs.partly_read_total - len(docs.partly_read)
+            if hidden > 0:
+                table.add_row(msg.STATUS_PARTLY_READ_MORE.format(count=hidden), "")
+            self.query_one("#partly-read-section", Collapsible).collapsed = False
 
     def _load_arch(self, info: ModelArchInfo) -> None:
         """Populate the model architecture section from worker result."""

@@ -76,6 +76,7 @@ from lilbee.cli.tui.screens.chat_helpers import (
     close_stream,
     open_local_file,
     remember_from_input,
+    report_ingest,
     unregister_added_roots,
 )
 from lilbee.cli.tui.screens.profile_dialogs import run_profile_op, start_profile_switch
@@ -1043,6 +1044,7 @@ class ChatScreen(Screen[None]):
             )
         )
         self._notify_unreadable_folders(sync_result)
+        report_ingest(reporter, sync_result)
         if sync_result.failed:
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
         if sync_result.skipped:
@@ -1052,6 +1054,7 @@ class ChatScreen(Screen[None]):
             if registered and not add_indexed_anything(registered, sync_result):
                 raise RuntimeError(skipped_msg)
             call_from_thread(self, self.notify, skipped_msg, severity="warning")
+        self._report_partly_read(sync_result)
         if sync_result.relocated:
             call_from_thread(
                 self,
@@ -2798,6 +2801,7 @@ class ChatScreen(Screen[None]):
         *,
         force_rebuild: bool = False,
         prune_ignored: bool = False,
+        retry_skipped: bool = False,
     ) -> None:
         """Enqueue a document sync (or full rebuild) in the task bar.
 
@@ -2820,7 +2824,12 @@ class ChatScreen(Screen[None]):
 
         def _target(reporter: ProgressReporter) -> None:
             try:
-                self._do_sync(reporter, force_rebuild=force_rebuild, prune_ignored=prune_ignored)
+                self._do_sync(
+                    reporter,
+                    force_rebuild=force_rebuild,
+                    prune_ignored=prune_ignored,
+                    retry_skipped=retry_skipped,
+                )
             finally:
                 # Re-detect after every sync attempt: success drives the
                 # count to 0, failure or cancel leaves the still-pending
@@ -2843,6 +2852,7 @@ class ChatScreen(Screen[None]):
         *,
         force_rebuild: bool = False,
         prune_ignored: bool = False,
+        retry_skipped: bool = False,
     ) -> None:
         """Sync body. Runs on worker thread."""
         from lilbee.data.ingest import sync
@@ -2857,6 +2867,7 @@ class ChatScreen(Screen[None]):
                     cancel=reporter,
                     force_rebuild=force_rebuild,
                     prune_ignored=prune_ignored,
+                    retry_skipped=retry_skipped,
                     started_by="the lilbee TUI",
                 )
             )
@@ -2865,6 +2876,8 @@ class ChatScreen(Screen[None]):
         if prune_ignored:
             call_from_thread(self, self.notify, msg.prune_ignored_message(len(result.removed)))
         self._notify_unreadable_folders(result)
+        report_ingest(reporter, result)
+        self._report_partly_read(result)
         if result.failed:
             # The footer notice lasts under two seconds; the toast stays long enough to read.
             call_from_thread(
@@ -2887,6 +2900,16 @@ class ChatScreen(Screen[None]):
                 self,
                 self.notify,
                 msg.SYNC_HELD_OUT.format(count=len(result.held_out)),
+                severity="warning",
+            )
+
+    def _report_partly_read(self, result: SyncResult) -> None:
+        """Warn when OCR failed on pages of files a sync indexed."""
+        if result.partial:
+            call_from_thread(
+                self,
+                self.notify,
+                msg.SYNC_PARTLY_READ.format(count=len(result.partial)),
                 severity="warning",
             )
 

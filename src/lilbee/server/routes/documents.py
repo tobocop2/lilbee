@@ -43,7 +43,8 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
     under the current ``cfg.embedding_model``. This is the recovery path after
     a ``PUT /api/models/embedding`` that returned ``reindex_required=true``.
     Pass ``{"retry_skipped": true}`` for the lighter path: retry the files that
-    failed a previous sync without dropping the store.
+    failed a previous sync and read partly read files again, without dropping
+    the store.
     Pass ``{"prune_ignored": true}`` to also drop sources a ``.lilbeeignore``
     now excludes; without it, sync leaves already-indexed sources alone.
     """
