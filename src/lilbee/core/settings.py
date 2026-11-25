@@ -417,18 +417,41 @@ def read_settled(
     lilbee, and the default of some editors) gives the file a new inode and is never
     torn, so it is taken at once. A file with the inode of *last_stamp* and a young
     modification time may be mid-write: the reading has values None and stamp None, so
-    the next check reads it again. With no *last_stamp* the read is plain. A modification
-    time in the future (a skewed clock) is not young.
+    the next check reads it again; a reader that runs only on events asks
+    ``settle_remaining_s`` when to check again. With no *last_stamp* the read is plain.
+    A modification time in the future (a skewed clock) is not young.
 
     Gaps: a file system whose inode numbers do not change on a replace gets the window
     for every write; an in-place edit that stays torn for more than ``SETTLE_NS`` is taken.
     """
     stamp, values = read_persisted(root)
-    if stamp is None or last_stamp is None or stamp[2] != last_stamp[2]:
-        return stamp, values
-    if 0 <= _now_ns() - stamp[0] < SETTLE_NS:
+    if _settle_remaining_ns(stamp, last_stamp) > 0:
         return None, None
     return stamp, values
+
+
+_SETTLE_MARGIN_S = 0.05
+
+
+def _settle_remaining_ns(
+    stamp: tuple[int, int, int] | None, last_stamp: tuple[int, int, int] | None
+) -> int:
+    """Nanoseconds until *stamp*, an in-place write of the file *last_stamp* names, is old."""
+    if stamp is None or last_stamp is None or stamp[2] != last_stamp[2]:
+        return 0
+    age = _now_ns() - stamp[0]
+    return SETTLE_NS - age if 0 <= age < SETTLE_NS else 0
+
+
+def settle_remaining_s(root: Path, last_stamp: tuple[int, int, int] | None) -> float:
+    """Seconds until a check of *root*'s config.toml may take the file; 0.0 when it may now.
+
+    A reader that runs only on events calls this after a check. Above zero, ``read_settled``
+    skipped the file: the reader checks again after this long, so a skipped read is
+    always retried.
+    """
+    remaining = _settle_remaining_ns(overlay_stamp(root), last_stamp)
+    return remaining / 1e9 + _SETTLE_MARGIN_S if remaining > 0 else 0.0
 
 
 def _stable_reading(

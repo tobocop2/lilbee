@@ -60,7 +60,7 @@ def _truncate_in_place(tick: int) -> None:
 def _clock_at(monkeypatch: pytest.MonkeyPatch, tick: int, offset_ns: int) -> None:
     """Set the clock *offset_ns* after the mtime a write at *tick* gets."""
     now = _MTIME_NS + tick * _SECOND_NS + offset_ns
-    monkeypatch.setattr(persistent_settings, "_now_ns", lambda: now, raising=False)
+    monkeypatch.setattr(persistent_settings, "_now_ns", lambda: now)
 
 
 def test_a_truncated_file_mid_rewrite_keeps_the_values(monkeypatch):
@@ -151,6 +151,49 @@ def test_read_settled_without_a_file_reads_defaults(monkeypatch):
     stamp, values = persistent_settings.read_settled(cfg.data_root, None)
     assert stamp is None
     assert values is not None
+
+
+def test_settle_remaining_is_the_time_left_of_a_skipped_in_place_write(monkeypatch):
+    _write("top_k", 21, tick=1)
+    last = persistent_settings.overlay_stamp(cfg.data_root)
+    _truncate_in_place(tick=2)
+    _clock_at(monkeypatch, 2, _SECOND_NS // 4)
+    remaining = persistent_settings.settle_remaining_s(cfg.data_root, last)
+    assert remaining == pytest.approx(0.75 + 0.05)
+    _clock_at(monkeypatch, 2, _SECOND_NS)
+    assert persistent_settings.settle_remaining_s(cfg.data_root, last) == 0.0
+
+
+@pytest.mark.parametrize("case", ["new_inode", "no_last_stamp", "no_file"])
+def test_settle_remaining_is_zero_where_the_read_is_not_skipped(monkeypatch, case):
+    _write("top_k", 21, tick=1)
+    last = persistent_settings.overlay_stamp(cfg.data_root)
+    if case == "new_inode":
+        _write("top_k", 13, tick=2)
+    elif case == "no_last_stamp":
+        last = None
+    else:
+        _config_path().unlink()
+    _clock_at(monkeypatch, 2, 0)
+    assert persistent_settings.settle_remaining_s(cfg.data_root, last) == 0.0
+
+
+def test_a_follower_asks_for_a_recheck_after_a_skipped_write(monkeypatch):
+    from lilbee.app.config_follow import ConfigFileFollower
+
+    from lilbee.app import config_follow
+
+    monkeypatch.setattr(config_follow, "start_config_reading", app_settings.read_config_state)
+    _write("top_k", 21, tick=1)
+    follower = ConfigFileFollower(frozenset(), long_running=True, keeper="the test")
+    assert follower.recheck_delay_s() == 0.0
+    _truncate_in_place(tick=2)
+    _clock_at(monkeypatch, 2, 0)
+    follower.check()
+    assert follower.recheck_delay_s() > 0.0
+    _clock_at(monkeypatch, 2, _SECOND_NS)
+    follower.check()
+    assert follower.recheck_delay_s() == 0.0
 
 
 def test_the_startup_overlay_takes_a_file_written_just_now(monkeypatch):

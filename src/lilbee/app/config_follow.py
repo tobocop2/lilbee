@@ -93,6 +93,13 @@ class ConfigFileFollower:
             and values[key] != getattr(cfg, key)
         }
 
+    def recheck_delay_s(self) -> float:
+        """Seconds until the next check may take a file the last check skipped; 0.0 if none.
+
+        A process that checks only on events (the TUI) schedules one check after this long.
+        """
+        return persistent_settings.settle_remaining_s(cfg.data_root, self._reading.stamp)
+
     def check(self) -> tuple[bool, SettingsUpdateResult | None]:
         """Take the outside changes; return whether the file moved since the last check.
 
