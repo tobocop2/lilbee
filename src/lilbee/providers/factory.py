@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, assert_never
 
@@ -52,6 +52,7 @@ def create_provider(
     *,
     hold_warm: bool = False,
     config_refresh: Callable[[], None] | None = None,
+    held_writes: Callable[[], Mapping[str, object]] | None = None,
 ) -> LLMProvider:
     """Create a new LLM provider instance from the given config.
 
@@ -61,14 +62,18 @@ def create_provider(
     with other users, or kept warm, outlives it and keeps its idle window).
     Irrelevant to a remote provider, which has no local engine to hold.
     *config_refresh* takes config.toml changes now; the local engine runs it
-    before it retries a call on an engine that went away.
+    before it retries a call on an engine that went away. *held_writes* names the
+    held keys config.toml changed during this run; the local engine asks it before
+    it starts a private fleet beside one it cannot bind.
     """
     match config.llm_provider:
         case LlmProvider.AUTO:
             # circular: routing_provider -> factory via create_sdk_provider
             from lilbee.providers.routing_provider import RoutingProvider
 
-            return RoutingProvider(hold_warm=hold_warm, config_refresh=config_refresh)
+            return RoutingProvider(
+                hold_warm=hold_warm, config_refresh=config_refresh, held_writes=held_writes
+            )
 
         case LlmProvider.REMOTE:
             if not availability.provider_sdk_available():
