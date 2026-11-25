@@ -128,7 +128,14 @@ def test_the_stored_width_read_gives_none_for_a_library_without_a_meta_table():
 def _build_recording_width(monkeypatch) -> list[int]:
     built: list[int] = []
 
-    def build(config, provider=None, registry=None, interactive=False, config_refresh=None):
+    def build(
+        config,
+        provider=None,
+        registry=None,
+        interactive=False,
+        config_refresh=None,
+        held_writes=None,
+    ):
         built.append(config.embedding_dim)
         return make_mock_services(store=Store(config))
 
