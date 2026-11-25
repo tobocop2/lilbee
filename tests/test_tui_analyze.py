@@ -974,6 +974,13 @@ async def test_the_tip_stays_while_an_add_is_queued_for_indexing(chat_app, tmp_p
                 assert msg.ANALYZE_TIP_LABEL in _hint_text(chat)
             finally:
                 release.set()
+            # The worker ends through the loop (call_from_thread): pump it until the thread is gone.
+            assert await _until(
+                pilot,
+                lambda: not any(
+                    t.name.startswith("task-") and t.is_alive() for t in threading.enumerate()
+                ),
+            ), "the add worker was still alive at the end of the test"
 
 
 @pytest.mark.parametrize("size", [(120, 36), (80, 24)])
