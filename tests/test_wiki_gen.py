@@ -1591,7 +1591,7 @@ class TestWritePageToDrafts:
 
 class TestDeleteDriftDraftIfPresent:
     def test_returns_false_when_no_draft_exists(self, tmp_path: Path):
-        assert delete_drift_draft_if_present(tmp_path, "missing", ["a.md"]) is False
+        assert delete_drift_draft_if_present(tmp_path, "missing", ["a.md"], source_ids={}) is False
 
     def test_leaves_a_low_faithfulness_draft_alone(self, tmp_path: Path):
         """The draft names the same sources the publish does, so the
@@ -1601,21 +1601,48 @@ class TestDeleteDriftDraftIfPresent:
         survive on that alone, whatever the marker check did."""
         draft = tmp_path / "x.md"
         draft.write_text('---\nfaithfulness_score: 0.2\nsources: ["a.md"]\n---\n\nbody\n')
-        assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"]) is False
+        assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"], source_ids={}) is False
         assert draft.is_file()
 
     def test_removes_a_drift_draft(self, tmp_path: Path):
         draft = divert_to_drafts(
             "# body\n", tmp_path, "x", 0.5, "diff", WikiSubdir.CONCEPTS, ["a.md"], source_ids={}
         )
-        assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"]) is True
+        assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"], source_ids={}) is True
         assert not draft.exists()
+
+    def test_removes_a_drift_draft_written_before_ids_by_its_path_key(self, tmp_path: Path):
+        """An older draft keys its marker by the hash of the paths and records no ids."""
+        from lilbee.wiki.batch import short_source_hash
+
+        draft = tmp_path / "x.md"
+        draft.write_text(
+            f"<!-- DRIFT: 50% content changed; origin: concepts; source: {short_source_hash('a.md')}"
+            ' - flagged for human review -->\n\n---\nsources: ["a.md"]\n---\n\nbody\n'
+        )
+        assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"], source_ids={"a.md": "1"})
+        assert not draft.exists()
+
+    def test_keeps_an_id_keyed_draft_when_a_new_file_took_the_path(self, tmp_path: Path):
+        """The same path under another id is another source: the path key does not claim it."""
+        draft = divert_to_drafts(
+            "# body\n",
+            tmp_path,
+            "x",
+            0.5,
+            "diff",
+            WikiSubdir.CONCEPTS,
+            ["a.md"],
+            source_ids={"a.md": "1"},
+        )
+        assert not delete_drift_draft_if_present(tmp_path, "x", ["a.md"], source_ids={"a.md": "2"})
+        assert draft.is_file()
 
     def test_keeps_a_drift_draft_belonging_to_another_source(self, tmp_path: Path):
         draft = divert_to_drafts(
             "# body\n", tmp_path, "x", 0.5, "diff", WikiSubdir.CONCEPTS, ["a.md"], source_ids={}
         )
-        assert delete_drift_draft_if_present(tmp_path, "x", ["b.md"]) is False
+        assert delete_drift_draft_if_present(tmp_path, "x", ["b.md"], source_ids={}) is False
         assert draft.is_file()
 
 

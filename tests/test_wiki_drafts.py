@@ -736,6 +736,7 @@ class TestUnpairedCollisionAccept:
         path = divert_concept_collision(
             slug="brakes",
             source="b.md",
+            source_names=["b.md"],
             first_source="a.md",
             content=_cited_draft(),
             drafts_dir=wiki_root / WikiSubdir.DRAFTS,
