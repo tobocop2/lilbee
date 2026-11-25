@@ -16,6 +16,8 @@ from unittest import mock
 import pytest
 
 from conftest import clean_env
+from lilbee.app.services import get_services
+from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.types import ModelSource, ModelTask
 from lilbee.core.config import Config, cfg
 from lilbee.modelhub.install_state import InstallState, install_state
@@ -75,7 +77,7 @@ class TestPullReportsWhatItDid:
     def test_handbuilt_layout_is_not_installed(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         _handbuilt_repo_layout(models_dir)
-        manager = ModelManager(models_dir, cfg)
+        manager = ModelManager(models_dir, cfg, hf_client=HfClient(cfg))
 
         assert manager.is_installed(_REF, ModelSource.NATIVE) is False
         assert ModelRegistry(models_dir).list_installed() == []
@@ -86,7 +88,7 @@ class TestPullReportsWhatItDid:
         models_dir = tmp_path / "models"
         _handbuilt_repo_layout(models_dir, "other/Repo/other.gguf")
         _install(models_dir)
-        manager = ModelManager(models_dir, cfg)
+        manager = ModelManager(models_dir, cfg, hf_client=HfClient(cfg))
 
         listed = manager.list_installed(ModelSource.NATIVE)
         assert listed == [_REF]
@@ -97,7 +99,7 @@ class TestPullReportsWhatItDid:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         (models_dir / "llama3-8b.gguf").write_bytes(_BLOB)
-        manager = ModelManager(models_dir, cfg)
+        manager = ModelManager(models_dir, cfg, hf_client=HfClient(cfg))
 
         assert manager.is_installed("llama3-8b.gguf", ModelSource.NATIVE) is False
         assert manager.get_source("llama3-8b.gguf") is None
@@ -108,7 +110,7 @@ class TestPullReportsWhatItDid:
         models_dir.mkdir()
         stray = models_dir / "llama3-8b.gguf"
         stray.write_bytes(_BLOB)
-        manager = ModelManager(models_dir, cfg)
+        manager = ModelManager(models_dir, cfg, hf_client=HfClient(cfg))
 
         assert manager.remove("llama3-8b.gguf") is True
         assert not stray.exists()
@@ -119,7 +121,12 @@ class TestPullReportsWhatItDid:
         models_dir.mkdir()
         _install(models_dir)
 
-        assert ModelManager(models_dir, cfg).is_installed(_REF, ModelSource.NATIVE) is True
+        assert (
+            ModelManager(models_dir, cfg, hf_client=HfClient(cfg)).is_installed(
+                _REF, ModelSource.NATIVE
+            )
+            is True
+        )
 
 
 def _build_config(tmp_path: Path, roles: dict[str, str]) -> Config:
@@ -403,7 +410,9 @@ class TestEntryPointParity:
             mock.patch("lilbee.modelhub.role_validator.find_pick", return_value=None),
             pytest.raises(ValueError, match="not installed"),
         ):
-            validate_model_task_assignment("chat_model", str(gguf), allow_bypass=False)
+            validate_model_task_assignment(
+                "chat_model", str(gguf), allow_bypass=False, hf_client=get_services().hf_client
+            )
         assert "chat_model" in flagged
 
 

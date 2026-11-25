@@ -666,7 +666,7 @@ class TestEnsureVisionProjector:
         from lilbee.catalog.types import ModelTask
 
         entry = self._entry(ModelTask.CHAT)
-        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: entry)
+        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q, **_: entry)
         missing = iter([True, False])
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: next(missing))
         called: list[object] = []
@@ -682,7 +682,7 @@ class TestEnsureVisionProjector:
         from lilbee.catalog.types import ModelTask
 
         entry = self._entry(ModelTask.VISION)
-        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: entry)
+        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q, **_: entry)
         missing = iter([True, False])
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: next(missing))
         called: list[object] = []
@@ -700,7 +700,7 @@ class TestEnsureVisionProjector:
         from lilbee.catalog.types import ModelTask
 
         entry = self._entry(ModelTask.VISION)
-        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: entry)
+        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q, **_: entry)
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: False)
         called: list[object] = []
         monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e, **_: called.append(e))
@@ -711,7 +711,7 @@ class TestEnsureVisionProjector:
         assert called == []
 
     def test_unresolvable_ref_is_noop(self, monkeypatch):
-        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: None)
+        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q, **_: None)
         called: list[object] = []
         monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e, **_: called.append(e))
         assert model_mod.ensure_vision_projector("not a repo", warn_unreadable=False) is None
@@ -723,7 +723,7 @@ class TestEnsureVisionProjector:
         from lilbee.catalog.types import ModelTask
 
         monkeypatch.setattr(
-            "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.CHAT)
+            "lilbee.catalog.resolve_pull_target", lambda _q, **_: self._entry(ModelTask.CHAT)
         )
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
 
@@ -743,7 +743,7 @@ class TestEnsureVisionProjector:
         from lilbee.catalog.types import ModelTask
 
         monkeypatch.setattr(
-            "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.CHAT)
+            "lilbee.catalog.resolve_pull_target", lambda _q, **_: self._entry(ModelTask.CHAT)
         )
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
         monkeypatch.setattr(
@@ -764,7 +764,7 @@ class TestEnsureVisionProjector:
         model = models / "m-Q4_K_M.gguf"
         model.write_bytes(b"model")
         monkeypatch.setattr(
-            "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.CHAT)
+            "lilbee.catalog.resolve_pull_target", lambda _q, **_: self._entry(ModelTask.CHAT)
         )
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
 
@@ -788,7 +788,7 @@ class TestEnsureVisionProjector:
         from lilbee.catalog.types import ModelTask
 
         monkeypatch.setattr(
-            "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.CHAT)
+            "lilbee.catalog.resolve_pull_target", lambda _q, **_: self._entry(ModelTask.CHAT)
         )
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
 
@@ -803,7 +803,7 @@ class TestEnsureVisionProjector:
         from lilbee.catalog.types import ModelTask
 
         monkeypatch.setattr(
-            "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.VISION)
+            "lilbee.catalog.resolve_pull_target", lambda _q, **_: self._entry(ModelTask.VISION)
         )
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
         monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e, **_: None)
@@ -816,7 +816,7 @@ class TestEnsureVisionProjector:
         from lilbee.catalog.types import ModelTask
 
         monkeypatch.setattr(
-            "lilbee.catalog.resolve_pull_target", lambda _q: self._entry(ModelTask.CHAT)
+            "lilbee.catalog.resolve_pull_target", lambda _q, **_: self._entry(ModelTask.CHAT)
         )
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
         monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e, **_: None)

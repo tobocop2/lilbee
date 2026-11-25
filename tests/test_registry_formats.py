@@ -8,6 +8,7 @@ from unittest import mock
 
 import pytest
 
+from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelFormat, ModelSource, ModelTask
 from lilbee.core.config.model import cfg
@@ -368,7 +369,7 @@ class TestThroughTheModelManager:
     def test_install_list_find_and_remove_by_ref(self, repo: Path) -> None:
         _install(repo, ModelFormat.GGUF)
         _install(repo, ModelFormat.MLX)
-        manager = ModelManager(repo, cfg)
+        manager = ModelManager(repo, cfg, hf_client=HfClient(cfg))
         assert manager.list_installed(ModelSource.NATIVE) == [
             "org/repo#mlx",
             f"org/repo/{_GGUF}",

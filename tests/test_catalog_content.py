@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from lilbee.app.services import get_services
 from lilbee.catalog.content import is_safety_stripped
 
 
@@ -111,18 +112,18 @@ def test_flipping_the_opt_in_drops_the_memoized_picks(
 
     calls: list[None] = []
 
-    def fake_resolve() -> tuple[CatalogModel, ...]:
+    def fake_resolve(**_) -> tuple[CatalogModel, ...]:
         calls.append(None)
         return ()
 
     monkeypatch.setattr(picks_mod, "_resolve_picks", fake_resolve)
     try:
         picks_mod.seed_picks(())
-        assert picks_mod.get_picks() == ()
+        assert picks_mod.get_picks(hf_client=get_services().hf_client) == ()
         assert calls == []
         result = apply_settings_update({"include_uncensored": True})
         assert result.updated == ["include_uncensored"]
-        assert picks_mod.get_picks() == ()
+        assert picks_mod.get_picks(hf_client=get_services().hf_client) == ()
         assert len(calls) == 1
     finally:
         picks_mod.reset_picks()
@@ -138,17 +139,17 @@ def test_an_unrelated_setting_keeps_the_memoized_picks(
 
     calls: list[None] = []
 
-    def fake_resolve() -> tuple[CatalogModel, ...]:
+    def fake_resolve(**_) -> tuple[CatalogModel, ...]:
         calls.append(None)
         return ()
 
     monkeypatch.setattr(picks_mod, "_resolve_picks", fake_resolve)
     try:
         picks_mod.seed_picks(())
-        assert picks_mod.get_picks() == ()
+        assert picks_mod.get_picks(hf_client=get_services().hf_client) == ()
         assert calls == []
         apply_settings_update({"top_k": 5})
-        assert picks_mod.get_picks() == ()
+        assert picks_mod.get_picks(hf_client=get_services().hf_client) == ()
         assert len(calls) == 0
     finally:
         picks_mod.reset_picks()
