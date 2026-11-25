@@ -103,6 +103,89 @@ with mock.patch("lilbee.cli.tui.app.LilbeeApp", _TerminatedApp):
     run_tui()
 """
 
+_HUNG_UP_TUI_CHILD = """
+import asyncio
+import gc
+import logging
+import os
+import signal
+import sys
+
+import lilbee.cli.tui as tui
+from lilbee.app.services import install_engine_lifecycle_hooks, mark_interactive_session
+from lilbee.cli.tui import app as tui_app
+
+
+def _hang_up():
+    logging.getLogger("hung_up_tui").warning("SIGHUP sent from a timer tick")
+    # A signal to this process runs its handler at the next bytecode: inside this tick.
+    os.kill(os.getpid(), signal.SIGHUP)
+
+
+class _HungUpApp(tui_app.LilbeeApp):
+    def on_mount(self):  # Textual runs the mount handler of LilbeeApp as well
+        self.set_timer(0.5, _hang_up)
+
+
+_exit_when_stragglers_would_hang = tui.exit_when_stragglers_would_hang
+
+
+def _report_unread_task_errors(status):
+    # The forced exit skips the collection where asyncio logs a task whose exception
+    # nobody read, so the same test asyncio makes there runs here first.
+    for task in gc.get_objects():
+        if isinstance(task, asyncio.Task) and task._log_traceback:
+            print(f"Task exception was never retrieved: {task.exception()!r}", file=sys.stderr)
+    _exit_when_stragglers_would_hang(status)
+
+
+tui_app.LilbeeApp = _HungUpApp
+tui.exit_when_stragglers_would_hang = _report_unread_task_errors
+install_engine_lifecycle_hooks()
+mark_interactive_session()
+tui.run_tui()
+"""
+
+
+def _run_in_a_terminal(argv: list[str], env: dict[str, str]) -> tuple[int, str]:
+    """Run *argv* on a pseudo terminal; return its status and everything it wrote there."""
+    import fcntl
+    import os
+    import pty
+    import struct
+    import subprocess
+    import termios
+    import threading
+
+    controller, terminal = pty.openpty()
+    fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    written: list[bytes] = []
+
+    def read_terminal() -> None:
+        # The app blocks on a full terminal buffer when nobody reads its output.
+        while True:
+            try:
+                chunk = os.read(controller, 65536)
+            except OSError:  # Linux: the child closed the terminal
+                return
+            if not chunk:
+                return
+            written.append(chunk)
+
+    reader = threading.Thread(target=read_terminal, daemon=True)
+    reader.start()
+    child = subprocess.Popen(
+        argv, env=env, stdin=terminal, stdout=terminal, stderr=terminal, start_new_session=True
+    )
+    os.close(terminal)
+    try:
+        child.wait(timeout=120)
+        reader.join(timeout=5)
+    finally:
+        child.kill()  # a no-op once the child ended
+        os.close(controller)
+    return child.returncode, b"".join(written).decode("utf-8", "replace")
+
 
 class TestRunTui:
     @mock.patch("lilbee.cli.tui.app.LilbeeApp.run_async")
@@ -231,6 +314,26 @@ class TestRunTui:
         finally:
             child.kill()  # a no-op once the child ended
         assert child.returncode == 128 + signal.SIGTERM, stderr
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SIGHUP and no pty")
+    def test_a_hangup_during_a_timer_tick_exits_129_with_no_unread_task_error(
+        self, tmp_path
+    ) -> None:
+        """The real TUI in a terminal gets SIGHUP inside a timer callback.
+
+        The exit leaves the run with 128 + 1, and no task keeps the exit as an
+        exception that asyncio logs as never retrieved.
+        """
+        import signal
+
+        script = tmp_path / "hung_up_tui.py"
+        script.write_text(_HUNG_UP_TUI_CHILD, encoding="utf-8")
+        status, terminal = _run_in_a_terminal([sys.executable, str(script)], clean_env(tmp_path))
+
+        log = (tmp_path / "logs" / "tui.log").read_text(encoding="utf-8")
+        assert status == 128 + signal.SIGHUP, terminal + log
+        assert "SIGHUP sent from a timer tick" in log
+        assert "never retrieved" not in log + terminal, terminal + log
 
     @pytest.mark.parametrize(
         ("code", "status"), [(None, 0), (3, 3), ("lilbee: bye", 1)], ids=["none", "int", "text"]
