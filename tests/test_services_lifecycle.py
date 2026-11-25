@@ -277,6 +277,21 @@ def test_the_handler_force_quit_writes_to_fd_2_and_takes_no_lock(monkeypatch):
     assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
 
 
+def test_the_exit_flush_uses_the_standard_logging_shutdown_then_flushes_stdio(monkeypatch):
+    """logging.shutdown reaches every live handler; a walk of the logger table misses some."""
+    steps: list[str] = []
+    monkeypatch.setattr(logging, "shutdown", lambda: steps.append("shutdown"))
+    out, err = MagicMock(), MagicMock()
+    out.flush.side_effect = lambda: steps.append("stdout")
+    err.flush.side_effect = lambda: steps.append("stderr")
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+
+    services_mod._flush_logs()
+
+    assert steps == ["shutdown", "stdout", "stderr"]
+
+
 def test_the_force_quit_kills_the_ingest_workers_then_ends_the_process(monkeypatch):
     """Only Linux ends a worker with its parent, and this exit skips the join of the workers."""
     steps: list[object] = []
