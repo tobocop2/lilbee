@@ -2997,3 +2997,11 @@ class TestThePersistedValuesReadTheFileOnce:
         else:
             assert {k: values[k] for k in expected} == expected
         assert len(reads) == parses
+
+    @pytest.mark.parametrize(
+        ("stored", "readable"), [("top_k = 4\n", True), ("top_k = = 9\n", False)]
+    )
+    def test_toml_is_readable_says_whether_the_file_parses(self, tmp_path, stored, readable):
+        path = tmp_path / "config.toml"
+        path.write_text(stored, encoding="utf-8")
+        assert _toml_is_readable(path) is readable

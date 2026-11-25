@@ -18,13 +18,14 @@ from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
 from lilbee.core.config.defaults import SKIP_TOML_ENV
 from lilbee.core.config.enums import SettingSource
 from lilbee.core.config.load_warnings import warn_on_load
-from lilbee.core.config.model import read_toml_values, refusal_sentence, toml_value
+from lilbee.core.config.model import overlay_source, refusal_sentence, toml_value
 from lilbee.core.config.resolve import (
     PROFILE_NAME_KEY,
     PROFILE_TABLE,
     PROFILE_VALUES_KEY,
     ROOT_DERIVED_FIELDS,
     Resolved,
+    read_config_table,
     read_layers,
     resolve_all,
     sanitize_soft_fields,
@@ -356,13 +357,17 @@ def persisted_values(root: Path) -> dict[str, Any] | None:
     if os.environ.get(SKIP_TOML_ENV) == "1":
         return None
     path = _config_path(root)
-    data: Mapping[str, Any] | None = {}
+    data: Mapping[str, Any] = {}
     accepted: Mapping[str, Any] = {}
     if path.exists():
         harden_private_file(path)
-        data, accepted = read_toml_values(path)
-        if data is None:
+        source = overlay_source(path)
+        try:
+            data = read_config_table(path)
+        except (ValueError, OSError):
+            source.report_unreadable()
             return None
+        accepted = source.accept(data)
     layers = read_layers(root, data)
     refused = (layers.user.keys() - accepted.keys()) | layers.refused_user
     resolved = resolve_all(
