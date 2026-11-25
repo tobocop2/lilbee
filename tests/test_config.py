@@ -981,7 +981,7 @@ class TestSemanticChunkingConfig:
         _, warnings = _build_with(tmp_path, f'{key} = "{_SECRET_ADDRESS}"\n')
         assert len(warnings) == 1
         assert "s3cret" not in warnings[0]
-        assert warnings[0].count(key) == 1
+        assert warnings[0].count("is not a valid web address") == 1
 
     @pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
     def test_a_bad_server_address_variable_is_refused_by_name_without_its_value(
