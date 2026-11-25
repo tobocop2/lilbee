@@ -47,6 +47,7 @@ jobs:
               - 'uv.lock'
               - 'Makefile'
               - '.coveragerc-windows'
+              - '.coveragerc-lineonly'
               - 'engine-versions.env'
               - 'scripts/check_style_rules.py'
               - 'tools/qa/**'

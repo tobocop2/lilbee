@@ -1,0 +1,14 @@
+# Report config for the packages that are still measured by lines only (LINE_ONLY in the
+# Makefile). The run records branch data for every file; `partial_branches = .*` makes this
+# report treat no line as a branch point. exclude_lines mirrors [tool.coverage.report] in
+# pyproject.toml.
+[report]
+show_missing = True
+fail_under = 100
+partial_branches = .*
+exclude_lines =
+    pragma: no cover
+    pragma: windows only
+    if TYPE_CHECKING:
+    class.*Protocol
+    @(typing\.)?overload

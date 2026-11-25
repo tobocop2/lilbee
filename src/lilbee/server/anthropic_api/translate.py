@@ -215,9 +215,7 @@ def _block_messages(
             blocks.append(ToolUseBlock(id=block.id, name=block.name, input=block.input))
         elif isinstance(block, ToolResultBlockParam):
             tool_messages.append(_tool_result_message(block))
-        else:
-            # Image and unknown blocks have no canonical form; they are dropped.
-            continue
+        # Image and unknown blocks have no canonical form; they match no branch and are dropped.
 
     out = tool_messages
     if blocks:
@@ -549,10 +547,7 @@ async def canonical_stream_to_anthropic_events(
                     },
                 },
             )
-        else:
-            # MessageStart and MessageStop. The Anthropic message_start is
-            # emitted eagerly above (it needs no canonical data), and
-            # message_stop follows the loop so it stays last even if the
-            # provider never sends one.
-            continue
+        # MessageStart and MessageStop match no branch. The Anthropic message_start is
+        # emitted eagerly above (it needs no canonical data), and message_stop follows
+        # the loop so it stays last even if the provider never sends one.
     yield (AnthropicEventType.MESSAGE_STOP, {"type": "message_stop"})
