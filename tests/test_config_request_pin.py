@@ -13,8 +13,8 @@ from unittest import mock
 
 import pytest
 
-from lilbee.app import settings as app_settings
 from lilbee.app import services as svc_mod
+from lilbee.app import settings as app_settings
 from lilbee.app.services import follow_config_long_running, set_services
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import CONFIG_FILE_NAME, Config, active_config, cfg, config_scope
