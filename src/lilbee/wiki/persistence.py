@@ -224,7 +224,7 @@ def divert_to_drafts(
     source_names: list[str],
     *,
     source_ids: Mapping[str, str],
-    live_ids: IdsHeld | None = None,
+    live_ids: IdsHeld | None,
 ) -> Path:
     """Write new content to wiki/drafts/ with a drift note instead of overwriting.
 
@@ -418,7 +418,7 @@ def delete_drift_draft_if_present(
     source_names: list[str],
     *,
     source_ids: Mapping[str, str],
-    live_ids: IdsHeld | None = None,
+    live_ids: IdsHeld | None,
 ) -> bool:
     """Delete *slug*'s superseded drift draft; return whether one was removed.
 

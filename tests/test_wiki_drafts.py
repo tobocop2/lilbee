@@ -822,6 +822,7 @@ def _stacked_drift_collision_draft(wiki_root: Path) -> str:
         WikiSubdir.CONCEPTS,
         ["a.md"],
         source_ids={},
+        live_ids=None,
     )
     return path.stem
 
