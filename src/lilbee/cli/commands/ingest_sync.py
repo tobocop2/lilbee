@@ -786,7 +786,7 @@ def _register_and_sync(
         rollback.absorbed_into = registration.absorbed_into
         result = _run_sync(
             cancel_event,
-            before_sync=lambda: rollback.registered(registration.revocable, cancel_event),
+            before_sync=lambda: rollback.registered(registration, cancel_event),
             started_by="lilbee add",
         )
         synced = _changed_content(result)

@@ -960,17 +960,16 @@ class ChatScreen(Screen[None]):
         self._notify_registration(reg_result)
         if not reg_result.reached_corpus:
             return
-        # A source that took in another one stays: un-registering it orphans what it took.
-        revocable = reg_result.revocable
         try:
             with forget_unfinished_on_cancel(
-                paths, revocable, reporter, reporter.cancelled_by_user
+                paths, reg_result, reporter, reporter.cancelled_by_user
             ) as rollback:
                 self._sync_added(reg_result.registered, reporter)
         except asyncio.CancelledError as exc:
             raise TaskCancelledError(rollback.message(msg.SYNC_CANCELLED_RESUME)) from exc
         except BaseException:
-            unregister_added_roots(revocable)
+            # A source that took in another one stays after a failure: it covers what it took.
+            unregister_added_roots(reg_result.revocable)
             raise
 
     def _notify_registration(self, reg_result: RegisterResult) -> None:

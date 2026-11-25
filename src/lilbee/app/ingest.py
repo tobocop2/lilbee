@@ -64,6 +64,8 @@ class RegisterResult:
     """The overlapping paths that contain the documents directory; none is registered."""
     absorbed_into: dict[str, list[str]] = field(default_factory=dict)
     """Each newly registered label that took in registered sources, with their labels."""
+    absorbed_roots: dict[str, str] = field(default_factory=dict)
+    """The folder each taken-in source was registered at, by its label; a cancel restores it."""
     refused: list[str] = field(default_factory=list)
     """Files whose format lilbee does not index, as ``name: reason``."""
     outside_corpus: list[str] = field(default_factory=list)
@@ -93,7 +95,7 @@ class RegisterResult:
 
     @property
     def revocable(self) -> list[str]:
-        """The registered labels a cancelled add un-registers: each that took in no source."""
+        """The registered labels a failed sync un-registers: each that took in no source."""
         return [label for label in self.registered if label not in self.absorbed_into]
 
     @property
@@ -196,16 +198,20 @@ def _classify(
             result.name_taken.append(src.name)
             outside.setdefault(src, src.name)
             continue
+        was = {child: roots[child] for child in reached}
         for child in reached:
             del roots[child]
             by_target.pop(spelled.pop(child), None)
-        taken = sorted(child for child in reached if child in sources)
+        # A path of this call that this one contains passes on what it took in.
+        passed = (kid for child in reached for kid in result.absorbed_into.pop(child, []))
+        taken = sorted({*(child for child in reached if child in sources), *passed})
         roots[label] = str(src)
         spelled[label] = src
         by_target[src] = label
         result.registered = [name for name in result.registered if name not in reached] + [label]
         if taken:
             result.absorbed_into[label] = taken
+            result.absorbed_roots.update((child, was[child]) for child in taken)
     result.outside_corpus = list(outside.values())
     return result
 
@@ -544,8 +550,8 @@ class AddRollback:
     at_sync: bool = True
     """Whether the add reached its sync."""
     absorbed_into: dict[str, list[str]] = field(default_factory=dict)
-    """Each label the add registered that took in sources, with their labels; it stays."""
-    _roots: list[str] = field(default_factory=list)
+    """Each label the add registered that took in sources, with their labels, while it stays."""
+    _registration: RegisterResult = field(default_factory=RegisterResult)
     _before: dict[str, str] = field(default_factory=dict)
 
     def message(self, nothing_dropped: str) -> str:
@@ -564,11 +570,12 @@ class AddRollback:
         log.warning("A stopped sync also hit an error", exc_info=exc)
         self.error = str(exc) or type(exc).__name__
 
-    def registered(self, labels: list[str], cancel: CancelSignal) -> None:
-        """Take *labels* as the roots the add registered; its sync starts here."""
-        self._roots, self.at_sync = labels, True
+    def registered(self, registration: RegisterResult, cancel: CancelSignal) -> None:
+        """Take *registration* as what the add registered; its sync starts here."""
+        self._registration, self.at_sync = registration, True
+        self.absorbed_into = dict(registration.absorbed_into)
         try:
-            self._before = indexed_stamps(labels)
+            self._before = indexed_stamps(registration.registered)
         except Exception as exc:
             if not cancel.is_set():
                 raise
@@ -589,7 +596,8 @@ class AddRollback:
 
     def _forget_roots(self) -> None:
         """Un-register each root with no file indexed since the sync started."""
-        forget_unfinished_roots(self._roots, self._before)
+        for label in forget_unfinished_roots(self._registration, self._before):
+            self.absorbed_into.pop(label, None)
 
     def _name_missing(self) -> None:
         """Take the name of each given path the corpus does not hold."""
@@ -618,14 +626,50 @@ def indexed_stamps(labels: list[str]) -> dict[str, str]:
     }
 
 
-def forget_unfinished_roots(labels: list[str], before: dict[str, str]) -> list[str]:
-    """Un-register each root in *labels* with no file indexed since *before*; returns them.
+def forget_unfinished_roots(registration: RegisterResult, before: dict[str, str]) -> list[str]:
+    """Undo each root *registration* made with no file indexed since *before*; returns them.
 
-    A file is indexed since *before* when its source is new or its stamp changed.
+    A root that took in registered sources gives each back, registered at its
+    folder again, before it leaves; the rows, records and wiki pages of a
+    source follow its folder, so none is rewritten. A file is indexed since
+    *before* when its source is new or its stamp changed.
     """
+    labels = registration.registered
     finished = [name for name, stamp in indexed_stamps(labels).items() if before.get(name) != stamp]
     unfinished = [label for label in labels if not any(is_under(name, label) for name in finished)]
-    return forget_roots(unfinished) if unfinished else []
+    if not unfinished:
+        return []
+    swapped = [label for label in unfinished if label in registration.absorbed_into.get(label, [])]
+    restore_absorbed(registration, unfinished, swapped)
+    forget_roots([label for label in unfinished if label not in swapped])
+    return unfinished
+
+
+def restore_absorbed(registration: RegisterResult, parents: list[str], swapped: list[str]) -> None:
+    """Register again each source the roots *parents* took in, at the folder it had.
+
+    A source whose label a root still holds stays unregistered, unless that root is in
+    *swapped*: it took the label of its own source, so the source takes the label back.
+    """
+    back = {
+        child: registration.absorbed_roots[child]
+        for parent in parents
+        for child in registration.absorbed_into.get(parent, [])
+    }
+    if not back:
+        return
+
+    def _mutate(persisted: dict[str, str] | None) -> tuple[dict[str, str], None]:
+        roots = dict(persisted or {})
+        roots.update(
+            (child, path) for child, path in back.items() if child not in roots or child in swapped
+        )
+        return roots, None
+
+    config = active_config()
+    settings.mutate_value(config.data_root, "linked_roots", _mutate)
+    settings.sync_from_resolver(config, ["linked_roots"])
+    show_current_paths_in_wiki()
 
 
 @contextmanager
@@ -646,11 +690,14 @@ def leave_as_cancel(
 
 @contextmanager
 def forget_unfinished_on_cancel(
-    paths: list[Path], labels: list[str], cancel: CancelSignal, user_cancelled: Callable[[], bool]
+    paths: list[Path],
+    registration: RegisterResult,
+    cancel: CancelSignal,
+    user_cancelled: Callable[[], bool],
 ) -> Generator[AddRollback, None, None]:
     """Wrap an add of *paths* after registration; a raise under a set *cancel* is a cancel."""
     rollback = AddRollback(paths=paths)
-    rollback.registered(labels, cancel)
+    rollback.registered(registration, cancel)
     with leave_as_cancel(rollback, cancel, user_cancelled):
         yield rollback
 
