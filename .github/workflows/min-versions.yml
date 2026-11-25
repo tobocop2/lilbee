@@ -41,6 +41,8 @@ jobs:
         run: cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/min-versions"
 
       - name: Resolve every direct dependency to its lowest version
+        # Explicit bash turns on pipefail, so a failed sync fails the step and not only tee.
+        shell: bash
         working-directory: ${{ runner.temp }}/min-versions
         run: uv sync --resolution lowest-direct --all-extras --python 3.11 2>&1 | tee "$RUNNER_TEMP/sync.log"
 
