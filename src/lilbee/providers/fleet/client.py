@@ -811,7 +811,6 @@ class LlamaServerClient:
             raise ProviderError(
                 "The conversation exceeds this model's context window. "
                 "Start a new conversation or shorten the input.",
-                
                 kind=ProviderErrorKind.CONTEXT_OVERFLOW,
             )
         # llama-swap answers 429 once its concurrency limit for the model is reached.
@@ -820,7 +819,6 @@ class LlamaServerClient:
         if resp.status_code == _HTTP_TOO_MANY_REQUESTS:
             raise ProviderError(
                 "The model is busy with too many requests. Try again in a moment.",
-                
                 kind=ProviderErrorKind.RATE_LIMIT,
             )
         refusal = self._profile.batch_count_refusal
@@ -828,7 +826,6 @@ class LlamaServerClient:
             raise ProviderError(
                 f"{self._profile.label} refused the request for holding too many inputs. "
                 "Send fewer inputs in one request.",
-                
                 kind=ProviderErrorKind.BAD_REQUEST,
             )
         kind = _classify_error(resp.status_code, body, self._profile)
@@ -846,13 +843,11 @@ class LlamaServerClient:
                 _upstream_death_message(
                     kind, resp.status_code, self.model_ref, self.engine_log, tail
                 ),
-                
                 kind=kind,
             )
         detail = f": {body[:600]}" if body else ""
         raise ProviderError(
             f"{self._profile.label} returned HTTP {resp.status_code}{detail}",
-            
             kind=kind,
         )
 
@@ -861,7 +856,6 @@ class LlamaServerClient:
         subject = self.model_ref if self.model_ref is not None else "the model"
         return WarmTimeoutError(
             _WARM_TIMEOUT_MESSAGE.format(model=subject),
-            
             wait_s=wait_s,
         )
 
@@ -1080,7 +1074,6 @@ class LlamaServerClient:
             except TimeoutError:
                 raise ChatDeadlineError(
                     f"{self._profile.label} chat exceeded its {deadline_s:g}s deadline.",
-                    
                 ) from None
             finally:
                 chat.cancel()
@@ -1480,7 +1473,6 @@ class LlamaServerClient:
         if resp.status_code == httpx.codes.NOT_FOUND:
             raise ProviderError(
                 f"{self._profile.label} has no such route (HTTP 404): {resp.text.strip()[:200]}",
-                
                 kind=ProviderErrorKind.NOT_FOUND,
             )
         try:
@@ -1736,7 +1728,6 @@ class LlamaServerClient:
         if sorted(by_index) != list(range(len(texts))):
             raise ProviderError(
                 f"The reranker did not return one score for each of the {len(texts)} candidates.",
-                
             )
         return [by_index[i] for i in range(len(texts))], overflow
 
@@ -1832,7 +1823,6 @@ class LlamaServerClient:
             if len(data) != len(inputs):
                 raise ProviderError(
                     f"Embedder returned {len(data)} vectors for {len(inputs)} inputs",
-                    
                 )
             return list(data)
 
@@ -2302,9 +2292,7 @@ def _embedding_vector(item: dict[str, Any], profile: RequestProfile) -> npt.NDAr
     embedding = item.get("embedding")
     # Untyped server JSON: a non-string means the encoding format was not honored.
     if not isinstance(embedding, str):
-        raise ProviderError(
-            _UNREADABLE_EMBEDDING_ERROR + profile.unreadable_embedding_hint
-        )
+        raise ProviderError(_UNREADABLE_EMBEDDING_ERROR + profile.unreadable_embedding_hint)
     try:
         return np.frombuffer(base64.b64decode(embedding), dtype=_EMBED_VECTOR_DTYPE)
     except ValueError as exc:

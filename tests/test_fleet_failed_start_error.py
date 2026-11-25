@@ -57,6 +57,5 @@ def test_a_request_that_waits_out_a_restart_hears_an_error_from_the_llama_server
     if stuck:
         provider._stuck_roles = frozenset({WorkerRole.EMBED})
 
-    with pytest.raises(ProviderError) as heard:
+    with pytest.raises(ProviderError):
         provider._require_clients(WorkerRole.EMBED)
-
