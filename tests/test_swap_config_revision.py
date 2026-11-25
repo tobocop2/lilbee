@@ -2,7 +2,7 @@
 
 A peer binds an engine only when its pin, which holds the revision, matches. A change to what
 the writer renders without a new revision lets a peer adopt an engine launched under the old
-config. The snapshot holds the full text of the config for a fixed launch set, with the
+config. The snapshot holds the full config for a fixed launch set, with the
 revision it was recorded at. To update it, raise SWAP_CONFIG_REVISION in swap_config.py, then run
 
     UPDATE_SWAP_CONFIG_SNAPSHOT=1 uv run pytest tests/test_swap_config_revision.py
@@ -63,8 +63,8 @@ def _launches() -> list[InstanceLaunch]:
     return launches
 
 
-def _rendered() -> dict[str, str]:
-    """The config text for each way the writer is driven."""
+def _rendered() -> dict[str, Any]:
+    """The parsed config for each way the writer is driven."""
     launches = _launches()
     ports = {launch.model_id: _BASE_PORT + i for i, launch in enumerate(launches)}
     all_logs: dict[str, Any] = {
@@ -77,7 +77,10 @@ def _rendered() -> dict[str, str]:
         "swap-ttl-some-logs": {"engine_logs": some_logs, "swap": True, "ttl_seconds": 300},
         "older-router": {"engine_logs": {}, "router_reads_streams": False},
     }
-    return {name: build_swap_config(launches, ports, **kwargs) for name, kwargs in runs.items()}
+    return {
+        name: json.loads(build_swap_config(launches, ports, **kwargs))
+        for name, kwargs in runs.items()
+    }
 
 
 def _recorded() -> dict[str, Any]:
@@ -100,7 +103,7 @@ def test_swap_config_changes_only_with_a_revision_bump() -> None:
     )
     assert same_revision or not same_text, (
         f"SWAP_CONFIG_REVISION is {SWAP_CONFIG_REVISION} and the snapshot was recorded at "
-        f"{recorded['revision']}, but the config text is the same. Undo the bump, or change "
+        f"{recorded['revision']}, but the config is the same. Undo the bump, or change "
         "what the writer renders."
     )
     assert same_text, (
