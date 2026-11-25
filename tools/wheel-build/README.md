@@ -58,6 +58,9 @@ the same behavior, so a developer can reproduce a CI build off-runner.
   (`tools/qa/assert_engine_bundle.py --prune-runtime`).
 - `check_glibc_floor.sh` — fails when a file in a pack imports glibc above 2.34
   or libstdc++ above 3.4.29.
+- `check_ik_repro.sh` — decides whether two or more CUDA builds of one ik commit
+  are equal. Every file must be byte-equal, except `libggml.so`: its host code
+  (`.text`, `.rodata`, `.dynsym`, `.dynstr`) must be equal and its GPU code may differ.
 - `build_lilbee_binary.sh` — Nuitka one-file build of the lilbee standalone
   executable, bundling the engine wheel built above.
 
