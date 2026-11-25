@@ -102,7 +102,6 @@ def test_the_steps_run_in_the_order_the_design_names(tmp_path: Path) -> None:
         "stored-models",
         "set-model",
         "set-model",
-        "engines-left-running",
         "use",
         "use",
         "use",
@@ -268,9 +267,7 @@ def test_model_use_sets_every_role_but_embed(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION])
-def test_a_role_without_use_embedder_is_set_by_model_use(
-    tmp_path: Path, role: WorkerRole
-) -> None:
+def test_a_role_without_use_embedder_is_set_by_model_use(tmp_path: Path, role: WorkerRole) -> None:
     t = observe(_plan((role,)), tmp_path)
     (set_step,) = _step(t, StepName.SET_MODEL)
     assert set_step.command[len(_CLI) :] == ("--json", "model", "use", str(role), _MODELS[role])
