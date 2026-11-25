@@ -56,7 +56,7 @@ def test_a_truncated_file_mid_rewrite_keeps_the_values(monkeypatch):
     _write("top_k", 21, tick=1)
     reading = app_settings.read_config_state()
     cfg.top_k = 21
-    _config_path().write_text("")  # the editor's truncate; its rewrite has not landed
+    _config_path().write_text("", encoding="utf-8")  # the editor's truncate; its rewrite has not landed
     stamp = _MTIME_NS + 2 * _SECOND_NS
     os.utime(_config_path(), ns=(stamp, stamp))
     _clock_at(monkeypatch, 2, _SECOND_NS // 10)
