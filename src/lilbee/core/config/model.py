@@ -1535,8 +1535,21 @@ class Config(BaseSettings):
 
     @field_validator("ollama_base_url", "lm_studio_base_url", mode="after")
     @classmethod
-    def _strip_trailing_slash(cls, v: str) -> str:
-        """Canonicalize a local-server URL once at the write boundary."""
+    def _strip_trailing_slash(cls, v: str, info: ValidationInfo) -> str:
+        """Canonicalize a local-server URL once at the write boundary.
+
+        Every request to a local server builds its URL from this value, so an address that
+        httpx cannot parse is refused here, before any request raises a raw URL error.
+        """
+        import httpx
+
+        try:
+            httpx.Request("GET", v)
+        except (httpx.InvalidURL, ValueError):
+            raise ValueError(
+                f"{info.field_name} is not a valid web address. "
+                "Write it as http://host:port, for example http://localhost:11434"
+            ) from None
         return v.rstrip("/")
 
     @field_validator("cors_origins", mode="before")
