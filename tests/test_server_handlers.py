@@ -224,6 +224,25 @@ class TestHealth:
         assert result.chat_status == "error"
         assert result.chat_error == "The GPU device probe did not respond within 60s"
 
+    async def test_chat_error_names_the_route_beside_a_command(self, mock_svc):
+        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        reason = "The engine is missing. Run 'lilbee engine list' to see the builds."
+        mock_svc.provider.role_ready.return_value = False
+        mock_svc.provider.warm_progress.return_value = WarmProgress(
+            phase=WarmPhase.ERROR, error=reason
+        )
+        result = await handlers.health()
+        assert result.chat_error == name_routes(reason)
+        assert "GET /api/engines" in result.chat_error
+
+    async def test_chat_error_with_no_reason_stays_empty(self, mock_svc):
+        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        mock_svc.provider.role_ready.return_value = False
+        mock_svc.provider.warm_progress.return_value = WarmProgress(phase=WarmPhase.ERROR)
+        assert (await handlers.health()).chat_error is None
+
     async def test_chat_error_absent_outside_the_error_state(self, mock_svc):
         mock_svc.provider.role_ready.return_value = True
         assert (await handlers.health()).chat_error is None
