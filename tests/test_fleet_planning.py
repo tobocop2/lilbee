@@ -4597,13 +4597,25 @@ def test_role_unplaceable_reason_names_the_cause_and_the_role(
 ) -> None:
     _ref = type("R", (), {"is_remote": remote})()
     monkeypatch.setattr(planning_mod, "parse_model_ref", lambda _r: _ref)
-    monkeypatch.setattr(planning_mod, "_vision_without_mmproj", lambda _r, _ref: projector)
+    monkeypatch.setattr(planning_mod, "_vision_lacks_mmproj", lambda _r, _ref: projector)
     monkeypatch.setattr(planning_mod, "_role_weights_bytes", lambda _r, _ref: weights)
     monkeypatch.setattr(planning_mod, "_weights_exceed_hardware", lambda _w, _v, **_k: exceeds)
     monkeypatch.setattr(planning_mod, "_ref_is_moe", lambda _ref, *, engine: False)
     reason = planning_mod.role_unplaceable_reason(WorkerRole.VISION, "org/m", 1, engine=LLAMA)
     assert words in reason
     assert "org/m" in reason
+
+
+def test_a_vision_role_without_a_projector_logs_the_projector_warning_once(
+    monkeypatch, caplog
+) -> None:
+    monkeypatch.setattr(planning_mod, "_vision_ref_needs_projector", lambda _ref: True)
+    monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _ref: None)
+    with caplog.at_level("WARNING"):
+        assert not planning_mod.role_model_placeable(WorkerRole.VISION, "org/m", 1, engine=LLAMA)
+        reason = planning_mod.role_unplaceable_reason(WorkerRole.VISION, "org/m", 1, engine=LLAMA)
+    assert "no projector file" in reason
+    assert sum("no mmproj" in message for message in caplog.messages) == 1
 
 
 def test_placeable_total_vram_reuses_the_captured_probe(monkeypatch) -> None:

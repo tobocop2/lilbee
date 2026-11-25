@@ -1439,16 +1439,21 @@ def _weights_exceed_hardware(size: int, total_vram: int, *, is_moe: bool) -> boo
     )
 
 
+def _vision_lacks_mmproj(role: WorkerRole, ref: str) -> bool:
+    """True for a configured vision model whose mmproj is missing."""
+    return (
+        role is WorkerRole.VISION
+        and _vision_ref_needs_projector(ref)
+        and vision_mmproj(ref) is None
+    )
+
+
 def _vision_without_mmproj(role: WorkerRole, ref: str) -> bool:
     """True (with a warning) for a configured vision model whose mmproj is missing.
 
     The skip would silently disable OCR; the warning names the cause and the fix.
     """
-    if (
-        role is not WorkerRole.VISION
-        or not _vision_ref_needs_projector(ref)
-        or vision_mmproj(ref) is not None
-    ):
+    if not _vision_lacks_mmproj(role, ref):
         return False
     log.warning(
         "Vision model %s has no mmproj (CLIP projector); OCR is disabled. "
@@ -1900,12 +1905,21 @@ _UNPLACEABLE_REASONS = {
 
 
 def _unplaceable_cause(
-    role: WorkerRole, ref: str, total_vram: int, *, engine: EngineAdapter
+    role: WorkerRole,
+    ref: str,
+    total_vram: int,
+    *,
+    engine: EngineAdapter,
+    lacks_projector: Callable[[WorkerRole, str], bool],
 ) -> str | None:
-    """The key of ``_UNPLACEABLE_REASONS`` that stops a fresh plan serving *role*, or None."""
+    """The key of ``_UNPLACEABLE_REASONS`` that stops a fresh plan serving *role*, or None.
+
+    *lacks_projector* is the projector check: the placeable gate passes the one that warns,
+    and the reason passes the quiet one, so one role logs the projector warning once.
+    """
     if parse_model_ref(ref).is_remote:
         return "remote"
-    if _vision_without_mmproj(role, ref):
+    if lacks_projector(role, ref):
         return "projector"
     weights = _role_weights_bytes(role, ref)  # 0 when not installed / unresolvable
     if weights == 0:
@@ -1927,14 +1941,22 @@ def role_model_placeable(
     configured-but-unplaceable role keeps bind from ever matching a running
     engine and restarts the shared engine on every process start.
     """
-    return _unplaceable_cause(role, ref, total_vram, engine=engine) is None
+    cause = _unplaceable_cause(
+        role, ref, total_vram, engine=engine, lacks_projector=_vision_without_mmproj
+    )
+    return cause is None
 
 
 def role_unplaceable_reason(
     role: WorkerRole, ref: str, total_vram: int, *, engine: EngineAdapter
 ) -> str:
     """The sentence that tells a user why *role* gets no server on *ref*, with the next step."""
-    cause = _unplaceable_cause(role, ref, total_vram, engine=engine) or "memory"
+    cause = (
+        _unplaceable_cause(
+            role, ref, total_vram, engine=engine, lacks_projector=_vision_lacks_mmproj
+        )
+        or "memory"
+    )
     return _UNPLACEABLE_REASONS[cause].format(role=role.value, ref=ref)
 
 
