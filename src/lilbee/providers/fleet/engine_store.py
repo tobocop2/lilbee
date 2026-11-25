@@ -270,9 +270,8 @@ class FolderMoveError(EngineFolderError):
     """The rename that sets a build aside failed for a reason other than a denied write."""
 
     def __str__(self) -> str:
-        reason = self.fault.strerror if self.fault is not None and self.fault.strerror else ""
         return (
-            f"lilbee cannot move the engine folder {self.folder} aside ({reason or 'it failed'}). "
+            f"lilbee cannot move the engine folder {self.folder} aside ({self.fault}). "
             f"lilbee leaves the folder as it is. Run the command again."
         )
 
