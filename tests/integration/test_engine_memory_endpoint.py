@@ -101,7 +101,9 @@ def served(engine: Path, tiny_model: Path) -> Iterator[str]:
     try:
         deadline = time.monotonic() + _READY_SECONDS
         while time.monotonic() < deadline:
-            assert proc.poll() is None, f"{engine} exited with {proc.returncode} before it was ready"
+            assert proc.poll() is None, (
+                f"{engine} exited with {proc.returncode} before it was ready"
+            )
             try:
                 if httpx.get(f"{base}/health", timeout=2.0).status_code == httpx.codes.OK:
                     break
