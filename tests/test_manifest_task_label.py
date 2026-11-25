@@ -51,9 +51,7 @@ class TestManifestLabel:
         assert data.task == ModelTask.VISION
 
     def test_chat_listing_leaves_it_out(self, smolvlm_stored_as_chat: str) -> None:
-        services = make_mock_services()
-        services.registry = ModelRegistry(cfg.models_dir)
-        set_services(services)
+        set_services(make_mock_services(registry=ModelRegistry(cfg.models_dir)))
         try:
             with patch(_ENGINES, return_value={EngineName.LLAMA: frozenset({ModelFormat.GGUF})}):
                 assert smolvlm_stored_as_chat not in installed_chat_model_refs()
