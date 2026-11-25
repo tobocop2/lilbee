@@ -57,7 +57,7 @@ from lilbee.wiki.shared import (
     WikiSubdir,
     atomic_write_text,
 )
-from lilbee.wiki.stats import BuildStats
+from lilbee.wiki.stats import EMPTY_RESPONSE, BuildStats
 
 log = logging.getLogger(__name__)
 
@@ -387,6 +387,35 @@ def index_wiki_page(
     return store.replace_chunks(wiki_source, ChunkType.WIKI, records)
 
 
+def request_wiki_text(
+    label: str,
+    prompt: str,
+    provider: LLMProvider,
+    config: Config,
+    stats: BuildStats,
+) -> str | None:
+    """Issue one wiki model call; None when it raised or came back empty.
+
+    The single place a wiki run calls the model. Each outcome is counted in
+    *stats*, so a run can tell a build that wrote nothing because every call
+    failed from one that had nothing to write.
+    """
+    messages = build_wiki_messages(prompt, provider, config)
+    try:
+        response = provider.chat(messages, stream=False, options=wiki_generation_options(config))
+    except Exception as exc:
+        log.warning("Model call failed for %s: %s", label, exc)
+        stats.record_model_call(str(exc) or type(exc).__name__)
+        return None
+    text = strip_reasoning(response.text).strip()
+    if not text:
+        log.warning("Model call returned an empty response for %s", label)
+        stats.record_model_call(EMPTY_RESPONSE)
+        return None
+    stats.record_model_call(None)
+    return text
+
+
 def generate_page(
     label: str,
     prompt: str,
@@ -416,20 +445,10 @@ def generate_page(
 
     _emit("preparing", chunks=len(chunks), source=label)
 
-    messages = build_wiki_messages(prompt, provider, config)
     _emit("generating", source=label)
-    options = wiki_generation_options(config)
-    try:
-        response = provider.chat(messages, stream=False, options=options)
-        wiki_text = strip_reasoning(response.text).strip()
-    except Exception as exc:
-        log.warning("LLM failed to generate wiki page for %s: %s", label, exc)
-        _emit("failed", error=str(exc))
-        return None
-
-    if not wiki_text:
-        log.warning("LLM returned empty response for wiki page %s", label)
-        _emit("failed", error="Model returned empty response")
+    wiki_text = request_wiki_text(label, prompt, provider, config, stats)
+    if wiki_text is None:
+        _emit("failed", error=stats.last_model_failure)
         return None
 
     parsed_citations = parse_wiki_citations(wiki_text)
