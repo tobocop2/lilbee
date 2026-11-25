@@ -28,6 +28,7 @@ PREFERRED = ROOT / "preferred"
 ROLES_FILE = ROOT / "roles.json"
 MODELS_FILE = ROOT / "models.json"
 CALLS_FILE = ROOT / "calls.txt"
+PULLED = ROOT / "pulled.json"
 UTF8 = "utf-8"
 # The ref suffix that picks the safetensors format of a repo.
 SAFETENSORS_SUFFIX = "#safetensors"
@@ -55,6 +56,11 @@ def set_model(role: str, ref: str) -> str:
     stored = ref if keeps_ref else f"{ref}/{ref.rsplit('/', 1)[-1]}.gguf"
     MODELS_FILE.write_text(json.dumps({**models(), role: stored}), encoding=UTF8)
     return stored
+
+
+def pulled() -> list[str]:
+    """The refs `model pull` fetched so far."""
+    return json.loads(PULLED.read_text(encoding=UTF8)) if PULLED.exists() else []
 
 
 def installed() -> list[str]:
@@ -196,6 +202,7 @@ def model_pull(argv: list[str]) -> None:
     """Refuse a safetensors ref until an engine is preferred, as the real pull does."""
     if argv[2].endswith(SAFETENSORS_SUFFIX) and not PREFERRED.exists():
         sys.exit(f"No engine is chosen by default for the safetensors format of {argv[2]}.")
+    PULLED.write_text(json.dumps([*pulled(), argv[2]]), encoding=UTF8)
     print(f"pulled {argv[2]} {os.environ.get('FAKE_PULL_URL', '')}".rstrip())
 
 
@@ -205,11 +212,23 @@ def use_embedder(argv: list[str]) -> None:
 
 
 def model_use(argv: list[str]) -> None:
-    """Set the model of a role and print the stored ref as JSON, as `--json model use` does."""
+    """Answer `--json model use` as the real command does.
+
+    Embed is a usage error (exit 2). A ref that was not pulled is a JSON error (exit 1).
+    Otherwise the reply is the SetModelResponse fields.
+    """
     role, ref = argv[2], argv[3]
     if role not in USE_ROLES:
-        sys.exit(f"embed is refused: use 'lilbee use-embedder'. Got {role}.")
-    print(json.dumps({"model": set_model(role, ref), "warnings": []}))
+        print(
+            f"Invalid value for ROLE: {role} is refused: use 'lilbee use-embedder <ref>'",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if ref not in pulled():
+        print(json.dumps({"error": f"Model {ref} is not installed."}))
+        sys.exit(1)
+    reply = {"model": set_model(role, ref), "reindex_required": False, "warnings": []}
+    print(json.dumps(reply))
 
 
 def engine_use(argv: list[str]) -> None:
