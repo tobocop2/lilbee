@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 
 from textual import events
@@ -184,11 +185,17 @@ def test_a_write_in_progress_reverts_nothing(monkeypatch):
     thread = threading.Thread(target=writer)
     thread.start()
     half_written.wait()
-    _after, _result = adopt_external_changes(reading)
+    after, _result = adopt_external_changes(reading)
     seen_top_k = cfg.top_k
     reader_waits.set()  # a reader that never took the lock leaves the writer waiting
     thread.join()
-    assert seen_top_k == 32
+    # The whole file is under a second old and written in place, so this check leaves it.
+    assert seen_top_k == 31
+    # The check after the quiet window (an injected clock) takes it.
+    later = time.time_ns() + 3_600_000_000_000
+    monkeypatch.setattr(persistent_settings, "_now_ns", lambda: later)
+    adopt_external_changes(after)
+    assert cfg.top_k == 32
 
 
 def test_a_value_this_process_already_holds_is_not_applied_again():
