@@ -892,7 +892,7 @@ class _EngineLifecycle:
             if signal.getsignal(sig) == self._on_hard_exit
         )
 
-    def on_loop_signal(self, signum: int) -> None:  # pragma: posix only - no loop signals
+    def on_loop_signal(self, signum: int) -> None:
         """Run the handler of *signum* as a loop callback, with no interrupted frame."""
         self._on_hard_exit(signum, None)
 
@@ -1221,28 +1221,52 @@ def loop_takes_signals(loop: asyncio.AbstractEventLoop) -> Iterator[None]:
     installed before return when the loop ends, so a late signal still reaches the stop.
     The loop's last remove clears the signal wakeup descriptor, so the one set before
     (the writer that ``run_without_join`` sets) returns too.
+
+    A Windows loop has no signal handlers. There the plain handler only queues the same
+    callback, as ``asyncio.Runner`` queues its own Ctrl-C there, and the proactor's
+    wakeup descriptor wakes the loop to run it.
     """
     routed = _lifecycle.routed_in_loop()
     previous = {sig: signal.getsignal(sig) for sig in routed}
     added: list[signal.Signals] = []
+    queued: list[signal.Signals] = []
     woken_by = -1
     try:
         if routed:
             woken_by = signal.set_wakeup_fd(-1)
             signal.set_wakeup_fd(woken_by)
         for sig in routed:
-            loop.add_signal_handler(sig, _lifecycle.on_loop_signal, sig)
-            added.append(sig)  # pragma: posix only - Windows loops raise on the add
-    except (NotImplementedError, RuntimeError, ValueError):  # pragma: no cover - Windows, off main
+            try:
+                loop.add_signal_handler(sig, _lifecycle.on_loop_signal, sig)
+            except NotImplementedError:
+                signal.signal(sig, _queue_for(loop))
+                queued.append(sig)
+            else:
+                added.append(sig)  # pragma: posix only - Windows loops raise on the add
+    except (RuntimeError, ValueError):  # pragma: no cover - a closed loop, off the main thread
         pass
     try:
         yield
     finally:
         for sig in added:  # pragma: posix only - empty on Windows
             loop.remove_signal_handler(sig)
+        for sig in (*added, *queued):
             signal.signal(sig, previous[sig])
         if added:  # pragma: posix only - empty on Windows
             signal.set_wakeup_fd(woken_by)
+
+
+def _queue_for(loop: asyncio.AbstractEventLoop) -> Callable[[int, object], None]:
+    """Return a signal handler that queues the routed stop as a callback of *loop*.
+
+    It raises nothing, so the exit never lands inside a step, as a loop's own handler.
+    """
+
+    def queue_stop(signum: int, frame: object) -> None:
+        del frame
+        loop.call_soon_threadsafe(_lifecycle.on_loop_signal, signum)
+
+    return queue_stop
 
 
 def exit_status_after_stop(status: int) -> int:
