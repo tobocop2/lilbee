@@ -413,13 +413,15 @@ def test_a_reload_that_keeps_every_group_restamps_them_with_the_file(
 ) -> None:
     gap = _gap(monkeypatch, tmp_path)
     kept = dict(gap.owner._swaps)
-    # A plan key the reload finds no launch change for: only the file moves.
-    persistent_settings.update_values(cfg.data_root, {"kv_cache_type": "f16"})
+    # The file now sets a plan key to the value the owner runs on: only the file moves.
+    assert cfg.kv_cache_type == "q8_0"
+    persistent_settings.update_values(cfg.data_root, {"kv_cache_type": "q8_0"})
     gap.owner.replan_fleet(wait=True)
     now = prov_mod._file_origin()
     assert gap.owner._swaps == kept  # nothing restarted
     assert all(swap.origin == now for swap in kept.values())
-    assert isinstance(now, PlanOrigin) and '"kv_cache_type": "f16"' in (now.fleet_view or "")
+    assert all(swap.origin.followed == FLEET_RELOAD_KEYS for swap in kept.values())
+    assert isinstance(now, PlanOrigin) and '"kv_cache_type": "q8_0"' in (now.fleet_view or "")
 
 
 def test_a_restamp_that_fails_to_write_does_not_fail_the_reload(
