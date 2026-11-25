@@ -143,15 +143,18 @@ def read_profile_table(root: Path) -> ProfileTable:
     return _profile_table(_read_toml(path), path)
 
 
-def read_layers(root: Path) -> SettingLayers:
-    """Read the env vars and ``root/config.toml`` once."""
-    return read_table_and_layers(root)[1]
+def read_layers(root: Path, data: Mapping[str, Any] | None = None) -> SettingLayers:
+    """Read the env vars and ``root/config.toml`` once, or take *data*, the file already read."""
+    return read_table_and_layers(root, data)[1]
 
 
-def read_table_and_layers(root: Path) -> tuple[ProfileTable, SettingLayers]:
+def read_table_and_layers(
+    root: Path, data: Mapping[str, Any] | None = None
+) -> tuple[ProfileTable, SettingLayers]:
     """The ``[profile]`` table and the setting layers, from one read of ``root/config.toml``."""
     path = root / CONFIG_FILE_NAME
-    data = _read_toml(path)
+    if data is None:
+        data = _read_toml(path)
     table = _profile_table(data, path)
     user = _present({key: value for key, value in data.items() if key != PROFILE_TABLE})
     profile = _present(table.values)

@@ -2965,3 +2965,35 @@ class TestUnreadableConfigIsAReadFailure:
 
         text = config_write_failure_message(OSError(28, "No space left on device"))
         assert text.startswith("Could not write config.toml")
+
+
+class TestThePersistedValuesReadTheFileOnce:
+    """The overlay takes its accepted values, its layers and its readability from one parse."""
+
+    @pytest.mark.parametrize(
+        ("stored", "expected", "parses"),
+        [
+            ("top_k = 4\n", {"top_k": 4}, 1),
+            ('top_k = "many"\nvision_replicas = 3\n', {"vision_replicas": 3}, 1),
+            (None, {}, 0),
+            ("top_k = = 9\n", None, 1),
+        ],
+        ids=["accepted", "refused", "missing", "unparsable"],
+    )
+    def test_one_parse_of_config_toml_and_the_same_values(
+        self, tmp_path, monkeypatch, stored, expected, parses
+    ):
+        import tomllib
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        if stored is not None:
+            (tmp_path / "config.toml").write_text(stored, encoding="utf-8")
+        reads = []
+        real_load = tomllib.load
+        monkeypatch.setattr(tomllib, "load", lambda f, *a, **k: reads.append(1) or real_load(f))
+        values = settings.persisted_values(tmp_path)
+        if expected is None:
+            assert values is None
+        else:
+            assert {k: values[k] for k in expected} == expected
+        assert len(reads) == parses
