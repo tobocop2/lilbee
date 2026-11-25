@@ -6,7 +6,7 @@
 The run takes the two binaries from the packs that the tree pins. It downloads each model
 it does not find in --models and stops if a file has another sha256 than the record states.
 It starts every server with the adapter's own command line on the CPU, the engine on cores 0-7
-and the oracle on cores 8-15. Then it runs tests.conformance.compare_run with the cross_format
+and the oracle on cores 8-15, each with 8 threads. Then it runs tests.conformance.compare_run with the cross_format
 embed bound, and stops the servers. compare_run writes the record and refuses a stale pin.
 """
 
@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -32,6 +33,7 @@ from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 _HF = "https://huggingface.co"
 _ENGINE_CORES = "0-7"
 _ORACLE_CORES = "8-15"
+_THREADS = 8
 _HEALTH_TRIES = 600
 _FETCH_TRIES = 4
 
@@ -206,12 +208,16 @@ class _Servers:
         else:
             argv += ["--port", str(port)]
         if alias:
-            argv += ["--alias", alias]
+            # llama.cpp starts one thread per physical core of the host by default. More threads
+            # than pinned cores run at 0.4 tokens per second, and an answer passes the timeout.
+            argv += ["--alias", alias, "--threads", str(_THREADS)]
         log = (self.logs / f"{adapter.name.value}-{role.value}-{port}.log").open("wb")
         self.handles.append(log)
         print("start", " ".join(argv), flush=True)
+        env = {**os.environ, "RAYON_NUM_THREADS": str(_THREADS)}
+        command = ["taskset", "-c", cores, *argv]
         self.procs.append(
-            subprocess.Popen(["taskset", "-c", cores, *argv], stdout=log, stderr=subprocess.STDOUT)
+            subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=env)
         )
         return f"http://127.0.0.1:{port}"
 
