@@ -39,6 +39,7 @@ from lilbee.core.config.model import (
     default_refusal,
     refusal_sentence,
     root_folders,
+    shown_value,
 )
 from lilbee.core.config.resolve import (
     PROFILE_FIELDS,
@@ -1157,11 +1158,13 @@ def _refuse_invalid_fallbacks(
         value = builtin_value(key) if default_refusal(key, entry.value) else entry.value
         try:
             setattr(trial, key, value)
-        except ValueError as exc:
+        except ValueError:
+            # No cause is chained: the validation error holds the raw value.
+            shown = shown_value(key, entry.value)
             raise ValueError(
-                f"Cannot {action.value} '{key}': its {entry.source.value} value {entry.value!r} is "
+                f"Cannot {action.value} '{key}': its {entry.source.value} value {shown} is "
                 "invalid. Fix or remove that value first."
-            ) from exc
+            ) from None
     return {key: getattr(trial, key) for key in fallbacks}
 
 

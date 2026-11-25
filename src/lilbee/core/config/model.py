@@ -113,7 +113,7 @@ _ADDRESS_SETTINGS = frozenset({"ollama_base_url", "lm_studio_base_url"})
 _VALUE_NOT_SHOWN = "(value not shown)"
 
 
-def _shown(key: str, value: Any) -> str:
+def shown_value(key: str, value: Any) -> str:
     """*value* as a refusal prints it: its repr, or a note for a setting that can hold a secret."""
     return _VALUE_NOT_SHOWN if key in _ADDRESS_SETTINGS else repr(value)
 
@@ -1818,7 +1818,7 @@ class _PlainEnvSource:
     def _stop(self, values: dict[str, Any], refused: dict[str, str]) -> None:
         """Refuse the variables in *refused*, less the ones that take their default."""
         lines = [
-            f"{_variable(self._settings_cls, key)} = {_shown(key, values[key])} {reason}"
+            f"{_variable(self._settings_cls, key)} = {shown_value(key, values[key])} {reason}"
             for key, reason in refused.items()
             if key not in _TAKES_DEFAULT_WHEN_REFUSED
         ]
@@ -1890,7 +1890,7 @@ class _TomlSource:
         fallback = f"{key} {otherwise}"
         if env_value(key) is not None:
             fallback = f"{_variable(self._settings_cls, key)} sets {key}"
-        return f"{label}: {key} = {_shown(key, values[key])} {reason}; {fallback}"
+        return f"{label}: {key} = {shown_value(key, values[key])} {reason}; {fallback}"
 
     def _refuse_not_settings(self, data: dict[str, Any]) -> None:
         """Report each key in *data* that is not a setting, as a refused value is reported."""
@@ -1942,7 +1942,7 @@ class _ProfileSource:
             name = read_profile_table(root).name
             label = f"the {name!r} profile" if name else "the applied profile"
             for key, reason in refused.items():
-                shown = _shown(key, values[key])
+                shown = shown_value(key, values[key])
                 warn_on_load(f"{label}: {key} = {shown} {reason}; {key} {_USES_ITS_DEFAULT}")
         return {key: value for key, value in values.items() if key not in refused}
 
@@ -1977,7 +1977,7 @@ def hard_refusals(values: Mapping[str, Any]) -> dict[str, str]:
 def refusal_sentence(key: str, value: Any) -> str:
     """One plain sentence for a *value* that *key* refuses, with no validator dump."""
     reason = _refusals(Config, {key: value}).get(key, "is not a value it accepts")
-    return f"{key} = {_shown(key, value)} {reason}"
+    return f"{key} = {shown_value(key, value)} {reason}"
 
 
 def canonical_model_ref(ref: str) -> str:
