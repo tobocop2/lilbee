@@ -79,6 +79,24 @@ runs() {  # the release-candidate list the stub serves
   [[ "$output" != *"run_started_at"* ]]
 }
 
+@test "publish.yml executes the resolver and publishes the run id it prints" {
+  # Run the real step body in a scratch checkout. The resolver there is a
+  # sentinel, so the output proves the step ran it and took its answer.
+  work="${BATS_TEST_TMPDIR}/work"
+  mkdir -p "${work}/scripts" "${work}/bin"
+  printf '#!/usr/bin/env bash\necho ran >> "%s/resolver.log"\necho 4242\n' "${BATS_TEST_TMPDIR}" > "${work}/scripts/resolve_rc_run.sh"
+  printf '#!/usr/bin/env bash\necho good\n' > "${work}/bin/git"
+  printf '#!/usr/bin/env bash\necho "{\\"artifacts\\":[{\\"name\\":\\"wheel-default\\"},{\\"name\\":\\"sdist\\"}]}"\n' > "${work}/bin/gh"
+  chmod +x "${work}/bin/git" "${work}/bin/gh"
+  yq -r '.jobs.guard.steps[] | select(.id == "resolve") | .run' "${REPO_ROOT}/.github/workflows/publish.yml" > "${work}/step.sh"
+  : > "${work}/out"
+  cd "${work}"
+  GITHUB_OUTPUT="${work}/out" REPO=tobocop2/lilbee TAG=v1.0.0 PATH="${work}/bin:${PATH}" run bash step.sh
+  [ "$status" -eq 0 ]
+  [ "$(cat "${BATS_TEST_TMPDIR}/resolver.log")" = "ran" ]
+  [ "$(cat "${work}/out")" = "rc_run_id=4242" ]
+}
+
 @test "the release candidate hands publish.yml its own run id" {
   run yq -r '.jobs["dispatch-publish"].steps[0].run' "${REPO_ROOT}/.github/workflows/release-candidate.yml"
   [ "$status" -eq 0 ]
