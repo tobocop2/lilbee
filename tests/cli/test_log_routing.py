@@ -162,6 +162,29 @@ def test_a_command_leaves_warning_capture_on_when_it_was_on_before(routed_app, r
     assert _capture_is_on() is True
 
 
+def test_a_record_logged_during_the_close_does_not_reopen_the_log_file(
+    routed_app, restored_logging, monkeypatch
+):
+    """A thread that logs while the undo closes the handler must not reopen cli.log.
+
+    The close hook logs one record, as that thread would. The handler is detached by then,
+    so the record misses it; a handler still attached would reopen its stream.
+    """
+    app, _ = routed_app
+    original_close = RotatingFileHandler.close
+    closed: list[RotatingFileHandler] = []
+
+    def close_then_log(self: RotatingFileHandler) -> None:
+        original_close(self)
+        closed.append(self)
+        logging.getLogger("lilbee.tests.late").warning("a record during the close")
+
+    monkeypatch.setattr(RotatingFileHandler, "close", close_then_log)
+    CliRunner().invoke(app, [])
+    assert closed
+    assert all(handler.stream is None for handler in closed)
+
+
 def test_the_log_file_handler_is_closed_when_the_command_ends(routed_app, restored_logging):
     app, seen = routed_app
     CliRunner().invoke(app, [])
