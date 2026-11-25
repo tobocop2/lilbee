@@ -285,11 +285,6 @@ _LLM_RERANK_VRAM_FRACTION = 0.5
 # a quarter of total RAM, capped at 4 GiB. A fixed 4 GiB floor leaves a small
 # host (7-8 GB) with no budget at all, refusing to serve even tiny models.
 _SYSTEM_MEMORY_FLOOR_DIVISOR = 4
-# A GPU driver still initializing at boot answers with no devices. Ask again
-# before letting that decide the daemon's whole run; two extra probes cost a
-# couple of seconds only on a host that has a card the engine could not see.
-_PROBE_RETRIES = 2
-_PROBE_RETRY_DELAY_S = 1.0
 
 # A network filesystem makes mmap dangerous (page faults served over the wire can
 # wedge the loader in uninterruptible I/O), so the chat server loads its weights
@@ -2632,8 +2627,12 @@ _DEVICE_PROBE_FAILURE_TTL_S = 60.0
 _PLAN_RESTATE_FAILURE_WAIT_S = 60.0
 # An engine that lists no device on a GPU host may be hitting a transient GPU-init
 # error (the card momentarily held by another process); re-probe before treating
-# the empty list as fatal.
-_DEVICE_PROBE_EMPTY_RETRIES = 3
+# the empty list as fatal. A GPU driver still initializing at boot, ordinary under
+# systemd or right after a container gains a device, answers the same way, and the
+# plan snapshot is not retaken until a full teardown, so an empty first answer would
+# decide the daemon's whole run. This one ladder (at most 5 probes and 2 s) is the
+# only retry; it costs that only on a host that has a card the engine could not see.
+_DEVICE_PROBE_EMPTY_RETRIES = 4
 _DEVICE_PROBE_EMPTY_RETRY_DELAY_S = 0.5
 # Stands in for the engine binary's identity on a host that has none, so "no
 # engine yet" and "an engine at last" are different identities.
@@ -3003,45 +3002,7 @@ def _probe_engine_devices(engine: EngineAdapter) -> DeviceReading:
     rather than silently degrading. Device enumeration reads no residency, so it is
     safe to run while an incumbent engine is still up.
     """
-    binary = engine.binary()
-    reading = _read_devices(binary, engine)
-    if reading.devices:
-        return reading
-    return _reprobe_while_a_gpu_is_installed(binary, reading, engine)
-
-
-def _reprobe_while_a_gpu_is_installed(
-    binary: Path, reading: DeviceReading, engine: EngineAdapter
-) -> DeviceReading:
-    """Ask again when the host has a GPU the engine did not list.
-
-    The plan snapshot is taken once, on a clean box, and is not retaken until a
-    full teardown, so an empty first answer decides the whole run. A GPU driver
-    that is still initializing when the daemon starts, which is ordinary under
-    systemd or right after a container gains a device, would leave a GPU host
-    serving on CPU until someone noticed and restarted it.
-
-    Only where a card is actually installed. A host with no GPU answers empty
-    every time and must not pay a retry for it on every start.
-    """
-    from lilbee.providers.fleet.gpu_hardware import installed_gpu_vendor_ids
-
-    if not installed_gpu_vendor_ids():
-        return reading
-    for attempt in range(1, _PROBE_RETRIES + 1):
-        log.info(
-            "The engine listed no GPU on a host that has one; asking again in %.1fs "
-            "(attempt %d of %d) in case the driver is still initializing.",
-            _PROBE_RETRY_DELAY_S,
-            attempt,
-            _PROBE_RETRIES,
-        )
-        time.sleep(_PROBE_RETRY_DELAY_S)
-        clear_read_device_cache()
-        reading = _read_devices(binary, engine)
-        if reading.devices:
-            return reading
-    return reading
+    return _read_devices(engine.binary(), engine)
 
 
 def assert_engine_probeable(engine: EngineAdapter) -> None:
