@@ -26,7 +26,7 @@ from lilbee.server.models import (
     EngineRolesResponse,
     EngineUseBody,
 )
-from lilbee.server.route_names import name_routes
+from lilbee.server.route_names import name_damaged_folders, name_routes
 
 _T = TypeVar("_T")
 _HTTP_BAD_REQUEST = 400
@@ -77,10 +77,7 @@ def _require_engines_enabled(_connection: ASGIConnection, _handler: BaseRouteHan
 async def engine_builds_route() -> EngineBuildsResponse:
     """The engine builds installed beside the models."""
     view = await _call(service.engine_list)
-    payload = view.payload()
-    for folder in payload["damaged"]:
-        folder["error"] = name_routes(folder["error"])
-    return EngineBuildsResponse.model_validate(payload)
+    return EngineBuildsResponse.model_validate(name_damaged_folders(view.payload(), name_routes))
 
 
 @delete(
@@ -111,7 +108,11 @@ async def engine_roles_route() -> EngineRolesResponse:
     return EngineRolesResponse(
         roles=[
             EngineRoleResponse(
-                role=v.role, model=v.model, format=v.format, engine=v.engine, notice=v.notice
+                role=v.role,
+                model=v.model,
+                format=v.format,
+                engine=v.engine,
+                notice=name_routes(v.notice) if v.notice else v.notice,
             )
             for v in views
         ]
