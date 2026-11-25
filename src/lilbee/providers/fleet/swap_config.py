@@ -13,7 +13,6 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING
 
-from lilbee.data.offload import max_workers
 from lilbee.providers.fleet.engines.base import PORT_SLOT
 from lilbee.providers.fleet.readback import MEMORY_FLAG, engine_log_env
 from lilbee.providers.roles import WorkerRole
@@ -68,17 +67,19 @@ PORT_FLAG = "--port"
 # one model (its default is 10), and a request held through a cold load counts.
 # One engine serves every lilbee process the user runs (the TUI, serve with its
 # HTTP clients, MCP, an ingest run), and llama-server queues requests past its
-# slots by itself, so the limit only has to stop runaway load. It covers this
-# many processes, each at its own ceiling: the larger of the slots and the
-# ingest pool, whose every thread can hold one embed or OCR request.
-_CONCURRENCY_PROCESSES = 4
+# slots by itself, so the limit only has to stop runaway load. It is one fixed
+# number for every model: it reads no slot count, pool size or other process. It
+# covers the reference load of 432 requests in flight (an 8-process fanout, a TUI,
+# a server and MCP) with room for 10 processes at httpx's 100 connections each.
+CONCURRENCY_LIMIT = 1024
 # Part of the engine pin, so a peer never binds an engine launched under another
 # contract. Raise it when a launch rule changes. 1: every model carries
 # concurrencyLimit. 2: an equal split across cards runs tensor parallel. 3: a swap
 # process keeps a residency class loaded together. 4: the llama-swap log holds the
 # output of every engine that writes no log of its own, and a --memory launch
-# writes its own log at the default verbosity.
-SWAP_CONFIG_REVISION = 4
+# writes its own log at the default verbosity. 5: every model carries the fixed
+# CONCURRENCY_LIMIT, and llama-swap starts with an open-file limit that covers it.
+SWAP_CONFIG_REVISION = 5
 
 # llama-swap config keys.
 _KEY_HEALTH_TIMEOUT = "healthCheckTimeout"
@@ -139,7 +140,7 @@ def build_swap_config(
             _KEY_CMD: _command_line(launch.argv, port),
             _KEY_PROXY: _PROXY_URL_TEMPLATE.format(port=port),
             _KEY_TTL: ttl_seconds,
-            _KEY_CONCURRENCY_LIMIT: _concurrency_limit(launch),
+            _KEY_CONCURRENCY_LIMIT: CONCURRENCY_LIMIT,
         }
         env = dict(launch.env_overrides)
         log_path = engine_logs.get(launch.model_id)
@@ -190,11 +191,6 @@ def _evicting_groups(launches: list[InstanceLaunch]) -> dict[str, object]:
         }
         for name, ids in members.items()
     }
-
-
-def _concurrency_limit(launch: InstanceLaunch) -> int:
-    """Requests llama-swap lets in flight for *launch* before it answers 429."""
-    return _CONCURRENCY_PROCESSES * max(launch.slots, max_workers())
 
 
 def cold_load_timeout_s(weights_bytes: int, role: WorkerRole) -> int:
