@@ -2405,6 +2405,18 @@ def _classify_chat_embed():
 
 @pytest.mark.real_model_classify
 class TestClassifyInstalledModels:
+    def test_an_unreadable_registry_raises_instead_of_an_empty_picker(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import classify_installed_models_full
+
+        with (
+            mock.patch(
+                "lilbee.modelhub.registry.ModelRegistry.list_installed",
+                side_effect=OSError("manifests unreadable"),
+            ),
+            pytest.raises(OSError, match="manifests unreadable"),
+        ):
+            classify_installed_models_full()
+
     def test_native_models_classified_by_task(self, tmp_path) -> None:
         from lilbee.modelhub.registry import ModelManifest
 
@@ -2994,13 +3006,17 @@ class TestModelOptions:
         with mock.patch("lilbee.modelhub.models.list_installed_models", return_value=["a", "b"]):
             assert list_model_options() == ["a", "b"]
 
-    def test_returns_empty_on_error(self) -> None:
+    def test_an_unreadable_registry_raises_instead_of_listing_nothing(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import list_model_options
 
-        with mock.patch(
-            "lilbee.modelhub.models.list_installed_models", side_effect=Exception("err")
+        with (
+            mock.patch(
+                "lilbee.modelhub.models.list_installed_models",
+                side_effect=OSError("manifests unreadable"),
+            ),
+            pytest.raises(OSError, match="manifests unreadable"),
         ):
-            assert list_model_options() == []
+            list_model_options()
 
 
 class TestSettingOptions:
