@@ -127,6 +127,75 @@ def _launch(role: WorkerRole) -> InstanceLaunch:
     )
 
 
+class _FakeResource:
+    """A stand-in for the resource module holding one open-file limit pair."""
+
+    RLIMIT_NOFILE = 7
+    RLIM_INFINITY = -1
+
+    def __init__(self, soft: int, hard: int) -> None:
+        self.limits = (soft, hard)
+
+    def getrlimit(self, _which: int) -> tuple[int, int]:
+        return self.limits
+
+    def setrlimit(self, _which: int, limits: tuple[int, int]) -> None:
+        self.limits = limits
+
+
+class TestOpenFileLimit:
+    """llama-swap passes its start limit to the engines, one socket per admitted request."""
+
+    def _start(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, res: _FakeResource) -> None:
+        monkeypatch.setattr(sm, "resource", res)
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
+
+    def test_a_low_soft_limit_is_raised_to_the_floor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        res = _FakeResource(soft=256, hard=65536)
+        self._start(tmp_path, monkeypatch, res)
+        assert res.limits == (1088, 65536)
+
+    def test_a_soft_limit_past_the_floor_is_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        res = _FakeResource(soft=4096, hard=4096)
+        self._start(tmp_path, monkeypatch, res)
+        assert res.limits == (4096, 4096)
+
+    def test_an_unlimited_hard_limit_takes_the_floor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        res = _FakeResource(soft=256, hard=_FakeResource.RLIM_INFINITY)
+        self._start(tmp_path, monkeypatch, res)
+        assert res.limits == (1088, _FakeResource.RLIM_INFINITY)
+
+    def test_a_hard_limit_under_the_floor_is_used_and_warned_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        res = _FakeResource(soft=256, hard=512)
+        with caplog.at_level(logging.WARNING, logger=sm.log.name):
+            self._start(tmp_path, monkeypatch, res)
+        assert res.limits == (512, 512)
+        warnings = [r for r in caplog.records if "open-file" in r.getMessage()]
+        assert len(warnings) == 1
+
+    def test_a_platform_without_the_resource_module_starts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sm, "resource", None)
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
+        assert mgr.running
+
+
 class TestStart:
     def test_log_path_is_the_file_the_proxy_writes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
