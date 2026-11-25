@@ -1187,9 +1187,7 @@ class TestEveryEntryPoint:
         assert rollback._registration.registered == ["notes"]
         assert rollback._registration.absorbed_roots == {"work": str((notes / "work").resolve())}
 
-    async def test_the_tui_names_the_source_and_its_rollback_restores_it(
-        self, library, notes
-    ):
+    async def test_the_tui_names_the_source_and_its_rollback_restores_it(self, library, notes):
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
