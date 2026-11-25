@@ -166,7 +166,7 @@ def test_no_tui_module_builds_a_plain_select():
         f"{path.relative_to(_TUI_DIR)}:{line}"
         for path in sorted(_TUI_DIR.rglob("*.py"))
         if path.name != "mount_guard.py"
-        for line in _builds_plain_select(ast.parse(path.read_text()))
+        for line in _builds_plain_select(ast.parse(path.read_text(encoding="utf-8")))
     ]
     assert found == [], f"build a GuardedSelect, not Select: {found}"
 
