@@ -79,9 +79,12 @@ def test_serve_takes_a_write_made_before_its_app_was_built_with_data_dir(isolate
 async def test_the_stdio_mcp_takes_a_write_made_before_it_started():
     from mcp.types import CallToolResult
 
+    from lilbee.app.services import mark_long_running
+    from lilbee.core.config.keys import PROVIDER_SWITCHING_KEYS
     from lilbee.mcp_server import build_mcp_server
 
     _start_the_cli()
+    mark_long_running(PROVIDER_SWITCHING_KEYS)
     server = build_mcp_server()
     server.follow_config_file()
     result = await server.call_tool("settings_get", {"key": "top_k"})
@@ -105,13 +108,15 @@ def test_the_tui_engine_retry_takes_the_file_and_shows_it_on_the_app_thread(monk
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
-    assert svc_mod._state.config_refresh == app.take_external_settings_now
+    # The engine's retry runs the process's one follower, the one the TUI checks on focus.
+    retry = svc_mod.config_follower().take_now
+    assert svc_mod.config_follower() is app._config_follower
     shown: list[tuple[Any, ...]] = []
     monkeypatch.setattr(tui_app_mod, "call_from_thread", lambda *args: shown.append(args))
-    svc_mod.refresh_config()
+    retry()
     assert shown == []  # nothing changed, nothing to show
     _write_from_another_process("top_k", 23, tick=3)
-    svc_mod.refresh_config()
+    retry()
     assert cfg.top_k == 23
     assert len(shown) == 1
     node, show, result = shown[0]
@@ -122,6 +127,7 @@ def test_the_tui_engine_retry_takes_the_file_and_shows_it_on_the_app_thread(monk
 
 
 def test_a_failed_take_on_the_tui_retry_is_logged_and_does_not_raise(monkeypatch, caplog):
+    from lilbee.app import config_follow
     from lilbee.cli.tui import app as tui_app_mod
     from lilbee.cli.tui.app import LilbeeApp
 
@@ -132,9 +138,9 @@ def test_a_failed_take_on_the_tui_retry_is_logged_and_does_not_raise(monkeypatch
     def refuse(_reading, **_options):
         raise ValueError("refused value")
 
-    monkeypatch.setattr(tui_app_mod, "adopt_external_changes", refuse)
-    with caplog.at_level("ERROR", logger=tui_app_mod.log.name):
-        assert app.take_external_settings_now() is None
+    monkeypatch.setattr(config_follow, "adopt_external_changes", refuse)
+    with caplog.at_level("ERROR", logger=config_follow.log.name):
+        assert app._config_follower.take_now() is None
     assert shown == []
     assert [r.exc_info[1].args for r in caplog.records if r.exc_info] == [("refused value",)]
 
@@ -148,7 +154,7 @@ def test_a_provider_switch_from_outside_stops_the_fleet_after_the_tui_lock_is_fr
 
     def stop_the_fleet() -> None:
         # Another take during the stop finds the reading current: nothing is taken twice.
-        held = app._config_lock.locked()
+        held = app._config_follower._lock.locked()
         seen.append((held, cfg.llm_provider, None if held else app.adopt_external_settings()))
 
     monkeypatch.setattr(svc_mod, "reset_services", stop_the_fleet)
@@ -188,8 +194,11 @@ if mode == "serve":
     client = TestClient(create_app())
     print(client.get("/api/config").json()["top_k"])
 elif mode == "mcp":
+    from lilbee.app.services import mark_long_running
+    from lilbee.core.config.keys import PROVIDER_SWITCHING_KEYS
     from lilbee.mcp_server import build_mcp_server
 
+    mark_long_running(PROVIDER_SWITCHING_KEYS)
     server = build_mcp_server()
     server.follow_config_file()
     result = asyncio.run(server.call_tool("settings_get", {"key": "top_k"}))

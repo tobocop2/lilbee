@@ -41,6 +41,7 @@ from lilbee.runtime.asyncio_loop import hold_exit
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from lilbee.app.config_follow import ConfigFileFollower
     from lilbee.app.engine_choice import EngineBook
     from lilbee.catalog.hf_client import HfClient
     from lilbee.core.config import Config
@@ -221,8 +222,13 @@ class _ServicesState:
         self.interactive: bool = False
         # Where this process shows a library upgrade; each surface sets its own.
         self.on_upgrade: DetailedProgressCallback | None = None
-        # How this process takes config.toml now; set by each surface that follows the file.
-        self.config_refresh: Callable[[], None] | None = None
+        # The keys a long-running process (serve, the stdio MCP server, the TUI) holds
+        # from config.toml; None for a one-off command. Recorded by the entry point
+        # before anything builds the container, and read once when the follower is built.
+        self.long_running_hold: frozenset[str] | None = None
+        # This process's one config.toml follower, built with the first container.
+        self.follower: ConfigFileFollower | None = None
+        self.follower_lock = threading.Lock()
         # Every store this process built, so the exit can wait for any library open
         # (the first, the one /reset makes, a lazy one) without each path telling it.
         self.stores: weakref.WeakSet[Store] = weakref.WeakSet()
@@ -317,7 +323,7 @@ def build_services(
     engines = EngineBook(config)
     owns_provider = provider is None
     provider = provider or create_provider(
-        config, hold_warm=interactive, config_refresh=refresh_config
+        config, hold_warm=interactive, config_refresh=config_follower().take_now
     )
     store: Store | None = None
     try:
@@ -483,20 +489,29 @@ def mark_interactive_session() -> None:
     _state.interactive = True
 
 
-def set_config_refresh(hook: Callable[[], None] | None) -> None:
-    """Register how this process takes config.toml changes now (None clears it).
+def mark_long_running(hold: frozenset[str]) -> None:
+    """Record that this process runs until it is stopped, and the keys it holds from config.toml.
 
-    serve, the stdio MCP server and the TUI register the check they already run, so
-    the local engine can take an owner's new settings before it retries a call.
+    serve, the stdio MCP server and the TUI call it before anything builds the
+    services container, so their config follower takes every key but *hold*. A
+    one-off command never calls it: its follower takes only the engine-only keys.
     """
-    _state.config_refresh = hook
+    _state.long_running_hold = hold
 
 
-def refresh_config() -> None:
-    """Take config.toml changes now through the registered check; nothing without one."""
-    hook = _state.config_refresh
-    if hook is not None:
-        hook()
+def config_follower() -> ConfigFileFollower:
+    """This process's config.toml follower, built at the first call.
+
+    The services hand its take to the local engine, which runs it before it retries
+    a call over an owner restart; a long-running process also runs it per request.
+    """
+    from lilbee.app.config_follow import ONE_OFF_HOLD, ConfigFileFollower
+
+    with _state.follower_lock:
+        if _state.follower is None:
+            hold = _state.long_running_hold
+            _state.follower = ConfigFileFollower(ONE_OFF_HOLD if hold is None else hold)
+        return _state.follower
 
 
 def report_library_upgrade(callback: DetailedProgressCallback | None) -> None:

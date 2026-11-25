@@ -65,12 +65,13 @@ from lilbee.app.presets import (
 )
 from lilbee.app.search import clean_results
 from lilbee.app.services import (
+    config_follower,
     get_services,
     logged_services_build,
     loop_takes_signals,
+    mark_long_running,
     reset_services,
     reset_store,
-    set_config_refresh,
 )
 from lilbee.app.session_sources import (
     LocatorError,
@@ -93,6 +94,7 @@ from lilbee.catalog.runnable import hidden_summary
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
+from lilbee.core.config.keys import PROVIDER_SWITCHING_KEYS
 from lilbee.core.health_warnings import HealthWarning, warnings_payload
 from lilbee.core.profile_files import ProfileFolder, ProfileStore, ProfileValidation
 from lilbee.core.security import FileLockUnavailableError
@@ -1938,8 +1940,7 @@ class LilbeeMCP(MCPServer):
         Only the stdio server calls this. The HTTP mount sits behind the daemon's own
         middleware, which already takes the file once per request.
         """
-        self._config_follower = ConfigFileFollower()
-        set_config_refresh(self._config_follower.take_now)
+        self._config_follower = config_follower()
 
     async def call_tool(
         self,
@@ -2512,6 +2513,7 @@ def main() -> None:
     The services build runs first, as in the HTTP server. A failed build ends the start
     with the logged error and a non-zero exit, so no tool call retries it.
     """
+    mark_long_running(PROVIDER_SWITCHING_KEYS)
     with logged_services_build(log):
         for notice in fill_empty_chat_model():
             log.info("%s", notice)

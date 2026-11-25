@@ -19,20 +19,21 @@ from litestar.openapi import OpenAPIConfig
 from litestar.openapi.spec import Components, SecurityScheme
 from litestar.status_codes import HTTP_503_SERVICE_UNAVAILABLE
 
-from lilbee.app.config_follow import ConfigFileFollower
 from lilbee.app.endpoints import MCP_PATH
 from lilbee.app.services import (
     ServicesStoppingError,
+    config_follower,
     get_services,
     logged_services_build,
+    mark_long_running,
     peek_services,
     reset_services,
-    set_config_refresh,
     wait_for_opens,
 )
 from lilbee.app.settings import config_write_failure_message, fill_empty_chat_model
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
+from lilbee.core.config.keys import PROVIDER_SWITCHING_KEYS
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.core.settings import ReadOnlyConfigError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
@@ -320,12 +321,8 @@ class _ConfigFileReload(ASGIMiddleware):
     file itself.
     """
 
-    def __init__(self) -> None:
-        self._follower = ConfigFileFollower()
-        set_config_refresh(self._follower.take_now)
-
     async def handle(self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp) -> None:
-        await self._follower.take()
+        await config_follower().take()
         await next_app(scope, receive, send)
 
 
@@ -481,7 +478,8 @@ def _config_unreadable_response(request: Request, exc: ConfigReadError) -> Respo
 
 
 def create_app() -> Litestar:
-    """Create the Litestar application instance."""
+    """Create the Litestar application instance; the process serves until it is stopped."""
+    mark_long_running(PROVIDER_SWITCHING_KEYS)
     cors = CORSConfig(
         allow_origins=cfg.cors_origins,
         allow_origin_regex=cfg.cors_origin_regex,
