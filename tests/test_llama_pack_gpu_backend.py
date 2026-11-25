@@ -83,8 +83,8 @@ def _sysfs_host(
     for index, (class_code, vendor) in enumerate(devices):
         device = root / f"0000-{index:02x}-00.0"
         device.mkdir()
-        (device / "class").write_text(f"{class_code}\n")
-        (device / "vendor").write_text(f"{vendor}\n")
+        (device / "class").write_text(f"{class_code}\n", encoding="utf-8")
+        (device / "vendor").write_text(f"{vendor}\n", encoding="utf-8")
         (device / "driver").mkdir()
     monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
     monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", root)
