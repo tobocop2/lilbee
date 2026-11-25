@@ -45,10 +45,19 @@ _atexit_registered = False
 
 
 def _serve(loop: asyncio.AbstractEventLoop) -> None:
-    """Run *loop* on this thread; close it once it stops, even when the stop comes late."""
+    """Run *loop* on this thread; close it once it stops, even when the stop comes late.
+
+    A stop that comes late can leave tasks that never ran a step, such as the drain
+    that the shutdown queued. They are cancelled and awaited here, as ``asyncio.run`` does.
+    """
     try:
         loop.run_forever()
     finally:
+        left = asyncio.all_tasks(loop)
+        for task in left:
+            task.cancel()
+        if left:
+            loop.run_until_complete(asyncio.gather(*left, return_exceptions=True))
         loop.close()
 
 
