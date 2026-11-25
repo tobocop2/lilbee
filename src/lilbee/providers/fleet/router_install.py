@@ -19,6 +19,7 @@ from lilbee.catalog.download import RetryCallback, disk_shortfall, download_url,
 from lilbee.catalog.download_progress import ProgressCallback
 from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError, file_lock
+from lilbee.providers.fleet.build_use import make_in_use_file
 from lilbee.providers.fleet.engine_store import (
     LOCK_DIR,
     PACK_DIR,
@@ -285,6 +286,7 @@ def install_router(
             _check_digest(asset, digest, source)
             _unpack(asset, archive, stage)
             archive.unlink()
+            make_in_use_file(stage)
             _remove_folder(final)
             stage.rename(final)
         finally:

@@ -21,6 +21,7 @@ from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet import first_use, router_install
 from lilbee.providers.fleet.binary import EngineTool, resolve_llama_swap
+from lilbee.providers.fleet.build_use import IN_USE_NAME
 from lilbee.providers.fleet.engine_store import (
     PACK_DIR,
     STAGE_PREFIX,
@@ -205,7 +206,7 @@ class TestInstall:
         # Windows has no execute bit: there, every file that exists passes.
         assert os.access(binary, os.X_OK)
         assert "MIT License" in (folder / LICENCE_FILE).read_text(encoding="utf-8")
-        assert sorted(p.name for p in folder.iterdir()) == [LICENCE_FILE, "llama-swap"]
+        assert sorted(p.name for p in folder.iterdir()) == [IN_USE_NAME, LICENCE_FILE, "llama-swap"]
         assert release == [
             f"https://github.com/mostlygeek/llama-swap/releases/download/{ROUTER_VERSION}/"
             "llama-swap_test_linux_amd64.tar.gz"
