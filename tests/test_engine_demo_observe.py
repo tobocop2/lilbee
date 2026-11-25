@@ -38,6 +38,7 @@ from lilbee.catalog.refs import model_format
 from lilbee.providers.fleet.engines.base import EngineAdapter
 from lilbee.providers.fleet.engines.choice import ADAPTERS
 from lilbee.providers.roles import WorkerRole
+from lilbee.server.models import SetModelResponse
 
 _FAKE = Path(__file__).parent / "engine_demo_fake_cli.py"
 _CLI = (sys.executable, str(_FAKE))
@@ -302,6 +303,29 @@ def _fake(tmp_path: Path, *argv: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [*_CLI, *argv], env=env, capture_output=True, text=True, encoding="utf-8", check=False
     )
+
+
+def test_the_fake_model_use_reply_has_the_fields_of_the_real_response(tmp_path: Path) -> None:
+    ref = _MODELS[WorkerRole.CHAT]
+    assert _fake(tmp_path, "model", "pull", ref).returncode == 0
+    done = _fake(tmp_path, "--json", "model", "use", "chat", ref)
+    assert done.returncode == 0
+    assert set(json.loads(done.stdout)) == set(SetModelResponse.model_fields)
+
+
+def test_the_fake_model_use_refuses_embed_as_a_usage_error(tmp_path: Path) -> None:
+    done = _fake(tmp_path, "--json", "model", "use", "embed", _MODELS[WorkerRole.EMBED])
+    assert done.returncode == 2
+    usage = "Invalid value for ROLE: embed is refused: use 'lilbee use-embedder <ref>'"
+    assert usage in done.stderr
+
+
+def test_the_fake_model_use_fails_with_a_json_error_for_a_ref_that_is_not_installed(
+    tmp_path: Path,
+) -> None:
+    done = _fake(tmp_path, "--json", "model", "use", "chat", _MODELS[WorkerRole.CHAT])
+    assert done.returncode == 1
+    assert "error" in json.loads(done.stdout)
 
 
 def test_engine_use_with_a_ref_other_than_the_stored_one_fails_on_the_fake_as_on_the_real_cli(
