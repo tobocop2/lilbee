@@ -1198,7 +1198,10 @@ class TestServerShowsTheUpgrade:
         assert start["status"] == 503
         assert dict(start["headers"])[b"retry-after"] == b"10"
         assert b"upgrading the library" in sent[1]["body"]
-        assert json.loads(sent[1]["body"])["upgrade"] == _table(1).model_dump(mode="json")
+        upgrade = json.loads(sent[1]["body"])["upgrade"]
+        assert upgrade == _table(1).model_dump(mode="json")
+        assert (upgrade["work"], upgrade["table"]) == ("adding_ids", "chunks")
+        assert upgrade["text"] == "Tables done: 1 of 2 · adding ids to search chunks · 0 s"
 
     @pytest.mark.parametrize(
         ("path", "message_of"),
@@ -1291,7 +1294,12 @@ class TestServerShowsTheUpgrade:
         for response in (plugin, openai, anthropic):
             assert response.status_code == 503
             assert response.headers["retry-after"] == "10"
-            assert response.json()["upgrade"]["tables_total"] == 6
+            upgrade = response.json()["upgrade"]
+            assert upgrade["tables_total"] == 6
+            assert (upgrade["work"], upgrade["table"]) == ("updating", "sources")
+            assert re.fullmatch(
+                r"Tables done: 0 of 6 · updating source list · \d+ s", upgrade["text"]
+            )
         assert "upgrading the library" in plugin.json()["detail"]
         assert "upgrading the library" in openai.json()["error"]["message"]
         assert anthropic.json()["type"] == "error"
@@ -1404,7 +1412,7 @@ class TestMcpWaitsForTheUpgrade:
         assert during["detail"] == UPGRADE_HEADLINE
         assert during["upgrade"]["phase"] == "table"
         assert (during["upgrade"]["tables_done"], during["upgrade"]["tables_total"]) == (0, 6)
-        assert during["upgrade"]["table"] == "sources"
+        assert (during["upgrade"]["work"], during["upgrade"]["table"]) == ("updating", "sources")
         assert "document_count" not in during
         assert after["document_count"] == 2
         assert "upgrade" not in after
