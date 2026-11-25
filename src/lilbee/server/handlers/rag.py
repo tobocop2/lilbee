@@ -11,7 +11,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 from lilbee.app.memory import auto_extract, auto_extract_enabled
-from lilbee.app.search import clean_results, source_labels
+from lilbee.app.search import clean_results, resolve_vault_path, source_labels
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.health_warnings import HealthWarning, warnings_payload
@@ -154,7 +154,7 @@ async def search(
         get_services().searcher.search_report, q, top_k=resolved_top_k, chunk_type=chunk_type
     )
     labels = source_labels(report.rows)
-    documents = [r.model_copy(update={"label": labels[r.source]}) for r in group(report.rows)]
+    documents = [r.model_copy(update={"label": labels[r.source]}) for r in group(report.rows, resolve_vault_path)]
     return SearchResponse(documents, report.degraded)
 
 
