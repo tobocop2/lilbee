@@ -111,7 +111,13 @@ def _refusal(path):
     return f"{path} is read-only; make it writable and try again."
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root writes a read-only file")
+# Windows has no geteuid, and its read-only attribute binds every user.
+_ROOT_WRITES_READ_ONLY = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes a read-only file"
+)
+
+
+@_ROOT_WRITES_READ_ONLY
 @pytest.mark.parametrize(("method", "url", "kwargs"), WRITE_REQUESTS)
 def test_a_read_only_config_answers_503_with_the_write_refusal(
     client, read_only_config, method, url, kwargs
@@ -121,7 +127,7 @@ def test_a_read_only_config_answers_503_with_the_write_refusal(
     assert res.json()["detail"] == _refusal(read_only_config), res.text
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root writes a read-only file")
+@_ROOT_WRITES_READ_ONLY
 def test_add_with_a_read_only_config_streams_the_write_refusal_as_an_error_event(
     client, read_only_config, tmp_path
 ):
