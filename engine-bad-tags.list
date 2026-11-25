@@ -1,0 +1,4 @@
+# Fork tags that the engine pin must never point at. One per line:
+# <tag> <reason>. The engine-pin-sync workflow skips these through
+# tools/ci/pick_engine_tag.sh and prints the reason.
+memory-20260921-150014 carries upstream 1884824f; load_ldmatrix has no tile<8,4> overload, so every CUDA cell fails to compile fattn.cu (fixed by upstream b1c2863e)
