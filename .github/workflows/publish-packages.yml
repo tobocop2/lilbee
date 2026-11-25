@@ -334,9 +334,9 @@ jobs:
   # promote_release.sh stamp it). scripts/publish_npm.sh skips a version already
   # on npm, and fails when it cannot publish. Auth is npm trusted publishing:
   # the registry takes the job's OIDC token, so there is no npm token anywhere
-  # and provenance is automatic. That trust is configured per package on npmjs.com and names
-  # this filename, so renaming this workflow breaks the publish -- see
-  # packages/lilbee/docs/publishing.md.
+  # and provenance is automatic. That trust is configured per package on
+  # npmjs.com and names this filename, so renaming this workflow breaks the
+  # publish -- see packages/lilbee/docs/publishing.md.
   npm:
     needs: resolve
     # The resolve job decides: 'all' leaves npm out for a dev tag.
