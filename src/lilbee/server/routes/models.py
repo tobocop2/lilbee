@@ -165,12 +165,16 @@ async def models_show_route(data: SetModelRequest) -> ModelsShowResponse:
     return await handlers.models_show(model=data.model)
 
 
-@delete("/api/models/{model:str}", status_code=200)
+@delete("/api/models/{model:path}", status_code=200)
 async def models_delete_route(
     model: FromPath[str], source: FromQuery[str] = ModelSource.NATIVE.value
 ) -> ModelsDeleteResponse:
-    """Delete a model from the specified source."""
+    """Delete a model from the specified source.
+
+    The ref holds slashes (``org/repo/model.gguf``), so the path parameter spans
+    segments; Litestar hands it over with a leading slash, which is dropped here.
+    """
     try:
-        return await handlers.models_delete(model, source=source)
+        return await handlers.models_delete(model.lstrip("/"), source=source)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
