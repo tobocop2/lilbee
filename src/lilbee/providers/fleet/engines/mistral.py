@@ -22,6 +22,7 @@ from lilbee.providers.fleet.engines.base import (
     ServerProcess,
     SplitRefusedError,
 )
+from lilbee.providers.fleet.engines.cuda_cells import cuda_cell
 from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -71,7 +72,11 @@ _SUBCOMMAND = {
 }
 _TEXT = "text"
 _METAL = "metal"
-_NO_CUDA_PACK = "The mistral.rs CUDA pack is not offered, so the cpu pack runs."
+_CUDA_PREFIX = "cuda-sm"
+# The compute capabilities (major * 10 + minor) of the CUDA 12.8 archives of the release.
+_CUDA_CELLS = (80, 86, 89, 90, 100, 120)
+_MIN_COMPUTE = (8, 0)
+_CUDA_DRIVER_FLOOR = (12, 8)
 _SUPPORTED_HOSTS = frozenset(
     {
         (HostOS.LINUX, HostArch.X86_64),
@@ -102,13 +107,54 @@ class BuildPick:
     reason: str
 
 
+def _version(pair: tuple[int, int]) -> str:
+    return f"{pair[0]}.{pair[1]}"
+
+
 def _linux_pick(host: HostCaps) -> BuildPick:
-    """The CPU archive, with the reason when an NVIDIA GPU could have asked for a CUDA one."""
+    """The CUDA archive that every card of *host* runs, else the CPU archive with the reason.
+
+    One binary serves every card, so the weakest card picks the archive: machine code for
+    sm89 does not run on an sm86 card. It does not run on a card of another major version
+    either, so cards of two generations get the CPU archive.
+    """
     if not host.nvidia_known:
         return BuildPick(_CPU, f"{host.nvidia_reason}, so the CPU archive runs.")
     if not host.gpus:
         return BuildPick(_CPU, "This computer has no NVIDIA GPU, so the CPU archive runs.")
-    return BuildPick(_CPU, _NO_CUDA_PACK)
+    card = min(host.gpus, key=lambda gpu: gpu.compute)
+    driver = host.nvidia_driver_cuda or (0, 0)
+    if driver < _CUDA_DRIVER_FLOOR:
+        return BuildPick(
+            _CPU,
+            f"The NVIDIA driver for {card.name} offers CUDA {_version(driver)}, and the "
+            f"mistral.rs CUDA build needs CUDA {_version(_CUDA_DRIVER_FLOOR)}. "
+            "Update the driver. lilbee installs the CPU build.",
+        )
+    cell = cuda_cell(_CUDA_CELLS, card.compute)
+    other = next((g for g in host.gpus if g.compute[0] != card.compute[0]), None)
+    if cell is not None and other is not None:
+        return BuildPick(
+            _CPU,
+            f"The NVIDIA GPUs {card.name} (compute {_version(card.compute)}) and {other.name} "
+            f"(compute {_version(other.compute)}) are of different generations, and one "
+            "mistral.rs CUDA build runs on one generation only. lilbee installs the CPU build.",
+        )
+    if cell is None:
+        return BuildPick(
+            _CPU,
+            f"The NVIDIA GPU {card.name} has compute capability {_version(card.compute)}, and "
+            f"the mistral.rs CUDA builds cover {_version(_MIN_COMPUTE)} (Ampere) up to Blackwell. "
+            "lilbee installs the CPU build.",
+        )
+    return BuildPick(f"{_CUDA_PREFIX}{cell}", "")
+
+
+def _build_label(backend: str | None) -> str:
+    """The name of a build in a refusal: Metal, CUDA or CPU."""
+    if backend == _METAL:
+        return "Metal"
+    return "CUDA" if backend and backend.startswith(_CUDA_PREFIX) else "CPU"
 
 
 def _positive_int(value: object) -> int | None:
@@ -291,7 +337,7 @@ class MistralAdapter:
         from lilbee.catalog.runnable import session_host
 
         name = snapshot_entry_of_blob(model_path).name
-        label = "Metal" if self.pick_build(session_host()).backend == _METAL else "CPU"
+        label = _build_label(self.pick_build(session_host()).backend)
         raise SplitRefusedError(
             f"mistral.rs cannot split {name} across {len(ratio)} cards on the {label} build. "
             f"{_SPLIT_FIX}"

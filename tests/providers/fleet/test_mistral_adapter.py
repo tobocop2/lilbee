@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -95,35 +96,115 @@ def request(tmp_path: Path, **overrides: Any) -> LaunchRequest:
     return LaunchRequest(**{**fields, **overrides})
 
 
-NO_CUDA_PACK = "The mistral.rs CUDA pack is not offered, so the cpu pack runs."
+A100 = ("NVIDIA A100", (8, 0))
+H100 = ("NVIDIA H100", (9, 0))
+B200 = ("NVIDIA B200", (10, 0))
+RTX5090 = ("NVIDIA GeForce RTX 5090", (12, 0))
+ORIN = ("NVIDIA Orin", (8, 7))
+THOR = ("NVIDIA Thor", (11, 0))
+OLD_DRIVER_REASON = "Update the driver"
+SHIPPED_CELLS = [
+    "linux-x86_64-cpu",
+    "linux-x86_64-cuda-sm100",
+    "linux-x86_64-cuda-sm120",
+    "linux-x86_64-cuda-sm80",
+    "linux-x86_64-cuda-sm86",
+    "linux-x86_64-cuda-sm89",
+    "linux-x86_64-cuda-sm90",
+    "macos-arm64-metal",
+]
 
 
 @pytest.mark.parametrize(
-    ("gpus", "cuda"),
+    ("card", "backend"),
     [
-        ([L4], (12, 8)),
-        ([A40], (12, 8)),
-        ([L4], (13, 0)),
-        ([L4], (12, 4)),
-        ([TURING], (12, 8)),
-        ([L4, L4], (12, 8)),
-        ([L4, A40], (12, 8)),
+        (A100, "cuda-sm80"),
+        (A40, "cuda-sm86"),
+        (ORIN, "cuda-sm86"),
+        (L4, "cuda-sm89"),
+        (H100, "cuda-sm90"),
+        (B200, "cuda-sm100"),
+        (RTX5090, "cuda-sm120"),
     ],
-    ids=["ada", "ampere", "new-driver", "old-driver", "turing", "two-cards", "mixed-cards"],
 )
-def test_a_cuda_host_picks_the_cpu_pack_and_says_no_cuda_pack_is_offered(
-    gpus: list[tuple[str, tuple[int, int]]], cuda: tuple[int, int]
+def test_a_card_picks_the_newest_cell_that_its_machine_code_runs_on(
+    card: tuple[str, tuple[int, int]], backend: str
 ) -> None:
-    host = caps("Linux", "x86_64", gpus=gpus, cuda=cuda)
+    host = caps("Linux", "x86_64", gpus=[card], cuda=(12, 8))
     pick = MISTRAL.pick_build(host)
-    assert (pick.backend, pick.reason) == ("cpu", NO_CUDA_PACK)
+    assert (pick.backend, pick.reason) == (backend, "")
+    assert (MISTRAL.host_gate(host).ok, MISTRAL.host_gate(host).reason) == (True, "")
+
+
+def test_a_newer_driver_than_the_floor_still_picks_the_cuda_cell() -> None:
+    assert MISTRAL.pick_build(caps("Linux", "x86_64", gpus=[L4], cuda=(13, 0))).backend == (
+        "cuda-sm89"
+    )
+
+
+@pytest.mark.parametrize(
+    ("gpus", "backend"),
+    [
+        ([L4, A40], "cuda-sm86"),
+        ([A40, L4], "cuda-sm86"),
+        ([A40, A40], "cuda-sm86"),
+        ([A100, A40, L4], "cuda-sm80"),
+    ],
+)
+def test_cards_take_the_cell_that_the_weakest_card_runs(
+    gpus: list[tuple[str, tuple[int, int]]], backend: str
+) -> None:
+    pick = MISTRAL.pick_build(caps("Linux", "x86_64", gpus=gpus, cuda=(12, 8)))
+    assert pick.backend == backend
+
+
+@pytest.mark.parametrize("gpus", [[L4, H100], [H100, L4], [A100, B200]])
+def test_cards_of_different_generations_pick_cpu_and_say_so(
+    gpus: list[tuple[str, tuple[int, int]]],
+) -> None:
+    """Machine code of one major version does not run on another."""
+    pick = MISTRAL.pick_build(caps("Linux", "x86_64", gpus=gpus, cuda=(12, 8)))
+    assert pick.backend == "cpu"
+    assert "different generations" in pick.reason
+    assert all(name in pick.reason for name, _ in gpus)
+
+
+def test_a_card_below_every_cell_picks_cpu_and_says_why() -> None:
+    pick = MISTRAL.pick_build(caps("Linux", "x86_64", gpus=[TURING], cuda=(12, 8)))
+    assert pick.backend == "cpu"
+    assert "NVIDIA T4" in pick.reason and "7.5" in pick.reason and "8.0" in pick.reason
+
+
+def test_a_turing_card_beside_a_newer_one_picks_cpu() -> None:
+    pick = MISTRAL.pick_build(caps("Linux", "x86_64", gpus=[TURING, L4], cuda=(12, 8)))
+    assert pick.backend == "cpu"
+    assert "NVIDIA T4" in pick.reason
+
+
+def test_a_card_newer_than_every_cell_picks_cpu_and_names_its_compute() -> None:
+    pick = MISTRAL.pick_build(caps("Linux", "x86_64", gpus=[THOR], cuda=(12, 8)))
+    assert pick.backend == "cpu"
+    assert "NVIDIA Thor" in pick.reason and "11.0" in pick.reason
+
+
+def test_a_driver_below_the_build_floor_picks_cpu_and_says_to_update() -> None:
+    host = caps("Linux", "x86_64", gpus=[L4], cuda=(12, 4))
+    pick = MISTRAL.pick_build(host)
+    assert pick.backend == "cpu"
+    assert "NVIDIA L4" in pick.reason and "12.4" in pick.reason and "12.8" in pick.reason
+    assert OLD_DRIVER_REASON in pick.reason
     gate = MISTRAL.host_gate(host)
-    assert (gate.ok, gate.reason) == (True, NO_CUDA_PACK)
+    assert (gate.ok, gate.reason) == (True, pick.reason)
 
 
-def test_the_shipped_table_has_no_cuda_cell_for_mistral() -> None:
-    cells = engine_manifest.MANIFESTS["mistral.rs"]["0.9.5"]
-    assert sorted(cells) == ["linux-x86_64-cpu", "macos-arm64-metal"]
+def test_the_pack_table_has_a_cell_for_every_published_card_family() -> None:
+    assert sorted(engine_manifest.MANIFESTS["mistral.rs"]["0.9.5"]) == SHIPPED_CELLS
+
+
+def test_the_pick_of_a_cuda_host_resolves_to_a_pack_digest() -> None:
+    host = caps("Linux", "x86_64", gpus=[L4], cuda=(12, 8))
+    backend = MISTRAL.pick_build(host).backend
+    assert engine_manifest.pack_digest("mistral.rs", "0.9.5", host, backend)
 
 
 def test_a_host_without_a_card_picks_the_cpu_archive() -> None:
@@ -139,6 +220,14 @@ def test_an_unreadable_driver_picks_the_cpu_archive() -> None:
     pick = MISTRAL.pick_build(caps("Linux", "x86_64", nvidia=nvidia))
     assert pick.backend == "cpu"
     assert pick.reason == f"{host_caps.NVIDIA_UNREADABLE}, so the CPU archive runs."
+
+
+def test_a_card_whose_driver_cuda_is_unknown_is_treated_as_an_old_driver() -> None:
+    """The host reader never gives cards without the driver version; the pick still guards it."""
+    host = dataclasses.replace(caps("Linux", "x86_64", gpus=[L4]), nvidia_driver_cuda=None)
+    pick = MISTRAL.pick_build(host)
+    assert pick.backend == "cpu"
+    assert "offers CUDA 0.0" in pick.reason and OLD_DRIVER_REASON in pick.reason
 
 
 def test_windows_picks_the_cpu_archive_and_names_windows() -> None:
@@ -744,7 +833,7 @@ def test_a_pin_with_no_published_pack_refuses_a_lock(monkeypatch: pytest.MonkeyP
     ("host", "reason"),
     [
         (lambda: caps("Windows", "AMD64"), "The release has no CUDA archive for Windows."),
-        (lambda: caps("Linux", "x86_64", gpus=[L4], cuda=(12, 4)), NO_CUDA_PACK),
+        (lambda: caps("Linux", "x86_64", gpus=[L4], cuda=(12, 4)), OLD_DRIVER_REASON),
         (lambda: caps("Linux", "x86_64"), "so the CPU archive runs."),
     ],
 )
@@ -778,15 +867,15 @@ def _cuda_install_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(engine_service, "fetch_frozen", fake_fetch)
 
 
-def test_a_cuda_host_installs_the_cpu_pack_and_the_service_says_no_cuda_pack_is_offered(
+def test_a_cuda_host_installs_the_cuda_pack_and_the_service_names_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _cuda_install_host(tmp_path, monkeypatch)
     built = engine_service.install("mistral.rs")
-    assert (built.backend, built.note) == ("cpu", NO_CUDA_PACK)
+    assert (built.backend, built.note) == ("cuda-sm89", "")
 
 
-def test_a_cuda_host_installs_the_cpu_pack_and_the_cli_says_no_cuda_pack_is_offered(
+def test_a_cuda_host_installs_the_cuda_pack_and_the_cli_names_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _cuda_install_host(tmp_path, monkeypatch)
@@ -794,37 +883,37 @@ def test_a_cuda_host_installs_the_cpu_pack_and_the_cli_says_no_cuda_pack_is_offe
     body = json.loads(result.stdout.strip().splitlines()[-1])
     assert (result.exit_code, body["installed"], body["note"]) == (
         0,
-        "mistral.rs 0.9.5 (cpu)",
-        NO_CUDA_PACK,
+        "mistral.rs 0.9.5 (cuda-sm89)",
+        "",
     )
 
 
-def test_a_cuda_host_installs_the_cpu_pack_and_rest_says_no_cuda_pack_is_offered(
+def test_a_cuda_host_installs_the_cuda_pack_and_rest_names_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _cuda_install_host(tmp_path, monkeypatch)
     with create_test_client([routes.engine_install_route], debug=False) as client:
         res = client.post("/api/engines/install", json={"engine": "mistral.rs"})
     body = res.json()
-    assert (res.status_code, body["backend"], body["note"]) == (200, "cpu", NO_CUDA_PACK)
+    assert (res.status_code, body["backend"], body["note"]) == (200, "cuda-sm89", "")
 
 
-def test_a_cuda_host_installs_the_cpu_pack_and_mcp_says_no_cuda_pack_is_offered(
+def test_a_cuda_host_installs_the_cuda_pack_and_mcp_names_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _cuda_install_host(tmp_path, monkeypatch)
     body = mcp_server.engine_install_tool("mistral.rs")
-    assert (body["backend"], body["note"]) == ("cpu", NO_CUDA_PACK)
+    assert (body["backend"], body["note"]) == ("cuda-sm89", "")
 
 
-def test_a_cuda_host_lists_mistral_as_installable_and_then_as_the_cpu_build(
+def test_a_cuda_host_lists_mistral_as_installable_and_then_as_the_cuda_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _cuda_install_host(tmp_path, monkeypatch)
     assert "mistral.rs" in engine_service.engine_list().payload()["not_installed"]
     engine_service.install("mistral.rs")
     builds = engine_service.engine_list().payload()["builds"]
-    assert [(b["engine"], b["backend"]) for b in builds] == [("mistral.rs", "cpu")]
+    assert [(b["engine"], b["backend"]) for b in builds] == [("mistral.rs", "cuda-sm89")]
 
 
 def test_an_install_reads_the_host_now_and_a_list_reads_the_cached_host(
@@ -843,11 +932,11 @@ def test_an_install_reads_the_host_now_and_a_list_reads_the_cached_host(
     runnable.session_host()
     has_gpu[0] = True
     sha = make_pack(tmp_path / "pack.whl")
-    publish(monkeypatch, EngineName.MISTRAL, sha)
+    publish(monkeypatch, EngineName.MISTRAL, sha, key="linux-x86_64-cuda-sm89")
     installed_engines()
     assert reads == [False]
     built = engine_service.install("mistral.rs", tmp_path / "pack.whl")
-    assert (built.backend, built.note, reads) == ("cpu", NO_CUDA_PACK, [False, True])
+    assert (built.backend, built.note, reads) == ("cuda-sm89", "", [False, True])
     assert EngineName.MISTRAL in installed_engines()
     assert reads == [False, True]
 
@@ -943,18 +1032,23 @@ def test_device_flags_follow_the_subcommand(
 
 @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.VISION])
 @pytest.mark.parametrize("target", [RoleTarget.CPU, RoleTarget.GPU])
-def test_a_cuda_host_runs_every_target_on_the_cpu_pack(
+def test_a_cuda_host_runs_the_gpu_target_on_the_cuda_pack_and_the_cpu_target_on_the_cpu(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: WorkerRole, target: RoleTarget
 ) -> None:
     host = caps("Linux", "x86_64", gpus=[L4], cuda=(12, 8))
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     pick = MISTRAL.pick_build(host)
-    assert (pick.backend, pick.reason) == ("cpu", NO_CUDA_PACK)
+    assert (pick.backend, pick.reason) == ("cuda-sm89", "")
+    assert MISTRAL.device_targets(Path("mistralrs")) == {RoleTarget.CPU, RoleTarget.GPU}
     spec = MISTRAL.role_spec(role, None, None)
     argv = MISTRAL.launch_argv(spec, request(tmp_path, target=target))
     subcommand = argv.index("multimodal" if role is WorkerRole.VISION else "text")
-    assert argv[subcommand + 1] == "--cpu"
-    assert "--paged-attn" not in argv
+    if target is RoleTarget.CPU:
+        assert argv[subcommand + 1] == "--cpu"
+        assert "--paged-attn" not in argv
+    else:
+        assert argv[subcommand + 1 : subcommand + 3] == ["--paged-attn", "off"]
+        assert "--cpu" not in argv
 
 
 # ---- a role across several cards ----
@@ -982,7 +1076,7 @@ def _one_card_argv(tmp_path: Path, role: WorkerRole = WorkerRole.CHAT, **over: A
 
 @pytest.mark.parametrize(
     ("system", "cards", "label"),
-    [("Darwin", 2, "Metal"), ("Windows", 2, "CPU"), ("Linux", 0, "CPU"), ("Linux", 2, "CPU")],
+    [("Darwin", 2, "Metal"), ("Windows", 2, "CPU"), ("Linux", 0, "CPU"), ("Linux", 2, "CUDA")],
 )
 def test_a_build_that_cannot_split_refuses_a_split(
     system: str, cards: int, label: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -994,7 +1088,7 @@ def test_a_build_that_cannot_split_refuses_a_split(
         _split_argv(tmp_path, (1, 1))
 
 
-def test_a_two_card_launch_on_a_cuda_host_is_refused_by_the_cpu_build(
+def test_a_two_card_launch_on_a_cuda_host_is_refused_by_the_cuda_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     model = tmp_path / "m.gguf"
@@ -1005,7 +1099,7 @@ def test_a_two_card_launch_on_a_cuda_host_is_refused_by_the_cpu_build(
     monkeypatch.setattr(planning, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
     cards = {i: FleetDevice("CUDA", i, f"card{i}", 24 * GIB, 22 * GIB) for i in (0, 1)}
     plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
-    with pytest.raises(ProviderError, match=r"mistral\.rs cannot split m\.gguf.*CPU build"):
+    with pytest.raises(ProviderError, match=r"mistral\.rs cannot split m\.gguf.*CUDA build"):
         planning._launch_for(plan, "ref", cards, engine=MISTRAL)
 
 
@@ -1088,7 +1182,7 @@ def test_the_ladder_of_split_ratios_keeps_the_proportional_and_the_shifted_ratio
 
 
 @pytest.mark.parametrize(
-    ("system", "cards", "label"), [("Darwin", 2, "Metal"), ("Linux", 2, "CPU")]
+    ("system", "cards", "label"), [("Darwin", 2, "Metal"), ("Linux", 2, "CUDA")]
 )
 @_stated
 def test_placement_offers_no_split_on_a_build_that_cannot_split(
