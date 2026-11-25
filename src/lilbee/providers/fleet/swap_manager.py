@@ -613,13 +613,22 @@ class SwapManager:
     def role_ready(self, role: WorkerRole) -> bool:
         """Whether at least one of *role*'s replica servers is loaded and ready."""
         prefix = role_model_prefix(role)
-        ready = self._ready_models()
+        ready = self._read_ready()
         if ready is None:
-            return False  # a failed read says nothing about the engines, so no finding changes
-        self._check_estimates(ready)
+            return False
         if ready:
             self.record_ready()
         return any(model.startswith(prefix) for model in ready)
+
+    def _read_ready(self) -> set[str] | None:
+        """The ready set from one /running read, with the engines' reports checked against it.
+
+        A failed read says nothing about the engines, so no finding changes.
+        """
+        ready = self._ready_models()
+        if ready is not None:
+            self._check_estimates(ready)
+        return ready
 
     def _check_estimates(self, ready: set[str]) -> None:
         """Compare each newly-ready engine's own report against what it was planned for.
@@ -728,7 +737,13 @@ class SwapManager:
             self._spill_warnings.clear()
 
     def health_warnings(self) -> list[HealthWarning]:
-        """Placement divergences and host spills of ready engines, and an outdated router."""
+        """Placement divergences and host spills of ready engines, and an outdated router.
+
+        Reads the engines' reports first, through the same probe client as
+        :meth:`role_ready`, so a caller gets current findings without a readiness poll
+        having run before it.
+        """
+        self._read_ready()
         with self._warnings_lock:
             warnings = [*self._placement_warnings.values(), *self._spill_warnings.values()]
             if self._router_warning is not None:

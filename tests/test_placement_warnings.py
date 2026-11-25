@@ -336,6 +336,39 @@ class TestFailedReadyProbe:
         assert not manager.role_ready(WorkerRole.CHAT)
         assert manager.health_warnings() == held
 
+    def test_health_warnings_read_the_report_with_no_readiness_poll_before_them(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.core.health_warnings import WarningCode
+        from lilbee.providers.fleet.readback import MEMORY_FLAG
+
+        GIB = 1024**3
+        engine = self._engine(monkeypatch)
+        engine.memory = {
+            "data": [{"name": "CUDA0", "model": 4 * GIB}, {"name": "Host", "model": 6 * GIB}]
+        }
+        reads: list[str] = []
+        probe = engine.get
+
+        def recording_get(url: str, timeout: float | None = None) -> _Answer:
+            reads.append(url)
+            return probe(url)
+
+        monkeypatch.setattr(engine, "get", recording_get)
+        manager = self._manager(tmp_path, ["/bin/llama-server", MEMORY_FLAG])
+        assert reads == []
+        assert [w.code for w in manager.health_warnings()] == [WarningCode.HOST_SPILL]
+        assert [url.rsplit("/", 1)[1] for url in reads] == ["running", "memory"]
+
+    def test_a_log_engine_spill_shows_without_a_readiness_poll(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.core.health_warnings import WarningCode
+
+        self._engine(monkeypatch)
+        manager = self._manager(tmp_path, ["/bin/llama-server"])
+        assert [w.code for w in manager.health_warnings()] == [WarningCode.HOST_SPILL]
+
     def test_an_empty_running_list_still_clears_both(self, tmp_path: Path, monkeypatch) -> None:
         from lilbee.core.health_warnings import HealthWarning, WarningCode
 
