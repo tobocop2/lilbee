@@ -167,6 +167,13 @@ def _sample_cli_value(key: str) -> str:
     return str(value).lower() if isinstance(value, bool) else str(value)
 
 
+def _as_text(value: object) -> str:
+    """The text a value would be typed as: a list is one item per line, a bool is lower case."""
+    if isinstance(value, list):
+        return "\n".join(str(item) for item in value)
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
 class TestSurfaceColumns:
     """Each column is derived, so check the derivation against the boundary itself."""
 
@@ -234,35 +241,32 @@ class TestSurfaceColumns:
         assert "`lilbee settings set`" in row
         assert generator._cli_cell("top_k") == "`lilbee settings set`"
 
-    @pytest.mark.parametrize("key", sorted(set(WRITABLE_CONFIG_FIELDS) | MODEL_ROLE_FIELDS))
+    @pytest.mark.parametrize("key", sorted(Config.model_fields))
     def test_cli_column_matches_what_the_set_path_does(self, generator, tmp_path, monkeypatch, key):
-        """Run `lilbee settings set` for one key that can be set and compare with the cell.
+        """Run `lilbee settings set` for every field and compare with the cell.
 
-        One test for each key: a single loop over every key ran 15 to 35 seconds
-        alone and passed the 60 second test limit on a loaded host.
+        An accepted set must leave the value in config.toml, and a refused one must
+        leave the key out. One test for each key: a single loop over every key ran 15
+        to 35 seconds alone and passed the 60 second test limit on a loaded host.
         """
         from typer.testing import CliRunner
 
         from lilbee.app import services as svc_mod
         from lilbee.cli.app import app
+        from lilbee.core import settings as persistent_settings
         from tests.conftest import make_mock_services
 
         monkeypatch.delenv("LILBEE_DATA", raising=False)
         snapshot = cfg.model_copy()
         svc_mod.set_services(make_mock_services())
+        sample = _sample_cli_value(key)
         try:
             result = CliRunner().invoke(
                 app,
-                [
-                    "settings",
-                    "set",
-                    "--data-dir",
-                    str(tmp_path),
-                    "--",
-                    key,
-                    _sample_cli_value(key),
-                ],
+                ["settings", "set", "--data-dir", str(tmp_path), "--", key, sample],
             )
+            stored = persistent_settings.load(cfg.data_root)
+            live = getattr(cfg, key)
         finally:
             svc_mod.set_services(None)
             for name in type(cfg).model_fields:
@@ -272,6 +276,14 @@ class TestSurfaceColumns:
         assert accepted == marked, (
             f"the CLI column disagrees with `lilbee settings set` for {key}: "
             f"{'accepted' if accepted else 'refused'} {result.output[-90:]}"
+        )
+        if not accepted:
+            assert key not in stored, f"a refused set of {key} wrote it to config.toml"
+            return
+        assert key in stored, f"`lilbee settings set {key}` exited 0 but config.toml lacks it"
+        assert stored[key] == live, f"config.toml holds {stored[key]!r}, the live value is {live!r}"
+        assert _as_text(live) == sample.lower() or _as_text(live) == sample, (
+            f"`lilbee settings set {key} {sample!r}` stored {live!r}"
         )
 
     def test_cli_column_keeps_the_dedicated_commands(self, generator):

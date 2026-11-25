@@ -30,7 +30,7 @@ An environment value that its setting refuses stops every command with one line 
 
 `token_sizing` is not a setting. A `token_sizing` key in `config.toml` or in a profile file, or a `LILBEE_TOKEN_SIZING` variable, prints a warning and is ignored: `chunk_size` always counts the embedding model's tokens.
 
-From a shell, `lilbee settings set <setting> <value>` writes a setting to `config.toml`, and `lilbee settings unset <setting>` removes your value. `lilbee settings list` shows each setting you can write with its value and source, and `--advanced` adds the advanced ones, and `lilbee settings get <setting>` shows one. `lilbee settings set` refuses the model roles, and refuses a setting whose value is a table. The CLI column names the command that does write each one, or `no`. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
+From a shell, `lilbee settings set <setting> <value>` writes a setting to `config.toml`, and `lilbee settings unset <setting>` removes your value. `lilbee settings list` shows each setting you can write with its value and source. `--advanced` adds the advanced ones. `lilbee settings get <setting>` shows one. `lilbee settings set` refuses the model roles, and refuses a setting whose value is a table. The CLI column names the command that does write each one, or `no`. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
 
 ## Reading the surface columns
 
