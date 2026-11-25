@@ -211,13 +211,17 @@ class TestLintChangedSources:
         store.get_citations_for_wiki.assert_called_once()
 
     def test_an_explicit_config_is_used_for_the_lint(self, tmp_path: Path):
-        write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")
+        other_root = tmp_path / "other"
+        write_wiki_page(other_root, "summaries", "doc", "# Title\n\nUnmarked claim here.\n")
         store = MagicMock(spec=Store)
         store.get_citations_for_source.return_value = [make_citation(source_filename="doc.md")]
-        store.get_citations_for_wiki.return_value = [make_citation(source_filename="doc.md")]
-        report = lint_changed_sources(["doc.md"], store, config=cfg.model_copy())
-        # The cited source does not exist, so the page lints with an error.
-        assert report.error_count >= 1
+        store.get_citations_for_wiki.return_value = []
+        explicit = cfg.model_copy(update={"data_root": other_root})
+        assert explicit.data_root != cfg.data_root
+        report = lint_changed_sources(["doc.md"], store, config=explicit)
+        # The page exists only under the explicit config's root, so a lint that read the
+        # global config would find nothing to flag.
+        assert any("unmarked" in i.message.lower() for i in report.issues)
 
     def test_empty_sources_returns_empty_report(self):
         store = MagicMock(spec=Store)
