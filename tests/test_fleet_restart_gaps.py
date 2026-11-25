@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import httpx
@@ -131,7 +132,6 @@ def test_a_stream_open_that_fails_on_a_server_nobody_restarted_rediscovers(
     _release_first_engines(swaps)
     drop = MagicMock()
     monkeypatch.setattr(provider, "_drop_swap_refs", drop)
-    monkeypatch.setattr(provider, "_release_unused_holds", lambda: None)
     client = provider._clients[CHAT][0]
     opens = _fail_first_open(client, httpx.ConnectError("refused"))
 
@@ -179,13 +179,21 @@ class _FlakyLock:
         self._lock.__exit__(*exc)
 
 
-def test_a_rediscover_that_never_opened_releases_no_count(
+def _hold_the_fleet_dir(provider: FleetProvider) -> tuple[Path, MagicMock]:
+    """Give the fleet's dir a hold that records its release."""
+    engine_dir = provider._reload_dir()
+    hold = MagicMock()
+    provider._engine_holds = {engine_dir: hold}
+    return engine_dir, hold
+
+
+def test_a_rediscover_that_never_took_its_uses_gives_none_back(
     engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider, _swaps = engine_fleet
-    monkeypatch.setattr(provider, "_release_unused_holds", lambda: None)
-    flaky = _FlakyLock(provider._lock)
-    monkeypatch.setattr(provider, "_lock", flaky)
+    _engine_dir, hold = _hold_the_fleet_dir(provider)
+    flaky = _FlakyLock(provider._holds_lock)
+    monkeypatch.setattr(provider, "_holds_lock", flaky)
     flaky.fail_next = True
 
     def call() -> str:
@@ -194,16 +202,17 @@ def test_a_rediscover_that_never_opened_releases_no_count(
     with pytest.raises(OSError, match="the lock failed"):
         provider._with_rediscover(call)
 
-    assert provider._open_rediscovers == 0
+    assert provider._dir_users == {}
+    hold.release_and_check_last.assert_not_called()
 
 
-def test_two_overlapping_rediscovers_count_two(
+def test_two_overlapping_rediscovers_keep_the_dir_until_the_second_ends(
     engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider, _swaps = engine_fleet
+    engine_dir, hold = _hold_the_fleet_dir(provider)
     monkeypatch.setattr(provider, "_drop_swap_refs", lambda: None)
-    monkeypatch.setattr(provider, "_release_unused_holds", lambda: None)
-    release = threading.Event()
+    release = [threading.Event(), threading.Event()]
     inside = [threading.Event(), threading.Event()]
     results: list[str] = []
 
@@ -215,7 +224,7 @@ def test_two_overlapping_rediscovers_count_two(
             if len(attempts) == 1:
                 raise _connection_error()
             inside[index].set()
-            assert release.wait(_JOIN_S)
+            assert release[index].wait(_JOIN_S)
             return "answered"
 
         return call
@@ -234,15 +243,21 @@ def test_two_overlapping_rediscovers_count_two(
         caller.start()
     try:
         assert all(event.wait(_JOIN_S) for event in inside)
-        counted = provider._open_rediscovers
+        counted = provider._dir_users.get(engine_dir)
+        release[0].set()
+        callers[0].join(_JOIN_S)
+        held_after_the_first = engine_dir in provider._engine_holds
     finally:
-        release.set()
+        for event in release:
+            event.set()
         for caller in callers:
             caller.join(_JOIN_S)
 
     assert counted == 2
+    assert held_after_the_first
     assert results == ["answered", "answered"]
-    assert provider._open_rediscovers == 0
+    assert provider._dir_users == {}
+    hold.release_and_check_last.assert_called_once()
 
 
 def test_a_timeout_on_a_role_with_no_clients_restarts_nothing(
@@ -252,7 +267,6 @@ def test_a_timeout_on_a_role_with_no_clients_restarts_nothing(
     restart = MagicMock()
     monkeypatch.setattr(provider, "_force_restart", restart)
     monkeypatch.setattr(provider, "_drop_swap_refs", lambda: None)
-    monkeypatch.setattr(provider, "_release_unused_holds", lambda: None)
     with provider._lock:
         provider._clients.pop(CHAT)
     attempts: list[int] = []
