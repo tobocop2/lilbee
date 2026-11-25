@@ -42,11 +42,11 @@ dependencies = [
     "tree-sitter-language-pack>=1.8.1,<2.0",
     "typer>=0.26.0",
     "tiktoken>=0.13.0",
-    "textual>=3.7.0",
+    "textual>=6.0.0",
     # Floor is 2.2.0: it bounds StreamableHTTP sessions (CVE-2026-59951); 1.x lacks mcp.server.mcpserver.
     "mcp>=2.2.0,<3",
     "pillow>=13.0.0",
-    "litestar>=2.22.0",
+    "litestar>=2.23.0",
     "uvicorn>=0.30",
     "httpx>=0.28.1",
     "httpx2>=2.12.0",
