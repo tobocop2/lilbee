@@ -95,6 +95,20 @@ def _slotted_estimator(*, base: int, per_slot: int):
     return _est
 
 
+def _drafted(build):
+    """A stand-in for the plan loop's launch draft, from a stand-in that returns the launch.
+
+    The draft keeps no prompts, so the plan hands the launch back unchanged.
+    """
+
+    def draft(*args, **kwargs):
+        return SimpleNamespace(
+            launch=build(*args, **kwargs), held_bytes=0, checkpoint_bytes=0, keeps_prompts=False
+        )
+
+    return draft
+
+
 @pytest.fixture(autouse=True)
 def _stub_bundled_engine(monkeypatch) -> None:
     """A launch reads the binary from its adapter, so a default host has the bundled one."""
@@ -2119,7 +2133,7 @@ class TestBuildFleetWiring:
             ),
         )
         sentinel = MagicMock()
-        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: sentinel)
+        monkeypatch.setattr(planning_mod, "_draft_launch", _drafted(lambda *a, **kw: sentinel))
         assert planning_mod.plan_all_launches(
             engines=engines_for_all_roles(LLAMA)
         ) == planning_mod.FleetPlan((sentinel,))
@@ -2154,7 +2168,7 @@ class TestBuildFleetWiring:
                 instances=(InstancePlan(WorkerRole.EMBED, (0,)),), unplaceable_roles=()
             ),
         )
-        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(planning_mod, "_draft_launch", _drafted(lambda *a, **kw: MagicMock()))
         plan = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
         assert plan.skipped_not_installed == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
 
@@ -2199,7 +2213,7 @@ class TestBuildFleetWiring:
         collapsed = InstanceLaunch(
             role=WorkerRole.CHAT, argv=[], env_overrides={}, model="org/repo/chat.gguf", ctx=512
         )
-        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: collapsed)
+        monkeypatch.setattr(planning_mod, "_draft_launch", _drafted(lambda *a, **kw: collapsed))
         monkeypatch.setattr(cfg, "num_ctx", None)
 
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
@@ -2276,7 +2290,7 @@ class TestBuildFleetWiring:
                 ctx=min_usable_chat_ctx() * 4,
             )
 
-        monkeypatch.setattr(planning_mod, "_launch_for", launch_with_real_argv)
+        monkeypatch.setattr(planning_mod, "_draft_launch", _drafted(launch_with_real_argv))
         monkeypatch.setattr(cfg, "num_ctx", None)
 
         plan = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
@@ -2337,7 +2351,9 @@ class TestBuildFleetWiring:
                 role=plan.role, argv=[], env_overrides={}, model=model, ctx=window
             )
 
-        monkeypatch.setattr(planning_mod, "_launch_for", launch_with_chat_window_below_the_floor)
+        monkeypatch.setattr(
+            planning_mod, "_draft_launch", _drafted(launch_with_chat_window_below_the_floor)
+        )
         monkeypatch.setattr(cfg, "num_ctx", None)
         engines = engines_for_all_roles(LLAMA)
 
@@ -2388,7 +2404,7 @@ class TestBuildFleetWiring:
             ctx=2048,
             trained_ctx=2048,
         )
-        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: short)
+        monkeypatch.setattr(planning_mod, "_draft_launch", _drafted(lambda *a, **kw: short))
         monkeypatch.setattr(cfg, "num_ctx", None)
 
         plan = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
@@ -2434,7 +2450,7 @@ class TestBuildFleetWiring:
         pinned = InstanceLaunch(
             role=WorkerRole.CHAT, argv=[], env_overrides={}, model="org/repo/chat.gguf", ctx=1024
         )
-        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: pinned)
+        monkeypatch.setattr(planning_mod, "_draft_launch", _drafted(lambda *a, **kw: pinned))
         monkeypatch.setattr(cfg, "num_ctx", 1024)
 
         plan = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
@@ -2475,7 +2491,7 @@ class TestBuildFleetWiring:
                 swap_classes=(frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION})),
             ),
         )
-        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(planning_mod, "_draft_launch", _drafted(lambda *a, **kw: MagicMock()))
 
         with caplog.at_level(logging.INFO):
             plan = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
@@ -2521,7 +2537,7 @@ class TestBuildFleetWiring:
             seen[plan.role] = kw
             return MagicMock()
 
-        monkeypatch.setattr(planning_mod, "_launch_for", _launch)
+        monkeypatch.setattr(planning_mod, "_draft_launch", _drafted(_launch))
         planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
         return seen[WorkerRole.CHAT]
 
@@ -2931,6 +2947,9 @@ _NON_SIZING_LAUNCH_FLAGS = {
     "--pooling",
     "--threads",
     "--sse-ping-interval",
+    # Host heap that the plan charges apart, as the launch's host cache charge.
+    "--cache-ram",
+    "--ctx-checkpoints",
 }
 # Sizing-relevant launch flag -> the gguf-parser flag that must carry the same value.
 _SIZING_FLAG_TO_ESTIMATOR_FLAG = {
@@ -5612,7 +5631,7 @@ class TestEnginePerRole:
             launched[plan.role] = engine
             return SimpleNamespace(role=plan.role)
 
-        monkeypatch.setattr(planning_mod, "_launch_for", _launch)
+        monkeypatch.setattr(planning_mod, "_draft_launch", _drafted(_launch))
         monkeypatch.setattr(
             planning_mod, "_unusable_chat_ctx_reason", lambda _launch, _devices: None
         )

@@ -34,6 +34,16 @@ def _no_estimate(role: WorkerRole, ratio: tuple[int, ...]) -> tuple[int, ...]:
     raise AssertionError(f"{role} was sized for a card")
 
 
+def _role_draft(plan: InstancePlan, _ref, _by, **_k) -> SimpleNamespace:
+    """A plan-loop launch draft that only names its role and keeps no prompts."""
+    return SimpleNamespace(
+        launch=SimpleNamespace(role=plan.role),
+        held_bytes=0,
+        checkpoint_bytes=0,
+        keeps_prompts=False,
+    )
+
+
 def _build(monkeypatch: pytest.MonkeyPatch, adapter: type, backend: str | None) -> None:
     monkeypatch.setattr(runnable, "session_host", lambda: None)
     picked = SimpleNamespace(backend=backend)
@@ -607,9 +617,7 @@ class TestARefusedRoleDoesNotStopTheOthers:
                 {},
             ),
         )
-        monkeypatch.setattr(
-            planning, "_launch_for", lambda plan, _ref, _by, **_k: SimpleNamespace(role=plan.role)
-        )
+        monkeypatch.setattr(planning, "_draft_launch", _role_draft)
         monkeypatch.setattr(planning, "_unusable_chat_ctx_reason", lambda _launch, _devices: None)
         monkeypatch.setattr(
             planning, "_peak_estimator", lambda *_a: lambda _r, ratio: (1,) * len(ratio)
@@ -663,9 +671,7 @@ class TestAGoneCardRefusesOnlyItsRole:
                 {},
             ),
         )
-        monkeypatch.setattr(
-            planning, "_launch_for", lambda plan, _ref, _by, **_k: SimpleNamespace(role=plan.role)
-        )
+        monkeypatch.setattr(planning, "_draft_launch", _role_draft)
         monkeypatch.setattr(planning, "_unusable_chat_ctx_reason", lambda _launch, _devices: None)
         monkeypatch.setattr(
             planning, "_peak_estimator", lambda *_a: lambda _r, ratio: (1,) * len(ratio)
