@@ -964,6 +964,30 @@ class TestSemanticChunkingConfig:
         assert (getattr(built, key), built.top_k) == (stored, 7)
         assert warnings == (f"config.toml: {key} = {bad[1:-1]!r} {reason}; {key} uses its default",)
 
+    @pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
+    def test_config_toml_with_an_unparseable_server_address_loads_and_names_it(
+        self, tmp_path, key
+    ) -> None:
+        built, warnings = _build_with(tmp_path, f'{key} = "http://ollama:abc"\ntop_k = 7\n')
+        assert (getattr(built, key), built.top_k) == ("", 7)
+        assert len(warnings) == 1
+        assert key in warnings[0]
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "http://localhost:11434",
+            "https://ollama.example.com",
+            "http://my-host:9000/v1",
+            "http://localhost:1234/v1/",
+            "http://[::1]:11434",
+            "",
+        ],
+    )
+    @pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
+    def test_a_usable_server_address_is_kept(self, key, address) -> None:
+        assert getattr(Config(**{key: address}), key) == address.rstrip("/")
+
     @pytest.mark.parametrize(
         ("key", "bad"),
         [

@@ -70,7 +70,12 @@ def test_a_hf_endpoint_httpx_cannot_parse_leaves_the_arch_unknown_and_is_named(
     from lilbee.catalog import header_probe
 
     monkeypatch.setattr(compat, "probe_header", header_probe.probe_header)
-    monkeypatch.setattr(huggingface_hub.constants, "ENDPOINT", endpoint)
+    # huggingface_hub bakes HF_ENDPOINT into this template when it is imported.
+    monkeypatch.setattr(
+        huggingface_hub.constants,
+        "HUGGINGFACE_CO_URL_TEMPLATE",
+        endpoint + "/{repo_id}/resolve/{revision}/{filename}",
+    )
     with caplog.at_level("WARNING", logger=header_probe.log.name):
         assert resolve_arch_for_pull("acme/foo-GGUF/foo.gguf", client) == ""
     assert "HF_ENDPOINT" in caplog.text
