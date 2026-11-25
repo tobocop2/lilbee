@@ -395,15 +395,16 @@ def stop_spawned_server(proc: subprocess.Popen[bytes]) -> None:
     """Terminate *proc* gracefully, escalating to kill if it ignores SIGTERM."""
     if proc.poll() is not None:
         return
-    if sys.platform == "win32":
-        # terminate() is TerminateProcess there: serve's handlers never run. CTRL_BREAK
-        # reaches the one process group spawn_server made for serve and nothing else.
-        proc.send_signal(signal.CTRL_BREAK_EVENT)
-    else:
-        proc.terminate()
     try:
+        if sys.platform == "win32":
+            # terminate() is TerminateProcess there: serve's handlers never run. CTRL_BREAK
+            # reaches the one process group spawn_server made for serve and nothing else.
+            # It raises OSError when the launcher has no console (pythonw, a service).
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            proc.terminate()
         proc.wait(timeout=_TERMINATE_GRACE_S)
-    except subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         proc.kill()
         proc.wait(timeout=_KILL_GRACE_S)
 
