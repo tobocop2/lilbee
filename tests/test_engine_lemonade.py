@@ -408,9 +408,9 @@ def _reply(name: str) -> object:
     return json.loads((LEMONADE_REPLIES / name).read_text(encoding="utf-8"))
 
 
-NPU_FIX = (
-    "Check that the XDNA driver is installed and that `lemonade system-info` lists the npu device."
-)
+# The fix names no command: lilbee's lemond runs on a port of its own, and only while
+# llama-swap has the model loaded, so no Lemonade CLI command reaches it.
+NPU_FIX = "Check that the AMD XDNA driver is installed, then restart lilbee."
 
 
 def test_d1_the_parser_reads_a_model_lemond_lists_on_the_cpu_as_a_refusal() -> None:

@@ -3,6 +3,7 @@
 import _thread
 import contextlib
 import errno
+import functools
 import json
 import logging
 import os
@@ -8399,6 +8400,27 @@ class TestSelfCheckHelpers:
         )
         setup._self_check_server(WorkerRole.CHAT, tmp_path / "chat.gguf")
         assert seen["model"] == "chat-0"
+
+    def test_self_check_client_loads_through_the_device_gate(self, monkeypatch, tmp_path) -> None:
+        # The self-check client checks its device like a fleet client: its gate loads the
+        # model with the role's own load request before it reads the device.
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+        from lilbee.providers.fleet import provider
+        from lilbee.providers.roles import WorkerRole
+
+        self._patch_fleet_primitives(monkeypatch, swap=mock.MagicMock(), client=mock.MagicMock())
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.client.LlamaServerClient",
+            lambda _endpoint, _model, **kw: seen.update(kw) or mock.MagicMock(),
+        )
+        setup._self_check_server(WorkerRole.CHAT, tmp_path / "chat.gguf")
+        load = seen["load"]
+        assert isinstance(load, functools.partial)
+        assert load.func is provider.load_role
+        assert load.args == (WorkerRole.CHAT,)
 
     def test_self_check_embed_applies_decoder_pooling(self, monkeypatch, tmp_path) -> None:
         # The embed self-check must launch with the same pooling a real ingest uses,

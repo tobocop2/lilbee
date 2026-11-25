@@ -67,6 +67,8 @@ def _fake_client(in_flight: int = 0) -> MagicMock:
     client = MagicMock()
     client.in_flight = in_flight
     client.restart_message = None
+    # A llama-server client: its engine names no device route, so a warm sends its load.
+    client.needs_device_check = False
     return client
 
 
