@@ -150,7 +150,7 @@ def test_a_record_of_the_service_teardown_reaches_cli_log_and_not_the_console(
     app, _ = routed_app
     result = CliRunner().invoke(app, [])
     assert services.provider.shutdown.called
-    assert "teardown note" in (tmp_path / "logs" / "cli.log").read_text()
+    assert "teardown note" in (tmp_path / "logs" / "cli.log").read_text(encoding="utf-8")
     assert "teardown note" not in result.output
 
 
