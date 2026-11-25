@@ -625,7 +625,7 @@ _WORK_FOUND = [
 @pytest.mark.parametrize("counts", _NOTHING_TO_INGEST)
 def test_sync_with_nothing_to_ingest_prints_no_tip(project, counts):
     result = _sync(project, counts=counts)
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == (1 if counts.get("failed") else 0), result.output
     assert "SYNC RESULT" in result.output
     assert "lilbee analyze" not in result.output
 
@@ -676,7 +676,7 @@ def test_sync_that_found_work_prints_the_tip_before_the_first_file(project, coun
 def test_add_with_nothing_to_ingest_prints_no_tip(project, notes, counts):
     with _library_sync_patch(counts):
         result = _add(project, notes)
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == (1 if counts.get("failed") else 0), result.output
     assert "SYNC RESULT" in result.output
     assert "lilbee analyze" not in result.output
 
