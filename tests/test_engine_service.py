@@ -343,8 +343,15 @@ def test_the_catalog_client_judges_architectures_with_the_engine_of_its_config(
         "gguf": {"total": 4_000_000_000, "context_length": 4096, "architecture": "library_arch"},
     }
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, json=[row]))
-    assert HfClient(_library_config()).fetch_models().models[0].compat is ModelCompat.SUPPORTED
-    assert HfClient(cfg).fetch_models().models[0].compat is ModelCompat.UNSUPPORTED
+    library = _library_config()
+    library_client = HfClient(
+        library, engine_for_format=lambda fmt: engine_choice.engine_for_page(fmt, library)
+    )
+    default_client = HfClient(
+        cfg, engine_for_format=lambda fmt: engine_choice.engine_for_page(fmt, cfg)
+    )
+    assert library_client.fetch_models().models[0].compat is ModelCompat.SUPPORTED
+    assert default_client.fetch_models().models[0].compat is ModelCompat.UNSUPPORTED
 
 
 def test_no_stored_choices_read_as_empty() -> None:
