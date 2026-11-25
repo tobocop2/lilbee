@@ -26,7 +26,7 @@ from lilbee.cli.tui.widgets.slash_command_catalog import (
     SlashCommandCatalog,
 )
 from lilbee.core.config import cfg
-from tests._lilbee_app_test_host import LilbeeAppHost, pump_until
+from tests._lilbee_app_test_host import LilbeeAppHost, pump_until, settle_workers
 
 
 @pytest.fixture(autouse=True)
@@ -1406,13 +1406,16 @@ class TestModelCompletionsOffTheLoopAsync:
                 "lilbee.modelhub.models.list_installed_models", side_effect=_listing
             ) as listed:
                 inp.value = "/remove q"
-                assert await pump_until(pilot, lambda: overlay.options == ["qwen3:8b"])
+                await settle_workers(pilot)
+                assert overlay.options == ["qwen3:8b"]
                 # A submit clears the input as a programmatic edit.
                 screen._set_input("")
-                assert await pump_until(pilot, lambda: screen._model_names is None)
+                await pilot.pause()
+                assert screen._model_names is None
                 # A recalled /model line lists again and no longer offers the removed model.
                 inp.value = "/model "
-                assert await pump_until(pilot, lambda: overlay.options == ["mistral:7b"])
+                await settle_workers(pilot)
+                assert overlay.options == ["mistral:7b"]
             assert listed.call_count == 2
 
     @pytest.mark.parametrize("clear_handled_first", [True, False])
