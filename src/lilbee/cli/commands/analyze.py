@@ -94,6 +94,8 @@ def _progress() -> Iterator[DetailedProgressCallback]:
         transient=True,
         console=PlainConsole(stderr=True),
         disable=cfg.json_mode,
+        redirect_stdout=False,
+        redirect_stderr=False,
     ) as progress:
         task = progress.add_task(READING_LABEL, total=None)
 

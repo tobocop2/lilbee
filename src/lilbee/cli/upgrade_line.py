@@ -5,6 +5,8 @@ from __future__ import annotations
 from contextlib import ExitStack
 from time import monotonic
 
+from rich.live import Live
+from rich.spinner import Spinner
 from rich.text import Text
 
 from lilbee.core.config import cfg
@@ -15,7 +17,7 @@ from lilbee.runtime.progress import UPGRADE_HEADLINE, EventType, LibraryUpgradeE
 class UpgradeLine:
     """Shows library upgrade events on *console*: a live line on a terminal, else plain lines.
 
-    The live line is Rich's status spinner, whose own refresh reads the elapsed time
+    The live line is a Rich spinner, whose own refresh reads the elapsed time
     again at each redraw. With *live* off, under ``--json`` or piped, each event is a line.
     """
 
@@ -49,8 +51,18 @@ class UpgradeLine:
         if not (self.live and self._console.is_terminal and not cfg.json_mode):
             self._write(event.text)
         elif self._status is None:
+            # Rich's own status spinner redirects stdout into the console; a print to
+            # stdout stays on stdout, so the same spinner is built on a Live that does not.
+            live = Live(
+                Spinner("dots", text=self, style="status.spinner"),
+                console=self._console,
+                refresh_per_second=12.5,
+                transient=True,
+                redirect_stdout=False,
+                redirect_stderr=False,
+            )
             self._status = ExitStack()
-            self._status.enter_context(self._console.status(self))
+            self._status.enter_context(live)
 
     def _show_end(self, event: LibraryUpgradeEvent) -> None:
         if self._status is not None:
