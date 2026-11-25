@@ -242,10 +242,10 @@ def test_a_placement_write_leaves_a_same_root_peer_with_no_wait(
     """An owner that adopts a placement write does not rebuild, so the peer must not wait."""
     assert "placement" not in FLEET_RELOAD_KEYS
     gap = _gap(monkeypatch, tmp_path)
-    before = prov_mod._plan_origin()
+    before = prov_mod._file_origin()
     persistent_settings.update_values(cfg.data_root, {"placement": '{"chat": {"devices": [0]}}'})
     _bind_fails_in_memory(monkeypatch)
-    assert prov_mod._plan_origin() == before
+    assert prov_mod._file_origin() == before
     _peer_takes_the_value(monkeypatch, gap.peer, "follow")
     assert not gap.waits.is_set()
     assert gap.built == [private_engine_dir(cfg.data_root)]
@@ -286,11 +286,11 @@ def test_a_key_is_in_the_plan_view_iff_a_change_makes_the_owner_rebuild(
     monkeypatch, key: str
 ) -> None:
     assert _RELOAD_KEY_VALUES.keys() == FLEET_RELOAD_KEYS
-    before = prov_mod._plan_origin()
+    before = prov_mod._file_origin()
     value = (_RELOAD_KEY_VALUES | _OTHER_KEY_VALUES)[key]
     persistent_settings.update_values(cfg.data_root, {key: value})
     assert key in (persistent_settings.persisted_values(cfg.data_root) or {})  # the write took
-    view_moved = prov_mod._plan_origin() != before
+    view_moved = prov_mod._file_origin() != before
     rebuilds = _owner_rebuilds_on(monkeypatch, key)
     assert view_moved is rebuilds is (key in FLEET_RELOAD_KEYS)
 
@@ -299,10 +299,10 @@ def test_a_write_of_a_key_no_plan_reads_leaves_the_peer_with_no_wait(
     real_planner, monkeypatch, tmp_path: Path
 ) -> None:
     gap = _gap(monkeypatch, tmp_path)
-    before = prov_mod._plan_origin()
+    before = prov_mod._file_origin()
     persistent_settings.update_values(cfg.data_root, {"top_k": 3})
     _bind_fails_in_memory(monkeypatch)
-    assert prov_mod._plan_origin() == before
+    assert prov_mod._file_origin() == before
     _peer_takes_the_value(monkeypatch, gap.peer, "follow")
     assert not gap.waits.is_set()
     assert gap.built == [private_engine_dir(cfg.data_root)]

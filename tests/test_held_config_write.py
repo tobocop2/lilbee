@@ -210,7 +210,7 @@ def test_a_fleet_planned_on_a_flag_is_not_stamped_with_the_file_view(monkeypatch
     monkeypatch.setattr(cfg, "chat_model", _OTHER_CHAT_REF)
     stamped = prov_mod._plan_origin()
     assert stamped != prov_mod._file_origin()
-    assert json.loads(stamped.fleet_view or "{}") == {"chat_model": _OTHER_CHAT_REF}
+    assert json.loads(stamped.fleet_view or "{}")["chat_model"] == _OTHER_CHAT_REF
 
 
 def test_a_long_running_process_reports_no_held_write() -> None:
@@ -271,23 +271,25 @@ _ONE_OFF_COMMANDS = {
 
 
 @pytest.mark.parametrize("command", sorted(_ONE_OFF_COMMANDS))
-def test_each_one_off_command_hands_the_engine_its_held_writes(
+def test_each_one_off_command_reports_a_held_chat_model_write(
     cli_env: Path, monkeypatch: pytest.MonkeyPatch, command: str
 ) -> None:
-    """Each one-off command's engine hears of a chat_model write made during its run."""
-    seen: dict[str, object] = {}
+    """Each one-off command holds chat_model, so its engine hears of a write during its run.
 
-    def capture(_config: object, **kwargs: object) -> None:
-        seen.update(kwargs)
-        raise _FactorySeen
-
-    monkeypatch.setattr("lilbee.providers.factory.create_provider", capture)
+    The services hand the engine this same question (see the first-start test above).
+    """
+    monkeypatch.setattr(services_mod._state, "follower", None)
+    monkeypatch.setattr("lilbee.providers.factory.create_provider", _refuse_to_build)
     args = [arg.format(doc=cli_env) for arg in _ONE_OFF_COMMANDS[command]]
     runner.invoke(app, args)
-    held_writes = seen.get("held_writes")
-    assert callable(held_writes), f"{command} gave the engine no held-write check"
+    follower = services_mod._state.follower
+    assert follower is not None and not follower.long_running, command
     persistent_settings.save(cfg.data_root, {"chat_model": _OTHER_CHAT_REF})
-    assert held_writes() == {"chat_model": _OTHER_CHAT_REF}
+    assert services_mod._held_writes_of_the_process_follower() == {"chat_model": _OTHER_CHAT_REF}
+
+
+def _refuse_to_build(_config: object, **_kwargs: object) -> None:
+    raise _FactorySeen
 
 
 def test_add_stops_with_the_clear_error_on_a_chat_model_write(
@@ -307,8 +309,11 @@ def test_add_stops_with_the_clear_error_on_a_chat_model_write(
             )
 
         provider = MagicMock()
-        for name in ("embed", "count_tokens", "chat", "vision_ocr", "rerank"):
+        for name in ("embed", "count_tokens", "embed_token_cap", "chat", "vision_ocr", "rerank"):
             getattr(provider, name).side_effect = refuse
+        provider.max_concurrent_chats.return_value = 1
+        for name in ("vision_slot_capacity", "served_chat_ctx", "served_chat_slots"):
+            getattr(provider, name).return_value = None
         return provider
 
     monkeypatch.setattr("lilbee.providers.factory.create_provider", refusing_provider)

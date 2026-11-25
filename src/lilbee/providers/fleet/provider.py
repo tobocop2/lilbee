@@ -417,9 +417,7 @@ def _owner_owes_the_file(states: dict[SwapGroup, SwapState]) -> bool:
 def _planned_on_the_file_now(states: dict[SwapGroup, SwapState]) -> bool:
     """True when a fleet of this config root was planned on config.toml as it is now."""
     now = _file_origin()
-    return now.fleet_view is not None and any(
-        state.origin == now for state in states.values()
-    )
+    return now.fleet_view is not None and any(state.origin == now for state in states.values())
 
 
 def _held_write_message(writes: Mapping[str, object]) -> str:
