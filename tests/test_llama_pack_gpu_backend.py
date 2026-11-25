@@ -76,6 +76,50 @@ def test_the_backend_follows_the_gpu_and_the_host_libraries(host: HostCaps, back
     assert pack_backend(host) == backend
 
 
+def _sysfs_host(
+    root: Path, monkeypatch: pytest.MonkeyPatch, devices: list[tuple[str, str]]
+) -> HostCaps:
+    """A Linux host whose PCI devices are (class, vendor) pairs under a fake sysfs."""
+    for index, (class_code, vendor) in enumerate(devices):
+        device = root / f"0000-{index:02x}-00.0"
+        device.mkdir()
+        (device / "class").write_text(f"{class_code}\n")
+        (device / "vendor").write_text(f"{vendor}\n")
+        (device / "driver").mkdir()
+    monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
+    monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", root)
+    return collect(
+        system="Linux",
+        machine="x86_64",
+        cpu_info={},
+        nvidia=None,
+        display_vendors=gpu_hardware.installed_gpu_vendor_ids(),
+        vulkan_loader=True,
+        libnuma=False,
+    )
+
+
+def test_an_instinct_card_beside_a_bmc_chip_gets_the_vulkan_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = _sysfs_host(tmp_path, monkeypatch, [("0x030000", "0x1a03"), ("0x120000", "0x1002")])
+    assert pack_backend(host) == "vulkan"
+
+
+def test_a_host_with_only_a_bmc_chip_gets_the_cpu_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = _sysfs_host(tmp_path, monkeypatch, [("0x030000", "0x1a03")])
+    assert pack_backend(host) == "cpu"
+
+
+def test_a_display_class_amd_card_still_gets_the_vulkan_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = _sysfs_host(tmp_path, monkeypatch, [("0x030000", "0x1a03"), ("0x030200", "0x1002")])
+    assert pack_backend(host) == "vulkan"
+
+
 def test_a_usable_nvidia_card_wins_over_an_amd_gpu() -> None:
     facts = {"driver": "550", "cuda_driver": 12040, "gpus": [{"name": "c", "cc": [8, 6]}]}
     host = collect(
