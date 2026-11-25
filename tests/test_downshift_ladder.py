@@ -6,6 +6,8 @@ group down and respawns an identical launch on the strength of it.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from lilbee.core.config import cfg
@@ -78,6 +80,7 @@ def test_a_ready_engine_clears_that_role(monkeypatch, tmp_path) -> None:
 
     mgr = sm.SwapManager.__new__(sm.SwapManager)
     mgr._estimate_checked = set()
+    mgr._warnings_lock = threading.Lock()
     mgr._log_path = tmp_path / "swap.log"
     launch = type("L", (), {"role": WorkerRole.CHAT, "est_vram_bytes": 0, "argv": []})()
     mgr._launch_by_model = {"chat-0": launch}

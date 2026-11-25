@@ -335,7 +335,7 @@ class SwapManager:
         self._config_path = data_dir / _config_filename(os.getpid(), group.value)
         self._log_path = data_dir / _LOGS_SUBDIR / _LOG_FILENAME_TEMPLATE.format(group=group.value)
         # Instances whose engine report has already been compared to the estimate,
-        # so the check runs once per start rather than on every readiness poll.
+        # so a readiness poll reads each load once. Guarded by ``_warnings_lock``.
         self._estimate_checked: set[str] = set()
         self._launch_by_model: dict[str, InstanceLaunch] = {}
         # The file each member's engine writes its own log to; a member with none has
@@ -435,7 +435,6 @@ class SwapManager:
             if log_path is not None:
                 self._engine_logs[launch.model_id] = log_path
         reads_streams = self._router_reads_streams(router, launches)
-        self._estimate_checked.clear()
         self._ready_at = None
         self._clear_placement_warnings()
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -629,47 +628,65 @@ class SwapManager:
         answer does not change while the engine stays loaded. An engine that left the
         ready set has unloaded, so its findings go and its next load is read afresh.
         """
-        for model_id in self._estimate_checked - ready:
-            self._estimate_checked.discard(model_id)
-            with self._warnings_lock:
+        with self._warnings_lock:
+            for model_id in self._estimate_checked - ready:
+                self._estimate_checked.discard(model_id)
                 self._placement_warnings.pop(model_id, None)
                 self._spill_warnings.pop(model_id, None)
-        for model_id in ready - self._estimate_checked:
-            launch = self._launch_by_model.get(model_id)
-            self._estimate_checked.add(model_id)
-            if launch is None:
-                continue
-            # Ready means this role's context loaded, so any reduction taken to
-            # get here has done its job and must not follow the role into the
-            # next plan, a freed machine, or a model the user switched to.
-            clear_ctx_downshift(launch.role)
-            # A launch carrying --memory serves its own report on GET /memory
-            # and writes a log at the default verbosity, with no load report
-            # (swap_config), so the log-side checks would misfire on it by construction.
-            if MEMORY_FLAG in launch.argv:
-                self._check_memory_estimate(model_id, launch)
-                continue
-            # An engine that writes no log of its own has no file to read back.
-            if model_id not in self._engine_logs:
-                continue
-            # The engine is ready, so a missing log is not "too early" any more.
-            if report_missing_log(self._log_path.parent, model_id, launch.role):
-                continue
-            if launch.est_vram_bytes <= 0:
-                continue
-            spills: list[HealthWarning] = []
-            warning = check_launch(
-                self._log_path.parent,
-                model_id,
-                launch.role,
-                launch.model,
-                launch.est_vram_bytes,
-                launch.est_vram_by_device,
-                launch.est_unreported_bytes,
-                launch.est_host_bytes,
-                spills,
-            )
-            self._record_findings(model_id, warning, spills)
+            fresh = ready - self._estimate_checked
+            self._estimate_checked |= fresh
+        for model_id in fresh:
+            self._read_estimate(model_id)
+
+    def check_loaded(self, model_ids: Iterable[str]) -> None:
+        """Read the report of each engine in *model_ids*, which the caller saw load.
+
+        Each id is read again even when an earlier load was read: a reload after
+        an idle unload looks the same as an engine that stayed loaded. A read with
+        no result keeps the earlier findings. The reads block on the engines.
+        """
+        loaded = set(model_ids)
+        with self._warnings_lock:
+            self._estimate_checked |= loaded
+        for model_id in loaded:
+            self._read_estimate(model_id)
+
+    def _read_estimate(self, model_id: str) -> None:
+        """Compare *model_id*'s own report with its plan; only a result replaces its findings."""
+        launch = self._launch_by_model.get(model_id)
+        if launch is None:
+            return
+        # Ready means this role's context loaded, so any reduction taken to
+        # get here has done its job and must not follow the role into the
+        # next plan, a freed machine, or a model the user switched to.
+        clear_ctx_downshift(launch.role)
+        # A launch carrying --memory serves its own report on GET /memory
+        # and writes a log at the default verbosity, with no load report
+        # (swap_config), so the log-side checks would misfire on it by construction.
+        if MEMORY_FLAG in launch.argv:
+            self._check_memory_estimate(model_id, launch)
+            return
+        # An engine that writes no log of its own has no file to read back.
+        if model_id not in self._engine_logs:
+            return
+        # The engine is ready, so a missing log is not "too early" any more.
+        if report_missing_log(self._log_path.parent, model_id, launch.role):
+            return
+        if launch.est_vram_bytes <= 0:
+            return
+        spills: list[HealthWarning] = []
+        warning = check_launch(
+            self._log_path.parent,
+            model_id,
+            launch.role,
+            launch.model,
+            launch.est_vram_bytes,
+            launch.est_vram_by_device,
+            launch.est_unreported_bytes,
+            launch.est_host_bytes,
+            spills,
+        )
+        self._record_findings(model_id, warning, spills)
 
     def _check_memory_estimate(self, model_id: str, launch: InstanceLaunch) -> None:
         """Run the estimate check off the engine's own ``GET /memory``.
@@ -714,16 +731,19 @@ class SwapManager:
     def _record_findings(
         self, model_id: str, placement: HealthWarning | None, spills: list[HealthWarning]
     ) -> None:
-        """Keep what a readback found for *model_id*, for :meth:`health_warnings`."""
+        """Replace *model_id*'s findings with what a read found, for :meth:`health_warnings`."""
         with self._warnings_lock:
+            self._placement_warnings.pop(model_id, None)
+            self._spill_warnings.pop(model_id, None)
             if placement is not None:
                 self._placement_warnings[model_id] = placement
             if spills:
                 self._spill_warnings[model_id] = spills[-1]
 
     def _clear_placement_warnings(self) -> None:
-        """Forget every readback finding; the engines they describe are gone or restarting."""
+        """Forget every read and finding; the engines they describe are gone or restarting."""
         with self._warnings_lock:
+            self._estimate_checked.clear()
             self._placement_warnings.clear()
             self._spill_warnings.clear()
 

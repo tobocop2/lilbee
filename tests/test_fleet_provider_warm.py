@@ -345,6 +345,9 @@ class _Swap:
     def record_ready(self) -> None:
         return None
 
+    def check_loaded(self, model_ids) -> None:
+        return None
+
     def routes(self) -> dict[str, Reply]:
         """A chat request starts the upstream; the unload route stops it."""
         return {

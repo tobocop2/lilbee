@@ -205,6 +205,17 @@ _VISION_REPEAT_LAST_N = 64
 _DISPATCH_HEALTH_RECHECK_S = 0.5
 _T = TypeVar("_T")
 _Item = TypeVar("_Item")
+# The replicas that answered inside a lazy warm owner's scope; None outside one.
+_answered_replicas: contextvars.ContextVar[list[LlamaServerClient] | None] = contextvars.ContextVar(
+    "lilbee_answered_replicas", default=None
+)
+
+
+def _note_answered(client: LlamaServerClient) -> None:
+    """Record that *client* answered, for the lazy warm owner that this call runs under."""
+    answered = _answered_replicas.get()
+    if answered is not None:
+        answered.append(client)
 
 
 def _prewarm_key(shard: Path) -> tuple[str, int, int]:
@@ -602,13 +613,15 @@ def _stream_reserved(
     """Open a stream on the least-busy client; its reservation lasts until the stream ends."""
     client = pool.pick(_reserve_least_busy)
     try:
-        return _ReservedStream(client, _primed_stream(open_stream(client)))
+        stream = _ReservedStream(client, _primed_stream(open_stream(client)))
     except BaseException as exc:
         client.release()
         if isinstance(exc, DeviceRefusedError):
             return _stream_on_other_replica(pool, client, open_stream, exc)
         _raise_if_restarted(client, exc)
         raise
+    _note_answered(client)
+    return stream
 
 
 def _stream_on_other_replica(
@@ -627,10 +640,12 @@ def _stream_on_other_replica(
     if retry is None:
         _raise_no_healthy_replica(cause)
     try:
-        return _ReservedStream(retry, _primed_stream(open_stream(retry)))
+        stream = _ReservedStream(retry, _primed_stream(open_stream(retry)))
     except BaseException:
         retry.release()
         raise
+    _note_answered(retry)
+    return stream
 
 
 def _call_reserved(
@@ -643,12 +658,15 @@ def _call_reserved(
     """
     client = pool.pick(_reserve_least_busy)
     try:
-        return call(client)
+        result = call(client)
     except DeviceRefusedError as exc:
         refusal = exc
     except Exception as exc:
         _raise_if_restarted(client, exc)
         raise
+    else:
+        _note_answered(client)
+        return result
     finally:
         client.release()
     return _retry_on_other_replica(pool, client, call, refusal)
@@ -675,6 +693,7 @@ def _call_with_failover(
         return _retry_on_other_replica(pool, client, call, exc)
     else:
         client.mark_healthy()
+        _note_answered(client)
         return result
     finally:
         client.release()
@@ -700,6 +719,7 @@ def _retry_on_other_replica(
         raise
     else:
         retry.mark_healthy()
+        _note_answered(retry)
         return retry_result
     finally:
         retry.release()
@@ -3519,13 +3539,16 @@ class FleetProvider:
             _tell_listeners(on_spawning, role)
             try:
                 if role is WorkerRole.CHAT:
-                    self._warm_chat_role(pools[role])
+                    warmed = self._warm_chat_role(pools[role])
                 else:
-                    self._warm_role_clients(role, pools[role])
+                    warmed = self._warm_role_clients(role, pools[role])
             except Exception as exc:
                 first_exc = first_exc or exc
             else:
                 _tell_listeners(on_spawned, role)
+                if warmed:
+                    # A replica that failed its warm was marked unhealthy, so it is not read.
+                    self._read_reports(role, [client for client in pools[role] if client.healthy])
         if first_exc is not None:
             raise first_exc
 
@@ -3573,8 +3596,26 @@ class FleetProvider:
                 swap.record_ready()
         return warmed
 
-    def _warm_chat_role(self, clients: list[LlamaServerClient]) -> None:
-        """Warm the chat role, driving the tracker through read -> load -> ready/fail.
+    def _read_reports(self, role: WorkerRole, loaded: list[LlamaServerClient]) -> None:
+        """Start the read of each *loaded* replica's memory report on a daemon thread.
+
+        No caller waits for the read, so a slow engine delays no warm and no request,
+        and an error in it goes to the thread hook.
+        """
+        with self._lock:
+            swap = self._swap_for(role)
+        if swap is None or not loaded:
+            return
+        model_ids = [client.model_id for client in loaded]
+        threading.Thread(
+            target=swap.check_loaded,
+            args=(model_ids,),
+            name=f"fleet-report-{role.value}",
+            daemon=True,
+        ).start()
+
+    def _warm_chat_role(self, clients: list[LlamaServerClient]) -> bool:
+        """Warm the chat role through read -> load -> ready/fail; return whether one loaded.
 
         Readiness is decided by whether a warm request actually returned, not by
         re-probing llama-swap (which can transiently report empty right after a
@@ -3592,6 +3633,7 @@ class FleetProvider:
                 self._warm_tracker.ready()
             else:
                 self._warm_tracker.fail(self._chat_load_failure())
+        return warmed
 
     @contextmanager
     def _lazy_warm_scope(self) -> Iterator[None]:
@@ -3600,16 +3642,22 @@ class FleetProvider:
         The request that finds the chat role cold with no warm in flight owns
         the warm: it stamps STARTING on entry and READY or ERROR on exit, on
         every exit path. Concurrent requests share the load and touch nothing.
+        The owner reads the report of each chat replica that answered it.
         """
         owner = self._begin_lazy_warm()
+        if not owner:
+            yield
+            return
+        answered: list[LlamaServerClient] = []
+        token = _answered_replicas.set(answered)
         try:
             yield
         except Exception as exc:
-            if owner:
-                self._end_lazy_warm(str(exc))
+            self._end_lazy_warm(str(exc), answered)
             raise
-        if owner:
-            self._end_lazy_warm(None)
+        finally:
+            _answered_replicas.reset(token)
+        self._end_lazy_warm(None, answered)
 
     def _begin_lazy_warm(self) -> bool:
         """Begin a warm when the chat role is cold; True when this call owns it."""
@@ -3625,12 +3673,18 @@ class FleetProvider:
         self._warm_tracker.begin(str(cfg.chat_model))
         return True
 
-    def _end_lazy_warm(self, error: str | None) -> None:
-        """Stamp the owned warm READY when the role serves, else ERROR with *error*."""
+    def _end_lazy_warm(self, error: str | None, answered: list[LlamaServerClient]) -> None:
+        """Stamp the owned warm READY when the role serves, else ERROR with *error*.
+
+        On READY, the chat replicas in *answered* have loaded, so their reports are read.
+        """
         with self._lock:
             self._lazy_warming = False
+            chat = self._clients.get(WorkerRole.CHAT, [])
+            loaded = [client for client in chat if client in answered]
         if error is None or self.role_ready(WorkerRole.CHAT):
             self._warm_tracker.ready()
+            self._read_reports(WorkerRole.CHAT, loaded)
         else:
             self._warm_tracker.fail(error)
 
