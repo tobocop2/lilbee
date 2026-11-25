@@ -447,6 +447,8 @@ def test_the_server_command_falls_back_to_the_module_form(monkeypatch, _capture_
 def test_serve_gets_a_session_of_its_own_on_posix_with_or_without_env_overrides(
     monkeypatch, _capture_popen, overrides
 ) -> None:
+    # The Windows group flag has its own test; pin the platform so this one runs everywhere.
+    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("LILBEE_LAUNCHER_SERVE_QUIET", "1")
 
     server_mod.spawn_server(8080, env_overrides=overrides)
@@ -577,6 +579,8 @@ class TestEnsureServerRunningRetries:
         return proc
 
     def test_retries_with_a_fresh_port_then_succeeds(self, monkeypatch) -> None:
+        # The stop asserted here is the POSIX one; the Windows stop has its own tests.
+        monkeypatch.setattr(sys, "platform", "linux")
         first, second = self._proc(), self._proc()
         monkeypatch.setattr(
             server_mod,
@@ -606,6 +610,7 @@ class TestEnsureServerRunningRetries:
     def test_gives_up_after_bounded_attempts(self, monkeypatch) -> None:
         import typer
 
+        monkeypatch.setattr(sys, "platform", "linux")
         procs = [self._proc() for _ in range(server_mod._SPAWN_ATTEMPTS)]
         monkeypatch.setattr(server_mod, "running_server_session", lambda: None)
         monkeypatch.setattr(

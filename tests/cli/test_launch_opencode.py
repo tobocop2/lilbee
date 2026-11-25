@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -25,6 +26,15 @@ _PORT = 8888
 def _write_server_session() -> None:
     server_json_path().write_text(json.dumps({"token": _TOKEN}))
     (cfg.data_dir / "server.port").write_text(str(_PORT))
+
+
+@pytest.fixture
+def posix_stop(monkeypatch):
+    """Pin the platform so the launcher stops serve with terminate(), as on POSIX.
+
+    Windows stops serve with CTRL_BREAK instead; that stop has its own tests.
+    """
+    monkeypatch.setattr(sys, "platform", "linux")
 
 
 @pytest.fixture(autouse=True)
@@ -136,6 +146,7 @@ def test_launch_opencode_with_running_server_writes_provider_into_config(tmp_pat
 
 
 @pytest.mark.no_health_default
+@pytest.mark.usefixtures("posix_stop")
 def test_launch_opencode_spawns_fresh_server_when_session_files_are_stale(tmp_path):
     """A leftover server.port from a crashed server must not poison reuse."""
     _write_server_session()
@@ -518,6 +529,7 @@ def test_launch_opencode_warns_when_configured_chat_model_not_installed(tmp_path
     assert "is not installed" in result.output
 
 
+@pytest.mark.usefixtures("posix_stop")
 def test_launch_opencode_spawns_server_when_none_running():
     fake_opencode = "/usr/local/bin/opencode"
     completed = MagicMock(returncode=0)
@@ -541,6 +553,7 @@ def test_launch_opencode_spawns_server_when_none_running():
     fake_proc.terminate.assert_called_once()
 
 
+@pytest.mark.usefixtures("posix_stop")
 def test_launch_opencode_health_timeout_terminates_spawn_and_exits_1():
     from lilbee.cli.launchers.server import _SPAWN_ATTEMPTS
 
@@ -560,6 +573,7 @@ def test_launch_opencode_health_timeout_terminates_spawn_and_exits_1():
     assert fake_proc.terminate.call_count == _SPAWN_ATTEMPTS
 
 
+@pytest.mark.usefixtures("posix_stop")
 def test_launch_opencode_health_ok_but_session_missing_exits_1():
     """Health endpoint replies but server.json never lands (rare race)."""
     fake_opencode = "/usr/local/bin/opencode"
@@ -743,6 +757,7 @@ def test_spawn_server_returns_popen(monkeypatch):
     assert out is fake
 
 
+@pytest.mark.usefixtures("posix_stop")
 def test_stop_spawned_server_kills_on_terminate_timeout():
     import subprocess as _subprocess
 
