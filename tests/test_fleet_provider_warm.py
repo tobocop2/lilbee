@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import functools
 import json
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -524,6 +525,44 @@ def test_the_device_check_holds_a_reservation_for_its_requests(
     assert held == [1]
     assert client.in_flight == 0
     assert client.needs_device_check is False
+
+
+def test_a_client_without_a_load_request_reads_the_device_of_the_running_model() -> None:
+    client = LlamaServerClient(
+        "http://swap.test", MODEL_ID, profile=LEMONADE.request_profile(WorkerRole.EMBED)
+    )
+    asked: list[str] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        asked.append(request.url.path)
+        return _answer({RUNNING: READY, HEALTH: ON_NPU}[request.url.path], request)
+
+    _attach(client, answer)
+    client.ensure_device()
+    assert asked == [RUNNING, HEALTH]
+    assert client.needs_device_check is False
+
+
+def test_a_request_that_waited_out_another_check_reads_nothing_itself() -> None:
+    client, asked = _client(WorkerRole.EMBED, LEMONADE.request_profile, {HEALTH: ON_NPU})
+    at_the_lock = threading.Event()
+    real_raise = client._raise_device_refusal
+
+    def raise_and_signal() -> None:
+        at_the_lock.set()
+        real_raise()
+
+    client._raise_device_refusal = raise_and_signal  # type: ignore[method-assign]
+    # The test holds the lock as a check on another thread would, and ends that check
+    # with a confirmed device while the request waits.
+    with client._device_lock:
+        waiter = threading.Thread(target=client.ensure_device)
+        waiter.start()
+        assert at_the_lock.wait(5)
+        client._device_ok = True
+    waiter.join(5)
+    assert not waiter.is_alive()
+    assert asked == []
 
 
 def test_d1_a_later_good_warm_clears_the_error_of_an_unreadable_health_reply(
