@@ -627,17 +627,24 @@ def indexed_stamps(labels: list[str]) -> dict[str, str]:
     }
 
 
+def unfinished_since(labels: list[str], before: dict[str, str]) -> list[str]:
+    """Each of *labels* with no file indexed since the stamps *before* were read.
+
+    A file is indexed since *before* when its source is new or its stamp changed.
+    """
+    finished = [name for name, stamp in indexed_stamps(labels).items() if before.get(name) != stamp]
+    return [label for label in labels if not any(is_under(name, label) for name in finished)]
+
+
 def forget_unfinished_roots(registration: RegisterResult, before: dict[str, str]) -> list[str]:
     """Undo each root *registration* made with no file indexed since *before*; returns them.
 
     A root that took in registered sources gives each back, registered at its
     folder again, before it leaves; the rows, records and wiki pages of a
-    source follow its folder, so none is rewritten. A file is indexed since
-    *before* when its source is new or its stamp changed.
+    source follow its folder, so none is rewritten.
     """
     labels = registration.registered
-    finished = [name for name, stamp in indexed_stamps(labels).items() if before.get(name) != stamp]
-    unfinished = [label for label in labels if not any(is_under(name, label) for name in finished)]
+    unfinished = unfinished_since(labels, before)
     if not unfinished:
         return []
     swapped = [label for label in unfinished if label in registration.absorbed_into.get(label, [])]
