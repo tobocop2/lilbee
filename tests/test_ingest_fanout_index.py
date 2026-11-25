@@ -639,6 +639,66 @@ class TestChunkTitlesOfAMixedBatch:
         assert None not in titles
 
 
+def _chunk(source: str, **extra) -> dict:
+    return {
+        "source": source,
+        "content_type": "text",
+        "chunk_type": "raw",
+        "page_start": 0,
+        "page_end": 0,
+        "line_start": 0,
+        "line_end": 0,
+        "chunk": f"{source} text",
+        "chunk_index": 0,
+        "vector": [0.1] * cfg.embedding_dim,
+        **extra,
+    }
+
+
+def _titles_by_source(library: Library) -> dict[str, list[str | None]]:
+    table = Store(cfg).open_table("chunks")
+    assert table is not None
+    ids = table.to_arrow().column("source_id").to_pylist()
+    paths = Store(cfg).source_paths(ids)
+    titles = table.to_arrow().column("title").to_pylist()
+    return {paths[i]: [t] for i, t in zip(ids, titles, strict=True)}
+
+
+class TestARecordWithoutATitle:
+    def test_a_record_without_a_title_does_not_null_the_title_of_the_next(self, tmp_path):
+        """The store builds the rows against the table's schema, not from the first record."""
+        library = Library(tmp_path / "lib", 1)
+        library.write("bare.txt", "x")
+        library.write("titled.txt", "y")
+        Store(cfg).add_chunks([_chunk("bare.txt"), _chunk("titled.txt", title="Kept")])
+
+        assert _titles_by_source(library) == {"bare.txt": [None], "titled.txt": ["Kept"]}
+
+    def test_a_flush_that_starts_with_an_untitled_record_keeps_the_later_titles(self, tmp_path):
+        from lilbee.data.types import _IngestResult
+
+        library = Library(tmp_path / "lib", 1)
+        results = [
+            _IngestResult(
+                name=name,
+                path=library.write(name, name),
+                chunk_count=1,
+                error=None,
+                file_hash=name,
+                records=[_chunk(name, **extra)],
+            )
+            for name, extra in (("bare.txt", {}), ("one.txt", {"title": "One"}), ("two.txt", {"title": "Two"}))
+        ]
+
+        pipeline_mod._flush_batch(results)
+
+        assert _titles_by_source(library) == {
+            "bare.txt": [None],
+            "one.txt": ["One"],
+            "two.txt": ["Two"],
+        }
+
+
 _STOPS = ("before_the_start", "first_report", "every_report", "in_a_write")
 
 
