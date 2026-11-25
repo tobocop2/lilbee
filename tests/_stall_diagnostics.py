@@ -7,8 +7,9 @@ whose text holds the snapshot and the tail of the child's output, so the failure
 
 The snapshot lists every descendant of this process: its state, its command, and on Linux its
 kernel wait channel and signal masks from ``/proc``. When ``py-spy`` is on ``PATH`` and the
-kernel lets this user attach, it adds a stack dump of each descendant. Other systems skip the
-``/proc`` fields and still get the tree.
+kernel lets this user attach, it adds a stack dump of each descendant. Where the kernel denies the
+attach, ``LILBEE_TEST_STALL_SUDO=1`` retries with ``sudo -n``; the CI test job sets it on Linux.
+Other systems skip the ``/proc`` fields and still get the tree.
 """
 
 from __future__ import annotations
@@ -31,6 +32,10 @@ _PY_SPY_LIMIT_S = 5.0
 _PY_SPY_TAIL_CHARS = 3500
 _COMMAND_CHARS = 160
 _JOIN_WAIT_S = 10.0
+# A run that ends in time must not wait for a snapshot still in progress.
+_EXIT_JOIN_WAIT_S = 0.2
+SUDO_ENV = "LILBEE_TEST_STALL_SUDO"
+_DENIED = "Permission"
 _STATUS_FIELDS = ("State", "PPid", "SigBlk", "SigIgn", "SigCgt")
 _PROC = Path("/proc")
 
@@ -54,19 +59,33 @@ def _py_spy_dump(pid: int, py_spy: str | None) -> str:
     """The stacks of one process, or the reason there are none."""
     if py_spy is None:
         return f"{_PY_SPY} is not on PATH"
+    command = [os.path.abspath(py_spy), "dump", "--pid", str(pid)]
+    dumped, text = _run_py_spy(command)
+    if not dumped and _DENIED in text:
+        # Yama ptrace scope 1 lets only root attach to a child. sudo is opt in: a developer's
+        # laptop can hold cached sudo credentials, and a test helper must not use them unasked.
+        if os.environ.get(SUDO_ENV) == "1":
+            _, text = _run_py_spy(["sudo", "-n", *command])
+        else:
+            text += f" (set {SUDO_ENV}=1 to retry with sudo -n)"
+    return f"{_PY_SPY} dump of pid {pid}: {text}"
+
+
+def _run_py_spy(command: list[str]) -> tuple[bool, str]:
+    """Run one py-spy command; return whether it dumped, and its stacks or its error text."""
     try:
         done = subprocess.run(
-            [py_spy, "dump", "--pid", str(pid)],
+            command,
             capture_output=True,
             encoding="utf-8",
             errors="replace",
             timeout=_PY_SPY_LIMIT_S,
         )
     except (OSError, subprocess.TimeoutExpired) as err:
-        return f"{_PY_SPY} failed: {err!r}"
-    text = done.stdout[-_PY_SPY_TAIL_CHARS:] if done.returncode == 0 else done.stderr
-    text = text.strip() or f"exited {done.returncode} with no output"
-    return f"{_PY_SPY} dump of pid {pid}: {text}"
+        return False, f"failed: {err!r}"
+    if done.returncode == 0:
+        return True, done.stdout[-_PY_SPY_TAIL_CHARS:].strip()
+    return False, done.stderr.strip() or f"exited {done.returncode} with no output"
 
 
 def _describe(proc: psutil.Process, *, on_linux: bool, with_stacks: bool) -> list[str]:
@@ -138,7 +157,7 @@ class StallWatch:
         tb: TracebackType | None,
     ) -> None:
         self._done.set()
-        self._thread.join(_JOIN_WAIT_S)
+        self._thread.join(_EXIT_JOIN_WAIT_S)
 
     def _run(self) -> None:
         if not self._done.wait(self._delay_s):
