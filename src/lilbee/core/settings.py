@@ -18,7 +18,7 @@ from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
 from lilbee.core.config.defaults import SKIP_TOML_ENV
 from lilbee.core.config.enums import SettingSource
 from lilbee.core.config.load_warnings import warn_on_load
-from lilbee.core.config.model import refusal_sentence, read_toml_values, toml_value
+from lilbee.core.config.model import read_toml_values, refusal_sentence, toml_value
 from lilbee.core.config.resolve import (
     PROFILE_NAME_KEY,
     PROFILE_TABLE,
