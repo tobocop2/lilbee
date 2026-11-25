@@ -76,9 +76,7 @@ def _batch_sizes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "chunk_size", CHUNK)
 
 
-def _charge(
-    path: Path, role: WorkerRole | None, ctx: int = CTX, *, on_cpu: bool = True
-) -> int:
+def _charge(path: Path, role: WorkerRole | None, ctx: int = CTX, *, on_cpu: bool = True) -> int:
     return OVMS.estimate_memory(_request(path, role, ctx, on_cpu=on_cpu)).shared_bytes
 
 
