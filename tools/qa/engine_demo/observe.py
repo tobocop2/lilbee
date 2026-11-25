@@ -17,14 +17,13 @@ Known limits:
 - ``engine use`` refuses a role whose model is not set, and accepts only the
   stored ref, which is the full file ref of a bare repo ref. The embed role is
   set with ``lilbee use-embedder``, and ``engine roles`` names the ref it stored.
-  ``lilbee model use`` sets the chat, rerank and vision model too. The demo sets
-  those roles through the server's model routes in one short server session, and
-  each route's reply names the stored ref.
+  ``lilbee model use`` sets the chat, rerank and vision model, and its JSON reply
+  names the stored ref.
 - The engines-left-running steps only record the processes below the server that
   outlive it, each with its command line. No oracle reads them: the engine reaper
   and a kept-warm engine outlive the server by design. A run on a host calibrates
   what a normal leftover looks like.
-- The server session starts the server on port 0 and reads the bound port from
+- The chat step's server session starts the server on port 0 and reads the bound port from
   data/server.port, which the server writes after it binds. It reads the token
   from data/server.json, where the server writes it under the default data
   folder layout.
@@ -62,12 +61,6 @@ REQUEST_ERROR_EXIT_CODE = 1
 
 _LOOPBACK = "127.0.0.1"
 _CHAT_PATH = "/api/chat"
-# The server route that sets the model of each role the CLI has no command for.
-_MODEL_ROUTES = {
-    WorkerRole.CHAT: "/api/models/chat",
-    WorkerRole.RERANK: "/api/models/reranker",
-    WorkerRole.VISION: "/api/models/vision",
-}
 _SESSION_FILE = Path("data") / "server.json"
 _PORT_FILE = Path("data") / "server.port"
 _POLL_S = 0.1
@@ -158,7 +151,7 @@ def observe(plan: RunPlan, run_dir: Path) -> Transcript:
             cli(StepName.PREFER, "engine", "prefer", plan.engines[role], "--yes"),
             cli(StepName.PULL, "model", "pull", ref),
         ]
-    set_steps, stored = _set_models(plan.models, cli, session)
+    set_steps, stored = _set_models(plan.models, cli)
     steps += set_steps
     steps += [
         *(
@@ -190,7 +183,6 @@ def observe(plan: RunPlan, run_dir: Path) -> Transcript:
 def _set_models(
     models: Mapping[WorkerRole, str],
     cli: Callable[..., Step],
-    session: Callable[..., list[Step]],
 ) -> tuple[list[Step], dict[WorkerRole, str]]:
     """Set the model of each role; returns the steps and the ref each role stored."""
     steps: list[Step] = []
@@ -200,17 +192,11 @@ def _set_models(
         read = cli(StepName.STORED_MODELS, "--json", "engine", "roles", json_output=True)
         steps.append(read)
         stored[WorkerRole.EMBED] = _role_model(read, WorkerRole.EMBED, models[WorkerRole.EMBED])
-    routed_roles = [role for role in models if role in _MODEL_ROUTES]
-    if routed_roles:
-        routed = session(
-            *(
-                _Request(StepName.SET_MODEL, "PUT", _MODEL_ROUTES[role], {"model": models[role]})
-                for role in routed_roles
-            )
-        )
-        steps += routed
-        replies = routed[:-1]  # the last step records the processes left running
-        for role, step in zip(routed_roles, replies, strict=True):
+    for role in models:
+        if role is not WorkerRole.EMBED:
+            args = ("--json", "model", "use", str(role), models[role])
+            step = cli(StepName.SET_MODEL, *args, json_output=True)
+            steps.append(step)
             stored[role] = _stored_model(step, models[role])
     return steps, stored
 
