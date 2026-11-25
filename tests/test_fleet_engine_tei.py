@@ -240,7 +240,7 @@ def test_a_large_vocabulary_is_charged_its_load_peak_on_a_cpu_build(
     assert charge >= 4617 * _MIB
 
 
-def test_a_small_vocabulary_is_charged_within_a_third_of_its_load_peak_on_a_cpu_build(
+def test_a_small_vocabulary_is_charged_within_1_3_times_its_load_peak_on_a_cpu_build(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps())
