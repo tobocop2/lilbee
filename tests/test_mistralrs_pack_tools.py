@@ -1146,20 +1146,30 @@ def test_the_pack_has_a_cuda_stage() -> None:
     assert "check_cuda_libs" in check
 
 
-def test_the_pack_matrix_holds_the_cpu_cells_and_the_six_cuda_cells() -> None:
-    cells = pack_cells("mistralrs")
-    assert {cell["cell"] for cell in cells} == {
-        "mistralrs-linux-x86_64-cpu",
-        "mistralrs-windows-x86_64-cpu",
-        "mistralrs-macos-arm64-metal",
-        *(f"mistralrs-linux-x86_64-cuda-sm{cc}" for cc in (80, 86, 89, 90, 100, 120)),
-    }
-    for cell in cells:
-        if "cuda" in cell["cell"]:
-            # The features of the cuda128 archives in the linux-cuda matrix of the v0.9.5
-            # release.yml: features: "cuda flash-attn nccl".
-            assert cell["rust_features"] == "cuda,flash-attn,nccl"
-            assert cell["asset"].startswith("mistralrs-cuda128-sm")
+_MISTRAL_CPU_CELLS = {
+    "mistralrs-linux-x86_64-cpu",
+    "mistralrs-windows-x86_64-cpu",
+    "mistralrs-macos-arm64-metal",
+}
+_MISTRAL_CUDA_CELLS = {f"mistralrs-linux-x86_64-cuda-sm{cc}" for cc in (80, 86, 89, 90, 100, 120)}
+
+
+def test_the_pack_matrix_holds_the_cpu_cells_and_either_no_cuda_cell_or_the_six() -> None:
+    """The packs check runs this test at its tag both before and after the CUDA cells land."""
+    cells = {cell["cell"]: cell for cell in pack_cells("mistralrs")}
+    cuda = set(cells) - _MISTRAL_CPU_CELLS
+    assert set(cells) >= _MISTRAL_CPU_CELLS
+    assert cuda in (set(), _MISTRAL_CUDA_CELLS)
+    for name in cuda:
+        # The features of the cuda128 archives in the linux-cuda matrix of the v0.9.5
+        # release.yml: features: "cuda flash-attn nccl".
+        assert cells[name]["rust_features"] == "cuda,flash-attn,nccl"
+        assert cells[name]["asset"].startswith("mistralrs-cuda128-sm")
+
+
+def test_the_pack_matrix_holds_the_six_cuda_cells_that_the_pick_names() -> None:
+    cells = {cell["cell"] for cell in pack_cells("mistralrs")}
+    assert cells == _MISTRAL_CPU_CELLS | _MISTRAL_CUDA_CELLS
 
 
 def test_the_repack_takes_exactly_the_five_cuda_libraries() -> None:
