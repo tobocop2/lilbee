@@ -741,7 +741,13 @@ def test_your_changes_lists_only_the_values_that_differ_from_the_profile(store):
     _prepend_config("chunk_size = 384\ntop_k = 7\n")
     assert [row.key for row in profiles.your_changes()] == ["top_k"]
     assert [row.key for row in profiles.active(store).changes] == ["top_k"]
-    _write_config("chunk_size = 384\n")
+
+
+def test_your_changes_treats_an_int_and_a_float_of_the_same_number_as_equal(store):
+    # The setting is a float, so the model coerces 1 to 1.0: the same effective value.
+    _write(_global_dir(), "mine", "[values]\nmax_distance = 1.0\n")
+    profiles.apply(store, "mine")
+    _prepend_config("max_distance = 1\n")
     assert profiles.your_changes() == ()
 
 
