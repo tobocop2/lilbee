@@ -7788,6 +7788,42 @@ class TestModelBarScanRaces:
         assert bar._options_cache == {}  # nothing cached; the next scan retries
         refresh.assert_called_once()
 
+    def test_a_scan_that_cannot_read_the_registry_reports_it_and_populates_nothing(self) -> None:
+        from unittest import mock
+
+        from lilbee.cli.tui.widgets import model_bar
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        bar = mock.MagicMock()
+        error = OSError("manifests unreadable")
+        with (
+            mock.patch.object(model_bar, "classify_installed_models_full", side_effect=error),
+            mock.patch.object(model_bar, "call_from_thread") as post,
+        ):
+            ModelBar._scan_models.__wrapped__(bar)
+        post.assert_called_once_with(bar, bar._scan_failed, error)
+        bar._populate.assert_not_called()
+
+    def test_a_failed_scan_notifies_with_an_error(self) -> None:
+        from unittest import mock
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        bar = mock.MagicMock()
+        ModelBar._scan_failed(bar, OSError("manifests unreadable"))
+        assert "manifests unreadable" in bar.notify.call_args.args[0]
+        assert bar.notify.call_args.kwargs["severity"] == "error"
+
+    def test_a_listing_failure_from_an_ended_completion_session_is_dropped(self) -> None:
+        from unittest import mock
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = mock.MagicMock()
+        screen._model_session = 2
+        ChatScreen._models_unreadable(screen, 1, OSError("manifests unreadable"))
+        screen.notify.assert_not_called()
+
     def test_cloud_warning_refresh_survives_an_unmounted_bar(self) -> None:
         from unittest import mock
 

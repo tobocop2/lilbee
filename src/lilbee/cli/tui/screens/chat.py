@@ -3227,8 +3227,7 @@ class ChatScreen(Screen[None]):
         try:
             names = list_model_options()
         except OSError as exc:
-            if not _get_worker().is_cancelled:
-                call_from_thread(self, self._models_unreadable, session, exc)
+            call_from_thread(self, self._models_unreadable, session, exc)
             return
         if _get_worker().is_cancelled:
             return
