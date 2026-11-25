@@ -1612,6 +1612,121 @@ def test_a_signal_on_another_thread_ends_an_idle_loop_with_its_status():
     provider.shutdown.assert_called_once()
 
 
+class _NoSignalHandlerLoop(asyncio.SelectorEventLoop):
+    """A loop shaped like the Windows proactor: no signal handlers, its own wakeup descriptor.
+
+    The proactor points the signal wakeup descriptor at its self-pipe when it is made on
+    the main thread, so a signal that lands while it waits wakes it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._wakeup_before = signal.set_wakeup_fd(self._csock.fileno())
+
+    def add_signal_handler(self, sig, callback, *args):
+        raise NotImplementedError
+
+    def close(self) -> None:
+        signal.set_wakeup_fd(self._wakeup_before)
+        super().close()
+
+
+# On Windows the real loop runs the test; elsewhere a loop that refuses signal handlers
+# as it does.
+_WINDOWS_LOOP = getattr(asyncio, "ProactorEventLoop", _NoSignalHandlerLoop)
+
+
+def _record_loop_signals(monkeypatch) -> list[int]:
+    """Record every signal that reaches the stop as a loop callback."""
+    taken: list[int] = []
+    on_loop_signal = services_mod._lifecycle.on_loop_signal
+
+    def recording_loop_signal(signum: int) -> None:
+        taken.append(signum)
+        on_loop_signal(signum)
+
+    monkeypatch.setattr(services_mod._lifecycle, "on_loop_signal", recording_loop_signal)
+    return taken
+
+
+def test_a_loop_with_no_signal_handlers_still_takes_ctrl_c_as_a_callback(monkeypatch):
+    """On Windows the press is queued for the loop, so the exit never lands mid-step."""
+    provider = _install_stub_services()
+    loop_signals = _record_loop_signals(monkeypatch)
+    previous = signal.getsignal(signal.SIGINT)
+    ready = threading.Event()
+    sender = threading.Thread(target=_signal_once_the_loop_runs, args=(ready,))
+
+    async def idle() -> None:
+        loop = asyncio.get_running_loop()
+        with loop_takes_signals(loop):
+            loop.call_soon(ready.set)
+            sender.start()
+            await asyncio.sleep(30)
+
+    try:
+        install_engine_lifecycle_hooks()
+        stop_on_interrupt()
+        interrupt_handler = signal.getsignal(signal.SIGINT)
+        started = time.monotonic()
+        with (
+            pytest.raises(SystemExit) as raised,
+            asyncio.Runner(loop_factory=_WINDOWS_LOOP) as runner,
+        ):
+            runner.run(idle())
+        waited = time.monotonic() - started
+        _join_teardown()
+        after = signal.getsignal(signal.SIGINT)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        sender.join(timeout=5)
+
+    assert raised.value.code == 128 + signal.SIGINT
+    assert loop_signals == [signal.SIGINT]
+    assert waited < 10  # the wakeup descriptor woke the loop; it did not sleep out the 30 s
+    assert after == interrupt_handler
+    provider.shutdown.assert_called_once()
+
+
+def test_a_second_ctrl_c_in_a_loop_with_no_signal_handlers_force_quits(monkeypatch):
+    """The queued callback reaches the one handler: the second press ends the process."""
+    provider = _install_stub_services()
+    forced: list[int] = []
+    monkeypatch.setattr(services_mod, "_force_quit_from_handler", forced.append)
+    loop_signals = _record_loop_signals(monkeypatch)
+    # A registered server hook takes the first press, so the callback does not raise.
+    set_server_exit_hook(lambda _status: None)
+    previous = signal.getsignal(signal.SIGINT)
+
+    async def until(condition) -> None:
+        async with asyncio.timeout(10):
+            while not condition():
+                await asyncio.sleep(0.01)
+
+    async def serve() -> None:
+        with loop_takes_signals(asyncio.get_running_loop()):
+            signal.raise_signal(signal.SIGINT)
+            await until(lambda: services_mod._lifecycle._signalled)
+            first_press_forced = list(forced)
+            signal.raise_signal(signal.SIGINT)
+            await until(lambda: forced)
+            assert first_press_forced == []
+
+    try:
+        stop_on_interrupt()
+        with asyncio.Runner(loop_factory=_WINDOWS_LOOP) as runner:
+            runner.run(serve())
+        _join_teardown()
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        set_server_exit_hook(lambda _status: None)
+        set_server_exit_hook(None)
+
+    assert forced == [128 + signal.SIGINT]
+    assert loop_signals == [signal.SIGINT, signal.SIGINT]
+    provider.shutdown.assert_called_once()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
 def test_a_second_ctrl_c_in_a_loop_owned_loop_force_quits(monkeypatch):
     """The loop callback reaches the one handler: the second press ends the process."""

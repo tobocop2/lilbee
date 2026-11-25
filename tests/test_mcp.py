@@ -1415,7 +1415,6 @@ class TestMain:
         assert "The services build failed" not in caplog.text
         mock_build.assert_not_called()
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SIGTERM handler to keep")
     @mock.patch("lilbee.mcp_server.build_mcp_server")
     def test_main_gives_the_terminate_handler_back_when_the_loop_ends(self, mock_build):
         """The loop takes SIGTERM while it serves, and its close returns the handler it found."""
