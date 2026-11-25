@@ -37,19 +37,20 @@ from lilbee.server.models import (
     ProfileValidateRequest,
     ProfileValidationResponse,
 )
+from lilbee.server.routes.engines import NO_LIBRARY_KEY
 
 PROFILE_MEDIA_TYPE = "application/toml"
 # JSON escapes one byte of a file to at most six characters; the rest covers the other fields
 PROFILE_BODY_MAX_BYTES = 6 * MAX_PROFILE_BYTES + 64 * 1024
 
 
-@get("/api/profiles", raises=FILE_ERRORS)
+@get("/api/profiles", raises=FILE_ERRORS, opt={NO_LIBRARY_KEY: True})
 async def profiles_list_route() -> ProfileListResponse:
     """Every profile file, Default first, built-ins next; broken files carry their reason."""
     return await handlers.list_profiles()
 
 
-@get("/api/profiles/active", raises=FILE_ERRORS)
+@get("/api/profiles/active", raises=FILE_ERRORS, opt={NO_LIBRARY_KEY: True})
 async def profiles_active_route() -> ActiveProfileResponse:
     """The project's applied profile and whether its file is current, changed, gone or broken."""
     return await handlers.active_profile()
@@ -119,13 +120,13 @@ async def profiles_validate_route(data: ProfileValidateRequest) -> ProfileValida
     return await handlers.validate_profile(data)
 
 
-@get("/api/profiles/{name:str}", raises=NAMED_ERRORS)
+@get("/api/profiles/{name:str}", raises=NAMED_ERRORS, opt={NO_LIBRARY_KEY: True})
 async def profiles_show_route(name: FromPath[str]) -> ProfileEntryResponse:
     """The profile *name* picks."""
     return await handlers.show_profile(name)
 
 
-@get("/api/profiles/{name:str}/diff", raises=NAMED_ERRORS)
+@get("/api/profiles/{name:str}/diff", raises=NAMED_ERRORS, opt={NO_LIBRARY_KEY: True})
 async def profiles_diff_route(name: FromPath[str]) -> ProfileDiffResponse:
     """What applying the profile changes and which values of yours it keeps."""
     return await handlers.diff_profile(name)
@@ -189,7 +190,12 @@ async def profiles_delete_route(name: FromPath[str]) -> ProfileLocationResponse:
     return await handlers.delete_profile(name)
 
 
-@get("/api/profiles/{name:str}/export", media_type=PROFILE_MEDIA_TYPE, raises=NAMED_ERRORS)
+@get(
+    "/api/profiles/{name:str}/export",
+    media_type=PROFILE_MEDIA_TYPE,
+    raises=NAMED_ERRORS,
+    opt={NO_LIBRARY_KEY: True},
+)
 async def profiles_export_route(name: FromPath[str]) -> Response[str]:
     """Download the profile as a clean file."""
     exported = await handlers.export_profile(name)

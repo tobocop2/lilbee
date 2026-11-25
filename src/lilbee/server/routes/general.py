@@ -36,6 +36,7 @@ from lilbee.server.models import (
     SourceContentResponse,
     StatusResponse,
 )
+from lilbee.server.routes.engines import NO_LIBRARY_KEY
 
 
 @get("/api/health")
@@ -77,13 +78,13 @@ async def shutdown_route() -> Response[ShutdownResponse]:
     )
 
 
-@get("/api/config")
+@get("/api/config", opt={NO_LIBRARY_KEY: True})
 async def config_route() -> ConfigResponse:
     """Return all user-facing configuration values."""
     return await handlers.get_config()
 
 
-@get("/api/config/defaults")
+@get("/api/config/defaults", opt={NO_LIBRARY_KEY: True})
 async def config_defaults_route() -> ConfigResponse:
     """Return canonical defaults for every writable, public configuration field."""
     return await handlers.get_config_defaults()
@@ -104,13 +105,13 @@ async def config_reset_route(data: ConfigResetRequest) -> ConfigUpdateResponse:
         ) from exc
 
 
-@get("/api/config/schema")
+@get("/api/config/schema", opt={NO_LIBRARY_KEY: True})
 async def config_schema_route() -> ConfigSchemaResponse:
     """Return type, choices, writability and reindex metadata for every public field."""
     return await handlers.get_config_schema()
 
 
-@get("/api/config/sources")
+@get("/api/config/sources", opt={NO_LIBRARY_KEY: True})
 async def config_sources_route() -> ConfigSourcesResponse:
     """Return the layer that supplies each configuration value."""
     return await handlers.get_config_sources()
