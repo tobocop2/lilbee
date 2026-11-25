@@ -38,6 +38,42 @@ def _manifest(ref: str):
     return manifest
 
 
+@pytest.fixture
+def unknown_task_model() -> str:
+    """A model whose manifest names a task this lilbee does not know (a newer writer)."""
+    return install_fake_model("other/Plain-Chat-GGUF", "plain-Q4_K_M.gguf", "bogus")
+
+
+class TestUnknownTaskStaysListed:
+    """An unknown task string loads as stored, so the user can still see and remove the model."""
+
+    def test_registry_lists_it_with_the_stored_string(self, unknown_task_model: str) -> None:
+        manifests = ModelRegistry(cfg.models_dir).list_installed()
+        assert [(m.ref, m.task) for m in manifests] == [(unknown_task_model, "bogus")]
+
+    def test_model_list_table_shows_it(self, unknown_task_model: str) -> None:
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        with patch("lilbee.app.models._collect_backend_entries", return_value=[]):
+            result = CliRunner().invoke(app, ["model", "list"])
+        assert result.exit_code == 0, result.output
+        assert unknown_task_model in result.output
+
+    def test_model_list_json_shows_it(self, unknown_task_model: str) -> None:
+        import json
+
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        with patch("lilbee.app.models._collect_backend_entries", return_value=[]):
+            result = CliRunner().invoke(app, ["--json", "model", "list"])
+        assert result.exit_code == 0, result.output
+        assert unknown_task_model in [m["name"] for m in json.loads(result.output)["models"]]
+
+
 class TestManifestLabel:
     def test_registry_reports_vision(self, smolvlm_stored_as_chat: str) -> None:
         assert _manifest(smolvlm_stored_as_chat).task == ModelTask.VISION
