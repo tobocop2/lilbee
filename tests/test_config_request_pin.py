@@ -196,7 +196,7 @@ def test_a_refresh_inside_a_request_reads_the_new_file_value():
     _write_from_another_process("top_k", 12, tick=1)
     cfg.top_k = 12
     follower = ConfigFileFollower()
-    set_config_refresh(follower.take_now)
+    set_config_refresh(follower.refresh_now)
     try:
         with request_config_scope():
             _write_from_another_process("top_k", 19, tick=2)

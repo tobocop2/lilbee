@@ -1943,7 +1943,7 @@ class LilbeeMCP(MCPServer):
         middleware, which already takes the file once per request.
         """
         self._config_follower = ConfigFileFollower()
-        set_config_refresh(self._config_follower.take_now)
+        set_config_refresh(self._config_follower.refresh_now)
 
     async def call_tool(
         self,
