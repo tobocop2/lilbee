@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 import os
 import sys
 import threading
-import time
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -77,7 +75,6 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_THEME = "rose-pine"  # muted, low-glare; easier on the eyes than the warmer themes
 _CHAT_SCREEN_NAME = "chat"
-_UNWIND_POLL_S = 0.01
 # Textual's default screen, then the current view; anything higher is pushed over the view.
 _VIEW_DEPTH = 2
 # Long enough that a model-fallback notice or a load warning is readable before it fades.
@@ -816,16 +813,13 @@ class LilbeeApp(App[None]):
             self._theme_index = 0
 
     async def on_unmount(self) -> None:
-        """Cancel the tasks, then wait for every task-bar worker that still calls into this app.
+        """Wait for the task-bar workers to return before the app is gone.
 
         A worker past its task has left the worker map, so ``stop_all`` does not join it, and
-        a worker inside its task may be about to leave. The wait pumps the loop, which runs
-        each worker's calls and lets its thread return.
+        a worker inside its task may be about to leave. The wait keeps this loop running, so
+        each worker's calls into the app complete and its thread returns.
         """
-        self.task_bar.begin_stop()
-        deadline = self.task_bar.start_exit_clock()
-        while self.task_bar.has_running_workers() and time.monotonic() < deadline:
-            await asyncio.sleep(_UNWIND_POLL_S)
+        await self.task_bar.wait_for_exit()
 
     async def action_quit(self) -> None:
         """Context-aware Ctrl+C: cancel the foreground operation, else quit.
