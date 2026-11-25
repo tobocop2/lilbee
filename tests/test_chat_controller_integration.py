@@ -2092,6 +2092,34 @@ async def test_stop_all_spends_one_budget_on_the_drain_and_the_joins() -> None:
         assert 1.5 < elapsed < 3.5  # two waits of the budget take 4 seconds
 
 
+async def test_a_quit_spends_one_budget_on_the_unmount_wait_and_stop_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker that ignores its cancel costs the quit the budget once, not once per wait."""
+    import threading
+    import time
+
+    from lilbee.cli.tui.widgets import task_bar_controller
+
+    monkeypatch.setattr(task_bar_controller, "_EXIT_STOP_BUDGET_S", 1.0)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _ignores_cancel(_reporter: ProgressReporter) -> None:
+        entered.set()
+        release.wait(30.0)
+
+    app = LilbeeApp()
+    async with app.run_test():
+        app.task_bar.start_task("Sync", TaskType.SYNC, _ignores_cancel)
+        assert entered.wait(5.0)
+        left_at = time.monotonic()
+    app.task_bar.stop_all(budget_s=1.0)
+    total = time.monotonic() - left_at
+    release.set()
+    assert 0.9 < total < 1.6  # the unmount wait and the stop_all join, at 1 s each, take 2 s
+
+
 class _OwnedLock:
     """A lock that knows which thread holds it."""
 
