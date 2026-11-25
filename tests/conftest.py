@@ -288,6 +288,26 @@ def _restore_interactive_intent():
     services_mod._state.pool_watchers[:] = watchers
 
 
+_RESTORED_SIGNALS = tuple(
+    getattr(signal, name) for name in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, name)
+)
+
+
+@pytest.fixture(autouse=True)
+def _restore_signal_handlers():
+    """Give every test the worker's SIGINT, SIGTERM and SIGHUP handlers back.
+
+    An in-process serve or mcp command routes these signals to the engine stop for
+    the life of the process, and an xdist worker runs many tests. A leaked handler
+    turns a later test's Ctrl-C into an engine stop, and a leaked ignore reaches
+    every child the later tests start.
+    """
+    saved = {sig: signal.getsignal(sig) for sig in _RESTORED_SIGNALS}
+    yield
+    for sig, handler in saved.items():
+        signal.signal(sig, handler)
+
+
 @pytest.fixture(autouse=True)
 def _restore_server_stop_flag():
     """Snapshot the flag that says the server is stopping around every test.

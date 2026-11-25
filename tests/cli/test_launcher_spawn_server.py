@@ -24,6 +24,7 @@ from lilbee.cli.launchers import server as server_mod
 from lilbee.core.config import cfg
 from lilbee.runtime.lock import SERVER_LOCK_TIMEOUT, acquire_server_lock
 from tests._mock_effects import repeat_last
+from tests._signals import child_preexec
 from tests.conftest import clean_env
 
 # A stand-in for `lilbee serve`: it answers the health probe and writes the session
@@ -224,6 +225,7 @@ def _start_launcher(
         stderr=subprocess.PIPE,
         encoding="utf-8",
         start_new_session=True,
+        preexec_fn=child_preexec(),
     )
     assert launcher.stdout is not None
     try:
