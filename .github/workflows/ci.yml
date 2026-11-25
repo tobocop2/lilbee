@@ -265,6 +265,10 @@ jobs:
           # or asyncio's Windows transport teardown is patched upstream.
           - os: windows-latest
             python-version: "3.11"
+          # The hosted macOS cap is 5 concurrent jobs. One macOS cell per job
+          # keeps a run at 2 macOS jobs, so two runs fit in the cap at once.
+          - os: macos-latest
+            python-version: "3.12"
 
     steps:
       - uses: actions/checkout@v7
@@ -358,6 +362,14 @@ jobs:
         include:
           - python-version: "3.12"
             full-crawl: true
+        exclude:
+          # macOS runs one integration cell (3.12, which carries full-crawl).
+          # The Metal, MLX and launchd paths do not depend on the Python minor
+          # version, and the hosted macOS cap is 5 concurrent jobs.
+          - os: macos-latest
+            python-version: "3.11"
+          - os: macos-latest
+            python-version: "3.13"
     steps:
       - uses: actions/checkout@v7
 
