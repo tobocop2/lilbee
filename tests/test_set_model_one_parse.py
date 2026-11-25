@@ -233,3 +233,28 @@ class TestAdoptEmbedder:
         ):
             result = app_models.adopt_embedder("org/repo/f.gguf#gguf")
         assert result.warning == "Slow. No engine."
+
+    def test_a_missing_non_gguf_embedder_shows_the_no_engine_notice_once(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The pull and the settings update each report the real notice of the same model."""
+        from lilbee.app import settings as app_settings
+
+        ref = "org/repo#safetensors"
+        manager = MagicMock()
+        manager.is_installed.return_value = False
+        services = SimpleNamespace(model_manager=manager)
+        monkeypatch.setattr(app_models, "get_services", lambda: services)
+        monkeypatch.setattr(cfg, "embedding_model", ref)
+        monkeypatch.setattr(engine_choice, "installed_engines", dict)
+        _engine, pull_notice = ModelManager(tmp_path / "models", cfg)._pull_engine(ref)
+        (settings_notice,) = app_settings._no_engine_notices({"embedding_model"})
+        assert pull_notice and pull_notice == settings_notice
+        update = SimpleNamespace(reindex_required=False, warnings=(settings_notice,))
+        pulled = SimpleNamespace(warning=pull_notice)
+        with (
+            patch("lilbee.app.settings.apply_settings_update", return_value=update),
+            patch.object(app_models, "pull_model_data", return_value=pulled),
+        ):
+            result = app_models.adopt_embedder(ref)
+        assert result.warning == pull_notice
