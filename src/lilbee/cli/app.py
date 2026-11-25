@@ -11,7 +11,11 @@ from pydantic import ValidationError
 from typer._click import Context
 from typer.core import TyperCommand
 
-from lilbee.app.services import install_engine_lifecycle_hooks, report_library_upgrade
+from lilbee.app.services import (
+    follow_config_one_off,
+    install_engine_lifecycle_hooks,
+    report_library_upgrade,
+)
 from lilbee.app.version import get_version
 from lilbee.cli.helpers import json_output as json_out
 from lilbee.cli.upgrade_line import UpgradeLine
@@ -178,6 +182,8 @@ def apply_overrides(
     # Re-applied every call: a later call's data-root overlay resets the fields.
     for attr, value in _override_state.values.items():
         setattr(cfg, attr, value)
+    # The flags win over a later write of the same key to config.toml.
+    follow_config_one_off(frozenset(_override_state.values))
 
 
 def _refuse_environment(json_output: bool) -> None:
