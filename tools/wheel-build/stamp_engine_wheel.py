@@ -31,7 +31,7 @@ def main(argv: list[str]) -> None:
     if len(argv) != 4:
         raise SystemExit(__doc__)
     path = Path(argv[1])
-    path.write_text(stamp(path.read_text(encoding="utf-8"), argv[2], argv[3]), encoding="utf-8")
+    path.write_text(stamp(path.read_text(encoding="utf-8"), argv[2], argv[3]), encoding="utf-8", newline="\n")
 
 
 if __name__ == "__main__":

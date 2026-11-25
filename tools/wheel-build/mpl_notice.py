@@ -60,7 +60,7 @@ def main(argv: list[str]) -> None:
     lock = tomllib.loads(Path(argv[2]).read_text(encoding="utf-8"))
     text = notice(about, lock)
     if text is not None:
-        Path(argv[3]).write_text(text, encoding="utf-8")
+        Path(argv[3]).write_text(text, encoding="utf-8", newline="\n")
 
 
 if __name__ == "__main__":
