@@ -60,13 +60,18 @@ export ENGINE_PACKS_CELLS
 
 # The hang watchdog (tests/_hang_watchdog.py) prints every stack when a test runs long,
 # so a lost worker leaves a trace in the job log. This Makefile owns the seconds for
-# every test recipe, and CI sets only the folder. An empty value would switch the
-# watchdog off without a word, so make stops instead.
-export LILBEE_TEST_HANG_DUMP_S ?= 90
-export LILBEE_TEST_HANG_DUMP_DIR ?= $(or $(TMPDIR),/tmp)/lilbee-hang-dumps
+# the unit test recipes, and CI sets only the folder. An empty value would switch the
+# watchdog off without a word, so make stops instead. The integration and preset
+# recipes do not get the variables: the watchdog ignores a test's own timeout, so it
+# would kill a slow test that is marked to run longer.
+LILBEE_TEST_HANG_DUMP_S ?= 90
+LILBEE_TEST_HANG_DUMP_DIR ?= $(or $(TMPDIR),/tmp)/lilbee-hang-dumps
 ifeq ($(strip $(LILBEE_TEST_HANG_DUMP_S)),)
 $(error LILBEE_TEST_HANG_DUMP_S is empty: the hang watchdog would be off)
 endif
+UNIT_TEST_RECIPES := test test-ci test-ci-split test-ci-serial test-ci-forked
+$(UNIT_TEST_RECIPES): export LILBEE_TEST_HANG_DUMP_S := $(LILBEE_TEST_HANG_DUMP_S)
+$(UNIT_TEST_RECIPES): export LILBEE_TEST_HANG_DUMP_DIR := $(LILBEE_TEST_HANG_DUMP_DIR)
 
 test:
 	uv run pytest --cov=lilbee --cov-report=term-missing -v $(XDIST)
