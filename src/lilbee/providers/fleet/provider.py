@@ -211,6 +211,15 @@ _answered_replicas: contextvars.ContextVar[list[LlamaServerClient] | None] = con
 )
 
 
+def _read_logging_errors(read: Callable[[], None], role: WorkerRole) -> None:
+    """Run a memory report *read*; log an error, which no caller waits to see."""
+    try:
+        read()
+    except Exception as exc:
+        log.warning("The %s memory report could not be read: %s", role.value, exc)
+        log.debug("Memory report read failure detail.", exc_info=True)
+
+
 def _note_answered(client: LlamaServerClient) -> None:
     """Record that *client* answered, for the lazy warm owner that this call runs under."""
     answered = _answered_replicas.get()
@@ -693,7 +702,6 @@ def _call_with_failover(
         return _retry_on_other_replica(pool, client, call, exc)
     else:
         client.mark_healthy()
-        _note_answered(client)
         return result
     finally:
         client.release()
@@ -3599,17 +3607,18 @@ class FleetProvider:
     def _read_reports(self, role: WorkerRole, loaded: list[LlamaServerClient]) -> None:
         """Start the read of each *loaded* replica's memory report on a daemon thread.
 
-        No caller waits for the read, so a slow engine delays no warm and no request,
-        and an error in it goes to the thread hook.
+        The load is claimed here, on the caller's thread, so a read begun for an
+        older load records nothing. No caller waits for the read itself, so a slow
+        engine delays no warm and no request.
         """
         with self._lock:
             swap = self._swap_for(role)
         if swap is None or not loaded:
             return
-        model_ids = [client.model_id for client in loaded]
+        read = swap.claim_loaded([client.model_id for client in loaded])
         threading.Thread(
-            target=swap.check_loaded,
-            args=(model_ids,),
+            target=_read_logging_errors,
+            args=(read, role),
             name=f"fleet-report-{role.value}",
             daemon=True,
         ).start()

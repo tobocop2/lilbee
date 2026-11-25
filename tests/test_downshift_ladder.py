@@ -80,6 +80,9 @@ def test_a_ready_engine_clears_that_role(monkeypatch, tmp_path) -> None:
 
     mgr = sm.SwapManager.__new__(sm.SwapManager)
     mgr._estimate_checked = set()
+    mgr._placement_warnings = {}
+    mgr._spill_warnings = {}
+    mgr._load_generation = {}
     mgr._warnings_lock = threading.Lock()
     mgr._log_path = tmp_path / "swap.log"
     launch = type("L", (), {"role": WorkerRole.CHAT, "est_vram_bytes": 0, "argv": []})()
@@ -89,6 +92,23 @@ def test_a_ready_engine_clears_that_role(monkeypatch, tmp_path) -> None:
     mgr._check_estimates({"chat-0"})
 
     assert planning.apply_ctx_downshift(WorkerRole.CHAT, 32768) == 32768
+
+
+def test_a_late_read_keeps_a_downshift_recorded_after_its_load(tmp_path) -> None:
+    # The load clears the old reduction; an OOM after it records a new one, and the
+    # report read that the load started, running later, must not clear that one.
+    from lilbee.providers.fleet import swap_manager as sm
+    from lilbee.providers.fleet.groups import SwapGroup
+
+    planning.record_ctx_downshift(WorkerRole.CHAT)
+    mgr = sm.SwapManager(tmp_path, SwapGroup.CHAT)
+    launch = type("L", (), {"role": WorkerRole.CHAT, "est_vram_bytes": 0, "argv": []})()
+    mgr._launch_by_model = {"chat-0": launch}
+    read = mgr.claim_loaded(["chat-0"])
+    assert planning.apply_ctx_downshift(WorkerRole.CHAT, 32768) == 32768
+    planning.record_ctx_downshift(WorkerRole.CHAT)
+    read()
+    assert planning.apply_ctx_downshift(WorkerRole.CHAT, 32768) < 32768
 
 
 def test_a_role_that_was_never_sized_gets_one_step_and_no_more() -> None:

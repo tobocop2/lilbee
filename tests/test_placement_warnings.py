@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -178,7 +179,7 @@ class TestHostSpillInHealth:
         manager = self._manager(tmp_path, self._LOG)
         divergence = HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan")
         manager._estimate_checked.add("chat-0")
-        manager._record_findings("chat-0", divergence, [])
+        manager._record_findings("chat-0", 0, divergence, [])
         assert manager.health_warnings() == [divergence]
         manager._check_estimates(set())
         assert manager.health_warnings() == []
@@ -333,7 +334,7 @@ class TestFailedReadyProbe(_ProbedManager):
         manager = self._manager(tmp_path, ["/bin/llama-server"])
         assert manager.role_ready(WorkerRole.CHAT)
         divergence = HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan")
-        manager._record_findings("chat-0", divergence, manager.health_warnings())
+        manager._record_findings("chat-0", 0, divergence, manager.health_warnings())
         held = manager.health_warnings()
         assert {w.code for w in held} == {WarningCode.HOST_SPILL, WarningCode.PLACEMENT_DIVERGED}
         engine.running = None
@@ -347,7 +348,7 @@ class TestFailedReadyProbe(_ProbedManager):
         manager = self._manager(tmp_path, ["/bin/llama-server"])
         manager.role_ready(WorkerRole.CHAT)
         manager._record_findings(
-            "chat-0", HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off"), []
+            "chat-0", 0, HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off"), []
         )
         engine.running = []
         assert not manager.role_ready(WorkerRole.CHAT)
@@ -380,6 +381,11 @@ _SPILLED = {"data": [{"name": "CUDA0", "model": 4 * _GIB}, {"name": "Host", "mod
 _ON_CARD = {"data": [{"name": "CUDA0", "model": 4 * _GIB}]}
 
 
+def _read_load(manager, model_ids: list[str]) -> None:
+    """Claim the load of *model_ids* and run its read on this thread."""
+    manager.claim_loaded(model_ids)()
+
+
 class TestALoadTheCallerSaw(_ProbedManager):
     """A load that a warm or a lazy owner saw is read from the ids it names, with no poll."""
 
@@ -400,7 +406,7 @@ class TestALoadTheCallerSaw(_ProbedManager):
 
         engine, manager = self._memory_manager(tmp_path, monkeypatch, _SPILLED)
         engine.running = []
-        manager.check_loaded(["chat-0"])
+        _read_load(manager, ["chat-0"])
         assert self._codes(manager) == [WarningCode.HOST_SPILL]
 
     def test_a_log_engine_is_read_when_it_loads(self, tmp_path: Path, monkeypatch) -> None:
@@ -408,30 +414,30 @@ class TestALoadTheCallerSaw(_ProbedManager):
 
         self._engine(monkeypatch).running = []
         manager = self._manager(tmp_path, ["/bin/llama-server"])
-        manager.check_loaded(["chat-0"])
+        _read_load(manager, ["chat-0"])
         assert self._codes(manager) == [WarningCode.HOST_SPILL]
 
     def test_a_rewarm_with_no_poll_between_is_read_again(self, tmp_path: Path, monkeypatch) -> None:
         from lilbee.core.health_warnings import WarningCode
 
         engine, manager = self._memory_manager(tmp_path, monkeypatch, _SPILLED)
-        manager.check_loaded(["chat-0"])
+        _read_load(manager, ["chat-0"])
         assert self._codes(manager) == [WarningCode.HOST_SPILL]
         # The model reloaded with every layer on the card: a clean report clears the spill.
         engine.memory = _ON_CARD
-        manager.check_loaded(["chat-0"])
+        _read_load(manager, ["chat-0"])
         assert manager.health_warnings() == []
         engine.memory = _SPILLED
-        manager.check_loaded(["chat-0"])
+        _read_load(manager, ["chat-0"])
         assert self._codes(manager) == [WarningCode.HOST_SPILL]
 
     def test_a_failed_read_keeps_the_old_finding(self, tmp_path: Path, monkeypatch) -> None:
         from lilbee.core.health_warnings import WarningCode
 
         engine, manager = self._memory_manager(tmp_path, monkeypatch, _SPILLED)
-        manager.check_loaded(["chat-0"])
+        _read_load(manager, ["chat-0"])
         engine.memory = None  # /memory does not answer
-        manager.check_loaded(["chat-0"])
+        _read_load(manager, ["chat-0"])
         assert self._codes(manager) == [WarningCode.HOST_SPILL]
 
     def test_a_poll_after_the_load_does_not_read_it_again(
@@ -446,7 +452,7 @@ class TestALoadTheCallerSaw(_ProbedManager):
             return probe(url)
 
         monkeypatch.setattr(engine, "get", recording_get)
-        manager.check_loaded(["chat-0"])
+        _read_load(manager, ["chat-0"])
         assert manager.role_ready(WorkerRole.CHAT)
         assert reads.count("memory") == 1
 
@@ -454,6 +460,111 @@ class TestALoadTheCallerSaw(_ProbedManager):
         from lilbee.core.health_warnings import WarningCode
 
         _engine, manager = self._memory_manager(tmp_path, monkeypatch, _SPILLED)
-        manager.check_loaded(["chat-0"])
-        manager.check_loaded(["ghost-0"])
+        _read_load(manager, ["chat-0"])
+        _read_load(manager, ["ghost-0"])
         assert self._codes(manager) == [WarningCode.HOST_SPILL]
+
+    def test_a_restarted_swap_reads_its_engines_again(self, tmp_path: Path, monkeypatch) -> None:
+        from lilbee.core.health_warnings import WarningCode
+
+        self._engine(monkeypatch)
+        manager = self._manager(tmp_path, ["/bin/llama-server"])
+        assert manager.role_ready(WorkerRole.CHAT)
+        manager._clear_placement_warnings()  # what a stop and a start do
+        assert manager.role_ready(WorkerRole.CHAT)
+        assert self._codes(manager) == [WarningCode.HOST_SPILL]
+
+
+class TestALateRead(_ProbedManager):
+    """A read that a poll's unload, a stop or a newer load passed records nothing."""
+
+    def test_an_unload_during_a_log_read_leaves_no_finding(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.providers.fleet import swap_manager as sm
+
+        engine = self._engine(monkeypatch)
+        manager = self._manager(tmp_path, ["/bin/llama-server"])
+        real = sm.check_launch
+
+        def unloading(*args, **kwargs):
+            result = real(*args, **kwargs)
+            engine.running = []
+            assert not manager.role_ready(WorkerRole.CHAT)
+            return result
+
+        monkeypatch.setattr(sm, "check_launch", unloading)
+        _read_load(manager, ["chat-0"])
+        assert manager.health_warnings() == []
+
+    def test_an_unload_during_a_memory_read_leaves_no_finding(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.providers.fleet.readback import MEMORY_FLAG
+
+        engine = self._engine(monkeypatch)
+        engine.memory = _SPILLED
+        manager = self._manager(tmp_path, ["/bin/llama-server", MEMORY_FLAG])
+        real = engine.get
+
+        def unloading(url: str, timeout: float | None = None) -> _Answer:
+            answer = real(url)
+            if url.endswith("/memory"):
+                engine.running = []
+                assert not manager.role_ready(WorkerRole.CHAT)
+            return answer
+
+        monkeypatch.setattr(engine, "get", unloading)
+        _read_load(manager, ["chat-0"])
+        assert manager.health_warnings() == []
+
+    def test_a_stop_during_a_read_leaves_no_finding(self, tmp_path: Path, monkeypatch) -> None:
+        from lilbee.providers.fleet import swap_manager as sm
+
+        self._engine(monkeypatch)
+        manager = self._manager(tmp_path, ["/bin/llama-server"])
+        real = sm.check_launch
+
+        def stopping(*args, **kwargs):
+            result = real(*args, **kwargs)
+            manager._clear_placement_warnings()
+            return result
+
+        monkeypatch.setattr(sm, "check_launch", stopping)
+        _read_load(manager, ["chat-0"])
+        assert manager.health_warnings() == []
+
+    def test_a_poll_drops_a_finding_that_is_not_in_its_read_set(self, tmp_path: Path) -> None:
+        from lilbee.core.health_warnings import HealthWarning, WarningCode
+
+        manager = self._manager(tmp_path, ["/bin/llama-server"])
+        divergence = HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan")
+        manager._record_findings("chat-0", 0, divergence, [divergence])
+        manager._check_estimates(set())
+        assert manager.health_warnings() == []
+
+    def test_an_older_read_that_ends_last_does_not_replace_a_newer_one(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.providers.fleet.readback import MEMORY_FLAG
+
+        engine = self._engine(monkeypatch)
+        engine.memory = _SPILLED
+        manager = self._manager(tmp_path, ["/bin/llama-server", MEMORY_FLAG])
+        real = engine.get
+        reloaded = threading.Event()
+
+        def reloading(url: str, timeout: float | None = None) -> _Answer:
+            answer = real(url)
+            if url.endswith("/memory") and not reloaded.is_set():
+                reloaded.set()
+                engine.memory = _ON_CARD  # the engine reloads on the card, read B
+                _read_load(manager, ["chat-0"])
+            return answer
+
+        monkeypatch.setattr(engine, "get", reloading)
+        _read_load(manager, ["chat-0"])  # read A, which got the spilled report
+        assert manager.health_warnings() == []
+        for _ in range(3):
+            assert manager.role_ready(WorkerRole.CHAT)
+        assert manager.health_warnings() == []

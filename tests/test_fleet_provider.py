@@ -112,6 +112,7 @@ class _FakeSwap:
         self.running = True
         self.ready_records = 0
         # Each report read: the ids it was given and the thread it ran on.
+        self.claimed: list[tuple[list[str], str]] = []
         self.loaded_reads: list[tuple[list[str], str]] = []
         self.read_done = threading.Event()
         self.bound = False  # bound to a shared engine (set by the adopt/bind path)
@@ -145,9 +146,15 @@ class _FakeSwap:
     def record_ready(self) -> None:
         self.ready_records += 1
 
-    def check_loaded(self, model_ids) -> None:
-        self.loaded_reads.append((list(model_ids), threading.current_thread().name))
-        self.read_done.set()
+    def claim_loaded(self, model_ids):
+        ids = list(model_ids)
+        self.claimed.append((ids, threading.current_thread().name))
+
+        def read() -> None:
+            self.loaded_reads.append((ids, threading.current_thread().name))
+            self.read_done.set()
+
+        return read
 
     def health_warnings(self) -> list:
         return []
@@ -9460,7 +9467,7 @@ class TestReportsReadAfterTheLoad:
 
         p, swap = self._warming(monkeypatch)
         order: list[object] = []
-        swap.check_loaded = lambda ids: (  # type: ignore[method-assign]
+        swap.claim_loaded = lambda ids: lambda: (  # type: ignore[method-assign]
             order.append(p.warm_progress().phase),
             swap.read_done.set(),
         )
@@ -9489,7 +9496,7 @@ class TestReportsReadAfterTheLoad:
 
         p, swap = self._cold(self._replica("chat-0"))
         phases: list[object] = []
-        swap.check_loaded = lambda ids: (  # type: ignore[method-assign]
+        swap.claim_loaded = lambda ids: lambda: (  # type: ignore[method-assign]
             phases.append(p.warm_progress().phase),
             swap.read_done.set(),
         )
@@ -9525,6 +9532,55 @@ class TestReportsReadAfterTheLoad:
         swap.ready.add(WorkerRole.CHAT)
         p.chat(list(_HELLO_TURN))
         assert self._reads_once_settled(swap) == []
+
+    def test_a_lazy_load_refused_by_one_replica_reads_the_one_that_answered(self) -> None:
+        from lilbee.providers.fleet.client import DeviceRefusedError
+
+        refusing, sibling = self._replica("chat-0"), self._replica("chat-1", in_flight=1)
+        refusing.chat_result.side_effect = DeviceRefusedError("the model is on the wrong card")
+        p, swap = self._cold(refusing, sibling)
+        p.chat(list(_HELLO_TURN))
+        assert [ids for ids, _thread in self._reads_once_settled(swap)] == [["chat-1"]]
+
+    def test_a_lazy_stream_refused_by_one_replica_reads_the_one_that_streamed(self) -> None:
+        from lilbee.providers.fleet.client import DeviceRefusedError
+
+        refusing, sibling = self._replica("chat-0"), self._replica("chat-1", in_flight=1)
+        refusing.chat_stream_items.side_effect = DeviceRefusedError("on the wrong card")
+        sibling.chat_stream_items.return_value = _frames_of("a")
+        p, swap = self._cold(refusing, sibling)
+        list(p.chat(list(_HELLO_TURN), stream=True))
+        assert [ids for ids, _thread in self._reads_once_settled(swap)] == [["chat-1"]]
+
+    def test_a_lazy_load_that_fails_after_a_replica_answered_reads_nothing(self) -> None:
+        answered = self._replica("chat-0")
+        p, swap = self._cold(answered)
+        with pytest.raises(RuntimeError, match="after the count"), p._lazy_warm_scope():
+            prov_mod._note_answered(answered)
+            raise RuntimeError("the chat failed after the count")
+        assert self._reads_once_settled(swap) == []
+
+    def test_the_answered_list_ends_with_the_lazy_load(self) -> None:
+        p, _swap = self._cold(self._replica("chat-0"))
+        p.chat(list(_HELLO_TURN))
+        assert prov_mod._answered_replicas.get() is None
+
+    def test_a_read_that_raises_is_logged_not_left_to_the_thread_hook(
+        self, monkeypatch, caplog
+    ) -> None:
+        p, swap = self._cold(self._replica("chat-0"))
+
+        def failing_read() -> None:
+            raise RuntimeError("the report broke")
+
+        swap.claim_loaded = lambda ids: failing_read  # type: ignore[method-assign]
+        hooked: list[object] = []
+        monkeypatch.setattr(threading, "excepthook", hooked.append)
+        with caplog.at_level(logging.WARNING, logger=prov_mod.__name__):
+            p.chat(list(_HELLO_TURN))
+            self._reads_once_settled(swap)
+        assert hooked == []
+        assert "memory report could not be read: the report broke" in caplog.text
 
     def test_a_client_names_its_replica_id(self) -> None:
         client = LlamaServerClient(
