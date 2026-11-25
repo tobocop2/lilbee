@@ -572,7 +572,7 @@ def sync_cmd(
             started_by="lilbee sync",
             analyze_tip=True,
         )
-    except RuntimeError as exc:
+    except (RuntimeError, ProviderError) as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
