@@ -1629,7 +1629,7 @@ class TestDeleteDriftDraftIfPresent:
     def test_keeps_an_id_keyed_draft_when_a_new_file_took_the_path(self, tmp_path: Path):
         """The same path under another id is another source: the path key does not claim it."""
         draft = divert_to_drafts(
-            "# body\n",
+            '---\nsources: ["a.md"]\n---\n\nbody\n',
             tmp_path,
             "x",
             0.5,
@@ -1638,8 +1638,29 @@ class TestDeleteDriftDraftIfPresent:
             ["a.md"],
             source_ids={"a.md": "1"},
         )
-        assert not delete_drift_draft_if_present(tmp_path, "x", ["a.md"], source_ids={"a.md": "2"})
+        assert not delete_drift_draft_if_present(
+            tmp_path, "x", ["a.md"], source_ids={"a.md": "2"}, live_ids=lambda ids: {"1": "a.md"}
+        )
         assert draft.is_file()
+
+    def test_removes_an_id_keyed_draft_whose_ids_are_all_gone_from_the_store(
+        self, tmp_path: Path
+    ):
+        """A rebuild gives every source a new id: the draft then matches by names."""
+        draft = divert_to_drafts(
+            '---\nsources: ["a.md"]\n---\n\nbody\n',
+            tmp_path,
+            "x",
+            0.5,
+            "diff",
+            WikiSubdir.CONCEPTS,
+            ["a.md"],
+            source_ids={"a.md": "1"},
+        )
+        assert delete_drift_draft_if_present(
+            tmp_path, "x", ["a.md"], source_ids={"a.md": "2"}, live_ids=lambda ids: {}
+        )
+        assert not draft.exists()
 
     def test_keeps_a_drift_draft_belonging_to_another_source(self, tmp_path: Path):
         draft = divert_to_drafts(
