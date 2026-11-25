@@ -537,7 +537,8 @@ _DATA_PREFIX = "data:"
 _DEFAULT_TIMEOUT_S = 300.0
 # The longest silence, in seconds, between two reads of a chat stream's body. The client
 # timeout stays the wait for the headers: llama-swap sends no byte while it loads a model,
-# and llama-server sends a ":" comment every 30 s once the headers are out.
+# and llama-server sends a ":" comment every 30 s once the headers are out. An engine whose
+# profile has silent_prefill (Lemonade) starts this bound at its first frame instead.
 _STREAM_IDLE_TIMEOUT_S = 120.0
 # How often an abortable chat checks its cancel signal.
 _CANCEL_POLL_S = 0.1
