@@ -183,7 +183,7 @@ def test_interpreter_ignores_a_windows_wrapper_that_embeds_a_non_python_program(
 ):
     """A .cmd wrapper that launches something other than python is not taken as the interpreter."""
     cmd = tmp_path / "hermes.cmd"
-    cmd.write_text('@"C:\\tools\\node.exe" "%~dp0hermes.js" %*\n')
+    cmd.write_text('@"C:\\tools\\node.exe" "%~dp0hermes.js" %*\n', encoding="utf-8")
     monkeypatch.setattr(hermes_mcp.sys, "platform", "win32")
     assert hermes_mcp.hermes_interpreter(str(cmd)) == hermes_mcp.sys.executable
 
