@@ -1878,7 +1878,7 @@ _UNPLACEABLE_REASONS = {
         "so no {role} server starts. Install the model again or choose another."
     ),
     "memory": (
-        "The {role} model {ref} needs more memory than this host has, "
+        "The {role} model {ref} needs more memory than this computer has, "
         "so no {role} server starts. Choose a smaller model."
     ),
 }
