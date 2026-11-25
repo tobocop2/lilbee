@@ -1,10 +1,15 @@
 """Tests for neighbor-window expansion (pure logic, mocked store)."""
 
 import math
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from lilbee.data.store import SearchChunk
-from lilbee.retrieval.query.neighbors import expand_neighbors, merge_adjacent_texts
+from lilbee.retrieval.query import neighbors
+from lilbee.retrieval.query.neighbors import (
+    NeighborCache,
+    expand_neighbors,
+    merge_adjacent_texts,
+)
 
 
 def _cost(text: str) -> int:
@@ -254,3 +259,41 @@ class TestExcludedNeighbors:
             exclude=lambda t: "excluded" in t,
         )
         assert out == [center]
+
+
+class TestNeighborCache:
+    """A shared cache lets a refit widen again without new store reads or seam scans."""
+
+    _CENTER = _chunk(index=2, text="gamma overlap padding delta overlap padding")
+    _ROWS = (
+        _chunk(index=1, text="beta gamma overlap padding"),
+        _chunk(index=3, text="delta overlap padding epsilon"),
+    )
+
+    def test_a_second_widening_reads_no_row_again(self):
+        store = _store_with(list(self._ROWS))
+        cache = NeighborCache()
+        first = expand_neighbors([self._CENTER], store, 1, 1000, _cost, cache=cache)
+        second = expand_neighbors([self._CENTER], store, 1, 1000, _cost, cache=cache)
+        assert first == second
+        store.get_chunks_by_indices.assert_called_once_with("doc.pdf", [1, 2, 3])
+
+    def test_a_wider_center_set_reads_only_the_new_indices(self):
+        store = _store_with(list(self._ROWS))
+        cache = NeighborCache()
+        expand_neighbors([self._CENTER], store, 1, 1000, _cost, cache=cache)
+        far = _chunk(index=6, text="far away")
+        expand_neighbors([self._CENTER, far], store, 1, 1000, _cost, cache=cache)
+        assert store.get_chunks_by_indices.call_args.args == ("doc.pdf", [5, 6, 7])
+
+    def test_a_smaller_budget_scans_no_seam_again(self):
+        store = _store_with(list(self._ROWS))
+        cache = NeighborCache()
+        with patch.object(neighbors, "_seam", wraps=neighbors._seam) as seam:
+            expand_neighbors([self._CENTER], store, 1, 1000, _cost, cache=cache)
+            scanned = seam.call_count
+            narrow = expand_neighbors([self._CENTER], store, 1, 1, _cost, cache=cache)
+        assert scanned == 2
+        assert seam.call_count == scanned
+        widest = "beta gamma overlap padding delta overlap padding epsilon"
+        assert len(narrow[0].chunk) < len(widest)
