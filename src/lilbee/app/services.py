@@ -1223,8 +1223,8 @@ def loop_takes_signals(loop: asyncio.AbstractEventLoop) -> Iterator[None]:
     (the writer that ``run_without_join`` sets) returns too.
 
     A Windows loop has no signal handlers. There the plain handler only queues the same
-    callback, as ``asyncio.Runner`` queues its own Ctrl-C there, and the proactor's
-    wakeup descriptor wakes the loop to run it.
+    callback with ``call_soon_threadsafe``, as the Ctrl-C handler of ``asyncio.Runner``
+    reaches its loop, and the proactor's wakeup descriptor wakes the loop to run it.
     """
     routed = _lifecycle.routed_in_loop()
     previous = {sig: signal.getsignal(sig) for sig in routed}
