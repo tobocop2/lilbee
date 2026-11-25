@@ -65,21 +65,34 @@ def routed_app(tmp_path: Path):
     seen: dict[str, Any] = {}
 
     @app.command()
-    def run(ctx: typer.Context, fail: bool = False) -> None:
+    def run(ctx: typer.Context, how: str = "return") -> None:
         set_explicit_verbosity(False)
+        root = logging.getLogger()
+        # The console handler is not last: its place must survive the undo.
         stderr_handler = logging.StreamHandler(sys.stderr)
-        logging.getLogger().addHandler(stderr_handler)
+        root.addHandler(stderr_handler)
+        root.addHandler(logging.NullHandler())
         seen["stderr_handler"] = stderr_handler
-        seen["before"] = list(logging.getLogger().handlers)
+        seen["before"] = list(root.handlers)
         with mock.patch("lilbee.cli.log_routing.cfg") as m_cfg:
             m_cfg.data_root = tmp_path
             seen["path"] = route_diagnostics_to_log_file(ctx)
-        seen["handlers_during"] = list(logging.getLogger().handlers)
+        seen["handlers_during"] = list(root.handlers)
         seen["capture_during"] = _capture_is_on()
-        if fail:
-            raise SystemExit(1)
+        if how in _ENDINGS:
+            raise _ENDINGS[how]
 
     return app, seen
+
+
+_ENDINGS: dict[str, BaseException] = {
+    "system-exit": SystemExit(1),
+    "typer-exit": typer.Exit(2),
+    "error": RuntimeError("the command failed"),
+    "interrupt": KeyboardInterrupt(),
+    "abort": typer.Abort(),
+}
+_HOWS = ["return", *_ENDINGS]
 
 
 @pytest.fixture
@@ -99,28 +112,46 @@ def restored_logging():
             root.addHandler(handler)
 
 
-@pytest.mark.parametrize("fail", [False, True])
+@pytest.mark.parametrize("how", _HOWS)
 def test_a_command_that_routes_diagnostics_leaves_the_root_handlers_as_it_found_them(
-    routed_app, restored_logging, fail: bool
+    routed_app, restored_logging, how: str
 ):
     app, seen = routed_app
-    result = CliRunner().invoke(app, ["--fail"] if fail else [])
-    assert result.exit_code == (1 if fail else 0)
+    CliRunner().invoke(app, ["--how", how])
     assert seen["path"] is not None
     assert seen["stderr_handler"] not in seen["handlers_during"]
     assert any(isinstance(h, RotatingFileHandler) for h in seen["handlers_during"])
     assert logging.getLogger().handlers == seen["before"]
 
 
-@pytest.mark.parametrize("fail", [False, True])
+@pytest.mark.parametrize("how", _HOWS)
 def test_a_command_that_routes_diagnostics_turns_warning_capture_back_off(
-    routed_app, restored_logging, fail: bool
+    routed_app, restored_logging, how: str
 ):
     app, seen = routed_app
     assert _capture_is_on() is False
-    CliRunner().invoke(app, ["--fail"] if fail else [])
+    CliRunner().invoke(app, ["--how", how])
     assert seen["capture_during"] is True
     assert _capture_is_on() is False
+
+
+def test_a_record_of_the_service_teardown_reaches_cli_log_and_not_the_console(
+    routed_app, restored_logging, tmp_path: Path
+):
+    """The real teardown path (reset_services_on_exit) runs under the log file."""
+    import lilbee.app.services as svc_mod
+    from tests.conftest import make_mock_services
+
+    services = make_mock_services()
+    services.provider.shutdown.side_effect = lambda: logging.getLogger("lilbee.teardown").warning(
+        "teardown note"
+    )
+    svc_mod.set_services(services)
+    app, _ = routed_app
+    result = CliRunner().invoke(app, [])
+    assert services.provider.shutdown.called
+    assert "teardown note" in (tmp_path / "logs" / "cli.log").read_text()
+    assert "teardown note" not in result.output
 
 
 def test_a_command_leaves_warning_capture_on_when_it_was_on_before(routed_app, restored_logging):
