@@ -32,8 +32,9 @@ listing, to the npm version.
 
 The `npm` job checks out the tag and runs `scripts/publish_npm.sh`. A run with
 `channels: all` does not request npm for a dev tag, so the job shows as skipped.
-If you request npm for a dev tag by name, the job fails. The script stops when `package.json` or `server.json`
-does not carry the npm version of that tag, or when the `server.json` name is
+If you request npm for a dev tag by name, the job fails. The script stops when
+`package.json` or `server.json` does not carry the npm version of that tag, or
+when the `server.json` name is
 not the `mcpName` of `package.json`. It publishes with `--tag latest`,
 because npm 11 refuses a prerelease publish without a dist-tag. If the version
 is already on npm, the script skips the publish.
