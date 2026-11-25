@@ -61,9 +61,7 @@ class ConfigFileFollower:
         self._start = self._reading
         # The fleet reload keys a one-off holds at the file's start value. A key a flag
         # set is the command's own choice, so a write of it to the file is not a held write.
-        self._held_reload_keys = (
-            frozenset() if long_running else (hold - flags) & FLEET_RELOAD_KEYS
-        )
+        self._held_reload_keys = frozenset() if long_running else (hold - flags) & FLEET_RELOAD_KEYS
         self._lock = threading.Lock()
         # The file state of the last failed check, so the error is logged once per state.
         self._failed_stamp: object = _NO_FAILURE
