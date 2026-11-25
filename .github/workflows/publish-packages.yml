@@ -60,7 +60,9 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          case "${CHANNELS}" in
+          # Case-insensitive, as the contains() and == this replaces were.
+          channels=$(printf '%s' "${CHANNELS}" | tr '[:upper:]' '[:lower:]')
+          case "${channels}" in
             *npm*) requested=true ;;
             all) case "${TAG}" in *.dev*) requested=false ;; *) requested=true ;; esac ;;
             *) requested=false ;;
