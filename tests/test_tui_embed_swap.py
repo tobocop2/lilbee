@@ -885,7 +885,6 @@ _ENDS: dict[str, tuple[Callable[..., Awaitable[str]], Any, int]] = {
 }
 
 
-@pytest.mark.usefixtures("slow_worker_final_call")
 @pytest.mark.parametrize(("end", "arg", "ends"), _ENDS.values(), ids=_ENDS.keys())
 async def test_the_work_end_hook_runs_once_per_end(
     end: Callable[..., Awaitable[str]], arg: Any, ends: int
