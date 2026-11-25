@@ -819,6 +819,18 @@ def test_the_build_script_removes_lineinfo_before_the_first_compile() -> None:
     assert text.count("exit 1") >= 1 and "-lineinfo is still in a CMake file" in text
 
 
+def test_the_compile_runs_without_address_randomization_in_an_unfiltered_container() -> None:
+    """cicc orders work by object addresses, so a kernel gives other PTX in each run with ASLR on."""
+    build = _active_script().splitlines()
+    wanted = 'setarch "$(uname -m)" -R cmake --build "${SRC_DIR}/build"'
+    assert [line for line in build if "cmake --build" in line] == [
+        f'{wanted} --parallel "${{jobs}}" --target llama-server'
+    ]
+    pack = (_BUILD_SCRIPT.parent / "pack_ik.sh").read_text(encoding="utf-8")
+    # setarch -R needs the personality system call, which the default seccomp filter denies.
+    assert pack.count("docker run --rm --security-opt seccomp=unconfined -v") == 1
+
+
 def test_the_build_script_strips_exactly_the_first_party_files() -> None:
     """The strip drops the nvcc temporary file name, which holds a process ID. NVIDIA files stay."""
     text = _active_script()

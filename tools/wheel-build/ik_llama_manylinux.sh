@@ -86,7 +86,10 @@ else
     -DCMAKE_CUDA_COMPILER="${cuda_dir}/bin/nvcc" -DCMAKE_CUDA_HOST_COMPILER="${gcc13}/g++")
 fi
 cmake -S "${SRC_DIR}" -B "${SRC_DIR}/build" "${args[@]}"
-cmake --build "${SRC_DIR}/build" --parallel "${jobs}" --target llama-server
+# cicc, the CUDA front end, orders some work by the address of its objects, so with address randomization it gives other
+# PTX and other register counts for the same kernel in each run. setarch -R turns the randomization off for the build.
+# The container needs the personality system call for that: pack_ik.sh starts it without the default seccomp filter.
+setarch "$(uname -m)" -R cmake --build "${SRC_DIR}/build" --parallel "${jobs}" --target llama-server
 
 mkdir -p "${BIN_DIR}"
 cp "${SRC_DIR}/build/bin/llama-server" "${BIN_DIR}/llama-server"

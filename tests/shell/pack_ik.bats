@@ -128,6 +128,8 @@ run_copy() {  # folder variable=value
   [ "$(cat "${DOCKER_LOG}")" = "== call
 run
 --rm
+--security-opt
+seccomp=unconfined
 -v
 ${ROOT}:/work
 -w

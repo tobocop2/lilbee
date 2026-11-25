@@ -46,7 +46,9 @@ require_inputs() {
 # and writes cuda-libs.sha256 and NOTICE-NVIDIA-CUDA. ik_llama_manylinux.sh installs the pinned build tools there.
 build_server() {
   mkdir -p "${WHEEL_TREE}/${PACKAGE}/bin"
-  docker run --rm -v "${PWD}:/work" -w /work \
+  # The seccomp setting lets the build turn off address randomization (setarch -R), which the GPU compiler needs for
+  # the same output in each build.
+  docker run --rm --security-opt seccomp=unconfined -v "${PWD}:/work" -w /work \
     -e UPSTREAM_REPO -e UPSTREAM_COMMIT -e BACKEND \
     -e "BIN_DIR=/work/${WHEEL_TREE}/${PACKAGE}/bin" \
     -e SRC_DIR=/work/ik-src \
