@@ -1717,6 +1717,10 @@ lilbee placement set --spec placement.json
 lilbee placement show
 ```
 
+The output names the engine backend under the GPU table. If it says `unknown`,
+the device probe did not answer. Run `lilbee engine list`, then
+`lilbee engine install`. A host with no usable GPU says `cpu`.
+
 **To go back to automatic:**
 
 ```bash
