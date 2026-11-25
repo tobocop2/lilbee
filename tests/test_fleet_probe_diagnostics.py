@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import devices as devices_mod
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines import llama as llama_mod
-from lilbee.providers.roles import EngineBackend
+from lilbee.providers.roles import WorkerRole
 
 
 class TestASpawnFailureIsReported:
@@ -191,81 +192,153 @@ class TestEveryVendorGetsTheWarning:
         assert "reported none" not in caplog.text
 
 
-class TestABootTimeEmptyAnswerIsRetried:
+class _FakeEngine:
+    """An engine whose device answers come from a script; the last answer repeats."""
+
+    name = "llama"
+
+    def __init__(self, answers: list[object]) -> None:
+        self.answers = answers
+        self.probes = 0
+
+    def binary(self) -> Path:
+        return Path("/bin/srv")
+
+    def discover_devices(self, _binary: Path):
+        answer = self.answers[min(self.probes, len(self.answers) - 1)]
+        self.probes += 1
+        return answer
+
+
+class TestAnEmptyProbeIsRetriedByOneLadder:
     """A driver not ready when the daemon starts must not decide the whole run.
 
     The plan snapshot is taken once, on a clean box, and is not re-taken until a
     full teardown. An empty first answer therefore persists for the daemon's
     life, so a GPU host that booted a second too early served on CPU until
-    someone restarted it.
+    someone restarted it. One retry ladder, in the device read, owns that wait.
     """
 
-    @staticmethod
-    def _answers(monkeypatch, results: list[list[object]]) -> list[int]:
+    @pytest.fixture(autouse=True)
+    def _host(self, monkeypatch) -> Iterator[list[float]]:
+        """A one-card host that never sleeps; the yielded list records each delay."""
         from lilbee.providers.fleet import planning as planning_mod
 
-        calls: list[int] = []
-
-        def _resolve(_binary, engine):
-            calls.append(1)
-            devices = list(results[min(len(calls) - 1, len(results) - 1)])
-            return planning_mod.DeviceReading(devices, EngineBackend.CUDA)
-
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
-        )
-        monkeypatch.setattr(planning_mod, "_read_devices", _resolve)
-        monkeypatch.setattr(planning_mod, "_PROBE_RETRY_DELAY_S", 0.0)
-        return calls
-
-    def test_a_gpu_host_probes_again_before_accepting_nothing(self, monkeypatch) -> None:
-        from lilbee.providers.fleet import planning as planning_mod
-        from lilbee.providers.fleet.devices import FleetDevice
-
-        card = FleetDevice("CUDA", 0, "gpu", 1, 1)
-        calls = self._answers(monkeypatch, [[], [], [card]])
+        delays: list[float] = []
+        monkeypatch.setattr(planning_mod.time, "sleep", delays.append)
         monkeypatch.setattr(
             "lilbee.providers.fleet.gpu_hardware.installed_gpu_vendor_ids",
             lambda: frozenset({0x10DE}),
         )
-        devices = planning_mod._probe_engine_devices(engine=LLAMA).devices
-        assert devices == [card]
-        assert len(calls) == 3
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.gpu_hardware.undriven_gpu_vendor_ids", frozenset
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.cuda_runtime.assert_cuda_devices_usable", lambda *_a: None
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.rocm_runtime.assert_rocm_devices_usable", lambda *_a: None
+        )
+        monkeypatch.setattr(planning_mod, "engine_binary_identity", lambda _b: "v1")
+        planning_mod.clear_read_device_cache()
+        planning_mod.clear_plan_probe()
+        yield delays
+        planning_mod.clear_read_device_cache()
+        planning_mod.clear_plan_probe()
 
-    def test_a_host_with_no_gpu_accepts_the_first_answer(self, monkeypatch) -> None:
+    @staticmethod
+    def _empty():
+        from lilbee.providers.fleet.devices import DeviceProbe
+
+        return DeviceProbe([], "", spoke_protocol=True)
+
+    @staticmethod
+    def _card():
+        from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
+
+        return DeviceProbe([FleetDevice("CUDA", 0, "gpu", 1, 1)], "", spoke_protocol=True)
+
+    @staticmethod
+    def _build(engine):
         from lilbee.providers.fleet import planning as planning_mod
 
-        calls = self._answers(monkeypatch, [[]])
+        return planning_mod._probe_engine_devices(engine)
+
+    @staticmethod
+    def _view(engine):
+        from lilbee.providers.fleet import planning as planning_mod
+
+        return planning_mod._read_device_cache.get(engine.binary(), engine)
+
+    @pytest.mark.parametrize("read", ["_build", "_view"], ids=["build", "read-view"])
+    def test_an_always_empty_probe_takes_one_ladder(self, _host, read) -> None:
+        engine = _FakeEngine([self._empty()])
+        assert getattr(self, read)(engine).devices == []
+        assert engine.probes == 5
+        assert sum(_host) == pytest.approx(2.0)
+
+    def test_the_build_and_the_read_view_take_the_same_ladder(self, _host) -> None:
+        build_engine = _FakeEngine([self._empty()])
+        self._build(build_engine)
+        build_slept = sum(_host)
+        _host.clear()
+        view_engine = _FakeEngine([self._empty()])
+        self._view(view_engine)
+        assert build_engine.probes == view_engine.probes
+        assert build_slept == pytest.approx(sum(_host))
+
+    def test_a_stale_plan_read_probes_one_ladder_and_the_next_probes_nothing(
+        self, monkeypatch
+    ) -> None:
+        from lilbee.providers.fleet import planning as planning_mod
+
+        monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 1)
+        identity = ["v1"]
+        monkeypatch.setattr(planning_mod, "_engine_identity", lambda _e: identity[0])
+        engine = _FakeEngine([self._card()])
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: engine})
+        captured = engine.probes
+        identity[0] = "v2"
+        engine.answers = [self._empty()]
+        planning_mod._current_plan_probe(engine)
+        assert engine.probes - captured == 5
+        planning_mod._current_plan_probe(engine)
+        assert engine.probes - captured == 5
+
+    def test_the_missing_gpu_warning_is_logged_once_per_probe(self, caplog) -> None:
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            self._build(_FakeEngine([self._empty()]))
+        assert caplog.text.count("reported none") == 1
+
+    def test_a_binary_that_does_not_speak_the_protocol_is_probed_once(self, monkeypatch) -> None:
+        from lilbee.providers.fleet.devices import DeviceProbe
+
+        monkeypatch.setattr("lilbee.providers.fleet.gpu_select.enumerate_gpu_vram", lambda: [])
+        monkeypatch.setattr("lilbee.providers.fleet.gpu_select.integrated_vulkan_indices", set)
+        engine = _FakeEngine([DeviceProbe([], "usage: llama-server", spoke_protocol=False)])
+        assert self._build(engine).devices == []
+        assert engine.probes == 1
+
+    @pytest.mark.parametrize("read", ["_build", "_view"], ids=["build", "read-view"])
+    def test_a_probe_that_recovers_returns_the_card(self, read) -> None:
+        engine = _FakeEngine([self._empty(), self._empty(), self._card()])
+        assert [d.index for d in getattr(self, read)(engine).devices] == [0]
+        assert engine.probes == 3
+
+    def test_a_host_with_no_gpu_accepts_the_first_answer(self, monkeypatch, _host) -> None:
         monkeypatch.setattr(
             "lilbee.providers.fleet.gpu_hardware.installed_gpu_vendor_ids", frozenset
         )
-        devices = planning_mod._probe_engine_devices(engine=LLAMA).devices
-        assert devices == []
-        assert len(calls) == 1
+        engine = _FakeEngine([self._empty()])
+        assert self._build(engine).devices == []
+        assert engine.probes == 1
+        assert _host == []
 
-    def test_a_first_answer_with_devices_is_not_retried(self, monkeypatch) -> None:
-        from lilbee.providers.fleet import planning as planning_mod
-        from lilbee.providers.fleet.devices import FleetDevice
-
-        calls = self._answers(monkeypatch, [[FleetDevice("CUDA", 0, "gpu", 1, 1)]])
-        planning_mod._probe_engine_devices(engine=LLAMA)
-        assert len(calls) == 1
-
-    def test_a_card_that_never_appears_gives_up_and_says_nothing_is_there(
-        self, monkeypatch
-    ) -> None:
-        # A card the engine genuinely cannot use (no driver, wrong build) must not
-        # retry forever; the fleet still has to start, on CPU, with the warning.
-        from lilbee.providers.fleet import planning as planning_mod
-
-        calls = self._answers(monkeypatch, [[]])
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.gpu_hardware.installed_gpu_vendor_ids",
-            lambda: frozenset({0x1002}),
-        )
-        devices = planning_mod._probe_engine_devices(engine=LLAMA).devices
-        assert devices == []
-        assert len(calls) == 1 + planning_mod._PROBE_RETRIES
+    def test_a_first_answer_with_devices_is_not_retried(self, _host) -> None:
+        engine = _FakeEngine([self._card()])
+        self._build(engine)
+        assert engine.probes == 1
+        assert _host == []
 
 
 class TestPartialOutputArrivesInEitherShape:
