@@ -365,7 +365,7 @@ class TestFetchFrontierWorker:
         screen = CatalogScreen.__new__(CatalogScreen)
         screen._frontier_rows = []
 
-        def _boom() -> list:
+        def _boom(**_) -> list:
             raise RuntimeError("provider discovery is down")
 
         monkeypatch.setattr(
@@ -392,7 +392,7 @@ class TestFetchFamiliesWorker:
         from lilbee.cli.tui.screens import catalog as catalog_mod
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        def _boom() -> list:
+        def _boom(**_) -> list:
             raise RuntimeError("huggingface is down")
 
         monkeypatch.setattr(catalog_mod, "get_families", _boom)

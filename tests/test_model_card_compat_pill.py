@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.tui.messages import COMPAT_PILL_UNKNOWN, COMPAT_PILL_UNSUPPORTED
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
@@ -135,7 +136,7 @@ def test_variant_row_is_supported() -> None:
     from lilbee.catalog import get_families
     from lilbee.cli.tui.screens.catalog_utils import variant_to_row
 
-    family = get_families()[0]
+    family = get_families(hf_client=get_services().hf_client)[0]
     row = variant_to_row(family.variants[0], family, installed=False)
     assert row.compat is ModelCompat.SUPPORTED
 

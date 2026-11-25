@@ -13,7 +13,7 @@ import pytest
 
 from conftest import install_fake_model, make_mock_services
 from lilbee.app.models import ManifestData, ModelEntry, installed_chat_model_refs
-from lilbee.app.services import set_services
+from lilbee.app.services import get_services, set_services
 from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
@@ -96,13 +96,21 @@ class TestManifestLabel:
 
     def test_vision_role_accepts_it(self, smolvlm_stored_as_chat: str) -> None:
         got = validate_model_task_assignment(
-            "vision_model", smolvlm_stored_as_chat, allow_bypass=False
+            "vision_model",
+            smolvlm_stored_as_chat,
+            allow_bypass=False,
+            hf_client=get_services().hf_client,
         )
         assert got == smolvlm_stored_as_chat
 
     def test_chat_role_refuses_it_with_the_same_label(self, smolvlm_stored_as_chat: str) -> None:
         with pytest.raises(TaskMismatchError) as caught:
-            validate_model_task_assignment("chat_model", smolvlm_stored_as_chat, allow_bypass=False)
+            validate_model_task_assignment(
+                "chat_model",
+                smolvlm_stored_as_chat,
+                allow_bypass=False,
+                hf_client=get_services().hf_client,
+            )
         assert caught.value.entry_task == ModelTask.VISION
 
     def test_vision_route_check_accepts_it(

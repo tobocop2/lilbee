@@ -309,7 +309,7 @@ class TestListingRead:
         from lilbee.app import models as model_mod
 
         monkeypatch.setattr(hf_constants, "HF_HUB_OFFLINE", True)
-        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: _entry())
+        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q, **_: _entry())
         monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
         monkeypatch.setattr(dl, "_models_dir", lambda: tmp_path)
         assert model_mod.ensure_vision_projector(_REPO, warn_unreadable=False) is None

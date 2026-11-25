@@ -18,6 +18,7 @@ import pytest
 from pydantic import ValidationError
 
 from conftest import PICKS_CHAT, PICKS_RERANK, PICKS_VISION, clean_env
+from lilbee.app.services import get_services
 from lilbee.core.config import (
     CHUNKS_TABLE,
     DEFAULT_IGNORE_DIRS,
@@ -2413,44 +2414,65 @@ class TestValidateModelTaskAssignment:
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         ref = f"{PICKS_CHAT[0].hf_repo}/tiny-1b-Q4_K_M.gguf"
-        assert validate_model_task_assignment("chat_model", ref) == ref
+        assert (
+            validate_model_task_assignment("chat_model", ref, hf_client=get_services().hf_client)
+            == ref
+        )
 
     def test_chat_slot_rejects_vision_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="vision"):
-            validate_model_task_assignment("chat_model", PICKS_VISION[0].hf_repo)
+            validate_model_task_assignment(
+                "chat_model", PICKS_VISION[0].hf_repo, hf_client=get_services().hf_client
+            )
 
     def test_chat_slot_rejects_reranker_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="rerank"):
-            validate_model_task_assignment("chat_model", PICKS_RERANK[0].hf_repo)
+            validate_model_task_assignment(
+                "chat_model", PICKS_RERANK[0].hf_repo, hf_client=get_services().hf_client
+            )
 
     def test_embedding_slot_rejects_chat_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="chat"):
-            validate_model_task_assignment("embedding_model", PICKS_CHAT[0].hf_repo)
+            validate_model_task_assignment(
+                "embedding_model", PICKS_CHAT[0].hf_repo, hf_client=get_services().hf_client
+            )
 
     def test_vision_slot_rejects_chat_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="chat"):
-            validate_model_task_assignment("vision_model", PICKS_CHAT[0].hf_repo)
+            validate_model_task_assignment(
+                "vision_model", PICKS_CHAT[0].hf_repo, hf_client=get_services().hf_client
+            )
 
     def test_reranker_slot_rejects_vision_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="vision"):
-            validate_model_task_assignment("reranker_model", PICKS_VISION[0].hf_repo)
+            validate_model_task_assignment(
+                "reranker_model", PICKS_VISION[0].hf_repo, hf_client=get_services().hf_client
+            )
 
     def test_empty_string_passes_through(self, _task_validation_enabled):
         """Empty or whitespace refs bypass validation (role unset)."""
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
-        assert validate_model_task_assignment("vision_model", "") == ""
-        assert validate_model_task_assignment("reranker_model", "   ") == "   "
+        assert (
+            validate_model_task_assignment("vision_model", "", hf_client=get_services().hf_client)
+            == ""
+        )
+        assert (
+            validate_model_task_assignment(
+                "reranker_model", "   ", hf_client=get_services().hf_client
+            )
+            == "   "
+        )
 
     def test_provider_prefix_bypasses_catalog(self, _task_validation_enabled):
         """Provider-prefixed refs (ollama/, openai/, ...) bypass the featured
@@ -2459,21 +2481,31 @@ class TestValidateModelTaskAssignment:
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         ref = "ollama/qwen3:0.6b"
-        assert validate_model_task_assignment("chat_model", ref) == ref
+        assert (
+            validate_model_task_assignment("chat_model", ref, hf_client=get_services().hf_client)
+            == ref
+        )
 
     def test_bare_hf_repo_canonicalizes_to_the_picks_ref(self, _task_validation_enabled):
         """A bare ``hf_repo`` that is a current pick resolves to that pick's ref."""
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         repo = PICKS_RERANK[0].hf_repo
-        assert validate_model_task_assignment("reranker_model", repo) == repo
+        assert (
+            validate_model_task_assignment(
+                "reranker_model", repo, hf_client=get_services().hf_client
+            )
+            == repo
+        )
 
     def test_out_of_catalog_rejected(self, _task_validation_enabled):
         """Refs that are neither featured nor installed are rejected as not installed."""
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="not installed"):
-            validate_model_task_assignment("chat_model", "totally-unknown-model:99b")
+            validate_model_task_assignment(
+                "chat_model", "totally-unknown-model:99b", hf_client=get_services().hf_client
+            )
 
     def test_skip_env_var_disables_check(self, tmp_path):
         """LILBEE_SKIP_MODEL_TASK_VALIDATION bypasses the role check when pytest is imported."""
@@ -2481,7 +2513,9 @@ class TestValidateModelTaskAssignment:
 
         with mock.patch.dict(os.environ, {"LILBEE_SKIP_MODEL_TASK_VALIDATION": "1"}):
             # Bypass: returns input unchanged, does not raise.
-            result = validate_model_task_assignment("chat_model", "totally-unknown-model:99b")
+            result = validate_model_task_assignment(
+                "chat_model", "totally-unknown-model:99b", hf_client=get_services().hf_client
+            )
         assert result == "totally-unknown-model:99b"
 
     def test_skip_env_var_alone_does_not_bypass_in_production(self, tmp_path):
@@ -2496,7 +2530,9 @@ class TestValidateModelTaskAssignment:
                 mock.patch.dict(os.environ, {"LILBEE_SKIP_MODEL_TASK_VALIDATION": "1"}),
                 pytest.raises(ValueError, match="not installed"),
             ):
-                validate_model_task_assignment("chat_model", "totally-unknown-model:99b")
+                validate_model_task_assignment(
+                    "chat_model", "totally-unknown-model:99b", hf_client=get_services().hf_client
+                )
         finally:
             if saved_pytest is not None:
                 sys.modules["pytest"] = saved_pytest
@@ -2508,7 +2544,7 @@ class TestValidateModelTaskAssignment:
 
         vision = PICKS_VISION[0].hf_repo
         with pytest.raises(TaskMismatchError) as exc_info:
-            validate_model_task_assignment("chat_model", vision)
+            validate_model_task_assignment("chat_model", vision, hf_client=get_services().hf_client)
 
         err = exc_info.value
         assert err.ref == vision
@@ -2523,7 +2559,10 @@ class TestValidateModelTaskAssignment:
         ref = install_fake_model(
             "MaziyarPanahi/Qwen3-1.7B-GGUF", "Qwen3-1.7B.Q4_K_M.gguf", task="chat"
         )
-        assert validate_model_task_assignment("chat_model", ref) == ref
+        assert (
+            validate_model_task_assignment("chat_model", ref, hf_client=get_services().hf_client)
+            == ref
+        )
 
     def test_bare_non_featured_repo_canonicalizes_to_installed_quant(
         self, _task_validation_enabled
@@ -2539,7 +2578,8 @@ class TestValidateModelTaskAssignment:
         )
         result = validate_model_task_assignment(
             "chat_model",
-            "bartowski/SmolLM2-360M-Instruct-GGUF",  # pragma: allowlist secret
+            "bartowski/SmolLM2-360M-Instruct-GGUF",
+            hf_client=get_services().hf_client,  # pragma: allowlist secret
         )
         assert result == ref
 
@@ -2548,7 +2588,9 @@ class TestValidateModelTaskAssignment:
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="not installed"):
-            validate_model_task_assignment("chat_model", "org/Never-Pulled-GGUF")
+            validate_model_task_assignment(
+                "chat_model", "org/Never-Pulled-GGUF", hf_client=get_services().hf_client
+            )
 
     def test_installed_non_featured_wrong_role_rejected(self, _task_validation_enabled):
         """An installed non-featured chat model in the reranker slot raises TaskMismatchError."""
@@ -2560,7 +2602,9 @@ class TestValidateModelTaskAssignment:
             "MaziyarPanahi/Qwen3-1.7B-GGUF", "Qwen3-1.7B.Q4_K_M.gguf", task="chat"
         )
         with pytest.raises(TaskMismatchError) as exc_info:
-            validate_model_task_assignment("reranker_model", ref)
+            validate_model_task_assignment(
+                "reranker_model", ref, hf_client=get_services().hf_client
+            )
         assert exc_info.value.entry_task == ModelTask.CHAT
         assert exc_info.value.expected_task == ModelTask.RERANK
 

@@ -7,6 +7,7 @@ import re
 import pytest
 
 from conftest import stub_hf_listing
+from lilbee.app.services import get_services
 from lilbee.catalog import query as _query
 from lilbee.catalog import runnable
 from lilbee.catalog.formatting import enrich_catalog
@@ -189,7 +190,7 @@ def _row(repo: str, formats: frozenset[ModelFormat]) -> CatalogModel:
 def test_catalog_hides_a_row_and_lists_one_row_with_runnable_formats(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(_query, "get_picks", lambda: [])
+    monkeypatch.setattr(_query, "get_picks", lambda **_: [])
     stub_hf_listing(
         monkeypatch,
         {
@@ -199,17 +200,17 @@ def test_catalog_hides_a_row_and_lists_one_row_with_runnable_formats(
             ]
         },
     )
-    result = get_catalog(task=ModelTask.CHAT)
+    result = get_catalog(task=ModelTask.CHAT, hf_client=get_services().hf_client)
     assert [(m.hf_repo, m.formats) for m in result.models] == [("a/both", {ModelFormat.GGUF})]
     assert [(h.hf_repo, h.reason) for h in result.hidden] == [("b/mlx-only", "no_engine")]
 
 
 def test_every_surface_shows_the_same_hidden_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_query, "get_picks", lambda: [])
+    monkeypatch.setattr(_query, "get_picks", lambda **_: [])
     stub_hf_listing(
         monkeypatch, {"text-generation": [_row("b/mlx-only", frozenset({ModelFormat.MLX}))]}
     )
-    result = get_catalog(task=ModelTask.CHAT)
+    result = get_catalog(task=ModelTask.CHAT, hf_client=get_services().hf_client)
     texts = [h.text for h in result.hidden]
     assert texts == ["no engine for mlx"]
     assert hidden_summary(texts) == "1 hidden (no engine for mlx)"
@@ -223,7 +224,7 @@ async def test_server_and_mcp_lists_carry_the_same_hidden_text(
     from lilbee import mcp_server
     from lilbee.server import handlers
 
-    monkeypatch.setattr(_query, "get_picks", lambda: [])
+    monkeypatch.setattr(_query, "get_picks", lambda **_: [])
     stub_hf_listing(
         monkeypatch,
         {
@@ -266,7 +267,7 @@ def _by_format_listing(
 def test_scan_reads_one_stream_per_engine_format_and_merges_by_downloads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(_query, "get_picks", lambda: [])
+    monkeypatch.setattr(_query, "get_picks", lambda **_: [])
     monkeypatch.setattr(_query, "default_offers", _two_format_offers)
     monkeypatch.setattr(runnable, "session_host", lambda: _host(gpus=GPU))
     gguf = _row("a/gguf", frozenset({ModelFormat.GGUF}))
@@ -277,7 +278,7 @@ def test_scan_reads_one_stream_per_engine_format_and_merges_by_downloads(
         monkeypatch,
         {ModelFormat.GGUF: [gguf, both_a], ModelFormat.SAFETENSORS: [st, both_b]},
     )
-    result = get_catalog(task=ModelTask.CHAT)
+    result = get_catalog(task=ModelTask.CHAT, hf_client=get_services().hf_client)
     assert sorted(asked) == [ModelFormat.GGUF, ModelFormat.SAFETENSORS]
     assert sorted(m.hf_repo for m in result.models) == ["a/gguf", "b/st", "c/both"]
     assert result.hidden == ()
@@ -285,16 +286,16 @@ def test_scan_reads_one_stream_per_engine_format_and_merges_by_downloads(
 
 def test_a_hidden_pick_the_scan_finds_again_counts_once(monkeypatch: pytest.MonkeyPatch) -> None:
     pick = _row("p/mlx-pick", frozenset({ModelFormat.MLX}))
-    monkeypatch.setattr(_query, "get_picks", lambda: [pick])
+    monkeypatch.setattr(_query, "get_picks", lambda **_: [pick])
     stub_hf_listing(
         monkeypatch, {"text-generation": [pick, _row("a/ok", frozenset({ModelFormat.GGUF}))]}
     )
-    result = get_catalog(task=ModelTask.CHAT)
+    result = get_catalog(task=ModelTask.CHAT, hf_client=get_services().hf_client)
     assert [h.hf_repo for h in result.hidden] == ["p/mlx-pick"]
 
 
 def test_hidden_rows_follow_the_search_filter(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_query, "get_picks", lambda: [])
+    monkeypatch.setattr(_query, "get_picks", lambda **_: [])
     stub_hf_listing(
         monkeypatch,
         {
@@ -304,7 +305,7 @@ def test_hidden_rows_follow_the_search_filter(monkeypatch: pytest.MonkeyPatch) -
             ]
         },
     )
-    result = get_catalog(task=ModelTask.CHAT, search="qwen")
+    result = get_catalog(task=ModelTask.CHAT, search="qwen", hf_client=get_services().hf_client)
     assert [h.hf_repo for h in result.hidden] == ["c/mlx-qwen"]
 
 
@@ -319,12 +320,12 @@ def test_a_failing_host_read_leaves_the_catalog_open_and_says_why(
     monkeypatch.setattr(runnable, "detect", _refuse)
     runnable._read_host.cache_clear()
     try:
-        monkeypatch.setattr(_query, "get_picks", lambda: [])
+        monkeypatch.setattr(_query, "get_picks", lambda **_: [])
         stub_hf_listing(
             monkeypatch, {"text-generation": [_row("a/ok", frozenset({ModelFormat.GGUF}))]}
         )
         with caplog.at_level("WARNING", logger="lilbee.catalog.runnable"):
-            result = get_catalog(task=ModelTask.CHAT)
+            result = get_catalog(task=ModelTask.CHAT, hf_client=get_services().hf_client)
         host = runnable.session_host()
     finally:
         runnable._read_host.cache_clear()
@@ -345,12 +346,12 @@ def test_a_host_read_that_raises_something_else_leaves_the_catalog_open(
     monkeypatch.setattr(runnable, "detect", _bug)
     runnable._read_host.cache_clear()
     try:
-        monkeypatch.setattr(_query, "get_picks", lambda: [])
+        monkeypatch.setattr(_query, "get_picks", lambda **_: [])
         stub_hf_listing(
             monkeypatch, {"text-generation": [_row("a/ok", frozenset({ModelFormat.GGUF}))]}
         )
         with caplog.at_level("WARNING", logger="lilbee.catalog.runnable"):
-            result = get_catalog(task=ModelTask.CHAT)
+            result = get_catalog(task=ModelTask.CHAT, hf_client=get_services().hf_client)
     finally:
         runnable._read_host.cache_clear()
     assert [m.hf_repo for m in result.models] == ["a/ok"]
@@ -441,16 +442,16 @@ def test_the_installed_filter_keys_a_row_by_repo_and_format() -> None:
 def test_ref_with_a_format_resolves_to_an_entry_of_that_format() -> None:
     from lilbee.catalog.query import resolve_pull_target
 
-    entry = resolve_pull_target("acme/two#openvino")
+    entry = resolve_pull_target("acme/two#openvino", hf_client=get_services().hf_client)
     assert entry is not None
     assert (entry.hf_repo, entry.format, entry.pull_ref) == (
         "acme/two",
         ModelFormat.OPENVINO,
         "acme/two#openvino",
     )
-    assert resolve_pull_target("acme/two#nonsense") is None
-    assert resolve_pull_target("two#mlx") is None
-    assert resolve_pull_target("ac me/two#mlx") is None
+    assert resolve_pull_target("acme/two#nonsense", hf_client=get_services().hf_client) is None
+    assert resolve_pull_target("two#mlx", hf_client=get_services().hf_client) is None
+    assert resolve_pull_target("ac me/two#mlx", hf_client=get_services().hf_client) is None
 
 
 @pytest.mark.parametrize(
@@ -467,7 +468,7 @@ def test_ref_with_a_format_resolves_to_an_entry_of_that_format() -> None:
 def test_the_gguf_qualifier_resolves_like_no_qualifier(
     ref: str, repo: str, filename: str, task: ModelTask
 ) -> None:
-    entry = resolve_pull_target(ref)
+    entry = resolve_pull_target(ref, hf_client=get_services().hf_client)
     assert entry is not None
     assert (entry.hf_repo, entry.gguf_filename, entry.task, entry.format, entry.featured) == (
         repo,
@@ -482,4 +483,4 @@ def test_the_gguf_qualifier_resolves_like_no_qualifier(
     "ref", ["two#gguf", "ac me/two#gguf", "owner/repo/../escape/m.gguf#gguf", "acme/Repo#GGUF"]
 )
 def test_the_gguf_qualifier_on_a_bad_ref_has_no_target(ref: str) -> None:
-    assert resolve_pull_target(ref) is None
+    assert resolve_pull_target(ref, hf_client=get_services().hf_client) is None

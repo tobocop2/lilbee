@@ -48,7 +48,7 @@ async def test_cancelling_a_pull_during_the_projector_backoff_ends_it_before_the
     monkeypatch.setattr(dl, "_require_disk_space", lambda *a: None)
     monkeypatch.setattr(dl, "_hf_download_or_translate", failing_transfer)
     monkeypatch.setattr(dl, "_RETRY_BACKOFF_SECONDS", 60)
-    monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda ref: model)
+    monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda ref, **_: model)
     monkeypatch.setattr(app_models, "_vision_projector_missing", lambda ref: True)
     monkeypatch.setattr(
         app_models.get_services().model_manager.__class__,

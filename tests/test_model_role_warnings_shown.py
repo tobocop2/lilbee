@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest import mock
 
+from lilbee.app.services import get_services
 from lilbee.app.settings import SettingsUpdateResult
 from lilbee.catalog.types import ModelSource
 from lilbee.cli.commands import search_chat
@@ -118,7 +119,7 @@ class TestAskShowsWarnings:
 
     def test_the_pull_stays_silent_on_the_notice_the_update_reports(self) -> None:
         ensure = self._prepare(())
-        ensure.assert_called_once_with(report_no_engine=False)
+        ensure.assert_called_once_with(hf_client=mock.ANY, report_no_engine=False)
 
 
 class TestFirstRunPullForwardsTheNoEngineSwitch:
@@ -133,7 +134,7 @@ class TestFirstRunPullForwardsTheNoEngineSwitch:
             mock.patch.object(models_hub, "prompt_model_choice", return_value=info),
             mock.patch.object(models_hub, "validate_disk_and_pull", return_value="r") as pull,
         ):
-            models_hub.ensure_chat_model(report_no_engine=False)
+            models_hub.ensure_chat_model(report_no_engine=False, hf_client=get_services().hf_client)
         pull.assert_called_once_with(info, 50.0, report_no_engine=False)
 
     def test_the_progress_pull_forwards_the_switch_to_the_manager(self) -> None:

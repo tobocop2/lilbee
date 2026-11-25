@@ -27,6 +27,7 @@ from lilbee.catalog import (
     CatalogModel,
     CatalogResult,
 )
+from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import _silence_stderr_log_handlers
 from lilbee.cli.tui import app as tui_app
@@ -9436,7 +9437,7 @@ async def test_catalog_delete_accepts_bare_hf_repo_row():
                 downloaded_at=datetime.now(UTC).isoformat(),
             ),
         )
-        mgr = ModelManager(models_dir, cfg)
+        mgr = ModelManager(models_dir, cfg, hf_client=HfClient(cfg))
         services = MagicMock()
         services.model_manager = mgr
 
@@ -9626,7 +9627,9 @@ async def test_chat_slash_remove_deletes_an_unregistered_gguf(tmp_path):
         with (
             patch(
                 "lilbee.cli.tui.screens.chat.get_services",
-                return_value=MagicMock(model_manager=ModelManager(models_dir, cfg)),
+                return_value=MagicMock(
+                    model_manager=ModelManager(models_dir, cfg, hf_client=HfClient(cfg))
+                ),
             ),
             patch(
                 "lilbee.modelhub.model_manager.discovery.classify_all_remote_models",
