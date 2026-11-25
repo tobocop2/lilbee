@@ -38,6 +38,7 @@ With `--json`, the CLI, the MCP tool and the REST route return the same five fie
 - `engines_folder`: the path that the `Engines folder:` line shows.
 
 Each build in `builds` has a `not_run_on` field with the devices of its own cell.
+It also has a `differs_from_pin` field. The field is `true` for a build that is not the build the pin names for this computer. lilbee runs only the pin build, so a build that differs stays on disk and runs nothing. `engine list` ends the line of that build with `, differs from the pin`. The Engines tab shows the same words, and keeps Remove on that row.
 
 If lilbee has no record of an engine on a device, the engine is experimental
 there and the line ends with `, experimental: not run on <device>`. The list then

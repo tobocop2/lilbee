@@ -47,7 +47,7 @@ _SERVED_BY = re.compile(r"served by engine=(\S+) version=(\S+) build=\S+ role=(\
 
 # Keys of the CLI JSON, pinned: cli/engine.py writes them from RoleView and BuildView.
 ROLE_KEYS = frozenset({"role", "model", "format", "engine", "notice"})
-BUILD_KEYS = frozenset({"engine", "version", "backend", "not_run_on"})
+BUILD_KEYS = frozenset({"engine", "version", "backend", "not_run_on", "differs_from_pin"})
 ROLES_TOP_KEYS = frozenset({"command", "roles"})
 LIST_TOP_KEYS = frozenset(
     {"command", "builds", "damaged", "not_installed", "experimental", "engines_folder"}
