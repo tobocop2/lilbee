@@ -477,9 +477,10 @@ class Config(BaseSettings):
             "Emit structured JSON from CLI commands. The --json flag sets it for one invocation"
         ),
     )
-    # None sends no value, so the engine samples with the model's own values: the
-    # GGUF's general.sampling keys, or generation_config.json. A near-greedy
-    # default here kept thinking models thinking until the token cap.
+    # None sends no value and leaves the choice to the engine: the model's values
+    # when the file carries them (GGUF general.sampling keys, generation_config.json),
+    # else the engine's defaults. A near-greedy default here kept thinking models
+    # thinking until the token cap.
     temperature: float | None = ConfigField(default=None, ge=0.0, writable=True)
     top_p: float | None = ConfigField(default=None, ge=0.0, le=1.0, writable=True)
     top_k_sampling: int | None = ConfigField(default=None, ge=1, writable=True)
