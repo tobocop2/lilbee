@@ -323,8 +323,9 @@ jobs:
           # pytest-timeout ends a stuck test. See tests/_hang_watchdog.py.
           LILBEE_TEST_HANG_DUMP_S: "90"
           LILBEE_TEST_HANG_DUMP_DIR: ${{ runner.temp }}/hang-dumps
-          # A stalled child run in a test attaches py-spy to its descendants; Ubuntu's ptrace
-          # scope allows that for root only. The runner has passwordless sudo.
+          # When py-spy is installed, a stalled child run in a test attaches it to each
+          # descendant; Ubuntu's ptrace scope allows that for root only. The runner has
+          # passwordless sudo. Without py-spy the variable has no effect.
           LILBEE_TEST_STALL_SUDO: ${{ runner.os == 'Linux' && '1' || '' }}
 
       - name: Surface hang-watchdog stack dumps
