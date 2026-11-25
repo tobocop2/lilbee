@@ -16,6 +16,7 @@ import signal
 import socket
 import sys
 import threading
+import time
 from collections.abc import Awaitable, Coroutine, Iterator
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -47,7 +48,15 @@ _lock = threading.Lock()
 _atexit_registered = False
 
 
-def get_loop() -> asyncio.AbstractEventLoop:
+def _serve(loop: asyncio.AbstractEventLoop) -> None:
+    """Run *loop* on this thread; close it once it stops, even when the stop comes late."""
+    try:
+        loop.run_forever()
+    finally:
+        loop.close()
+
+
+def get_loop() ->asyncio.AbstractEventLoop:
     """Return the background loop, starting it on a daemon thread if needed."""
     global _loop, _thread, _atexit_registered
     with _lock:
@@ -55,7 +64,8 @@ def get_loop() -> asyncio.AbstractEventLoop:
             return _loop
         loop = asyncio.new_event_loop()
         thread = threading.Thread(
-            target=loop.run_forever,
+            target=_serve,
+            args=(loop,),
             name="lilbee-bg-loop",
             daemon=True,
         )
@@ -290,8 +300,13 @@ def hold_exit(stop: SystemExit) -> bool:
 
 
 def shutdown(drain_budget_s: float = _DRAIN_BUDGET_S) -> None:
-    """Cancel pending tasks and wait *drain_budget_s* for them, then stop the loop. Idempotent."""
+    """Cancel pending tasks, stop the loop, and wait *drain_budget_s* in all. Idempotent.
+
+    The drain and the join of the loop thread share the one budget. A loop thread that a
+    coroutine blocks outlives it as a daemon, and closes the loop when it stops.
+    """
     global _loop, _thread
+    deadline = time.monotonic() + drain_budget_s
     with _lock:
         loop, _loop = _loop, None
         thread, _thread = _thread, None
@@ -302,8 +317,7 @@ def shutdown(drain_budget_s: float = _DRAIN_BUDGET_S) -> None:
         asyncio.run_coroutine_threadsafe(_drain(loop), loop).result(timeout=drain_budget_s)
     loop.call_soon_threadsafe(loop.stop)
     if thread is not None:
-        thread.join(timeout=10.0)
-    loop.close()
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
 
 
 async def _drain(loop: asyncio.AbstractEventLoop) -> None:
