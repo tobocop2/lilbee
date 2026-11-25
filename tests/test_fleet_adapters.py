@@ -23,6 +23,8 @@ from lilbee.providers.fleet.adapters import (
     rerank_spec,
     resolve_rerank_mode,
 )
+from lilbee.providers.fleet.engines.base import LaunchRequest
+from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 
@@ -396,6 +398,38 @@ def test_build_argv_no_mmap_reads_help_on_stderr(monkeypatch) -> None:
         no_mmap=True,
     )
     assert _mmap_tokens(argv) == ["--load-mode", "none"]
+
+
+def test_no_mmap_help_read_targets_the_launched_binary(monkeypatch) -> None:
+    """With two builds side by side, the flag comes from the one the argv launches."""
+    old_build, new_build = Path("/engines/old/llama-server"), Path("/engines/new/llama-server")
+    helps = {old_build: _HELP_NO_MMAP, new_build: _HELP_LOAD_MODE}
+    read: list[Path] = []
+
+    def _run(cmd, *_a, **_k):
+        read.append(Path(cmd[0]))
+        return SimpleNamespace(stdout=helps[Path(cmd[0])], stderr="")
+
+    monkeypatch.setattr(binary_mod.subprocess, "run", _run)
+    for launched, other, tokens in (
+        (old_build, new_build, ["--no-mmap"]),
+        (new_build, old_build, ["--load-mode", "none"]),
+    ):
+        binary_mod._read_help.cache_clear()
+        read.clear()
+        request = LaunchRequest(
+            binary=launched,
+            model_path=Path("/models/chat.gguf"),
+            devices=(0,),
+            n_gpu_layers=-1,
+            slots=1,
+            ctx_per_slot=4096,
+            no_mmap=True,
+        )
+        argv = LLAMA.launch_argv(ROLE_SPECS[WorkerRole.CHAT], request)
+        assert argv[0] == str(launched)
+        assert _mmap_tokens(argv) == tokens
+        assert other not in read
 
 
 def test_build_argv_defaults_to_mmap(monkeypatch) -> None:
