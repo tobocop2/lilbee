@@ -129,7 +129,7 @@ def test_a_host_without_a_card_picks_the_cpu_archive() -> None:
     pick = MISTRAL.pick_build(caps("Linux", "x86_64"))
     assert (pick.backend, pick.reason) == (
         "cpu",
-        "This host has no NVIDIA GPU, so the CPU archive runs.",
+        "This computer has no NVIDIA GPU, so the CPU archive runs.",
     )
 
 
