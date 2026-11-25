@@ -26,6 +26,7 @@ from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase
+from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.server.handlers import _chat_status
 
 REPLIES = Path(__file__).parent / "fixtures" / "lemonade"
@@ -545,26 +546,175 @@ def test_a_client_without_a_load_request_reads_the_device_of_the_running_model()
     assert client.needs_device_check is False
 
 
+def _pretend_a_check_is_running(client: LlamaServerClient) -> None:
+    """Make *client* look as if another thread's check were running its load."""
+    with client._device_cond:
+        client._device_checking = True
+
+
+def _run_waiter(call: Callable[[], object]) -> tuple[threading.Thread, list[BaseException]]:
+    """Run *call* on a thread, and keep what it raises; the thread still waits after 0.3 s."""
+    outcome: list[BaseException] = []
+
+    def wait() -> None:
+        try:
+            call()
+        except BaseException as exc:
+            outcome.append(exc)
+
+    waiter = threading.Thread(target=wait, daemon=True)
+    waiter.start()
+    waiter.join(0.3)
+    assert waiter.is_alive()
+    return waiter, outcome
+
+
 def test_a_request_that_waited_out_another_check_reads_nothing_itself() -> None:
     client, asked = _client(WorkerRole.EMBED, LEMONADE.request_profile, {HEALTH: ON_NPU})
-    at_the_lock = threading.Event()
-    real_raise = client._raise_device_refusal
-
-    def raise_and_signal() -> None:
-        at_the_lock.set()
-        real_raise()
-
-    client._raise_device_refusal = raise_and_signal  # type: ignore[method-assign]
-    # The test holds the lock as a check on another thread would, and ends that check
-    # with a confirmed device while the request waits.
-    with client._device_lock:
-        waiter = threading.Thread(target=client.ensure_device)
-        waiter.start()
-        assert at_the_lock.wait(5)
+    _pretend_a_check_is_running(client)
+    waiter, outcome = _run_waiter(client.ensure_device)
+    # The other check ends with a confirmed device while the request waits.
+    with client._device_cond:
         client._device_ok = True
+        client._device_checking = False
+        client._device_cond.notify_all()
     waiter.join(5)
     assert not waiter.is_alive()
+    assert outcome == []
     assert asked == []
+
+
+def test_a_request_that_waits_for_the_check_can_be_cancelled() -> None:
+    client, asked = _client(WorkerRole.CHAT, LEMONADE.request_profile, {})
+    _pretend_a_check_is_running(client)
+    cancel = threading.Event()
+    waiter, outcome = _run_waiter(
+        lambda: client.chat_abortable([{"role": "user", "content": QUESTION}], cancel=cancel)
+    )
+    cancel.set()
+    waiter.join(5)
+    assert not waiter.is_alive()
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], TaskCancelledError)
+    assert asked == []
+    assert client.in_flight == 0
+
+
+def test_a_request_that_waits_for_the_check_ends_when_the_client_closes() -> None:
+    client, _ = _client(WorkerRole.EMBED, LEMONADE.request_profile, {})
+    _pretend_a_check_is_running(client)
+    waiter, outcome = _run_waiter(client.ensure_device)
+    client.close()
+    waiter.join(5)
+    assert not waiter.is_alive()
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], TaskCancelledError)
+
+
+def test_the_check_does_not_hold_its_lock_while_the_load_runs() -> None:
+    """A load that fans out to worker threads can take the gate's condition."""
+    client, _ = _client(WorkerRole.EMBED, LEMONADE.request_profile, {HEALTH: ON_NPU})
+    free_during_load: list[bool] = []
+
+    def take_it() -> None:
+        got = client._device_cond.acquire(timeout=1)
+        free_during_load.append(got)
+        if got:
+            client._device_cond.release()
+
+    def load(_client: LlamaServerClient) -> None:
+        worker = threading.Thread(target=take_it)
+        worker.start()
+        worker.join(5)
+
+    client._load = load
+    client.ensure_device()
+    assert free_during_load == [True]
+    assert client.needs_device_check is False
+
+
+MESSAGES = [{"role": "user", "content": QUESTION}]
+
+
+def _two_replicas(
+    first: Reply, second: Reply
+) -> tuple[provider_mod._LivePool[LlamaServerClient], list[LlamaServerClient]]:
+    """Two unchecked Lemonade chat replicas, each on the device its own *first*/*second* reports."""
+    clients = [
+        _client(WorkerRole.CHAT, LEMONADE.request_profile, _Swap(devices).routes())[0]
+        for devices in (first, second)
+    ]
+    pool = provider_mod._LivePool(threading.RLock(), lambda: list(clients), lambda: None)
+    return pool, clients
+
+
+def test_a_refused_unchecked_replica_hands_the_request_to_its_sibling() -> None:
+    pool, (bad, good) = _two_replicas(CHAT_ON_CPU, CHAT_ON_NPU)
+    assert bad.needs_device_check
+    assert provider_mod._call_reserved(pool, lambda c: c.chat(MESSAGES, stream=False)) == "hi"
+    assert bad.healthy is False
+    assert good.needs_device_check is False
+    assert bad.in_flight == good.in_flight == 0
+
+
+def test_a_refused_unchecked_replica_hands_the_stream_to_its_sibling() -> None:
+    pool, (bad, good) = _two_replicas(CHAT_ON_CPU, CHAT_ON_NPU)
+    stream = provider_mod._stream_reserved(pool, lambda c: c.chat_stream_items(MESSAGES))
+    assert "hi" in "".join(str(getattr(item, "content", item)) for item in stream)
+    assert bad.healthy is False
+    assert good.needs_device_check is False
+
+
+def test_with_every_replica_refused_the_request_gets_the_device_error() -> None:
+    pool, _ = _two_replicas(CHAT_ON_CPU, CHAT_ON_CPU)
+    with pytest.raises(ProviderError, match="not the NPU"):
+        provider_mod._call_reserved(pool, lambda c: c.chat(MESSAGES, stream=False))
+    pool, _ = _two_replicas(CHAT_ON_CPU, CHAT_ON_CPU)
+    with pytest.raises(ProviderError, match="not the NPU"):
+        provider_mod._stream_reserved(pool, lambda c: c.chat_stream_items(MESSAGES))
+
+
+def test_a_lone_refused_replica_gives_the_device_error() -> None:
+    for open_it in (
+        lambda pool: provider_mod._call_reserved(pool, lambda c: c.chat(MESSAGES, stream=False)),
+        lambda pool: provider_mod._stream_reserved(pool, lambda c: c.chat_stream_items(MESSAGES)),
+    ):
+        pool, (bad, _) = _two_replicas(CHAT_ON_CPU, CHAT_ON_CPU)
+        alone = provider_mod._LivePool(threading.RLock(), lambda: [bad], lambda: None)
+        with pytest.raises(ProviderError, match="not the NPU"):
+            open_it(alone)
+        assert bad.in_flight == 0
+
+
+def test_a_refused_replica_hands_a_failover_call_to_its_sibling() -> None:
+    """The embed, count and rerank calls retry on a sibling for a refusal as for a dead replica."""
+    pool, (bad, good) = _two_replicas(CHAT_ON_CPU, CHAT_ON_NPU)
+    assert provider_mod._call_with_failover(pool, lambda c: c.chat(MESSAGES, stream=False)) == "hi"
+    assert bad.healthy is False
+    assert good.needs_device_check is False
+    pool, _ = _two_replicas(CHAT_ON_CPU, CHAT_ON_CPU)
+    with pytest.raises(ProviderError, match="not the NPU"):
+        provider_mod._call_with_failover(pool, lambda c: c.chat(MESSAGES, stream=False))
+
+
+def _vision_pool(clients: list[LlamaServerClient]) -> provider_mod._LivePool:
+    return provider_mod._LivePool(
+        threading.RLock(),
+        lambda: [provider_mod._VisionReplica(c, 1) for c in clients],
+        lambda: None,
+    )
+
+
+def test_a_refused_vision_replica_hands_the_request_to_its_sibling() -> None:
+    _, (bad, good) = _two_replicas(CHAT_ON_CPU, CHAT_ON_NPU)
+    pool = _vision_pool([bad, good])
+    assert provider_mod._dispatch_vision(pool, lambda c: c.chat(MESSAGES, stream=False)) == "hi"
+    assert bad.healthy is False
+    _, refused = _two_replicas(CHAT_ON_CPU, CHAT_ON_CPU)
+    with pytest.raises(ProviderError, match="not the NPU"):
+        provider_mod._dispatch_vision(
+            _vision_pool(refused), lambda c: c.chat(MESSAGES, stream=False)
+        )
 
 
 def test_d1_a_later_good_warm_clears_the_error_of_an_unreadable_health_reply(
