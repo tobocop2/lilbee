@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
-import json
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -199,18 +198,96 @@ def test_a_model_this_command_chose_by_flag_still_overflows(
 def test_the_error_names_the_written_key_and_its_new_value() -> None:
     message = prov_mod._held_write_message({"chat_model": _OTHER_CHAT_REF})
     assert message == (
-        f"chat_model changed to {_OTHER_CHAT_REF} in config.toml while this command ran, "
-        "and the running engine now serves it. Run the command again."
+        f"config.toml changed chat_model to {_OTHER_CHAT_REF} while this command ran. "
+        "Run the command again."
     )
 
 
-def test_a_fleet_planned_on_a_flag_is_not_stamped_with_the_file_view(monkeypatch) -> None:
-    """`ask --model X` plans X while config.toml names another model: its fleet is not current."""
+def test_the_error_names_each_written_key_with_its_own_value() -> None:
+    message = prov_mod._held_write_message({"chat_model": _OTHER_CHAT_REF, "chunk_size": 256})
+    assert message == (
+        f"config.toml changed chat_model to {_OTHER_CHAT_REF}, chunk_size to 256 while this "
+        "command ran. Run the command again."
+    )
+
+
+_THIRD_CHAT_REF = "Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q8_0.gguf"
+
+
+def test_a_slot_fleet_on_a_flagged_model_after_the_write_gets_a_true_error(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    """The slot runs `ask --model X`, planned after the write: the error claims nothing it serves.
+
+    The fleet carries the file's view, so the one-off stops. The error must not say the
+    engine serves the written model, because it serves X.
+    """
     persistent_settings.save(cfg.data_root, {"chat_model": _CHAT_REF})
+    follow_config_one_off(frozenset())
+    kwargs = _one_off_provider_kwargs(monkeypatch)
+    persistent_settings.save(cfg.data_root, {"chat_model": _THIRD_CHAT_REF})
+    monkeypatch.setattr(cfg, "chat_model", _OTHER_CHAT_REF)  # the other command's flag
+    _owner_provider, states = _owner(monkeypatch, tmp_path)
+    _stamp(states, prov_mod._plan_origin())
+    monkeypatch.setattr(cfg, "chat_model", _CHAT_REF)  # this one-off holds its start model
+    peer, built = _peer_beside_the_slot(monkeypatch, tmp_path, states, kwargs)
+    message = _outcome(peer._ensure_fleet) or (peer._engine_refusal or "")
+    assert built == []
+    assert message == (
+        f"config.toml changed chat_model to {_THIRD_CHAT_REF} while this command ran. "
+        "Run the command again."
+    )
+
+
+def _one_off_follower_on_a(follower_flags: frozenset[str] = frozenset()):
+    """A one-off follower on chat_model A in config.toml, as follow_config_one_off builds it."""
+    persistent_settings.save(cfg.data_root, {"chat_model": _CHAT_REF})
+    follow_config_one_off(follower_flags)
+    return services_mod._state.follower
+
+
+def test_a_process_on_an_override_with_no_write_reports_no_held_write(monkeypatch) -> None:
+    """An environment override makes the process run on B while the file says A; no write."""
+    follower = _one_off_follower_on_a()
     monkeypatch.setattr(cfg, "chat_model", _OTHER_CHAT_REF)
-    stamped = prov_mod._plan_origin()
-    assert stamped != prov_mod._file_origin()
-    assert json.loads(stamped.fleet_view or "{}")["chat_model"] == _OTHER_CHAT_REF
+    assert follower.held_writes() == {}
+
+
+def test_a_write_of_the_value_the_process_runs_on_is_no_held_write(monkeypatch) -> None:
+    """The process runs on B through an override; the file changes from A to B."""
+    follower = _one_off_follower_on_a()
+    monkeypatch.setattr(cfg, "chat_model", _OTHER_CHAT_REF)
+    persistent_settings.save(cfg.data_root, {"chat_model": _OTHER_CHAT_REF})
+    assert follower.held_writes() == {}
+
+
+def test_a_held_write_of_a_new_value_is_reported(monkeypatch) -> None:
+    follower = _one_off_follower_on_a()
+    monkeypatch.setattr(cfg, "chat_model", _CHAT_REF)
+    persistent_settings.save(cfg.data_root, {"chat_model": _OTHER_CHAT_REF})
+    assert follower.held_writes() == {"chat_model": _OTHER_CHAT_REF}
+
+
+def test_the_follower_reports_no_write_of_a_key_a_flag_set(monkeypatch) -> None:
+    from lilbee.app.config_follow import ONE_OFF_HOLD, ConfigFileFollower
+
+    persistent_settings.save(cfg.data_root, {"chat_model": _CHAT_REF})
+    follower = ConfigFileFollower(
+        ONE_OFF_HOLD | {"chat_model"},
+        long_running=False,
+        keeper="the command",
+        flags=frozenset({"chat_model"}),
+    )
+    monkeypatch.setattr(cfg, "chat_model", _THIRD_CHAT_REF)  # the flag's model
+    persistent_settings.save(cfg.data_root, {"chat_model": _OTHER_CHAT_REF})
+    assert follower.held_writes() == {}
+
+
+def test_the_services_report_no_write_of_a_key_a_flag_set(monkeypatch) -> None:
+    _one_off_follower_on_a(frozenset({"chat_model"}))
+    monkeypatch.setattr(cfg, "chat_model", _THIRD_CHAT_REF)  # the flag's model
+    persistent_settings.save(cfg.data_root, {"chat_model": _OTHER_CHAT_REF})
+    assert services_mod._held_writes_of_the_process_follower() == {}
 
 
 def test_the_factory_hands_the_held_writes_to_the_local_engine() -> None:
@@ -360,7 +437,7 @@ def test_add_stops_with_the_clear_error_on_a_chat_model_write(
     result = runner.invoke(app, ["add", str(cli_env)])
     print(f"add rc={result.exit_code} output={result.output!r}")
     assert result.exit_code == 1, result.output
-    assert "chat_model changed to" in result.output and "again" in result.output, result.output
+    assert "changed chat_model to" in result.output and "again" in result.output, result.output
 
 
 # The commands besides add that reach the engine on this one-document library. ask reaches
@@ -379,4 +456,4 @@ def test_each_one_off_command_ends_with_the_clear_error(
     result = runner.invoke(app, args)
     assert calls, f"{command} never reached the engine"
     assert result.exit_code == 1, result.output
-    assert "chat_model changed to" in result.output and "again" in result.output, result.output
+    assert "changed chat_model to" in result.output and "again" in result.output, result.output
