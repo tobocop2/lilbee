@@ -56,6 +56,19 @@ _GATE_POLL_S = 0.02
 _PUMP_TIMEOUT_S = 5.0
 
 
+async def settle_workers(pilot) -> None:
+    """Wait until the app's workers end and every message they posted is handled.
+
+    The first pause lets the pending edit reach its handler, which starts the
+    worker. ``wait_for_complete`` then awaits that worker itself, however long a
+    loaded host takes to run it. The last pause handles what the worker posted.
+    No wall-clock limit applies: pytest's per-test timeout bounds a hang.
+    """
+    await pilot.pause()
+    await pilot.app.workers.wait_for_complete()
+    await pilot.pause()
+
+
 async def pump_until(pilot, predicate, *, timeout_s: float = _PUMP_TIMEOUT_S) -> bool:
     """Pump Textual's message bus until *predicate* holds; return whether it did.
 
