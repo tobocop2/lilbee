@@ -41,6 +41,27 @@ _CRASH_NODEID = "test_toy.py::test_worker_dies"
 _CRASH_REPORT = "crashed while running"
 _EXIT_TESTS_FAILED = 1
 _MARKER_ENV = "TOY_DIED_ONCE"
+# The toy run needs one worker to die and one to survive. `-n logical` would start one worker per
+# CPU, and on a loaded host each worker's start competes with the others for the same CPUs.
+_TOY_WORKERS = 2
+_START_COST_ENV = "TOY_WORKER_START_COST_S"
+_START_LOCK_ENV = "TOY_WORKER_START_LOCK"
+_START_COST_S = 4.0
+_TOY_CONFTEST = """
+import os
+import time
+
+import filelock
+
+
+def pytest_configure(config):
+    # A loaded host starts the workers one after another on shared CPUs. One lock models that:
+    # each worker holds it for the cost of its start.
+    cost = float(os.environ.get("TOY_WORKER_START_COST_S", "0"))
+    if cost and os.environ.get("PYTEST_XDIST_WORKER"):
+        with filelock.FileLock(os.environ["TOY_WORKER_START_LOCK"]):
+            time.sleep(cost)
+"""
 _TOY_SUITE = """
 import os
 import pathlib
@@ -273,18 +294,40 @@ def test_a_target_naming_no_test_file_keeps_all_its_arguments() -> None:
     assert {"-v", "-n", "--dist", "--max-worker-restart=0"} <= set(_XDIST_TARGETS["test"])
 
 
-@pytest.mark.timeout(_RUN_BUDGET_S * 2)
-@pytest.mark.parametrize("target", sorted(_XDIST_TARGETS))
-def test_a_dead_worker_fails_the_run_instead_of_hanging_it(target: str, tmp_path: Path) -> None:
+def _toy_run(target: str, tmp_path: Path, *, start_cost_s: float = 0.0) -> tuple[str, int]:
+    """Run the target's pytest arguments against the toy suite, whose one test kills its worker.
+
+    The worker count is replaced: the last `-n` on the command line wins.
+    """
     (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     (tmp_path / "test_toy.py").write_text(_TOY_SUITE, encoding="utf-8")
+    (tmp_path / "conftest.py").write_text(_TOY_CONFTEST, encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if not k.startswith(_CHILD_ENV_PREFIXES)}
     env[_MARKER_ENV] = str(tmp_path / "died-once")
-    output, returncode = _run_bounded_child(
-        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *_XDIST_TARGETS[target]],
-        cwd=tmp_path,
-        env=env,
+    env[_START_COST_ENV] = str(start_cost_s)
+    env[_START_LOCK_ENV] = str(tmp_path / "start.lock")
+    args = [*_XDIST_TARGETS[target], "-n", str(_TOY_WORKERS)]
+    return _run_bounded_child(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *args], cwd=tmp_path, env=env
     )
+
+
+def _assert_the_dead_worker_failed_the_run(output: str, returncode: int) -> None:
     assert returncode == _EXIT_TESTS_FAILED, output
     assert _CRASH_REPORT in output
     assert _CRASH_NODEID in output
+
+
+@pytest.mark.timeout(_RUN_BUDGET_S * 2)
+@pytest.mark.parametrize("target", sorted(_XDIST_TARGETS))
+def test_a_dead_worker_fails_the_run_instead_of_hanging_it(target: str, tmp_path: Path) -> None:
+    _assert_the_dead_worker_failed_the_run(*_toy_run(target, tmp_path))
+
+
+@pytest.mark.timeout(_RUN_BUDGET_S * 2)
+def test_a_slow_worker_start_does_not_fail_the_dead_worker_run(tmp_path: Path) -> None:
+    # Every worker start costs _START_COST_S of a shared CPU, as on a host at load 40. With one
+    # worker per CPU the starts alone pass the run budget on any host of 16 CPUs or more.
+    _assert_the_dead_worker_failed_the_run(
+        *_toy_run("test", tmp_path, start_cost_s=_START_COST_S)
+    )
