@@ -282,7 +282,9 @@ def test_the_exit_after_a_signal_gives_the_stragglers_the_whole_budget(
     monkeypatch, restored_signals, pool_exit_stubbed
 ):
     deadlines: list[float] = []
+    exits: list[int] = []
     monkeypatch.setattr(services_mod._lifecycle, "stop_for_exit", lambda: False)
+    monkeypatch.setattr(services_mod, "_exit_now", lambda status, note: exits.append(status))
     monkeypatch.setattr(
         services_mod, "_exit_if_stragglers", lambda status, deadline: deadlines.append(deadline)
     )
@@ -290,6 +292,7 @@ def test_the_exit_after_a_signal_gives_the_stragglers_the_whole_budget(
 
     services_mod.exit_after_signal(0)
 
+    assert exits == []
     assert len(deadlines) == 1
     assert before + services_mod._STRAGGLER_BUDGET_S <= deadlines[0]
     assert deadlines[0] <= time.monotonic() + services_mod._STRAGGLER_BUDGET_S
