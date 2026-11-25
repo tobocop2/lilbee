@@ -1122,7 +1122,9 @@ class TestDiagnosticsRouting:
         log_text = (isolated_env / "logs" / "cli.log").read_text()
         assert "Sync reconciliation" in log_text
 
-    def test_search_leaves_no_log_handler_and_capture_off_when_it_ends(self, mock_svc, isolated_env):
+    def test_search_leaves_no_log_handler_and_capture_off_when_it_ends(
+        self, mock_svc, isolated_env
+    ):
         import warnings
 
         mock_svc.searcher.search_report.return_value = SearchReport([])
