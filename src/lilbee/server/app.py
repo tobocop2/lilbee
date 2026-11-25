@@ -321,8 +321,12 @@ class _ConfigFileReload(ASGIMiddleware):
     file itself.
     """
 
+    def __init__(self) -> None:
+        # Built with the app, so a write made after that is a change the first request takes.
+        self._follower = config_follower()
+
     async def handle(self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp) -> None:
-        await config_follower().take()
+        await self._follower.take()
         await next_app(scope, receive, send)
 
 
