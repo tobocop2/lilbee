@@ -1985,9 +1985,17 @@ def _failed_result(
     During shutdown, worker pools raise RuntimeError from submit(). Those are
     cancellation, not ingest failures: the cancel flag is the source of truth,
     and the executor's shutdown message covers the race where cancel was set
-    after the submit.
+    after the submit. A file error that lands after the cancel is a real failure:
+    it leaves as the cause of the cancel, and is logged here because no result
+    carries it to :func:`_classify_result`.
     """
-    if (cancel and cancel.is_set()) or is_executor_shutdown(exc):
+    if is_executor_shutdown(exc):
+        raise asyncio.CancelledError from exc
+    if cancel and cancel.is_set():
+        log.warning(
+            "Failed to ingest %s after the sync was cancelled: %s", entry.name, log_reason(exc)
+        )
+        log.debug("Traceback for failed ingest of %s", entry.name, exc_info=exc)
         raise asyncio.CancelledError from exc
     # Suppress TaskCancelledError on the FILE_DONE notice: the user already
     # cancelled, and re-raising here would strand sibling tasks awaiting in
