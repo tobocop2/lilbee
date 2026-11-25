@@ -14,7 +14,9 @@ from lilbee.core.config import cfg
 from lilbee.providers.roles import EngineBackend
 
 
-def _show(monkeypatch: pytest.MonkeyPatch, backend: EngineBackend, *, json_mode: bool = False) -> str:
+def _show(
+    monkeypatch: pytest.MonkeyPatch, backend: EngineBackend, *, json_mode: bool = False
+) -> str:
     view = PlacementView(
         gpus=(), roles=(), unplaceable=(), manual=False, spec_json=None, engine_backend=backend
     )
