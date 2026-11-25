@@ -24,9 +24,16 @@ def _env() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key not in (SECONDS, FOLDER)}
 
 
-def _make(*args: str) -> subprocess.CompletedProcess[str]:
+def _make(
+    *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["make", *args], cwd=ROOT, capture_output=True, encoding="utf-8", env=_env(), check=False
+        ["make", *args],
+        cwd=ROOT,
+        capture_output=True,
+        encoding="utf-8",
+        env=_env() if env is None else env,
+        check=False,
     )
 
 
@@ -35,7 +42,7 @@ UNIT_RECIPES = ("test", "test-ci", "test-ci-split", "test-ci-serial", "test-ci-f
 LONG_RECIPES = ("test-integration", "test-presets")
 
 
-def _seen_by(recipe: str, tmp_path: Path) -> str:
+def _seen_by(recipe: str, tmp_path: Path, env: dict[str, str] | None = None) -> str:
     """The watchdog variables as the recipe's own environment holds them.
 
     A prerequisite inherits the target-specific variables of its target. The ``+`` prefix
@@ -46,7 +53,7 @@ def _seen_by(recipe: str, tmp_path: Path) -> str:
         f"probe-{recipe}:\n\t+@echo PROBE $${SECONDS}/$${FOLDER}\n{recipe}: probe-{recipe}\n",
         encoding="utf-8",
     )
-    shown = _make("-n", "-f", "Makefile", "-f", str(probe), recipe)
+    shown = _make("-n", "-f", "Makefile", "-f", str(probe), recipe, env=env)
     assert shown.returncode == 0, shown.stderr
     (line,) = [line for line in shown.stdout.splitlines() if line.startswith("PROBE ")]
     return line.removeprefix("PROBE ")
@@ -68,10 +75,28 @@ def test_the_long_recipes_do_not_get_the_watchdog(recipe: str, tmp_path: Path) -
 
 
 @needs_make
-def test_an_empty_value_stops_make_instead_of_switching_the_watchdog_off() -> None:
-    stopped = _make("-n", "test", f"{SECONDS}=")
+@pytest.mark.parametrize("recipe", LONG_RECIPES)
+def test_a_value_from_the_shell_does_not_reach_the_long_recipes(
+    recipe: str, tmp_path: Path
+) -> None:
+    shell = {**_env(), SECONDS: "7", FOLDER: "/from/the/shell"}
+    assert _seen_by(recipe, tmp_path, env=shell) == "/"
+
+
+@needs_make
+@pytest.mark.parametrize("recipe", UNIT_RECIPES)
+def test_an_empty_value_stops_make_instead_of_switching_the_watchdog_off(recipe: str) -> None:
+    stopped = _make("-n", recipe, env={**_env(), SECONDS: ""})
     assert stopped.returncode != 0
     assert "the hang watchdog would be off" in stopped.stderr
+
+
+@needs_make
+@pytest.mark.parametrize("target", (*LONG_RECIPES, "lint"))
+def test_an_empty_value_does_not_stop_the_other_targets(target: str) -> None:
+    shown = _make("-n", target, env={**_env(), SECONDS: ""})
+    assert shown.returncode == 0, shown.stderr
+    assert "the hang watchdog would be off" not in shown.stderr
 
 
 def test_ci_keeps_no_copy_of_the_seconds() -> None:
