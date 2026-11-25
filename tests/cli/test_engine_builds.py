@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 from lilbee.catalog import runnable
 from lilbee.cli import app
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.build_use import BuildHolds
 from lilbee.providers.fleet.engine_manifest import cell_key
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
 from lilbee.providers.fleet.engines import proof
@@ -89,17 +90,16 @@ def test_remove_json_names_the_build(models_dir: Path) -> None:
     assert json.loads(result.output)["removed"] == "fx 1 (cpu)"
 
 
-def test_remove_refuses_while_a_launch_holds_the_engine(models_dir: Path, tmp_path: Path) -> None:
-    from lilbee.runtime.engine_lock import hold_user_lock
-
+def test_remove_refuses_while_a_launch_holds_the_engine(models_dir: Path) -> None:
     install(models_dir)
-    hold = hold_user_lock(tmp_path / "slot")
+    # A launch holds the in-use file of the build it runs; a remove asks that file.
+    holds = BuildHolds([engines_root(models_dir) / "fx" / "1-cpu"])
     try:
         result = runner.invoke(app, ["engine", "remove", "fx", "1", "cpu"])
     finally:
-        hold.release_and_check_last()
+        holds.close()
     assert result.exit_code == 1
-    assert "is in use" in result.output
+    assert "Engine fx 1 (cpu) is in use" in result.output
     assert len(EngineStore(engines_root(models_dir)).installed()) == 1
 
 
