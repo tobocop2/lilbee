@@ -807,6 +807,30 @@ def test_the_build_script_holds_a_virtual_architecture_at_or_above_hopper() -> N
     assert max(virtual) >= max(real)
 
 
+def test_the_build_script_pins_the_source_mtimes_before_the_first_compile() -> None:
+    """nvcc -lineinfo copies each source mtime into the GPU code; a checkout sets its own time."""
+    text = _active_script()
+    epoch = 'epoch="$(bash "$(dirname "${BASH_SOURCE[0]}")/source_date_epoch.sh" "${SRC_DIR}")"'
+    touch = '-exec touch -d "@${epoch#SOURCE_DATE_EPOCH=}" {} +'
+    assert text.count(epoch) == 1
+    assert text.count(touch) == 1
+    assert text.index("checkout -q FETCH_HEAD") < text.index(epoch) < text.index(touch)
+    assert text.index(touch) < text.index("cmake -S")
+    assert "-name .git -prune" in text
+    assert (_BUILD_SCRIPT.parent / "source_date_epoch.sh").is_file()
+
+
+def test_the_build_script_strips_exactly_the_first_party_files() -> None:
+    """The strip drops the nvcc temporary file name, which holds a process ID. NVIDIA files stay."""
+    text = _active_script()
+    header = 'for f in "${BIN_DIR}"/llama-server "${BIN_DIR}"/libggml* "${BIN_DIR}"/libllama*; do'
+    assert text.count(header) == 1
+    body = text.split(header)[1].split("\ndone")[0]
+    assert body.index("strip --strip-unneeded") < body.index("patchelf --set-rpath")
+    assert text.count("strip --strip-unneeded") == 1
+    assert "strip" not in "\n".join(_cuda_blocks())
+
+
 # The ik cells of the packs repository build the wheels that the shipped table names.
 # tests/shell/pack_ik.bats tests the script that builds and checks one cell.
 
