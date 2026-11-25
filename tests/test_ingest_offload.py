@@ -173,7 +173,8 @@ def _engine_share(monkeypatch: pytest.MonkeyPatch, share: int | None) -> None:
     from lilbee.app import services
 
     provider = SimpleNamespace(ingest_request_share=lambda: share)
-    monkeypatch.setattr(services, "get_services", lambda: SimpleNamespace(provider=provider))
+    monkeypatch.setattr(services._state, "singleton", SimpleNamespace(provider=provider))
+    monkeypatch.setattr(offload, "fleet_inflight_target", lambda: 0)
 
 
 def test_a_pool_past_the_engine_share_shrinks_to_it(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -234,7 +235,8 @@ def _fleet_of_two_cards_after_a_failed_probe(
     binary.write_bytes(b"engine")
     engine = SimpleNamespace(binary=lambda: binary)
     services = SimpleNamespace(
-        engines=SimpleNamespace(for_role=lambda _role: SimpleNamespace(adapter=engine))
+        engines=SimpleNamespace(for_role=lambda _role: SimpleNamespace(adapter=engine)),
+        provider=SimpleNamespace(ingest_request_share=lambda: None),
     )
     set_services(services)
     monkeypatch.setattr(replicas, "resolve_replica_count", _REAL_RESOLVE_REPLICA_COUNT)

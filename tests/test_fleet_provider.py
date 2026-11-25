@@ -5279,7 +5279,7 @@ class TestChatCapacityAndCtxGetters:
 
 
 class TestIngestRequestShare:
-    """The per-process share of the engine's request limit, read from the swaps that ingest calls."""
+    """One process's share of the engine request limit, from the embed and vision swaps."""
 
     @staticmethod
     def _up(limits: dict[WorkerRole, int | None], *, bound: bool = True) -> FleetProvider:

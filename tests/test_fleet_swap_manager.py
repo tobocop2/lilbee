@@ -2108,9 +2108,9 @@ class TestBindToLiveEngine:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         state_path = self._live_state(tmp_path)
-        recorded = json.loads(state_path.read_text())
+        recorded = json.loads(state_path.read_text(encoding="utf-8"))
         recorded["concurrency_limit"] = 56
-        state_path.write_text(json.dumps(recorded))
+        state_path.write_text(json.dumps(recorded), encoding="utf-8")
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, _GROUP)
         state = sm._load_state(state_path)
