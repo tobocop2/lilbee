@@ -384,6 +384,8 @@ jobs:
   # so a failure here never blocks the release. Builds are continue-on-error.
   build-multigpu:
     needs: [resolve]
+    permissions:
+      contents: write  # build-multigpu publishes the engines it builds to the mirror release
     uses: ./.github/workflows/build-multigpu.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}

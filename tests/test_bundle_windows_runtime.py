@@ -427,9 +427,9 @@ def test_fails_when_the_install_has_no_redistribution_terms(tree) -> None:
     [
         ".github/actions/bundle-llama-server/action.yml",
         ".github/workflows/build-multigpu.yml",
-        ".github/workflows/warm-engine-cache.yml",
+        ".github/workflows/ci.yml",
     ],
 )
-def test_every_engine_cache_key_hashes_the_helper(workflow: str) -> None:
+def test_every_engine_key_and_engine_path_group_names_the_helper(workflow: str) -> None:
     text = (_SCRIPT.parents[2] / workflow).read_text(encoding="utf-8")
     assert "tools/wheel-build/bundle_windows_runtime.sh" in text
