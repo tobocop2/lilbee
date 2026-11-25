@@ -34,7 +34,7 @@ def write_licences(report: dict, out: Path) -> list[str]:
             for use in entry["used_by"]
         )
         head = f"{entry['name']} ({entry['id']}). It covers these crates:\n" + "\n".join(crates)
-        (out / name).write_text(f"{head}\n\n{'-' * 72}\n\n{entry['text'].strip()}\n", encoding="utf-8")
+        (out / name).write_text(f"{head}\n\n{'-' * 72}\n\n{entry['text'].strip()}\n", encoding="utf-8", newline="\n")
     return sorted({entry["id"] for entry in texts})
 
 

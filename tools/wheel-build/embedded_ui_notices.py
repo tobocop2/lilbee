@@ -78,7 +78,7 @@ def main(argv: list[str]) -> None:
     if MIT_NAMED.search(text):
         text += f"\nThe MIT License, the permission text of the notices above:\n\n{MIT_TEXT}"
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(text, encoding="utf-8")
+    output.write_text(text, encoding="utf-8", newline="\n")
 
 
 if __name__ == "__main__":

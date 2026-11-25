@@ -307,7 +307,7 @@ def main(argv: list[str]) -> None:
         names, found = interpreter_licences(metadata, tree, out)
         _stop(found)
         names |= set(terms_file.read_text(encoding="utf-8").split())
-        terms_file.write_text("".join(f"{t}\n" for t in sorted(names)), encoding="utf-8")
+        terms_file.write_text("".join(f"{t}\n" for t in sorted(names)), encoding="utf-8", newline="\n")
         print(f"interpreter libraries, terms: {' '.join(sorted(names))}")
         return
     mpl_file, argv = _take_option(argv, "--mpl")
@@ -316,9 +316,9 @@ def main(argv: list[str]) -> None:
     site = Path(argv[0])
     names, mpl, found = collect(site, Path(argv[1]), Path(argv[3]) if len(argv) == 4 else None)
     _stop(found)
-    Path(argv[2]).write_text("".join(f"{t}\n" for t in sorted(names)), encoding="utf-8")
+    Path(argv[2]).write_text("".join(f"{t}\n" for t in sorted(names)), encoding="utf-8", newline="\n")
     if mpl_file is not None:
-        mpl_file.write_text("".join(f"{p}\n" for p in sorted(mpl)), encoding="utf-8")
+        mpl_file.write_text("".join(f"{p}\n" for p in sorted(mpl)), encoding="utf-8", newline="\n")
     print(f"{len(list(site.glob('*.dist-info')))} packages, terms: {' '.join(sorted(names))}")
 
 
