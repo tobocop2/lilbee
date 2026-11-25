@@ -146,6 +146,7 @@ _STATE_KEY_LAUNCHES = "launches"
 _STATE_KEY_ENGINE_PIN = "engine_pin"
 _STATE_KEY_CONFIG_ROOT = "config_root"
 _STATE_KEY_FLEET_VIEW = "fleet_view"
+_STATE_KEY_PLANNED_VIEW = "planned_view"
 _STATE_KEY_FOLLOWED_KEYS = "followed_keys"
 _STATE_KEY_READY_AT = "ready_at"
 _STATE_KEY_STARTED_MONO = "started_mono"
@@ -299,14 +300,16 @@ class SwapState:
 class PlanOrigin:
     """The config root of a fleet, the values its plan used, and the keys its builder follows.
 
-    *fleet_view* holds each fleet reload key config.toml set at plan time, with the value
-    the plan used. *followed* names the reload keys the builder takes from config.toml;
-    ``None`` is a record of an older version and counts every reload key as followed.
-    Two origins are equal when their root and their planned values are.
+    *fleet_view* holds each fleet reload key config.toml set at plan time, with the file's
+    value; every version writes and reads it the same way. *planned_view* holds the same
+    keys with the value the plan used, and *followed* names the reload keys the builder
+    takes from config.toml. A record of an older version has neither. Two origins are
+    equal when their root and their file view are.
     """
 
     config_root: str
     fleet_view: str | None
+    planned_view: str | None = field(default=None, compare=False)
     followed: frozenset[str] | None = field(default=None, compare=False)
 
 
@@ -570,6 +573,8 @@ class SwapManager:
         if self._origin is not None:
             state[_STATE_KEY_CONFIG_ROOT] = self._origin.config_root
             state[_STATE_KEY_FLEET_VIEW] = self._origin.fleet_view
+            if self._origin.planned_view is not None:
+                state[_STATE_KEY_PLANNED_VIEW] = self._origin.planned_view
             if self._origin.followed is not None:
                 state[_STATE_KEY_FOLLOWED_KEYS] = sorted(self._origin.followed)
         if self._ready_at is not None:
@@ -1472,6 +1477,7 @@ def _load_state(path: Path) -> SwapState | None:
             else PlanOrigin(
                 str(raw_root),
                 payload.get(_STATE_KEY_FLEET_VIEW),
+                payload.get(_STATE_KEY_PLANNED_VIEW),
                 None if raw_followed is None else frozenset(str(key) for key in raw_followed),
             )
         )
