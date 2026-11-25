@@ -24,6 +24,7 @@ from textual.widget import Widget
 from textual.widgets import Select, TabbedContent
 from textual.worker import Worker, WorkerCancelled, WorkerFailed
 
+import lilbee
 from lilbee.app.settings_map import SettingDef
 from lilbee.cli.tui import app as app_module
 from lilbee.cli.tui.mount_guard import MountWhenAttached
@@ -140,46 +141,101 @@ async def test_quit_while_a_setting_select_mounts_exits_cleanly(value, monkeypat
     assert app.return_code == 0
 
 
-_TUI_DIR = Path(app_module.__file__).parent
+_SRC_DIR = Path(lilbee.__file__).parent
+_SELECT_PATHS = {"textual.widgets.Select", "textual.widgets._select.Select"}
 
 
 def _builds_plain_select(tree: ast.AST) -> list[int]:
-    """Lines that call or subclass textual's Select by its bare name."""
+    """Lines that build textual's Select: a call, a classmethod call or a subclass.
 
-    def is_select(node: ast.expr) -> bool:
+    Names resolve through the module's own imports, so an alias or a module attribute counts.
+    Dynamic forms (getattr, a rebinding such as ``F = Select``) are out of reach of a static scan.
+    """
+    roots: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    roots[alias.asname] = alias.name
+                else:
+                    roots[alias.name.split(".")[0]] = alias.name.split(".")[0]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                roots[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+
+    def path(node: ast.expr) -> str | None:
         if isinstance(node, ast.Subscript):
             node = node.value
-        return isinstance(node, ast.Name) and node.id == "Select"
+        if isinstance(node, ast.Name):
+            return roots.get(node.id)
+        if isinstance(node, ast.Attribute):
+            base = path(node.value)
+            return f"{base}.{node.attr}" if base else None
+        return None
 
     lines = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and is_select(node.func):
-            lines.append(node.lineno)
+        if isinstance(node, ast.Call):
+            func = node.func
+            # A lowercase attribute of Select is a classmethod such as from_values; an
+            # uppercase one (Select.Changed) is a nested message class, not a widget.
+            builds = path(func) in _SELECT_PATHS or (
+                isinstance(func, ast.Attribute)
+                and path(func.value) in _SELECT_PATHS
+                and not func.attr[0].isupper()
+            )
+            if builds:
+                lines.append(node.lineno)
         elif isinstance(node, ast.ClassDef):
-            lines.extend(node.lineno for base in node.bases if is_select(base))
+            lines.extend(node.lineno for base in node.bases if path(base) in _SELECT_PATHS)
     return lines
 
 
-def test_no_tui_module_builds_a_plain_select():
-    """Every Select the TUI builds is a GuardedSelect, so a quit mid-mount cannot break it."""
+def test_no_module_builds_a_plain_select():
+    """Every Select lilbee builds is a GuardedSelect, so a quit mid-mount cannot break it."""
     found = [
-        f"{path.relative_to(_TUI_DIR)}:{line}"
-        for path in sorted(_TUI_DIR.rglob("*.py"))
+        f"{path.relative_to(_SRC_DIR)}:{line}"
+        for path in sorted(_SRC_DIR.rglob("*.py"))
         if path.name != "mount_guard.py"
         for line in _builds_plain_select(ast.parse(path.read_text(encoding="utf-8")))
     ]
     assert found == [], f"build a GuardedSelect, not Select: {found}"
 
 
-@pytest.mark.parametrize(
-    "source",
-    ["Select(x)", "Select[str](x)", "class Mine(Select): ...", "class Mine(Select[str]): ..."],
-)
+_FROM = "from textual.widgets import Select\n"
+_BUILDS = {
+    "call": _FROM + "Select(x)",
+    "subscripted-call": _FROM + "Select[str](x)",
+    "subclass": _FROM + "class Mine(Select): ...",
+    "subscripted-subclass": _FROM + "class Mine(Select[str]): ...",
+    "alias-call": "from textual.widgets import Select as S\nS(x)",
+    "alias-subclass": "from textual.widgets import Select as S\nclass Mine(S): ...",
+    "private-module": "from textual.widgets._select import Select\nSelect(x)",
+    "full-path": "import textual.widgets\ntextual.widgets.Select(x)",
+    "module-alias": "from textual import widgets\nwidgets.Select(x)",
+    "module-alias-subclass": "import textual.widgets as w\nclass Mine(w.Select): ...",
+    "module-alias-call": "import textual.widgets as w\nw.Select[str](x)",
+    "classmethod": _FROM + "Select.from_values(x)",
+    "alias-classmethod": "from textual.widgets import Select as S\nS.from_values(x)",
+}
+
+
+@pytest.mark.parametrize("source", _BUILDS.values(), ids=_BUILDS.keys())
 def test_the_plain_select_scan_sees_each_way_to_build_one(source):
-    assert _builds_plain_select(ast.parse(source)) == [1]
+    assert _builds_plain_select(ast.parse(source)) == [source.count("\n") + 1]
 
 
-@pytest.mark.parametrize("source", ["GuardedSelect(x)", "query_one(Select)", "Select.Changed"])
+_LEFT_ALONE = {
+    "guarded": _FROM + "GuardedSelect(x)",
+    "query": _FROM + "query_one(Select)",
+    "message-class": _FROM + "Select.Changed",
+    "message-built": _FROM + "Select.Changed(x)",
+    "other-module": "from other import Select\nSelect(x)",
+    "unimported": "Select(x)",
+}
+
+
+@pytest.mark.parametrize("source", _LEFT_ALONE.values(), ids=_LEFT_ALONE.keys())
 def test_the_plain_select_scan_leaves_other_uses_alone(source):
     assert _builds_plain_select(ast.parse(source)) == []
 
