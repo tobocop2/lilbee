@@ -24,7 +24,7 @@ check_tag() {  # wheel
   local name info
   name="$(basename "$1")"
   case "${name}" in
-    lilbee_engine_mistral_rs-*-"${BUILD_NUMBER}.${BACKEND//-/_}"-py3-none-"${PLATFORM}".whl) ;;
+    lilbee_engine_mistral_rs-*-"${BUILD_NUMBER}.${BACKEND//-/_}-py3-none-${PLATFORM}.whl") ;;
     *) refuse "wrong tag on ${name}: expected build ${BUILD_NUMBER}.${BACKEND//-/_} and platform ${PLATFORM}" || return 1 ;;
   esac
   info="$(dist_info "$1" WHEEL)" || return 1
