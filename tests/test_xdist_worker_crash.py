@@ -14,6 +14,7 @@ import psutil
 import pytest
 
 from lilbee.providers.fleet.proc import run_bounded
+from tests._stall_diagnostics import StallWatch
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _RUN_BUDGET_S = 60.0
@@ -227,10 +228,22 @@ def _run_bounded_child(
 
     The child starts its own xdist workers. `subprocess.run` kills only the child at the limit,
     so the workers it started stay alive and the reap can wait on them.
+
+    At the limit the raised error carries the tail of the child's output, the process tree and the
+    stacks of each descendant, taken before the kill. The limit still fails the test.
     """
-    return run_bounded(
-        argv, timeout_s=timeout_s, kill_wait_s=_REAP_WAIT_S, env=env, merge_stderr=True, cwd=cwd
-    )
+    with StallWatch(timeout_s) as watch:
+        try:
+            return run_bounded(
+                argv,
+                timeout_s=timeout_s,
+                kill_wait_s=_REAP_WAIT_S,
+                env=env,
+                merge_stderr=True,
+                cwd=cwd,
+            )
+        except subprocess.TimeoutExpired as expired:
+            raise watch.stalled(expired) from expired
 
 
 def _is_running(pid: int) -> bool:
