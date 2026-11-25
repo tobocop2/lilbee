@@ -964,16 +964,21 @@ def code_parsers_ready(tmp_path_factory) -> Iterator[None]:
     the worker down. The run's folder sits beside the workers' temp folders, is
     filled under a lock every worker shares, and is the cache the pack reads.
     """
-    from tree_sitter_language_pack import PackConfig, configure
+    from importlib.metadata import version
+
+    from tree_sitter_language_pack import PackConfig, configure, has_language
 
     from lilbee.data.extract.code_chunker import _ensure_language
 
     run_root = tmp_path_factory.getbasetemp().parent
-    cache = run_root / "parser-cache"
-    configure(PackConfig(cache_dir=str(cache)))  # type: ignore[arg-type]
+    # The pack version is in the name: a run without xdist keeps this folder across runs.
+    cache = run_root / f"parser-cache-{version('tree-sitter-language-pack')}"
+    configure(PackConfig(cache_dir=str(cache)))
     with FileLock(run_root / "parser-cache.lock"):
         for language in CODE_PARSER_LANGUAGES:
             _ensure_language(language)
+            if not has_language(language):
+                pytest.fail(f"The {language} parser is not available in {cache}")
     yield
 
 

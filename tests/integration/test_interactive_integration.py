@@ -239,7 +239,7 @@ def sync_fn(run_async):
 
 
 @pytest.fixture
-def sync_with_docs(sync_fn):
+def sync_with_docs(sync_fn, code_parsers_ready):
     """Write all test docs then sync."""
 
     def _run():
@@ -342,7 +342,7 @@ class TestAddAndDelete:
 
 
 class TestSync:
-    def test_sync_idempotent(self, isolated_env, sync_fn):
+    def test_sync_idempotent(self, isolated_env, sync_fn, code_parsers_ready):
         _write_all_docs()
         r1 = sync_fn()
         assert len(r1.added) > 0
