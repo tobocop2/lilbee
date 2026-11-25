@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import difflib
+import heapq
 import logging
 import os
 import shlex
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -276,6 +277,22 @@ def _refusal_text(exc: ValueError | TypeError) -> str:
 def _setting_type_hint(kind: type) -> str:
     """Human phrase for what a settings value must be."""
     return _SETTING_TYPE_HINTS.get(kind, f"a valid {kind.__name__} value")
+
+
+def _first_removable_names() -> tuple[list[str], int]:
+    """The alphabetically first names ``/delete`` lists, and how many removable names there are.
+
+    The names stream past once and only the page is kept, so memory stays flat.
+    """
+    total = 0
+
+    def counted() -> Iterator[str]:
+        nonlocal total
+        for name in iter_removable_names():
+            total += 1
+            yield name
+
+    return heapq.nsmallest(_DELETE_LISTED, counted()), total
 
 
 def _closest_source(name: str) -> str | None:
@@ -1330,7 +1347,7 @@ class ChatScreen(Screen[None]):
             store = get_services().store
             indexed = store.count_sources()
             has_failures = bool(held_failures())
-            page = store.source_names("", limit=_DELETE_LISTED) if indexed and not name else []
+            page, total = _first_removable_names() if not name else ([], 0)
             exists = bool(name) and bool(removable_among([name]))
             suggestion = None
             if name and not exists and (indexed or has_failures):
@@ -1345,9 +1362,9 @@ class ChatScreen(Screen[None]):
             return
 
         if not name:
-            names = ", ".join(strip_control_characters(n) for n in sorted(removable_names(page)))
-            if indexed > len(page):
-                names += msg.CMD_DELETE_USAGE_MORE.format(count=indexed - len(page))
+            names = ", ".join(strip_control_characters(n) for n in page)
+            if total > len(page):
+                names += msg.CMD_DELETE_USAGE_MORE.format(count=total - len(page))
             usage = msg.CMD_DELETE_USAGE.format(names=names)
             call_from_thread(self, self.notify, usage)
             return

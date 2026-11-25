@@ -77,15 +77,21 @@ class SourceLocations:
         ]
         return " AND ".join([under_sql(column, root), *deeper])
 
-    def search_filter(self, term: str, path: str, title: str | None = None) -> str:
+    def search_filter(
+        self, term: str, path: str, title: str | None = None, *, starts: bool = False
+    ) -> str:
         """The predicate for a shown name in *path*, or a title in *title*, holding *term*.
 
-        With no *title* column the predicate matches the shown name only.
+        With no *title* column the predicate matches the shown name only. With
+        *starts* the shown name must begin with *term*.
 
         Case-insensitive. Each root's arm leaves out the roots below it, so a
         location matches by the one name it shows.
         """
-        pattern = f"LIKE '%{escape_sql_string(_escape_like_wildcards(term.lower()))}%' ESCAPE '\\'"
+        lead = "" if starts else "%"
+        pattern = (
+            f"LIKE '{lead}{escape_sql_string(_escape_like_wildcards(term.lower()))}%' ESCAPE '\\'"
+        )
         arms: list[str] = []
         for root, label in self._deepest_first:
             shown = f"concat('{escape_sql_string(label)}', substr({path}, {len(root) + 1}))"
