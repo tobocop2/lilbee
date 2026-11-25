@@ -17,6 +17,7 @@ import stat
 import sys
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -368,6 +369,30 @@ def test_a_leftover_that_goes_mid_sweep_is_gone_and_the_sweep_goes_on(
     assert names(engine) == []
 
 
+def test_a_folder_that_stays_is_reported_false_and_is_not_listed_as_swept(
+    store: EngineStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    engine = store.root / ENGINE
+    stuck = engine / ".trash-stuck"
+    stuck.mkdir(parents=True)
+    (stuck / "keep.txt").write_text("x", encoding="utf-8")
+    (engine / ".stage-ok").mkdir()
+    real_unlink = os.unlink
+
+    def refuse_keep(path: str | Path, *args: Any, **kwargs: Any) -> None:
+        if str(path).endswith("keep.txt"):
+            raise PermissionError(13, "Permission denied", str(path))
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", refuse_keep)
+    with caplog.at_level(logging.WARNING, logger=engine_store.log.name):
+        assert engine_store.delete_tree(stuck) is False
+        assert any(str(stuck) in r.getMessage() for r in caplog.records)
+        swept = store.sweep()
+    assert swept == [engine / ".stage-ok"]
+    assert stuck.exists()
+
+
 def test_a_cleanup_failure_never_hides_the_first_error(
     store: EngineStore,
     tmp_path: Path,
@@ -381,7 +406,7 @@ def test_a_cleanup_failure_never_hides_the_first_error(
     def refuse(path: Path) -> bool:
         raise PermissionError(13, "denied", str(path))
 
-    monkeypatch.setattr(engine_store, "_delete", refuse)
+    monkeypatch.setattr(engine_store, "delete_tree", refuse)
     with caplog.at_level(logging.WARNING), pytest.raises(ChecksumError):
         store.install_from_wheel(lock, wheel)
     assert any(r.levelno == logging.WARNING for r in caplog.records)
@@ -401,6 +426,27 @@ def test_the_retry_adds_the_write_bit_only_inside_the_tree(tmp_path: Path) -> No
     engine_store._retry_writable(str(top), os.rmdir, str(top / "gone"), None)
     assert outside == 0o555, oct(outside)
     assert stat.S_IMODE(os.lstat(top).st_mode) & stat.S_IWUSR
+
+
+@posix_only
+def test_the_retry_adds_the_write_bit_to_the_file_and_never_through_a_link(
+    tmp_path: Path,
+) -> None:
+    top = tmp_path / "trash"
+    top.mkdir()
+    held = top / "held.txt"
+    held.write_text("x", encoding="utf-8")
+    held.chmod(0o444)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("y", encoding="utf-8")
+    outside.chmod(0o444)
+    link = top / "link"
+    link.symlink_to(outside)
+    engine_store._retry_writable(str(top), os.unlink, str(held), None)
+    engine_store._retry_writable(str(top), os.unlink, str(link), None)
+    assert not held.exists()
+    assert not link.exists()
+    assert stat.S_IMODE(os.lstat(outside).st_mode) == 0o444
 
 
 # K ruling 3: an engine folder that is a link inside the root is damage.
