@@ -1,6 +1,7 @@
 """The suite never resolves the developer's real global config or data dirs."""
 
 import os
+import sys
 import tempfile
 from itertools import pairwise
 from pathlib import Path
@@ -76,6 +77,17 @@ def test_the_real_global_root_is_not_a_session_scratch_dir():
 
 def test_the_session_scratch_dir_outlives_collection():
     assert _HOME_AT_COLLECTION.parent.is_dir()
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    ["lilbee.cli.tui.widgets.model_bar", "lilbee.mcp_server", "lilbee.server.app"],
+)
+def test_a_module_that_binds_reset_services_loads_before_any_test_patches_it(module_name):
+    from lilbee.app import services
+
+    assert module_name in sys.modules
+    assert sys.modules[module_name].reset_services is services.reset_services
 
 
 def test_the_package_profiles_folder_is_a_session_copy_of_the_real_one():

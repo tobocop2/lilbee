@@ -44,6 +44,12 @@ os.environ.setdefault("LILBEE_SKIP_MODEL_TASK_VALIDATION", "1")
 # that assert defaults. Matches CI, which has no config.toml. (bb-e7d)
 os.environ.setdefault("LILBEE_SKIP_TOML_CONFIG", "1")
 
+# Each of these modules binds ``reset_services`` by name when it first loads. A test that
+# patches the function and then loads one of them first leaves the patch in that module for
+# the rest of the worker, so they load here, before any test patches anything.
+import lilbee.cli.tui.widgets.model_bar  # noqa: F401
+import lilbee.mcp_server  # noqa: F401
+import lilbee.server.app  # noqa: F401
 from lilbee.catalog import CatalogModel
 from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.catalog.types import ModelCompat, ModelTask
