@@ -2273,8 +2273,7 @@ def _warn_without_prompt_cache(launch: InstanceLaunch, cache: _HostCache, checkp
         "without its prompt cache: this plan leaves no free system memory for it. A "
         "conversation that returns after another one reprocesses its whole prompt."
         if no_cache
-        else "without context checkpoints: this plan leaves too little free system memory "
-        "for them."
+        else "without context checkpoints: this plan leaves too little free system memory for them."
     )
     log.warning(
         "The %s model %s starts %s%s Close other programs, use a smaller model, or lower "
