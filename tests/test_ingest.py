@@ -1323,6 +1323,7 @@ class TestSync:
 
         assert any("nested.txt" in f for f in (await sync()).added)
 
+    @pytest.mark.usefixtures("code_parsers_ready")
     async def test_code_file_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "example.py").write_text("def hello():\n    print('hi')\n")
         from lilbee.data.ingest import sync
