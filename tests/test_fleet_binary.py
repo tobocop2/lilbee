@@ -387,6 +387,10 @@ class TestEnginePin:
         staged.replace(exe)
         assert binary_mod._binary_signature(exe) != sig_a
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="st_ctime_ns is the creation time on Windows, so an in-place rewrite keeps it",
+    )
     def test_signature_tells_an_in_place_rewrite_apart_when_times_are_whole_seconds(
         self, tmp_path: Path
     ) -> None:
