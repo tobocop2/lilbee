@@ -7,6 +7,7 @@ here write to stderr, so a redirect would move the text of a stdout print to std
 from __future__ import annotations
 
 import ast
+import sys
 import threading
 from io import StringIO
 from pathlib import Path
@@ -107,11 +108,13 @@ def test_model_hub_pull_progress_leaves_a_stdout_print_on_stdout(capsys, stderr_
     _assert_whole_on_stdout(capsys)
 
 
-def test_live_progress_turns_both_redirects_off():
-    progress = live_progress(console=PlainConsole(stderr=True), transient=True)
+def test_live_progress_leaves_both_streams_in_place():
+    console = PlainConsole(file=StringIO(), force_terminal=True)
+    stdout, stderr = sys.stdout, sys.stderr
 
-    assert progress.live.redirect_stdout is False
-    assert progress.live.redirect_stderr is False
+    with live_progress(console=console, transient=True):
+        assert sys.stdout is stdout
+        assert sys.stderr is stderr
 
 
 def _builds_a_live_display(path: Path) -> bool:
