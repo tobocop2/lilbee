@@ -1,4 +1,4 @@
-"""The pick of a CUDA build by compute capability, shared by the adapters that ship one per family."""
+"""The pick of a CUDA build by compute capability, shared by the adapters with one per family."""
 
 from __future__ import annotations
 
