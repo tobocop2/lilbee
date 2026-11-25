@@ -1878,6 +1878,36 @@ def placeable_total_vram(engine: EngineAdapter) -> int:
         return 0
 
 
+_UNPLACEABLE_REASONS = {
+    "remote": "The {role} model {ref} runs on a remote service, so no {role} server starts.",
+    "projector": "The vision model {ref} has no projector file, so no vision server starts.",
+    "weights": (
+        "The {role} model {ref} has no weight files that lilbee can read, "
+        "so no {role} server starts. Install the model again or choose another."
+    ),
+    "memory": (
+        "The {role} model {ref} needs more memory than this host has, "
+        "so no {role} server starts. Choose a smaller model."
+    ),
+}
+
+
+def _unplaceable_cause(
+    role: WorkerRole, ref: str, total_vram: int, *, engine: EngineAdapter
+) -> str | None:
+    """The key of ``_UNPLACEABLE_REASONS`` that stops a fresh plan serving *role*, or None."""
+    if parse_model_ref(ref).is_remote:
+        return "remote"
+    if _vision_without_mmproj(role, ref):
+        return "projector"
+    weights = _role_weights_bytes(role, ref)  # 0 when not installed / unresolvable
+    if weights == 0:
+        return "weights"
+    if _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref, engine=engine)):
+        return "memory"
+    return None
+
+
 def role_model_placeable(
     role: WorkerRole, ref: str, total_vram: int, *, engine: EngineAdapter
 ) -> bool:
@@ -1890,12 +1920,15 @@ def role_model_placeable(
     configured-but-unplaceable role keeps bind from ever matching a running
     engine and restarts the shared engine on every process start.
     """
-    if parse_model_ref(ref).is_remote or _vision_without_mmproj(role, ref):
-        return False
-    weights = _role_weights_bytes(role, ref)  # 0 when not installed / unresolvable
-    if weights == 0:
-        return False
-    return not _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref, engine=engine))
+    return _unplaceable_cause(role, ref, total_vram, engine=engine) is None
+
+
+def role_unplaceable_reason(
+    role: WorkerRole, ref: str, total_vram: int, *, engine: EngineAdapter
+) -> str:
+    """The sentence that tells a user why *role* gets no server on *ref*, with the next step."""
+    cause = _unplaceable_cause(role, ref, total_vram, engine=engine) or "memory"
+    return _UNPLACEABLE_REASONS[cause].format(role=role.value, ref=ref)
 
 
 def _without_shared_file(
