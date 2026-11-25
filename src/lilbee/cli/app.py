@@ -8,7 +8,6 @@ from typing import Any
 
 import typer
 from pydantic import ValidationError
-from typer._click import Context
 from typer.core import TyperCommand
 
 from lilbee.app.services import (
@@ -201,7 +200,7 @@ def _refuse_environment(json_output: bool) -> None:
 class RefusingCommand(TyperCommand):
     """A command that refuses the environment when it runs, after its --help is parsed."""
 
-    def invoke(self, ctx: Context) -> Any:
+    def invoke(self, ctx: typer.Context) -> Any:
         _refuse_environment(cfg.json_mode)
         return super().invoke(ctx)
 
