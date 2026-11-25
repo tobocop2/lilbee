@@ -127,7 +127,11 @@ def _build(top: Path, tmp_path: Path, host: tuple[str, str]) -> subprocess.Compl
         encoding="utf-8",
         timeout=60,
         check=False,
-        env={**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}"},
+        env={
+            **os.environ,
+            "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}",
+            "BUILD_NUMBER": "1",
+        },
     )
 
 
@@ -201,6 +205,7 @@ def test_the_python_install_writes_nothing_outside_the_scratch_directory(tmp_pat
         env={
             **os.environ,
             "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}",
+            "BUILD_NUMBER": "1",
             "TMPDIR": str(scratch),
         },
     )
@@ -251,6 +256,7 @@ def test_the_script_stops_when_numpy_bundles_libraries_again(tmp_path: Path) -> 
         env={
             **os.environ,
             "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}",
+            "BUILD_NUMBER": "1",
             "TMPDIR": str(scratch),
         },
     )
@@ -374,7 +380,12 @@ def _pack_tree(
     _stub(stubs, "python3", "exit 1")
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    env = {**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}", "TMPDIR": str(scratch)}
+    env = {
+        **os.environ,
+        "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}",
+        "BUILD_NUMBER": "1",
+        "TMPDIR": str(scratch),
+    }
     return top, env
 
 
@@ -640,3 +651,34 @@ def test_the_embed_launcher_runs_the_server_script_on_the_bundled_interpreter(
     assert args[0] == "-I"
     assert Path(args[1]).resolve() == (package / SERVER.name).resolve()
     assert args[2:] == ["--task", "embed", "--port", "5"]
+
+
+@needs_bash
+@needs_shasum
+def test_the_wheel_takes_its_build_number_from_the_cell(tmp_path: Path) -> None:
+    top, env = _pack_tree(tmp_path, sources=[_TQDM_LINE])
+    assert _run_pack(top, {**env, "BUILD_NUMBER": "7"}, tmp_path).returncode == 1
+    wheel = (_dist(tmp_path) / "WHEEL").read_text(encoding="utf-8")
+    assert f"Build: 7.{_pin()['MLX_BACKEND']}\n" in wheel
+
+
+@needs_bash
+@pytest.mark.parametrize("value", [None, ""])
+def test_the_script_stops_when_the_cell_gives_no_build_number(
+    tmp_path: Path, value: str | None
+) -> None:
+    top = _tree(tmp_path)
+    env = {key: item for key, item in os.environ.items() if key != "BUILD_NUMBER"}
+    if value is not None:
+        env["BUILD_NUMBER"] = value
+    done = subprocess.run(
+        ["bash", str(top / "tools" / "wheel-build" / "mlx_wheel.sh"), str(tmp_path / "out")],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+        env=env,
+    )
+    assert done.returncode == 2
+    assert "mlx_wheel.sh: BUILD_NUMBER is not set" in done.stderr
