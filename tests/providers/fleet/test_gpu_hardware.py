@@ -124,13 +124,32 @@ class TestLinuxSysfs:
 
         assert gpu_hardware.installed_gpu_vendor_ids() == frozenset({AMD})
 
-    def test_an_amd_accelerator_card_counts_beside_a_bmc_vga_chip(
+    @pytest.mark.parametrize("vendor", ["0x1002", "0x8086", "0x10de", "0x1a03"])
+    @pytest.mark.parametrize("driver_bound", [True, False])
+    def test_accelerator_class_cards_are_not_gpus(
+        self, vendor: str, driver_bound: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No class 0x12 device counts, driven or not.
+
+        An AMD Instinct card is class 0x12 and RADV does not support it (the Vulkan pack crashes
+        with a lost device on an MI350), and an Intel NPU is class 0x12 with no Vulkan driver.
+        """
+        _write_pci_device(
+            tmp_path,
+            "0000-00-0b.0",
+            class_code=ACCELERATOR_CLASS,
+            vendor=vendor,
+            driver_bound=driver_bound,
+        )
+        monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
+        monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
+
+        assert gpu_hardware.installed_gpu_vendor_ids() == frozenset()
+        assert gpu_hardware.undriven_gpu_vendor_ids() == frozenset()
+
+    def test_a_bmc_vga_chip_beside_an_instinct_card_reports_only_the_chip(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An Instinct card is PCI class 0x12, so only the AMD vendor of that class counts.
-
-        Measured on an MI350 pod: the only display device was an ASPEED BMC chip.
-        """
         _write_pci_device(
             tmp_path, "0000-02-00.0", class_code=VGA_CONTROLLER_CLASS, vendor="0x1a03"
         )
@@ -138,34 +157,7 @@ class TestLinuxSysfs:
         monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
         monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
 
-        assert gpu_hardware.installed_gpu_vendor_ids() == frozenset({BMC, AMD})
-
-    @pytest.mark.parametrize("vendor", ["0x8086", "0x10de", "0x1a03"])
-    def test_other_vendors_accelerators_are_not_gpus(
-        self, vendor: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """An Intel NPU is class 0x12 and cannot run Vulkan, so only AMD accelerators count."""
-        _write_pci_device(tmp_path, "0000-00-0b.0", class_code=ACCELERATOR_CLASS, vendor=vendor)
-        monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
-        monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
-
-        assert gpu_hardware.installed_gpu_vendor_ids() == frozenset()
-
-    def test_an_amd_accelerator_with_no_driver_is_undriven(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _write_pci_device(
-            tmp_path,
-            "0000-41-00.0",
-            class_code=ACCELERATOR_CLASS,
-            vendor="0x1002",
-            driver_bound=False,
-        )
-        monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
-        monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
-
-        assert gpu_hardware.installed_gpu_vendor_ids() == frozenset()
-        assert gpu_hardware.undriven_gpu_vendor_ids() == frozenset({AMD})
+        assert gpu_hardware.installed_gpu_vendor_ids() == frozenset({BMC})
 
     def test_unreadable_attributes_are_skipped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
