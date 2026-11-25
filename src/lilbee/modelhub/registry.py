@@ -146,6 +146,9 @@ class ModelManifest:
 
     def __post_init__(self) -> None:
         self.format = ModelFormat(self.format)
+        # A pull records the chat label for any model it cannot tell apart; the
+        # name is the one signal, so every reader gets the same label from here.
+        self.task = ModelTask(reclassify_by_name(self.ref, self.task))
 
     @property
     def ref(self) -> str:
