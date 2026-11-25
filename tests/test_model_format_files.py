@@ -241,6 +241,46 @@ class TestSelectFiles:
             "modules.json",
         ]
 
+    def test_openvino_reads_every_part_of_a_vision_model(self) -> None:
+        names = [
+            "config.json",
+            "openvino_config.json",
+            "openvino_detokenizer.bin",
+            "openvino_detokenizer.xml",
+            "openvino_language_model.bin",
+            "openvino_language_model.xml",
+            "openvino_text_embeddings_model.bin",
+            "openvino_text_embeddings_model.xml",
+            "openvino_tokenizer.bin",
+            "openvino_tokenizer.xml",
+            "openvino_vision_embeddings_model.bin",
+            "openvino_vision_embeddings_model.xml",
+            "preprocessor_config.json",
+            "modeling_internvl_chat.py",
+            "tokenizer.json",
+            "pytorch_model.bin",
+            "sub/openvino_language_model.xml",
+        ]
+        assert select_files(ModelFormat.OPENVINO, names) == [
+            "openvino_language_model.xml",
+            "openvino_detokenizer.bin",
+            "openvino_detokenizer.xml",
+            "openvino_language_model.bin",
+            "openvino_text_embeddings_model.bin",
+            "openvino_text_embeddings_model.xml",
+            "openvino_tokenizer.bin",
+            "openvino_tokenizer.xml",
+            "openvino_vision_embeddings_model.bin",
+            "openvino_vision_embeddings_model.xml",
+            "openvino_config.json",
+            "preprocessor_config.json",
+            "config.json",
+            "tokenizer.json",
+        ]
+
+    def test_a_folder_with_no_openvino_entry_selects_nothing(self) -> None:
+        assert select_files(ModelFormat.OPENVINO, ["config.json", "openvino_tokenizer.xml"]) == []
+
     def test_openvino_prefers_the_shallowest_folder(self) -> None:
         names = ["a/b/openvino_model.xml", "a/b/openvino_model.bin", "openvino_model.xml"]
         assert select_files(ModelFormat.OPENVINO, names) == ["openvino_model.xml"]
