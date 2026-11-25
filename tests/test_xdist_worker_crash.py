@@ -292,7 +292,8 @@ def test_a_child_run_that_hits_its_limit_leaves_no_worker_alive(tmp_path: Path) 
 def test_a_child_run_that_hits_its_limit_reports_its_output_and_process_tree(
     tmp_path: Path,
 ) -> None:
-    stalls = "import sys, time\nprint('last words of the child', flush=True)\ntime.sleep(600)\n"
+    # The words are joined at run time, so the command text alone cannot satisfy the assertion.
+    stalls = "import time\nprint('last words' + ' of the child', flush=True)\ntime.sleep(600)\n"
     with pytest.raises(subprocess.TimeoutExpired) as raised:
         _run_bounded_child(
             [sys.executable, "-c", stalls], cwd=tmp_path, env=dict(os.environ), timeout_s=3.0
