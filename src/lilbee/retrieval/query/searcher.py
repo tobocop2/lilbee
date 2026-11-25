@@ -220,6 +220,13 @@ _ASSOCIATION_LINES = 15
 # One retry after a provider context-overflow, refitting to this fraction of
 # the budget. The estimator is a heuristic; overflow must degrade, not fail.
 _OVERFLOW_RETRY_SCALE = 0.6
+# Measurements of the assembled prompt with a scaled estimate before the fit
+# falls back to a binary search over the kept count.
+_MAX_SCALED_MEASUREMENTS = 3
+# Share of the source budget a refit after an overflow leaves free. A fit packs
+# to the brim, and the ratio is an average over the whole prompt, so a refit
+# by the ratio alone overflowed again on the K2 bench of a mixed list.
+_REFIT_MARGIN = 0.05
 # Approximate token cost of the Context/Question template wrapper.
 _CONTEXT_TEMPLATE_TOKENS = 16
 # Approximate per-source overhead: the "[i] " marker, the provenance header
@@ -344,6 +351,47 @@ class RagContext(NamedTuple):
     dropped: list[SearchChunk] | None = None
     degraded: tuple[HealthWarning, ...] = ()
     refused: bool = False
+
+
+class _Assembly(NamedTuple):
+    """One assembled prompt: the sources it sends, its messages and what it shed.
+
+    ``fitted`` is the kept set before neighbor widening, so a search over the
+    kept count can drop sources without carrying their neighbor text.
+    """
+
+    results: list[SearchChunk]
+    messages: list[ChatMessage]
+    dropped: list[SearchChunk]
+    fitted: list[SearchChunk]
+
+
+class _Measurement(NamedTuple):
+    """The engine's token count of a prompt and its ratio to the character rule."""
+
+    tokens: int
+    ratio: float
+
+
+def _scaled_cost(ratio: float) -> Callable[[str], int]:
+    """The character rule scaled by *ratio*.
+
+    The ratio never drops below 1, so a text never costs less than the
+    provider's own window check charges for it.
+    """
+    return lambda text: max(1, math.ceil(len(text) * ratio / BUDGET_CHARS_PER_TOKEN))
+
+
+def _rag_messages(
+    system: str, question: str, history: list[ChatMessage] | None, results: list[SearchChunk]
+) -> list[ChatMessage]:
+    """The chat messages that send *results* as the context for *question*."""
+    prompt = CONTEXT_TEMPLATE.format(context=build_context(results), question=question)
+    messages: list[ChatMessage] = [{"role": "system", "content": system}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": prompt})
+    return messages
 
 
 class SearchReport(NamedTuple):
@@ -1233,41 +1281,126 @@ class Searcher:
         are visible without consuming the document budget or the prompt context.
         """
         system = self._system_with_memory(self._config.rag_system_prompt, question)
-        base_results = list(results)
-        cost = self._token_cost(
-            [system, question, *(m["content"] for m in history or []), *(r.chunk for r in results)]
-        )
-        budget = self._context_budget(system, question, history, scale, cost)
-        results, used, dropped = self._fit_to_budget(results, budget, cost)
-        results = self._widen_with_neighbors(results, max(0, budget - used), cost)
-        context = build_context(results)
-        prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
-        messages: list[ChatMessage] = [{"role": "system", "content": system}]
-        if history:
-            messages.extend(history)
-        messages.append({"role": "user", "content": prompt})
+        fitted = self._fit_measured(results, system, question, history, scale)
         return RagContext(
-            [*results, *self._memory_sources(question)],
-            messages,
-            base_results,
+            [*fitted.results, *self._memory_sources(question)],
+            fitted.messages,
+            list(results),
             retrieval_query,
-            dropped,
+            fitted.dropped,
         )
 
-    def _token_cost(self, texts: list[str]) -> Callable[[str], int]:
-        """Token cost from the chat engine's count of *texts*, else the character rule."""
-        joined = "\n".join(texts)
+    def _fit_measured(
+        self,
+        results: list[SearchChunk],
+        system: str,
+        question: str,
+        history: list[ChatMessage] | None,
+        scale: float,
+    ) -> _Assembly:
+        """Fit *results* by estimate, then measure the assembled prompt until it fits.
+
+        Each measurement is one tokenize request for the prompt as it is sent, so
+        its cost is bounded by the window, not by the candidate count. An
+        overflow scales the estimate by the measured ratio, keeps
+        _REFIT_MARGIN of the source budget free, and fits again. After
+        _MAX_SCALED_MEASUREMENTS overflows, or when a refit repeats the prompt
+        that overflowed, a binary search over the kept count finds the most
+        sources that a measurement says fit. No prompt is measured twice. A
+        failed measurement sends the latest assembly, which the character rule
+        bounds.
+        """
+        target = prompt_token_budget(self._chat_window())
+        ratio, fill = 1.0, scale
+        overflowed: _Assembly | None = None
+        for _ in range(_MAX_SCALED_MEASUREMENTS):
+            assembly = self._assemble_by_estimate(results, system, question, history, fill, ratio)
+            if overflowed is not None and assembly.messages == overflowed.messages:
+                break
+            overflowed = assembly
+            measured = self._measure(assembly.messages)
+            if measured is None or measured.tokens <= target:
+                return assembly
+            ratio, fill = max(ratio, measured.ratio), scale * (1 - _REFIT_MARGIN)
+        return self._search_kept_count(assembly, system, question, history, target)
+
+    def _assemble_by_estimate(
+        self,
+        results: list[SearchChunk],
+        system: str,
+        question: str,
+        history: list[ChatMessage] | None,
+        scale: float,
+        ratio: float,
+    ) -> _Assembly:
+        """Fit and widen *results* with the character rule scaled by *ratio*."""
+        cost = _scaled_cost(ratio)
+        budget = self._context_budget(system, question, history, scale, cost)
+        kept, used, dropped = self._fit_to_budget(results, budget, cost)
+        widened = self._widen_with_neighbors(kept, max(0, budget - used), cost)
+        messages = _rag_messages(system, question, history, widened)
+        return _Assembly(widened, messages, dropped, kept)
+
+    def _search_kept_count(
+        self,
+        overflowed: _Assembly,
+        system: str,
+        question: str,
+        history: list[ChatMessage] | None,
+        target: int,
+    ) -> _Assembly:
+        """The longest rank-order prefix of the fitted sources that a measurement fits.
+
+        A prefix carries no neighbor text, so the search sheds expansion before
+        it drops a source. The top source always stays, as in the estimate fit.
+        """
+
+        def prefix(count: int) -> _Assembly:
+            kept = overflowed.fitted[:count]
+            dropped = [*overflowed.dropped, *overflowed.fitted[count:]]
+            return _Assembly(kept, _rag_messages(system, question, history, kept), dropped, kept)
+
+        best: _Assembly | None = None
+        # Without neighbor text, the whole fitted set is the assembly that overflowed.
+        widened = overflowed.results != overflowed.fitted
+        low, high = 1, len(overflowed.fitted) - (not widened)
+        while low <= high:
+            middle = (low + high) // 2
+            probe = prefix(middle)
+            measured = self._measure(probe.messages)
+            if measured is None:
+                return probe
+            if measured.tokens <= target:
+                best, low = probe, middle + 1
+            else:
+                high = middle - 1
+        if best is None:
+            log.warning("The top source alone overflows the context window; it is sent anyway.")
+            return prefix(1)
+        return best
+
+    def _measure(self, messages: list[ChatMessage]) -> _Measurement | None:
+        """The chat engine's token count of *messages*, or None to keep the estimate.
+
+        One request for the joined contents, plus the per-message overhead that
+        the budget charges.
+        """
+        joined = "\n".join(m["content"] for m in messages)
         try:
             tokens = self._provider.count_chat_text_tokens(joined)
         except ProviderError:
             log.debug("Chat engine tokenize failed; budgeting with the character rule.")
-            return estimate_budget_tokens
+            return None
         if not tokens:
-            return estimate_budget_tokens
-        # The provider's window check costs text at BUDGET_CHARS_PER_TOKEN, so a
-        # prompt costed lower here would be refused there.
-        chars_per_token = min(len(joined) / tokens, BUDGET_CHARS_PER_TOKEN)
-        return lambda text: max(1, math.ceil(len(text) / chars_per_token))
+            return None
+        overhead = CHAT_MESSAGE_OVERHEAD_TOKENS * len(messages)
+        return _Measurement(tokens + overhead, tokens / estimate_budget_tokens(joined))
+
+    def _chat_window(self) -> int:
+        """The chat window the prompt must fit: the served one when it is smaller."""
+        configured = self._config.num_ctx or self._config.chat_n_ctx_target
+        served = self._provider.served_chat_ctx()
+        return min(configured, served) if served else configured
 
     def _context_budget(
         self,
@@ -1285,9 +1418,6 @@ class Searcher:
         Budgeting against the target let a routed whole document overflow
         the real window and hard-fail the request with an HTTP 400.
         """
-        configured = self._config.num_ctx or self._config.chat_n_ctx_target
-        served = self._provider.served_chat_ctx()
-        ctx = min(configured, served) if served else configured
         # Fit inside what the provider will actually accept: prompt_token_budget
         # already removes the generation reserve and the engine's margin, so the
         # sources get what is left after the rest of the prompt. The per-message
@@ -1299,7 +1429,7 @@ class Searcher:
             + _CONTEXT_TEMPLATE_TOKENS
             + CHAT_MESSAGE_OVERHEAD_TOKENS * (len(history or []) + 2)
         )
-        return int((prompt_token_budget(ctx) - non_source) * scale)
+        return int((prompt_token_budget(self._chat_window()) - non_source) * scale)
 
     def _fit_to_budget(
         self,
