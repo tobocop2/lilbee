@@ -13,6 +13,7 @@ import json
 import tomllib
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -24,6 +25,7 @@ from lilbee.cli.commands import search_chat
 from lilbee.cli.commands._shared import REBUILD_HINT
 from lilbee.core.config import cfg
 from lilbee.data.store import IndexMismatch
+from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import PlainConsole
 from tests._cli_text import plain_cli_text
 from tests.conftest import make_mock_services
@@ -234,3 +236,24 @@ class TestFailureLine:
             result = runner.invoke(app, ["use-embedder", _REF, "--data-dir", str(tmp_path)])
         assert result.exit_code == 1
         assert buffer.getvalue().splitlines() == [f"{_RED}Error: \x1b[0mno such model"]
+
+
+class TestNoEngineNotice:
+    def test_an_installed_embedder_no_engine_loads_prints_the_notice(self, tmp_path):
+        notice = "No installed engine loads this model."
+        choice = SimpleNamespace(name=None, notice=notice)
+        choices = SimpleNamespace(choices={role: choice for role in WorkerRole})
+        with patch("lilbee.app.settings.resolve_engines", return_value=choices):
+            result = runner.invoke(app, ["use-embedder", _REF, "--data-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert f"Warning: {notice}" in result.output
+
+    def test_the_json_result_carries_the_notice(self, tmp_path):
+        notice = "No installed engine loads this model."
+        choice = SimpleNamespace(name=None, notice=notice)
+        choices = SimpleNamespace(choices={role: choice for role in WorkerRole})
+        with patch("lilbee.app.settings.resolve_engines", return_value=choices):
+            result = runner.invoke(
+                app, ["--json", "use-embedder", _REF, "--data-dir", str(tmp_path)]
+            )
+        assert json.loads(result.output)["warning"] == notice
