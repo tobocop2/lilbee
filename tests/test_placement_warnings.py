@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.groups import SwapGroup
@@ -379,9 +381,12 @@ class TestFailedReadyProbe:
         engine.memory = {"data": [{"name": "CUDA0", "model": 1}]}
         reads: list[str] = []
         probe = engine.get
-        monkeypatch.setattr(
-            engine, "get", lambda url, timeout=None: (reads.append(url), probe(url))[1]
-        )
+
+        def recording_get(url: str, timeout: float | None = None) -> _Answer:
+            reads.append(url)
+            return probe(url)
+
+        monkeypatch.setattr(engine, "get", recording_get)
         manager = self._manager(tmp_path, ["/bin/llama-server", MEMORY_FLAG])
         manager.engine_ready(WorkerRole.CHAT)
         manager.engine_ready(WorkerRole.CHAT)
