@@ -834,7 +834,7 @@ def test_a_reload_forgets_a_kept_device_reading_only_after_a_reap(
 
     def _capture(_engines) -> None:
         seen.append(planning_mod._read_device_cache.recent_empty(binary) is not None)
-        raise ProviderError("stop here", provider="llama-server")
+        raise ProviderError("stop here")
 
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _capture)
     with pytest.raises(ProviderError):
