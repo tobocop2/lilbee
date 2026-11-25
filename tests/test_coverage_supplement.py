@@ -1947,10 +1947,6 @@ class TestModelBarVisionSidecarPicker:
                 return_value=registry,
             ),
             mock.patch(
-                "lilbee.catalog.query.reclassify_by_name",
-                return_value=ModelTask.CHAT,
-            ),
-            mock.patch(
                 "pathlib.Path.glob",
                 return_value=[Path("/tmp/fake/mmproj-vision.gguf")],
             ),
