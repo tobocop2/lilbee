@@ -12,12 +12,6 @@ from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import WorkerRole
 
 
-@pytest.fixture(autouse=True)
-def _pin_ingest_workers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the config tests off the fleet probe that the real ingest pool size runs."""
-    monkeypatch.setattr(swap_config_mod, "max_workers", lambda: 8)
-
-
 def _mid(role: WorkerRole, replica: int = 0) -> str:
     """The llama-swap model id for a role's replica (matches InstanceLaunch.model_id)."""
     return f"{role.value}-{replica}"
@@ -433,24 +427,26 @@ class TestWarmTtlSeconds:
 
 
 @pytest.mark.parametrize(
-    ("role", "slots", "ingest_workers", "expected"),
+    ("role", "slots"),
     [
-        (WorkerRole.CHAT, 4, 14, 56),
-        (WorkerRole.CHAT, 40, 14, 160),
-        (WorkerRole.VISION, 8, 14, 56),
-        (WorkerRole.EMBED, 1, 32, 128),
-        (WorkerRole.RERANK, 8, 6, 32),
+        (WorkerRole.CHAT, 4),
+        (WorkerRole.CHAT, 40),
+        (WorkerRole.VISION, 8),
+        (WorkerRole.EMBED, 1),
+        (WorkerRole.RERANK, 8),
     ],
-    ids=["chat", "chat-slots-past-pool", "vision", "embed", "rerank"],
+    ids=["chat", "chat-many-slots", "vision", "embed", "rerank"],
 )
-def test_every_model_carries_a_concurrency_limit_for_several_processes(
-    monkeypatch, role: WorkerRole, slots: int, ingest_workers: int, expected: int
-) -> None:
-    # llama-swap answers 429 past the limit (default 10) and lilbee no longer
-    # waits a 429 out, so the limit covers four processes at their own ceiling.
-    monkeypatch.setattr(swap_config_mod, "max_workers", lambda: ingest_workers)
+def test_every_model_carries_the_same_fixed_concurrency_limit(role: WorkerRole, slots: int) -> None:
+    # llama-swap answers 429 past the limit (default 10) and never queues. The limit is
+    # one number for every model: it reads no slot count, pool size or other process.
     launch = InstanceLaunch(
         role=role, replica=0, argv=["/bin/llama-server"], env_overrides={}, model="m", slots=slots
     )
     entry = _config([launch])["models"][launch.model_id]
-    assert entry["concurrencyLimit"] == expected
+    assert entry["concurrencyLimit"] == 1024
+    assert swap_config_mod.CONCURRENCY_LIMIT == 1024
+
+
+def test_the_config_reads_no_ingest_pool_size() -> None:
+    assert not hasattr(swap_config_mod, "max_workers")

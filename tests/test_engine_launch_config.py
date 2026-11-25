@@ -132,8 +132,6 @@ def _install_host(
     """*session* with the bundled llama-server and every store engine installed."""
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setattr(runnable, "session_host", lambda: session)
-    # The real read builds the process-wide services, and those start a warm-up thread.
-    monkeypatch.setattr(swap_config, "_concurrency_limit", lambda *_a, **_k: 4)
     bundled = tmp_path / "lilbee_engine_llama_cpp" / "bin" / _BUNDLED
     bundled.parent.mkdir(parents=True)
     bundled.write_text("#!/bin/sh\n", encoding="utf-8")
