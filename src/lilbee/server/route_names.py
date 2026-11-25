@@ -3,13 +3,16 @@
 The messages in the engine and model code name a lilbee command, because the CLI and the TUI
 show them as they are. An HTTP caller has no command line, and an MCP client has none either.
 The server adds the route where an error becomes an HTTP response, with `name_routes`. The MCP
-server adds the tool where it returns an error or a notice, with `name_tools`.
+server adds the tool where it returns an error or a notice, with `name_tools`. Both apply to
+the warnings a client reads, with `name_warnings`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any, NamedTuple
+
+from lilbee.core.health_warnings import HealthWarning
 
 
 class _Route(NamedTuple):
@@ -84,6 +87,18 @@ def name_tools(text: str, *, http_mounted: bool = False) -> str:
         if r.tool and r.command in text and r.tool not in text
     ]
     return " ".join([text, *sentences])
+
+
+def name_warnings(
+    warnings: Iterable[HealthWarning], namer: Callable[[str], str]
+) -> list[HealthWarning]:
+    """*warnings* with *namer* applied to the message and the remedy of each one."""
+    return [
+        w.model_copy(
+            update={"message": namer(w.message), "remedy": namer(w.remedy) if w.remedy else None}
+        )
+        for w in warnings
+    ]
 
 
 def name_damaged_folders(payload: dict[str, Any], namer: Callable[[str], str]) -> dict[str, Any]:

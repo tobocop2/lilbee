@@ -165,6 +165,20 @@ class TestHealth:
         assert [w.code for w in result.warnings] == [WarningCode.FTS_UNAVAILABLE]
         assert result.warnings[0].remedy == "rebuild"
 
+    async def test_health_names_the_sync_route_beside_a_rebuild_remedy(self, mock_svc):
+        from lilbee.core.health_warnings import HealthWarning, WarningCode
+
+        mock_svc.store.health_warnings.return_value = [
+            HealthWarning(
+                code=WarningCode.FTS_UNAVAILABLE,
+                message="keyword search is down",
+                remedy="Run `lilbee rebuild` to rebuild the search index.",
+            )
+        ]
+        remedy = (await handlers.health()).warnings[0].remedy
+        assert remedy is not None
+        assert "Over HTTP, call POST /api/sync, with force_rebuild true in place of" in remedy
+
     async def test_health_reports_no_warnings_on_a_clean_store(self, mock_svc):
         mock_svc.store.health_warnings.return_value = []
         assert (await handlers.health()).warnings == []
