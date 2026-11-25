@@ -168,6 +168,25 @@ def test_removing_the_embedder_build_with_no_server_asks_with_the_count(
     assert [(b.engine, b.version) for b in _installed()] == [("fx", "1")]
 
 
+def test_the_standalone_count_opens_its_store_through_the_open_registry(
+    standalone_library: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exit waits on the stores of the registry, so the count must open its store there."""
+    from lilbee.app import services as services_mod
+
+    opened: list[Store] = []
+    real = services_mod._new_store
+
+    def _spy(config: object, probe: object = None) -> Store:
+        store = real(config, probe)  # type: ignore[arg-type]
+        opened.append(store)
+        return store
+
+    monkeypatch.setattr(services_mod, "_new_store", _spy)
+    assert engine_service._document_count(None) == 3
+    assert len(opened) == 1
+
+
 def test_the_standalone_cli_refuses_without_a_terminal_and_names_the_flag(
     standalone_library: None,
 ) -> None:
