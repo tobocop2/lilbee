@@ -52,16 +52,16 @@ def _serve(loop: asyncio.AbstractEventLoop) -> None:
     """Run *loop* on this thread; close it once it stops, even when the stop comes late.
 
     A stop that comes late can leave tasks that never ran a step, such as the drain
-    that the shutdown queued. They are cancelled and awaited here, as ``asyncio.run`` does.
+    that the shutdown queued. They are cancelled and get one pass of the loop, which
+    runs a step each, so none is dropped unscheduled. A task still pending after that
+    pass, such as one that swallows its cancel, is dropped with the closed loop.
     """
     try:
         loop.run_forever()
     finally:
-        left = asyncio.all_tasks(loop)
-        for task in left:
+        for task in asyncio.all_tasks(loop):
             task.cancel()
-        if left:
-            loop.run_until_complete(asyncio.gather(*left, return_exceptions=True))
+        loop.run_until_complete(asyncio.sleep(0))
         loop.close()
 
 
