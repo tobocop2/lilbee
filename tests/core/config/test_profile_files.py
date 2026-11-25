@@ -632,9 +632,14 @@ def test_plan_write_refuses_a_name_or_stem_held_without_parsing_the_values(
     tmp_path, monkeypatch, stem, text, name
 ):
     _write(tmp_path, stem, text)
+    real_read_entry = profile_files.read_entry
 
-    def parsed(*_args):
-        raise AssertionError("the clash check validated a file")
+    def parsed(path, folder):
+        # Only the folder under test: the first built-in-keys lookup in a process reads
+        # and validates the built-in files, which is not the clash check.
+        if path.parent == tmp_path:
+            raise AssertionError("the clash check validated a file")
+        return real_read_entry(path, folder)
 
     monkeypatch.setattr(profile_files, "read_entry", parsed)
     new = f'[profile]\nname = "{name}"\n[values]\n'
