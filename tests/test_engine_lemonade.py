@@ -91,6 +91,17 @@ def _data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
 
 
+def test_lemonade_is_the_one_engine_with_a_silent_prefill() -> None:
+    """lemond pings only once flm answers, so its chat bound starts at the first frame."""
+    silent = {
+        name
+        for name, adapter in choice.ADAPTERS.items()
+        for role in adapter.served_roles
+        if adapter.request_profile(role).silent_prefill
+    }
+    assert silent == {EngineName.LEMONADE}
+
+
 def test_b1_an_xdna2_host_passes() -> None:
     gate = LEMONADE.host_gate(_host("amd-xdna2-linux"))
     assert (gate.ok, gate.known, gate.auto_selectable) == (True, True, True)
