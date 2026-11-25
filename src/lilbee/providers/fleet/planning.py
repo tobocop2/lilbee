@@ -28,10 +28,7 @@ from lilbee.providers.fleet.adapters import (
     RankPoolingMissingError,
     resolve_rerank_mode,
 )
-from lilbee.providers.fleet.binary import (
-    engine_binary_identity,
-    engine_build_id,
-)
+from lilbee.providers.fleet.binary import engine_binary_identity
 from lilbee.providers.fleet.devices import (
     MIB,
     VULKAN_BACKEND,
@@ -158,11 +155,16 @@ def log_role_launches(
 
 
 def _engine_id(launch: InstanceLaunch, engine: EngineAdapter) -> str:
-    """*launch*'s binary with the engine build, backend, and probed devices."""
+    """*launch*'s binary with its engine, the build of that binary, backend, and probed devices.
+
+    The build is the engine's own identity of the binary the process runs, never the
+    llama.cpp pack the host resolves.
+    """
     devices = probed_devices(engine)
     names = ", ".join(f"{d.backend}{d.index}: {d.name}" for d in devices) or _NO_DEVICES
     return (
-        f"{launch.binary} (build {engine_build_id()}, "
+        f"{launch.binary} (engine {engine.name.value}, "
+        f"build {engine.identity(Path(launch.binary))}, "
         f"backend {engine_backend(engine).value}, devices: {names})"
     )
 
