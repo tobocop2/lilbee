@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from lilbee.app import engine_choice, engine_service
+from lilbee.app.services import get_services
 from lilbee.catalog import runnable
 from lilbee.catalog.query import get_catalog
 from lilbee.catalog.types import ModelFormat
@@ -46,8 +47,8 @@ def test_engine_choice_reads_the_patched_host(mac_reads: list[HostCaps]) -> None
 def test_catalog_query_reads_the_patched_host(
     mac_reads: list[HostCaps], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("lilbee.catalog.query.get_picks", lambda: [])
-    get_catalog(featured=True)
+    monkeypatch.setattr("lilbee.catalog.query.get_picks", lambda **_: [])
+    get_catalog(featured=True, hf_client=get_services().hf_client)
     assert mac_reads
 
 

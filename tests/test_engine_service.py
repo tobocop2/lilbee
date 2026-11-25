@@ -142,7 +142,10 @@ def test_a_pull_follows_the_choice_for_that_model_only(with_openvino: None) -> N
     assert cfg.engine_choices == json.dumps({GGUF_REF: "openvino"})
     assert engine_for_ref(GGUF_REF, cfg) is OPENVINO_ENGINE
     assert engine_for_ref("org/other/file.gguf", cfg) is GGUF_ENGINE
-    assert ModelManager(cfg.models_dir, cfg).require_engine(GGUF_REF) is OPENVINO_ENGINE
+    assert (
+        ModelManager(cfg.models_dir, cfg, hf_client=HfClient(cfg)).require_engine(GGUF_REF)
+        is OPENVINO_ENGINE
+    )
 
 
 def test_prefer_refuses_an_engine_that_is_not_installed() -> None:
@@ -315,9 +318,15 @@ def test_a_pull_and_a_run_on_one_library_config_name_the_same_engine(
     assert run is OPENVINO_ENGINE
     assert engine_for_ref(GGUF_REF, library) is run
     assert engine_choice.engine_for_format(choice.ModelFormat.GGUF, library) is run
-    assert ModelManager(cfg.models_dir, library).require_engine(GGUF_REF) is run
+    assert (
+        ModelManager(cfg.models_dir, library, hf_client=HfClient(library)).require_engine(GGUF_REF)
+        is run
+    )
     assert EngineBook(library).for_ref(GGUF_REF) is run
-    assert ModelManager(cfg.models_dir, cfg).require_engine(GGUF_REF) is GGUF_ENGINE
+    assert (
+        ModelManager(cfg.models_dir, cfg, hf_client=HfClient(cfg)).require_engine(GGUF_REF)
+        is GGUF_ENGINE
+    )
 
 
 @pytest.mark.real_hf_client
@@ -349,7 +358,7 @@ def test_the_preference_picks_the_engine_for_a_pull(with_mlx: None) -> None:
 
 
 def test_the_manager_and_the_client_ask_for_the_engine_of_each_call(with_mlx: None) -> None:
-    manager = ModelManager(cfg.models_dir, cfg)
+    manager = ModelManager(cfg.models_dir, cfg, hf_client=HfClient(cfg))
     assert manager.require_engine(GGUF_REF) is GGUF_ENGINE
     assert manager.require_engine(MLX_REF) is MLX_ENGINE
     assert "engine" not in HfClient.__init__.__code__.co_varnames
@@ -358,7 +367,7 @@ def test_the_manager_and_the_client_ask_for_the_engine_of_each_call(with_mlx: No
 def test_the_manager_follows_an_engine_that_arrives_after_it_was_built(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    manager = ModelManager(cfg.models_dir, cfg)
+    manager = ModelManager(cfg.models_dir, cfg, hf_client=HfClient(cfg))
     with pytest.raises(NoEngineError):
         manager.require_engine(MLX_REF)
     monkeypatch.setitem(choice.ADAPTERS, EngineName.MLX, MLX_ENGINE)  # type: ignore[arg-type]

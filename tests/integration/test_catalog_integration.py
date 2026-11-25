@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 from huggingface_hub.utils import http_backoff
 
+from lilbee.app.services import get_services
 from lilbee.catalog.hf_client import DEFAULT_TIMEOUT, HF_API_URL, hf_headers
 from lilbee.catalog.picks import get_picks, reset_picks
 from lilbee.catalog.query import reclassify_by_name, size_bucket
@@ -26,7 +27,7 @@ pytestmark = [pytest.mark.slow, pytest.mark.live_picks]
 def live_picks():
     """Resolve picks once against the real trending ranking."""
     reset_picks()
-    picks = get_picks()
+    picks = get_picks(hf_client=get_services().hf_client)
     if not picks:
         pytest.skip("HuggingFace unreachable")
     yield picks

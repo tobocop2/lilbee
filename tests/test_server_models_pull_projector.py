@@ -43,7 +43,9 @@ async def _pull_events(
 
 
 def _stub_entry(monkeypatch: pytest.MonkeyPatch, task: ModelTask = ModelTask.VISION) -> None:
-    monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: SimpleNamespace(task=task))
+    monkeypatch.setattr(
+        "lilbee.catalog.resolve_pull_target", lambda _q, **_: SimpleNamespace(task=task)
+    )
 
 
 def _stub_listing_error(monkeypatch: pytest.MonkeyPatch) -> None:

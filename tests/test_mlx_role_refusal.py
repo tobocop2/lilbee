@@ -21,6 +21,7 @@ from typer.testing import CliRunner
 from conftest import clean_env
 from lilbee.app import models as app_models
 from lilbee.app import settings as appset
+from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.cli import app
 from lilbee.cli.tui.app import LilbeeApp
@@ -248,7 +249,7 @@ class TestModelRoutes:
     ) -> None:
         monkeypatch.setenv("LILBEE_SKIP_MODEL_TASK_VALIDATION", "1")
         with pytest.raises(ValueError, match=family):
-            validate_model_task_assignment(field, ref)
+            validate_model_task_assignment(field, ref, hf_client=get_services().hf_client)
 
     def test_the_cli_refuses_an_unsupported_reranker(
         self, listed: list[str], tmp_path: Path

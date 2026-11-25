@@ -592,7 +592,9 @@ class TestFetchHfModels:
             return httpx.Response(200, json=data, headers={"Link": link})
 
         monkeypatch.setattr(httpx, "get", mock_get)
-        result = get_catalog(task=ModelTask.CHAT, featured=False, limit=5)
+        result = get_catalog(
+            task=ModelTask.CHAT, featured=False, limit=5, hf_client=get_services().hf_client
+        )
         assert [m.hf_repo for m in result.models] == ["user/model"]
         assert result.has_more is False
         assert result.truncated is False
@@ -827,19 +829,19 @@ class TestFetchHfModels:
 class TestGetCatalog:
     def test_returns_featured_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog()
+        result = get_catalog(hf_client=get_services().hf_client)
         assert result.total is None
         assert all(m.featured for m in result.models)
 
     def test_pagination(self) -> None:
-        result = get_catalog(limit=2, offset=0)
+        result = get_catalog(limit=2, offset=0, hf_client=get_services().hf_client)
         assert len(result.models) == 2
         assert result.limit == 2
         assert result.offset == 0
 
     def test_pagination_offset(self) -> None:
-        r1 = get_catalog(limit=2, offset=0)
-        r2 = get_catalog(limit=2, offset=2)
+        r1 = get_catalog(limit=2, offset=0, hf_client=get_services().hf_client)
+        r2 = get_catalog(limit=2, offset=2, hf_client=get_services().hf_client)
         repos1 = {m.hf_repo for m in r1.models}
         repos2 = {m.hf_repo for m in r2.models}
         assert repos1.isdisjoint(repos2)
@@ -848,7 +850,9 @@ class TestGetCatalog:
         """The first browse page holds the picks and only as many HF rows as fit after them."""
         upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(10)]
         calls = stub_hf_listing(monkeypatch, {"text-generation": upstream})
-        result = get_catalog(task=ModelTask.CHAT, limit=10, offset=0)
+        result = get_catalog(
+            task=ModelTask.CHAT, limit=10, offset=0, hf_client=get_services().hf_client
+        )
         assert [m.hf_repo for m in result.models] == [m.hf_repo for m in PICKS_CHAT] + [
             "test/Hf0",
             "test/Hf1",
@@ -862,8 +866,12 @@ class TestGetCatalog:
         """Page two shows the HF rows after the ones page one showed."""
         upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(10)]
         stub_hf_listing(monkeypatch, {"text-generation": upstream})
-        first = get_catalog(task=ModelTask.CHAT, limit=10, offset=0)
-        second = get_catalog(task=ModelTask.CHAT, limit=10, offset=10)
+        first = get_catalog(
+            task=ModelTask.CHAT, limit=10, offset=0, hf_client=get_services().hf_client
+        )
+        second = get_catalog(
+            task=ModelTask.CHAT, limit=10, offset=10, hf_client=get_services().hf_client
+        )
         assert [m.hf_repo for m in first.models if not m.featured] == ["test/Hf0", "test/Hf1"]
         assert [m.hf_repo for m in second.models] == [f"test/Hf{i}" for i in range(2, 10)]
         assert second.total is None
@@ -873,8 +881,12 @@ class TestGetCatalog:
         """The browse total is unknown, so both pages report none and agree."""
         upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(10)]
         stub_hf_listing(monkeypatch, {"text-generation": upstream})
-        first = get_catalog(task=ModelTask.CHAT, limit=10, offset=0)
-        second = get_catalog(task=ModelTask.CHAT, limit=10, offset=10)
+        first = get_catalog(
+            task=ModelTask.CHAT, limit=10, offset=0, hf_client=get_services().hf_client
+        )
+        second = get_catalog(
+            task=ModelTask.CHAT, limit=10, offset=10, hf_client=get_services().hf_client
+        )
         assert first.total is None
         assert second.total is None
 
@@ -882,7 +894,7 @@ class TestGetCatalog:
         """A browse that names no limit serves twenty rows and reports limit=20."""
         upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(40)]
         stub_hf_listing(monkeypatch, {"text-generation": upstream})
-        result = get_catalog(task=ModelTask.CHAT)
+        result = get_catalog(task=ModelTask.CHAT, hf_client=get_services().hf_client)
         assert result.limit == 20
         assert [m.hf_repo for m in result.models] == [
             *[m.hf_repo for m in PICKS_CHAT],
@@ -896,7 +908,9 @@ class TestGetCatalog:
         """A window that starts in the picks and ends past them serves both parts in order."""
         upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(6)]
         stub_hf_listing(monkeypatch, {"text-generation": upstream})
-        result = get_catalog(task=ModelTask.CHAT, limit=4, offset=6)
+        result = get_catalog(
+            task=ModelTask.CHAT, limit=4, offset=6, hf_client=get_services().hf_client
+        )
         assert result.offset == 6
         assert [m.hf_repo for m in result.models] == [
             *[m.hf_repo for m in PICKS_CHAT[6:]],
@@ -910,7 +924,9 @@ class TestGetCatalog:
     ) -> None:
         """A window that ends inside the picks needs no HF request and still has more."""
         calls = stub_hf_listing(monkeypatch, {})
-        result = get_catalog(task=ModelTask.CHAT, limit=3, offset=2)
+        result = get_catalog(
+            task=ModelTask.CHAT, limit=3, offset=2, hf_client=get_services().hf_client
+        )
         assert [m.hf_repo for m in result.models] == [m.hf_repo for m in PICKS_CHAT[2:5]]
         assert calls == []
         assert result.has_more is True
@@ -920,17 +936,33 @@ class TestGetCatalog:
     ) -> None:
         """At the end of the picks, has_more asks HuggingFace whether one more match exists."""
         stub_hf_listing(monkeypatch, {"text-generation": [make_test_catalog_model(name="Hf0")]})
-        with_hf = get_catalog(task=ModelTask.CHAT, limit=len(PICKS_CHAT), offset=0)
+        with_hf = get_catalog(
+            task=ModelTask.CHAT, limit=len(PICKS_CHAT), offset=0, hf_client=get_services().hf_client
+        )
         stub_hf_listing(monkeypatch, {})
-        without_hf = get_catalog(task=ModelTask.CHAT, limit=len(PICKS_CHAT), offset=0)
+        without_hf = get_catalog(
+            task=ModelTask.CHAT, limit=len(PICKS_CHAT), offset=0, hf_client=get_services().hf_client
+        )
         assert len(with_hf.models) == len(PICKS_CHAT)
         assert with_hf.has_more is True
         assert without_hf.has_more is False
 
     def test_featured_listing_pages_past_the_first(self) -> None:
         """A featured-only listing pages through the picks with an exact has_more."""
-        first = get_catalog(task=ModelTask.CHAT, featured=True, limit=3, offset=3)
-        last = get_catalog(task=ModelTask.CHAT, featured=True, limit=4, offset=4)
+        first = get_catalog(
+            task=ModelTask.CHAT,
+            featured=True,
+            limit=3,
+            offset=3,
+            hf_client=get_services().hf_client,
+        )
+        last = get_catalog(
+            task=ModelTask.CHAT,
+            featured=True,
+            limit=4,
+            offset=4,
+            hf_client=get_services().hf_client,
+        )
         assert [m.hf_repo for m in first.models] == [m.hf_repo for m in PICKS_CHAT[3:6]]
         assert first.has_more is True
         assert [m.hf_repo for m in last.models] == [m.hf_repo for m in PICKS_CHAT[4:8]]
@@ -939,89 +971,97 @@ class TestGetCatalog:
     def test_featured_listing_makes_no_hf_request(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """HuggingFace rows are never featured, so a featured-only page reads only the picks."""
         calls = stub_hf_listing(monkeypatch, {"text-generation": [make_test_catalog_model()]})
-        result = get_catalog(task=ModelTask.CHAT, featured=True, limit=50)
+        result = get_catalog(
+            task=ModelTask.CHAT, featured=True, limit=50, hf_client=get_services().hf_client
+        )
         assert [m.hf_repo for m in result.models] == [m.hf_repo for m in PICKS_CHAT]
         assert calls == []
 
     def test_zero_width_window_returns_no_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A page of no rows reports no total and says whether any match exists."""
         calls = stub_hf_listing(monkeypatch, {})
-        result = get_catalog(task=ModelTask.CHAT, limit=0, offset=0)
+        result = get_catalog(
+            task=ModelTask.CHAT, limit=0, offset=0, hf_client=get_services().hf_client
+        )
         assert result.models == []
         assert result.total is None
         assert calls == []
         assert result.has_more is True
 
     def test_filter_by_task_chat(self) -> None:
-        result = get_catalog(task=ModelTask.CHAT)
+        result = get_catalog(task=ModelTask.CHAT, hf_client=get_services().hf_client)
         assert all(m.task == "chat" for m in result.models)
 
     def test_filter_by_task_embedding(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog(task=ModelTask.EMBEDDING)
+        result = get_catalog(task=ModelTask.EMBEDDING, hf_client=get_services().hf_client)
         assert all(m.task == "embedding" for m in result.models)
         assert result.total is None
 
     def test_filter_by_task_vision(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog(task=ModelTask.VISION)
+        result = get_catalog(task=ModelTask.VISION, hf_client=get_services().hf_client)
         assert all(m.task == "vision" for m in result.models)
         assert result.total is None
 
     def test_search_by_name(self) -> None:
-        result = get_catalog(search="Qwen3")
+        result = get_catalog(search="Qwen3", hf_client=get_services().hf_client)
         for m in result.models:
             assert "qwen3" in m.display_name.lower() or "qwen3" in m.hf_repo.lower()
 
     def test_search_by_description(self) -> None:
-        result = get_catalog(search="Sample embedding pick")
+        result = get_catalog(search="Sample embedding pick", hf_client=get_services().hf_client)
         assert result.models
         assert all(m.task == "embedding" for m in result.models)
 
     def test_search_case_insensitive(self) -> None:
-        result = get_catalog(search="QWEN3")
+        result = get_catalog(search="QWEN3", hf_client=get_services().hf_client)
         assert result.models
         assert result.total is None
 
     def test_search_no_results(self) -> None:
-        result = get_catalog(search="nonexistent_model_xyz")
+        result = get_catalog(search="nonexistent_model_xyz", hf_client=get_services().hf_client)
         assert result.models == []
         assert result.total is None
 
     def test_filter_size_small(self) -> None:
-        result = get_catalog(size=CatalogSize.SMALL)
+        result = get_catalog(size=CatalogSize.SMALL, hf_client=get_services().hf_client)
         assert result.models
         for m in result.models:
             assert m.params < 4_000_000_000
 
     def test_filter_size_medium(self) -> None:
-        result = get_catalog(size=CatalogSize.MEDIUM)
+        result = get_catalog(size=CatalogSize.MEDIUM, hf_client=get_services().hf_client)
         assert result.models
         for m in result.models:
             assert 4_000_000_000 <= m.params < 20_000_000_000
 
     def test_filter_size_large(self) -> None:
-        result = get_catalog(size=CatalogSize.LARGE)
+        result = get_catalog(size=CatalogSize.LARGE, hf_client=get_services().hf_client)
         assert result.models
         for m in result.models:
             assert 20_000_000_000 <= m.params < 70_000_000_000
 
     def test_filter_size_huge(self) -> None:
-        result = get_catalog(size=CatalogSize.HUGE)
+        result = get_catalog(size=CatalogSize.HUGE, hf_client=get_services().hf_client)
         assert result.models
         for m in result.models:
             assert m.params >= 70_000_000_000
 
     def test_filter_size_unknown_bucket_matches_nothing(self) -> None:
         """An unrecognized bucket filters everything out rather than raising."""
-        result = get_catalog(size="gigantic")  # type: ignore[arg-type]
+        result = get_catalog(size="gigantic", hf_client=get_services().hf_client)  # type: ignore[arg-type]
         assert result.models == []
         assert result.total is None
 
     def test_largest_first_page_is_all_rows_the_host_cannot_load(self) -> None:
         """The control for the fit filter: this is the page a client has to fix itself."""
         result = get_catalog(
-            task=ModelTask.CHAT, featured=True, sort=CatalogSort.SIZE_DESC, limit=3
+            task=ModelTask.CHAT,
+            featured=True,
+            sort=CatalogSort.SIZE_DESC,
+            limit=3,
+            hf_client=get_services().hf_client,
         )
         assert [m.size_gb for m in result.models] == [68.6, 40.0, 19.4]
         assert all(fit_for_size(m.size_gb, 8 * 1024**3) is FitLevel.WONT_RUN for m in result.models)
@@ -1034,6 +1074,7 @@ class TestGetCatalog:
             sort=CatalogSort.SIZE_DESC,
             limit=3,
             fit_filter=make_fit_filter(FitLevel.FITS, 8 * 1024**3),
+            hf_client=get_services().hf_client,
         )
         assert [m.size_gb for m in result.models] == [4.6, 1.8, 0.6]
 
@@ -1045,6 +1086,7 @@ class TestGetCatalog:
             sort=CatalogSort.SIZE_DESC,
             limit=2,
             fit_filter=make_fit_filter(FitLevel.FITS, 8 * 1024**3),
+            hf_client=get_services().hf_client,
         )
         assert [m.size_gb for m in result.models] == [4.6, 1.8]
         assert result.total == 3
@@ -1062,6 +1104,7 @@ class TestGetCatalog:
             featured=False,
             limit=2,
             fit_filter=make_fit_filter(FitLevel.FITS, 8 * 1024**3),
+            hf_client=get_services().hf_client,
         )
         assert [m.hf_repo for m in result.models] == ["test/Small0", "test/Small1"]
         assert result.total is None
@@ -1088,18 +1131,19 @@ class TestGetCatalog:
             featured=False,
             limit=50,
             fit_filter=make_fit_filter(FitLevel.FITS, 8 * 1024**3),
+            hf_client=get_services().hf_client,
         )
         assert sorted(m.hf_repo for m in result.models) == ["test/Small", "test/Unmeasured"]
         assert result.total is None
         assert result.has_more is False
 
     def test_filter_featured_true(self) -> None:
-        result = get_catalog(featured=True)
+        result = get_catalog(featured=True, hf_client=get_services().hf_client)
         assert all(m.featured for m in result.models)
 
     def test_filter_featured_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog(featured=False)
+        result = get_catalog(featured=False, hf_client=get_services().hf_client)
         assert result.total is None
 
     def test_a_pick_the_host_cannot_run_is_not_served(
@@ -1111,8 +1155,8 @@ class TestGetCatalog:
             formats=frozenset({ModelFormat.MLX}),
         )
         gguf_pick = make_test_catalog_model(name="GgufPick", featured=True)
-        monkeypatch.setattr(_query, "get_picks", lambda: [mlx_pick, gguf_pick])
-        result = get_catalog(task=ModelTask.CHAT, featured=True)
+        monkeypatch.setattr(_query, "get_picks", lambda **_: [mlx_pick, gguf_pick])
+        result = get_catalog(task=ModelTask.CHAT, featured=True, hf_client=get_services().hf_client)
         assert [m.hf_repo for m in result.models] == ["test/GgufPick"]
         assert [h.hf_repo for h in result.hidden] == ["test/MlxPick"]
         assert result.total == 1
@@ -1122,37 +1166,39 @@ class TestGetCatalog:
     ) -> None:
         """featured=False reaches the row filter: the featured picks are not served with it."""
         stub_hf_listing(monkeypatch, {"text-generation": [make_test_catalog_model(name="Hf0")]})
-        result = get_catalog(task=ModelTask.CHAT, featured=False)
+        result = get_catalog(
+            task=ModelTask.CHAT, featured=False, hf_client=get_services().hf_client
+        )
         assert [m.hf_repo for m in result.models] == ["test/Hf0"]
         assert all(m.featured is False for m in result.models)
 
     def test_sort_featured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog(sort=CatalogSort.FEATURED)
+        result = get_catalog(sort=CatalogSort.FEATURED, hf_client=get_services().hf_client)
         downloads = [m.downloads for m in result.models]
         assert downloads == sorted(downloads, reverse=True)
 
     def test_sort_downloads(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog(sort=CatalogSort.DOWNLOADS)
+        result = get_catalog(sort=CatalogSort.DOWNLOADS, hf_client=get_services().hf_client)
         downloads = [m.downloads for m in result.models]
         assert downloads == sorted(downloads, reverse=True)
 
     def test_sort_size_asc(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog(sort=CatalogSort.SIZE_ASC)
+        result = get_catalog(sort=CatalogSort.SIZE_ASC, hf_client=get_services().hf_client)
         sizes = [m.size_gb for m in result.models]
         assert sizes == sorted(sizes)
 
     def test_sort_size_desc(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog(sort=CatalogSort.SIZE_DESC)
+        result = get_catalog(sort=CatalogSort.SIZE_DESC, hf_client=get_services().hf_client)
         sizes = [m.size_gb for m in result.models]
         assert sizes == sorted(sizes, reverse=True)
 
     def test_sort_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog(sort=CatalogSort.NAME)
+        result = get_catalog(sort=CatalogSort.NAME, hf_client=get_services().hf_client)
         names = [m.display_name.lower() for m in result.models]
         assert names == sorted(names)
 
@@ -1161,7 +1207,9 @@ class TestGetCatalog:
             def list_installed(self) -> list[str]:
                 return ["Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"]
 
-        result = get_catalog(installed=True, model_manager=FakeManager())
+        result = get_catalog(
+            installed=True, model_manager=FakeManager(), hf_client=get_services().hf_client
+        )
         assert all(m.hf_repo == "Qwen/Qwen3-8B-GGUF" for m in result.models)
 
     def test_installed_filter_not_installed(self) -> None:
@@ -1169,7 +1217,9 @@ class TestGetCatalog:
             def list_installed(self) -> list[str]:
                 return ["Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"]
 
-        result = get_catalog(installed=False, model_manager=FakeManager())
+        result = get_catalog(
+            installed=False, model_manager=FakeManager(), hf_client=get_services().hf_client
+        )
         assert all(m.hf_repo != "Qwen/Qwen3-8B-GGUF" for m in result.models)
 
     def test_installed_filter_manager_error(self) -> None:
@@ -1177,7 +1227,9 @@ class TestGetCatalog:
             def list_installed(self) -> list[str]:
                 raise RuntimeError("no manager")
 
-        result = get_catalog(installed=True, model_manager=BadManager())
+        result = get_catalog(
+            installed=True, model_manager=BadManager(), hf_client=get_services().hf_client
+        )
         assert result.total is None
 
     def test_combines_featured_and_hf(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1198,7 +1250,7 @@ class TestGetCatalog:
             "fetch_models",
             lambda **kw: HfPage(models=hf_models),
         )
-        result = get_catalog()
+        result = get_catalog(hf_client=get_services().hf_client)
         repos = [m.hf_repo for m in result.models]
         assert "user/hf-model" in repos
         assert any(r.startswith("mid/") for r in repos)
@@ -1221,7 +1273,7 @@ class TestGetCatalog:
             "fetch_models",
             lambda **kw: HfPage(models=hf_models),
         )
-        result = get_catalog()
+        result = get_catalog(hf_client=get_services().hf_client)
         dupes = [m for m in result.models if m.hf_repo == "mid/Mid-8B-GGUF"]
         assert len(dupes) == 1
         assert dupes[0].featured is True
@@ -1232,53 +1284,58 @@ class TestGetCatalog:
         """A next HuggingFace page is not a next match: has_more follows the matches."""
         upstream = [make_test_catalog_model(name=f"Hf{i}", size_gb=2.0) for i in range(300)]
         stub_hf_listing(monkeypatch, {"text-generation": upstream})
-        result = get_catalog(task=ModelTask.CHAT, size=CatalogSize.HUGE, featured=False)
+        result = get_catalog(
+            task=ModelTask.CHAT,
+            size=CatalogSize.HUGE,
+            featured=False,
+            hf_client=get_services().hf_client,
+        )
         assert result.models == []
         assert result.has_more is False
 
     def test_has_more_false_when_featured_only(self) -> None:
         """Featured-only requests have has_more=False (no HF fetch)."""
-        result = get_catalog(featured=True)
+        result = get_catalog(featured=True, hf_client=get_services().hf_client)
         assert result.has_more is False
 
     def test_has_more_false_when_no_more_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog()
+        result = get_catalog(hf_client=get_services().hf_client)
         assert result.has_more is False
 
 
 class TestFindPick:
     def test_match_by_hf_repo(self) -> None:
-        result = find_pick("mid/Mid-8B-GGUF")
+        result = find_pick("mid/Mid-8B-GGUF", hf_client=get_services().hf_client)
         assert result is not None
         assert result.hf_repo == "mid/Mid-8B-GGUF"
 
     def test_match_by_a_suffixed_native_ref(self) -> None:
-        result = find_pick("mid/Mid-8B-GGUF/m-Q4_K_M.gguf#gguf")
+        result = find_pick("mid/Mid-8B-GGUF/m-Q4_K_M.gguf#gguf", hf_client=get_services().hf_client)
         assert result is not None
         assert result.hf_repo == "mid/Mid-8B-GGUF"
 
     def test_match_by_hf_repo_case_insensitive(self) -> None:
-        result = find_pick("MID/mid-8b-gguf")
+        result = find_pick("MID/mid-8b-gguf", hf_client=get_services().hf_client)
         assert result is not None
         assert result.hf_repo == "mid/Mid-8B-GGUF"
 
     def test_not_found(self) -> None:
-        assert find_pick("nobody/Not-A-Pick-GGUF") is None
+        assert find_pick("nobody/Not-A-Pick-GGUF", hf_client=get_services().hf_client) is None
 
     def test_empty_string(self) -> None:
-        assert find_pick("") is None
+        assert find_pick("", hf_client=get_services().hf_client) is None
 
     def test_full_ref_resolves_to_its_repo(self) -> None:
         """A ``<repo>/<file>.gguf`` ref resolves to the repo it names."""
-        result = find_pick("mid/Mid-8B-GGUF/mid-8b-Q4_K_M.gguf")
+        result = find_pick("mid/Mid-8B-GGUF/mid-8b-Q4_K_M.gguf", hf_client=get_services().hf_client)
         assert result is not None
         assert result.hf_repo == "mid/Mid-8B-GGUF"
 
     def test_bare_names_return_none(self) -> None:
         """Bare names and display labels are not lookup keys."""
-        assert find_pick("qwen3:0.6b") is None
-        assert find_pick("qwen3") is None
+        assert find_pick("qwen3:0.6b", hf_client=get_services().hf_client) is None
+        assert find_pick("qwen3", hf_client=get_services().hf_client) is None
 
 
 class TestHfRepoFromRef:
@@ -1385,37 +1442,47 @@ class TestIsHfRepoId:
 class TestResolvePullTarget:
     def test_bare_repo_resolves_hf_first(self) -> None:
         """Every bare repo pulls through the glob; no curated entry pre-empts it."""
-        entry = catalog.resolve_pull_target("mid/Mid-8B-GGUF")
+        entry = catalog.resolve_pull_target("mid/Mid-8B-GGUF", hf_client=get_services().hf_client)
         assert entry is not None
         assert entry.featured is False
         assert entry.hf_repo == "mid/Mid-8B-GGUF"
         assert entry.gguf_filename == "*.gguf"
 
     def test_unknown_hf_repo_builds_adhoc(self) -> None:
-        entry = catalog.resolve_pull_target("bartowski/gemma-2-2b-it-GGUF")
+        entry = catalog.resolve_pull_target(
+            "bartowski/gemma-2-2b-it-GGUF", hf_client=get_services().hf_client
+        )
         assert entry is not None
         assert entry.featured is False
         assert entry.hf_repo == "bartowski/gemma-2-2b-it-GGUF"
         assert entry.gguf_filename == "*.gguf"
 
     def test_unknown_short_name_returns_none(self) -> None:
-        assert catalog.resolve_pull_target("not-a-real-model") is None
+        assert (
+            catalog.resolve_pull_target("not-a-real-model", hf_client=get_services().hf_client)
+            is None
+        )
 
     def test_resolve_pull_target_classifies_embedding_repo(self):
         """Non-featured embedding repos must not register as chat models (bb-euk)."""
         from lilbee.catalog.types import ModelTask
 
-        bare = catalog.resolve_pull_target("Qwen/Qwen3-Embedding-8B-GGUF")
+        bare = catalog.resolve_pull_target(
+            "Qwen/Qwen3-Embedding-8B-GGUF", hf_client=get_services().hf_client
+        )
         assert bare is not None and bare.task is ModelTask.EMBEDDING
         exact = catalog.resolve_pull_target(
-            "Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf"
+            "Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf",
+            hf_client=get_services().hf_client,
         )
         assert exact is not None and exact.task is ModelTask.EMBEDDING
 
     def test_resolve_pull_target_classifies_reranker_repo(self):
         from lilbee.catalog.types import ModelTask
 
-        entry = catalog.resolve_pull_target("BAAI/bge-reranker-v2-m3-GGUF")
+        entry = catalog.resolve_pull_target(
+            "BAAI/bge-reranker-v2-m3-GGUF", hf_client=get_services().hf_client
+        )
         assert entry is not None and entry.task is ModelTask.RERANK
 
     @pytest.mark.parametrize(
@@ -1423,12 +1490,12 @@ class TestResolvePullTarget:
         ["https://huggingface.co/Qwen/Qwen3-8B-GGUF", "datasets/foo/bar", "foo--bar/baz"],
     )
     def test_malformed_hf_inputs_return_none(self, value: str) -> None:
-        assert catalog.resolve_pull_target(value) is None
+        assert catalog.resolve_pull_target(value, hf_client=get_services().hf_client) is None
 
     def test_subdir_gguf_ref_builds_adhoc_with_exact_filename(self) -> None:
         """A full subdir ref (F2) resolves to an ad-hoc entry pinning that file."""
         ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
-        entry = catalog.resolve_pull_target(ref)
+        entry = catalog.resolve_pull_target(ref, hf_client=get_services().hf_client)
         assert entry is not None
         assert entry.featured is False
         assert entry.hf_repo == "unsloth/MiniMax-M2-GGUF"
@@ -1436,14 +1503,19 @@ class TestResolvePullTarget:
 
     def test_flat_gguf_ref_builds_adhoc_with_exact_filename(self) -> None:
         ref = "bartowski/gemma-2-2b-it-GGUF/gemma-2-2b-it-Q5_K_M.gguf"
-        entry = catalog.resolve_pull_target(ref)
+        entry = catalog.resolve_pull_target(ref, hf_client=get_services().hf_client)
         assert entry is not None
         assert entry.hf_repo == "bartowski/gemma-2-2b-it-GGUF"
         assert entry.gguf_filename == "gemma-2-2b-it-Q5_K_M.gguf"
 
     def test_traversal_gguf_ref_returns_none(self) -> None:
         """A ``.gguf`` ref whose subdir path tries to escape the repo is rejected."""
-        assert catalog.resolve_pull_target("owner/repo/../escape/m.gguf") is None
+        assert (
+            catalog.resolve_pull_target(
+                "owner/repo/../escape/m.gguf", hf_client=get_services().hf_client
+            )
+            is None
+        )
 
     def test_explicit_quant_overrides_featured_default(self) -> None:
         """F5: naming a specific .gguf on a featured repo pins that exact quant.
@@ -1451,10 +1523,12 @@ class TestResolvePullTarget:
         The featured entry for the repo pins a default quant; an explicit
         filename must win (HF-first) instead of being overridden.
         """
-        featured = catalog.resolve_pull_target("Qwen/Qwen3-8B-GGUF")
+        featured = catalog.resolve_pull_target(
+            "Qwen/Qwen3-8B-GGUF", hf_client=get_services().hf_client
+        )
         assert featured is not None
         explicit_ref = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
-        entry = catalog.resolve_pull_target(explicit_ref)
+        entry = catalog.resolve_pull_target(explicit_ref, hf_client=get_services().hf_client)
         assert entry is not None
         assert entry.gguf_filename == "Qwen3-8B-Q4_K_M.gguf"
         assert entry.gguf_filename != featured.gguf_filename
@@ -2408,7 +2482,9 @@ class TestHfRowsMergeTags:
         """nomic-embed-text-v1.5 carries sentence-similarity, invisible to one tag."""
         nomic = self._row("nomic-ai/nomic-embed-text-v1.5-GGUF", 155590)
         stub_hf_listing(monkeypatch, {"sentence-similarity": [nomic]})
-        result = get_catalog(task=ModelTask.EMBEDDING, search="nomic-embed-text")
+        result = get_catalog(
+            task=ModelTask.EMBEDDING, search="nomic-embed-text", hf_client=get_services().hf_client
+        )
         assert "nomic-ai/nomic-embed-text-v1.5-GGUF" in [m.hf_repo for m in result.models]
 
     def test_rows_order_by_downloads_across_tags(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2419,7 +2495,11 @@ class TestHfRowsMergeTags:
                 "sentence-similarity": [self._row("b/high-GGUF", 9000)],
             },
         )
-        rows = list(_query._HfScan(ModelTask.EMBEDDING, "", [ModelFormat.GGUF]).rows())
+        rows = list(
+            _query._HfScan(
+                ModelTask.EMBEDDING, "", [ModelFormat.GGUF], hf_client=get_services().hf_client
+            ).rows()
+        )
         assert [m.hf_repo for m in rows] == ["b/high-GGUF", "a/low-GGUF"]
 
     def test_rows_dedupe_a_repo_listed_under_both_tags(
@@ -2427,7 +2507,11 @@ class TestHfRowsMergeTags:
     ) -> None:
         dupe = self._row("a/dupe-GGUF", 500)
         stub_hf_listing(monkeypatch, {"feature-extraction": [dupe], "sentence-similarity": [dupe]})
-        rows = list(_query._HfScan(ModelTask.EMBEDDING, "", [ModelFormat.GGUF]).rows())
+        rows = list(
+            _query._HfScan(
+                ModelTask.EMBEDDING, "", [ModelFormat.GGUF], hf_client=get_services().hf_client
+            ).rows()
+        )
         assert [m.hf_repo for m in rows] == ["a/dupe-GGUF"]
 
     def test_rows_follow_cursors_across_pages_of_both_tags(
@@ -2440,7 +2524,11 @@ class TestHfRowsMergeTags:
         calls = stub_hf_listing(
             monkeypatch, {"feature-extraction": tag_a, "sentence-similarity": tag_b}
         )
-        rows = list(_query._HfScan(ModelTask.EMBEDDING, "", [ModelFormat.GGUF]).rows())
+        rows = list(
+            _query._HfScan(
+                ModelTask.EMBEDDING, "", [ModelFormat.GGUF], hf_client=get_services().hf_client
+            ).rows()
+        )
         by_downloads = sorted(tag_a + tag_b, key=lambda m: m.downloads, reverse=True)
         assert [m.hf_repo for m in rows] == [m.hf_repo for m in by_downloads]
         assert sorted(str(c["cursor"]) for c in calls) == [str(size), str(size), "None", "None"]
@@ -2451,7 +2539,9 @@ class TestHfRowsMergeTags:
         pages = _query._HF_SCAN_MAX_PAGES
         endless = [make_test_catalog_model(name=f"Hf{i}") for i in range(size * (pages + 1))]
         calls = stub_hf_listing(monkeypatch, {"text-generation": endless})
-        scan = _query._HfScan(ModelTask.CHAT, "", [ModelFormat.GGUF])
+        scan = _query._HfScan(
+            ModelTask.CHAT, "", [ModelFormat.GGUF], hf_client=get_services().hf_client
+        )
         rows = list(scan.rows())
         assert len(rows) == size * pages
         assert len(calls) == pages
@@ -2471,7 +2561,9 @@ class TestHfRowsMergeTags:
         bound = _query._HF_SCAN_PAGE_SIZE * _query._HF_SCAN_MAX_PAGES
         rows = [make_test_catalog_model(name=f"Hf{i}") for i in range(bound + past_bound)]
         stub_hf_listing(monkeypatch, {"text-generation": rows})
-        scan = _query._HfScan(ModelTask.CHAT, "", [ModelFormat.GGUF])
+        scan = _query._HfScan(
+            ModelTask.CHAT, "", [ModelFormat.GGUF], hf_client=get_services().hf_client
+        )
         assert len(list(scan.rows())) == min(len(rows), bound)
         assert scan.truncated is truncated
 
@@ -2491,7 +2583,12 @@ class TestCatalogFiltersBeforePaging:
     def test_sparse_filter_returns_full_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
         stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
         page = get_catalog(
-            task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=5, offset=0
+            task=ModelTask.CHAT,
+            size=CatalogSize.LARGE,
+            featured=False,
+            limit=5,
+            offset=0,
+            hf_client=get_services().hf_client,
         )
         assert [m.hf_repo for m in page.models] == [
             f"test/Hf{i:03d}" for i in (49, 99, 149, 199, 249)
@@ -2501,7 +2598,12 @@ class TestCatalogFiltersBeforePaging:
     def test_offset_counts_matching_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
         stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
         page = get_catalog(
-            task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=5, offset=5
+            task=ModelTask.CHAT,
+            size=CatalogSize.LARGE,
+            featured=False,
+            limit=5,
+            offset=5,
+            hf_client=get_services().hf_client,
         )
         assert [m.hf_repo for m in page.models] == [
             f"test/Hf{i:03d}" for i in (299, 349, 399, 449, 499)
@@ -2513,7 +2615,12 @@ class TestCatalogFiltersBeforePaging:
     ) -> None:
         stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
         page = get_catalog(
-            task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=5, offset=10
+            task=ModelTask.CHAT,
+            size=CatalogSize.LARGE,
+            featured=False,
+            limit=5,
+            offset=10,
+            hf_client=get_services().hf_client,
         )
         assert [m.hf_repo for m in page.models] == ["test/Hf549", "test/Hf599"]
         assert page.has_more is False
@@ -2523,14 +2630,25 @@ class TestCatalogFiltersBeforePaging:
     ) -> None:
         stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
         page = get_catalog(
-            task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=6, offset=6
+            task=ModelTask.CHAT,
+            size=CatalogSize.LARGE,
+            featured=False,
+            limit=6,
+            offset=6,
+            hf_client=get_services().hf_client,
         )
         assert len(page.models) == 6
         assert page.has_more is False
 
     def test_has_more_false_on_an_empty_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
         stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
-        page = get_catalog(task=ModelTask.CHAT, size=CatalogSize.HUGE, featured=False, limit=5)
+        page = get_catalog(
+            task=ModelTask.CHAT,
+            size=CatalogSize.HUGE,
+            featured=False,
+            limit=5,
+            hf_client=get_services().hf_client,
+        )
         assert page.models == []
         assert page.has_more is False
 
@@ -2543,7 +2661,12 @@ class TestCatalogFiltersBeforePaging:
         requests = 0
         for offset in range(0, 600, 5):
             page = get_catalog(
-                task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=5, offset=offset
+                task=ModelTask.CHAT,
+                size=CatalogSize.LARGE,
+                featured=False,
+                limit=5,
+                offset=offset,
+                hf_client=get_services().hf_client,
             )
             requests += 1
             shown.extend(m.hf_repo for m in page.models)
@@ -2565,7 +2688,13 @@ class TestCatalogFiltersBeforePaging:
             for i in range(bound + 10)
         ]
         stub_hf_listing(monkeypatch, {"text-generation": rows})
-        page = get_catalog(task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=5)
+        page = get_catalog(
+            task=ModelTask.CHAT,
+            size=CatalogSize.LARGE,
+            featured=False,
+            limit=5,
+            hf_client=get_services().hf_client,
+        )
         assert [m.hf_repo for m in page.models] == [f"test/Hf{bound - 1:05d}"]
         assert page.has_more is False
         assert page.truncated is True
@@ -2573,7 +2702,12 @@ class TestCatalogFiltersBeforePaging:
     def test_listing_that_ends_is_not_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
         stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
         page = get_catalog(
-            task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=5, offset=10
+            task=ModelTask.CHAT,
+            size=CatalogSize.LARGE,
+            featured=False,
+            limit=5,
+            offset=10,
+            hf_client=get_services().hf_client,
         )
         assert page.has_more is False
         assert page.truncated is False
@@ -2581,8 +2715,12 @@ class TestCatalogFiltersBeforePaging:
     def test_unfiltered_listing_is_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """With no filter the pages are the picks then the HuggingFace rows in order."""
         stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
-        first = get_catalog(task=ModelTask.CHAT, limit=10, offset=0)
-        second = get_catalog(task=ModelTask.CHAT, limit=10, offset=10)
+        first = get_catalog(
+            task=ModelTask.CHAT, limit=10, offset=0, hf_client=get_services().hf_client
+        )
+        second = get_catalog(
+            task=ModelTask.CHAT, limit=10, offset=10, hf_client=get_services().hf_client
+        )
         hf_first = 10 - len(PICKS_CHAT)
         assert [m.hf_repo for m in first.models] == [m.hf_repo for m in PICKS_CHAT] + [
             f"test/Hf{i:03d}" for i in range(hf_first)
@@ -2815,39 +2953,39 @@ class TestExtractQuant:
 
 class TestGetFamilies:
     def test_returns_list(self) -> None:
-        families = get_families()
+        families = get_families(hf_client=get_services().hf_client)
         assert isinstance(families, list)
         assert all(isinstance(f, ModelFamily) for f in families)
 
     def test_has_chat_families(self) -> None:
-        families = get_families()
+        families = get_families(hf_client=get_services().hf_client)
         chat_families = [f for f in families if f.task == "chat"]
         assert len(chat_families) > 0
 
     def test_has_embedding_families(self) -> None:
-        families = get_families()
+        families = get_families(hf_client=get_services().hf_client)
         embed_families = [f for f in families if f.task == "embedding"]
         assert len(embed_families) > 0
 
     def test_has_vision_families(self) -> None:
-        families = get_families()
+        families = get_families(hf_client=get_services().hf_client)
         vision_families = [f for f in families if f.task == "vision"]
         assert len(vision_families) > 0
 
     def test_same_named_picks_group_into_one_family(self) -> None:
         """Picks sharing a family name collapse into a single family."""
-        families = get_families()
+        families = get_families(hf_client=get_services().hf_client)
         mid = [f for f in families if f.name == "Mid"]
         assert len(mid) == 1
         assert len(mid[0].variants) == 2  # Mid-8B and Mid-13B
 
     def test_total_variants_matches_featured(self) -> None:
-        families = get_families()
+        families = get_families(hf_client=get_services().hf_client)
         total_variants = sum(len(f.variants) for f in families)
         assert total_variants == len(SAMPLE_PICKS)
 
     def test_variant_has_correct_fields(self) -> None:
-        families = get_families()
+        families = get_families(hf_client=get_services().hf_client)
         qwen3 = next(f for f in families if f.name == "Mid")
         v = qwen3.variants[0]
         assert v.param_count == "8B"
@@ -2856,7 +2994,7 @@ class TestGetFamilies:
         assert v.hf_repo == "mid/Mid-8B-GGUF"
 
     def test_order_chat_then_embedding_then_vision(self) -> None:
-        families = get_families()
+        families = get_families(hf_client=get_services().hf_client)
         tasks = [f.task for f in families]
         # All chat tasks should come before embedding, embedding before vision
         chat_last = max(i for i, t in enumerate(tasks) if t == "chat")
@@ -3333,7 +3471,7 @@ class TestFetchHfModelsSearchForwarding:
             return _EMPTY_HF_PAGE
 
         monkeypatch.setattr(get_services().hf_client, "fetch_models", fake_fetch)
-        get_catalog(search="llama3", featured=False)
+        get_catalog(search="llama3", featured=False, hf_client=get_services().hf_client)
         assert captured_kwargs.get("search") == "llama3"
 
 
@@ -4367,7 +4505,9 @@ class TestUnsendableHfToken:
             return "m.gguf"
 
         monkeypatch.setattr("lilbee.catalog.download.resolve_filename", _resolve)
-        ModelManager(tmp_path, cfg)._resolved_entry(PICKS_VISION[0], LLAMA, verify=True)
+        ModelManager(tmp_path, cfg, hf_client=HfClient(cfg))._resolved_entry(
+            PICKS_VISION[0], LLAMA, verify=True
+        )
         assert check.call_args.args[2] is False
 
     def test_no_authorization_header_reaches_the_wire(

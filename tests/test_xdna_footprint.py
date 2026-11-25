@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from lilbee.app.services import get_services
 from lilbee.catalog import query, xdna
 from lilbee.catalog.download import download_model
 from lilbee.catalog.query import resolve_pull_target
@@ -103,8 +104,8 @@ class TestThePull:
     ) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         rows = parse_models(_listed(FOOTPRINT_GB))
-        monkeypatch.setattr(query, "_engine_rows", lambda offers: rows)
-        entry = resolve_pull_target(f"{TAG}#xdna")
+        monkeypatch.setattr(query, "_engine_rows", lambda offers, **_: rows)
+        entry = resolve_pull_target(f"{TAG}#xdna", hf_client=get_services().hf_client)
         assert entry is not None
         assert xdna.read_footprint(download_model(entry, None)) == FOOTPRINT_BYTES
 
@@ -113,8 +114,8 @@ class TestThePull:
     ) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         rows = parse_models(_listed(FOOTPRINT_GB))
-        monkeypatch.setattr(query, "_engine_rows", lambda offers: rows)
-        entry = resolve_pull_target("zed:1b#xdna")
+        monkeypatch.setattr(query, "_engine_rows", lambda offers, **_: rows)
+        entry = resolve_pull_target("zed:1b#xdna", hf_client=get_services().hf_client)
         assert entry is not None
         assert (entry.hf_repo, entry.format) == ("zed:1b", ModelFormat.XDNA)
         assert xdna.read_footprint(download_model(entry, None)) is None

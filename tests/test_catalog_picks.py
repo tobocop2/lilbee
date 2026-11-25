@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from lilbee.app.services import get_services
 from lilbee.catalog.models import CatalogModel, HfPage
 from lilbee.catalog.types import CatalogSize, ModelCompat, ModelTask
 
@@ -84,7 +85,7 @@ class TestChatTierSpread:
         from lilbee.catalog.query import size_bucket
 
         _stub_fetch(monkeypatch, {"chat": _CHAT_CANDIDATES})
-        chat = picks_for(ModelTask.CHAT)
+        chat = picks_for(ModelTask.CHAT, hf_client=get_services().hf_client)
 
         assert len(chat) == 8
         by_tier = [size_bucket(m.params) for m in chat]
@@ -96,7 +97,7 @@ class TestChatTierSpread:
         from lilbee.catalog.picks import picks_for
 
         _stub_fetch(monkeypatch, {"chat": _CHAT_CANDIDATES})
-        repos = [m.hf_repo for m in picks_for(ModelTask.CHAT)]
+        repos = [m.hf_repo for m in picks_for(ModelTask.CHAT, hf_client=get_services().hf_client)]
 
         assert repos[:2] == ["a/Small-1B-GGUF", "a/Small-2B-GGUF"]
         assert "a/Small-3B-GGUF" not in repos  # third in its tier, so it loses
@@ -109,7 +110,7 @@ class TestChatTierSpread:
         thin = [m for m in _CHAT_CANDIDATES if size_bucket(m.params) != CatalogSize.HUGE]
         thin.append(_model("a/Only-70B-GGUF", "chat", 70_000_000_000))
         _stub_fetch(monkeypatch, {"chat": thin})
-        chat = picks_for(ModelTask.CHAT)
+        chat = picks_for(ModelTask.CHAT, hf_client=get_services().hf_client)
 
         huge = [m for m in chat if size_bucket(m.params) == CatalogSize.HUGE]
         assert len(huge) == 1
@@ -120,7 +121,7 @@ class TestChatTierSpread:
         from lilbee.catalog.picks import picks_for
 
         _stub_fetch(monkeypatch, {"chat": [_model("a/No-Meta-GGUF", "chat", 0)]})
-        assert picks_for(ModelTask.CHAT) == ()
+        assert picks_for(ModelTask.CHAT, hf_client=get_services().hf_client) == ()
 
 
 class TestRoleVerification:
@@ -138,7 +139,7 @@ class TestRoleVerification:
                 ]
             },
         )
-        rerank = picks_for(ModelTask.RERANK)
+        rerank = picks_for(ModelTask.RERANK, hf_client=get_services().hf_client)
 
         assert [m.hf_repo for m in rerank] == ["pervll/bge-reranker-v2-GGUF"]
 
@@ -156,7 +157,9 @@ class TestRoleVerification:
                 ]
             },
         )
-        repos = [m.hf_repo for m in picks_for(ModelTask.EMBEDDING)]
+        repos = [
+            m.hf_repo for m in picks_for(ModelTask.EMBEDDING, hf_client=get_services().hf_client)
+        ]
 
         assert "Anbeeld/Qwen3-35B-A3B-GGUF" not in repos
         assert len(repos) == 3
@@ -175,7 +178,9 @@ class TestRoleVerification:
         )
         _stub_fetch(monkeypatch, {"rerank": [broken, runnable]})
 
-        assert [m.hf_repo for m in picks_for(ModelTask.RERANK)] == ["ok/bge-reranker-GGUF"]
+        assert [
+            m.hf_repo for m in picks_for(ModelTask.RERANK, hf_client=get_services().hf_client)
+        ] == ["ok/bge-reranker-GGUF"]
 
     def test_a_safety_stripped_model_is_never_picked(self, monkeypatch) -> None:
         """A pick is a recommendation: a stripped model must not be offered."""
@@ -190,7 +195,9 @@ class TestRoleVerification:
         )
         _stub_fetch(monkeypatch, {"chat": [stripped, clean]})
 
-        assert [m.hf_repo for m in picks_for(ModelTask.CHAT)] == ["ok/Qwen3-8B-GGUF"]
+        assert [
+            m.hf_repo for m in picks_for(ModelTask.CHAT, hf_client=get_services().hf_client)
+        ] == ["ok/Qwen3-8B-GGUF"]
 
     def test_a_safety_stripped_model_is_picked_when_the_opt_in_is_on(self, monkeypatch) -> None:
         """The opt-in restores stripped models to the picks they were cut from."""
@@ -207,7 +214,9 @@ class TestRoleVerification:
         )
         _stub_fetch(monkeypatch, {"chat": [stripped, clean]})
 
-        assert [m.hf_repo for m in picks_for(ModelTask.CHAT)] == [
+        assert [
+            m.hf_repo for m in picks_for(ModelTask.CHAT, hf_client=get_services().hf_client)
+        ] == [
             "x/Qwen3-8B-Uncensored-GGUF",
             "ok/Qwen3-8B-GGUF",
         ]
@@ -238,7 +247,9 @@ class TestRoleVerification:
 
         monkeypatch.setattr(picks_mod, "repo_has_mmproj", fake_probe)
 
-        assert [m.hf_repo for m in picks_for(ModelTask.VISION)] == ["a/Qwen3-VL-GGUF"]
+        assert [
+            m.hf_repo for m in picks_for(ModelTask.VISION, hf_client=get_services().hf_client)
+        ] == ["a/Qwen3-VL-GGUF"]
         assert probed == ["a/Plain-Chat-GGUF", "a/Qwen3-VL-GGUF"]
 
     def test_vision_probe_stops_once_the_quota_is_met(self, monkeypatch) -> None:
@@ -258,7 +269,7 @@ class TestRoleVerification:
         probed: list[str] = []
         monkeypatch.setattr(picks_mod, "repo_has_mmproj", lambda r: (probed.append(r), True)[1])
 
-        assert len(picks_for(ModelTask.VISION)) == quota
+        assert len(picks_for(ModelTask.VISION, hf_client=get_services().hf_client)) == quota
         assert len(probed) == quota  # stopped at the quota, did not scan the rest
 
 
@@ -268,7 +279,7 @@ class TestPickFlagAndCaching:
         from lilbee.catalog.picks import get_picks
 
         _stub_fetch(monkeypatch, {"chat": _CHAT_CANDIDATES})
-        assert all(m.featured for m in get_picks())
+        assert all(m.featured for m in get_picks(hf_client=get_services().hf_client))
 
     def test_resolved_once_per_process(self, monkeypatch) -> None:
         """Rows must not reshuffle while the user types in the catalog search."""
@@ -277,9 +288,9 @@ class TestPickFlagAndCaching:
 
         monkeypatch.setattr(picks_mod, "repo_has_mmproj", lambda r: True)
         calls = _stub_fetch(monkeypatch, _ALL_ROLES)
-        first = get_picks()
+        first = get_picks(hf_client=get_services().hf_client)
         after_first = len(calls)
-        second = get_picks()
+        second = get_picks(hf_client=get_services().hf_client)
 
         assert first == second
         assert len(calls) == after_first  # no refetch
@@ -289,10 +300,10 @@ class TestPickFlagAndCaching:
         from lilbee.catalog.picks import get_picks
 
         _stub_fetch(monkeypatch, {})
-        assert get_picks() == ()
+        assert get_picks(hf_client=get_services().hf_client) == ()
 
         _stub_fetch(monkeypatch, {"chat": _CHAT_CANDIDATES})
-        assert get_picks() != ()
+        assert get_picks(hf_client=get_services().hf_client) != ()
 
     def test_a_role_missing_from_the_result_is_retried(self, monkeypatch) -> None:
         """One role's failed fetch must not leave it empty for the process."""
@@ -302,11 +313,13 @@ class TestPickFlagAndCaching:
         monkeypatch.setattr(picks_mod, "repo_has_mmproj", lambda r: True)
         partial = dict(_ALL_ROLES, embedding=[])
         _stub_fetch(monkeypatch, partial)
-        assert get_picks()  # served despite the gap
-        assert picks_for(ModelTask.EMBEDDING) == ()
+        assert get_picks(hf_client=get_services().hf_client)  # served despite the gap
+        assert picks_for(ModelTask.EMBEDDING, hf_client=get_services().hf_client) == ()
 
         _stub_fetch(monkeypatch, _ALL_ROLES)
-        assert picks_for(ModelTask.EMBEDDING)  # refilled once HF recovered
+        assert picks_for(
+            ModelTask.EMBEDDING, hf_client=get_services().hf_client
+        )  # refilled once HF recovered
 
     def test_a_complete_result_is_not_re_resolved(self, monkeypatch) -> None:
         """A full set is final; only a gap earns a retry."""
@@ -315,10 +328,10 @@ class TestPickFlagAndCaching:
 
         monkeypatch.setattr(picks_mod, "repo_has_mmproj", lambda r: True)
         calls = _stub_fetch(monkeypatch, _ALL_ROLES)
-        get_picks()
+        get_picks(hf_client=get_services().hf_client)
         settled = len(calls)
-        get_picks()
-        get_picks()
+        get_picks(hf_client=get_services().hf_client)
+        get_picks(hf_client=get_services().hf_client)
         assert len(calls) == settled
 
     def test_a_fetch_failure_yields_no_picks(self, monkeypatch) -> None:
@@ -329,16 +342,16 @@ class TestPickFlagAndCaching:
             raise RuntimeError("HuggingFace unreachable")
 
         monkeypatch.setattr(get_services().hf_client, "fetch_models", boom)
-        assert get_picks() == ()
+        assert get_picks(hf_client=get_services().hf_client) == ()
 
     def test_reset_drops_the_memo(self, monkeypatch) -> None:
         from lilbee.catalog.picks import get_picks, reset_picks
 
         calls = _stub_fetch(monkeypatch, {"chat": _CHAT_CANDIDATES})
-        get_picks()
+        get_picks(hf_client=get_services().hf_client)
         before = len(calls)
         reset_picks()
-        get_picks()
+        get_picks(hf_client=get_services().hf_client)
 
         assert len(calls) > before
 
@@ -368,7 +381,9 @@ class TestMultiTagFanout:
             monkeypatch,
             {"feature-extraction": [gte], "sentence-similarity": [nomic]},
         )
-        repos = [m.hf_repo for m in picks_for(ModelTask.EMBEDDING)]
+        repos = [
+            m.hf_repo for m in picks_for(ModelTask.EMBEDDING, hf_client=get_services().hf_client)
+        ]
 
         assert repos == ["e/gte-base-GGUF", "nomic-ai/nomic-embed-text-v1.5-GGUF"]
         assert {"feature-extraction", "sentence-similarity"} <= {c["pipeline_tag"] for c in calls}
@@ -381,7 +396,9 @@ class TestMultiTagFanout:
             monkeypatch,
             {"feature-extraction": [gte], "sentence-similarity": [gte]},
         )
-        repos = [m.hf_repo for m in picks_for(ModelTask.EMBEDDING)]
+        repos = [
+            m.hf_repo for m in picks_for(ModelTask.EMBEDDING, hf_client=get_services().hf_client)
+        ]
 
         assert repos == ["e/gte-base-GGUF"]
 
@@ -403,7 +420,9 @@ class TestMultiTagFanout:
             monkeypatch,
             {"feature-extraction": low, "sentence-similarity": high},
         )
-        got = _fetch_trending(ModelTask.EMBEDDING, 100, needed=2)
+        got = _fetch_trending(
+            ModelTask.EMBEDDING, 100, needed=2, hf_client=get_services().hf_client
+        )
 
         assert [m.hf_repo for m in got] == ["e/high-embed-a-GGUF", "e/high-embed-b-GGUF"]
 
@@ -413,7 +432,7 @@ class TestTrendingRequest:
         from lilbee.catalog.picks import TRENDING_SORT, get_picks
 
         calls = _stub_fetch(monkeypatch, {"chat": _CHAT_CANDIDATES})
-        get_picks()
+        get_picks(hf_client=get_services().hf_client)
 
         assert calls
         assert all(c["sort"] == TRENDING_SORT for c in calls)
@@ -429,10 +448,10 @@ class TestBackoffAndConcurrency:
 
         monkeypatch.setattr(picks_mod, "_RETRY_BACKOFF_S", 3600.0)
         calls = _stub_fetch(monkeypatch, {})
-        assert get_picks() == ()
+        assert get_picks(hf_client=get_services().hf_client) == ()
         after_first = len(calls)
 
-        assert get_picks() == ()
+        assert get_picks(hf_client=get_services().hf_client) == ()
         assert len(calls) == after_first  # inside the backoff, no refetch
 
     def test_a_set_landed_by_another_thread_wins(self, monkeypatch) -> None:
@@ -446,10 +465,10 @@ class TestBackoffAndConcurrency:
 
         real_resolve = picks_mod._resolve_picks
 
-        def resolve_then_race() -> tuple:
-            result = real_resolve()
+        def resolve_then_race(**kwargs: object) -> tuple:
+            result = real_resolve(**kwargs)
             picks.seed(landed)  # another thread completes mid-fetch
             return result
 
         monkeypatch.setattr(picks_mod, "_resolve_picks", resolve_then_race)
-        assert picks.all() == landed
+        assert picks.all(hf_client=get_services().hf_client) == landed
