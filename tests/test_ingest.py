@@ -2266,6 +2266,45 @@ class TestCancellation:
             with pytest.raises(asyncio.CancelledError):
                 await ingest_stream(one_plan_batch([entry]), added, {}, {}, {}, quiet=True)
 
+    @pytest.mark.parametrize("shutdown", [False, True])
+    async def test_file_error_after_cancel_is_logged_unless_executor_shutdown(
+        self, isolated_env, caplog, shutdown
+    ):
+        """A real file error after the cancel is set is logged; a pool-shutdown race is not."""
+        from lilbee.data.ingest import ingest_stream
+        from lilbee.data.types import FileToProcess
+        from tests.conftest import one_plan_batch
+
+        cancel = threading.Event()
+        error = (
+            RuntimeError("cannot schedule new futures after shutdown")
+            if shutdown
+            else ValueError("corrupt page tree")
+        )
+
+        async def _fail_after_cancel(*args, **kwargs):
+            cancel.set()
+            raise error
+
+        entry = FileToProcess("bad.pdf", isolated_env / "bad.pdf", "pdf", "abc123", False)
+        with (
+            mock.patch(
+                "lilbee.data.ingest.pipeline.produce_records", side_effect=_fail_after_cancel
+            ),
+            caplog.at_level("WARNING", logger="lilbee.data.ingest.pipeline"),
+            pytest.raises(asyncio.CancelledError) as raised,
+        ):
+            await ingest_stream(
+                one_plan_batch([entry]), {"bad.pdf": None}, {}, {}, {}, quiet=True, cancel=cancel
+            )
+        assert raised.value.__cause__ is error
+        logged = [r.getMessage() for r in caplog.records if "bad.pdf" in r.getMessage()]
+        if shutdown:
+            assert logged == []
+        else:
+            assert len(logged) == 1
+            assert "corrupt page tree" in logged[0]
+
     @mock.patch(
         "lilbee.data.extract.xberg.aextract_document",
         new_callable=mock.AsyncMock,
