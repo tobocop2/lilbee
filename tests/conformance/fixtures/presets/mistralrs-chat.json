@@ -1,6 +1,5 @@
 {
  "server": "mistralrs-chat",
- "sampling_knobs": "not_recorded",
  "version": "mistralrs 0.9.5 v0.9.5 cpu",
  "roles": [
   "chat"
@@ -10,6 +9,7 @@
  },
  "rerank_wire": "v1",
  "embed_dim": 0,
+ "strict": false,
  "results": {
   "template": {
    "ok": true,
@@ -35,6 +35,7 @@
    "method": "POST",
    "path": "/v1/chat/completions",
    "request": {
+    "max_tokens": 1024,
     "messages": [
      {
       "content": "You answer in one short sentence.",
@@ -54,16 +55,19 @@
      }
     ],
     "model": "Qwen/Qwen3-0.6B",
-    "stream": false
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"id\":\"1\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"\\n\\nRome.\",\"role\":\"assistant\",\"tool_calls\":null,\"reasoning_content\":\"\\nOkay, the user first asked about the capital of France, and I provided the answer. Now they're asking about Italy. I need to make sure I'm answering correctly. Let me think. Italy's capital is Rome. I should check if there's any recent change, but I don't think there's been any significant shift. So the answer should be Rome. Just a simple sentence.\\n\"},\"logprobs\":null}],\"created\":1793429395,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":87,\"prompt_tokens\":43,\"total_tokens\":130,\"avg_tok_per_sec\":9.386281,\"avg_prompt_tok_per_sec\":99.76798,\"avg_compl_tok_per_sec\":6.4833446,\"total_time_sec\":13.85,\"total_prompt_time_sec\":0.431,\"total_completion_time_sec\":13.419}}"
+   "body": "{\"id\":\"7\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"\\n\\nRome.\",\"role\":\"assistant\",\"tool_calls\":null,\"reasoning_content\":\"\\nOkay, the user first asked about the capital of France, and I correctly answered Paris. Now they're asking about Italy. I need to make sure I provide the correct answer. Italy's capital is Rome, right? Let me confirm that. Yes, Rome is the capital. I should state it clearly and concisely in one sentence. No need for extra information. Just the capital name. Alright, that should do it.\\n\"},\"logprobs\":null}],\"created\":1795576076,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":95,\"prompt_tokens\":43,\"total_tokens\":138,\"avg_tok_per_sec\":2.2315292,\"avg_prompt_tok_per_sec\":18.94273,\"avg_compl_tok_per_sec\":1.5947356,\"total_time_sec\":61.841,\"total_prompt_time_sec\":2.27,\"total_completion_time_sec\":59.571}}"
   },
   {
    "method": "POST",
    "path": "/v1/chat/completions",
    "request": {
+    "max_tokens": 1024,
     "messages": [
      {
       "content": "What is the weather in Paris? Use the tool.",
@@ -71,7 +75,9 @@
      }
     ],
     "model": "Qwen/Qwen3-0.6B",
+    "seed": 7,
     "stream": false,
+    "temperature": 0.0,
     "tool_choice": "auto",
     "tools": [
      {
@@ -96,12 +102,13 @@
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"id\":\"2\",\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"content\":null,\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call-4e485d25-6371-4028-a296-c57c4ee6f024\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}],\"reasoning_content\":\"\\nOkay, the user is asking about the weather in Paris. I need to use the get_weather function. The function requires the city parameter. Since they mentioned Paris, I should call the function with \\\"Paris\\\" as the city. Let me make sure there are no typos. Alright, the tool call should be correct.\\n\"},\"logprobs\":null}],\"created\":1793429409,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":90,\"prompt_tokens\":158,\"total_tokens\":248,\"prompt_tokens_details\":{\"cached_tokens\":3},\"avg_tok_per_sec\":16.739792,\"avg_prompt_tok_per_sec\":195.06172,\"avg_compl_tok_per_sec\":6.426276,\"total_time_sec\":14.815,\"total_prompt_time_sec\":0.81,\"total_completion_time_sec\":14.005}}"
+   "body": "{\"id\":\"8\",\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"content\":null,\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call-71061de7-aeb3-4bf7-a732-0610c3d64b63\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}],\"reasoning_content\":\"\\nOkay, the user is asking for the weather in Paris. I need to use the get_weather function. The function requires the city parameter. So I should call get_weather with \\\"Paris\\\" as the argument. Let me make sure the city name is correctly spelled and matches what the function expects. Once I get the response, I can relay the weather information back to the user.\\n\"},\"logprobs\":null}],\"created\":1795576138,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":101,\"prompt_tokens\":158,\"total_tokens\":259,\"avg_tok_per_sec\":4.2941937,\"avg_prompt_tok_per_sec\":32.363785,\"avg_compl_tok_per_sec\":1.8220522,\"total_time_sec\":60.314,\"total_prompt_time_sec\":4.882,\"total_completion_time_sec\":55.432}}"
   },
   {
    "method": "POST",
    "path": "/v1/chat/completions",
    "request": {
+    "max_tokens": 16,
     "messages": [
      {
       "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
@@ -109,7 +116,9 @@
      }
     ],
     "model": "Qwen/Qwen3-0.6B",
-    "stream": false
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
    },
    "status": 400,
    "content_type": "application/json",
