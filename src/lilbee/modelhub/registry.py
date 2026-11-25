@@ -148,7 +148,10 @@ class ModelManifest:
         self.format = ModelFormat(self.format)
         # A pull records the chat label for any model it cannot tell apart; the
         # name is the one signal, so every reader gets the same label from here.
-        self.task = ModelTask(reclassify_by_name(self.ref, self.task))
+        # An unknown task string stays as stored, so the model is still listed.
+        labelled = reclassify_by_name(self.ref, self.task)
+        if labelled != self.task:
+            self.task = ModelTask(labelled)
 
     @property
     def ref(self) -> str:
@@ -560,7 +563,6 @@ class ModelRegistry:
         """
         ref = format_native_gguf_ref(hf_repo, gguf_filename)
         try:
-            task = ModelTask(reclassify_by_name(ref, ModelTask.CHAT))
             total_size, shard_blobs = (
                 _shard_accounting(snapshot_path) if snapshot_path is not None else (None, [])
             )
@@ -569,7 +571,7 @@ class ModelRegistry:
                     hf_repo=hf_repo,
                     gguf_filename=gguf_filename,
                     size_bytes=blob_path.stat().st_size,
-                    task=task,
+                    task=ModelTask.CHAT,
                     downloaded_at=datetime.now(UTC).isoformat(),
                     # Only a file under blobs/ is named by its sha; a symlink-less
                     # snapshot file is not, so no digest is recorded for it.

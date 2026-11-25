@@ -119,14 +119,12 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
         for m in manifests:
             repo_counts[m.hf_repo] = repo_counts.get(m.hf_repo, 0) + 1
 
-        from lilbee.catalog.query import reclassify_by_name
-
         loadable = set(loadable_refs(m.ref for m in manifests))
         for manifest in manifests:
             ref = manifest.ref
             if _is_mmproj(manifest.gguf_filename) or ref in seen:
                 continue
-            task = reclassify_by_name(ref, manifest.task)
+            task = manifest.task
             if task == ModelTask.CHAT and ref not in loadable:
                 continue
             label = _native_label(

@@ -11,7 +11,6 @@ from rich.progress import BarColumn, DownloadColumn, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
-from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import model_format
 from lilbee.catalog.runnable import session_host
 from lilbee.catalog.types import ModelTask
@@ -348,7 +347,7 @@ def _registry_chat_refs() -> list[str]:
     return [
         manifest.ref
         for manifest in ModelRegistry(cfg.models_dir).list_installed()
-        if reclassify_by_name(manifest.ref, manifest.task) == ModelTask.CHAT
+        if manifest.task == ModelTask.CHAT
     ]
 
 

@@ -6,7 +6,6 @@ import sys
 from typing import cast
 
 from lilbee.catalog import CatalogModel, find_pick
-from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import canonical_ref, is_bare_hf_repo
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import Config, cfg
@@ -53,11 +52,11 @@ def _model_task_validation_bypassed() -> bool:
 
 
 def _resolve_installed_task(registry: ModelRegistry, ref: str) -> ModelTask | None:
-    """Return the manifest's ``ModelTask`` for *ref*, name-reclassified, or ``None``."""
+    """Return the manifest's ``ModelTask`` for *ref*, or ``None``."""
     manifest = registry.get_manifest(ref)
     if manifest is None:
         return None
-    return ModelTask(reclassify_by_name(ref, manifest.task))
+    return ModelTask(manifest.task)
 
 
 def _is_registry_ref(ref: str) -> bool:
