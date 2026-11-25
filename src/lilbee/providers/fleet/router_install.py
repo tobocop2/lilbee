@@ -24,6 +24,8 @@ from lilbee.providers.fleet.engine_store import (
     ChecksumError,
     EngineDiskError,
     PackUrlError,
+    _clean_up,
+    _delete,
     copy_with_digest,
     engines_root,
     file_digest,
@@ -256,10 +258,14 @@ def install_router(
             _check_digest(asset, digest, source)
             _unpack(asset, archive, stage)
             archive.unlink()
-            shutil.rmtree(final, ignore_errors=True)
+            if not _delete(final):
+                raise OSError(
+                    f"The old router folder {final} stays. "
+                    "Correct its permissions and run the install again."
+                )
             stage.rename(final)
         finally:
-            shutil.rmtree(stage, ignore_errors=True)
+            _clean_up(stage)
     _refusals.forget(_refusal_key())
     return final / asset.binary
 
