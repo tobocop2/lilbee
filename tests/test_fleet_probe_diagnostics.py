@@ -6,6 +6,7 @@ import logging
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -13,6 +14,7 @@ from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import devices as devices_mod
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines import llama as llama_mod
+from lilbee.providers.fleet.engines.llama import LlamaCppAdapter
 from lilbee.providers.roles import WorkerRole
 
 
@@ -192,10 +194,8 @@ class TestEveryVendorGetsTheWarning:
         assert "reported none" not in caplog.text
 
 
-class _FakeEngine:
-    """An engine whose device answers come from a script; the last answer repeats."""
-
-    name = "llama"
+class _FakeEngine(LlamaCppAdapter):
+    """The llama adapter with device answers from a script; the last answer repeats."""
 
     def __init__(self, answers: list[object]) -> None:
         self.answers = answers
@@ -314,7 +314,10 @@ class TestAnEmptyProbeIsRetriedByOneLadder:
         from lilbee.providers.fleet.devices import DeviceProbe
 
         monkeypatch.setattr("lilbee.providers.fleet.gpu_select.enumerate_gpu_vram", lambda: [])
-        monkeypatch.setattr("lilbee.providers.fleet.gpu_select.integrated_vulkan_indices", set)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.gpu_select.integrated_vulkan_indices",
+            MagicMock(return_value=set()),
+        )
         engine = _FakeEngine([DeviceProbe([], "usage: llama-server", spoke_protocol=False)])
         assert self._build(engine).devices == []
         assert engine.probes == 1
