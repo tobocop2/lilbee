@@ -878,13 +878,7 @@ def _write_exit_note(note: str) -> None:
 
 def _flush_logs() -> None:
     """Flush every log handler and stdio; ``os._exit`` drops what a buffer still holds."""
-    # loggerDict also holds PlaceHolder entries for loggers that have no object yet.
-    named = [e for e in logging.Logger.manager.loggerDict.values() if isinstance(e, logging.Logger)]
-    loggers = [logging.getLogger(), *named]
-    for logger in loggers:
-        for handler in logger.handlers:
-            with suppress(OSError, ValueError):
-                handler.flush()
+    logging.shutdown()
     for stream in (sys.stdout, sys.stderr):
         with suppress(AttributeError, OSError, ValueError):
             stream.flush()

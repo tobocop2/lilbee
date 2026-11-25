@@ -19,7 +19,7 @@ from lilbee.app.engine_choice import (
     resolve_engines,
     stored_choices,
 )
-from lilbee.app.services import Services, peek_services
+from lilbee.app.services import Services, _new_store, peek_services
 from lilbee.catalog import runnable
 from lilbee.catalog.download import retry_reporter
 from lilbee.catalog.download_progress import make_download_callback
@@ -436,10 +436,8 @@ def _document_count(services: Services | None) -> int:
         return services.store.source_summary(0).document_count
     if not cfg.lancedb_dir.exists():
         return 0
-    # heavy: lilbee.data.store opens lancedb (>50ms)
-    from lilbee.data.store import Store
-
-    store = Store(cfg)
+    # The open registry is the one the exit waits on; a bare Store would escape it.
+    store = _new_store(cfg)
     try:
         return store.source_summary(0).document_count
     finally:
