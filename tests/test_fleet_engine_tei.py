@@ -1245,8 +1245,6 @@ def test_a_404_on_a_side_route_is_a_not_found_error_that_names_the_router() -> N
     with pytest.raises(ProviderError) as raised:
         client._raise_for_side_route(httpx.Response(404, text="gone"))
     assert raised.value.kind is ProviderErrorKind.NOT_FOUND
-    assert raised.value.provider == client._profile.label
-    assert raised.value.provider != ""
 
 
 def test_an_unexpected_answer_is_asked_again_after_the_cool_down_and_warns_once(
@@ -1843,7 +1841,6 @@ def test_counting_one_text_keeps_the_kind_and_the_words_of_a_refused_count(
     with pytest.raises(ProviderError) as raised:
         client.count_text_tokens(_words(30))
     assert raised.value.kind is kind
-    assert raised.value.provider == client._profile.label
     assert said in str(raised.value)
 
 

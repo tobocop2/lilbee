@@ -200,7 +200,7 @@ class Embedder:
         except ProviderError as exc:
             if exc.repeats_on_retry:
                 raise EmbeddingOverflowError(
-                    str(exc), provider=exc.provider, kind=exc.kind
+                    str(exc), kind=exc.kind
                 ) from exc
             raise
 

@@ -382,7 +382,7 @@ class TestChatNonStream:
             provider.chat([{"role": "user", "content": "hi"}])
 
     def test_passes_through_provider_error_unchanged(self) -> None:
-        backend = FakeBackend(raise_complete=ProviderError("original", provider="fake"))
+        backend = FakeBackend(raise_complete=ProviderError("original"))
         provider = SdkLLMProvider(backend)
         with pytest.raises(ProviderError, match="original"):
             provider.chat([{"role": "user", "content": "hi"}])
@@ -689,7 +689,7 @@ class TestListModels:
                 self, *, spec: LocalServerSpec, base_url: str, api_key: str
             ) -> list[str]:
                 if base_url == down_url:
-                    raise ProviderError("ollama down", provider="fake")
+                    raise ProviderError("ollama down")
                 return ["lmstudio-model"]
 
         provider = SdkLLMProvider(_PartlyDownBackend())
@@ -733,7 +733,7 @@ class TestListChatModels:
     def test_propagates_provider_error_unchanged(self) -> None:
         class _WrappedError(FakeBackend):
             def list_chat_models(self, provider: str) -> list[str]:
-                raise ProviderError("already-typed", provider="fake")
+                raise ProviderError("already-typed")
 
         provider = SdkLLMProvider(_WrappedError())
         with pytest.raises(ProviderError, match="already-typed"):
@@ -778,7 +778,7 @@ class TestPullModel:
                 base_url: str,
                 on_progress: Any = None,
             ) -> None:
-                raise ProviderError("already-typed", provider="fake")
+                raise ProviderError("already-typed")
 
         provider = SdkLLMProvider(_WrappedError())
         with pytest.raises(ProviderError, match="already-typed"):
@@ -808,7 +808,7 @@ class TestShowModel:
     def test_propagates_provider_error_unchanged(self) -> None:
         class _WrappedError(FakeBackend):
             def show_model(self, model: str, *, base_url: str) -> dict[str, Any] | None:
-                raise ProviderError("already-typed", provider="fake")
+                raise ProviderError("already-typed")
 
         provider = SdkLLMProvider(_WrappedError())
         with pytest.raises(ProviderError, match="already-typed"):

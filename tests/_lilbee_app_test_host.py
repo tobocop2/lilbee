@@ -150,7 +150,7 @@ def ready_services():
     # An engine's binary is a path or an error; a bare mock is neither, and the device count
     # reads the file. No installed engine sizes the host as GPU-less, as on a bare machine.
     services.engines.for_role.return_value.adapter.binary.side_effect = ProviderError(
-        "no engine installed", provider="test"
+        "no engine installed"
     )
     services.provider.role_ready.return_value = True
     services.store = create_autospec(Store, instance=True)

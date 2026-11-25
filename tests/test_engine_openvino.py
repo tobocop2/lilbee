@@ -441,7 +441,6 @@ def test_a_listing_that_exits_non_zero_raises_with_the_exit_status(
         OPENVINO.device_targets(BINARY)
     assert str(raised.value) == _expected("exited with status 3")
     assert raised.value.kind is ProviderErrorKind.SERVER
-    assert raised.value.provider == "llama-server"
 
 
 def test_a_listing_killed_by_a_signal_raises_with_the_signal_name(
