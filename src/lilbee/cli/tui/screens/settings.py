@@ -384,8 +384,12 @@ class SettingsScreen(MountWhenAttached, Screen[None]):
             self._show_profile(result)
 
     def _mounted_profile_tabs(self) -> list[ProfileTab]:
-        """The tabs that can take a snapshot: filling one before it mounts raises."""
-        return [tab for tab in self.query(ProfileTab) if tab.is_mounted]
+        """The tabs that can take a snapshot: filling one before it mounts raises.
+
+        Textual marks a tab mounted even when the exiting app skipped its children, so it must
+        also be attached: a detached tab has nothing to query.
+        """
+        return [tab for tab in self.query(ProfileTab) if tab.is_mounted and tab.is_attached]
 
     def _show_profile_failure(self, reason: str) -> None:
         for tab in self._mounted_profile_tabs():
@@ -423,8 +427,10 @@ class SettingsScreen(MountWhenAttached, Screen[None]):
         self.call_after_refresh(self._focus_profile_select)
 
     def _focus_profile_select(self) -> None:
+        # Focus can land before the tab's own Mount settles, so it needs attached, not mounted.
         for tab in self.query(ProfileTab):
-            tab.focus_select()
+            if tab.is_attached:
+                tab.focus_select()
 
     @on(TabbedContent.TabActivated)
     def _on_tab_activated(self, event: TabbedContent.TabActivated) -> None:
