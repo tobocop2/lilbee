@@ -420,14 +420,22 @@ def test_a_host_with_an_nvidia_driver_resolves_the_cuda_llama_pack_from_the_ship
     )
 
 
+_MISTRAL_RELEASE = (
+    "https://github.com/tobocop2/lilbee-engine-packs/releases/download/engine-packs-20261125-mistralrs/"
+)
+
 SHIPPED_MISTRAL = {
     ("Darwin", "arm64"): (
         "macos-arm64-metal",
-        "08c30b536f6b6795587902fbe050ae2e53b27cc6873da6ceff55faca21179c2a",
+        "f21ef879a4072e4ba3a98910eb87908ae7a219c8d8c0cfbe4a715de3e5f1019a",
     ),
     ("Linux", "x86_64"): (
         "linux-x86_64-cpu",
-        "b55ace7732b20c64a0f91e46325d68370388620b02e5deeee4317d7e2e9fef4d",
+        "35c70ed067923c185a5275d57c8582c9efac087022fc2b7d5486f6385e9b7ee6",
+    ),
+    ("Windows", "AMD64"): (
+        "windows-x86_64-cpu",
+        "f4c22d36171ff99d9e8ec9a11fd46cc0d2edb84fd31bc6194e981304ee377cd7",
     ),
 }
 
@@ -440,8 +448,38 @@ def test_each_host_resolves_its_own_mistral_pack_from_the_shipped_table(
     pin = _pin(monkeypatch, EngineName.MISTRAL, system, machine)
     assert pin["sha256"] == digest
     assert list(pin["platforms"]) == [cell]
-    assert pin["platforms"][cell]["url"].startswith(
-        "https://github.com/tobocop2/lilbee-engine-packs/releases/download/engine-packs-20261118/"
+    assert pin["platforms"][cell]["url"].startswith(_MISTRAL_RELEASE)
+
+
+def test_the_metal_mistral_pack_states_the_macos_15_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    pin = _pin(monkeypatch, EngineName.MISTRAL, "Darwin", "arm64")
+    assert pin["platforms"]["macos-arm64-metal"]["min_os"] == "15.0"
+
+
+SHIPPED_MISTRAL_CUDA = {
+    80: "07976991691ce2188eaa4a43293ae7fbb85dac253e8f79bc3cc3fc2f3ee43eae",
+    86: "74f15bf25cb9112947175b513533a6438d87016a66c5edaa4dc9de19813b3e2f",
+    89: "fbd58aa532ba8f1a6491b4be9c90a247534e25f97d7474f0b0c2fc4d41c3629e",
+    90: "9547e8afe2ddcb8a94eea4ac20cc2ba76222adc324d2aa51491b90110173cb44",
+    100: "a027766de06b18e2ede8234c08f17d1d4236e5034e62a9eb4950aa7f20402f81",
+    120: "83bbfc1c7e20780707b5990fba0386df3a625abf6dd6ca60341efe0cbb42de01",
+}
+
+
+@pytest.mark.parametrize("cc", SHIPPED_MISTRAL_CUDA)
+def test_a_linux_host_with_a_cuda_12_8_driver_resolves_the_mistral_pack_of_its_card(
+    cc: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    card = {"name": "c", "cc": [cc // 10, cc % 10]}
+    facts = {"driver": "570.86", "cuda_driver": 12080, "gpus": [card]}
+    host = host_caps.collect(system="Linux", machine="x86_64", cpu_info={}, nvidia=facts)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+    pin = ADAPTERS[EngineName.MISTRAL].pin_record()
+    cell = f"linux-x86_64-cuda-sm{cc}"
+    assert pin["sha256"] == SHIPPED_MISTRAL_CUDA[cc]
+    assert list(pin["platforms"]) == [cell]
+    assert pin["platforms"][cell]["url"] == (
+        f"{_MISTRAL_RELEASE}lilbee_engine_mistral_rs-0.9.5-2.cuda_sm{cc}-py3-none-manylinux_2_35_x86_64.whl"
     )
 
 
