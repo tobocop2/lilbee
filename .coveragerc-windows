@@ -22,3 +22,4 @@ exclude_lines =
     pragma: posix only
     if TYPE_CHECKING:
     class.*Protocol
+    @(typing\.)?overload

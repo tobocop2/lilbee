@@ -1,4 +1,4 @@
-.PHONY: lint license-check lint-shell test-shell format format-check typecheck test test-ci test-ci-split test-ci-serial test-ci-forked test-integration test-presets imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
+.PHONY: coverage-gate lint license-check lint-shell test-shell format format-check typecheck test test-ci test-ci-split test-ci-serial test-ci-forked test-integration test-presets imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint: lint-shell
 	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py tools/wheel-build/metal_floor.py tools/wheel-build/llama_cuda_notice.py tools/wheel-build/repack_llama_archives.py hatch_build.py
@@ -73,12 +73,19 @@ UNIT_TEST_RECIPES := test test-ci test-ci-split test-ci-serial test-ci-forked
 $(UNIT_TEST_RECIPES): export LILBEE_TEST_HANG_DUMP_S := $(LILBEE_TEST_HANG_DUMP_S)
 $(UNIT_TEST_RECIPES): export LILBEE_TEST_HANG_DUMP_DIR := $(LILBEE_TEST_HANG_DUMP_DIR)
 
-# Branch data is on for the whole run, and scripts/check_branch_coverage.py applies the 100% gate:
-# every line, and every branch outside the packages named in its LINE_ONLY list. pytest-cov
-# cannot gate one package by branch, so its own threshold is off here. The Windows lane and the
-# site build measure lines only: they set COV_FLAGS and BRANCH_CHECK themselves.
-COV_FLAGS ?= --cov-branch --cov-fail-under=0 --cov-report=json:coverage.json
-BRANCH_CHECK ?= uv run python scripts/check_branch_coverage.py coverage.json
+# Branch data is on for the whole run. coverage.py has no per-package branch switch, so pytest-cov's
+# own threshold is off and two reports of the one .coverage file gate at 100%: one counts branches
+# outside LINE_ONLY, the other counts lines only inside it (.coveragerc-lineonly). Each step that
+# clears a package takes it out of LINE_ONLY; when it is empty, set branch = true in pyproject.toml
+# and drop both reports. The Windows lane and the site build measure lines only: they set COV_FLAGS
+# and BRANCH_CHECK themselves.
+LINE_ONLY := src/lilbee/cli/tui/*,src/lilbee/providers/fleet/*
+COV_FLAGS ?= --cov-branch --cov-fail-under=0
+BRANCH_CHECK ?= $(MAKE) --no-print-directory coverage-gate
+
+coverage-gate:
+	uv run coverage report --include='src/lilbee/*' --omit='src/lilbee/_generated/*,$(LINE_ONLY)' --fail-under=100 --skip-covered
+	uv run coverage report --rcfile=.coveragerc-lineonly --include='$(LINE_ONLY)' --fail-under=100 --skip-covered
 
 test:
 	uv run pytest --cov=lilbee --cov-report=term-missing $(COV_FLAGS) -v $(XDIST)
