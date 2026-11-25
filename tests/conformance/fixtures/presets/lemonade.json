@@ -1,5 +1,6 @@
 {
  "server": "lemonade",
+ "sampling_knobs": "not_recorded",
  "version": "lemonade 2026.44.1 llama.cpp cpu backend",
  "roles": [
   "chat",
