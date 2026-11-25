@@ -35,11 +35,7 @@ jobs:
         id: fork
         run: |
           tag=$(git ls-remote --tags https://github.com/tobocop2/llama.cpp 'memory-*' \
-            | awk -F/ '{print $NF}' | grep -E '^memory-[0-9]{8}-[0-9]{6}$' | sort | tail -1)
-          if [ -z "$tag" ]; then
-            echo "the fork has no memory-YYYYMMDD-HHMMSS tag yet" >&2
-            exit 1
-          fi
+            | awk -F/ '{print $NF}' | bash tools/ci/pick_engine_tag.sh engine-bad-tags.list)
           current=$(sed -n 's/^ENGINE_LLAMA_CPP_REF=//p' engine-versions.env)
           echo "tag=$tag"         >> "$GITHUB_OUTPUT"
           echo "current=$current" >> "$GITHUB_OUTPUT"
