@@ -1645,6 +1645,21 @@ class TestConfigUpdateRoute:
         assert (resp.status_code, cfg.crawl_user_agent) == (400, before)
         assert "crawl_user_agent" in resp.text
 
+    @pytest.mark.parametrize("name", ["ollama_base_url", "lm_studio_base_url"])
+    @pytest.mark.parametrize(
+        "address", ["http://ollama:abc", "http://localhost:11434 x", "http://[::1", "http://xn--:1"]
+    )
+    def test_a_local_server_address_httpx_cannot_parse_is_refused(self, client, name, address):
+        before = getattr(cfg, name)
+        resp = client.patch("/api/config", json={name: address})
+        assert (resp.status_code, getattr(cfg, name)) == (400, before)
+        assert name in resp.text
+        assert "http://localhost" in resp.text
+
+    def test_a_local_server_address_with_a_port_is_accepted(self, client):
+        resp = client.patch("/api/config", json={"ollama_base_url": "http://my-host:9000"})
+        assert (resp.status_code, cfg.ollama_base_url) == (200, "http://my-host:9000")
+
     def test_crawl_browser_extra_args_accepts_launch_flags(self, client):
         resp = client.patch("/api/config", json={"crawl_browser_extra_args": ["--lang=fr"]})
         assert resp.status_code == 200
