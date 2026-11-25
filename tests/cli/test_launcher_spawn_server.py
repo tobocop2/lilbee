@@ -279,6 +279,40 @@ def _capture_popen():
         yield captured
 
 
+_CTRL_BREAK = 21
+_NEW_GROUP = 0x200
+
+
+def test_spawn_gives_serve_its_own_process_group(monkeypatch, _capture_popen) -> None:
+    """A group of its own keeps a console Ctrl-C from reaching serve (Windows)."""
+    monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", _NEW_GROUP, raising=False)
+    monkeypatch.setenv("LILBEE_LAUNCHER_SERVE_QUIET", "1")
+    server_mod.spawn_server(8080)
+    assert _capture_popen["popen_kwargs"]["creationflags"] == _NEW_GROUP
+
+
+def test_windows_stop_asks_serve_to_stop_with_ctrl_break(monkeypatch) -> None:
+    """TerminateProcess skips serve's clean stop; CTRL_BREAK reaches its handler."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(signal, "CTRL_BREAK_EVENT", _CTRL_BREAK, raising=False)
+    proc = mock.MagicMock()
+    proc.poll.return_value = None
+    server_mod.stop_spawned_server(proc)
+    proc.send_signal.assert_called_once_with(_CTRL_BREAK)
+    proc.terminate.assert_not_called()
+    proc.kill.assert_not_called()
+
+
+def test_windows_stop_kills_serve_that_ignores_ctrl_break(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(signal, "CTRL_BREAK_EVENT", _CTRL_BREAK, raising=False)
+    proc = mock.MagicMock()
+    proc.poll.return_value = None
+    proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="x", timeout=10), None]
+    server_mod.stop_spawned_server(proc)
+    proc.kill.assert_called_once()
+
+
 def test_quiet_mode_routes_output_to_devnull(monkeypatch, _capture_popen) -> None:
     monkeypatch.setenv("LILBEE_LAUNCHER_SERVE_QUIET", "1")
     server_mod.spawn_server(8080)
