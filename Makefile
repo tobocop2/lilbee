@@ -73,11 +73,20 @@ UNIT_TEST_RECIPES := test test-ci test-ci-split test-ci-serial test-ci-forked
 $(UNIT_TEST_RECIPES): export LILBEE_TEST_HANG_DUMP_S := $(LILBEE_TEST_HANG_DUMP_S)
 $(UNIT_TEST_RECIPES): export LILBEE_TEST_HANG_DUMP_DIR := $(LILBEE_TEST_HANG_DUMP_DIR)
 
+# Branch data is on for the whole run, and scripts/check_branch_coverage.py applies the 100% gate:
+# every line, and every branch outside the packages named in its LINE_ONLY list. pytest-cov
+# cannot gate one package by branch, so its own threshold is off here. The Windows lane and the
+# site build measure lines only: they set COV_FLAGS and BRANCH_CHECK themselves.
+COV_FLAGS ?= --cov-branch --cov-fail-under=0 --cov-report=json:coverage.json
+BRANCH_CHECK ?= uv run python scripts/check_branch_coverage.py coverage.json
+
 test:
-	uv run pytest --cov=lilbee --cov-report=term-missing -v $(XDIST)
+	uv run pytest --cov=lilbee --cov-report=term-missing $(COV_FLAGS) -v $(XDIST)
+	$(BRANCH_CHECK)
 
 test-ci:
 	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html $(COV_FLAGS) -v $(XDIST)
+	$(BRANCH_CHECK)
 
 # One coverage session over the whole suite stalls the TUI pilot past its 30 s
 # screen wait on the 3 vCPU macOS runner; two shorter sessions do not.
@@ -179,7 +188,8 @@ docs-api:  ## Generate OpenAPI schema and Redoc static HTML
 
 docs-site: docs-api  ## Build the full dev portal (coverage + API docs)
 	# Tests gate CI and releases, not the site build; the coverage report deploys regardless of the test outcome.
-	-$(MAKE) test-ci
+	# The site shows one percentage, so this run measures lines only.
+	-$(MAKE) test-ci COV_FLAGS= BRANCH_CHECK=true
 	cp -r htmlcov site/coverage
 	uv run python tools/update_site_coverage.py
 

@@ -233,6 +233,8 @@ exclude_lines = [
     "pragma: windows only",
     "if TYPE_CHECKING:",
     "class.*Protocol",
+    # A stub has no body to run: branch data reports its def as a branch that never exits.
+    "@(typing\\.)?overload",
 ]
 
 [tool.ruff]
