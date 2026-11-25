@@ -21,7 +21,7 @@ from lilbee.cli.tui.engine_commands import (
 )
 from lilbee.cli.tui.engine_install_flow import confirm_and_install
 from lilbee.cli.tui.engine_mark import engine_mark, format_size
-from lilbee.cli.tui.mount_guard import MountWhenAttached
+from lilbee.cli.tui.mount_guard import GuardedSelect, MountWhenAttached
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.core.config import cfg
@@ -106,7 +106,7 @@ class EnginesPane(MountWhenAttached, VerticalScroll):
 
     def compose(self) -> ComposeResult:
         yield Static(msg.ENGINES_PREFERRED_LABEL, id="engines-preferred-label", markup=False)
-        yield Select(
+        yield GuardedSelect(
             [(EngineSetting.AUTO.value, EngineSetting.AUTO.value)],
             allow_blank=False,
             id=PREFERRED_ID,
