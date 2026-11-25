@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # tools/wheel-build/ci_mirror.sh with MIRROR_REFRESH_DAYS: a cache blob is
 # re-published once its age bucket rolls over, and a restore reads the current
-# bucket, then the one before it.
+# bucket, then the one before it. A publish that does not upload exits non-zero,
+# and every caller lets that step fail without failing the build.
 
 setup() {
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
@@ -32,6 +33,10 @@ while [ $# -gt 0 ]; do
 done
 case "${method} ${url}" in
   "POST https://uploads.github.com/"*)
+    if [ -n "${REFUSE_UPLOAD:-}" ]; then
+      echo "curl: (22) The requested URL returned error: 403" >&2
+      exit 22
+    fi
     name="${url##*name=}"
     cp "${data}" "${MIRROR}/${name}"
     echo "upload ${name}" >> "${CALLS}" ;;
@@ -130,6 +135,38 @@ at_day() {  # day-number command...
   MIRROR_REFRESH_DAYS="" run at_day 65 publish k "${SRC}"
   [ "$status" -eq 0 ]
   [ -f "${MIRROR}/k.tar.gz" ]
+}
+
+# A read-only token gets the release and is refused the upload. Every caller
+# runs the publish with continue-on-error, so a non-zero exit shows the step
+# red while the build goes on.
+@test "a refused upload fails the publish and names the reason" {
+  REFUSE_UPLOAD=1 run at_day 65 publish k "${SRC}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Mirror upload of k.b2.tar.gz failed: curl: (22) The requested URL returned error: 403"* ]]
+  [ ! -e "${MIRROR}/k.b2.tar.gz" ]
+}
+
+# The steps that run a publish: the engine action anywhere, and the Nuitka
+# cache action in its publish phase. One continue-on-error value per step.
+publish_steps() {  # yq path to a step list, file
+  yq -r "$1 | select(.uses == \"./.github/actions/publish-engine-asset\" or (.uses == \"./.github/actions/nuitka-object-cache\" and .with.phase == \"publish\")) | .[\"continue-on-error\"] // \"none\"" "$2"
+}
+
+@test "every caller of the publish swallows its failure" {
+  found=0
+  for f in "${REPO_ROOT}"/.github/workflows/*.yml "${REPO_ROOT}"/.github/actions/*/action.yml; do
+    case "${f}" in
+      */workflows/*) values=$(publish_steps '.jobs[].steps[]?' "${f}") ;;
+      *) values=$(publish_steps '.runs.steps[]?' "${f}") ;;
+    esac
+    for v in ${values}; do
+      echo "${f#"${REPO_ROOT}"/}: ${v}"
+      [ "${v}" = "true" ]
+      found=$((found + 1))
+    done
+  done
+  [ "${found}" -eq 4 ]
 }
 
 @test "the Nuitka cache action sets a refresh period for the check, the restore and the publish" {

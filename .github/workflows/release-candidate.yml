@@ -389,6 +389,7 @@ jobs:
     uses: ./.github/workflows/build-multigpu.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}
+      mirror: true
     secrets: inherit
 
   attach-multigpu:
