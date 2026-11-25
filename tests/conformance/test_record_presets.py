@@ -262,19 +262,35 @@ class TestFixtureJson:
 
 class TestReplayMatching:
     @pytest.mark.parametrize(
-        ("sent", "status"),
+        ("recorded", "sent", "status"),
         [
-            ({"messages": ["a"], "temperature": 0, "max_tokens": 1024}, 200),
-            ({"messages": ["a"]}, 200),
-            ({"messages": ["b"], "temperature": 0}, 599),
+            ({"m": "a"}, {"m": "a", "temperature": 0, "max_tokens": 1024}, 200),
+            ({"m": "a"}, {"m": "a"}, 200),
+            ({"m": "a"}, {"m": "b", "temperature": 0}, 599),
+            ({"m": "a", "temperature": 0}, {"m": "a", "temperature": 0}, 200),
+            ({"m": "a", "temperature": 0}, {"m": "a", "temperature": 0.7}, 599),
+            ({"m": "a", "temperature": 0}, {"m": "a"}, 599),
+            ({"m": "a", "max_tokens": 256}, {"m": "a", "max_tokens": 1}, 599),
+            ({"m": "a", "temperature": 0}, {"m": "a", "temperature": 0, "max_tokens": 5}, 200),
         ],
-        ids=["knobs-added", "as-recorded", "other-question"],
+        ids=[
+            "knobs-added",
+            "as-recorded",
+            "other-question",
+            "same-knob-value",
+            "other-knob-value",
+            "knob-missing-from-sent",
+            "other-cap",
+            "one-knob-added",
+        ],
     )
-    def test_sampling_knobs_do_not_pick_the_exchange(self, sent: dict, status: int) -> None:
+    def test_a_knob_the_recording_holds_must_match(
+        self, recorded: dict, sent: dict, status: int
+    ) -> None:
         from tests.conformance.preset_check import Exchange, replaying
 
-        recorded = Exchange("POST", "/x", {"messages": ["a"]}, 200, "application/json", "{}")
-        with replaying([recorded]) as url:
+        exchange = Exchange("POST", "/x", recorded, 200, "application/json", "{}")
+        with replaying([exchange]) as url:
             request = urllib.request.Request(  # noqa: S310
                 url + "/x", data=json.dumps(sent).encode(), method="POST"
             )

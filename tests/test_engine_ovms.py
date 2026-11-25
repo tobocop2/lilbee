@@ -95,8 +95,9 @@ def test_each_role_names_its_task() -> None:
     }
 
 
-def test_the_vision_role_is_a_chat_server() -> None:
-    assert OVMS.role_spec(WorkerRole.VISION, None, None).endpoint_path == "/v3/chat/completions"
+def test_the_vision_role_launches_as_a_text_generation_server() -> None:
+    spec = OVMS.role_spec(WorkerRole.VISION, None, None)
+    assert spec.extra_args == ("--task", "text_generation")
 
 
 def test_the_launch_binds_loopback_and_serves_the_one_model_name() -> None:
@@ -114,9 +115,10 @@ def test_the_target_sets_the_device() -> None:
     assert gpu[gpu.index("--target_device") + 1] == "GPU"
 
 
-def test_a_role_the_engine_does_not_serve_is_refused() -> None:
+def test_a_role_the_engine_does_not_serve_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(OVMS, "served_roles", frozenset({WorkerRole.CHAT}))
     with pytest.raises(ProviderError):
-        OVMS.role_spec("audio", None, None)  # type: ignore[arg-type]
+        OVMS.role_spec(WorkerRole.VISION, None, None)
 
 
 def test_the_gate_offers_linux_x86_64() -> None:
@@ -347,3 +349,30 @@ def test_an_installed_ir_folder_is_placeable(
     monkeypatch.setattr(planning.engine_params, "resolve_model_path", lambda _ref: tmp_path)
     assert planning._role_weights_bytes(WorkerRole.CHAT, "org/ir#openvino") == 1000
     assert planning.role_model_placeable(WorkerRole.CHAT, "org/ir#openvino", 0, engine=OVMS)
+
+
+_INTERNVL2_FILES = (
+    "openvino_language_model",
+    "openvino_vision_embeddings_model",
+    "openvino_text_embeddings_model",
+    "openvino_tokenizer",
+    "openvino_detokenizer",
+)
+
+
+def _vision_folder(root: Path) -> Path:
+    """A folder with the file names of OpenVINO/InternVL2-1B-int4-ov: no ``openvino_model`` pair."""
+    for stem in _INTERNVL2_FILES:
+        (root / f"{stem}.xml").write_bytes(b"x" * 10)
+        (root / f"{stem}.bin").write_bytes(b"y" * 100)
+    return root
+
+
+def test_an_installed_vision_ir_folder_is_placeable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(planning.engine_params, "resolve_model_path", lambda _ref: tmp_path)
+    _vision_folder(tmp_path)
+    ref = "org/vision#openvino"
+    assert planning._role_weights_bytes(WorkerRole.VISION, ref) == 3 * 110
+    assert planning.role_model_placeable(WorkerRole.VISION, ref, 0, engine=OVMS)

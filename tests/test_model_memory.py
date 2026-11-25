@@ -446,6 +446,34 @@ class TestWeightsFromFiles:
         }
         assert mm.weights_from_files(sizes) == 101
 
+    def test_a_vision_model_counts_every_pair_but_the_tokenizers(self) -> None:
+        sizes = {
+            "openvino_language_model.xml": 10,
+            "openvino_language_model.bin": 1000,
+            "openvino_vision_embeddings_model.xml": 10,
+            "openvino_vision_embeddings_model.bin": 300,
+            "openvino_text_embeddings_model.xml": 10,
+            "openvino_text_embeddings_model.bin": 200,
+            "openvino_tokenizer.xml": 10,
+            "openvino_tokenizer.bin": 500,
+            "openvino_detokenizer.xml": 10,
+            "openvino_detokenizer.bin": 500,
+        }
+        assert mm.weights_from_files(sizes) == 1530
+
+    def test_a_vision_part_without_its_bin_is_not_counted(self) -> None:
+        sizes = {"openvino_language_model.xml": 10, "openvino_vision_model.bin": 70}
+        assert mm.weights_from_files(sizes) == RESERVE
+
+    def test_a_vision_model_uses_the_shallowest_folder_that_holds_a_pair(self) -> None:
+        sizes = {
+            "openvino_language_model.xml": 1,
+            "openvino_language_model.bin": 100,
+            "a/b/openvino_vision_model.xml": 1,
+            "a/b/openvino_vision_model.bin": 5000,
+        }
+        assert mm.weights_from_files(sizes) == 101
+
     def test_a_listing_with_no_ir_is_the_reserve(self) -> None:
         assert mm.weights_from_files({"pytorch_model.bin": 9000}) == RESERVE
 
