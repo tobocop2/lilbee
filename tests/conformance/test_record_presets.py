@@ -10,6 +10,7 @@ import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -326,6 +327,70 @@ class TestReplayMatching:
 
         exchange = Exchange("POST", "/x", {"m": "a"}, 200, "application/json", "{}")
         assert self._post_to_replay([exchange], sent)[0] == 599
+
+    @staticmethod
+    def _post_chat(path: Path, sent: dict) -> int:
+        from tests.conformance.preset_check import load_fixture, replaying
+
+        exchanges = load_fixture(path)[2]
+        chat = next(e for e in exchanges if e.path.endswith("/chat/completions") and e.status == 200)
+        with replaying(exchanges) as url:
+            request = urllib.request.Request(  # noqa: S310
+                url + chat.path, data=json.dumps(sent).encode(), method="POST"
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=10) as resp:  # noqa: S310
+                    return resp.status
+            except urllib.error.HTTPError as exc:
+                return exc.code
+
+    _FIXTURE_DIR = Path(__file__).with_name("fixtures")
+    _PINNED_FIXTURES = [
+        "engines/llama.cpp-cpu.json",
+        "engines/llama.cpp-cpu-inline.json",
+        "engines/mistralrs-cpu.json",
+        "presets/lemonade.json",
+        "presets/mistralrs-chat.json",
+    ]
+
+    @pytest.mark.parametrize("name", _PINNED_FIXTURES)
+    def test_a_recorded_fixture_with_pins_misses_on_a_wrong_knob(self, name: str) -> None:
+        from tests.conformance.preset_check import (
+            SAMPLING_KNOBS_KEY,
+            load_fixture,
+        )
+
+        path = self._FIXTURE_DIR / name
+        doc = load_fixture(path)[3]
+        assert SAMPLING_KNOBS_KEY not in doc, "a re-recorded fixture carries no marker"
+        chat = next(
+            e
+            for e in load_fixture(path)[2]
+            if e.path.endswith("/chat/completions") and e.status == 200
+        )
+        assert chat.request["temperature"] == 0
+        assert chat.request["seed"] == 7
+        assert self._post_chat(path, chat.request) == 200
+        assert self._post_chat(path, {**chat.request, "seed": 8}) == 599
+        assert self._post_chat(path, {**chat.request, "temperature": 0.9}) == 599
+
+    def test_a_marked_fixture_answers_any_seed(self) -> None:
+        from tests.conformance.preset_check import (
+            KNOBS_NOT_RECORDED,
+            SAMPLING_KNOBS_KEY,
+            load_fixture,
+        )
+
+        path = self._FIXTURE_DIR / "engines/llama.cpp-cuda.json"
+        assert load_fixture(path)[3][SAMPLING_KNOBS_KEY] == KNOBS_NOT_RECORDED
+        chat = next(
+            e
+            for e in load_fixture(path)[2]
+            if e.path.endswith("/chat/completions") and e.status == 200
+        )
+        for seed in (7, 8):
+            sent = {**chat.request, "seed": seed, "temperature": 0}
+            assert self._post_chat(path, sent) == 200
 
     def test_a_wrong_temperature_does_not_take_the_reply_of_another_recording(self) -> None:
         from tests.conformance.preset_check import Exchange
