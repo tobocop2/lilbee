@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 
+from lilbee.core.results import DocumentResult
 from lilbee.core.results import group as _group
 from lilbee.core.results import to_dicts
 from lilbee.data.store import SearchChunk
 
 
-def group(chunks):  # type: ignore[no-untyped-def]
+def group(chunks: list[SearchChunk]) -> list[DocumentResult]:
     """Group with a vault resolver that finds nothing, as an unset vault does."""
     return _group(chunks, lambda source: None)
 
