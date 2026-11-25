@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import threading
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable
@@ -422,8 +423,10 @@ async def _stream_rag_response(
     # need a model-generated Sources block suppressed.
     cite_filter = StreamingCitationFilter() if results else None
 
+    # The copied context keeps the request's config pin on the stream's thread.
     executor_fut = sse.loop.run_in_executor(
         None,
+        contextvars.copy_context().run,
         _run_llm_stream,
         messages,
         opts,
