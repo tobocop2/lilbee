@@ -156,6 +156,22 @@ class TestHostSpillInHealth:
         manager._check_estimates({"chat-0"})
         assert WarningCode.HOST_SPILL not in [w.code for w in manager.health_warnings()]
 
+    def test_a_reload_with_a_spill_reads_the_new_load(self, tmp_path: Path) -> None:
+        from lilbee.core.health_warnings import WarningCode
+        from lilbee.providers.fleet.readback import engine_log_path
+
+        clean = (
+            "load_tensors:        CUDA0 model buffer size =  4000.00 MiB\n"
+            "load_model: initializing slots\n"
+        )
+        manager = self._manager(tmp_path, clean)
+        manager._check_estimates({"chat-0"})
+        assert manager.health_warnings() == []
+        manager._check_estimates(set())
+        engine_log_path(tmp_path / "logs", "chat-0").write_text(self._LOG, encoding="utf-8")
+        manager._check_estimates({"chat-0"})
+        assert [w.code for w in manager.health_warnings()] == [WarningCode.HOST_SPILL]
+
     def test_an_unload_clears_the_spill(self, tmp_path: Path) -> None:
         from lilbee.core.health_warnings import WarningCode
 
