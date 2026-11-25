@@ -234,8 +234,15 @@ class TestSurfaceColumns:
         assert "`lilbee settings set`" in row
         assert generator._cli_cell("top_k") == "`lilbee settings set`"
 
-    def test_cli_column_matches_what_the_set_path_does(self, generator, tmp_path, monkeypatch):
-        """Run `lilbee settings set` for every key that can be set and compare with the cell."""
+    @pytest.mark.parametrize("key", sorted(set(WRITABLE_CONFIG_FIELDS) | MODEL_ROLE_FIELDS))
+    def test_cli_column_matches_what_the_set_path_does(
+        self, generator, tmp_path, monkeypatch, key
+    ):
+        """Run `lilbee settings set` for one key that can be set and compare with the cell.
+
+        One test for each key: a single loop over every key ran 15 to 35 seconds
+        alone and passed the 60 second test limit on a loaded host.
+        """
         from typer.testing import CliRunner
 
         from lilbee.app import services as svc_mod
@@ -246,31 +253,28 @@ class TestSurfaceColumns:
         snapshot = cfg.model_copy()
         svc_mod.set_services(make_mock_services())
         try:
-            wrong = []
-            for key in sorted(set(WRITABLE_CONFIG_FIELDS) | MODEL_ROLE_FIELDS):
-                project = tmp_path / key
-                project.mkdir()
-                result = CliRunner().invoke(
-                    app,
-                    [
-                        "settings",
-                        "set",
-                        "--data-dir",
-                        str(project),
-                        "--",
-                        key,
-                        _sample_cli_value(key),
-                    ],
-                )
-                accepted = result.exit_code == 0
-                marked = "`lilbee settings set`" in generator._cli_cell(key)
-                if accepted != marked:
-                    wrong.append((key, "accepted" if accepted else "refused", result.output[-90:]))
+            result = CliRunner().invoke(
+                app,
+                [
+                    "settings",
+                    "set",
+                    "--data-dir",
+                    str(tmp_path),
+                    "--",
+                    key,
+                    _sample_cli_value(key),
+                ],
+            )
         finally:
             svc_mod.set_services(None)
             for name in type(cfg).model_fields:
                 setattr(cfg, name, getattr(snapshot, name))
-        assert not wrong, f"the CLI column disagrees with `lilbee settings set`: {wrong}"
+        accepted = result.exit_code == 0
+        marked = "`lilbee settings set`" in generator._cli_cell(key)
+        assert accepted == marked, (
+            f"the CLI column disagrees with `lilbee settings set` for {key}: "
+            f"{'accepted' if accepted else 'refused'} {result.output[-90:]}"
+        )
 
     def test_cli_column_keeps_the_dedicated_commands(self, generator):
         assert "use-embedder" in generator._cli_cell("embedding_model")
