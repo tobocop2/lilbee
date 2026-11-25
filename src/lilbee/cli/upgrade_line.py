@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import ExitStack
 from time import monotonic
+from typing import cast
 
 from rich.progress import ProgressColumn, SpinnerColumn, Task
 from rich.text import Text
@@ -27,7 +28,9 @@ class _LineColumn(ProgressColumn):
         self._spinner = SpinnerColumn("dots", style="status.spinner")
 
     def render(self, task: Task) -> Text:
-        return Text.assemble(self._spinner.render(task), " ", self._line())
+        # A SpinnerColumn without text renders its frame as a Text.
+        frame = cast("Text", self._spinner.render(task))
+        return Text.assemble(frame, " ", self._line())
 
 
 class UpgradeLine:
