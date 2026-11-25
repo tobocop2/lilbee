@@ -29,6 +29,7 @@ _HOLD_WITH_NATIVE = (
 # X_HOLD is "<hold>+<press point>": the prelude keeps the hold for held() and the point here.
 _PRESS = '''
 import asyncio.events
+import concurrent.futures.thread as _pool_thread
 import ctypes
 import signal as _signal
 import threading as _threading
@@ -94,17 +95,28 @@ def pressing_forget(self):
 
 AddRollback.forget_unfinished = pressing_forget
 _real_shutdown = _threading._shutdown
+_real_pool_exit = _pool_thread._python_exit
+
+
+def press_in_the_exit_wait():
+    # The exit waits for the worker thread that the cancelled run left stuck.
+    if _press_at == "exit" and _presses == ["set"]:
+        _presses.append("pressed")
+        press()
 
 
 def pressing_shutdown():
-    # The exit joins the worker thread that the cancelled run left stuck.
-    if _press_at == "shutdown" and _presses == ["set"]:
-        _presses.append("pressed")
-        press()
+    press_in_the_exit_wait()
     _real_shutdown()
 
 
+def pressing_pool_exit():
+    press_in_the_exit_wait()
+    _real_pool_exit()
+
+
 _threading._shutdown = pressing_shutdown
+_pool_thread._python_exit = pressing_pool_exit
 
 
 def native_stuck():
@@ -177,10 +189,10 @@ def test_a_second_ctrl_c_during_the_rollback_lets_the_rollback_finish(
 @pytest.mark.usefixtures("pressing_entry")
 @pytest.mark.parametrize("hold", ["pool", "to_thread"])
 @pytest.mark.parametrize("command", base._COMMANDS)
-def test_a_second_ctrl_c_at_the_shutdown_join_ends_the_command(
+def test_a_second_ctrl_c_in_the_exit_wait_for_a_left_worker_ends_the_command(
     tmp_path: Path, command: str, hold: str
 ) -> None:
-    run = base._Command(tmp_path, command, f"{hold}+shutdown")
+    run = base._Command(tmp_path, command, f"{hold}+exit")
     status = _status_after_one_press(run)
     assert "PRESS 2" in run.output, run.output
     _assert_forced(status, run.output)
