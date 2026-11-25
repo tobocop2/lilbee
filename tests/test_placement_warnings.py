@@ -163,6 +163,7 @@ class TestHostSpillInHealth:
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda *a, **k: [])
         manager = self._manager(tmp_path, self._LOG)
         manager._check_estimates({"chat-0"})
+        assert [w.code for w in manager.health_warnings()] == [WarningCode.HOST_SPILL]
         manager.shutdown()
         assert manager.health_warnings() == []
 
