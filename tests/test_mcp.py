@@ -2251,6 +2251,31 @@ class TestWikiBuildTool:
         assert result["stats"]["pages_published"] == 1
         assert result["stats"]["verified_by_page"] == {"wiki/concepts/p.md": 2}
 
+    @pytest.mark.parametrize(
+        ("tool", "target"),
+        [
+            (wiki_build, "lilbee.wiki.run_full_build"),
+            (wiki_synthesize, "lilbee.wiki.run_full_synthesize"),
+        ],
+    )
+    def test_a_run_that_lost_some_pages_returns_the_count(
+        self, mock_svc, tmp_path, monkeypatch, tool, target
+    ):
+        from lilbee.wiki.stats import BuildStats
+
+        cfg.wiki = True
+        stats = BuildStats()
+        stats.record_published("wiki/concepts/p.md", 2)
+        stats.record_model_call("engine down")
+        stats.record_failed_pages(2)
+        summary = {"paths": [str(tmp_path / "p.md")], "count": 1, "stats": stats.as_dict()}
+        monkeypatch.setattr(target, lambda *a, **kw: summary)
+        result = tool()
+        assert "error" not in result
+        assert result["count"] == 1
+        assert result["stats"]["pages_failed"] == 2
+        assert result["stats"]["last_model_failure"] == "engine down"
+
     def test_dry_run_returns_candidates_without_building(self, mock_svc, monkeypatch):
         cfg.wiki = True
 
