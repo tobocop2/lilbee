@@ -233,13 +233,19 @@ ${WHEEL}.sha256" ]
   grep -q '^-m wheel tags --remove --platform-tag manylinux_2_35_x86_64 dist/' "${PYTHON_LOG}"
 }
 
-for cc in 80 86 89 90 100 120; do
-  @test "the build number of the cuda-sm${cc} cell is 1.cuda_sm${cc}, with no hyphen" {
-    BACKEND="cuda-sm${cc}" run stage build_wheel
-    [ "$status" -eq 0 ]
-    grep -q -- "--build-number=1.cuda_sm${cc} " "${PYTHON_LOG}"
-  }
-done
+# Bats reads test names as literals, so each cell has its own test.
+cuda_build_tag() {  # compute capability
+  BACKEND="cuda-sm$1" run stage build_wheel
+  [ "$status" -eq 0 ]
+  grep -q -- "--build-number=1.cuda_sm$1 " "${PYTHON_LOG}"
+}
+
+@test "the build number of the cuda-sm80 cell is 1.cuda_sm80, with no hyphen" { cuda_build_tag 80; }
+@test "the build number of the cuda-sm86 cell is 1.cuda_sm86, with no hyphen" { cuda_build_tag 86; }
+@test "the build number of the cuda-sm89 cell is 1.cuda_sm89, with no hyphen" { cuda_build_tag 89; }
+@test "the build number of the cuda-sm90 cell is 1.cuda_sm90, with no hyphen" { cuda_build_tag 90; }
+@test "the build number of the cuda-sm100 cell is 1.cuda_sm100, with no hyphen" { cuda_build_tag 100; }
+@test "the build number of the cuda-sm120 cell is 1.cuda_sm120, with no hyphen" { cuda_build_tag 120; }
 
 @test "the build number of the Metal cell stays 1.metal" {
   BACKEND=metal run stage build_wheel
