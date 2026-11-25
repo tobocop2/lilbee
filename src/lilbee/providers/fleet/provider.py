@@ -1282,9 +1282,16 @@ def _engine_lifetime(engine_dir: Path) -> EngineLifetime:
     return EngineLifetime.BUILDER
 
 
+def _reap_stale_engines(data_dir: Path) -> None:
+    """Reap dead or unhealthy engines in *data_dir*, and forget any device reading it outdates."""
+    if reap_stale(data_dir):
+        # A reaped engine held the card, so a reading taken before it is stale.
+        planning.clear_read_device_cache()
+
+
 def _clear_engine_dir(engine_dir: Path) -> None:
     """Reap dead leftovers in *engine_dir* and stop its recorded engine; caller holds its lock."""
-    reap_stale(engine_dir)
+    _reap_stale_engines(engine_dir)
     if engine_record_exists(engine_dir):
         stop_engine(engine_dir)
         # The stop frees the card the engine held, so a reading taken before it is stale.
@@ -3678,7 +3685,7 @@ class FleetProvider:
             # build a second fleet into the same dir, double-allocating VRAM.
             with build_lock(reload_dir):
                 # Reap dead engines in our dirs before re-planning, as a build would.
-                reap_stale(reload_dir)
+                _reap_stale_engines(reload_dir)
                 origin = _plan_origin()
                 # A planning failure (a missing engine binary, a wedged GPU probe, an
                 # unusable CUDA runtime) propagates: the change was not applied, and a
