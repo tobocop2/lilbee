@@ -33,6 +33,7 @@ from lilbee.app.services import (
 from lilbee.app.settings import config_write_failure_message, fill_empty_chat_model
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
+from lilbee.core.config.context import request_config_scope
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.core.settings import ReadOnlyConfigError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
@@ -319,8 +320,9 @@ class _LibraryOpenWait(ASGIMiddleware):
 class _ConfigFileReload(ASGIMiddleware):
     """Take what another process changed in config.toml before each request runs.
 
-    The MCP mount is served by this middleware too, so its server does not follow the
-    file itself.
+    The request then reads the Config published by its check, plus its own writes,
+    while another request's check takes a later change. The MCP mount is served by
+    this middleware too, so its server does not follow the file itself.
     """
 
     def __init__(self) -> None:
@@ -329,7 +331,8 @@ class _ConfigFileReload(ASGIMiddleware):
 
     async def handle(self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp) -> None:
         await self._follower.take()
-        await next_app(scope, receive, send)
+        with request_config_scope():
+            await next_app(scope, receive, send)
 
 
 def _start_services() -> None:

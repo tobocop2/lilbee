@@ -588,13 +588,13 @@ def test_validating_a_profile_copies_the_config_once_for_all_its_values(monkeypa
     # The first call reads and validates the built-in files, which copy the config too.
     profile_files.builtin_keys()
     calls = []
-    real_copy = type(cfg).model_copy
+    real_copy = config_model.Config.model_copy
 
     def counting_copy(self, *args, **kwargs):
         calls.append(1)
         return real_copy(self, *args, **kwargs)
 
-    monkeypatch.setattr(type(cfg), "model_copy", counting_copy)
+    monkeypatch.setattr(config_model.Config, "model_copy", counting_copy)
     text = "[values]\nchunk_size = 900\nchunk_overlap = 50\ntop_k = 4\n"
     result = profile_files.validate_text(text, Path("many.toml"), ProfileFolder.GLOBAL)
     assert result.problems == ()
