@@ -2936,6 +2936,29 @@ class _ReadDeviceCache:
                 self._at = time.monotonic()
             return self._reading
 
+    def remember(self, binary: Path, reading: DeviceReading) -> None:
+        """Keep *reading*, just taken from *binary*, as the answer inside the TTL."""
+        identity = engine_binary_identity(binary)
+        with self._lock:
+            self._engine = identity
+            self._reading = reading
+            self._failure = None
+            self._at = time.monotonic()
+
+    def recent_empty(self, binary: Path) -> DeviceReading | None:
+        """The fresh reading of *binary* when it listed no device, else ``None``.
+
+        Only an empty reading is handed back. It has no free memory to go stale,
+        and repeating it costs a whole retry ladder. A reading with devices carries
+        free memory and is never reused here.
+        """
+        identity = engine_binary_identity(binary)
+        with self._lock:
+            reading = self._reading
+            if reading is None or reading.devices:
+                return None
+            return reading if self._is_fresh(identity) else None
+
     def clear(self) -> None:
         with self._lock:
             self._at = None
@@ -3240,8 +3263,13 @@ def _probe_engine_devices(engine: EngineAdapter) -> DeviceReading:
     that cannot init a GPU (a broken-runtime host) raises loud from resolve_devices
     rather than silently degrading. Device enumeration reads no residency, so it is
     safe to run while an incumbent engine is still up.
+
+    A reading that listed no device, taken moments ago from this same binary, is
+    reused: it already paid the whole retry ladder. A reading with devices is taken
+    again, since its free memory is what a clean box changes.
     """
-    return _read_devices(engine.binary(), engine)
+    binary = engine.binary()
+    return _read_device_cache.recent_empty(binary) or _read_devices(binary, engine)
 
 
 def assert_engine_probeable(engine: EngineAdapter) -> None:
@@ -3250,10 +3278,12 @@ def assert_engine_probeable(engine: EngineAdapter) -> None:
     A build precondition that must run BEFORE stopping a replaceable incumbent:
     it surfaces a wedged GPU probe or an unusable CUDA runtime without taking the
     residency-dependent memory snapshot (that belongs on the clean box, after the
-    stop, in capture_plan_probe). resolve_devices caches within its TTL, so the
-    follow-up capture reuses this enumeration rather than re-probing the hardware.
+    stop, in capture_plan_probe). The reading is kept in the read cache. When it
+    listed no device, the follow-up capture reuses it instead of walking the retry
+    ladder again; a reading with devices is taken again by the capture.
     """
-    _probe_engine_devices(engine)
+    binary = engine.binary()
+    _read_device_cache.remember(binary, _read_devices(binary, engine))
 
 
 def _engine_identity(engine: EngineAdapter) -> str:
