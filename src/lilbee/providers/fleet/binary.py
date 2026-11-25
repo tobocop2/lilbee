@@ -150,9 +150,12 @@ def _engine_wheel_version() -> str:
 
 
 def _binary_signature(path: Path) -> str:
-    """A cheap build fingerprint of the binary at *path*: size and mtime.
+    """A cheap build fingerprint of the binary at *path*: size, mtime, inode and ctime.
 
-    An in-place replacement changes both, so the pin stops matching the old build.
+    A replacement changes some of these, so the pin stops matching the old build. Tar
+    extraction and OCI layers restore whole-second mtimes, so two builds of equal size
+    can share size and mtime; the inode tells a swapped file apart, and the change time,
+    which no caller can set, tells an in-place rewrite apart.
     Best-effort and total (engine_pin runs on every state write): an unstatable
     path degrades to a fixed marker rather than raising.
     """
@@ -160,7 +163,7 @@ def _binary_signature(path: Path) -> str:
         st = path.stat()
     except OSError:
         return _UNSTATABLE
-    return f"{st.st_size}-{st.st_mtime_ns}"
+    return f"{st.st_size}-{st.st_mtime_ns}-{st.st_ino}-{st.st_ctime_ns}"
 
 
 def engine_binary_identity(binary: Path) -> str:
