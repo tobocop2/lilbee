@@ -1645,6 +1645,24 @@ def test_an_ignored_sighup_stays_ignored_inside_the_loop_signals():
     assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
+def test_the_loop_takes_only_the_signals_the_process_routes():
+    """With Ctrl-C not routed, as in the TUI, the loop leaves it a KeyboardInterrupt."""
+    install_engine_lifecycle_hooks()
+    routed = signal.getsignal(signal.SIGTERM)
+
+    async def inside() -> tuple[object, object]:
+        with loop_takes_signals(asyncio.get_running_loop()):
+            return signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)
+
+    with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+        interrupt, terminate = runner.run(inside())
+
+    assert interrupt is signal.default_int_handler
+    assert terminate != routed  # the loop's own handler took the terminate
+    assert signal.getsignal(signal.SIGTERM) == routed
+
+
 def test_the_thread_seam_lists_the_running_threads():
     assert threading.current_thread() in services_mod._all_threads()
 
