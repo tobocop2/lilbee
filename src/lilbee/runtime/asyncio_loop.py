@@ -161,7 +161,12 @@ def _run_with_sigint_blocked(
     signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
     asyncio.set_event_loop(loop)
     try:
-        done.set_result(loop.run_until_complete(task))
+        # Tasks the run leaves are cancelled and awaited before its end, as run_without_join does.
+        try:
+            result = loop.run_until_complete(task)
+        finally:
+            loop.run_until_complete(_drain(loop))
+        done.set_result(result)
     except BaseException as exc:
         done.set_exception(exc)
     finally:
