@@ -120,7 +120,7 @@ format, the pull prints a warning after the download. For the reference
 `org/repo#openvino`, with no installed engine that loads it:
 
 ```
-Warning: No installed engine loads the openvino format of org/repo#openvino. Run lilbee engine list to see the installed engines.
+Warning: No installed engine loads the openvino format of org/repo#openvino. Run lilbee engine list (or GET /api/engines) to see the installed engines.
 ```
 
 If an installed engine loads the format but is not chosen, the warning names
