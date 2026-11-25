@@ -63,6 +63,12 @@ if grep -rq -e '-lineinfo' "${SRC_DIR}" --include=CMakeLists.txt --include='*.cm
   echo "ik_llama_manylinux: -lineinfo is still in a CMake file of the source" >&2
   exit 1
 fi
+# ACCEPTED DIFFERENCE. Two CUDA builds of one commit are not byte-equal, and nothing needs them to be. The register
+# allocation of cicc (the GPU front end of nvcc) gives other code for one or two mmvq kernels from run to run, with
+# one thread, one process ID and no address randomization, and no nvcc flag removes it. The rule that holds: llama-server,
+# libllama.so, libmtmd.so and the NVIDIA libraries are byte-equal; libggml.so has equal host code (.text, .rodata,
+# .dynsym, .dynstr); only its GPU code (.nv_fatbin) and the sections that hold addresses after it (.nvFatBinSegment,
+# .eh_frame, .eh_frame_hdr, .rela.dyn) may differ. Wheel digests come from the release asset, never from a rebuild.
 
 # One CPU baseline for every host: AVX2, FMA and F16C, no -march=native. NCCL is off: the engine
 # links it when the image has it, and the wheel must not need it.
