@@ -1019,7 +1019,9 @@ def ready_model_ids(payload: Any) -> set[str]:
     Raises KeyError, TypeError or AttributeError for a body of another shape.
     """
     return {
-        entry[_KEY_MODEL] for entry in payload[_KEY_RUNNING] if entry.get(_KEY_STATE) == _STATE_READY
+        entry[_KEY_MODEL]
+        for entry in payload[_KEY_RUNNING]
+        if entry.get(_KEY_STATE) == _STATE_READY
     }
 
 
