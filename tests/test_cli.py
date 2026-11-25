@@ -8349,6 +8349,26 @@ class TestSelfCheck:
         ):
             _installed_model_path(ModelTask.CHAT, "acme/x-GGUF/x.gguf")
 
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["text", "json"])
+    def test_an_unreadable_registry_ends_the_check_through_its_failure_output(
+        self, flags: list[str]
+    ) -> None:
+        """The stop shows the check's own failure line or JSON object, never a traceback."""
+        with mock.patch(
+            "lilbee.cli.commands.setup._installed_model_path",
+            side_effect=OSError("manifests unreadable"),
+        ):
+            result = runner.invoke(app, [*flags, "self-check"])
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        if flags:
+            payload = json.loads(result.stdout.strip().splitlines()[-1])
+            assert payload["ok"] is False
+            assert "manifests unreadable" in payload["error"]
+        else:
+            assert "SELF-CHECK FAILED" in result.output
+            assert "manifests unreadable" in result.output
+
     def test_emit_failure_prints_a_bracketed_error_literally(self) -> None:
         """The failure detail is a model exception's repr and can carry a path."""
         from lilbee.cli.commands import setup

@@ -1223,15 +1223,18 @@ class TestGetCatalog:
         )
         assert all(m.hf_repo != "Qwen/Qwen3-8B-GGUF" for m in result.models)
 
-    def test_installed_filter_manager_error(self) -> None:
+    @pytest.mark.parametrize("installed", [True, False])
+    def test_an_unreadable_registry_is_not_an_empty_installed_set(self, installed: bool) -> None:
         class BadManager:
             def list_installed(self) -> list[str]:
-                raise RuntimeError("no manager")
+                raise OSError("manifests unreadable")
 
-        result = get_catalog(
-            installed=True, model_manager=BadManager(), hf_client=get_services().hf_client
-        )
-        assert result.total is None
+        with pytest.raises(OSError, match="manifests unreadable"):
+            get_catalog(
+                installed=installed,
+                model_manager=BadManager(),
+                hf_client=get_services().hf_client,
+            )
 
     def test_combines_featured_and_hf(self, monkeypatch: pytest.MonkeyPatch) -> None:
         hf_models = [
@@ -2771,20 +2774,6 @@ class TestPipelineToTask:
 
     def test_sentence_similarity_maps_to_embedding(self) -> None:
         assert _query.pipeline_to_task("sentence-similarity") == "embedding"
-
-
-class TestGetInstalledModels:
-    def test_returns_installed_names(self) -> None:
-        manager = MagicMock()
-        manager.list_installed.return_value = ["a/b", "c/d"]
-        assert _query._get_installed_models(manager) == {"a/b", "c/d"}
-
-    def test_manager_failure_returns_empty_and_logs(self, caplog) -> None:
-        manager = MagicMock()
-        manager.list_installed.side_effect = RuntimeError("registry broken")
-        with caplog.at_level("WARNING"):
-            assert _query._get_installed_models(manager) == set()
-        assert any("treating as none installed" in r.getMessage() for r in caplog.records)
 
 
 class TestVisionPicks:

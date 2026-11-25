@@ -7817,16 +7817,6 @@ class TestModelBarScanRaces:
         assert "manifests unreadable" in bar.notify.call_args.args[0]
         assert bar.notify.call_args.kwargs["severity"] == "error"
 
-    def test_a_listing_failure_from_an_ended_completion_session_is_dropped(self) -> None:
-        from unittest import mock
-
-        from lilbee.cli.tui.screens.chat import ChatScreen
-
-        screen = mock.MagicMock()
-        screen._model_session = 2
-        ChatScreen._models_unreadable(screen, 1, OSError("manifests unreadable"))
-        screen.notify.assert_not_called()
-
     def test_cloud_warning_refresh_survives_an_unmounted_bar(self) -> None:
         from unittest import mock
 

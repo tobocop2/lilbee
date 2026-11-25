@@ -1505,6 +1505,50 @@ class TestModelCompletionsOffTheLoopAsync:
                 inp.value = "/model q"
                 assert await pump_until(pilot, lambda: overlay.options == ["qwen3:8b"])
 
+    async def test_an_unreadable_registry_is_reported_once_per_completion_session(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        calls: list[int] = []
+
+        def _listing() -> list[str]:
+            calls.append(1)
+            raise OSError("manifests unreadable")
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            inp = screen.query_one("#chat-input")
+            with (
+                mock.patch("lilbee.modelhub.models.list_installed_models", side_effect=_listing),
+                mock.patch.object(screen, "notify") as notify,
+            ):
+                inp.value = "/model "
+                assert await pump_until(pilot, lambda: notify.call_count == 1)
+                # Each key press lists again, and the same session stays quiet.
+                for text in ("/model q", "/model qw", "/model qwe"):
+                    listed = len(calls)
+                    inp.value = text
+                    assert await pump_until(pilot, lambda: len(calls) > listed)
+                for _ in range(5):
+                    await pilot.pause()
+                assert notify.call_count == 1
+                # A new completion session reports the fault again.
+                inp.value = "hello"
+                await pilot.pause()
+                inp.value = "/remove "
+                assert await pump_until(pilot, lambda: notify.call_count == 2)
+
+    def test_a_listing_failure_from_an_ended_completion_session_is_dropped(self) -> None:
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = mock.MagicMock()
+        screen._model_session = 2
+        ChatScreen._models_unreadable(screen, 1, OSError("manifests unreadable"))
+        screen.notify.assert_not_called()
+
     @pytest.mark.parametrize("clear_handled_first", [True, False])
     async def test_a_listing_from_before_a_submit_does_not_offer_a_removed_model(
         self, _mock_resolve, _mock_services, clear_handled_first

@@ -519,6 +519,9 @@ class ChatScreen(Screen[None]):
         # Bumped when the input leaves the model argument; a listing started
         # before the bump is stale and its result is dropped.
         self._model_session = 0
+        # The session whose unreadable-registry notice was shown; a key press retries
+        # the listing but the same session does not repeat the notice.
+        self._model_error_session = -1
         # The latest model completion asked for while the listing runs.
         self._model_request: tuple[str, Callable[[bool], None] | None] = ("", None)
         self._rebuild_owed = False
@@ -3239,6 +3242,9 @@ class ChatScreen(Screen[None]):
             return
         self._listing_models = False
         self._model_request = ("", None)
+        if self._model_error_session == session:
+            return
+        self._model_error_session = session
         self.notify(msg.MODEL_REGISTRY_UNREADABLE.format(error=error), severity="error")
 
     def _models_listed(self, session: int, names: list[str]) -> None:
