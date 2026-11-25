@@ -195,6 +195,22 @@ def test_a_follower_asks_for_a_recheck_after_a_skipped_write(monkeypatch):
     assert follower.recheck_delay_s() == 0.0
 
 
+def test_a_follower_asks_for_no_recheck_after_it_took_a_young_atomic_write(monkeypatch):
+    from lilbee.app import config_follow
+    from lilbee.app.config_follow import ConfigFileFollower
+
+    monkeypatch.setattr(config_follow, "start_config_reading", app_settings.read_config_state)
+    _write("top_k", 21, tick=1)
+    follower = ConfigFileFollower(frozenset(), long_running=True, keeper="the test")
+    _write("top_k", 13, tick=2)
+    _clock_at(monkeypatch, 2, 0)
+    changed, result = follower.check()
+    assert changed
+    assert result is not None
+    assert cfg.top_k == 13
+    assert follower.recheck_delay_s() == 0.0
+
+
 def test_the_startup_overlay_takes_a_file_written_just_now(monkeypatch):
     _write("top_k", 21, tick=1)
     _clock_at(monkeypatch, 1, 0)

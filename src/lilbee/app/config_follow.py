@@ -97,7 +97,12 @@ class ConfigFileFollower:
         """Seconds until the next check may take a file the last check skipped; 0.0 if none.
 
         A process that checks only on events (the TUI) schedules one check after this long.
+        A check that took the file holds the file's own stamp, so nothing was skipped and
+        the delay is 0.0. A check that skipped it kept the older stamp.
         """
+        stamp = persistent_settings.overlay_stamp(cfg.data_root)
+        if stamp == self._reading.stamp:
+            return 0.0
         return persistent_settings.settle_remaining_s(cfg.data_root, self._reading.stamp)
 
     def check(self) -> tuple[bool, SettingsUpdateResult | None]:

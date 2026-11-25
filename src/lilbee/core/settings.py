@@ -444,11 +444,11 @@ def _settle_remaining_ns(
 
 
 def settle_remaining_s(root: Path, last_stamp: tuple[int, int, int] | None) -> float:
-    """Seconds until a check of *root*'s config.toml may take the file; 0.0 when it may now.
+    """Seconds until ``read_settled`` takes the file of *root* that *last_stamp* names; 0.0 now.
 
-    A reader that runs only on events calls this after a check. Above zero, ``read_settled``
-    skipped the file: the reader checks again after this long, so a skipped read is
-    always retried.
+    Above zero, a check that reads the file now skips it. A reader that runs only on
+    events calls this after a check that left the file unread (its reading still holds
+    *last_stamp*) and checks again after this long.
     """
     remaining = _settle_remaining_ns(overlay_stamp(root), last_stamp)
     return remaining / 1e9 + _SETTLE_MARGIN_S if remaining > 0 else 0.0
