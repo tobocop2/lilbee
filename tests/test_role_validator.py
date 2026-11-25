@@ -266,10 +266,20 @@ class TestRoleWriteNeedsNoServicesUnlessRemote:
                 hf_client_for=_services_unavailable,
             )
 
-    def test_the_settings_write_of_an_installed_ref_builds_no_services(self, monkeypatch) -> None:
-        from lilbee.app import services as services_module
+    def test_the_settings_write_of_an_installed_ref_needs_no_services(self) -> None:
+        from typing import Any, cast
+
+        from lilbee.app.services import set_services
         from lilbee.app.settings import _coerce_value
 
+        class _ServicesWithoutClient:
+            @property
+            def hf_client(self) -> None:
+                _services_unavailable()
+
         ref = install_fake_model("other/Chat-Model-GGUF", "chat-Q4_K_M.gguf", "chat")
-        monkeypatch.setattr(services_module, "get_services", _services_unavailable)
-        assert _coerce_value("chat_model", ref) == ref
+        set_services(cast(Any, _ServicesWithoutClient()))
+        try:
+            assert _coerce_value("chat_model", ref) == ref
+        finally:
+            set_services(None)
