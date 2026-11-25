@@ -7,6 +7,7 @@ import io
 import os
 import re
 import shutil
+import sys
 import tarfile
 import threading
 import zipfile
@@ -234,6 +235,46 @@ class TestInstall:
         (stale / "stale.txt").write_text("old", encoding="utf-8")
         install_router()
         assert sorted(p.name for p in stale.iterdir()) == [LICENCE_FILE, "llama-swap"]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX links")
+    def test_a_link_in_place_of_the_router_folder_is_unlinked_and_its_target_kept(
+        self, release: list[str], tmp_path: Path
+    ) -> None:
+        target = tmp_path / "elsewhere"
+        target.mkdir()
+        (target / "keep.txt").write_text("mine", encoding="utf-8")
+        final = engines_root(cfg.models_dir) / "router" / ROUTER_VERSION
+        final.parent.mkdir(parents=True)
+        final.symlink_to(target, target_is_directory=True)
+        install_router()
+        assert not final.is_symlink()
+        assert sorted(p.name for p in final.iterdir()) == [LICENCE_FILE, "llama-swap"]
+        assert (target / "keep.txt").read_text(encoding="utf-8") == "mine"
+
+    @pytest.mark.skipif(
+        sys.platform == "win32" or os.geteuid() == 0,
+        reason="POSIX modes, and root ignores them",
+    )
+    def test_an_old_router_folder_that_cannot_be_removed_fails_the_install(
+        self, release: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        parent = engines_root(cfg.models_dir) / "router"
+        stale = parent / ROUTER_VERSION
+        stale.mkdir(parents=True)
+        (stale / "stale.txt").write_text("old", encoding="utf-8")
+        real_unpack = router_install._unpack
+
+        def unpack_then_lock(asset: RouterAsset, archive: Path, stage: Path) -> None:
+            real_unpack(asset, archive, stage)
+            parent.chmod(0o555)
+
+        monkeypatch.setattr(router_install, "_unpack", unpack_then_lock)
+        try:
+            with pytest.raises(OSError, match="stays"):
+                install_router()
+        finally:
+            parent.chmod(0o755)
+        assert stale.is_dir()
 
     def test_the_install_holds_the_router_lock_for_the_whole_install(
         self, release: list[str], monkeypatch: pytest.MonkeyPatch
