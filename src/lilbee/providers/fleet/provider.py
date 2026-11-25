@@ -1853,8 +1853,7 @@ class FleetProvider:
         # The start uses the dir until its groups use it, so a start that fails
         # gives the dir back as any other user does.
         with self._lock:
-            self._take_user_lock(engine_dir)
-            starting = self._use_dir(engine_dir)
+            starting = self._hold_and_use(engine_dir)
             self._starting_dirs.add(engine_dir)
         try:
             spawned = False
@@ -2001,6 +2000,12 @@ class FleetProvider:
             hold = self._engine_holds.pop(engine_dir, None)
             if hold is not None:
                 hold.release_and_check_last()
+
+    def _hold_and_use(self, engine_dir: Path) -> _DirUse:
+        """Hold *engine_dir*'s user lock and count the caller as a user of the dir."""
+        with self._holds_lock:
+            self._take_user_lock(engine_dir)
+            return self._use_dir(engine_dir)
 
     def _use_dir(self, engine_dir: Path) -> _DirUse:
         """Count one more user of *engine_dir*; the returned use gives the count back."""
@@ -3816,8 +3821,7 @@ class FleetProvider:
                 # own use holds the dir when no group ran there, as after a failed pass.
                 stopped = self._stop_groups(changed, taken_for_replan, stuck, drained, owned)
                 try:
-                    self._take_user_lock(reload_dir)
-                    stopped.append(self._use_dir(reload_dir))
+                    stopped.append(self._hold_and_use(reload_dir))
                     # Start phase: spawn the changed groups present in the new plan.
                     to_start = sorted(changed & set(new), key=lambda g: g.value)
                     for index, group in enumerate(to_start):
