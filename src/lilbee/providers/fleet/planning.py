@@ -2635,6 +2635,7 @@ def _draft_launch(
             batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
             expert_offload=_role_expert_offload(model_path, engine=engine),
             on_cpu=on_cpu,
+            role=plan.role,
         ),
         one_pool=one_pool,
         weights_bytes=weights_bytes,
