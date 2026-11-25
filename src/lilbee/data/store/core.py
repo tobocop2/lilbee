@@ -2050,9 +2050,9 @@ class Store:
                 )
                 self._report_upgrade(UpgradePhase.TABLE, step)
                 column_added.result()
-                keyed_table = open_committed(db, name)
-                assert keyed_table is not None, "the step opened this table committed"
-                keyed_table.drop_columns([column])
+                opened = dict(steps)[name]
+                opened.checkout_latest()
+                opened.drop_columns([column])
                 done += 1
         meta = open_committed(db, META_TABLE)
         if meta is not None:
