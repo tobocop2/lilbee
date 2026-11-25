@@ -674,7 +674,7 @@ class TestOpenerKeepsTheScreenResponsive:
 
         def slow_opener(href: str) -> LinkOpenResult:
             started.set()
-            release.wait(timeout=15)
+            release.wait(timeout=45)  # under the 60 s test timeout
             returned.set()
             return LinkOpenResult.NOT_A_DOCUMENT
 
