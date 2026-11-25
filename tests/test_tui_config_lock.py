@@ -14,8 +14,9 @@ from lilbee.cli.tui.app import LilbeeApp
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._settings_test_app import SettingsTestApp
 from tests.conftest import TEST_LOCAL_REF
-from tests.test_tui_screens import ChatTestApp, SettingsTestApp
+from tests.test_tui_screens import ChatTestApp
 
 PLAIN_MESSAGE_START = "Could not write config.toml: another lilbee process held the lock"
 
