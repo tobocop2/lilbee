@@ -19,6 +19,7 @@ from lilbee.providers.fleet.memory_types import MemoryRequest
 from lilbee.providers.fleet.placement import _vram_proportional_split
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTUM
+from lilbee.providers.roles import WorkerRole
 
 
 def _largest_fitting_ctx(upper: int, fits: Callable[[int], bool]) -> int:
@@ -85,6 +86,7 @@ def fit_single_ctx(
                 kv_cache_type=kv_cache_type,
                 expert_offload=expert_offload,
                 on_cpu=on_cpu,
+                role=WorkerRole.CHAT,
             )
         )
         return est.resident_footprint(unified=unified) <= available_bytes
@@ -151,6 +153,7 @@ def fit_split_ctx(
                 kv_cache_type=kv_cache_type,
                 tensor_split=ratio,
                 expert_offload=expert_offload,
+                role=WorkerRole.CHAT,
             )
         )
         shares = est.per_device

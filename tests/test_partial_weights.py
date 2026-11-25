@@ -554,11 +554,19 @@ class TestThePlannerKeepsTheOnDiskSumOfACutFile:
 
 
 _IR_XML = '<net><layer><data element_type="f16" shape="8" offset="0" size="100"/></layer></net>'
+_IR_CONFIG = '{"num_hidden_layers": 1, "num_attention_heads": 1, "head_dim": 1}'
+"""A cache of two bytes a token: one layer, one head of width one, a key and a value, one byte."""
+
+
+def _chat_charge(weights: int) -> int:
+    """What an OVMS chat role holds: its weights twice, the 4096-token cache, and the runtime."""
+    return 2 * weights + 2 * 4096 + 928 * 1024**2
 
 
 def _openvino_folder(folder: Path, *, bin_bytes: int, xml: str = _IR_XML) -> MemoryRequest:
     (folder / "openvino_model.xml").write_text(xml, encoding="utf-8")
     (folder / "openvino_model.bin").write_bytes(b"\0" * bin_bytes)
+    (folder / "config.json").write_text(_IR_CONFIG, encoding="utf-8")
     return _request(folder)
 
 
@@ -573,6 +581,7 @@ def _vision_folder(folder: Path, *, cut_part: str | None) -> MemoryRequest:
     for part in _VISION_PARTS:
         (folder / f"{part}.xml").write_text(_IR_XML, encoding="utf-8")
         (folder / f"{part}.bin").write_bytes(b"\0" * (99 if part == cut_part else 100))
+    (folder / "config.json").write_text(_IR_CONFIG, encoding="utf-8")
     return _request(folder)
 
 
@@ -580,7 +589,7 @@ class TestACutOpenvinoWeightsFile:
     def test_a_whole_bin_is_charged_its_size(self, tmp_path: Path) -> None:
         request = _openvino_folder(tmp_path, bin_bytes=100)
         est = mm.estimate_memory(ModelFormat.OPENVINO, request)
-        assert est.device_bytes == len(_IR_XML) + 100
+        assert est.device_bytes == _chat_charge(len(_IR_XML) + 100)
 
     def test_a_bin_cut_short_of_the_listed_weights_is_charged_the_reserve(
         self, tmp_path: Path
@@ -610,26 +619,27 @@ class TestACutOpenvinoWeightsFile:
         cut = mm.estimate_memory(
             ModelFormat.OPENVINO, _openvino_folder(tmp_path, bin_bytes=149, xml=xml)
         )
-        assert (whole.device_bytes, whole.size_known) == (len(xml) + 150, True)
+        assert (whole.device_bytes, whole.size_known) == (_chat_charge(len(xml) + 150), True)
         assert _is_unknown(cut)
 
     def test_an_xml_that_lists_no_weights_keeps_the_bin_size(self, tmp_path: Path) -> None:
         request = _openvino_folder(tmp_path, bin_bytes=7, xml="<net/>")
-        assert mm.estimate_memory(ModelFormat.OPENVINO, request).device_bytes == 6 + 7
+        assert mm.estimate_memory(ModelFormat.OPENVINO, request).device_bytes == _chat_charge(6 + 7)
 
     def test_an_xml_that_is_not_text_keeps_the_bin_size(self, tmp_path: Path) -> None:
         request = _openvino_folder(tmp_path, bin_bytes=7)
         (tmp_path / "openvino_model.xml").write_bytes(b"\xff\xfe" * 4)
-        assert mm.estimate_memory(ModelFormat.OPENVINO, request).device_bytes == 8 + 7
+        assert mm.estimate_memory(ModelFormat.OPENVINO, request).device_bytes == _chat_charge(8 + 7)
 
     def test_a_vision_ir_with_one_cut_part_is_charged_the_reserve(self, tmp_path: Path) -> None:
         whole = _vision_folder(tmp_path, cut_part=None)
         est = mm.estimate_memory(ModelFormat.OPENVINO, whole)
-        assert (est.device_bytes, est.size_known) == (3 * (len(_IR_XML) + 100), True)
+        assert (est.device_bytes, est.size_known) == (_chat_charge(3 * (len(_IR_XML) + 100)), True)
         cut = _vision_folder(tmp_path, cut_part="openvino_vision_embeddings_model")
         assert _is_unknown(mm.estimate_memory(ModelFormat.OPENVINO, cut))
 
     def test_a_folder_with_no_ir_pair_has_no_bound(self, tmp_path: Path) -> None:
         (tmp_path / "openvino_model.bin").write_bytes(b"\0" * 5)
+        (tmp_path / "config.json").write_text(_IR_CONFIG, encoding="utf-8")
         est = mm.estimate_memory(ModelFormat.OPENVINO, _request(tmp_path))
-        assert est.device_bytes == 5
+        assert est.device_bytes == _chat_charge(5)
