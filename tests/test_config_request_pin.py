@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 import threading
 from collections.abc import AsyncIterator
@@ -13,7 +14,8 @@ from unittest import mock
 import pytest
 
 from lilbee.app import settings as app_settings
-from lilbee.app.services import set_services
+from lilbee.app.config_follow import ConfigFileFollower
+from lilbee.app.services import refresh_config, set_config_refresh, set_services
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import CONFIG_FILE_NAME, Config, active_config, cfg, config_scope
 from lilbee.core.config.context import published_config_scope, request_config_scope
@@ -189,6 +191,36 @@ async def test_the_rag_stream_thread_reads_the_request_config(monkeypatch):
     assert seen == [pinned], frames
 
 
+def test_a_refresh_inside_a_request_reads_the_new_file_value():
+    # The fleet calls refresh_config before its last retry, to plan on the newest settings.
+    _write_from_another_process("top_k", 12, tick=1)
+    cfg.top_k = 12
+    follower = ConfigFileFollower()
+    set_config_refresh(follower.take_now)
+    try:
+        with request_config_scope():
+            _write_from_another_process("top_k", 19, tick=2)
+            refresh_config()
+            seen = cfg.top_k
+    finally:
+        set_config_refresh(None)
+    assert (cfg.top_k, seen) == (19, 19)
+
+
+@pytest.mark.parametrize("step", [5, 6], ids=["same_as_other", "different"])
+def test_a_request_reads_its_own_write_also_of_a_value_another_request_published(step):
+    start = cfg.top_k
+    with request_config_scope():
+        contextvars.Context().run(setattr, cfg, "top_k", start + 5)  # another request
+        assert cfg.top_k == start
+        cfg.top_k = start + step
+        assert cfg.top_k == start + step
+
+
+def test_dict_of_cfg_lists_the_fields_it_reads():
+    assert dict(cfg) == dict(published_config())
+
+
 def test_a_write_publishes_a_new_config_and_leaves_the_old_one_whole():
     before = published_config()
     old_top_k = before.top_k
@@ -209,7 +241,7 @@ def test_a_write_that_moves_nothing_publishes_nothing():
 def test_a_refused_write_publishes_nothing():
     before = published_config()
     with pytest.raises(ValueError):
-        cfg.top_k = "many"  # type: ignore[assignment]
+        cfg.top_k = "many"
     assert published_config() is before
 
 

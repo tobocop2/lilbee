@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import threading
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextvars import ContextVar
 from enum import Enum
 from pathlib import Path
@@ -2097,6 +2097,9 @@ class LiveConfig:
     def __repr__(self) -> str:
         return repr(_current_of(self))
 
+    def __iter__(self) -> Iterator[tuple[str, Any]]:
+        return iter(_current_of(self))
+
 
 _published_of: Callable[[LiveConfig], Config] = LiveConfig.__dict__["_live_published"].__get__
 
@@ -2130,8 +2133,9 @@ def commit_config(change: Callable[[Config], _T]) -> _T:
     source, because the model validator can re-derive a field the change does not
     name. They go onto the Config published at the time of the store, so a field
     another thread wrote meanwhile keeps its new value. A request pin moves to the
-    new Config. ``model_copy`` is shallow, so *change* must assign a field and never
-    mutate a mutable value in place.
+    new Config, or to the published one when the write moved nothing, so the request
+    reads its own write either way. ``model_copy`` is shallow, so *change* must
+    assign a field and never mutate a mutable value in place.
     """
     source = published_config()
     draft = source.model_copy()
@@ -2143,6 +2147,7 @@ def commit_config(change: Callable[[Config], _T]) -> _T:
         if value is not before[key] and value != before[key]
     }
     if not moved:
+        _move_pin(source)
         return result
     with _publish_lock:
         latest = published_config()
@@ -2151,10 +2156,19 @@ def commit_config(change: Callable[[Config], _T]) -> _T:
             draft.__dict__.update(moved)
             draft.__pydantic_fields_set__.update(moved)
         object.__setattr__(_live, "_live_published", draft)
+    _move_pin(draft)
+    return result
+
+
+def follow_published_config() -> None:
+    """Move a request's pin to the Config published last: the request reads the newest."""
+    _move_pin(published_config())
+
+
+def _move_pin(config: Config) -> None:
     pin = active_pin.get()
     if pin is not None and pin.follows_writes:
-        pin.config = draft
-    return result
+        pin.config = config
 
 
 # Once, at import on the main thread: a later warning stays in this process, because
