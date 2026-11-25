@@ -233,6 +233,13 @@ def test_an_unreadable_cache_folder_is_named_in_a_plain_error(
         dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
 
 
+def test_a_lock_folder_that_cannot_be_made_is_named_in_a_plain_error(tmp_path: Path) -> None:
+    (tmp_path / ".locks").write_bytes(b"not a folder")
+
+    with pytest.raises(RuntimeError, match=r"Cannot read the model cache folder .*acme--big-GGUF"):
+        dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
+
+
 def test_a_cache_plain_error_covers_a_listing_that_fails_while_iterating(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
