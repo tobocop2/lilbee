@@ -643,6 +643,16 @@ def _new_source_id() -> str:
     return uuid.uuid4().hex
 
 
+def _chunk_rows(table: LanceTable, rows: list[dict]) -> pa.Table:
+    """*rows* as an Arrow table of the chunk table's own schema.
+
+    LanceDB takes the columns of a list of dicts from the first dict. Built
+    against the schema, a row that lacks an optional column gets NULL for that
+    row only, and never decides the columns of the rows after it.
+    """
+    return pa.Table.from_pylist(rows, schema=table.schema)
+
+
 def _keyed(rows: Iterable[Mapping[str, Any]], key: str, ids: Mapping[str, str]) -> list[dict]:
     """*rows* with the id of the path under *key* in its place."""
     return [
@@ -2442,7 +2452,10 @@ class Store:
         table = self._chunks_table()
         keyed = _keyed(records, "source", ids)
         self._add_and_stamp_unlocked(
-            lambda: table.add(keyed), embedding_model, embedding_dim, chunk_settings
+            lambda: table.add(_chunk_rows(table, keyed)),
+            embedding_model,
+            embedding_dim,
+            chunk_settings,
         )
         return len(records)
 
@@ -3676,7 +3689,7 @@ class Store:
             return
         table = self._chunks_table()
         self._add_and_stamp_unlocked(
-            lambda: table.add(all_records), embedding_model, embedding_dim, chunk_settings
+            lambda: table.add(_chunk_rows(table, all_records)), embedding_model, embedding_dim, chunk_settings
         )
 
     def _batch_source_writes(self, items: list[ChunkWrite]) -> list[_SourceWrite]:
