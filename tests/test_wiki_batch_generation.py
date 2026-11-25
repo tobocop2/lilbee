@@ -803,6 +803,7 @@ class TestBuildStatsForABatch:
             WikiSubdir.ENTITIES,
             ["s.txt"],
             source_ids={},
+            live_ids=None,
         )
         stats = BuildStats()
         pages = generate_source_batch(
