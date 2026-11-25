@@ -119,12 +119,19 @@ class TestTheRepackedCopy:
         estimate = IK_LLAMA.estimate_memory(_request(model, on_cpu=True))
         assert estimate.resident_footprint(unified=True) == CPU_CHARGE - REPACKED
 
-    def test_the_openvino_build_backs_the_file_and_the_copy_on_the_cpu(self, model: Path) -> None:
+    def test_the_openvino_build_backs_the_file_without_the_copy_on_the_cpu(
+        self, model: Path
+    ) -> None:
+        """llama-server b12032 on OpenVINO 2026.4.1, CPU device, Llama-3.2-1B at ctx 2048.
+
+        Its anonymous memory after load is 335.4 MiB for Q4_0 and 331.3 MiB for Q8_0: the
+        Q4_0 weights, which the llama.cpp CPU build repacks into 504.0 MiB, add nothing.
+        """
         from lilbee.providers.fleet.engines.openvino import OPENVINO
 
         cpu = OPENVINO.estimate_memory(_request(model, on_cpu=True))
         card = OPENVINO.estimate_memory(_request(model, on_cpu=False))
-        assert cpu.resident_footprint(unified=True) == UNIFIED + FILE_SIZE + REPACKED
+        assert cpu.resident_footprint(unified=True) == UNIFIED + FILE_SIZE
         assert card.resident_footprint(unified=True) == UNIFIED + FILE_SIZE
 
     def test_the_alternate_build_on_a_card_is_charged_as_llama_cpp(self, model: Path) -> None:
