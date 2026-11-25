@@ -2923,11 +2923,12 @@ class TestSettingsMcp:
         assert (isolated_env / "config.toml").read_text(encoding="utf-8") == stored
 
     def test_settings_set_a_list_for_a_named_exception_is_an_error(self, isolated_env):
-        """Only text falls back; a list reaches the validator, which has no branch for it."""
+        """Only text falls back; a list reaches the validator, which refuses it in words."""
         cfg.data_root = isolated_env
         settings_set({"n_gpu_layers": 12})
         result = settings_set({"n_gpu_layers": [1]})
-        assert "int()" in result["error"]
+        assert "n_gpu_layers" in result["error"]
+        assert "use a whole number, cpu or auto" in result["error"]
         assert cfg.n_gpu_layers == 12
 
     def test_settings_set_refused_value_of_another_setting_is_an_error(self, isolated_env):

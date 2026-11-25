@@ -235,9 +235,6 @@ def _assign(trial: Config, key: str, value: Any) -> Any:
         setattr(trial, key, value)
     except ValidationError as exc:
         raise ProfileFileError(f"Bad value for {key}: {exc.errors()[0]['msg']}") from None
-    # A validator's TypeError is a bad value
-    except TypeError as exc:
-        raise ProfileFileError(f"Bad value for {key}: {exc}") from None
     return getattr(trial, key)
 
 
