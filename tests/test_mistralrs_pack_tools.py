@@ -60,7 +60,13 @@ def test_repack_places_the_tool(tmp_path: Path) -> None:
     assert os.access(tmp_path / "bin" / "mistralrs", os.X_OK)
 
 
-CUDA_LIBS = ["libcudart.so.12", "libnccl.so.2", "libcublas.so.12", "libcublasLt.so.12", "libcurand.so.10"]
+CUDA_LIBS = [
+    "libcudart.so.12",
+    "libnccl.so.2",
+    "libcublas.so.12",
+    "libcublasLt.so.12",
+    "libcurand.so.10",
+]
 
 
 def test_repack_places_the_five_cuda_libraries_beside_the_tool(tmp_path: Path) -> None:
@@ -78,7 +84,8 @@ def test_repack_makes_no_lib_folder_for_a_cpu_archive(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "name", ["lib/libother.so.1", "lib/sub/libcudart.so.12", "libcudart.so.12", "other/libnccl.so.2"]
+    "name",
+    ["lib/libother.so.1", "lib/sub/libcudart.so.12", "libcudart.so.12", "other/libnccl.so.2"],
 )
 def test_repack_refuses_a_library_that_is_not_one_of_the_five(tmp_path: Path, name: str) -> None:
     archive = _tar(tmp_path / "a.tar.gz", {"mistralrs": b"bin", name: b"rt"})
@@ -1129,6 +1136,16 @@ def test_the_pack_names_the_cuda_eula_in_the_licence_expression_of_a_cuda_cell(
     cpu = _pack_stage(tmp_path, "name_licences", BACKEND="cpu")
     assert "LicenseRef-NVIDIA-CUDA-EULA" in cuda.stdout
     assert "LicenseRef-NVIDIA-CUDA-EULA" not in cpu.stdout
+
+
+def test_the_pack_has_a_cuda_stage() -> None:
+    job = yaml.safe_load(pack_workflow().read_text(encoding="utf-8"))["jobs"]["mistralrs"]
+    assert job["steps"]
+    pack = (TOOLS / "pack_mistralrs.sh").read_text(encoding="utf-8")
+    check = (TOOLS / "check_mistralrs_wheel.sh").read_text(encoding="utf-8")
+    for word in ("add_cuda_notices", "NCCL_TAG", "LicenseRef-NVIDIA-CUDA-EULA"):
+        assert word in pack
+    assert "check_cuda_libs" in check
 
 
 def test_the_pack_matrix_holds_the_cpu_cells_and_the_six_cuda_cells() -> None:
