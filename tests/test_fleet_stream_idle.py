@@ -72,6 +72,7 @@ class _Script:
     end: bool = False  # end the stream; otherwise go silent
     close: bool = False  # close the connection after the frames, with the body not ended
     answer_wait_s: float = 0.0  # before the answer to a request that does not stream
+    role_first: bool = False  # a first data line with no content, as OpenAI-style servers send
 
 
 class _ScriptedServer:
@@ -124,6 +125,9 @@ class _ScriptedServer:
                 out.clear()
                 self._release.wait(seconds)
 
+        if script.role_first:
+            role = {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+            out.extend(_chunk(f"data: {json.dumps({'choices': [role]})}\n\n".encode()))
         if script.heartbeat_s:
             deadline = time.monotonic() + script.wait_s
             while time.monotonic() < deadline:
@@ -370,20 +374,72 @@ def test_silence_after_the_first_frame_ends_at_the_idle_bound_for_a_silent_prefi
     assert _IDLE_S <= waited < _QUICK_S
 
 
-def test_a_comment_is_not_the_first_frame_of_a_silent_prefill() -> None:
+@pytest.mark.parametrize("site", sorted(_SITES))
+def test_a_comment_is_not_the_first_frame_of_a_silent_prefill(site: str) -> None:
     """The bound starts at a ``data:`` line, so a ping before it does not start it."""
     script = _Script(wait_s=_IDLE_S * 3, heartbeat_s=_IDLE_S * 2, end=True)
     with _serve(script, silent_prefill=True) as (_server, client):
-        assert "w0" in list(client.chat_stream_items(_MESSAGES))
+        assert "w0" in _SITES[site](client)
+
+
+@pytest.mark.parametrize("site", sorted(_SITES))
+def test_silence_after_a_first_frame_without_content_is_the_silence_error(site: str) -> None:
+    """A role-only first frame starts the bound; its cut is a read timeout, not a broken body."""
+    with (
+        _serve(_Script(role_first=True, wait_s=60.0), silent_prefill=True) as (_s, client),
+        pytest.raises(fleet_client.StreamSilentError),
+    ):
+        _SITES[site](client)
 
 
 def test_a_slow_reader_of_a_silent_prefill_stream_is_not_cut() -> None:
-    """The timer runs only while the client waits for a line, not while the caller holds one."""
-    with _serve(_Script(frames=3, end=True), silent_prefill=True) as (_server, client):
+    """The bound runs only while the client waits for a line, not while the caller holds one.
+
+    The second frame comes after the caller's hold, so a bound that ran during the hold has
+    shut the socket by then.
+    """
+    script = _Script(frames=2, gap_s=_IDLE_S * 2.5, end=True)
+    with _serve(script, silent_prefill=True) as (_server, client):
         stream = client.chat_stream_items(_MESSAGES)
         assert next(stream) == "w0"
         time.sleep(_IDLE_S * 2)
-        assert "w2" in list(stream)
+        assert "w1" in list(stream)
+
+
+def test_a_bound_never_fires_after_its_stream_ends(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The next request on the pooled connection is not cut by the bound of the one before."""
+    shutdowns: list[httpx.Response] = []
+    real = fleet_client._shut_down_socket
+
+    def record(resp: httpx.Response) -> bool:
+        shutdowns.append(resp)
+        return real(resp)
+
+    monkeypatch.setattr(fleet_client, "_shut_down_socket", record)
+    with _serve(_Script(end=True), silent_prefill=True) as (server, client):
+        assert "w0" in list(client.chat_stream_items(_MESSAGES))
+        time.sleep(_IDLE_S * 3)
+        assert "w0" in list(client.chat_stream_items(_MESSAGES))
+        time.sleep(_IDLE_S * 3)
+    assert shutdowns == []
+    assert len(server.peers) == 2
+    assert len(set(server.peers)) == 1
+
+
+def test_a_silent_prefill_stream_starts_one_thread_for_all_its_lines() -> None:
+    started: list[int] = []
+    real = threading.Thread.start
+
+    def count(thread: threading.Thread) -> None:
+        started.append(1)
+        real(thread)
+
+    with _serve(_Script(frames=50, end=True), silent_prefill=True) as (_server, client):
+        list(client.chat_stream_items(_MESSAGES))  # opens the pooled connection and its server thread
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(threading.Thread, "start", count)
+            assert "w49" in list(client.chat_stream_items(_MESSAGES))
+    assert len(started) == 1
 
 
 def test_a_connection_lost_after_the_first_frame_of_a_silent_prefill_is_a_cut_answer() -> None:
