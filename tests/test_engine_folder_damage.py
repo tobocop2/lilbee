@@ -34,7 +34,7 @@ from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.engines.tei import TeiAdapter
 from lilbee.providers.fleet.host_caps import collect
-from lilbee.server.route_names import name_routes
+from lilbee.server.route_names import name_routes, name_tools
 from lilbee.server.routes import engines as routes
 from tests._litestar_test_client import create_test_client
 from tests._unreadable import POSIX_DENIES_READS, unreadable
@@ -137,10 +137,11 @@ def _assert_every_surface_names(folder: Path) -> None:
     assert code == 0
     status, rest = _rest_list()
     assert status == 200
-    for body in (cli, rest, mcp_server.engine_list_tool()):
+    mcp = mcp_server.engine_list_tool()
+    for body in (cli, rest, mcp):
         assert [build["engine"] for build in body["builds"]] == GOOD
-        # REST callers have no command line, so the route stands beside the command there only.
-        shown = name_routes(error) if body is rest else error
+        # REST and MCP callers have no command line, so the route or the tool stands beside it.
+        shown = {id(rest): name_routes(error), id(mcp): name_tools(error)}.get(id(body), error)
         assert body.get("damaged") == [{"folder": str(folder), "error": shown}]
     text = CliRunner().invoke(cli_app, ["engine", "list"])
     assert (text.exit_code, text.output.splitlines().count(error)) == (0, 1)

@@ -1,19 +1,24 @@
-"""A command in an error message gets its REST route where the server answers, and only there.
+"""A command in an error message gets its REST route or MCP tool where the server answers.
 
 The CLI and the TUI show the messages as they are. The server adds the route where an error
-becomes an HTTP response, an SSE error event or a /v1 error body.
+becomes an HTTP response, an SSE error event or a /v1 error body. The MCP server adds the tool.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import NoReturn
 from unittest.mock import MagicMock
 
 import pytest
 from litestar import get
 from litestar.exceptions import HTTPException
 
+import lilbee.mcp_server as mcp_server
+from lilbee.app import engine_service
+from lilbee.app.engine_service import RoleView
+from lilbee.core.config import cfg
 from lilbee.crawler.messages import CHROMIUM_MISSING_MESSAGE
 from lilbee.providers import engine_params
 from lilbee.providers.base import ProviderError, ProviderErrorKind, WorkerRole, require_role_ref
@@ -26,7 +31,8 @@ from lilbee.server.app import _json_error_response, _provider_error_response
 from lilbee.server.chat_completions_api.errors import classify_provider_error
 from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
 from lilbee.server.handlers.sse import sse_error
-from lilbee.server.route_names import name_routes
+from lilbee.server.route_names import name_routes, name_tools
+from lilbee.server.routes import engines as engine_routes
 from tests._litestar_test_client import create_test_client
 
 PULL = "POST /api/models/pull"
@@ -190,3 +196,101 @@ def test_a_damaged_model_file_gets_a_route_and_no_remove_route(
     named = name_routes(text)
     assert route in named
     assert "DELETE" not in named
+
+
+TOOL_NAMED = [
+    pytest.param("lilbee model pull org/m", "the model_pull tool in place of", id="pull"),
+    pytest.param("lilbee model list", "the model_list tool in place of", id="list"),
+    pytest.param(
+        "lilbee engine install tei",
+        "the engine_install tool, which needs mcp_engines_enabled in place of",
+        id="engine-install",
+    ),
+    pytest.param(
+        "lilbee engine list",
+        "the engine_list tool, which needs mcp_engines_enabled in place of",
+        id="engine-list",
+    ),
+]
+
+
+@pytest.mark.parametrize(("command", "tool"), TOOL_NAMED)
+def test_a_command_gets_the_mcp_tool_that_does_the_same_work(command: str, tool: str) -> None:
+    text = name_tools(f"Run '{command}' first.")
+    assert text.startswith(f"Run '{command}' first.")
+    assert f"Over MCP, call {tool} '" in text
+    assert "/api/" not in text
+
+
+@pytest.mark.parametrize("command", ["lilbee model rm m", "lilbee setup crawler"])
+def test_a_command_with_no_mcp_tool_gets_none(command: str) -> None:
+    assert name_tools(f"Run '{command}'.") == f"Run '{command}'."
+
+
+def test_the_mcp_tools_are_named_once() -> None:
+    once = name_tools("Run 'lilbee model pull m' or 'lilbee model list'.")
+    assert name_tools(once) == once
+    named = "Run 'lilbee model pull m' (or the model_pull tool)."
+    assert name_tools(named) == named
+
+
+def _roles_with(notice: str | None) -> list[RoleView]:
+    return [RoleView(WorkerRole.CHAT, "org/repo/m.gguf", "gguf", None, notice)]
+
+
+def test_the_rest_roles_notice_names_the_engine_list_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine_service, "roles", lambda *_a: _roles_with(choice.LIST_HINT))
+    with create_test_client([engine_routes.engine_roles_route], debug=False) as client:
+        notice = client.get("/api/engines/roles").json()["roles"][0]["notice"]
+    assert notice == name_routes(choice.LIST_HINT)
+    assert ENGINE_LIST in notice
+
+
+def test_the_rest_roles_route_keeps_a_role_with_no_notice_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine_service, "roles", lambda *_a: _roles_with(None))
+    with create_test_client([engine_routes.engine_roles_route], debug=False) as client:
+        assert client.get("/api/engines/roles").json()["roles"][0]["notice"] is None
+
+
+def test_the_mcp_roles_notice_names_the_engine_list_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cfg, "mcp_engines_enabled", True)
+    monkeypatch.setattr(engine_service, "roles", lambda *_a: _roles_with(choice.LIST_HINT))
+    notice = mcp_server.engine_roles_tool()["roles"][0]["notice"]
+    assert notice == name_tools(choice.LIST_HINT)
+    assert "the engine_list tool" in notice
+    assert "/api/" not in notice
+
+
+def test_the_mcp_roles_tool_keeps_a_role_with_no_notice_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cfg, "mcp_engines_enabled", True)
+    monkeypatch.setattr(engine_service, "roles", lambda *_a: _roles_with(None))
+    assert mcp_server.engine_roles_tool()["roles"][0]["notice"] is None
+
+
+def test_an_mcp_error_for_an_unknown_model_names_the_list_and_pull_tools() -> None:
+    error = mcp_server._error(str(ModelNotFoundError("org/repo/m.gguf")))["error"]
+    assert "the model_list tool" in error
+    assert "the model_pull tool" in error
+    assert "/api/" not in error
+
+
+def test_an_mcp_engine_refusal_names_the_engine_list_tool() -> None:
+    def refuse() -> NoReturn:
+        raise engine_service.EngineRefusedError(f"Engine tei is not installed. {choice.LIST_HINT}")
+
+    assert "the engine_list tool" in mcp_server._engine_result(refuse)["error"]
+
+
+def test_a_rest_error_leaves_the_raised_exception_as_it_was() -> None:
+    error = HTTPException(status_code=404, detail=str(ModelNotFoundError("org/repo/m.gguf")))
+    plain = error.detail
+    _error_body(error, {HTTPException: _json_error_response})
+    assert error.detail == plain
