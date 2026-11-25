@@ -107,9 +107,9 @@ def test_a_lock_held_by_another_holder_past_the_wait_shows_the_busy_text(
     install(models_dir)
     real = engine_store.file_lock
     monkeypatch.setattr(engine_store, "file_lock", lambda path, _wait: real(path, 0.2))
-    with FileLock(engines_root(models_dir) / engine_store.LOCK_DIR / "fx.lock"):
-        with pytest.raises(engine_service.EngineRefusedError) as raised:
-            engine_service.remove_build("fx", "1", "cpu")
+    holder = FileLock(engines_root(models_dir) / engine_store.LOCK_DIR / "fx.lock")
+    with holder, pytest.raises(engine_service.EngineRefusedError) as raised:
+        engine_service.remove_build("fx", "1", "cpu")
     assert str(raised.value) == BUSY
     _kept(models_dir)
 
