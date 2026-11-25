@@ -1,12 +1,14 @@
 """The retrieval prompt is budgeted with the chat engine's tokenizer when it has one."""
 
 import math
+import threading
 
 import pytest
 
 from lilbee.app.services import get_services, set_services
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind, prompt_token_budget
+from lilbee.retrieval.query.token_cost import COUNT_WORKERS, TokenCost
 from tests.conftest import make_mock_services
 from tests.test_query import _make_result
 
@@ -106,10 +108,14 @@ class TestEngineTokenizerBudget:
 
     def test_counted_text_holds_the_system_prompt_and_every_candidate(self, _services):
         _services.provider.count_chat_text_tokens.side_effect = len
-        _build(chunk="marker chunk", count=3)
-        counted = [c.args[0] for c in _services.provider.count_chat_text_tokens.call_args_list]
+        results = [
+            _make_result(source=f"{i}.pdf", chunk=f"marker chunk {i}", chunk_index=i)
+            for i in range(3)
+        ]
+        get_services().searcher._finalize_context(results, "what is in them?", None)
+        counted = {c.args[0] for c in _services.provider.count_chat_text_tokens.call_args_list}
         assert cfg.rag_system_prompt in counted
-        assert "marker chunk" in counted
+        assert {f"marker chunk {i}" for i in range(3)} <= counted
 
     def test_counted_text_holds_every_history_message(self, _services):
         _services.provider.count_chat_text_tokens.side_effect = len
@@ -181,3 +187,46 @@ class TestEngineTokenizerBudget:
     def test_a_zero_count_keeps_the_character_rule(self, _services):
         _services.provider.count_chat_text_tokens.return_value = 0
         assert len(_build().results) == _CHUNKS
+
+
+class TestConcurrentCounting:
+    def test_distinct_texts_are_counted_at_once_and_once_each(self):
+        gate = threading.Barrier(4, timeout=5)
+        seen: list[str] = []
+
+        def count(text: str) -> int:
+            gate.wait()  # all four requests must be in flight together
+            seen.append(text)
+            return len(text)
+
+        cost = TokenCost(count)
+        cost.warm(["aaaa", "bbbb", "cccc", "dddd", "aaaa"])
+        assert sorted(seen) == ["aaaa", "bbbb", "cccc", "dddd"]
+        assert cost("aaaa") == 4
+        assert len(seen) == 4
+
+    def test_in_flight_requests_are_bounded(self):
+        lock = threading.Lock()
+        live = {"now": 0, "max": 0}
+
+        def count(text: str) -> int:
+            with lock:
+                live["now"] += 1
+                live["max"] = max(live["max"], live["now"])
+            threading.Event().wait(0.01)
+            with lock:
+                live["now"] -= 1
+            return 1
+
+        TokenCost(count).warm([f"text {i}" for i in range(40)])
+        assert 1 < live["max"] <= COUNT_WORKERS
+
+    def test_a_failure_in_one_request_switches_to_the_character_rule(self):
+        def count(text: str) -> int:
+            if text == "bad":
+                raise ProviderError("down", kind=ProviderErrorKind.CONNECTION)
+            return 100
+
+        cost = TokenCost(count)
+        cost.warm(["good one", "bad"])
+        assert cost("good one") == 3  # ceil(8 / 3), not the engine's 100

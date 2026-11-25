@@ -1,10 +1,12 @@
 """Tests for neighbor-window expansion (pure logic, mocked store)."""
 
 import math
+import random
+import re
 from unittest.mock import MagicMock
 
 from lilbee.data.store import SearchChunk
-from lilbee.retrieval.query.neighbors import expand_neighbors, merge_adjacent_texts
+from lilbee.retrieval.query.neighbors import SEAM_TOKENS, expand_neighbors, merge_adjacent_texts
 
 
 def _cost(text: str) -> int:
@@ -254,3 +256,52 @@ class TestExcludedNeighbors:
             exclude=lambda t: "excluded" in t,
         )
         assert out == [center]
+
+
+_PIECE = re.compile(r"\s?[A-Za-z]{1,4}|\s?\d|\s|[^\sA-Za-z\d]")
+
+
+def _piece_tokens(text: str) -> int:
+    """A greedy sub-word tokenizer: words split into pieces of up to four letters."""
+    return len(_PIECE.findall(text))
+
+
+class TestMergedSpanCost:
+    def test_the_sum_of_parts_plus_seams_never_reads_below_the_merged_count(self):
+        """Chunks cut mid-word, with and without shared overlap, merge to no more than the bound."""
+        rng = random.Random(11)
+        words = ["alpha", "bridging", "c", "dataset", "ledger", "x9", "quarterly", "nexus"]
+        for _ in range(300):
+            body = " ".join(rng.choice(words) for _ in range(rng.randint(40, 120)))
+            size, step = rng.randint(30, 80), rng.randint(15, 60)
+            parts = [body[i : i + size] for i in range(0, len(body), step)][: rng.randint(2, 5)]
+            merged = merge_adjacent_texts(parts)
+            bound = sum(_piece_tokens(p) for p in parts) + SEAM_TOKENS * (len(parts) - 1)
+            assert _piece_tokens(merged) <= bound
+
+    def test_a_chunk_text_is_costed_once_however_many_spans_are_tried(self):
+        calls: list[str] = []
+
+        def cost(text: str) -> int:
+            calls.append(text)
+            return _cost(text)
+
+        center = _chunk(index=5, text="centre " * 10)
+        rows = [_chunk(index=i, text=f"row{i} " * 10) for i in (3, 4, 6, 7)]
+        expand_neighbors([center], _store_with(rows), radius=2, budget=12, cost=cost)
+        parts = {center.chunk, *(r.chunk for r in rows)}
+        assert set(calls) <= parts, "a merged span was costed as one text"
+
+    def test_prefetch_receives_every_neighbor_text_before_widening(self):
+        center = _chunk(index=5, text="centre")
+        rows = [_chunk(index=4, text="before"), _chunk(index=6, text="after")]
+        seen: list[str] = []
+        expand_neighbors(
+            [center],
+            _store_with(rows),
+            radius=1,
+            budget=100,
+            cost=_cost,
+            prefetch=lambda texts: seen.extend(texts),
+        )
+        assert {"before", "after"} <= set(seen)

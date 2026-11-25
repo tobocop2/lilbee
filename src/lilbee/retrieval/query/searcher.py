@@ -94,6 +94,7 @@ from lilbee.retrieval.query.intent import (
 from lilbee.retrieval.query.memory import format_memory_block, memory_to_chunk
 from lilbee.retrieval.query.neighbors import expand_neighbors
 from lilbee.retrieval.query.structural import is_structural_chunk
+from lilbee.retrieval.query.token_cost import TokenCost
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
 from lilbee.retrieval.reasoning import (
     RetrievalNotice,
@@ -1233,6 +1234,9 @@ class Searcher:
         system = self._system_with_memory(self._config.rag_system_prompt, question)
         base_results = list(results)
         cost = self._token_cost()
+        cost.warm(
+            [system, question, *(m["content"] for m in history or []), *(r.chunk for r in results)]
+        )
         budget = self._context_budget(system, question, history, scale, cost)
         results, used, dropped = self._fit_to_budget(results, budget, cost)
         results = self._widen_with_neighbors(results, max(0, budget - used), cost)
@@ -1250,37 +1254,9 @@ class Searcher:
             dropped,
         )
 
-    def _token_cost(self) -> Callable[[str], int]:
-        """Per-text token cost from the chat engine's own count, else the character rule.
-
-        Every text is counted on its own, whatever it is: a dense chunk and a
-        sparse one cost what their own tokens say, never a share of one list
-        average. Counts are cached by text. An engine with no tokenize route, or
-        one that fails, switches every later text to the character rule.
-        """
-        counted: dict[str, int] = {}
-        measuring = True
-
-        def cost(text: str) -> int:
-            nonlocal measuring
-            floor = estimate_budget_tokens(text)
-            if not measuring:
-                return floor
-            if text not in counted:
-                try:
-                    tokens = self._provider.count_chat_text_tokens(text)
-                except ProviderError:
-                    log.debug("Chat engine tokenize failed; budgeting with the character rule.")
-                    tokens = None
-                if tokens is None:
-                    measuring = False
-                    return floor
-                counted[text] = tokens
-            # The provider's window check costs text at BUDGET_CHARS_PER_TOKEN, so a
-            # prompt costed lower here would be refused there.
-            return max(counted[text], floor)
-
-        return cost
+    def _token_cost(self) -> TokenCost:
+        """Per-text token cost from the chat engine's own count, else the character rule."""
+        return TokenCost(self._provider.count_chat_text_tokens)
 
     def _context_budget(
         self,
@@ -1370,7 +1346,10 @@ class Searcher:
         # With the structural filter on, expansion must not re-import the TOC
         # and cover text the filter dropped from the results.
         exclude = is_structural_chunk if self._config.filter_structural_chunks else None
-        return expand_neighbors(results, self._store, radius, leftover, cost, exclude=exclude)
+        prefetch = cost.warm if isinstance(cost, TokenCost) else None
+        return expand_neighbors(
+            results, self._store, radius, leftover, cost, exclude=exclude, prefetch=prefetch
+        )
 
     def _system_with_memory(self, base_prompt: str, question: str) -> str:
         """Append the local-owner memory block to *base_prompt* when memory is enabled."""

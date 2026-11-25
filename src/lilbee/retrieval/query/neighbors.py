@@ -14,13 +14,18 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
     from lilbee.data.store import SearchChunk, Store
 
 # Below this a suffix-prefix match is coincidence, not chunker overlap; deduping
 # it would delete real text at an overlap-free seam.
 _MIN_OVERLAP = 16
+
+# Tokens one seam can add beyond the sum of the two texts it joins. A seam either
+# drops the shared overlap (the sum still counts it) or joins with one newline
+# token; 2 leaves room for a token that splits where the text is cut.
+SEAM_TOKENS = 2
 
 # xberg markdown breadcrumb ("# Guide > ## Install\n\n"); heading-context
 # content lines never start with "#", so only the breadcrumb matches.
@@ -103,6 +108,7 @@ def expand_neighbors(
     cost: Callable[[str], int],
     *,
     exclude: Callable[[str], bool] | None = None,
+    prefetch: Callable[[Iterable[str]], None] | None = None,
 ) -> list[SearchChunk]:
     """Widen each result with up to *radius* adjacent same-source chunks.
 
@@ -115,6 +121,11 @@ def expand_neighbors(
     duplicated (a document routed whole expands to nothing). A neighbor whose
     text matches *exclude* is treated as absent, ending the run at its side,
     so expansion cannot re-import text an upstream filter dropped.
+
+    A merged passage costs the sum of its chunks' own costs plus SEAM_TOKENS
+    per seam, so each distinct chunk text is costed once however many spans
+    are tried. *prefetch* receives the neighbor texts before widening starts,
+    so a caller can cost them together.
     """
     if budget <= 0:
         # Nothing can be spent, so skip the per-source store fetches entirely:
@@ -133,6 +144,8 @@ def expand_neighbors(
         }
     if not rows:
         return results
+    if prefetch is not None:
+        prefetch(row.chunk for row in rows.values())
     claimed = {source: set(indices) for source, indices in centers.items()}
     remaining = budget
     expanded: list[SearchChunk] = []
@@ -215,7 +228,8 @@ def _widen(
     while left or right:
         span = sorted([*left, center, *right])
         merged = _merge_span(span, texts, seams)
-        extra = cost(merged) - cost(result.chunk)
+        merged_cost = sum(cost(texts[index]) for index in span) + SEAM_TOKENS * (len(span) - 1)
+        extra = merged_cost - cost(result.chunk)
         if extra <= remaining:
             claimed.update(index for index in span if index != center)
             neighbors = [rows[(result.source, index)] for index in span if index != center]
