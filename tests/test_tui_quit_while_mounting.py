@@ -27,7 +27,7 @@ from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.cli.tui.screens import settings as settings_module
 from lilbee.cli.tui.screens.memories import MemoriesScreen
 from lilbee.cli.tui.screens.model_picker import ModelPickerModal
-from lilbee.cli.tui.screens.profile_tab import PROFILE_SELECT_ID, ProfileTab
+from lilbee.cli.tui.screens.profile_tab import PROFILE_SELECT_ID, ProfileTab, load_snapshot
 from lilbee.cli.tui.screens.settings import PROFILE_PANE_ID, SettingsScreen
 from lilbee.cli.tui.screens.settings_engines import EnginesPane
 from lilbee.cli.tui.screens.settings_presets import PresetDialog, PresetsPane
@@ -294,6 +294,36 @@ async def test_a_profile_reload_on_a_live_screen_fills_the_line_and_the_tab(monk
         error = await _worker_error(screen.reload_profile())
         assert error is None
         assert fills == [("ProfileLine.show", True), ("ProfileTab.show", True)]
+
+
+_TAB_USES: dict[str, Callable[[SettingsScreen], None]] = {
+    "failure": lambda screen: screen._show_profile_failure("disk gone"),
+    "snapshot": lambda screen: screen._show_profile(load_snapshot()),
+    "focus": lambda screen: screen._focus_profile_select(),
+}
+
+
+@pytest.mark.parametrize("use", sorted(_TAB_USES))
+async def test_profile_tab_exited_mid_mount_is_left_alone(use, monkeypatch):
+    """A Profile tab the exit left in the DOM without children takes no snapshot or focus.
+
+    The screen is attached and fills the pane lazily; the exit lands inside the tab's compose.
+    The tab is then in the DOM and flagged mounted, but detached and empty.
+    """
+    monkeypatch.setattr(settings_module, "ProfileTab", _exiting(ProfileTab))
+    app = LilbeeAppHost()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = SettingsScreen()
+        await app.push_screen(screen)
+        await pilot.pause()
+        screen._populate_pane(PROFILE_PANE_ID)
+        for _ in range(5):
+            await pilot.pause()
+        (tab,) = screen.query(ProfileTab)
+        assert tab.is_mounted
+        assert not tab.is_attached
+        assert not tab.children
+        _TAB_USES[use](screen)
 
 
 class _Probe(MountWhenAttached):
