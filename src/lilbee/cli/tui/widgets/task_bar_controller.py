@@ -165,8 +165,11 @@ class TaskBarController:
         # Atomic int writes are safe under the GIL; the bar polls at 10 Hz.
         self.pending_sync_count: int = 0
         self._detect_thread: threading.Thread | None = None
-        # Set once, by stop_all, in a lock hold; read only by _admission.
+        # Set once, by begin_stop, in a lock hold; read only by _admission.
         self._stopped = False
+        # The monotonic time by which the exit has spent its one budget; None until the
+        # app starts its unmount wait. stop_all ends its drain and joins by it as well.
+        self._exit_deadline: float | None = None
         # Roles whose worker is currently in the spawn window (1-3 s cold
         # start). Surfaced as a single TaskBar hint instead of one toast
         # per role so the chat screen isn't drowned in implementation
@@ -494,7 +497,10 @@ class TaskBarController:
         """
         self.begin_stop()
         deadline = time.monotonic() + budget_s
-        asyncio_loop.shutdown(budget_s)
+        if self._exit_deadline is not None:
+            # The unmount already spent part of the exit budget: the exit costs it once.
+            deadline = min(deadline, self._exit_deadline)
+        asyncio_loop.shutdown(max(0.0, deadline - time.monotonic()))
         with self._lock:
             threads = [*self._workers.values(), self._detect_thread]
         for thread in threads:
@@ -508,6 +514,17 @@ class TaskBarController:
             self._stopped = True
         for task in [*self.queue.queued_tasks, *self.queue.active_tasks]:
             self._cancel(task.task_id, CancelOrigin.EXIT)
+
+    def start_exit_clock(self) -> float:
+        """Start the one budget of the exit, once; return the time by which it is spent.
+
+        The app waits for its workers up to this time, and ``stop_all`` stops at it too, so
+        a worker that ignores its cancel costs the exit the budget once and not twice.
+        """
+        with self._lock:
+            if self._exit_deadline is None:
+                self._exit_deadline = time.monotonic() + _EXIT_STOP_BUDGET_S
+            return self._exit_deadline
 
     def has_running_workers(self) -> bool:
         """True while a started worker has not returned, including one past its task.

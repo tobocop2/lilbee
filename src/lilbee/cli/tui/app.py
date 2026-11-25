@@ -77,8 +77,6 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_THEME = "rose-pine"  # muted, low-glare; easier on the eyes than the warmer themes
 _CHAT_SCREEN_NAME = "chat"
-# Seconds the unmount waits for the started task-bar workers to return.
-_UNWIND_WAIT_S = 5.0
 _UNWIND_POLL_S = 0.01
 # Textual's default screen, then the current view; anything higher is pushed over the view.
 _VIEW_DEPTH = 2
@@ -825,7 +823,7 @@ class LilbeeApp(App[None]):
         each worker's calls and lets its thread return.
         """
         self.task_bar.begin_stop()
-        deadline = time.monotonic() + _UNWIND_WAIT_S
+        deadline = self.task_bar.start_exit_clock()
         while self.task_bar.has_running_workers() and time.monotonic() < deadline:
             await asyncio.sleep(_UNWIND_POLL_S)
 
