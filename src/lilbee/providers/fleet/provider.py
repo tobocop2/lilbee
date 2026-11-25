@@ -635,13 +635,17 @@ def _output_log_of(engine: EngineAdapter, launch: InstanceLaunch, swap_log: Path
     return engine_log_of(engine, launch, swap_log.parent) or swap_log
 
 
-def _still_starting_error() -> ProviderError:
-    """The error for a caller whose wait on the fleet work reached ``_FLEET_WAIT_S``."""
-    return ProviderError(
-        f"The engines are still starting after {_FLEET_WAIT_S:.0f} s.",
-        provider=_PROVIDER_NAME,
-        kind=ProviderErrorKind.STARTING,
+def _fleet_wait_error(*, stopping: bool) -> ProviderError:
+    """The error for a caller whose wait on the fleet work ended before the work.
+
+    *stopping* means the server stopped; otherwise the wait reached ``_FLEET_WAIT_S``.
+    """
+    message = (
+        SERVER_STOPPING_MESSAGE
+        if stopping
+        else f"The engines are still starting after {_FLEET_WAIT_S:.0f} s."
     )
+    return ProviderError(message, provider=_PROVIDER_NAME, kind=ProviderErrorKind.STARTING)
 
 
 def _raise_no_healthy_replica(cause: Exception) -> NoReturn:
@@ -1568,20 +1572,18 @@ class FleetProvider:
         if not bounded:
             work.result()
             return
-        finished = work.wait_unless_woken(_FLEET_WAIT_S)
-        if self._stop_waiting and not finished:
-            raise ProviderError(
-                SERVER_STOPPING_MESSAGE,
-                kind=ProviderErrorKind.STARTING,
-            )
-        if not finished:
-            raise _still_starting_error()
+        if not work.wait_unless_woken(_FLEET_WAIT_S):
+            raise _fleet_wait_error(stopping=self._stop_waiting)
         work.result()
 
     def stop_waiting(self) -> None:
-        """Answer every caller that joined the fleet work now, and each that joins later."""
+        """Answer every caller that joined the fleet work now, and each that joins later.
+
+        A rediscover that waits for the fleet work before its drop wakes too.
+        """
         with self._lock:
             self._stop_waiting = True
+            self._reload_done.notify_all()
             work = self._fleet_work
         if work is not None:
             work.wake()
@@ -2691,15 +2693,18 @@ class FleetProvider:
         *close_all* is the terminal-shutdown path, where nothing will read again and
         whatever remains must actually be closed. Any other drop waits, in the same
         hold, until no fleet work runs: a reload or a build owns the map while it runs,
-        and a drop inside its drain would orphan the groups it keeps. A drop that is
-        still waiting at the fleet-work limit raises, and the map stays as it is.
+        and a drop inside its drain would orphan the groups it keeps. A drop whose
+        wait ends on a server stop or at the fleet-work limit raises the error that a
+        fleet-work join gives then, and the map stays as it is.
         """
         doomed: list[LlamaServerClient] = []
         with self._lock:
-            if not close_all and not self._reload_done.wait_for(
-                lambda: self._fleet_work is None, _FLEET_WAIT_S
-            ):
-                raise _still_starting_error()
+            if not close_all:
+                self._reload_done.wait_for(
+                    lambda: self._fleet_work is None or self._stop_waiting, _FLEET_WAIT_S
+                )
+                if self._fleet_work is not None:
+                    raise _fleet_wait_error(stopping=self._stop_waiting)
             live = [client for pool in self._clients.values() for client in pool]
             self._swaps = {}
             self._launches = {}
