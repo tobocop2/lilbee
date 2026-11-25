@@ -107,9 +107,7 @@ OTHER_CUDA = [
 
 
 @pytest.mark.parametrize("cuda", MISTRAL_CUDA)
-def test_a_mistral_rs_cuda_wheel_gets_a_row_beside_the_cpu_row(
-    tool: ModuleType, cuda: str
-) -> None:
+def test_a_mistral_rs_cuda_wheel_gets_a_row_beside_the_cpu_row(tool: ModuleType, cuda: str) -> None:
     releases = [
         release(
             "t",
