@@ -11,6 +11,7 @@ build/
 .ruff_cache/
 .coverage
 .coverage.*
+coverage.json
 htmlcov/
 *.pdf
 *.html
@@ -53,6 +54,7 @@ PLAN.md
 .DS_Store
 scripts/*
 !scripts/check_style_rules.py
+!scripts/check_branch_coverage.py
 !scripts/porkbun-dns-setup.sh
 !scripts/demo.sh
 !scripts/release.sh
