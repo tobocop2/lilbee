@@ -2041,8 +2041,9 @@ class Store:
                 column_added.result()
                 db.open_table(name).drop_columns([column])
                 done += 1
-        if META_TABLE in names:
-            db.open_table(META_TABLE).update(
+        meta = open_committed(db, META_TABLE)
+        if meta is not None:
+            meta.update(
                 where="schema_version >= 2", values={"schema_version": KEYED_SCHEMA_VERSION}
             )
         log.info("Keyed the library at %s by source id", self._config.lancedb_dir)
