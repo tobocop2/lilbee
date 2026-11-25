@@ -101,12 +101,6 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      # Without the key, checkout falls back to the job token, and a push made
-      # with that token starts no CI, so the pin pull request never merges.
-      - name: The pin push needs the flake pins deploy key
-        env:
-          FLAKE_PINS_SSH_KEY: ${{ secrets.FLAKE_PINS_SSH_KEY }}
-        run: '[ -n "${FLAKE_PINS_SSH_KEY}" ] || { echo "FLAKE_PINS_SSH_KEY is not set, so the flake pin cannot land"; exit 1; }'
       - uses: actions/checkout@v7
         with:
           ref: main
@@ -130,6 +124,7 @@ jobs:
           version: ${{ needs.resolve.outputs.version }}
           systems-json: ${{ steps.sys.outputs.value }}
           commit-message: "lilbee-compat ${{ needs.resolve.outputs.version }} (flake)"
+          deploy-key: ${{ secrets.FLAKE_PINS_SSH_KEY }}
 
   snap:
     needs: resolve

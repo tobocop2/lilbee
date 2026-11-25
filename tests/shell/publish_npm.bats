@@ -83,15 +83,32 @@ publish() {  # tag
   [ ! -s "${CALLS}" ]
 }
 
-# The npm job's condition, read from the workflow.
-npm_job_if() {
-  yq -r '.jobs.npm.if' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
+# The resolve step that decides whether the npm job runs, as the workflow runs it.
+npm_requested() {  # channels tag
+  local wf="${REPO_ROOT}/.github/workflows/publish-packages.yml" out="${BATS_TEST_TMPDIR}/github_output"
+  : > "${out}"
+  step=$(yq -r '.jobs.resolve.steps[] | select(.id == "npm") | .run' "${wf}")
+  [ -n "${step}" ] || return 2
+  CHANNELS="$1" TAG="$2" GITHUB_OUTPUT="${out}" bash -c "${step}" || return
+  sed -n 's/^requested=//p' "${out}"
 }
 
 @test "channels all does not request npm for a dev tag, and naming npm still does" {
-  run npm_job_if
-  [ "$status" -eq 0 ]
-  [ "$output" = "(inputs.channels == 'all' && !contains(inputs.tag, '.dev')) || contains(inputs.channels, 'npm')" ]
+  run npm_requested all v1.2.3b420.dev711
+  [ "$output" = false ]
+  run npm_requested all v1.2.3b1000
+  [ "$output" = true ]
+  run npm_requested npm v1.2.3b420.dev711
+  [ "$output" = true ]
+  run npm_requested homebrew,npm v1.2.3b1000
+  [ "$output" = true ]
+  run npm_requested homebrew,nix v1.2.3b1000
+  [ "$output" = false ]
+  # The npm job runs on that decision and on nothing else.
+  run yq -r '.jobs.npm.if' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
+  [ "$output" = "needs.resolve.outputs.npm == 'true'" ]
+  run yq -r '.jobs.resolve.outputs.npm' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
+  [ "$output" = '${{ steps.npm.outputs.requested }}' ]
 }
 
 @test "a version npm already holds is not published again, and the listing still runs" {

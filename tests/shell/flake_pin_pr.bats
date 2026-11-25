@@ -188,20 +188,37 @@ remote_branches() {
   done
 }
 
-# A missing secret expands to empty. Checkout then falls back to the job token,
-# whose push starts no CI, so the job must stop before it.
-@test "every nix-flake job fails before checkout when the flake pins key is missing" {
+@test "every nix-flake job passes the flake pins key to the publish action" {
   for wf in publish-packages publish-cuda-packages publish-rocm-packages publish-compat-packages publish-compat-cuda-packages; do
-    file="${REPO_ROOT}/.github/workflows/${wf}.yml"
-    run yq -r '.jobs["nix-flake"].steps[0].env.FLAKE_PINS_SSH_KEY' "${file}"
+    run yq -r '.jobs["nix-flake"].steps[] | select(.uses == "./.github/actions/publish-flake-sources") | .with["deploy-key"]' \
+      "${REPO_ROOT}/.github/workflows/${wf}.yml"
     [ "$output" = '${{ secrets.FLAKE_PINS_SSH_KEY }}' ] || { echo "${wf}: ${output}" >&2; return 1; }
-    step=$(yq -r '.jobs["nix-flake"].steps[0].run' "${file}")
-    FLAKE_PINS_SSH_KEY= run bash -c "${step}"
-    [ "$status" -eq 1 ] || { echo "${wf}: exit ${status}" >&2; return 1; }
-    [[ "$output" == *"FLAKE_PINS_SSH_KEY is not set"* ]]
-    FLAKE_PINS_SSH_KEY=key run bash -c "${step}"
-    [ "$status" -eq 0 ] || { echo "${wf}: exit ${status} with the key set" >&2; return 1; }
   done
+}
+
+# The publish action's first step, as it runs: DEPLOY_KEY and DRY_RUN come from its inputs.
+key_check() {  # deploy key, dry run
+  local action="${REPO_ROOT}/.github/actions/publish-flake-sources/action.yml"
+  [ "$(yq -r '.runs.steps[0].env.DEPLOY_KEY' "${action}")" = '${{ inputs.deploy-key }}' ] || return 2
+  [ "$(yq -r '.runs.steps[0].env.DRY_RUN' "${action}")" = '${{ inputs.dry-run }}' ] || return 2
+  step=$(yq -r '.runs.steps[0].run' "${action}")
+  DEPLOY_KEY="$1" DRY_RUN="$2" bash -c "${step}"
+}
+
+# A missing secret expands to empty. Checkout then falls back to the job token,
+# whose push starts no CI, so a real run must stop before anything is pushed.
+@test "the publish action fails a real run when the flake pins key is missing" {
+  run key_check "" false
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"FLAKE_PINS_SSH_KEY is not set"* ]]
+  run key_check key false
+  [ "$status" -eq 0 ]
+}
+
+@test "a dry run passes the key check with no key, because it pushes nothing" {
+  run key_check "" true
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry run"* ]]
 }
 
 @test "a dry run of publish packages stops before any channel unless it is nix alone" {
