@@ -97,7 +97,23 @@ def service(monkeypatch: pytest.MonkeyPatch) -> _Rows:
     monkeypatch.setattr(engine_service, "engine_rows", rows)
     offered = {name: frozenset({"gguf"}) for name in ("llama.cpp", "ik_llama.cpp", "tei")}
     monkeypatch.setattr(engine_service, "offered_engines", lambda: dict(offered))
+    monkeypatch.setattr(engine_service, "experimental_devices", lambda *_a, **_k: ())
     return rows
+
+
+async def test_a_backend_with_a_device_that_has_no_record_shows_the_experimental_mark(
+    service: _Rows, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unproven = {"ik_llama.cpp": ("NVIDIA GPU",), "llama.cpp": ("Apple GPU",)}
+    monkeypatch.setattr(
+        engine_service, "experimental_devices", lambda engine, _cell=None: unproven.get(engine, ())
+    )
+    service.rows.append(EngineRow("mistral.rs", EngineState.NOT_INSTALLED))
+    app = _SettingsApp()
+    async with app.run_test(size=(140, 40)) as pilot:
+        table = await _open_engines(app, pilot, rows=5)
+        backends = [_plain(table.get_row_at(i)[2]) for i in range(table.row_count)]
+        assert backends == ["metal (experimental)", "cuda (experimental)", "cpu", "cpu", "-"]
 
 
 def _toasts() -> list[str]:

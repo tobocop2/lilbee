@@ -77,6 +77,15 @@ def _size_text(row: EngineRow) -> str:
     return msg.ENGINES_NO_VALUE
 
 
+def _backend_text(row: EngineRow) -> str:
+    """The backend of a row, marked experimental when its cell has a device with no record."""
+    if not row.backend:
+        return msg.ENGINES_NO_VALUE
+    if engine_service.BuildView(row.engine, row.version, row.backend).not_run_on:
+        return f"{row.backend} ({msg.ENGINES_EXPERIMENTAL})"
+    return row.backend
+
+
 def _action_text(row: EngineRow) -> str:
     """The action of a row."""
     return _ACTION_TEXT[row.state]
@@ -147,7 +156,7 @@ class EnginesPane(MountWhenAttached, VerticalScroll):
         return [
             self._styled(engine_mark(row.engine)),
             Text(row.version or msg.ENGINES_NO_VALUE),
-            Text(row.backend or msg.ENGINES_NO_VALUE),
+            Text(_backend_text(row)),
             Text(_size_text(row)),
             Text(_STATE_TEXT[row.state]),
             Text(used),
