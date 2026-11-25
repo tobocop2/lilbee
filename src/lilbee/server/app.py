@@ -285,8 +285,8 @@ class _LibraryOpenWait(ASGIMiddleware):
 
     The wait runs off the loop, so an upgrade never blocks it. The limit sits under the
     15 s timeout of the Obsidian plugin, so the plugin shows the reason. Health, the warm
-    stream and shutdown pass at once: health reports the upgrade. A route that carries
-    the no_library option never reads the library, so it passes too. MCP tool calls wait
+    stream and shutdown pass at once: health reports the upgrade. The engine list and
+    roles routes never read the library, so they pass too. MCP tool calls wait
     for the library where they use it. A process with no services has no open to wait
     for, and the request passes without building them.
     """
