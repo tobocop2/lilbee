@@ -49,6 +49,15 @@ def attach_rotating_file_handler(
     root.addHandler(handler)
 
 
+def detach_rotating_file_handler(log_path: Path) -> None:
+    """Remove and close the root logger's RotatingFileHandler for *log_path*, if any."""
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if isinstance(handler, RotatingFileHandler) and Path(handler.baseFilename) == log_path:
+            root.removeHandler(handler)
+            handler.close()
+
+
 def _is_terminal_handler(handler: logging.Handler) -> bool:
     """Whether *handler* writes records to stderr or stdout."""
     return (
