@@ -77,4 +77,6 @@ async def test_cancelling_a_pull_during_the_projector_backoff_ends_it_before_the
         assert row.status is TaskStatus.CANCELLED
         assert time.monotonic() - started < 5
     assert requests == ["mmproj.gguf"]
-    assert list(tmp_path.rglob("*")) == []
+    # The cleanup takes the hub's lock file for each blob, so the lock folder stays.
+    left = [p for p in tmp_path.rglob("*") if ".locks" not in p.relative_to(tmp_path).parts]
+    assert left == []
