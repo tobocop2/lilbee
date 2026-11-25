@@ -198,6 +198,11 @@ def set_http_mounted(value: bool) -> None:
     _transport.http_mounted = value
 
 
+def _name_tools(text: str) -> str:
+    """*text* with the MCP tool for each command it names, as this transport needs it."""
+    return name_tools(text, http_mounted=_transport.http_mounted)
+
+
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 # Set by the offload for the duration of one sync handler and read by the long
@@ -357,7 +362,7 @@ def _error(msg: str) -> dict[str, Any]:
 
     An MCP client has no command line, so a command in *msg* gets its tool beside it.
     """
-    return {"error": name_tools(msg)}
+    return {"error": _name_tools(msg)}
 
 
 def _wiki_tool(fn: _F) -> _F:
@@ -1538,7 +1543,7 @@ async def _rebuild_when(needed: bool) -> dict[str, Any]:
                 quiet=True, force_rebuild=True, cancel=cancel, started_by=_SYNC_STARTER
             )
         except (*SYNC_REFUSALS, ProviderError) as exc:
-            return {"rebuild": None, "rebuild_error": name_tools(str(exc))}
+            return {"rebuild": None, "rebuild_error": _name_tools(str(exc))}
     return {"rebuild": result.model_dump()}
 
 
@@ -2041,12 +2046,12 @@ def _derive_owner(agent_id: str, ctx: Context | None) -> str:
 def _embedding_mismatch_error(exc: EmbeddingModelMismatchError) -> dict[str, Any]:
     """The structured error of an index that the embedder no longer matches."""
     if isinstance(exc, EmbeddingEngineChangedError):
-        return {"error": str(exc), "code": SseErrorCode.EMBEDDING_MISMATCH}
+        return {**_error(str(exc)), "code": SseErrorCode.EMBEDDING_MISMATCH}
     # Structured so an agent can offer to adopt the index's embedder rather than
     # parse prose out of a generic error. Names the embedder, which the HTTP
     # search route keeps out of its generic 503.
     return {
-        "error": str(exc),
+        **_error(str(exc)),
         "code": "INDEX_EMBEDDER_MISMATCH",
         "persisted_model": exc.persisted_model,
         "persisted_dim": exc.persisted_dim,
@@ -2368,7 +2373,7 @@ def engine_list_tool() -> dict[str, Any]:
         return refused
     return _engine_result(
         lambda: EngineBuildsResponse.model_validate(
-            name_damaged_folders(engine_service.engine_list().payload(), name_tools)
+            name_damaged_folders(engine_service.engine_list().payload(), _name_tools)
         )
     )
 
@@ -2406,7 +2411,7 @@ def engine_roles_tool() -> dict[str, Any]:
                     model=v.model,
                     format=v.format,
                     engine=v.engine,
-                    notice=name_tools(v.notice) if v.notice else v.notice,
+                    notice=_name_tools(v.notice) if v.notice else v.notice,
                 )
                 for v in engine_service.roles()
             ]
