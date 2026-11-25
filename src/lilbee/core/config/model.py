@@ -1561,7 +1561,8 @@ class Config(BaseSettings):
         except (httpx.InvalidURL, ValueError):
             raise ValueError(
                 "The address is not a valid web address. "
-                "Write it as http://host:port, for example http://localhost:11434"
+                "Write it as a URL with a scheme, host and port, "
+                "for example http://localhost:11434"
             ) from None
         return v.rstrip("/")
 
