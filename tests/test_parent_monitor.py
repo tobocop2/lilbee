@@ -44,6 +44,16 @@ def create_time_identity() -> Iterator[None]:
         yield
 
 
+@pytest.fixture()
+def windows() -> Iterator[None]:
+    """Pin the platform to Windows, the one that reads psutil's create time.
+
+    macOS reads the mach start instead, which test_parent_monitor_clock_step_off_linux.py covers.
+    """
+    with mock.patch("lilbee.parent_monitor.sys.platform", "win32"):
+        yield
+
+
 class TestParseParentPid:
     def test_returns_none_when_unset(self):
         assert parse_parent_pid() is None
@@ -77,6 +87,7 @@ class TestParseParentPid:
             os.environ.pop(PARENT_PID_ENV, None)
 
 
+@pytest.mark.usefixtures("windows")
 class TestParentIdentity:
     def test_identity_is_create_time_off_linux(self):
         proc = mock.MagicMock()
@@ -304,6 +315,7 @@ def _processes(parent_starts: list[float]) -> mock.MagicMock:
     return mock.MagicMock(side_effect=process)
 
 
+@pytest.mark.usefixtures("windows")
 class TestWatchParentThread:
     def test_fires_at_once_when_the_pid_holds_a_process_started_after_us(self):
         """The parent died and its pid was reused before the watch began."""
