@@ -48,12 +48,14 @@ from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.binary import engine_pin, installed_llama_server
 from lilbee.providers.fleet.client import (
     ChatDeadlineError,
+    DeviceRefusedError,
     LlamaServerClient,
     StreamInterruptedError,
     StreamSilentError,
     is_connection_failure,
     is_load_capacity_failure,
     is_rebuildable_failure,
+    is_replica_failure,
     retry_on_gateway_error,
 )
 from lilbee.providers.fleet.contract import (
@@ -526,17 +528,47 @@ def _stream_reserved(
         return _ReservedStream(client, _primed_stream(open_stream(client)))
     except BaseException as exc:
         client.release()
+        if isinstance(exc, DeviceRefusedError):
+            return _stream_on_other_replica(pool, client, open_stream, exc)
         _raise_if_restarted(client, exc)
+        raise
+
+
+def _stream_on_other_replica(
+    pool: _LivePool[LlamaServerClient],
+    failed: LlamaServerClient,
+    open_stream: Callable[[LlamaServerClient], ClosableIterator[ChatStreamItem]],
+    cause: Exception,
+) -> ClosableIterator[ChatStreamItem]:
+    """Open the stream on a replica other than *failed*, which the device check refused.
+
+    The refusal comes before any byte is sent, so the sibling takes the whole request.
+    With no other replica, the refusal surfaces.
+    """
+    failover = dataclasses.replace(pool, wait=lambda: _wait_for_failover(pool.wait, cause))
+    retry = failover.pick(lambda clients: _reserve_other_than(clients, failed))
+    if retry is None:
+        _raise_no_healthy_replica(cause)
+    try:
+        return _ReservedStream(retry, _primed_stream(open_stream(retry)))
+    except BaseException:
+        retry.release()
         raise
 
 
 def _call_reserved(
     pool: _LivePool[LlamaServerClient], call: Callable[[LlamaServerClient], _T]
 ) -> _T:
-    """Run *call* on the least-busy client, holding its reservation for the whole call."""
+    """Run *call* on the least-busy client, holding its reservation for the whole call.
+
+    A replica whose device check refuses the request hands it to a sibling through
+    the same retry as a dead replica.
+    """
     client = pool.pick(_reserve_least_busy)
     try:
         return call(client)
+    except DeviceRefusedError as exc:
+        return _retry_on_other_replica(pool, client, call, exc)
     except Exception as exc:
         _raise_if_restarted(client, exc)
         raise
@@ -559,7 +591,7 @@ def _call_with_failover(
     try:
         result = call(client)
     except Exception as exc:
-        if not is_connection_failure(exc):
+        if not is_replica_failure(exc):
             raise
         client.mark_unhealthy()
         return _retry_on_other_replica(pool, client, call, exc)
@@ -584,7 +616,7 @@ def _retry_on_other_replica(
     try:
         retry_result = call(retry)
     except Exception as retry_exc:
-        if is_connection_failure(retry_exc):
+        if is_replica_failure(retry_exc):
             retry.mark_unhealthy()
             _raise_no_healthy_replica(retry_exc)
         raise
@@ -927,7 +959,7 @@ def _dispatch_vision(
         try:
             result = call(client)
         except Exception as exc:
-            if not is_connection_failure(exc):
+            if not is_replica_failure(exc):
                 raise
             client.mark_unhealthy()
             failed, cause = client, exc
@@ -943,7 +975,7 @@ def _dispatch_vision(
         try:
             retry_result = call(retry_client)
         except Exception as retry_exc:
-            if is_connection_failure(retry_exc):
+            if is_replica_failure(retry_exc):
                 retry_client.mark_unhealthy()
                 _raise_no_healthy_replica(retry_exc)
             raise
