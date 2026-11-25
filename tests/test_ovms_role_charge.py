@@ -78,9 +78,7 @@ def test_a_chat_role_holds_its_weights_twice_plus_the_cache_and_the_runtime(
     tmp_path: Path,
 ) -> None:
     path = _folder(tmp_path, config=_FULL_CONFIG)
-    assert _charge(path, WorkerRole.CHAT) == (
-        2 * WEIGHTS + KV_PER_TOKEN * CTX * SLOTS + 928 * MIB
-    )
+    assert _charge(path, WorkerRole.CHAT) == (2 * WEIGHTS + KV_PER_TOKEN * CTX * SLOTS + 928 * MIB)
 
 
 def test_a_request_with_no_role_is_charged_as_chat(tmp_path: Path) -> None:

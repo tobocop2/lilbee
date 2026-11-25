@@ -494,9 +494,7 @@ def _ovms_encoder_estimate(
     if hidden is None:
         return _unknown_estimate(weights)
     return _sized_estimate(
-        weights
-        + _OVMS_ENCODER_RUNTIME_BYTES
-        + request_tokens * hidden * bytes_per_token_width
+        weights + _OVMS_ENCODER_RUNTIME_BYTES + request_tokens * hidden * bytes_per_token_width
     )
 
 
