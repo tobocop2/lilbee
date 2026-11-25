@@ -293,9 +293,13 @@ def _prepare_ask(*, no_sync: bool) -> None:
     from lilbee.app.settings import apply_settings_update
     from lilbee.modelhub.models import ensure_chat_model
 
-    pulled = ensure_chat_model()
+    # The settings update below reports the no-engine notice; the pull stays silent on it.
+    pulled = ensure_chat_model(report_no_engine=False)
     if pulled is not None:
-        apply_settings_update({"chat_model": pulled})
+        result = apply_settings_update({"chat_model": pulled})
+        # stderr keeps the JSON document on stdout whole.
+        for warning in result.warnings:
+            print_prefixed(PlainConsole(stderr=True), "Warning: ", warning, style=theme.WARNING)
     _swap_stale_models_to_installed(chat_overridden=chat_model_overridden())
     get_services().embedder.validate_model()
     if cfg.auto_sync and not no_sync:

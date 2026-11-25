@@ -210,9 +210,17 @@ def prompt_model_choice(ram_gb: float) -> ModelInfo:
 
 
 def validate_disk_and_pull(
-    model_info: ModelInfo, free_gb: float, *, console: PlainConsole | None = None
+    model_info: ModelInfo,
+    free_gb: float,
+    *,
+    console: PlainConsole | None = None,
+    report_no_engine: bool = True,
 ) -> str:
-    """Check disk space and pull the model. Returns the pulled ref; persist via the caller."""
+    """Check disk space and pull the model. Returns the pulled ref; persist via the caller.
+
+    *report_no_engine* False leaves the no-engine notice out of the pull, for a caller
+    whose settings update reports it.
+    """
     required_gb = model_info.size_gb + _DISK_HEADROOM_GB
     if free_gb < required_gb:
         raise RuntimeError(
@@ -221,11 +229,13 @@ def validate_disk_and_pull(
             f"Free up space or choose a smaller model."
         )
 
-    pull_with_progress(model_info.ref, console=console)
+    pull_with_progress(model_info.ref, console=console, report_no_engine=report_no_engine)
     return model_info.ref
 
 
-def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> None:
+def pull_with_progress(
+    model: str, *, console: PlainConsole | None = None, report_no_engine: bool = True
+) -> None:
     """Pull a model via model_manager with a progress bar, then check its vision projector."""
     from lilbee.app.models import ensure_vision_projector, join_warnings
     from lilbee.app.services import get_services
@@ -262,6 +272,7 @@ def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> No
             on_bytes=_on_bytes,
             on_notice=notices.append,
             on_retry=retry_reporter(_on_retry),
+            report_no_engine=report_no_engine,
         )
     warning = join_warnings(*notices, ensure_vision_projector(model, warn_unreadable=True))
     if warning is not None:
@@ -269,8 +280,11 @@ def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> No
     console.print(f"Model '{model}' ready.", soft_wrap=True)
 
 
-def ensure_chat_model() -> str | None:
+def ensure_chat_model(*, report_no_engine: bool = True) -> str | None:
     """If no chat models are installed, prompt for one and pull it. Returns the pulled ref or None.
+
+    *report_no_engine* False leaves the no-engine notice out of the pull, for a caller
+    whose settings update reports it.
 
     Interactive (TTY): show catalog picker with descriptions and sizes.
     Non-interactive (CI/pipes): raise with guidance; models are never
@@ -292,7 +306,7 @@ def ensure_chat_model() -> str | None:
     ram_gb = get_system_ram_gb()
     free_gb = get_free_disk_gb(cfg.data_dir)
     model_info = prompt_model_choice(ram_gb)
-    return validate_disk_and_pull(model_info, free_gb)
+    return validate_disk_and_pull(model_info, free_gb, report_no_engine=report_no_engine)
 
 
 def _remote_chat_model_names() -> list[str]:
