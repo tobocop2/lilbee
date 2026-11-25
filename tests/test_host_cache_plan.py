@@ -225,7 +225,7 @@ class TestNoRoom:
         assert "Each turn reprocesses the whole conversation." in named[0]
 
     def test_a_model_that_makes_no_checkpoints_does_not_warn_for_a_bound_of_zero(
-        self, host, caplog
+        self, caplog
     ) -> None:
         bounds = planning_mod._HostCache(cache_ram_mib=10, ctx_checkpoints=0)
         launch = InstanceLaunch(
