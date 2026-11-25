@@ -47,6 +47,7 @@ from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.binary import engine_pin, installed_llama_server
 from lilbee.providers.fleet.client import (
     ChatDeadlineError,
+    DeviceRefusedError,
     LlamaServerClient,
     StreamInterruptedError,
     StreamSilentError,
@@ -3329,6 +3330,8 @@ class FleetProvider:
                 # without anything having to remember it was bad.
                 client.mark_unhealthy()
                 self._warm_errors[role] = str(exc)
+                if isinstance(exc, DeviceRefusedError):
+                    self._remove_refused_replica(role, client, str(exc))
                 log.warning(
                     "The %s model failed to load: %s",
                     role.value,
@@ -3342,6 +3345,25 @@ class FleetProvider:
             if swap is not None:
                 swap.record_ready()
         return warmed
+
+    def _remove_refused_replica(
+        self, role: WorkerRole, client: LlamaServerClient, reason: str
+    ) -> None:
+        """Take a replica on the wrong device out of service until the next warm checks it.
+
+        llama-swap stops its upstream, so health no longer lists it as loaded. The client
+        leaves the pool, because llama-swap starts a stopped upstream on its next request.
+        A role left with no replica refuses its requests with *reason*.
+        """
+        client.unload_upstream()
+        with self._lock:
+            pool = self._clients.get(role, [])
+            if client not in pool:
+                return
+            self._clients[role] = [kept for kept in pool if kept is not client]
+            if not self._clients[role]:
+                self._refused_roles[role] = reason
+            self._retire_clients([client])
 
     def _warm_chat_role(self, clients: list[LlamaServerClient]) -> None:
         """Warm the chat role, driving the tracker through read -> load -> ready/fail.

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 import httpx
 import psutil
@@ -115,9 +115,10 @@ _INTERPRETER_PREFIX = "python"
 _CONFIG_FLAG = "-config"
 _LISTEN_FLAG = "-listen"
 _HEALTH_PATH = "/health"
-_RUNNING_PATH = "/running"
-# Stops every upstream llama-server; llama-swap itself keeps listening.
-_UNLOAD_PATH = "/api/models/unload"
+RUNNING_PATH = "/running"
+# Stops every upstream llama-server; llama-swap itself keeps listening. A model id
+# after a "/" stops that upstream alone.
+UNLOAD_PATH = "/api/models/unload"
 _HTTP_TIMEOUT_S = 10.0
 # llama-swap's own proxy answers within a second; upstream model loads have their
 # own (longer) budget inside llama-swap, so this only covers the proxy coming up.
@@ -725,14 +726,10 @@ class SwapManager:
         with contextlib.suppress(httpx.HTTPError, ValueError, KeyError, TypeError, ProviderError):
             payload = (
                 _probe_client()
-                .get(f"{self.endpoint()}{_RUNNING_PATH}", timeout=_PROBE_TIMEOUT_S)
+                .get(f"{self.endpoint()}{RUNNING_PATH}", timeout=_PROBE_TIMEOUT_S)
                 .json()
             )
-            return {
-                entry[_KEY_MODEL]
-                for entry in payload[_KEY_RUNNING]
-                if entry.get(_KEY_STATE) == _STATE_READY
-            }
+            return ready_model_ids(payload)
         return set()
 
     def _boot_log_tail(self) -> str:
@@ -976,6 +973,16 @@ def find_live_state(data_dir: Path, group: SwapGroup) -> SwapState | None:
     return best
 
 
+def ready_model_ids(payload: Any) -> set[str]:
+    """The model ids that a decoded ``/running`` body lists as ready.
+
+    Raises KeyError, TypeError or AttributeError for a body of another shape.
+    """
+    return {
+        entry[_KEY_MODEL] for entry in payload[_KEY_RUNNING] if entry.get(_KEY_STATE) == _STATE_READY
+    }
+
+
 def _running_listing(base_url: str) -> list[dict] | None:
     """The ``running`` entries at *base_url*, or ``None`` when it is not llama-swap.
 
@@ -987,7 +994,7 @@ def _running_listing(base_url: str) -> list[dict] | None:
     Total: any transport error or non-conforming body reads as "not our engine".
     """
     try:
-        resp = _probe_client().get(f"{base_url}{_RUNNING_PATH}", timeout=_LIVENESS_TIMEOUT)
+        resp = _probe_client().get(f"{base_url}{RUNNING_PATH}", timeout=_LIVENESS_TIMEOUT)
     except (OSError, httpx.HTTPError):
         return None
     if resp.status_code >= httpx.codes.BAD_REQUEST:
@@ -1171,7 +1178,7 @@ def engine_answers(data_dir: Path) -> bool:
 
 
 def _unload_models(proxy_port: int) -> bool:
-    url = f"http://{_HOST}:{proxy_port}{_UNLOAD_PATH}"
+    url = f"http://{_HOST}:{proxy_port}{UNLOAD_PATH}"
     try:
         resp = _probe_client().post(url, timeout=_HTTP_TIMEOUT_S)
     except (OSError, httpx.HTTPError) as exc:
