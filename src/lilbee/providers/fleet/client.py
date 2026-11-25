@@ -781,6 +781,11 @@ class LlamaServerClient:
         self.restart_message: str | None = None
 
     @property
+    def model_id(self) -> str:
+        """The replica id this client's requests name; the swap manager keys its findings by it."""
+        return self._model
+
+    @property
     def profile(self) -> RequestProfile:
         """The request profile of this server's engine."""
         return self._profile
