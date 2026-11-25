@@ -966,9 +966,7 @@ def code_parsers_ready(tmp_path_factory) -> Iterator[None]:
     """
     from importlib.metadata import version
 
-    from tree_sitter_language_pack import PackConfig, configure, has_language
-
-    from lilbee.data.extract.code_chunker import _ensure_language
+    from tree_sitter_language_pack import PackConfig, ProcessConfig, configure, process
 
     run_root = tmp_path_factory.getbasetemp().parent
     # The pack version is in the name: a run without xdist keeps this folder across runs.
@@ -976,9 +974,11 @@ def code_parsers_ready(tmp_path_factory) -> Iterator[None]:
     configure(PackConfig(cache_dir=str(cache)))
     with FileLock(run_root / "parser-cache.lock"):
         for language in CODE_PARSER_LANGUAGES:
-            _ensure_language(language)
-            if not has_language(language):
-                pytest.fail(f"The {language} parser is not available in {cache}")
+            # The pack fetches a parser on its first parse, not in has_language or init.
+            try:
+                process("x\n", ProcessConfig(language))  # type: ignore[arg-type]
+            except Exception as error:
+                pytest.fail(f"The {language} parser is not available in {cache}: {error}")
     yield
 
 
