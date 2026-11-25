@@ -26,12 +26,17 @@ from lilbee.catalog import (
     CatalogModel,
     ModelFamily,
     ModelVariant,
-    disk_shortfall,
     get_catalog,
     get_families,
     resolve_filename,
 )
-from lilbee.catalog.download import _BYTES_PER_GB, download_bytes
+from lilbee.catalog.download import (
+    _BYTES_PER_GB,
+    cache_blobs,
+    reclaimed_shortfall,
+    remote_shards,
+    shards_bytes,
+)
 from lilbee.catalog.models import CatalogResult, estimate_min_ram_gb
 from lilbee.catalog.refs import canonical_ref, is_gguf_filename
 from lilbee.catalog.runnable import hidden_summary
@@ -2162,6 +2167,7 @@ class CatalogScreen(Screen[None]):
         # The row's own size is an approximation off the parameter count; one
         # file is named here, so the check asks HuggingFace what it really costs.
         needed = int(model.size_gb * _BYTES_PER_GB)
+        blobs: list[str] = []
         try:
             if model.format is ModelFormat.GGUF:
                 engine = get_services().engines.for_ref(model.pull_ref)
@@ -2170,7 +2176,9 @@ class CatalogScreen(Screen[None]):
                 if dest.exists():
                     self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name))
                     return
-                needed = download_bytes(model.hf_repo, filename)
+                shards = remote_shards(model.hf_repo, filename)
+                needed = shards_bytes(shards)
+                blobs = cache_blobs(shards)
         except NoEngineError as exc:
             self.notify(str(exc), severity="error")
             return
@@ -2180,7 +2188,11 @@ class CatalogScreen(Screen[None]):
         # After the already-installed check, which needs no space, and before
         # the enqueue: a task that fails instantly is terminal, so dedupe would
         # not stop a second row.
-        shortfall = disk_shortfall(cfg.models_dir, model.hf_repo, needed)
+        try:
+            shortfall = reclaimed_shortfall(cfg.models_dir, model.hf_repo, blobs, needed)
+        except RuntimeError as exc:
+            self.notify(str(exc), severity="error")
+            return
         if shortfall is not None:
             self.notify(shortfall, severity="warning")
             return
