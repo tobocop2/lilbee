@@ -184,7 +184,7 @@ def test_main_fails_loudly_when_no_pack_is_public(
 ) -> None:
     _patch_gh(monkeypatch, [])
     monkeypatch.setattr("sys.argv", ["build_pack_index.py", str(tmp_path)])
-    with pytest.raises(SystemExit, match="no public engine pack wheel found.*lilbee-engine-packs"):
+    with pytest.raises(SystemExit, match=r"no public engine pack wheel found.*lilbee-engine-packs"):
         bpi.main()
     assert not (tmp_path / "packs").exists()
 
