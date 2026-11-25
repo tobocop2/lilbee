@@ -659,7 +659,7 @@ def _fleet_wait_error(*, stopping: bool) -> ProviderError:
         if stopping
         else f"The engines are still starting after {_FLEET_WAIT_S:.0f} s."
     )
-    return ProviderError(message, provider=_PROVIDER_NAME, kind=ProviderErrorKind.STARTING)
+    return ProviderError(message, kind=ProviderErrorKind.STARTING)
 
 
 def _raise_no_healthy_replica(cause: Exception) -> NoReturn:
