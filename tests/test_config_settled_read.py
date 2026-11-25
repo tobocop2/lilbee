@@ -179,9 +179,8 @@ def test_settle_remaining_is_zero_where_the_read_is_not_skipped(monkeypatch, cas
 
 
 def test_a_follower_asks_for_a_recheck_after_a_skipped_write(monkeypatch):
-    from lilbee.app.config_follow import ConfigFileFollower
-
     from lilbee.app import config_follow
+    from lilbee.app.config_follow import ConfigFileFollower
 
     monkeypatch.setattr(config_follow, "start_config_reading", app_settings.read_config_state)
     _write("top_k", 21, tick=1)
