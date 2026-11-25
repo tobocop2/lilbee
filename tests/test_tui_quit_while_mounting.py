@@ -31,8 +31,8 @@ from lilbee.cli.tui.screens.model_picker import ModelPickerModal
 from lilbee.cli.tui.screens.profile_tab import PROFILE_SELECT_ID, ProfileTab, load_snapshot
 from lilbee.cli.tui.screens.settings import PROFILE_PANE_ID, SettingsScreen
 from lilbee.cli.tui.screens.settings_engines import EnginesPane
-from lilbee.cli.tui.screens.settings_widgets import make_select
 from lilbee.cli.tui.screens.settings_presets import PresetDialog, PresetsPane
+from lilbee.cli.tui.screens.settings_widgets import make_select
 from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.screens.task_center import TaskCenter
 from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
