@@ -535,17 +535,20 @@ class SwapManager:
         """Compare each newly-ready engine's own report against what it was planned for.
 
         The plan is otherwise open-loop, and a wrong estimate only ever surfaces
-        as a failed request much later. Once per instance per start: readiness is
-        polled, and the answer does not change once the engine has loaded.
+        as a failed request much later. Once per load: readiness is polled, and the
+        answer does not change while the engine stays loaded. An engine that left the
+        ready set has unloaded, so its findings go and its next load is read afresh.
         """
+        for model_id in self._estimate_checked - ready:
+            self._estimate_checked.discard(model_id)
+            with self._warnings_lock:
+                self._placement_warnings.pop(model_id, None)
+                self._spill_warnings.pop(model_id, None)
         for model_id in ready - self._estimate_checked:
             launch = self._launch_by_model.get(model_id)
             self._estimate_checked.add(model_id)
             if launch is None:
                 continue
-            # A reload is read afresh: a spill from the last load must not outlive it.
-            with self._warnings_lock:
-                self._spill_warnings.pop(model_id, None)
             # Ready means this role's context loaded, so any reduction taken to
             # get here has done its job and must not follow the role into the
             # next plan, a freed machine, or a model the user switched to.
