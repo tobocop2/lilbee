@@ -211,9 +211,7 @@ def _draft_belongs_to_other_source(
     if any(f"{_DRIFT_SOURCE_FIELD}{key}" in first_line for key in keys):
         return False
     listed = _listed_sources(text)
-    return listed is None or _draft_sources_differ(
-        text, listed, source_names, source_ids, live_ids
-    )
+    return listed is None or _draft_sources_differ(text, listed, source_names, source_ids, live_ids)
 
 
 def divert_to_drafts(

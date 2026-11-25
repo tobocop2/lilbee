@@ -1805,9 +1805,7 @@ class TestADraftSurvivesAMoveOfItsSources:
         store.drop_all()
         for name in keys:
             _seed(store, name)
-        assert set(store.source_ids(keys, SourceType.DOCUMENT).values()).isdisjoint(
-            before.values()
-        )
+        assert set(store.source_ids(keys, SourceType.DOCUMENT).values()).isdisjoint(before.values())
 
         _generate(store, "entities", keys, _SECOND)
 
