@@ -875,11 +875,12 @@ def _upgrade_pending(db: LanceDBConnection) -> bool:
 
 def _upgrade_steps(db: LanceDBConnection, names: list[str]) -> list[tuple[str, LanceTable]]:
     """The tables of *db* an upgrade visits: ``_sources``, then each still keyed by path."""
-    tables = [(name, db.open_table(name)) for name in _UPGRADE_ORDER if name in names]
+    opened = ((name, open_committed(db, name)) for name in _UPGRADE_ORDER if name in names)
     return [
         (name, table)
-        for name, table in tables
-        if name == SOURCES_TABLE or _PATH_KEY_BY_TABLE[name] in table.schema.names
+        for name, table in opened
+        if table is not None
+        and (name == SOURCES_TABLE or _PATH_KEY_BY_TABLE[name] in table.schema.names)
     ]
 
 
@@ -2039,7 +2040,9 @@ class Store:
                 )
                 self._report_upgrade(UpgradePhase.TABLE, step)
                 column_added.result()
-                db.open_table(name).drop_columns([column])
+                keyed_table = open_committed(db, name)
+                assert keyed_table is not None, "the step opened this table committed"
+                keyed_table.drop_columns([column])
                 done += 1
         meta = open_committed(db, META_TABLE)
         if meta is not None:
