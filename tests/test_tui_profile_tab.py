@@ -983,6 +983,39 @@ async def test_discard_toasts_the_warning_it_leaves_behind() -> None:
     assert cfg.ocr is OcrMode.OFF
 
 
+async def test_update_with_nothing_of_yours_left_says_so_and_writes_nothing() -> None:
+    _on_legal_with_three_changes()
+    profile_file = _global_dir() / "legal-discovery.toml"
+    before = profile_file.read_text(encoding="utf-8")
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await _loaded(app, pilot, "legal-discovery")
+        # Your values leave config.toml after the tab loaded, so its Update pill is stale.
+        _config_path().write_text("", encoding="utf-8")
+        with mock.patch.object(app, "notify") as notify:
+            await _press(pilot, screen.query_one("#profile-update", ConfirmPill))
+            assert await _until(pilot, lambda: notify.called)
+    messages = [c.args[0] for c in notify.call_args_list]
+    assert not any(m.startswith("Updated") for m in messages), messages
+    assert profile_file.read_text(encoding="utf-8") == before
+
+
+async def test_update_with_values_equal_to_the_profile_changes_nothing() -> None:
+    _write_global("legal-discovery", _LEGAL)
+    profiles.apply(ProfileStore(), "legal-discovery")
+    _set_yours("chunk_size = 512\nlayout_detection = true\nmax_chunks_per_file = 3000\n")
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await _loaded(app, pilot, "legal-discovery")
+        shown = screen.query_one("#profile-update", ConfirmPill).display
+        with mock.patch.object(app, "notify") as notify:
+            if shown:
+                await _press(pilot, screen.query_one("#profile-update", ConfirmPill))
+                assert await _until(pilot, lambda: notify.called)
+    messages = [c.args[0] for c in notify.call_args_list]
+    assert not shown or not any(m.startswith("Updated") for m in messages), messages
+
+
 async def test_update_toasts_the_warning_it_leaves_behind() -> None:
     _write_global("ocr-off", "[values]\nocr = 'off'\n")
     profiles.apply(ProfileStore(), "ocr-off")
