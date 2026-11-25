@@ -558,6 +558,12 @@ jobs:
           fi
           uv run python -c "import socket; assert {socket.gethostbyname(n) for n in ('site.test', 'docs.site.test')} == {'127.0.0.1'}"
 
+      # pytest makes pytest-of-<user> under PYTEST_DEBUG_TEMPROOT without parents, so
+      # the root must exist before the tests start.
+      - name: Make the pytest temp root
+        shell: bash
+        run: mkdir -p "${RUNNER_TEMP}/pytest-tmp"
+
       # A step limit below the job limit: a stuck run fails this step while the job is
       # alive, so the upload step below runs with a clean job budget left.
       - name: Run integration tests
