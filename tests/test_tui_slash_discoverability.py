@@ -1198,7 +1198,7 @@ class TestArgCompletionsLiveFilterAsync:
                 side_effect=_slow_first_listing(self._MODELS, listing_delay_s),
             ):
                 # Land in arg-completion mode without going through any Tab.
-                await _set_chat_input(pilot, "/model ")
+                await _set_chat_input(pilot, "/model ", await_listing=True)
                 assert overlay.is_visible
                 assert set(overlay._options) == set(self._MODELS)
 
@@ -1219,8 +1219,8 @@ class TestArgCompletionsLiveFilterAsync:
                 "lilbee.modelhub.models.list_installed_models",
                 side_effect=_slow_first_listing(self._MODELS, listing_delay_s),
             ):
-                await _set_chat_input(pilot, "/model ")
-                full = list(overlay._options)
+                await _set_chat_input(pilot, "/model ", await_listing=True)
+                full =list(overlay._options)
                 await _set_chat_input(pilot, "/model qw")
                 assert overlay.is_visible
                 assert overlay._options == ["qwen3:8b"]
@@ -1243,7 +1243,7 @@ class TestArgCompletionsLiveFilterAsync:
                 "lilbee.modelhub.models.list_installed_models",
                 side_effect=_slow_first_listing(self._MODELS, listing_delay_s),
             ):
-                await _set_chat_input(pilot, "/model qw")
+                await _set_chat_input(pilot, "/model qw", await_listing=True)
                 assert overlay.is_visible
                 # Typing the option in full leaves nothing left to complete.
                 await _set_chat_input(pilot, "/model qwen3:8b")
@@ -1267,8 +1267,8 @@ class TestArgCompletionsLiveFilterAsync:
                 "lilbee.modelhub.models.list_installed_models",
                 side_effect=_slow_first_listing(self._MODELS, listing_delay_s),
             ):
-                await _set_chat_input(pilot, "/model ")
-                first = overlay.get_current()
+                await _set_chat_input(pilot, "/model ", await_listing=True)
+                first =overlay.get_current()
                 await pilot.press("ctrl+n")
                 await pilot.pause()
                 # Ctrl+N previews the highlighted model into the input,
@@ -1294,7 +1294,7 @@ class TestArgCompletionsLiveFilterAsync:
                 "lilbee.modelhub.models.list_installed_models",
                 side_effect=_slow_first_listing(self._MODELS, listing_delay_s),
             ):
-                await _set_chat_input(pilot, "/model qw")
+                await _set_chat_input(pilot, "/model qw", await_listing=True)
                 # "qw" matches only qwen3:8b; Tab fills the shared (full) prefix,
                 # which then collapses the now fully-typed dropdown.
                 await pilot.press("tab")
@@ -1345,7 +1345,8 @@ class TestModelCompletionsOffTheLoopAsync:
                     assert await pump_until(pilot, lambda: inp.value == "/model qw")
                     assert not typed.is_set()
                     typed.set()
-                    assert await pump_until(pilot, lambda: overlay.options == ["qwen3:8b"])
+                    await settle_workers(pilot)
+                    assert overlay.options == ["qwen3:8b"]
         finally:
             typed.set()
         assert len(lookup_threads) == 1
@@ -1385,13 +1386,13 @@ class TestModelCompletionsOffTheLoopAsync:
                     inp.value = "hello"
                     assert await pump_until(pilot, lambda: inp.value == "hello")
                     release.set()
-                    assert await pump_until(pilot, lambda: not screen._listing_models)
+                    await settle_workers(pilot)
+                    assert not screen._listing_models
                     assert not overlay.is_visible
                     # A new model argument starts a new listing.
                     inp.value = "/remove "
-                    assert await pump_until(
-                        pilot, lambda: set(overlay.options) == set(self._MODELS)
-                    )
+                    await settle_workers(pilot)
+                    assert set(overlay.options) == set(self._MODELS)
         finally:
             release.set()
         assert len(calls) == 2
@@ -1420,7 +1421,8 @@ class TestModelCompletionsOffTheLoopAsync:
             inp = screen.query_one("#chat-input")
             with mock.patch("lilbee.modelhub.models.list_installed_models", side_effect=_installed):
                 inp.value = "/model q"
-                assert await pump_until(pilot, lambda: overlay.options == ["qwen3:8b"])
+                await settle_workers(pilot)
+                assert overlay.options == ["qwen3:8b"]
                 await pilot.press("escape")
                 assert await pump_until(pilot, lambda: not overlay.is_visible)
                 await pilot.press("tab")
