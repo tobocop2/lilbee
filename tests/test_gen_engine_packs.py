@@ -97,11 +97,8 @@ def test_two_different_wheels_of_one_cell_version_and_build_are_refused(tool: Mo
 
 MISTRAL_CPU = "lilbee_engine_mistral_rs-0.9.5-1.cpu-py3-none-manylinux_2_35_x86_64.whl"
 MISTRAL_CUDA = [
-    "lilbee_engine_mistral_rs-0.9.5-1.cuda128_sm89-py3-none-manylinux_2_35_x86_64.whl",
-    "lilbee_engine_mistral_rs-0.9.5-2.cuda128_sm89-py3-none-manylinux_2_35_x86_64.whl",
-    "lilbee_engine_mistral_rs-0.9.6-1.cuda128_sm89-py3-none-manylinux_2_35_x86_64.whl",
-    "lilbee_engine_mistral_rs-0.9.5-1.cuda-py3-none-manylinux_2_35_x86_64.whl",
-    "lilbee_engine_mistral_rs-0.9.5-1.cuda_sm90-py3-none-win_amd64.whl",
+    f"lilbee_engine_mistral_rs-0.9.5-1.cuda_sm{cell}-py3-none-manylinux_2_35_x86_64.whl"
+    for cell in (80, 86, 89, 90, 100, 120)
 ]
 OTHER_CUDA = [
     "lilbee_engine_llama_cpp-1.0-1.cuda-py3-none-win_amd64.whl",
@@ -110,7 +107,7 @@ OTHER_CUDA = [
 
 
 @pytest.mark.parametrize("cuda", MISTRAL_CUDA)
-def test_a_mistral_rs_cuda_wheel_of_any_version_or_build_gets_no_row(
+def test_a_mistral_rs_cuda_wheel_gets_a_row_beside_the_cpu_row(
     tool: ModuleType, cuda: str
 ) -> None:
     releases = [
@@ -120,7 +117,20 @@ def test_a_mistral_rs_cuda_wheel_of_any_version_or_build_gets_no_row(
             asset(cuda, "sha256:" + "b" * 64, 9),
         )
     ]
-    assert [row["file"] for row in tool.build_record(releases, ["t"])] == [MISTRAL_CPU]
+    rows = tool.build_record(releases, ["t"])
+    assert sorted(row["file"] for row in rows) == sorted([MISTRAL_CPU, cuda])
+    assert {row["file"]: row["sha256"] for row in rows}[cuda] == "b" * 64
+
+
+def test_a_later_build_of_a_mistral_rs_cuda_cell_replaces_the_earlier_one(
+    tool: ModuleType,
+) -> None:
+    first = MISTRAL_CUDA[1]
+    second = first.replace("0.9.5-1.", "0.9.5-2.")
+    releases = [
+        release("t", asset(first, "sha256:" + "a" * 64, 7), asset(second, "sha256:" + "b" * 64, 9))
+    ]
+    assert [row["file"] for row in tool.build_record(releases, ["t"])] == [second]
 
 
 @pytest.mark.parametrize("cuda", OTHER_CUDA)

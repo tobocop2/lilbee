@@ -7,7 +7,8 @@
 #   MISTRALRS_REPO, MISTRALRS_TAG   the upstream release
 #   ASSET                           the archive of that release for this cell
 #   BACKEND, PLATFORM               the backend and the platform tag of the wheel
-#   RUST_TARGET, RUST_FEATURES      the crate graph of the binary (RUST_FEATURES may be empty)
+#   RUST_TARGET, RUST_FEATURES      the crate graph of the binary (empty for a cpu cell; a CUDA cell names the cuda features)
+#   CUDA_VERSION, NCCL_TAG          a CUDA cell only: the toolkit of the upstream archive and the tag of its NCCL
 #   CARGO_ABOUT_VERSION             the cargo-about release
 #   ABOUT_TARGET                    the cargo-about build for this host
 #   MISTRALRS_CHAT_MODEL            the model of the chat check
@@ -33,6 +34,11 @@ require_inputs() {
     MISTRALRS_CHAT_MODEL OUT; do
     [ -n "${!name:-}" ] || { echo "pack_mistralrs: ${name} is not set" >&2; return 2; }
   done
+  if is_cuda; then
+    for name in CUDA_VERSION NCCL_TAG RUST_FEATURES; do
+      [ -n "${!name:-}" ] || { echo "pack_mistralrs: ${name} is not set for the CUDA cell ${BACKEND}" >&2; return 2; }
+    done
+  fi
   for name in upstream cargo-about mistral.rs pack-venv out; do
     [ ! -e "${name}" ] || { echo "pack_mistralrs: an earlier build used this checkout (${name} exists). Use a fresh one." >&2; return 2; }
   done
@@ -74,6 +80,21 @@ repack() {
   ls -lR "${WHEEL_TREE}/lilbee_engine_mistral_rs/bin"
 }
 
+is_cuda() {
+  [[ "${BACKEND:-}" == cuda-sm* ]]
+}
+
+# The CUDA cells carry five libraries of NVIDIA. Four are in Attachment A of the CUDA EULA: the notice carries the EULA
+# text and names them from their checksums. NCCL has its own BSD-3-Clause licence, which the tag of NCCL gives.
+add_cuda_notices() {
+  local lib="${WHEEL_TREE}/lilbee_engine_mistral_rs/bin/lib"
+  is_cuda || return 0
+  (cd "${lib}" && sha256sum libcudart.so.12 libcublas.so.12 libcublasLt.so.12 libcurand.so.10) > cuda-libs.sha256
+  python tools/wheel-build/write_cuda_notice.py "${WHEEL_TREE}/NOTICE-NVIDIA-CUDA" "${CUDA_VERSION}" cuda-libs.sha256
+  curl -fsSL --retry 3 "https://raw.githubusercontent.com/NVIDIA/nccl/${NCCL_TAG}/LICENSE.txt" > "${WHEEL_TREE}/LICENSE-NCCL"
+  ls -l "${lib}"
+}
+
 add_windows_runtime() {
   local bin="${WHEEL_TREE}/lilbee_engine_mistral_rs/bin"
   [ "$(host_os)" = Windows ] || return 0
@@ -85,6 +106,7 @@ add_windows_runtime() {
 name_licences() {
   local extra=(Apache-2.0 BSD-3-Clause) file
   if [ "$(host_os)" = Windows ]; then extra+=(LicenseRef-Microsoft-VC-Runtime); fi
+  if is_cuda; then extra+=(LicenseRef-NVIDIA-CUDA-EULA); fi
   LICENSE_EXPRESSION="$({ echo MIT; cat crate-licences.txt; printf '%s\n' "${extra[@]}"; } | merge_terms)"
   export LICENSE_EXPRESSION
   echo "License-Expression: ${LICENSE_EXPRESSION}"
@@ -136,6 +158,7 @@ main() {
   fetch_cargo_about
   collect_licences
   repack
+  add_cuda_notices
   add_windows_runtime
   name_licences
   stamp_project

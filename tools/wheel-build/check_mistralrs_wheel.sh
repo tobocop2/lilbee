@@ -6,7 +6,7 @@
 #
 # <crate-licences> is the list of licence ids that rust_licences.py prints, one per line.
 # Reads:
-#   BACKEND, PLATFORM      the backend and the platform tag that the wheel must have
+#   BACKEND, PLATFORM      the backend and the platform tag that the wheel must have (cuda-sm<NN> for a CUDA wheel)
 #   MISTRALRS_CHAT_MODEL   the model of the chat check, which a cpu wheel must answer
 
 set -euo pipefail
@@ -23,7 +23,7 @@ check_tag() {  # wheel
   local name info
   name="$(basename "$1")"
   case "${name}" in
-    lilbee_engine_mistral_rs-*-1."${BACKEND}"-py3-none-"${PLATFORM}".whl) ;;
+    lilbee_engine_mistral_rs-*-1."${BACKEND//-/_}"-py3-none-"${PLATFORM}".whl) ;;
     *) refuse "wrong tag on ${name}: expected backend ${BACKEND} and platform ${PLATFORM}" || return 1 ;;
   esac
   info="$(dist_info "$1" WHEEL)" || return 1
@@ -58,6 +58,24 @@ check_licences() {  # wheel crate-licences expression
   if [ "$(host_os)" = Windows ]; then
     grep -q "dist-info/licenses/NOTICE-MICROSOFT-VC-RUNTIME " <<< "${listing}" || refuse "wheel lacks the Visual C++ runtime notice"
   fi
+  if is_cuda; then
+    for pair in NOTICE-NVIDIA-CUDA LICENSE-NCCL; do
+      grep -q "dist-info/licenses/${pair} " <<< "${listing}" || refuse "wheel lacks ${pair}" || return 1
+    done
+    grep -qF "LicenseRef-NVIDIA-CUDA-EULA" <<< "${expression}" || refuse "the licence expression lacks LicenseRef-NVIDIA-CUDA-EULA" || return 1
+  fi
+}
+
+is_cuda() {
+  [[ "${BACKEND}" == cuda-sm* ]]
+}
+
+# Fail when the folder of the tool lacks one of the five CUDA libraries that the tool finds through $ORIGIN/lib.
+check_cuda_libs() {  # lib folder
+  local name
+  for name in libcudart.so.12 libnccl.so.2 libcublas.so.12 libcublasLt.so.12 libcurand.so.10; do
+    [ -f "$1/${name}" ] || refuse "the installed wheel lacks bin/lib/${name}" || return 1
+  done
 }
 
 # Fail when a library of the output of `otool -L` is outside the system folders.
@@ -88,6 +106,8 @@ start_tool() {  # wheel
     echo "${libraries}"
     only_system_libraries <<< "${libraries}" || refuse "the binary loads a library outside the system"
   fi
+  # A CUDA tool needs libcuda.so.1 of the driver, which a build runner lacks: it stops at the library check.
+  if is_cuda; then check_cuda_libs "${bindir}/lib"; return; fi
   cd /
   "${exe}" --version || refuse "the installed tool does not start"
   # A Metal cell needs a device to serve a model: it stops at the version and the library check.

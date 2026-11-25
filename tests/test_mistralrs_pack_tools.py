@@ -60,11 +60,44 @@ def test_repack_places_the_tool(tmp_path: Path) -> None:
     assert os.access(tmp_path / "bin" / "mistralrs", os.X_OK)
 
 
-def test_repack_refuses_a_shared_library(tmp_path: Path) -> None:
-    archive = _tar(tmp_path / "a.tar.gz", {"mistralrs": b"bin", "lib/libcudart.so.12": b"rt"})
-    with pytest.raises(SystemExit, match=r"libcudart\.so\.12 is not the tool"):
+CUDA_LIBS = ["libcudart.so.12", "libnccl.so.2", "libcublas.so.12", "libcublasLt.so.12", "libcurand.so.10"]
+
+
+def test_repack_places_the_five_cuda_libraries_beside_the_tool(tmp_path: Path) -> None:
+    entries = {"mistralrs": b"bin", **{f"lib/{name}": name.encode() for name in CUDA_LIBS}}
+    repack.repack(_tar(tmp_path / "a.tar.gz", entries), tmp_path / "bin")
+    assert sorted(p.name for p in (tmp_path / "bin" / "lib").iterdir()) == sorted(CUDA_LIBS)
+    assert (tmp_path / "bin" / "lib" / "libnccl.so.2").read_bytes() == b"libnccl.so.2"
+    assert not os.access(tmp_path / "bin" / "lib" / "libnccl.so.2", os.X_OK)
+    assert (tmp_path / "bin" / "mistralrs").read_bytes() == b"bin"
+
+
+def test_repack_makes_no_lib_folder_for_a_cpu_archive(tmp_path: Path) -> None:
+    repack.repack(_tar(tmp_path / "a.tar.gz", {"mistralrs": b"bin"}), tmp_path / "bin")
+    assert not (tmp_path / "bin" / "lib").exists()
+
+
+@pytest.mark.parametrize(
+    "name", ["lib/libother.so.1", "lib/sub/libcudart.so.12", "libcudart.so.12", "other/libnccl.so.2"]
+)
+def test_repack_refuses_a_library_that_is_not_one_of_the_five(tmp_path: Path, name: str) -> None:
+    archive = _tar(tmp_path / "a.tar.gz", {"mistralrs": b"bin", name: b"rt"})
+    with pytest.raises(SystemExit, match=r"is not the tool or a bundled library"):
         repack.repack(archive, tmp_path / "bin")
     assert not (tmp_path / "bin").exists()
+
+
+def test_repack_refuses_a_linked_library(tmp_path: Path) -> None:
+    archive = tmp_path / "a.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tool = tarfile.TarInfo("mistralrs")
+        tar.addfile(tool)
+        info = tarfile.TarInfo("lib/libcudart.so.12")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "libcudart.so.12.8"
+        tar.addfile(info)
+    with pytest.raises(SystemExit, match=r"libcudart\.so\.12 is a link"):
+        repack.repack(archive, tmp_path / "bin")
 
 
 def test_repack_reads_a_zip_with_the_exe(tmp_path: Path) -> None:
@@ -351,7 +384,12 @@ def _wheel(
 
 
 def _check(
-    tmp_path: Path, wheel: Path, stage: str = "main", crates: Path | None = None, **env: str
+    tmp_path: Path,
+    wheel: Path,
+    stage: str = "main",
+    crates: Path | None = None,
+    expression: str = _EXPRESSION,
+    **env: str,
 ) -> subprocess.CompletedProcess[str]:
     """Run the wheel check, or one stage of it, the way the pack script does."""
     if crates is None:
@@ -360,7 +398,7 @@ def _check(
     script = _tree(tmp_path) / "tools" / "wheel-build" / "check_mistralrs_wheel.sh"
     args = [wheel.as_posix()]
     if stage in ("main", "check_licences"):
-        args += [crates.as_posix(), _EXPRESSION]
+        args += [crates.as_posix(), expression]
     settings = {
         "RUNNER_OS": "Linux",
         "RUNNER_TEMP": str(tmp_path),
@@ -969,20 +1007,139 @@ def test_the_repack_stage_exports_the_archive_time_to_the_later_stages(tmp_path:
     assert "read=1700000000" in done.stdout.splitlines()
 
 
-def test_the_pack_has_no_cuda_stage() -> None:
-    job = yaml.safe_load(pack_workflow().read_text(encoding="utf-8"))["jobs"]["mistralrs"]
-    assert job["steps"]
-    texts = [yaml.safe_dump(job)]
-    for script in ("pack_mistralrs.sh", "check_mistralrs_wheel.sh"):
-        texts.append((TOOLS / script).read_text(encoding="utf-8"))
-    for word in ("CUDA", "cuda", "NCCL", "nccl", "ldd"):
-        assert not [text for text in texts if word in text]
+_CUDA_EXPRESSION = f"{_EXPRESSION} AND LicenseRef-NVIDIA-CUDA-EULA"
+_CUDA_NOTICES = {
+    f"{_LICENCES}/NOTICE-NVIDIA-CUDA": b"eula",
+    f"{_LICENCES}/LICENSE-NCCL": b"bsd",
+}
+_CUDA_SM86 = f"1.cuda_sm86-py3-none-{_HOST_PLATFORM}"
 
 
-def test_the_pack_matrix_holds_no_cuda_cell() -> None:
+def _cuda_licence_check(
+    tmp_path: Path, drop: str | None = None, expression: str = _CUDA_EXPRESSION
+) -> subprocess.CompletedProcess[str]:
+    wheel = _wheel(
+        tmp_path, drop=drop, name_tag=_CUDA_SM86, expression=expression, more=_CUDA_NOTICES
+    )
+    return _check(
+        tmp_path, wheel, "check_licences", expression=expression, BACKEND="cuda-sm86"
+    )
+
+
+def test_the_check_passes_a_cuda_wheel_that_holds_the_nvidia_licences(tmp_path: Path) -> None:
+    done = _cuda_licence_check(tmp_path)
+    assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize("name", ["NOTICE-NVIDIA-CUDA", "LICENSE-NCCL"])
+def test_the_check_fails_a_cuda_wheel_that_lacks_an_nvidia_licence(
+    tmp_path: Path, name: str
+) -> None:
+    done = _cuda_licence_check(tmp_path, drop=f"{_LICENCES}/{name}")
+    assert done.returncode == 1
+    assert f"wheel lacks {name}" in done.stderr
+
+
+def test_the_check_fails_a_cuda_wheel_whose_expression_lacks_the_cuda_eula(
+    tmp_path: Path,
+) -> None:
+    done = _cuda_licence_check(tmp_path, expression=_EXPRESSION)
+    assert done.returncode == 1
+    assert "lacks LicenseRef-NVIDIA-CUDA-EULA" in done.stderr
+
+
+def test_the_check_names_a_cuda_cell_by_its_wheel_local_tag(tmp_path: Path) -> None:
+    wheel = _wheel(tmp_path, name_tag=_CUDA_SM86)
+    done = _check(tmp_path, wheel, "check_tag", BACKEND="cuda-sm86")
+    assert done.returncode == 0, done.stderr
+
+
+def _libs(tmp_path: Path, names: list[str]) -> Path:
+    folder = tmp_path / "libs"
+    folder.mkdir(exist_ok=True)
+    for name in names:
+        (folder / name).write_bytes(b"lib")
+    return folder
+
+
+def test_the_check_passes_a_cuda_wheel_with_the_five_libraries(tmp_path: Path) -> None:
+    folder = _libs(tmp_path, CUDA_LIBS)
+    done = _check(tmp_path, folder, "check_cuda_libs", BACKEND="cuda-sm86")
+    assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize("missing", CUDA_LIBS)
+def test_the_check_fails_a_cuda_wheel_that_lacks_a_library(tmp_path: Path, missing: str) -> None:
+    folder = _libs(tmp_path, [name for name in CUDA_LIBS if name != missing])
+    done = _check(tmp_path, folder, "check_cuda_libs", BACKEND="cuda-sm86")
+    assert done.returncode == 1
+    assert f"lacks bin/lib/{missing}" in done.stderr
+
+
+def test_the_whole_check_of_a_cuda_wheel_stops_at_the_libraries_not_at_the_start(
+    tmp_path: Path,
+) -> None:
+    """A build runner has no driver, so the tool cannot start; the check reads the libraries."""
+    wheel = _wheel(
+        tmp_path,
+        name_tag=_CUDA_SM86,
+        expression=_CUDA_EXPRESSION,
+        more={
+            **_CUDA_NOTICES,
+            **{f"lilbee_engine_mistral_rs/bin/lib/{name}": b"lib" for name in CUDA_LIBS},
+        },
+        tool=b"#!/bin/sh\nexit 99\n",
+    )
+    done = _check(tmp_path, wheel, expression=_CUDA_EXPRESSION, BACKEND="cuda-sm86")
+    assert done.returncode == 0, done.stderr
+
+
+def test_the_pack_asks_a_cuda_cell_for_its_cuda_inputs(tmp_path: Path) -> None:
+    base = {
+        "MISTRALRS_REPO": "r/r",
+        "MISTRALRS_TAG": "v0.9.5",
+        "ASSET": "a.tar.gz",
+        "BACKEND": "cuda-sm86",
+        "PLATFORM": "manylinux_2_35_x86_64",
+        "RUST_TARGET": "x86_64-unknown-linux-gnu",
+        "CARGO_ABOUT_VERSION": "0.9.3",
+        "ABOUT_TARGET": "x86_64-unknown-linux-musl",
+        "MISTRALRS_CHAT_MODEL": "m",
+        "OUT": str(tmp_path / "out"),
+        "RUST_FEATURES": "cuda,nccl",
+        "CUDA_VERSION": "12.8.1",
+        "NCCL_TAG": "v2.26.2-1",
+    }
+    ok = _pack_stage(tmp_path, "require_inputs", **base)
+    assert ok.returncode == 0, ok.stderr
+    for name in ("CUDA_VERSION", "NCCL_TAG", "RUST_FEATURES"):
+        done = _pack_stage(tmp_path, "require_inputs", **{**base, name: ""})
+        assert done.returncode == 2
+        assert f"{name} is not set for the CUDA cell cuda-sm86" in done.stderr
+
+
+def test_the_pack_names_the_cuda_eula_in_the_licence_expression_of_a_cuda_cell(
+    tmp_path: Path,
+) -> None:
+    root = _tree(tmp_path)
+    tree = root / "packaging" / PACKAGING.name
+    (root / "crate-licences.txt").write_text("MIT\n", encoding="utf-8", newline="\n")
+    (tree / "LICENSE-mistral.rs").write_text("text", encoding="utf-8")
+    cuda = _pack_stage(tmp_path, "name_licences", BACKEND="cuda-sm86")
+    cpu = _pack_stage(tmp_path, "name_licences", BACKEND="cpu")
+    assert "LicenseRef-NVIDIA-CUDA-EULA" in cuda.stdout
+    assert "LicenseRef-NVIDIA-CUDA-EULA" not in cpu.stdout
+
+
+def test_the_pack_matrix_holds_the_cpu_cells_and_the_six_cuda_cells() -> None:
     cells = pack_cells("mistralrs")
     assert {cell["cell"] for cell in cells} == {
         "mistralrs-linux-x86_64-cpu",
         "mistralrs-windows-x86_64-cpu",
         "mistralrs-macos-arm64-metal",
+        *(f"mistralrs-linux-x86_64-cuda-sm{cc}" for cc in (80, 86, 89, 90, 100, 120)),
     }
+    for cell in cells:
+        if "cuda" in cell["cell"]:
+            assert cell["rust_features"] == "cuda,nccl"
+            assert cell["asset"].startswith("mistralrs-cuda128-sm")
