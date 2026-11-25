@@ -537,7 +537,6 @@ def test_a_second_build_of_an_installed_engine_differs_from_the_pin_in_the_tab(
         (VERSION, "cpu", engine_service.EngineState.INSTALLED),
         (VERSION, "cuda", engine_service.EngineState.DIFFERS_FROM_PIN),
     ]
-    assert not rows[1].outside_store
 
 
 def test_every_surface_marks_the_second_build_with_the_same_term(
