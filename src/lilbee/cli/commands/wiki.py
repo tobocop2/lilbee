@@ -31,7 +31,7 @@ from lilbee.wiki.shared import (
     WikiSubdir,
     total_wiki_pages,
 )
-from lilbee.wiki.stats import WikiBuildError, model_failures_message, format_summary_line
+from lilbee.wiki.stats import WikiBuildError, format_summary_line, model_failures_message
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
