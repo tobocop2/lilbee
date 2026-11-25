@@ -18,7 +18,9 @@ ProgressDisplay: TypeAlias = Progress
 """The type of a progress display; build one with ``live_progress`` or ``stdout_progress``."""
 
 
-def live_progress(*columns: str | ProgressColumn, console: Console, **options: Any) -> ProgressDisplay:
+def live_progress(
+    *columns: str | ProgressColumn, console: Console, **options: Any
+) -> ProgressDisplay:
     """A progress display that leaves ``sys.stdout`` and ``sys.stderr`` alone.
 
     Rich redirects both streams into the display's console by default. A stderr display would
@@ -29,7 +31,9 @@ def live_progress(*columns: str | ProgressColumn, console: Console, **options: A
     )
 
 
-def stdout_progress(*columns: str | ProgressColumn, console: Console, **options: Any) -> ProgressDisplay:
+def stdout_progress(
+    *columns: str | ProgressColumn, console: Console, **options: Any
+) -> ProgressDisplay:
     """A progress display on a stdout console, with Rich's default stream redirects.
 
     The display shows text another part of the program writes to ``sys.stderr`` above the bar.
