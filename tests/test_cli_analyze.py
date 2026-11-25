@@ -742,7 +742,9 @@ def test_text_output_shows_pdf_length_and_the_values_you_keep(project, tmp_path)
     assert result.exit_code == 0, result.output
     assert "Median PDF length: 4 pages" in result.output
     assert re.search(
-        r"Scanned share of pages: \d+% \(a non-PDF file counts as one page\)", result.output
+        r"^Scanned share of pages: \d+% \(a non-PDF file counts as one page\)$",
+        result.output,
+        re.MULTILINE,
     )
     assert "Median length of other files:" in result.output
 
