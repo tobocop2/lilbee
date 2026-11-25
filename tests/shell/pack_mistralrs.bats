@@ -233,6 +233,22 @@ ${WHEEL}.sha256" ]
   grep -q '^-m wheel tags --remove --platform-tag manylinux_2_35_x86_64 dist/' "${PYTHON_LOG}"
 }
 
+@test "the build number of a CUDA cell holds the backend with an underscore for each hyphen" {
+  local cc
+  for cc in 80 86 89 90 100 120; do
+    BACKEND="cuda-sm${cc}" run stage build_wheel
+    [ "$status" -eq 0 ]
+    grep -q "^-m build --wheel --no-isolation -C--build-option=--build-number=1.cuda_sm${cc} " "${PYTHON_LOG}"
+  done
+  ! grep -q -- '--build-number=1\.[a-z_0-9]*-' "${PYTHON_LOG}"
+}
+
+@test "the build number of the Metal cell stays 1.metal" {
+  BACKEND=metal run stage build_wheel
+  [ "$status" -eq 0 ]
+  grep -q -- '--build-number=1.metal ' "${PYTHON_LOG}"
+}
+
 @test "the build runs with umask 022 whatever the shell has" {
   umask 0077
   run bash "${SCRIPT}"
