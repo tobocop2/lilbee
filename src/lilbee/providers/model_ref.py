@@ -215,7 +215,7 @@ def _refuse_unsupported(
         raise ProviderError(
             f"The provider rejected the request for {ref.raw}. "
             f"It does not support {', '.join(refused)}. Remove the setting and try again.",
-            provider=ModelSource.REMOTE,
+            
             kind=ProviderErrorKind.BAD_REQUEST,
         )
 

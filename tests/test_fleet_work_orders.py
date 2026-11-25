@@ -32,7 +32,7 @@ from tests.test_engine_write_applied import (
 __all__ = ["fleet"]
 
 _WAIT_S = 10.0
-_FAILED = ProviderError("engine did not start", provider="llama-server")
+_FAILED = ProviderError("engine did not start")
 _STILL_STARTING = "The engines are still starting after 0 s."
 _MLX = "mlx"
 _LLAMA = "llama.cpp"

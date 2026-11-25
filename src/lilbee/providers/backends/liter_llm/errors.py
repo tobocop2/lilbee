@@ -252,13 +252,13 @@ def _provider_error(
         message = _PRESET_NOT_FOUND.format(model=model, role=preset.role, url=preset.base_url)
         if preset.wire is not None:
             message = f"{message} {_rerank_wire_hint(preset.wire)}"
-        return ProviderError(message, provider=_PROVIDER_NAME, kind=kind)
+        return ProviderError(message, kind=kind)
     unprocessable = _unprocessable_message(kind, exc, model)
     if unprocessable is not None:
-        return ProviderError(unprocessable, provider=_PROVIDER_NAME, kind=kind)
+        return ProviderError(unprocessable, kind=kind)
     unreadable = _serialization_message(exc, model)
     if unreadable is not None:
-        return ProviderError(unreadable, provider=_PROVIDER_NAME, kind=kind)
+        return ProviderError(unreadable, kind=kind)
     template = _TYPE_MESSAGES.get(type(exc).__name__) or _KIND_MESSAGES.get(kind)
     message = template.format(model=model) if template is not None else f"{fallback}: {exc}"
-    return ProviderError(message, provider=_PROVIDER_NAME, kind=kind)
+    return ProviderError(message, kind=kind)

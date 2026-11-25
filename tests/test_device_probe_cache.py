@@ -40,7 +40,7 @@ class WedgedEngine(SpyEngine):
     def discover_devices(self, binary: Path):
         self.probed.append(binary)
         self._clock.now += PROBE_TIMEOUT_S
-        raise ProviderError("device probe did not respond", provider="spy")
+        raise ProviderError("device probe did not respond")
 
 
 @pytest.fixture
@@ -129,7 +129,7 @@ def test_an_engine_that_cannot_load_is_probed_again_on_the_next_call(
     class Unloadable(SpyEngine):
         def discover_devices(self, binary: Path):
             self.probed.append(binary)
-            raise error("engine cannot load", provider="spy")
+            raise error("engine cannot load")
 
     engine = Unloadable(healthy.binary())
     assert gpu_device_count(engine) == 1
@@ -146,7 +146,7 @@ def test_an_unloadable_replacement_does_not_leave_the_old_reading_answering(
         def discover_devices(self, binary: Path):
             if self.broken:
                 self.probed.append(binary)
-                raise EngineDllMissingError("engine cannot load", provider="spy")
+                raise EngineDllMissingError("engine cannot load")
             return super().discover_devices(binary)
 
     cards = (SPY_DEVICE, dataclasses.replace(SPY_DEVICE, index=4))
@@ -224,7 +224,7 @@ def test_a_good_probe_after_an_expired_failure_ends_the_failure(
         def discover_devices(self, binary: Path):
             if self.failing:
                 self.probed.append(binary)
-                raise ProviderError("device probe did not respond", provider="spy")
+                raise ProviderError("device probe did not respond")
             return super().discover_devices(binary)
 
     cards = (SPY_DEVICE, dataclasses.replace(SPY_DEVICE, index=4))

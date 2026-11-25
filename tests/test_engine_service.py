@@ -419,7 +419,7 @@ def test_a_failed_reload_keeps_the_saved_choice_and_tells_the_user(
 ) -> None:
     from lilbee.providers.base import ProviderError
 
-    running.failure = ProviderError("engine refused", provider="llama-server")
+    running.failure = ProviderError("engine refused")
     with pytest.raises(engine_service.EngineNotAppliedError, match="engine refused") as raised:
         engine_service.prefer("llama.cpp")
     assert "started with" not in str(raised.value)

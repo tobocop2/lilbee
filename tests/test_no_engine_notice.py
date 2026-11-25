@@ -15,7 +15,7 @@ from tests.test_engine_write_applied import _local, _ProcessSwap, fleet
 
 __all__ = ["fleet"]
 
-_REFUSED = ProviderError("engine refused", provider="llama-server")
+_REFUSED = ProviderError("engine refused")
 
 
 def _warnings(services: Any) -> list[str]:

@@ -237,7 +237,7 @@ class TestAnEngineThatChangesUnderARunningServe:
 
         def _raise(_binary: Path, engine) -> planning_mod.DeviceReading:
             runs.append(1)
-            raise ProviderError("probe wedged", provider="llama-server")
+            raise ProviderError("probe wedged")
 
         monkeypatch.setattr(planning_mod, "_read_devices", _raise)
 
@@ -410,7 +410,7 @@ class TestAnEngineThatChangesUnderARunningServe:
             return probe_engine(engine)
 
         def _gone() -> Path:
-            raise ProviderError("no engine binary", provider="llama-server")
+            raise ProviderError("no engine binary")
 
         monkeypatch.setattr(planning_mod, "_probe_engine_devices", _counted)
         monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", _gone)
@@ -568,7 +568,7 @@ class TestTheReadCacheDescribesOneBinary:
 
         def _resolve(binary: Path, engine) -> planning_mod.DeviceReading:
             if binary == stub:
-                raise ProviderError("probe wedged", provider="llama-server")
+                raise ProviderError("probe wedged")
             return _reading([FleetDevice("CUDA", 0, "A", 24 * _GB, 24 * _GB)])
 
         monkeypatch.setattr(planning_mod, "_read_devices", _resolve)

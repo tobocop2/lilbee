@@ -962,7 +962,7 @@ class TestBuildFleetWiring:
         def _estimate(role, ref, **_k):
             if role is WorkerRole.CHAT:
                 raise ProviderError(
-                    "not installed", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
+                    "not installed", kind=ProviderErrorKind.NOT_FOUND
                 )
             return ModelPlacementInput(role, _GB)
 
@@ -993,12 +993,12 @@ class TestBuildFleetWiring:
             if role is WorkerRole.EMBED:
                 raise ProviderError(
                     "no file for ref",
-                    provider="llama-server",
+                    
                     kind=ProviderErrorKind.NOT_FOUND,
                 )
             raise ProviderError(
                 "unexpected estimator output",
-                provider="llama-server",
+                
                 kind=ProviderErrorKind.SERVER,
             )
 
@@ -1980,7 +1980,7 @@ class TestBuildFleetWiring:
         from lilbee.providers.base import ProviderError
 
         def _missing(_ref: str) -> Path:
-            raise ProviderError("not installed", provider="llama-server")
+            raise ProviderError("not installed")
 
         monkeypatch.setattr(engine_params, "resolve_model_path", _missing)
         assert planning_mod.planned_embed_token_cap("org/repo/missing.gguf", engine=LLAMA) is None
@@ -4165,7 +4165,7 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
             if role is WorkerRole.CHAT:
                 raise ProviderError(
                     "unexpected estimator output",
-                    provider="llama-server",
+                    
                     kind=ProviderErrorKind.SERVER,
                 )
             return ModelPlacementInput(role, 512)
@@ -4255,13 +4255,13 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
         def boom(role, ref, **_k):
             raise ProviderError(
                 "unexpected estimator output",
-                provider="llama-server",
+                
                 kind=ProviderErrorKind.SERVER,
             )
 
         def no_path(_r):
             raise ProviderError(
-                "no file", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
+                "no file", kind=ProviderErrorKind.NOT_FOUND
             )
 
         monkeypatch.setattr(planning_mod, "_estimate_role", boom)
@@ -4291,7 +4291,7 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
             if role is WorkerRole.VISION:
                 raise ProviderError(
                     "unexpected estimator output",
-                    provider="llama-server",
+                    
                     kind=ProviderErrorKind.SERVER,
                 )
             return ModelPlacementInput(role, 512)
@@ -4318,7 +4318,7 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
 
         def boom(*_a, **_k):
             raise ProviderError(
-                "unparseable", provider="llama-server", kind=ProviderErrorKind.SERVER
+                "unparseable", kind=ProviderErrorKind.SERVER
             )
 
         monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", boom)
@@ -4649,7 +4649,7 @@ def test_placeable_total_vram_zero_when_unprobeable(monkeypatch) -> None:
     monkeypatch.setattr(planning_mod._plan_probe_store, "captured", lambda: False)
 
     def _boom(*_a, **_k):
-        raise ProviderError("no binary", provider="llama-server")
+        raise ProviderError("no binary")
 
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", _boom)
     assert planning_mod.placeable_total_vram(engine=LLAMA) == 0
@@ -5409,7 +5409,7 @@ class TestProbedDevices:
         from lilbee.providers.base import ProviderError
 
         def _boom() -> Path:
-            raise ProviderError("no engine binary", provider="llama-server")
+            raise ProviderError("no engine binary")
 
         monkeypatch.setattr(planning_mod._plan_probe_store, "captured", lambda: False)
         monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", _boom)

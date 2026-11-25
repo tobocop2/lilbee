@@ -8,13 +8,11 @@ from lilbee.providers.base import ProviderError, ProviderErrorKind
 def test_default_kind_is_unknown() -> None:
     err = ProviderError("boom")
     assert err.kind == ProviderErrorKind.UNKNOWN
-    assert err.provider == ""
     assert str(err) == "boom"
 
 
 def test_kind_and_provider_are_carried() -> None:
-    err = ProviderError("rate limited", provider="remote", kind=ProviderErrorKind.RATE_LIMIT)
+    err = ProviderError("rate limited", kind=ProviderErrorKind.RATE_LIMIT)
     assert err.kind == ProviderErrorKind.RATE_LIMIT
-    assert err.provider == "remote"
     # The message is unchanged; kind is metadata, not appended to str().
     assert str(err) == "rate limited"

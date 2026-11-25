@@ -90,7 +90,7 @@ class TestResolveChatCtx:
         from lilbee.providers.fleet import planning
 
         def _unavailable(*_a: object, **_k: object) -> int:
-            raise ProviderError("gguf-parser is not installed", provider="llama-server")
+            raise ProviderError("gguf-parser is not installed")
 
         monkeypatch.setattr(planning, "fit_chat_ctx", _unavailable)
 

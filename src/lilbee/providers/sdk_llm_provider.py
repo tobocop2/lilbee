@@ -117,7 +117,7 @@ class SdkLLMProvider(LLMProvider):
         """Embed texts in requests of at most EMBED_MAX_INPUTS, returning vectors in input order."""
         self._ensure_initialized()
         ref = parse_model_ref(
-            require_role_ref(cfg.embedding_model, WorkerRole.EMBED, provider="sdk")
+            require_role_ref(cfg.embedding_model, WorkerRole.EMBED)
         )
         route = _checked_route(ref, WorkerRole.EMBED)
         vectors: list[Vector] = []
@@ -134,7 +134,7 @@ class SdkLLMProvider(LLMProvider):
                 raise
             except Exception as exc:
                 raise ProviderError(
-                    f"Embedding failed: {exc}", provider=self._backend.provider_name
+                    f"Embedding failed: {exc}"
                 ) from exc
             vectors.extend(np.asarray(vec, dtype=np.float32) for vec in result.vectors)
         return vectors
@@ -159,7 +159,7 @@ class SdkLLMProvider(LLMProvider):
     def estimate_chat_tokens(self, text: str, *, model: str | None = None) -> int:
         """Count *text* with the model's own tokenizer where the SDK has one, else in bytes."""
         ref = parse_model_ref(
-            require_role_ref(model or cfg.chat_model, WorkerRole.CHAT, provider="sdk")
+            require_role_ref(model or cfg.chat_model, WorkerRole.CHAT)
         )
         try:
             return self._backend.count_chat_tokens(ref, text)
@@ -212,7 +212,7 @@ class SdkLLMProvider(LLMProvider):
         tool-call deltas). *role* is the role a server preset must serve: vision for OCR.
         """
         self._ensure_initialized()
-        ref = parse_model_ref(require_role_ref(model or cfg.chat_model, role, provider="sdk"))
+        ref = parse_model_ref(require_role_ref(model or cfg.chat_model, role))
         route = _checked_route(ref, role)
         if tools and not self.supports_tools(model or cfg.chat_model):
             chosen = model or cfg.chat_model
@@ -220,7 +220,7 @@ class SdkLLMProvider(LLMProvider):
                 f"Model '{chosen}' does not support tool calls. Pick a different "
                 f"chat model that advertises tool support, or remove tools from "
                 f"the request.",
-                provider=self._backend.provider_name,
+                
             )
         translated = translate_options(options, ref) if options else {}
         if tools is not None:
@@ -243,7 +243,7 @@ class SdkLLMProvider(LLMProvider):
             raise
         except Exception as exc:
             raise ProviderError(
-                f"Chat failed: {exc}", provider=self._backend.provider_name
+                f"Chat failed: {exc}"
             ) from exc
         return ChatResult(
             text=result.content,
@@ -314,7 +314,7 @@ class SdkLLMProvider(LLMProvider):
             raise
         except Exception as exc:
             raise ProviderError(
-                f"Chat failed: {exc}", provider=self._backend.provider_name
+                f"Chat failed: {exc}"
             ) from exc
 
     def vision_ocr(
@@ -348,7 +348,7 @@ class SdkLLMProvider(LLMProvider):
         if not isinstance(result, ChatResult):
             raise ProviderError(
                 f"Vision OCR returned non-text response ({type(result).__name__}).",
-                provider=self._backend.provider_name,
+                
             )
         return result.text
 
@@ -389,7 +389,7 @@ class SdkLLMProvider(LLMProvider):
             raise
         except Exception as exc:
             raise ProviderError(
-                f"Listing chat models failed: {exc}", provider=self._backend.provider_name
+                f"Listing chat models failed: {exc}"
             ) from exc
 
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
@@ -400,13 +400,13 @@ class SdkLLMProvider(LLMProvider):
         except NotImplementedError as exc:
             raise ProviderError(
                 f"Cannot pull model '{model}': backend does not support pulling",
-                provider=self._backend.provider_name,
+                
             ) from exc
         except ProviderError:
             raise
         except Exception as exc:
             raise ProviderError(
-                f"Cannot pull model '{model}': {exc}", provider=self._backend.provider_name
+                f"Cannot pull model '{model}': {exc}"
             ) from exc
 
     def show_model(self, model: str) -> dict[str, Any] | None:
@@ -420,7 +420,7 @@ class SdkLLMProvider(LLMProvider):
             raise
         except Exception as exc:
             raise ProviderError(
-                f"Showing model '{model}' failed: {exc}", provider=self._backend.provider_name
+                f"Showing model '{model}' failed: {exc}"
             ) from exc
 
     def get_capabilities(self, model: str) -> list[str]:
@@ -442,7 +442,7 @@ class SdkLLMProvider(LLMProvider):
             return []
         self._ensure_initialized()
         ref = parse_model_ref(
-            require_role_ref(cfg.reranker_model, WorkerRole.RERANK, provider="sdk")
+            require_role_ref(cfg.reranker_model, WorkerRole.RERANK)
         )
         route = _checked_route(ref, WorkerRole.RERANK)
         request = RerankRequest(
@@ -459,7 +459,7 @@ class SdkLLMProvider(LLMProvider):
             raise
         except Exception as exc:
             raise ProviderError(
-                f"Rerank failed: {exc}", provider=self._backend.provider_name
+                f"Rerank failed: {exc}"
             ) from exc
         return result.scores
 
