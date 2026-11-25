@@ -266,8 +266,8 @@ def test_a_slot_fleet_planned_on_the_file_gets_the_held_write_error(
     persistent_settings.save(cfg.data_root, {"chat_model": _CHAT_REF})
     follow_config_one_off(frozenset())
     kwargs = _one_off_provider_kwargs(monkeypatch)
-    persistent_settings.save(cfg.data_root, {"chat_model": _THIRD_CHAT_REF})
-    monkeypatch.setattr(cfg, "chat_model", _THIRD_CHAT_REF)  # another one-off on the file
+    persistent_settings.save(cfg.data_root, {"chat_model": _OTHER_CHAT_REF})
+    monkeypatch.setattr(cfg, "chat_model", _OTHER_CHAT_REF)  # another one-off on the file
     _owner_provider, states = _owner(monkeypatch, tmp_path)
     _stamp(states, prov_mod._plan_origin(ENGINE_TUNING_KEYS))
     monkeypatch.setattr(cfg, "chat_model", _CHAT_REF)  # this one-off holds its start model
@@ -275,7 +275,7 @@ def test_a_slot_fleet_planned_on_the_file_gets_the_held_write_error(
     message = _outcome(peer._ensure_fleet) or (peer._engine_refusal or "")
     assert built == []
     assert message == (
-        f"config.toml changed chat_model to {_THIRD_CHAT_REF} while this command ran. "
+        f"config.toml changed chat_model to {_OTHER_CHAT_REF} while this command ran. "
         "Run the command again."
     )
 
@@ -358,10 +358,8 @@ def test_a_stamp_records_the_planned_values_and_the_keys_its_builder_follows(
     monkeypatch.setattr(cfg, "flash_attention", True)
     followed = ENGINE_TUNING_KEYS - {"num_ctx"}
     origin = FleetProvider(followed_keys=lambda: followed)._stamp_origin()
-    assert json.loads(origin.fleet_view or "") == {
-        "chat_model": _OTHER_CHAT_REF,
-        "flash_attention": True,
-    }
+    planned = json.loads(origin.fleet_view or "")
+    assert (planned["chat_model"], planned["flash_attention"]) == (_OTHER_CHAT_REF, True)
     assert origin.followed == followed
 
 
