@@ -549,7 +549,19 @@ def estimate_gguf(request: MemoryRequest) -> MemoryEstimate:
         ),
         per_device=parsed.per_device_vram,
         per_device_shared=parsed.per_device_unified,
+        checkpoint_bytes=_checkpoint_or_slot_share(parsed, request.slots),
     )
+
+
+def _checkpoint_or_slot_share(parsed: GgufVramEstimate, slots: int) -> int:
+    """One checkpoint's bytes; for a model whose header cannot size it, one slot's share.
+
+    One slot's share of the footprint without the weights holds that slot's whole KV and
+    state, so it never under-counts what a checkpoint copies.
+    """
+    if parsed.checkpoint_bytes is not None:
+        return parsed.checkpoint_bytes
+    return parsed.unified_bytes // max(1, slots)
 
 
 def estimate_gguf_cpu_decode(request: MemoryRequest) -> MemoryEstimate:

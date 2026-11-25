@@ -8,11 +8,12 @@ from __future__ import annotations
 import json
 import math
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from lilbee.core.config.enums import KvCacheType
+from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.adapters import FLAG_BATCH_SIZE, FLAG_UBATCH_SIZE
 from lilbee.providers.fleet.binary import resolve_gguf_parser
@@ -73,6 +74,25 @@ _KEY_NONUMA = "nonuma"
 _KEY_METADATA = "metadata"
 _KEY_FILE_SIZE = "fileSize"
 
+# gguf-parser JSON keys under "architecture" that size one context checkpoint: the
+# sliding-window part of one sequence's KV cache, and the state of a recurrent layer.
+_KEY_ARCHITECTURE = "architecture"
+_ARCH_BLOCKS = "blockCount"
+_ARCH_HEADS = "attentionHeadCount"
+_ARCH_KV_HEADS = "attentionHeadCountKV"
+_ARCH_KEY_LENGTH = "attentionKeyLength"
+_ARCH_VALUE_LENGTH = "attentionValueLength"
+_ARCH_WINDOW = "attentionSlidingWindow"
+_ARCH_WINDOW_LAYERS = "attentionSlidingWindowLayers"
+_ARCH_RECURRENT = "attentionRecurrent"
+_ARCH_HYBRID = "attentionHybrid"
+_ARCH_SSM_CONV = "ssmConvolutionKernel"
+_ARCH_SSM_INNER = "ssmInnerSize"
+_ARCH_SSM_STATE = "ssmStateSize"
+_ARCH_SSM_GROUPS = "ssmGroupCount"
+_RECURRENT_STATE_ELEMENT_BYTES = 4
+"""llama.cpp holds the recurrent state in f32."""
+
 _PROVIDER = "llama-server"
 _PARSE_TIMEOUT_S = 60
 # Bounded wait for a timed-out parser to die before abandoning it (matches the
@@ -124,6 +144,8 @@ class GgufVramEstimate:
     """Discrete-GPU VRAM per device (gguf-parser ``vrams[].nonuma``)."""
     per_device_unified: tuple[int, ...] = ()
     """Unified-memory footprint per device (``vrams[].uma``)."""
+    checkpoint_bytes: int | None = 0
+    """Host bytes of one context checkpoint of one sequence (:func:`checkpoint_bytes`)."""
 
     def footprint(self, *, unified: bool) -> int:
         """Total bytes to charge against a shared budget for this memory model."""
@@ -210,6 +232,7 @@ def _corrected_projector_estimate(
         mapped_weights_bytes=base.mapped_weights_bytes + mmproj_bytes,
         per_device_vram=per_device_vram,
         per_device_unified=with_projector.per_device_unified,
+        checkpoint_bytes=base.checkpoint_bytes,
     )
 
 
@@ -260,7 +283,11 @@ def _cached_footprint(
         batch_size=batch_size,
         expert_offload=expert_offload,
     )
-    return _parse_estimate(_run_parser(argv, path_str), path_str)
+    return _parse_estimate(
+        _run_parser(argv, path_str),
+        path_str,
+        kv_element_bytes=KV_CACHE_TYPE_BYTES[KvCacheType(kv_cache_type)],
+    )
 
 
 def estimator_argv(
@@ -455,12 +482,56 @@ def _cached_attention_shape(
         ) from exc
 
 
-def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:
+def _count(value: object) -> int:
+    """A whole, non-negative header count; 0 when absent or not a number."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def checkpoint_bytes(architecture: Mapping[str, object], kv_element_bytes: float) -> int | None:
+    """Host bytes of one context checkpoint of one sequence, from the parser's architecture.
+
+    llama-server copies the sliding-window part of a sequence's KV cache, and the state of
+    each recurrent layer, into host memory at each checkpoint. The window part is the
+    windowed layers x KV heads x (key + value length) x *kv_element_bytes* x the window.
+    The recurrent part is llama.cpp's f32 conv and SSM state, charged on every block: a
+    hybrid model's split is not in the header, so this over-counts. 0 for a model with
+    neither. ``None`` when the model has either but the header lacks a field to size it.
+    """
+    blocks = _count(architecture.get(_ARCH_BLOCKS))
+    window = _count(architecture.get(_ARCH_WINDOW))
+    total = 0
+    if window:
+        layers = architecture.get(_ARCH_WINDOW_LAYERS)
+        windowed = sum(1 for on in layers if on) if isinstance(layers, list) else blocks
+        kv_heads = _count(architecture.get(_ARCH_KV_HEADS)) or _count(
+            architecture.get(_ARCH_HEADS)
+        )
+        key = _count(architecture.get(_ARCH_KEY_LENGTH))
+        value = _count(architecture.get(_ARCH_VALUE_LENGTH))
+        if not (windowed and kv_heads and key and value):
+            return None
+        total += int(windowed * kv_heads * (key + value) * window * kv_element_bytes)
+    if architecture.get(_ARCH_RECURRENT) or architecture.get(_ARCH_HYBRID):
+        conv = _count(architecture.get(_ARCH_SSM_CONV))
+        inner = _count(architecture.get(_ARCH_SSM_INNER))
+        state = _count(architecture.get(_ARCH_SSM_STATE))
+        groups = _count(architecture.get(_ARCH_SSM_GROUPS))
+        if not (blocks and conv and inner and state):
+            return None
+        per_layer = (conv - 1) * (inner + 2 * groups * state) + state * inner
+        total += blocks * per_layer * _RECURRENT_STATE_ELEMENT_BYTES
+    return total
+
+
+def _parse_estimate(
+    stdout: str, path_str: str, *, kv_element_bytes: float = KV_CACHE_TYPE_BYTES[KvCacheType.F16]
+) -> GgufVramEstimate:
     """Parse gguf-parser JSON into a UMA-aware footprint.
 
     Accepts both estimate payload keys: ``items`` (the pinned v0.24.x releases)
     and ``memory`` (upstream renamed the key after v0.24.1), so an engine built
     past the pin still sizes instead of failing every launch plan.
+    *kv_element_bytes* is the KV cache type the estimate ran with, for the checkpoint size.
     """
     try:
         report = json.loads(stdout)
@@ -477,6 +548,9 @@ def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:
             mapped_weights_bytes=int((report.get(_KEY_METADATA) or {}).get(_KEY_FILE_SIZE, 0)),
             per_device_vram=per_device_vram,
             per_device_unified=per_device_unified,
+            checkpoint_bytes=checkpoint_bytes(
+                report.get(_KEY_ARCHITECTURE) or {}, kv_element_bytes
+            ),
         )
     except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
         raise ProviderError(
