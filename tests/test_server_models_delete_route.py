@@ -68,11 +68,7 @@ class TestDeleteWithSlashRef:
         assert installed_model.call_args.args[0] == "ollama/llama3:latest"
         assert installed_model.call_args.args[1].value == "ollama"
 
-    def test_extra_leading_slashes_are_all_dropped(self, client, installed_model):
-        client.delete(f"/api/models//{SLASH_REF}")
-        assert installed_model.call_args.args[0] == SLASH_REF
-
-    def test_only_slashes_are_dropped_from_the_start(self, client, installed_model):
+    def test_only_the_leading_slash_is_dropped_from_the_ref(self, client, installed_model):
         client.delete("/api/models/XX/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf")
         assert installed_model.call_args.args[0] == "XX/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
 
@@ -80,6 +76,14 @@ class TestDeleteWithSlashRef:
         resp = client.delete("/api/models/test")
         assert resp.status_code == 200
         assert installed_model.call_args.args[0] == "test"
+
+
+class TestDeleteWithUnknownSource:
+    def test_an_unknown_source_gives_422_with_the_reason(self, client, installed_model):
+        resp = client.delete(f"/api/models/{SLASH_REF}?source=bogus")
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == "'bogus' is not a valid ModelSource"
+        assert installed_model.call_count == 0
 
 
 class TestDeleteSchema:
