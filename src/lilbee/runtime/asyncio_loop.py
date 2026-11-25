@@ -191,14 +191,17 @@ def run_interruptible(coro: Awaitable[T], cancel: SignalFlag) -> T:
     task = asyncio.ensure_future(coro, loop=loop)
     done: concurrent.futures.Future[T] = concurrent.futures.Future()
     cancel.bind_run(lambda: loop.call_soon_threadsafe(task.cancel))
+    runner = threading.Thread(
+        target=_run_with_sigint_blocked,
+        args=(loop, task, done),
+        name="lilbee-run",
+        daemon=True,
+    )
     try:
-        threading.Thread(
-            target=_run_with_sigint_blocked,
-            args=(loop, task, done),
-            name="lilbee-run",
-            daemon=True,
-        ).start()
+        runner.start()
         _wait_for(done)
+        # The run has ended, so the thread only returns: the scope sees no thread of it.
+        runner.join()
     except BaseException:
         loop.call_soon_threadsafe(_cancel_all_tasks, loop)
         raise
