@@ -347,12 +347,8 @@ def test_the_catalog_client_judges_architectures_with_the_engine_of_its_config(
     }
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, json=[row]))
     library = _library_config()
-    library_client = HfClient(
-        library, engine_for_format=lambda fmt: engine_choice.engine_for_page(fmt, library)
-    )
-    default_client = HfClient(
-        cfg, engine_for_format=lambda fmt: engine_choice.engine_for_page(fmt, cfg)
-    )
+    library_client = make_hf_client(library)
+    default_client = make_hf_client(cfg)
     assert library_client.fetch_models().models[0].compat is ModelCompat.SUPPORTED
     assert default_client.fetch_models().models[0].compat is ModelCompat.UNSUPPORTED
 
