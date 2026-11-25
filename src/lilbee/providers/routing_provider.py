@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from lilbee.app.engine_choice import resolve_engines
@@ -54,6 +54,7 @@ class RoutingProvider(LLMProvider):
         *,
         hold_warm: bool = False,
         config_refresh: Callable[[], None] | None = None,
+        held_writes: Callable[[], Mapping[str, object]] | None = None,
     ) -> None:
         self._noticed: dict[WorkerRole, str] = {}
         self._unread: dict[WorkerRole, str] = {}
@@ -63,6 +64,7 @@ class RoutingProvider(LLMProvider):
         # an interactive session hands that down to the FleetProvider it composes.
         self._hold_warm = hold_warm
         self._config_refresh = config_refresh
+        self._held_writes = held_writes
         # Guards both lazy inits so two concurrent first-callers on the shared
         # daemon don't each build a backend and leak the loser. (Construction is
         # cheap field init; FleetProvider defers the role-server spawn to first
@@ -80,7 +82,9 @@ class RoutingProvider(LLMProvider):
                     from lilbee.providers.fleet.provider import FleetProvider
 
                     self._local = FleetProvider(
-                        hold_warm=self._hold_warm, config_refresh=self._config_refresh
+                        hold_warm=self._hold_warm,
+                        config_refresh=self._config_refresh,
+                        held_writes=self._held_writes,
                     )
         return self._local
 

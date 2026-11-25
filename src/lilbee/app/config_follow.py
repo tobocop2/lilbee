@@ -16,11 +16,12 @@ from lilbee.app.settings import (
 )
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import Config, cfg
-from lilbee.providers.reload_keys import ENGINE_TUNING_KEYS
+from lilbee.providers.reload_keys import ENGINE_TUNING_KEYS, FLEET_RELOAD_KEYS
 
 log = logging.getLogger(__name__)
 
 _NO_FAILURE = object()
+_UNSET = object()
 
 ONE_OFF_HOLD: frozenset[str] = frozenset(Config.model_fields) - ENGINE_TUNING_KEYS
 """The keys a one-off command keeps at their start value for its whole run.
@@ -43,13 +44,26 @@ class ConfigFileFollower:
     the error is logged once per file state.
     """
 
-    def __init__(self, hold: frozenset[str], *, long_running: bool, keeper: str) -> None:
+    def __init__(
+        self,
+        hold: frozenset[str],
+        *,
+        long_running: bool,
+        keeper: str,
+        flags: frozenset[str] = frozenset(),
+    ) -> None:
         self.hold = hold
         # What the failure log says keeps its settings: "the server", "the TUI", "the command".
         self._keeper = keeper
         # Whether the process runs until it is stopped (serve, the stdio MCP server, the TUI).
         self.long_running = long_running
         self._reading: ConfigReading = start_config_reading()
+        self._start = self._reading
+        # The fleet reload keys a one-off holds at the file's start value. A key a flag
+        # set is the command's own choice, so a write of it to the file is not a held write.
+        self._held_reload_keys = (
+            frozenset() if long_running else (hold - flags) & FLEET_RELOAD_KEYS
+        )
         self._lock = threading.Lock()
         # The file state of the last failed check, so the error is logged once per state.
         self._failed_stamp: object = _NO_FAILURE
@@ -58,6 +72,26 @@ class ConfigFileFollower:
     def report_to(self, on_taken: Callable[[SettingsUpdateResult], None]) -> None:
         """Give each take that ``take_now`` makes to *on_taken*, such as a screen that shows it."""
         self._on_taken = on_taken
+
+    def held_writes(self) -> dict[str, object]:
+        """Each held fleet reload key config.toml changed since the start, with its new value.
+
+        A key counts when the file sets it to a value other than the one it set at the
+        start and other than the one this process runs on. The file is read as it is
+        now, so a write before the first engine start counts too. A long-running
+        process holds no such key; a torn file reports nothing.
+        """
+        if not self._held_reload_keys:
+            return {}
+        _stamp, values = persistent_settings.read_persisted(cfg.data_root)
+        if values is None:
+            return {}
+        return {
+            key: values[key]
+            for key in sorted(self._held_reload_keys & values.keys())
+            if values[key] != self._start.values.get(key, _UNSET)
+            and values[key] != getattr(cfg, key)
+        }
 
     def check(self) -> tuple[bool, SettingsUpdateResult | None]:
         """Take the outside changes; return whether the file moved since the last check.

@@ -29,7 +29,7 @@ import sys
 import threading
 import time
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -287,13 +287,16 @@ def build_services(
     registry: ModelRegistry | None = None,
     interactive: bool = False,
     config_refresh: Callable[[], None] | None = None,
+    held_writes: Callable[[], Mapping[str, object]] | None = None,
 ) -> Services:
     """Build a full Services container bound to *config*, without caching it.
 
     *config_refresh* is what the local engine runs before it retries a call;
     ``get_services`` passes a take through the process's current config.toml
-    follower. A container of the library API gets none, so its engine takes nothing
-    from the file.
+    follower. *held_writes* is what the engine asks before it starts a private
+    fleet beside a fleet it cannot bind: the held keys config.toml changed during
+    this run. A container of the library API gets neither, so its engine takes
+    nothing from the file.
 
     ``get_services()`` calls this with the process-global cfg; the library API
     calls it per instance. Service modules are imported inside the function to
@@ -327,7 +330,10 @@ def build_services(
     engines = EngineBook(config)
     owns_provider = provider is None
     provider = provider or create_provider(
-        config, hold_warm=interactive, config_refresh=config_refresh
+        config,
+        hold_warm=interactive,
+        config_refresh=config_refresh,
+        held_writes=held_writes,
     )
     store: Store | None = None
     try:
@@ -422,6 +428,7 @@ def get_services() -> Services:
             registry=registry,
             interactive=_state.interactive,
             config_refresh=_take_through_the_process_follower,
+            held_writes=_held_writes_of_the_process_follower,
         )
         # A stop asked for during the build may already have swapped the singleton
         # out, so this container is shut down here instead of outliving the stop.
@@ -510,6 +517,12 @@ def _take_through_the_process_follower() -> None:
         follower.take_now()
 
 
+def _held_writes_of_the_process_follower() -> dict[str, object]:
+    """The held keys config.toml changed during this run, by this process's follower; none without one."""
+    follower = _state.follower
+    return {} if follower is None else follower.held_writes()
+
+
 def follow_config_long_running(hold: frozenset[str], *, keeper: str) -> ConfigFileFollower:
     """The config.toml follower of a process that runs until it is stopped.
 
@@ -541,7 +554,10 @@ def follow_config_one_off(flag_keys: frozenset[str]) -> None:
         current = _state.follower
         if current is None or not current.long_running:
             _state.follower = ConfigFileFollower(
-                ONE_OFF_HOLD | flag_keys, long_running=False, keeper="the command"
+                ONE_OFF_HOLD | flag_keys,
+                long_running=False,
+                keeper="the command",
+                flags=flag_keys,
             )
 
 
