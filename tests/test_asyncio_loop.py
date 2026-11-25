@@ -568,6 +568,55 @@ def test_shutdown_does_not_wait_for_the_reset_a_sync_waits_for(tmp_path: Path) -
     assert sync_ended, "the shutdown gave up on a sync that waited for the reset"
 
 
+def _block_the_loop_thread() -> tuple[asyncio.AbstractEventLoop, threading.Thread, threading.Event]:
+    """Start a coroutine that holds the loop thread without yielding until the event is set."""
+    started = threading.Event()
+    release = threading.Event()
+
+    async def blocker() -> None:
+        started.set()
+        release.wait(30)
+
+    loop = asyncio_loop.get_loop()
+    thread = next(t for t in threading.enumerate() if t.name == "lilbee-bg-loop")
+    asyncio.run_coroutine_threadsafe(blocker(), loop)
+    assert started.wait(timeout=2.0)
+    return loop, thread, release
+
+
+def test_shutdown_with_a_stuck_loop_thread_stays_within_its_budget() -> None:
+    loop, thread, release = _block_the_loop_thread()
+    try:
+        started = time.monotonic()
+        asyncio_loop.shutdown(drain_budget_s=0.5)
+        elapsed = time.monotonic() - started
+        assert elapsed < 1.5, "the drain and the join each took a budget"
+        assert thread.is_alive()
+        assert thread.daemon
+        assert not loop.is_closed()
+    finally:
+        release.set()
+    thread.join(5.0)
+    assert not thread.is_alive()
+    assert loop.is_closed(), "the loop thread closes the loop it stopped"
+
+
+def test_get_loop_after_a_shutdown_that_timed_out_gives_a_working_loop() -> None:
+    old, thread, release = _block_the_loop_thread()
+    try:
+        asyncio_loop.shutdown(drain_budget_s=0.3)
+        new = asyncio_loop.get_loop()
+        assert new is not old
+
+        async def answer() -> int:
+            return 7
+
+        assert asyncio_loop.run(answer()) == 7
+    finally:
+        release.set()
+        thread.join(5.0)
+
+
 def test_run_from_multiple_threads() -> None:
     async def identity(n: int) -> int:
         await asyncio.sleep(0)
