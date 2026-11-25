@@ -950,6 +950,33 @@ def tessdata_ready(tmp_path_factory) -> Iterator[None]:
         yield
 
 
+CODE_PARSER_LANGUAGES = ("python", "javascript", "typescript", "go", "rust", "java", "c", "cpp")
+
+
+@pytest.fixture(scope="session")
+def code_parsers_ready(tmp_path_factory) -> Iterator[None]:
+    """Download the tree-sitter parsers once per run, and point every parse at them.
+
+    The parser pack caches its downloads under the home folder. Each test has its
+    own HOME, so that cache is cold in every test, and each test that parses code
+    downloads its parser from the network inside the test timeout. On a gate run
+    a stalled download timed out three sync tests, and on a loaded host it took
+    the worker down. The run's folder sits beside the workers' temp folders, is
+    filled under a lock every worker shares, and is the cache the pack reads.
+    """
+    from tree_sitter_language_pack import PackConfig, configure
+
+    from lilbee.data.extract.code_chunker import _ensure_language
+
+    run_root = tmp_path_factory.getbasetemp().parent
+    cache = run_root / "parser-cache"
+    configure(PackConfig(cache_dir=str(cache)))  # type: ignore[arg-type]
+    with FileLock(run_root / "parser-cache.lock"):
+        for language in CODE_PARSER_LANGUAGES:
+            _ensure_language(language)
+    yield
+
+
 def shutdown_ingest_pool() -> None:
     """Shut down and clear the shared ingest pool, if one is cached."""
     from lilbee.data import offload
