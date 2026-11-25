@@ -123,6 +123,8 @@ def install(
             literal_text_column("{task.fields[detail]}"),
             console=err,
             transient=True,
+            redirect_stdout=False,
+            redirect_stderr=False,
         ) as progress:
             task_id = progress.add_task(name, total=100, detail="")
 
