@@ -89,6 +89,21 @@ def test_cuda_host_gets_the_build_of_its_compute_capability(
     assert pick.backend == backend
 
 
+def test_a_host_with_two_cards_gets_the_build_of_the_newest_card() -> None:
+    nvidia = {
+        "driver": "570.0",
+        "cuda_driver": 12080,
+        "gpus": [{"name": "NVIDIA T4", "cc": [7, 5]}, {"name": L4[0], "cc": list(L4[1])}],
+    }
+    host = collect(
+        system="Linux",
+        machine="x86_64",
+        cpu_info={"flags": ["avx", "avx2"], "brand_raw": "Test CPU"},
+        nvidia=nvidia,
+    )
+    assert TEI.pick_build(host).backend == "cuda-sm89"
+
+
 def test_gpu_older_than_turing_gets_the_cpu_build_with_the_floor_in_the_reason() -> None:
     pick = TEI.pick_build(_caps(gpu=GTX))
     assert pick.backend == "cpu"
