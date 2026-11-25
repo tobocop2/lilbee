@@ -64,8 +64,9 @@ if grep -rq -e '-lineinfo' "${SRC_DIR}" --include=CMakeLists.txt --include='*.cm
   exit 1
 fi
 # ACCEPTED DIFFERENCE. Two CUDA builds of one commit are not byte-equal, and nothing needs them to be. The register
-# allocation of cicc (the GPU front end of nvcc) gives other code for one or two mmvq kernels from run to run, with
-# one thread, one process ID and no address randomization, and no nvcc flag removes it. The rule that holds: llama-server,
+# allocation of cicc (the GPU front end of nvcc) gives other code for a few mmvq kernels from run to run, with
+# one thread, one process ID and no address randomization, and no nvcc flag removes it. check_ik_repro.sh enforces the
+# rule and tests/shell/check_ik_repro.bats tests it. The rule that holds: llama-server,
 # libllama.so, libmtmd.so and the NVIDIA libraries are byte-equal; libggml.so has equal host code (.text, .rodata,
 # .dynsym, .dynstr); only its GPU code (.nv_fatbin) and the sections that hold addresses after it (.nvFatBinSegment,
 # .eh_frame, .eh_frame_hdr, .rela.dyn) may differ. Wheel digests come from the release asset, never from a rebuild.
