@@ -50,6 +50,10 @@ verify-release.yml|Verify release|no'
 state_dir="$(mktemp -d "${TMPDIR:-/tmp}/release-watch.XXXXXX")"
 trap 'rm -rf "${state_dir}"' EXIT
 
+# Set when the candidate's dropped cells could not be established. The legs may
+# all be green while a build cell is missing, so the report cannot claim success.
+candidate_unread=0
+
 note() { echo "$*"; }
 now() { date +%s; }
 
@@ -70,6 +74,7 @@ defer_to_selfheal() {
   rc=$(gh api "repos/${REPO}/actions/runs/${RC_RUN_ID}" \
          -q '"\(.run_attempt) \(.conclusion)"') || {
     note "could not read candidate ${RC_RUN_ID}; watching the legs rather than assuming a heal"
+    candidate_unread=1
     return 1
   }
   rc_attempt="${rc%% *}"
@@ -78,6 +83,7 @@ defer_to_selfheal() {
   rc_cells=$(RUN_ID="${RC_RUN_ID}" REPO="${REPO}" \
                bash "$(dirname "$0")/release_dropped_cells.sh") || {
     note "could not read candidate ${RC_RUN_ID} jobs; watching the legs"
+    candidate_unread=1
     return 1
   }
   rc_failed=$(printf '%s' "${rc_cells}" | grep -c .)
@@ -236,12 +242,17 @@ report() {  # -> 0 when everything shipped
     echo "| (release) | red | ${TAG} is not promoted (isPrerelease=${prerelease}) |" >> "${SUMMARY}"
   fi
 
+  if [ "${candidate_unread}" -eq 1 ]; then
+    failed=1
+    echo "| (candidate) | unknown | ${RC_RUN_ID} could not be read, so its dropped cells are unknown |" >> "${SUMMARY}"
+  fi
+
   echo >> "${SUMMARY}"
   if [ "${failed}" -eq 0 ]; then
     echo "Every channel published and ${TAG} is latest. Nothing was left for a person." >> "${SUMMARY}"
     return 0
   fi
-  echo "A leg above did not reach green. Each failing leg was retried once; read its logs before rerunning, because a second failure is a defect until proven otherwise." >> "${SUMMARY}"
+  echo "A row above did not reach green. An unknown candidate means a build cell may be missing. Each failing leg was retried once; read its logs before rerunning, because a second failure is a defect until proven otherwise." >> "${SUMMARY}"
   return 1
 }
 
