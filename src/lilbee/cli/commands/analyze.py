@@ -22,7 +22,7 @@ from lilbee.core.config import cfg
 from lilbee.core.profile_files import ProfileFolder, ProfileStore
 from lilbee.runtime.asyncio_loop import run_without_join
 from lilbee.runtime.cancellation import sigint_cancel
-from lilbee.runtime.console import PlainConsole
+from lilbee.runtime.console import PlainConsole, live_progress
 from lilbee.runtime.progress import AnalyzeEvent, EventType
 
 if TYPE_CHECKING:
@@ -70,19 +70,17 @@ def print_tip_if_shown(root: Path) -> None:
 @contextmanager
 def _progress() -> Iterator[DetailedProgressCallback]:
     """A progress bar over the files analyze extracts; off in JSON mode."""
-    from rich.progress import BarColumn, MofNCompleteColumn, Progress
+    from rich.progress import BarColumn, MofNCompleteColumn
 
     from lilbee.runtime.progress.columns import literal_text_column
 
-    with Progress(
+    with live_progress(
         literal_text_column("{task.description}"),
         BarColumn(),
         MofNCompleteColumn(),
         transient=True,
         console=PlainConsole(stderr=True),
         disable=cfg.json_mode,
-        redirect_stdout=False,
-        redirect_stderr=False,
     ) as progress:
         task = progress.add_task(READING_LABEL, total=None)
 

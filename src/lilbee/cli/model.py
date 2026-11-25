@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
-from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn
+from rich.progress import BarColumn, TextColumn, TimeRemainingColumn
 from rich.table import Table
 from rich.text import Text
 
@@ -41,7 +41,7 @@ from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.asyncio_loop import run_main
-from lilbee.runtime.console import PlainConsole, styled
+from lilbee.runtime.console import PlainConsole, live_progress, styled
 from lilbee.runtime.progress.columns import literal_text_column
 
 if TYPE_CHECKING:
@@ -263,7 +263,7 @@ def _pull_json_stream(ref: str, src: ModelSource, *, allow_unsupported: bool) ->
 def _pull_interactive_progress(ref: str, src: ModelSource, *, allow_unsupported: bool) -> None:
     """Drive Rich's Live progress bar during a native HuggingFace download."""
     err_console = PlainConsole(stderr=True, force_terminal=True)
-    with Progress(
+    with live_progress(
         literal_text_column("{task.description}", style="progress.description"),
         BarColumn(),
         TextColumn("{task.percentage:>3.0f}%"),
@@ -271,8 +271,6 @@ def _pull_interactive_progress(ref: str, src: ModelSource, *, allow_unsupported:
         TimeRemainingColumn(),
         console=err_console,
         transient=False,
-        redirect_stdout=False,
-        redirect_stderr=False,
     ) as progress:
         task_id = progress.add_task(f"Downloading {ref}", total=100, detail="")
 

@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn
+from rich.progress import BarColumn, DownloadColumn, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
@@ -23,7 +23,7 @@ from lilbee.providers.fleet.engines.choice import (
     loadable_refs,
 )
 from lilbee.providers.roles import WorkerRole
-from lilbee.runtime.console import PlainConsole, styled
+from lilbee.runtime.console import PlainConsole, live_progress, styled
 from lilbee.runtime.progress.columns import literal_text_column
 
 log = logging.getLogger(__name__)
@@ -236,7 +236,7 @@ def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> No
         console = PlainConsole(file=sys.__stderr__ or sys.stderr)
     manager = get_services().model_manager
     notices: list[str] = []
-    with Progress(
+    with live_progress(
         SpinnerColumn(),
         literal_text_column("{task.description}"),
         BarColumn(),
@@ -245,8 +245,6 @@ def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> No
         literal_text_column("{task.fields[detail]}"),
         transient=True,
         console=console,
-        redirect_stdout=False,
-        redirect_stderr=False,
     ) as progress:
         desc = f"Downloading model '{model}'..."
         ptask = progress.add_task(desc, total=None, detail="")

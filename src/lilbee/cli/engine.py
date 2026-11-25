@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.progress import BarColumn, Progress, TextColumn
+from rich.progress import BarColumn, TextColumn
 from rich.text import Text
 
 from lilbee.app import engine_service
@@ -24,7 +24,7 @@ from lilbee.providers.fleet.engines.proof import (
 )
 from lilbee.providers.fleet.swap_manager import stop_engine
 from lilbee.providers.roles import WorkerRole
-from lilbee.runtime.console import PlainConsole
+from lilbee.runtime.console import PlainConsole, live_progress
 from lilbee.runtime.engine_lock import build_lock, machine_engine_dir, private_engine_dir
 from lilbee.runtime.progress import SseErrorCode
 from lilbee.runtime.progress.columns import literal_text_column
@@ -116,15 +116,13 @@ def install(
         )
     err = PlainConsole(stderr=True)
     try:
-        with Progress(
+        with live_progress(
             literal_text_column("Downloading {task.description}"),
             BarColumn(),
             TextColumn("{task.percentage:>3.0f}%"),
             literal_text_column("{task.fields[detail]}"),
             console=err,
             transient=True,
-            redirect_stdout=False,
-            redirect_stderr=False,
         ) as progress:
             task_id = progress.add_task(name, total=100, detail="")
 

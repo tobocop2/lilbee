@@ -240,7 +240,7 @@ def _crawl_urls_blocking(
     A URL whose address is refused, or whose crawl saved nothing and failed on every page,
     is a failed source; the next URL is still crawled.
     """
-    from rich.progress import Progress, SpinnerColumn, TaskID
+    from rich.progress import SpinnerColumn, TaskID
 
     from lilbee.crawler import crawl_and_save
     from lilbee.runtime.progress import (
@@ -254,18 +254,16 @@ def _crawl_urls_blocking(
 
     effective_depth, effective_pages = (depth, max_pages) if crawl else (0, None)
 
-    from lilbee.runtime.console import PlainConsole
+    from lilbee.runtime.console import PlainConsole, live_progress
 
     err_console = PlainConsole(stderr=True)
     outcome = _CrawlOutcome()
-    with Progress(
+    with live_progress(
         SpinnerColumn(),
         literal_text_column("{task.description}"),
         transient=True,
         console=err_console,
         disable=cfg.json_mode,
-        redirect_stdout=False,
-        redirect_stderr=False,
     ) as progress:
         for url in urls:
             shown = without_userinfo(url)
