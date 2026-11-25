@@ -396,7 +396,12 @@ def _json_error_response(request: Request, exc: Exception) -> Response:
     An HTTP caller has no command line, so a command in the detail gets its route beside it.
     """
     if isinstance(exc, HTTPException):
-        exc.detail = name_routes(exc.detail)
+        exc = HTTPException(
+            status_code=exc.status_code,
+            detail=name_routes(exc.detail),
+            headers=exc.headers,
+            extra=exc.extra,
+        )
     response = create_exception_response(request, exc)
     response.media_type = MediaType.JSON
     return response

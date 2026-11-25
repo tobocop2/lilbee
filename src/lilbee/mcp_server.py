@@ -137,6 +137,7 @@ from lilbee.runtime.progress import (
     ProgressEvent,
     SseErrorCode,
 )
+from lilbee.server.route_names import name_damaged_folders, name_tools
 from lilbee.sessions import (
     AGENT_SESSIONS_DISABLED_HINT,
     MessageRole,
@@ -352,8 +353,10 @@ def _error(msg: str) -> dict[str, Any]:
     Typed as ``dict[str, Any]`` rather than a TypedDict so it composes
     with the success-side returns under the existing handler signatures
     without forcing every caller to widen its return type.
+
+    An MCP client has no command line, so a command in *msg* gets its tool beside it.
     """
-    return {"error": msg}
+    return {"error": name_tools(msg)}
 
 
 def _wiki_tool(fn: _F) -> _F:
@@ -1534,7 +1537,7 @@ async def _rebuild_when(needed: bool) -> dict[str, Any]:
                 quiet=True, force_rebuild=True, cancel=cancel, started_by=_SYNC_STARTER
             )
         except (*SYNC_REFUSALS, ProviderError) as exc:
-            return {"rebuild": None, "rebuild_error": str(exc)}
+            return {"rebuild": None, "rebuild_error": name_tools(str(exc))}
     return {"rebuild": result.model_dump()}
 
 
@@ -2357,7 +2360,9 @@ def engine_list_tool() -> dict[str, Any]:
     if (refused := _engine_read_refused()) is not None:
         return refused
     return _engine_result(
-        lambda: EngineBuildsResponse.model_validate(engine_service.engine_list().payload())
+        lambda: EngineBuildsResponse.model_validate(
+            name_damaged_folders(engine_service.engine_list().payload(), name_tools)
+        )
     )
 
 
@@ -2394,7 +2399,7 @@ def engine_roles_tool() -> dict[str, Any]:
                     model=v.model,
                     format=v.format,
                     engine=v.engine,
-                    notice=v.notice,
+                    notice=name_tools(v.notice) if v.notice else v.notice,
                 )
                 for v in engine_service.roles()
             ]
