@@ -172,6 +172,17 @@ class TestHostSpillInHealth:
         manager._check_estimates({"chat-0"})
         assert [w.code for w in manager.health_warnings()] == [WarningCode.HOST_SPILL]
 
+    def test_an_unload_clears_the_placement_divergence(self, tmp_path: Path) -> None:
+        from lilbee.core.health_warnings import HealthWarning, WarningCode
+
+        manager = self._manager(tmp_path, self._LOG)
+        divergence = HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan")
+        manager._estimate_checked.add("chat-0")
+        manager._record_findings("chat-0", divergence, [])
+        assert manager.health_warnings() == [divergence]
+        manager._check_estimates(set())
+        assert manager.health_warnings() == []
+
     def test_an_unload_clears_the_spill(self, tmp_path: Path) -> None:
         from lilbee.core.health_warnings import WarningCode
 
