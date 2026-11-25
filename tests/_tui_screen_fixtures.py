@@ -41,6 +41,7 @@ def mock_svc():
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
     store.source_summary.return_value = SourceSummary(0, 0, {}, [])
+    store.partly_read_sources.return_value = ({}, 0)
     store.count_sources.return_value = 0
     store.add_chunks.side_effect = len
     store.delete_by_source.return_value = None

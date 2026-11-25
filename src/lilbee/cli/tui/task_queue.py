@@ -11,8 +11,10 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
+
+from lilbee.data.types import PartialFile
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +25,7 @@ class TaskStatus(StrEnum):
     QUEUED = "queued"
     ACTIVE = "active"
     DONE = "done"
+    PARTIAL = "partial"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -51,7 +54,14 @@ class CancelOrigin(StrEnum):
 
 
 PERCENT = 100
-TERMINAL_STATUSES = (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED)
+TERMINAL_STATUSES = (
+    TaskStatus.DONE,
+    TaskStatus.PARTIAL,
+    TaskStatus.FAILED,
+    TaskStatus.CANCELLED,
+)
+# Terminal states of a task whose work ran to its end.
+COMPLETED_STATUSES = (TaskStatus.DONE, TaskStatus.PARTIAL)
 
 
 # Every icon is one cell wide. An emoji here is double-width and shifts its row
@@ -60,9 +70,31 @@ STATUS_ICONS: dict[TaskStatus, str] = {
     TaskStatus.QUEUED: "⋯",
     TaskStatus.ACTIVE: "▶",
     TaskStatus.DONE: "✓",
+    TaskStatus.PARTIAL: "▲",
     TaskStatus.FAILED: "✗",
     TaskStatus.CANCELLED: "⊘",
 }
+
+
+@dataclass(frozen=True)
+class TaskReport:
+    """The files an ingest task did not fully index, and how many it did index."""
+
+    partial: tuple[PartialFile, ...] = ()
+    # filename → reason
+    failed: dict[str, str] = field(default_factory=dict)
+    skipped: dict[str, str] = field(default_factory=dict)
+    indexed: int = 0
+
+    @property
+    def has_problems(self) -> bool:
+        """Whether any file was partly read, failed or skipped."""
+        return bool(self.partial or self.failed or self.skipped)
+
+    @property
+    def is_partial(self) -> bool:
+        """Whether the task indexed something and still left files partly read or unread."""
+        return self.indexed > 0 and self.has_problems
 
 
 @dataclass
@@ -90,6 +122,8 @@ class Task:
     completed_at: float | None = None
     # Set with the CANCELLED status; None while the task is not cancelled.
     cancel_origin: CancelOrigin | None = None
+    # Set by an ingest task whose run left files partly read, failed or skipped.
+    report: TaskReport | None = None
 
 
 class TaskQueue:
@@ -261,8 +295,16 @@ class TaskQueue:
                     task.indeterminate = indeterminate
         self._notify()
 
-    def complete_task(self, task_id: str) -> None:
-        """Mark a task as done and append it to history.
+    def set_report(self, task_id: str, report: TaskReport) -> None:
+        """Attach *report* to a task, for the Task Center detail view."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task:
+                task.report = report
+        self._notify()
+
+    def complete_task(self, task_id: str, status: TaskStatus = TaskStatus.DONE) -> None:
+        """Mark a task as done, or as *status* ``PARTIAL``, and append it to history.
 
         A row that already reached a terminal state is left alone, so a
         worker that finishes after the user cancelled it does not flip the
@@ -275,7 +317,7 @@ class TaskQueue:
         with self._lock:
             task = self._tasks.get(task_id)
             if task and task.status not in TERMINAL_STATUSES:
-                task.status = TaskStatus.DONE
+                task.status = status
                 task.progress = PERCENT
                 task.indeterminate = False
                 task.completed_at = time.monotonic()

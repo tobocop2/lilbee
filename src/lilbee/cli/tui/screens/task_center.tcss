@@ -60,6 +60,7 @@ TaskRow {
     &.-active { border-left: heavy $primary; }
     &.-active.-pulse { border-left: heavy $primary-lighten-3; }
     &.-done { border-left: heavy $success; }
+    &.-partial { border-left: heavy $warning; }
     &.-failed { border-left: heavy $error; }
     &.-cancelled { border-left: heavy $warning; }
     &.-just-completed { background: $primary 20%; }
@@ -73,6 +74,7 @@ TaskRow {
     }
     &.-queued .row-bar { color: $text-muted; }
     &.-done .row-bar { color: $success; }
+    &.-partial .row-bar { color: $warning; }
     &.-failed .row-bar { color: $error; }
     &.-cancelled .row-bar { color: $warning; text-style: strike; }
 
