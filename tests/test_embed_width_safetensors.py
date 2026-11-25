@@ -199,7 +199,9 @@ def test_get_services_pins_the_width_before_the_store_is_built(
 
     seen: list[int] = []
 
-    def build(config, provider=None, registry=None, interactive=False):  # type: ignore[no-untyped-def]
+    def build(  # type: ignore[no-untyped-def]
+        config, provider=None, registry=None, interactive=False, config_refresh=None
+    ):
         seen.append(config.embedding_dim)
         return make_mock_services()
 
