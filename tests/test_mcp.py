@@ -2281,6 +2281,22 @@ class TestWikiProviderFailure:
         assert wiki_build() == {"error": str(failure)}
 
 
+class TestWikiBuildWithNoPages:
+    @pytest.mark.parametrize("tool", [wiki_build, wiki_update])
+    def test_a_build_with_no_pages_returns_a_tool_error(self, mock_svc, monkeypatch, tool):
+        from lilbee.wiki.generation import WikiBuildError
+
+        cfg.wiki = True
+        message = "No wiki pages were written: all 2 model calls failed."
+
+        def _fail(*a, **kw):
+            raise WikiBuildError(message)
+
+        monkeypatch.setattr("lilbee.wiki.run_full_build", _fail)
+
+        assert tool() == {"error": message}
+
+
 class TestWikiUpdateTool:
     def test_wiki_disabled_returns_error(self, mock_svc, tmp_path):
         cfg.wiki = False

@@ -376,12 +376,13 @@ def _wiki_tool(fn: _F) -> _F:
     @functools.wraps(fn)
     def guarded(*args: Any, **kwargs: Any) -> Any:
         from lilbee.app.ingest import LIBRARY_REFUSALS
+        from lilbee.wiki.generation import WikiBuildError
 
         if not cfg.wiki:
             return _error(WIKI_DISABLED_ERROR)
         try:
             return fn(*args, **kwargs)
-        except (*LIBRARY_REFUSALS, ProviderError) as exc:
+        except (*LIBRARY_REFUSALS, ProviderError, WikiBuildError) as exc:
             return _error(str(exc))
 
     checked = cast("_F", guarded)

@@ -5965,6 +5965,37 @@ class TestWikiBuild:
         assert result.exit_code == 0
         assert "No concept or entity pages" in result.output
 
+    @pytest.mark.parametrize("command", ["build", "update"])
+    def test_a_build_with_no_pages_exits_1_with_the_error(
+        self, mock_svc, isolated_env, monkeypatch, command
+    ):
+        from lilbee.wiki.generation import WikiBuildError
+
+        def fail(*a, **kw):
+            raise WikiBuildError("No wiki pages were written: all 2 model calls failed.")
+
+        monkeypatch.setattr("lilbee.wiki.run_full_build", fail)
+        result = runner.invoke(app, ["wiki", command])
+        assert result.exit_code == 1
+        assert "Error:" in result.output
+        assert "No wiki pages were written" in result.output
+
+    def test_a_build_with_no_pages_gives_the_error_as_json(
+        self, mock_svc, isolated_env, monkeypatch
+    ):
+        from lilbee.wiki.generation import WikiBuildError
+
+        def fail(*a, **kw):
+            raise WikiBuildError("No wiki pages were written: all 2 model calls failed.")
+
+        cfg.json_mode = True
+        monkeypatch.setattr("lilbee.wiki.run_full_build", fail)
+        result = runner.invoke(app, ["--json", "wiki", "build"])
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {
+            "error": "No wiki pages were written: all 2 model calls failed."
+        }
+
     def test_prints_generated_paths(self, mock_svc, isolated_env, monkeypatch):
         out = isolated_env / "wiki" / "concepts" / "braking.md"
         monkeypatch.setattr(

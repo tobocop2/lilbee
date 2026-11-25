@@ -49,6 +49,21 @@ class BuildStats:
     citations_rendered: int = 0
     citations_dropped_unverified: int = 0
     verified_by_page: dict[str, int] = field(default_factory=dict)
+    model_calls: int = 0
+    model_calls_failed: int = 0
+    last_model_failure: str = ""
+
+    @property
+    def every_model_call_failed(self) -> bool:
+        """True when the run made model calls and none of them gave usable text."""
+        return self.model_calls > 0 and self.model_calls_failed == self.model_calls
+
+    def record_model_call(self, failure: str | None) -> None:
+        """Count one model call; *failure* is why it gave no text, or None when it did."""
+        self.model_calls += 1
+        if failure is not None:
+            self.model_calls_failed += 1
+            self.last_model_failure = failure
 
     @classmethod
     def ensure(cls, stats: BuildStats | None) -> BuildStats:
