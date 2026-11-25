@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -1290,7 +1291,15 @@ class TestDivertToDrafts:
     @staticmethod
     def _divert(drafts_dir: Path, content: str, sources: list[str]) -> Path:
         return divert_to_drafts(
-            content, drafts_dir, "my-page", 0.45, "diff text", "concepts", sources, source_ids={}
+            content,
+            drafts_dir,
+            "my-page",
+            0.45,
+            "diff text",
+            "concepts",
+            sources,
+            source_ids={},
+            live_ids=None,
         )
 
     def test_writes_draft_with_note(self, tmp_path: Path):
@@ -1399,6 +1408,7 @@ class TestWritePageDrift:
             ["a.md"],
             WikiSubdir.CONCEPTS,
             source_ids={},
+            live_ids=None,
         )
         assert result == page
 
@@ -1413,6 +1423,7 @@ class TestWritePageDrift:
             WikiSubdir.CONCEPTS,
             ["a.md"],
             source_ids={},
+            live_ids=None,
         )
         assert stale.is_file()
         write_page(
@@ -1424,6 +1435,7 @@ class TestWritePageDrift:
             ["a.md"],
             WikiSubdir.CONCEPTS,
             source_ids={},
+            live_ids=None,
         )
         assert not stale.exists()
 
@@ -1440,6 +1452,7 @@ class TestWritePageDrift:
             WikiSubdir.CONCEPTS,
             ["a.md"],
             source_ids={},
+            live_ids=None,
         )
         write_page(
             wiki_root,
@@ -1450,6 +1463,7 @@ class TestWritePageDrift:
             ["b.md"],
             WikiSubdir.ENTITIES,
             source_ids={},
+            live_ids=None,
         )
         assert other.is_file()
         assert "Ford the concept" in other.read_text()
@@ -1465,6 +1479,7 @@ class TestWritePageDrift:
             ["a.md"],
             WikiSubdir.CONCEPTS,
             source_ids={},
+            live_ids=None,
         )
         assert result.is_file()
 
@@ -1489,6 +1504,7 @@ class TestADraftRecordsTheIdsOfItsSources:
             sources,
             WikiSubdir.CONCEPTS,
             source_ids=self._IDS,
+            live_ids=None,
         )
 
     def test_a_page_held_by_the_quality_gate(self, tmp_path: Path):
@@ -1533,6 +1549,7 @@ class TestWritePageToDrafts:
             sources,
             WikiSubdir.CONCEPTS,
             source_ids={},
+            live_ids=None,
         )
 
     def test_the_same_sources_supersede_their_own_draft(self, tmp_path: Path):
@@ -1582,6 +1599,7 @@ class TestWritePageToDrafts:
             WikiSubdir.CONCEPTS,
             ["a.md"],
             source_ids={},
+            live_ids=None,
         )
         result = self._write(wiki_root, "# Brakes\n\nlater proposal", ["a.md"])
         assert result == drift
@@ -1592,7 +1610,12 @@ class TestWritePageToDrafts:
 
 class TestDeleteDriftDraftIfPresent:
     def test_returns_false_when_no_draft_exists(self, tmp_path: Path):
-        assert delete_drift_draft_if_present(tmp_path, "missing", ["a.md"], source_ids={}) is False
+        assert (
+            delete_drift_draft_if_present(
+                tmp_path, "missing", ["a.md"], source_ids={}, live_ids=None
+            )
+            is False
+        )
 
     def test_leaves_a_low_faithfulness_draft_alone(self, tmp_path: Path):
         """The draft names the same sources the publish does, so the
@@ -1602,14 +1625,28 @@ class TestDeleteDriftDraftIfPresent:
         survive on that alone, whatever the marker check did."""
         draft = tmp_path / "x.md"
         draft.write_text('---\nfaithfulness_score: 0.2\nsources: ["a.md"]\n---\n\nbody\n')
-        assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"], source_ids={}) is False
+        assert (
+            delete_drift_draft_if_present(tmp_path, "x", ["a.md"], source_ids={}, live_ids=None)
+            is False
+        )
         assert draft.is_file()
 
     def test_removes_a_drift_draft(self, tmp_path: Path):
         draft = divert_to_drafts(
-            "# body\n", tmp_path, "x", 0.5, "diff", WikiSubdir.CONCEPTS, ["a.md"], source_ids={}
+            "# body\n",
+            tmp_path,
+            "x",
+            0.5,
+            "diff",
+            WikiSubdir.CONCEPTS,
+            ["a.md"],
+            source_ids={},
+            live_ids=None,
         )
-        assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"], source_ids={}) is True
+        assert (
+            delete_drift_draft_if_present(tmp_path, "x", ["a.md"], source_ids={}, live_ids=None)
+            is True
+        )
         assert not draft.exists()
 
     def test_removes_a_drift_draft_written_before_ids_by_its_path_key(self, tmp_path: Path):
@@ -1623,7 +1660,9 @@ class TestDeleteDriftDraftIfPresent:
             ' - flagged for human review -->\n\n---\nsources: ["a.md"]\n---\n\nbody\n',
             encoding="utf-8",
         )
-        assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"], source_ids={"a.md": "1"})
+        assert delete_drift_draft_if_present(
+            tmp_path, "x", ["a.md"], source_ids={"a.md": "1"}, live_ids=None
+        )
         assert not draft.exists()
 
     def test_keeps_an_id_keyed_draft_when_a_new_file_took_the_path(self, tmp_path: Path):
@@ -1637,6 +1676,7 @@ class TestDeleteDriftDraftIfPresent:
             WikiSubdir.CONCEPTS,
             ["a.md"],
             source_ids={"a.md": "1"},
+            live_ids=None,
         )
         assert not delete_drift_draft_if_present(
             tmp_path, "x", ["a.md"], source_ids={"a.md": "2"}, live_ids=lambda ids: {"1": "a.md"}
@@ -1654,6 +1694,7 @@ class TestDeleteDriftDraftIfPresent:
             WikiSubdir.CONCEPTS,
             ["a.md"],
             source_ids={"a.md": "1"},
+            live_ids=None,
         )
         assert delete_drift_draft_if_present(
             tmp_path, "x", ["a.md"], source_ids={"a.md": "2"}, live_ids=lambda ids: {}
@@ -1662,10 +1703,33 @@ class TestDeleteDriftDraftIfPresent:
 
     def test_keeps_a_drift_draft_belonging_to_another_source(self, tmp_path: Path):
         draft = divert_to_drafts(
-            "# body\n", tmp_path, "x", 0.5, "diff", WikiSubdir.CONCEPTS, ["a.md"], source_ids={}
+            "# body\n",
+            tmp_path,
+            "x",
+            0.5,
+            "diff",
+            WikiSubdir.CONCEPTS,
+            ["a.md"],
+            source_ids={},
+            live_ids=None,
         )
-        assert delete_drift_draft_if_present(tmp_path, "x", ["b.md"], source_ids={}) is False
+        assert (
+            delete_drift_draft_if_present(tmp_path, "x", ["b.md"], source_ids={}, live_ids=None)
+            is False
+        )
         assert draft.is_file()
+
+
+class TestLiveIdsIsRequired:
+    """A default would let a new caller skip the rebuild check without notice."""
+
+    @pytest.mark.parametrize("writer", [write_page, divert_to_drafts, delete_drift_draft_if_present])
+    def test_the_writer_has_no_default_for_live_ids(self, writer):
+        assert inspect.signature(writer).parameters["live_ids"].default is inspect.Parameter.empty
+
+    def test_a_call_without_live_ids_is_refused(self, tmp_path: Path):
+        with pytest.raises(TypeError, match="live_ids"):
+            delete_drift_draft_if_present(tmp_path, "x", ["a.md"], source_ids={})  # type: ignore[call-arg]
 
 
 class TestSynthesisDriftDetection:
@@ -2472,6 +2536,7 @@ class TestWritePendingMarker:
             "concepts",
             ["a.md"],
             source_ids={},
+            live_ids=None,
         )
         with caplog.at_level("WARNING", logger="lilbee.wiki.persistence"):
             result = write_pending_marker(

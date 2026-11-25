@@ -223,7 +223,7 @@ def write_page(
     page_type: str,
     *,
     source_ids: Mapping[str, str],
-    live_ids: IdsHeld | None = None,
+    live_ids: IdsHeld | None,
 ) -> Path:
     """Write page to disk with drift detection. Returns path written to.
 

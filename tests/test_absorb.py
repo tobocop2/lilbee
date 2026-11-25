@@ -163,7 +163,15 @@ def _write_wiki_page(store: Store, keys: list[str], subdir: str = "entities") ->
     wiki_root = cfg.data_root / cfg.wiki_dir
     source_ids = store.source_ids(keys, SourceType.DOCUMENT)
     return write_page(
-        wiki_root, subdir, "boeing", content, 1.0, keys, "entities", source_ids=source_ids
+        wiki_root,
+        subdir,
+        "boeing",
+        content,
+        1.0,
+        keys,
+        "entities",
+        source_ids=source_ids,
+        live_ids=None,
     )
 
 
@@ -1793,6 +1801,7 @@ class TestADraftSurvivesAMoveOfItsSources:
             names,
             "entities",
             source_ids=store.source_ids(names, SourceType.DOCUMENT),
+            live_ids=None,
         )
 
         assert _drafts() == []
