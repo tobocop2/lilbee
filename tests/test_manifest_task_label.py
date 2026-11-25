@@ -66,9 +66,7 @@ class TestManifestLabel:
 
     def test_chat_role_refuses_it_with_the_same_label(self, smolvlm_stored_as_chat: str) -> None:
         with pytest.raises(TaskMismatchError) as caught:
-            validate_model_task_assignment(
-                "chat_model", smolvlm_stored_as_chat, allow_bypass=False
-            )
+            validate_model_task_assignment("chat_model", smolvlm_stored_as_chat, allow_bypass=False)
         assert caught.value.entry_task == ModelTask.VISION
 
     def test_vision_route_check_accepts_it(
