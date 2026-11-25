@@ -102,10 +102,7 @@ def _installed_model_path(want: str, configured: str) -> Path | None:
     from lilbee.modelhub.registry import ModelRegistry
 
     registry = ModelRegistry(cfg.models_dir)
-    try:
-        manifests = [m for m in registry.list_installed() if m.task == want]
-    except Exception:
-        return None
+    manifests = [m for m in registry.list_installed() if m.task == want]
     for skipped in (m for m in manifests if m.format is not ModelFormat.GGUF):
         console.print(f"Skipping {skipped.ref}: the self-check loads GGUF files only.")
     refs = [m.ref for m in manifests if m.format is ModelFormat.GGUF]
