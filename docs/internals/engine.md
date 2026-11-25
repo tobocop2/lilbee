@@ -220,8 +220,8 @@ Header math (`model_cache.compute_dynamic_ctx`) is the fallback
   (`--parallel`) steps down the same way before refusing.
 
 - **A role that mistral.rs serves**: the launch never splits a model over several
-  cards. A host with NVIDIA cards runs the CUDA pack that its weakest card runs (CUDA
-  12.8 driver or newer), and a Metal host has one device. A launch over two or more cards is
+  cards. No mistral.rs CUDA pack is published, so a host with NVIDIA cards runs the
+  CPU pack, and a Metal host has one device. A launch over two or more cards is
   refused with a message that names the model and the llama.cpp engine as the fix.
   The launch sets no card environment variable. The estimate is for one device: for a
   model folder it is the weights, the cache at the launch context and the runtime
