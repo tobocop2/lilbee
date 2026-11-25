@@ -5969,7 +5969,7 @@ class TestWikiBuild:
     def test_a_build_with_no_pages_exits_1_with_the_error(
         self, mock_svc, isolated_env, monkeypatch, command
     ):
-        from lilbee.wiki.generation import WikiBuildError
+        from lilbee.wiki.stats import WikiBuildError
 
         def fail(*a, **kw):
             raise WikiBuildError("No wiki pages were written: all 2 model calls failed.")
@@ -5980,10 +5980,30 @@ class TestWikiBuild:
         assert "Error:" in result.output
         assert "No wiki pages were written" in result.output
 
+    @pytest.mark.parametrize(
+        ("command", "target"),
+        [
+            (["wiki", "synthesize"], "lilbee.wiki.run_full_synthesize"),
+            (["wiki", "generate", "ford"], "lilbee.wiki.lazy.generate_stub_page"),
+        ],
+    )
+    def test_synthesize_and_generate_with_no_pages_exit_1_with_the_error(
+        self, mock_svc, isolated_env, monkeypatch, command, target
+    ):
+        from lilbee.wiki.stats import WikiBuildError
+
+        def fail(*a, **kw):
+            raise WikiBuildError("No wiki pages were written: every model call failed (1).")
+
+        monkeypatch.setattr(target, fail)
+        result = runner.invoke(app, command)
+        assert result.exit_code == 1
+        assert "No wiki pages were written" in result.output
+
     def test_a_build_with_no_pages_gives_the_error_as_json(
         self, mock_svc, isolated_env, monkeypatch
     ):
-        from lilbee.wiki.generation import WikiBuildError
+        from lilbee.wiki.stats import WikiBuildError
 
         def fail(*a, **kw):
             raise WikiBuildError("No wiki pages were written: all 2 model calls failed.")

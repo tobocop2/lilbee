@@ -26,6 +26,13 @@ class BuildStatsDict(TypedDict):
     citation_verify_rate: float
 
 
+EMPTY_RESPONSE = "the model returned no text"
+
+
+class WikiBuildError(RuntimeError):
+    """A wiki run wrote no page because every model call failed."""
+
+
 @dataclass
 class BuildStats:
     """What one wiki run's quality gates did.
@@ -57,6 +64,15 @@ class BuildStats:
     def every_model_call_failed(self) -> bool:
         """True when the run made model calls and none of them gave usable text."""
         return self.model_calls > 0 and self.model_calls_failed == self.model_calls
+
+    def raise_if_nothing_written(self, pages: int) -> None:
+        """Raise :class:`WikiBuildError` when *pages* is 0 because every model call failed."""
+        if pages == 0 and self.every_model_call_failed:
+            raise WikiBuildError(
+                f"No wiki pages were written because every model call failed "
+                f"({self.model_calls}). Last error: {self.last_model_failure}. "
+                "Check that the chat model is available, then run the command again."
+            )
 
     def record_model_call(self, failure: str | None) -> None:
         """Count one model call; *failure* is why it gave no text, or None when it did."""

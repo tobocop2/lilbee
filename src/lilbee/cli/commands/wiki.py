@@ -31,7 +31,7 @@ from lilbee.wiki.shared import (
     WikiSubdir,
     total_wiki_pages,
 )
-from lilbee.wiki.stats import format_summary_line
+from lilbee.wiki.stats import WikiBuildError, format_summary_line
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -116,7 +116,6 @@ def _wiki_progress() -> Iterator[DetailedProgressCallback]:
 def _library_refusal_exits() -> Iterator[None]:
     """Exit 1 with the error when a wiki write is refused or every model call fails."""
     from lilbee.app.ingest import LIBRARY_REFUSALS
-    from lilbee.wiki.generation import WikiBuildError
 
     try:
         yield
