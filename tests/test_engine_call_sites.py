@@ -485,9 +485,7 @@ class TestMemoryEstimates:
         )
         assert planning._declared_reserve(spy, request, unified=False) == 10 * BYTES_PER_CTX
 
-    @pytest.mark.parametrize(
-        "failure", [ProviderError("no estimate"), OSError("gone")]
-    )
+    @pytest.mark.parametrize("failure", [ProviderError("no estimate"), OSError("gone")])
     def test_declared_reserve_is_zero_when_the_engine_cannot_estimate(
         self,
         spy: SpyEngine,
