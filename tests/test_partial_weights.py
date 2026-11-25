@@ -603,10 +603,11 @@ class TestACutOpenvinoWeightsFile:
         for stem, bin_bytes in (("openvino_language_model", 100), ("openvino_vision_model", 99)):
             (tmp_path / f"{stem}.xml").write_text(_IR_XML, encoding="utf-8")
             (tmp_path / f"{stem}.bin").write_bytes(b"\0" * bin_bytes)
+        (tmp_path / "config.json").write_text(_IR_CONFIG, encoding="utf-8")
         assert _is_unknown(mm.estimate_memory(ModelFormat.OPENVINO, _request(tmp_path)))
         (tmp_path / "openvino_vision_model.bin").write_bytes(b"\0" * 100)
         whole = mm.estimate_memory(ModelFormat.OPENVINO, _request(tmp_path))
-        assert whole.device_bytes == 2 * (len(_IR_XML) + 100)
+        assert whole.device_bytes == _chat_charge(2 * (len(_IR_XML) + 100))
 
     def test_the_last_listed_weights_set_the_bound(self, tmp_path: Path) -> None:
         xml = (

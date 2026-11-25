@@ -26,7 +26,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 KNOWN = {{"--model_path", "--model_name", "--rest_bind_address", "--rest_port",
-          "--target_device", "--task"}}
+          "--target_device", "--task", "--max_num_seqs"}}
 args = sys.argv[1:]
 flags = dict(zip(args[::2], args[1::2]))
 if set(flags) - KNOWN or {{"--model_path", "--model_name", "--rest_port"}} - set(flags):
