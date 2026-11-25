@@ -7,12 +7,15 @@ setting on runs this pass after ingest: it extracts the concepts of each
 source that holds no concept row, and the caller then reclusters the whole
 corpus.
 
-The store records the checkpoint of the last pass that completed, as it does
-for the wiki index. With the source table at that version nothing is owed and
-nothing is read. With no record, every source is owed; otherwise only the
-sources written since the checkpoint are. A source that already holds concept
-rows is skipped, so a pass that stops part way resumes with the sources it did
-not reach.
+The store records the checkpoint of the last sync whose graph is complete, as
+it does for the wiki index: the caller records it only after the recluster
+succeeds. With the source table at that version nothing is owed and nothing is
+read. With no record, every source is owed; otherwise only the sources written
+since the checkpoint are. Of those, a source with no concept row needs its
+concepts extracted, and a source that holds rows this sync did not ingest was
+written by a pass whose recluster never finished, so the corpus needs a full
+recluster. Both answers come from the stored rows, so a pass, or a recluster,
+that stops part way is finished by the next sync.
 """
 
 from __future__ import annotations
@@ -23,6 +26,8 @@ from typing import TYPE_CHECKING, NamedTuple
 from lilbee.data.store import SourceType
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from lilbee.data.store import Store
     from lilbee.data.store.types import SourcesCheckpoint
     from lilbee.retrieval.concepts.graph import ConceptGraph
@@ -39,22 +44,36 @@ _CHUNK_COLUMNS = ["chunk", "source", "chunk_index"]
 
 
 class ConceptBackfill(NamedTuple):
-    """What one pass did."""
+    """What one pass found and did."""
 
-    # Sources whose concept rows the pass wrote; the corpus needs a recluster.
-    written: int
+    # Whether the corpus needs a full recluster: the pass wrote rows, or found
+    # rows that an earlier pass or ingest wrote and no recluster covered.
+    recluster: bool
     # The checkpoint to record once the graph is reclustered; None when the
     # pass did not complete, so the next sync runs it again.
     checkpoint: SourcesCheckpoint | None
 
 
-def backfill_concepts(
-    store: Store, graph: ConceptGraph, cancel: CancelSignal | None = None
-) -> ConceptBackfill | None:
-    """Extract the concepts of each owed source. None when nothing is owed."""
+def concepts_current(store: Store) -> bool:
+    """Whether the recorded checkpoint is at the source table's version: nothing is owed."""
     covered = store.concepts_covered()
-    if covered is not None and covered.version == store.sources_version():
+    return covered is not None and covered.version == store.sources_version()
+
+
+def backfill_concepts(
+    store: Store,
+    graph: ConceptGraph,
+    ingested: Collection[str] = (),
+    cancel: CancelSignal | None = None,
+) -> ConceptBackfill | None:
+    """Extract the concepts of each owed source. None when nothing is owed.
+
+    *ingested* names the sources this sync wrote; the caller reclusters them
+    on its own, so their rows do not make a full recluster owed.
+    """
+    if concepts_current(store):
         return None
+    covered = store.concepts_covered()
     # Before the read of the owed rows: a row committed after it is owed to the next pass.
     checkpoint = store.sources_checkpoint()
     names = (
@@ -64,15 +83,18 @@ def backfill_concepts(
     )
     ids = store.source_ids(names, SourceType.DOCUMENT)
     holding = graph.sources_with_concepts(ids.values())
+    fresh = set(store.source_ids(ingested, SourceType.DOCUMENT).values())
+    unclustered = bool(holding - fresh)
     owed = sorted(source_id for source_id in ids.values() if source_id not in holding)
     if owed and not graph.can_extract():
         # Without the model every chunk yields no concept: owe the sources to a later sync.
-        return ConceptBackfill(0, None)
-    written = 0
+        return ConceptBackfill(unclustered, None)
+    if owed:
+        log.info("Building concept rows for %d sources indexed without them", len(owed))
     for start in range(0, len(owed), _SOURCES_PER_BATCH):
         if cancel is not None and cancel.is_set():
             log.info("Concept backfill cancelled; the next sync resumes it")
-            return ConceptBackfill(written, None)
+            return ConceptBackfill(False, None)
         batch = owed[start : start + _SOURCES_PER_BATCH]
         chunk_ids: list[tuple[str, int]] = []
         texts: list[str] = []
@@ -82,7 +104,5 @@ def backfill_concepts(
         graph.write_concept_records(
             graph.build_concept_records(chunk_ids, graph.extract_concepts_batch(texts))
         )
-        written += len(batch)
-    if written:
-        log.info("Built concept rows for %d sources indexed without them", written)
-    return ConceptBackfill(written, checkpoint)
+        log.info("Concept rows built for %d of %d sources", start + len(batch), len(owed))
+    return ConceptBackfill(unclustered or bool(owed), checkpoint)

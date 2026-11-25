@@ -203,27 +203,34 @@ async def _update_concept_graph(
     """Backfill the sources ingest did not cover, then re-run Leiden. No-op if disabled.
 
     The backfill gives concept rows to each source indexed while the setting
-    was off (see :mod:`lilbee.retrieval.concepts.backfill`); any it writes
-    force a full pass. Removals force one too: their rows are already gone, so
-    the touched communities are unrecoverable, and so does a rebuild, which
-    re-ingests every source. Adds and updates recluster incrementally. The
-    backfill's checkpoint is recorded only after the recluster, so a sync that
-    stops between the two runs both again.
+    was off (see :mod:`lilbee.retrieval.concepts.backfill`), and says when the
+    stored rows owe a full pass: rows it wrote, or rows an earlier sync wrote
+    and never reclustered. Removals force one too: their rows are already
+    gone, so the touched communities are unrecoverable, and so does a rebuild,
+    which re-ingests every source. Adds and updates recluster incrementally.
+    The backfill's checkpoint is the last step, recorded only after the
+    recluster succeeds, so a sync that stops before it leaves the rows owing a
+    recluster and the next sync runs it. A sync that changed nothing, at the
+    checkpoint, returns before the graph dependencies are imported.
     """
     if not active_config().concept_graph:
         return
     from lilbee.retrieval.concepts import concepts_available
-    from lilbee.retrieval.concepts.backfill import backfill_concepts
+    from lilbee.retrieval.concepts.backfill import backfill_concepts, concepts_current
 
-    if not concepts_available():
-        return
     try:
         services = get_services()
+        if not (added or updated or removed or full) and concepts_current(services.store):
+            return
+        if not concepts_available():
+            return
         cg = services.concepts
-        backfill = await to_ingest_thread(backfill_concepts, services.store, cg, cancel)
-        backfilled = backfill is not None and backfill.written > 0
-        if (backfilled or added or updated or removed) and cg.get_graph():
-            if removed or full or backfilled:
+        backfill = await to_ingest_thread(
+            backfill_concepts, services.store, cg, [*added, *updated], cancel
+        )
+        owed = backfill is not None and backfill.recluster
+        if (owed or added or updated or removed) and cg.get_graph():
+            if removed or full or owed:
                 await to_ingest_thread(cg.rebuild_clusters)
             else:
                 await to_ingest_thread(cg.rebuild_clusters, set(added), set(updated))

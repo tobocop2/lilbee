@@ -1542,7 +1542,9 @@ The graph is built automatically during `lilbee sync`. No extra commands
 needed; search results are boosted transparently. If you turn the graph on for
 a library that is already indexed, the next sync builds it for the documents
 already there. You do not need to rebuild the index. If that sync stops part
-way, the sync after it continues with the documents it did not reach.
+way, the sync after it continues with the documents it did not reach and then
+clusters the graph. The sync logs a line when it starts this work and one after
+each batch of 50 documents.
 
 Based on: Microsoft Research's LazyGraphRAG technique, Church & Hanks 1990
 (PMI), Traag et al. 2019 (Leiden).
