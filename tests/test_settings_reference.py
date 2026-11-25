@@ -235,9 +235,7 @@ class TestSurfaceColumns:
         assert generator._cli_cell("top_k") == "`lilbee settings set`"
 
     @pytest.mark.parametrize("key", sorted(set(WRITABLE_CONFIG_FIELDS) | MODEL_ROLE_FIELDS))
-    def test_cli_column_matches_what_the_set_path_does(
-        self, generator, tmp_path, monkeypatch, key
-    ):
+    def test_cli_column_matches_what_the_set_path_does(self, generator, tmp_path, monkeypatch, key):
         """Run `lilbee settings set` for one key that can be set and compare with the cell.
 
         One test for each key: a single loop over every key ran 15 to 35 seconds
