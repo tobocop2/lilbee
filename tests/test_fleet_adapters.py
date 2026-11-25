@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +26,7 @@ from lilbee.providers.fleet.adapters import (
 )
 from lilbee.providers.fleet.engines.base import LaunchRequest
 from lilbee.providers.fleet.engines.choice import ADAPTERS
+from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 
@@ -400,15 +402,24 @@ def test_build_argv_no_mmap_reads_help_on_stderr(monkeypatch) -> None:
     assert _mmap_tokens(argv) == ["--load-mode", "none"]
 
 
-@pytest.mark.parametrize("adapter", list(ADAPTERS.values()), ids=[n.value for n in ADAPTERS])
+def _reaches_llama_argv(adapter) -> bool:
+    """Whether the adapter's module uses the shared argv builder, directly or through LLAMA."""
+    module_values = vars(sys.modules[type(adapter).__module__]).values()
+    return any(v is build_server_argv or v is LLAMA for v in module_values)
+
+
+_LLAMA_ARGV_ADAPTERS = {n: a for n, a in ADAPTERS.items() if _reaches_llama_argv(a)}
+
+
+@pytest.mark.parametrize(
+    "adapter", list(_LLAMA_ARGV_ADAPTERS.values()), ids=[n.value for n in _LLAMA_ARGV_ADAPTERS]
+)
 def test_no_mmap_help_read_targets_the_launched_binary(monkeypatch, adapter) -> None:
     """With two builds side by side, an adapter's flag comes from the build its argv launches.
 
-    Every shipped adapter runs. One that reads help must read the launched build and match
-    its flag; one that never reads help passes without a read.
+    Every adapter whose module uses the shared argv builder runs, so a new one is covered.
+    Each must read help from the launched build and match its flag.
     """
-    if WorkerRole.CHAT not in adapter.served_roles:
-        pytest.skip("the adapter does not serve chat")
     old_build, new_build = Path("/engines/old/llama-server"), Path("/engines/new/llama-server")
     helps = {old_build: _HELP_NO_MMAP, new_build: _HELP_LOAD_MODE}
     read: list[Path] = []
@@ -435,10 +446,9 @@ def test_no_mmap_help_read_targets_the_launched_binary(monkeypatch, adapter) -> 
             target=RoleTarget.CPU,
         )
         argv = adapter.launch_argv(adapter.role_spec(WorkerRole.CHAT, None, None), request)
-        assert other not in read
-        if read:
-            assert str(launched) in argv
-            assert _mmap_tokens(argv) == tokens
+        assert read == [launched]
+        assert str(launched) in argv
+        assert _mmap_tokens(argv) == tokens
 
 
 def test_build_argv_defaults_to_mmap(monkeypatch) -> None:
