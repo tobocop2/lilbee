@@ -432,7 +432,7 @@ def remove_build(
     except FileLockTimeoutError as exc:
         raise EngineRefusedError(STORE_BUSY) from exc
     except FileLockUnavailableError as exc:
-        raise EngineRefusedError(f"The engine store lock cannot be taken: {exc}.") from exc
+        raise EngineRefusedError(str(exc)) from exc
     return BuildView(engine, version, backend).plain_label
 
 

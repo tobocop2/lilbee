@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from filelock import FileLock
 from typer.testing import CliRunner
 
 from lilbee.app import engine_service
@@ -95,8 +96,21 @@ def test_a_lock_the_system_refuses_shows_its_own_text_not_the_busy_text(
     _fail_lock(monkeypatch, FileLockUnavailableError(REFUSED_LOCK))
     with pytest.raises(engine_service.EngineRefusedError) as raised:
         engine_service.remove_build("fx", "1", "cpu")
-    assert REFUSED_LOCK in str(raised.value)
-    assert BUSY not in str(raised.value)
+    assert str(raised.value) == REFUSED_LOCK
+    _kept(models_dir)
+
+
+def test_a_lock_held_by_another_holder_past_the_wait_shows_the_busy_text(
+    models_dir: Path,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install(models_dir)
+    real = engine_store.file_lock
+    monkeypatch.setattr(engine_store, "file_lock", lambda path, _wait: real(path, 0.2))
+    with FileLock(engines_root(models_dir) / engine_store.LOCK_DIR / "fx.lock"):
+        with pytest.raises(engine_service.EngineRefusedError) as raised:
+            engine_service.remove_build("fx", "1", "cpu")
+    assert str(raised.value) == BUSY
     _kept(models_dir)
 
 
