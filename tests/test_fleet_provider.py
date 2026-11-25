@@ -5513,7 +5513,7 @@ class _FakeReplica:
         """Rediscovery retires the pool; a real client's close releases httpx."""
 
     def notify_when_idle(self, _callback: object) -> None:
-        """Retiring registers the hold sweep; these routing tests never end a request."""
+        """Retiring registers the end of the dir use; these routing tests never end a request."""
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls += 1
