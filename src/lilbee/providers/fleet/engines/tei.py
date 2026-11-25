@@ -45,6 +45,10 @@ _CUDA_CELLS = (75, 80, 86, 89, 90, 100, 120)
 """The compute capabilities (major * 10 + minor) a CUDA build exists for."""
 _BATCH_LIMIT = 64
 """The inputs per request: the launch argv sets it on the server, the client splits at it."""
+_TOKENIZATION_WORKERS = 2
+"""The router starts one tokenizer worker per core, and each holds its own copy of the vocabulary
+and its own allocator arena. Two keep the load peak the same on every host and are far from the
+bottleneck: the forward pass sets the speed of an embed or rerank."""
 _SERVED = frozenset({WorkerRole.EMBED, WorkerRole.RERANK})
 _ENDPOINTS = {WorkerRole.EMBED: "/v1/embeddings", WorkerRole.RERANK: "/rerank"}
 
@@ -212,6 +216,8 @@ class TeiAdapter:
             str(_PROFILE.batch_limit),
             "--max-batch-tokens",
             str(_longest_input_tokens()),
+            "--tokenization-workers",
+            str(_TOKENIZATION_WORKERS),
             *spec.extra_args,
         ]
 
