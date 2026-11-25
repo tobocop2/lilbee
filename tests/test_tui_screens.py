@@ -20,14 +20,13 @@ from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Static
 from textual.widgets._tabbed_content import ContentTabs
 
-from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
+from conftest import TEST_EMBED_REF, TEST_LOCAL_REF, make_hf_client
 from lilbee.app.services import set_services
 from lilbee.app.settings_map import SettingGroup
 from lilbee.catalog import (
     CatalogModel,
     CatalogResult,
 )
-from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import _silence_stderr_log_handlers
 from lilbee.cli.tui import app as tui_app
@@ -9437,7 +9436,7 @@ async def test_catalog_delete_accepts_bare_hf_repo_row():
                 downloaded_at=datetime.now(UTC).isoformat(),
             ),
         )
-        mgr = ModelManager(models_dir, cfg, hf_client=HfClient(cfg))
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         services = MagicMock()
         services.model_manager = mgr
 
@@ -9628,7 +9627,7 @@ async def test_chat_slash_remove_deletes_an_unregistered_gguf(tmp_path):
             patch(
                 "lilbee.cli.tui.screens.chat.get_services",
                 return_value=MagicMock(
-                    model_manager=ModelManager(models_dir, cfg, hf_client=HfClient(cfg))
+                    model_manager=ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
                 ),
             ),
             patch(

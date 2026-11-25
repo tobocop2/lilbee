@@ -21,6 +21,7 @@ from conftest import (
     PICKS_RERANK,
     PICKS_VISION,
     SAMPLE_PICKS,
+    make_hf_client,
     make_test_catalog_model,
     stub_hf_listing,
 )
@@ -4505,7 +4506,7 @@ class TestUnsendableHfToken:
             return "m.gguf"
 
         monkeypatch.setattr("lilbee.catalog.download.resolve_filename", _resolve)
-        ModelManager(tmp_path, cfg, hf_client=HfClient(cfg))._resolved_entry(
+        ModelManager(tmp_path, cfg, hf_client=make_hf_client(cfg))._resolved_entry(
             PICKS_VISION[0], LLAMA, verify=True
         )
         assert check.call_args.args[2] is False
