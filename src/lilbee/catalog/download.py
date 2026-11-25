@@ -176,6 +176,15 @@ def discard_partial_blobs(models_dir: Path, hf_repo: str, blobs: Iterable[str]) 
                 _unlink_partials(repo_dir, blob)
         except Timeout:
             log.info("Kept the partial download of %s: another transfer holds it.", blob)
+        except OSError as exc:
+            raise _unreadable_cache(repo_dir, exc) from exc
+
+
+def _unreadable_cache(repo_dir: Path, exc: OSError) -> RuntimeError:
+    return RuntimeError(
+        f"Cannot read the model cache folder {repo_dir}: {exc.strerror or exc}. "
+        "Check that lilbee can read and write that folder."
+    )
 
 
 def _unlink_partials(repo_dir: Path, blob: str) -> None:
@@ -183,10 +192,7 @@ def _unlink_partials(repo_dir: Path, blob: str) -> None:
     try:
         partials = list(repo_dir.glob(f"blobs/{blob}.*.incomplete"))
     except OSError as exc:
-        raise RuntimeError(
-            f"Cannot read the model cache folder {repo_dir}: {exc.strerror or exc}. "
-            "Check that lilbee can read and write that folder."
-        ) from exc
+        raise _unreadable_cache(repo_dir, exc) from exc
     for partial in partials:
         try:
             partial.unlink()
