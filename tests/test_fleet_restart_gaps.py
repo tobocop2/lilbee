@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.base import SERVER_STOPPING_MESSAGE, ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.provider import FleetProvider
@@ -717,3 +717,55 @@ def test_a_rediscover_still_waiting_at_the_fleet_work_limit_raises_and_keeps_the
     assert raised.value.kind is ProviderErrorKind.STARTING
     assert provider._swap_for(EMBED) is old_embed
     assert provider._clients[EMBED]
+
+
+@pytest.mark.parametrize("stop_first", [False, True], ids=["stop-during-wait", "stop-before"])
+def test_a_rediscover_waiting_for_fleet_work_answers_a_server_stop_at_once(
+    engine_fleet: FleetFixture, stop_first: bool
+) -> None:
+    """A server stop answers a rediscover that waits for fleet work, or starts after the stop."""
+    provider, _swaps = engine_fleet
+    old_embed = provider._swap_for(EMBED)
+    gate = threading.Event()
+
+    def hold() -> None:
+        gate.wait(_JOIN_S)
+
+    failed = threading.Event()
+
+    def fail_once() -> str:
+        failed.set()
+        raise _connection_error()
+
+    errors: list[ProviderError] = []
+
+    def rediscover() -> None:
+        try:
+            provider._with_rediscover(fail_once)
+        except ProviderError as err:
+            errors.append(err)
+
+    request = threading.Thread(target=rediscover)
+    with provider._lock:
+        provider._fleet_work = DaemonCall(hold, name="held-fleet-work")
+    try:
+        if stop_first:
+            provider.stop_waiting()
+        request.start()
+        assert failed.wait(_JOIN_S)
+        provider.stop_waiting()
+        # Well inside the fleet-work limit of 105 s.
+        request.join(_JOIN_S / 2)
+        answered = not request.is_alive()
+    finally:
+        gate.set()
+        with provider._lock:
+            provider._fleet_work = None
+            provider._reload_done.notify_all()
+        request.join(_JOIN_S)
+
+    assert answered
+    assert len(errors) == 1
+    assert SERVER_STOPPING_MESSAGE in str(errors[0])
+    assert errors[0].kind is ProviderErrorKind.STARTING
+    assert provider._swap_for(EMBED) is old_embed
