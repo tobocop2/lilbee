@@ -4915,6 +4915,12 @@ class TestAddWithUrls:
             assert result.exit_code == 1
             assert "pip install 'lilbee[crawler]'" in result.output
 
+    def test_add_url_with_a_crawler_that_cannot_load(self, broken_crawlberg):
+        result = runner.invoke(app, ["add", "https://example.com"])
+        assert result.exit_code == 1
+        assert broken_crawlberg in result.output
+        assert "pip install --force-reinstall" in result.output
+
     def test_json_add_url_without_crawler_installed_prints_a_json_error(self):
         with mock.patch("lilbee.crawler.crawler_available", return_value=False):
             result = runner.invoke(app, ["--json", "add", "https://example.com", "--crawl"])
