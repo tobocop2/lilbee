@@ -139,6 +139,17 @@ def test_a_reload_that_stops_every_group_of_its_dir_keeps_the_dir_held() -> None
     assert _DIR in p._engine_holds
 
 
+def test_a_reload_stop_that_raises_gives_back_the_uses_it_took() -> None:
+    p, holds = _provider(_DIR)
+    _bound(p, SwapGroup.CHAT, _DIR)
+    swap = MagicMock()
+    swap.shutdown.side_effect = OSError("stop failed")
+    with pytest.raises(OSError, match="stop failed"):
+        p._stop_groups({SwapGroup.CHAT}, set(), frozenset(), {}, {SwapGroup.CHAT: swap})
+    assert p._dir_users == {}
+    holds[_DIR].release_and_check_last.assert_called_once()
+
+
 def test_the_last_use_releases_the_hold_and_stops_no_engine(monkeypatch) -> None:
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
