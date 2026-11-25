@@ -32,6 +32,7 @@ from lilbee.runtime.progress import (
     LibraryUpgradeEvent,
     TableWork,
     UpgradePhase,
+    UpgradeTable,
 )
 from lilbee.server import auth as auth_mod
 from tests._toasts import posted_toasts
@@ -39,29 +40,43 @@ from tests.test_store import _meta_rows, _path_keyed_tables
 
 # The tables of ``_path_keyed_tables`` an upgrade visits, in order, with their rows.
 _STEPS = [
-    ("source list", 2),
-    ("search chunks", 3),
-    ("page text", 1),
-    ("concept links", 1),
-    ("citations", 2),
-    ("wiki mentions", 1),
+    (UpgradeTable.SOURCES, 2),
+    (UpgradeTable.CHUNKS, 3),
+    (UpgradeTable.PAGE_TEXTS, 1),
+    (UpgradeTable.CHUNK_CONCEPTS, 1),
+    (UpgradeTable.CITATIONS, 2),
+    (UpgradeTable.WIKI_MENTIONS, 1),
 ]
 # What each progress event names while the opener works: (tables done, work, table).
 # Each table is first checked, then the opener waits while its ids are added; the
 # source list has no id column to wait on and is done once it is updated.
 _PROGRESS = [
-    (0, TableWork.UPDATING, "source list"),
-    (1, TableWork.CHECKING, "search chunks"),
-    (1, TableWork.CHECKING, "page text"),
-    (1, TableWork.CHECKING, "concept links"),
-    (1, TableWork.CHECKING, "citations"),
-    (1, TableWork.CHECKING, "wiki mentions"),
-    (1, TableWork.ADDING_IDS, "search chunks"),
-    (2, TableWork.ADDING_IDS, "page text"),
-    (3, TableWork.ADDING_IDS, "concept links"),
-    (4, TableWork.ADDING_IDS, "citations"),
-    (5, TableWork.ADDING_IDS, "wiki mentions"),
+    (0, TableWork.UPDATING, UpgradeTable.SOURCES),
+    (1, TableWork.CHECKING, UpgradeTable.CHUNKS),
+    (1, TableWork.CHECKING, UpgradeTable.PAGE_TEXTS),
+    (1, TableWork.CHECKING, UpgradeTable.CHUNK_CONCEPTS),
+    (1, TableWork.CHECKING, UpgradeTable.CITATIONS),
+    (1, TableWork.CHECKING, UpgradeTable.WIKI_MENTIONS),
+    (1, TableWork.ADDING_IDS, UpgradeTable.CHUNKS),
+    (2, TableWork.ADDING_IDS, UpgradeTable.PAGE_TEXTS),
+    (3, TableWork.ADDING_IDS, UpgradeTable.CHUNK_CONCEPTS),
+    (4, TableWork.ADDING_IDS, UpgradeTable.CITATIONS),
+    (5, TableWork.ADDING_IDS, UpgradeTable.WIKI_MENTIONS),
 ]
+# The words of the display line for each work and table.
+_WORK_LINE = {
+    TableWork.UPDATING: "updating",
+    TableWork.CHECKING: "checking",
+    TableWork.ADDING_IDS: "adding ids to",
+}
+_TABLE_LINE = {
+    UpgradeTable.SOURCES: "source list",
+    UpgradeTable.CHUNKS: "search chunks",
+    UpgradeTable.PAGE_TEXTS: "page text",
+    UpgradeTable.CHUNK_CONCEPTS: "concept links",
+    UpgradeTable.CITATIONS: "citations",
+    UpgradeTable.WIKI_MENTIONS: "wiki mentions",
+}
 # The lock timeout every test here stands in for the real 30 s one with.
 _SHORT_LOCK_S = 1.0
 # How long a slowed upgrade runs: past the short lock timeout.
@@ -113,7 +128,7 @@ def _table(done: int) -> LibraryUpgradeEvent:
     return LibraryUpgradeEvent(
         phase=UpgradePhase.TABLE,
         work=TableWork.ADDING_IDS,
-        table="search chunks",
+        table=UpgradeTable.CHUNKS,
         tables_done=done,
         tables_total=2,
         rows=9,
@@ -276,7 +291,7 @@ class TestStoreReportsTheUpgrade:
             0,
             6,
         )
-        assert (progress.table, progress.rows) == ("source list", 2)
+        assert (progress.table, progress.rows) == (UpgradeTable.SOURCES, 2)
         assert progress.elapsed_s >= 0.3
         assert is_open is False
 
@@ -315,7 +330,7 @@ class TestStoreReportsTheUpgrade:
             assert store.wait_for_open(30) is True
 
         assert progress is not None
-        assert (progress.phase, progress.table) == (UpgradePhase.TABLE, "")
+        assert (progress.phase, progress.table) == (UpgradePhase.TABLE, None)
         assert [w.code for w in warnings] == [WarningCode.LIBRARY_UPGRADING]
         assert store.upgrade_progress() is None
         assert store.health_warnings() == []
@@ -380,7 +395,7 @@ class TestStoreReportsTheUpgrade:
         entered, release = threading.Event(), threading.Event()
 
         def _migrate(self, db):
-            step = core_mod._TableStep(TableWork.ADDING_IDS, "citations", 2, 5, 6)
+            step = core_mod._TableStep(TableWork.ADDING_IDS, UpgradeTable.CITATIONS, 2, 5, 6)
             self._report_upgrade(UpgradePhase.TABLE, step)
 
         def _held(db, locations):
@@ -398,7 +413,7 @@ class TestStoreReportsTheUpgrade:
             assert store.wait_for_open(30) is True
 
         assert progress is not None
-        assert (progress.phase, progress.table) == (UpgradePhase.TABLE, "")
+        assert (progress.phase, progress.table) == (UpgradePhase.TABLE, None)
 
 
 class TestOthersWaitForTheUpgrade:
@@ -580,7 +595,7 @@ class TestUpgradeText:
                 LibraryUpgradeEvent(
                     phase=UpgradePhase.TABLE,
                     work=TableWork.ADDING_IDS,
-                    table="search chunks",
+                    table=UpgradeTable.CHUNKS,
                     tables_done=3,
                     tables_total=7,
                     rows=8841823,
@@ -601,6 +616,45 @@ class TestUpgradeText:
     def test_each_phase_has_its_line(self, event, text):
         assert event.text == text
 
+    def test_the_machine_values_a_client_reads_are_pinned(self):
+        assert {w.name: w.value for w in TableWork} == {
+            "UPDATING": "updating",
+            "CHECKING": "checking",
+            "ADDING_IDS": "adding_ids",
+        }
+        assert {t.name: t.value for t in UpgradeTable} == {
+            "SOURCES": "sources",
+            "CHUNKS": "chunks",
+            "PAGE_TEXTS": "page_texts",
+            "CHUNK_CONCEPTS": "chunk_concepts",
+            "ENTITIES": "entities",
+            "CITATIONS": "citations",
+            "WIKI_MENTIONS": "wiki_mentions",
+        }
+
+    def test_the_json_carries_the_machine_values_and_the_display_line(self):
+        event = LibraryUpgradeEvent(
+            phase=UpgradePhase.TABLE,
+            work=TableWork.ADDING_IDS,
+            table=UpgradeTable.CHUNKS,
+            tables_done=3,
+            tables_total=7,
+            elapsed_s=12.2,
+        )
+
+        body = event.model_dump(mode="json")
+
+        assert (body["work"], body["table"]) == ("adding_ids", "chunks")
+        assert body["text"] == "Tables done: 3 of 7 · adding ids to search chunks · 12 s"
+
+    def test_every_table_has_a_display_word(self):
+        assert set(_TABLE_LINE) | {UpgradeTable.ENTITIES} == set(UpgradeTable)
+        for table in UpgradeTable:
+            event = LibraryUpgradeEvent(
+                phase=UpgradePhase.TABLE, work=TableWork.CHECKING, table=table
+            )
+            assert event.text.startswith("Tables done: 0 of 0 · checking ")
+
     def test_the_headline_says_it_runs_once_and_how_long_it_takes(self):
         assert UPGRADE_HEADLINE == (
             "Upgrading your library (one time). "
@@ -611,7 +665,7 @@ class TestUpgradeText:
         event = LibraryUpgradeEvent(
             phase=UpgradePhase.TABLE,
             work=TableWork.CHECKING,
-            table="page text",
+            table=UpgradeTable.PAGE_TEXTS,
             tables_done=1,
             tables_total=2,
             rows=5,
@@ -787,7 +841,8 @@ class TestCliShowsTheUpgrade:
         assert lines[0] == UPGRADE_HEADLINE
         shown = [re.sub(r" · \d+ s$", "", text) for text in lines[1:12]]
         assert shown == [
-            f"Tables done: {done} of 6 · {work} {table}" for done, work, table in _PROGRESS
+            f"Tables done: {done} of 6 · {_WORK_LINE[work]} {_TABLE_LINE[table]}"
+            for done, work, table in _PROGRESS
         ]
         assert lines[12].startswith(_FINISHED)
         assert len(lines) == 13
@@ -989,7 +1044,7 @@ class TestTuiShowsTheUpgrade:
         event = LibraryUpgradeEvent(
             phase=UpgradePhase.TABLE,
             work=TableWork.ADDING_IDS,
-            table="search chunks",
+            table=UpgradeTable.CHUNKS,
             tables_done=3,
             tables_total=7,
             rows=8841823,
@@ -1061,11 +1116,15 @@ class TestServerShowsTheUpgrade:
         assert {key: upgrade[key] for key in upgrade if key != "elapsed_s"} == {
             "phase": "table",
             "work": "updating",
-            "table": "source list",
+            "table": "sources",
             "rows": 2,
             "tables_done": 0,
             "tables_total": 6,
+            "text": upgrade["text"],
         }
+        assert re.fullmatch(
+            r"Tables done: 0 of 6 · updating source list · \d+ s", upgrade["text"]
+        )
         assert upgrade["elapsed_s"] >= 0
         assert after["upgrade"] is None
         assert status.status_code == 200
@@ -1347,7 +1406,7 @@ class TestMcpWaitsForTheUpgrade:
         assert during["detail"] == UPGRADE_HEADLINE
         assert during["upgrade"]["phase"] == "table"
         assert (during["upgrade"]["tables_done"], during["upgrade"]["tables_total"]) == (0, 6)
-        assert during["upgrade"]["table"] == "source list"
+        assert during["upgrade"]["table"] == "sources"
         assert "document_count" not in during
         assert after["document_count"] == 2
         assert "upgrade" not in after
