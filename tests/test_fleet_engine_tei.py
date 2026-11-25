@@ -355,6 +355,8 @@ def test_launch_raises_the_server_batch_limit_to_the_client_batch(tmp_path: Path
         "64",
         "--max-batch-tokens",
         "640",
+        "--tokenization-workers",
+        "2",
     ]
 
 
