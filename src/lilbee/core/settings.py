@@ -15,10 +15,10 @@ import tomli_w
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
+from lilbee.core.config import resolve as resolve_mod
 from lilbee.core.config.defaults import SKIP_TOML_ENV
 from lilbee.core.config.enums import SettingSource
 from lilbee.core.config.load_warnings import warn_on_load
-from lilbee.core.config import resolve as resolve_mod
 from lilbee.core.config.model import overlay_source, refusal_sentence, toml_value
 from lilbee.core.config.resolve import (
     PROFILE_NAME_KEY,
