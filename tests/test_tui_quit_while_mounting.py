@@ -145,49 +145,62 @@ _SRC_DIR = Path(lilbee.__file__).parent
 _SELECT_PATHS = {"textual.widgets.Select", "textual.widgets._select.Select"}
 
 
+def _import_roots(tree: ast.AST) -> dict[str, str]:
+    """Map each name a module imports to the dotted path it stands for."""
+    roots: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                head = alias.name.split(".")[0]
+                roots[alias.asname or head] = alias.name if alias.asname else head
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                roots[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return roots
+
+
+def _dotted(roots: dict[str, str], node: ast.expr) -> str | None:
+    """The dotted path an expression names through the imports, or None."""
+    if isinstance(node, ast.Subscript):
+        node = node.value
+    if isinstance(node, ast.Name):
+        return roots.get(node.id)
+    if isinstance(node, ast.Attribute):
+        base = _dotted(roots, node.value)
+        return f"{base}.{node.attr}" if base else None
+    return None
+
+
+def _builds_select(roots: dict[str, str], call: ast.Call) -> bool:
+    """A call of Select, or of one of its classmethods such as from_values.
+
+    An uppercase attribute (Select.Changed) is a nested message class, not a widget.
+    """
+    func = call.func
+    if _dotted(roots, func) in _SELECT_PATHS:
+        return True
+    return (
+        isinstance(func, ast.Attribute)
+        and _dotted(roots, func.value) in _SELECT_PATHS
+        and not func.attr[0].isupper()
+    )
+
+
 def _builds_plain_select(tree: ast.AST) -> list[int]:
     """Lines that build textual's Select: a call, a classmethod call or a subclass.
 
     Names resolve through the module's own imports, so an alias or a module attribute counts.
     Dynamic forms (getattr, a rebinding such as ``F = Select``) are out of reach of a static scan.
     """
-    roots: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.asname:
-                    roots[alias.asname] = alias.name
-                else:
-                    roots[alias.name.split(".")[0]] = alias.name.split(".")[0]
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            for alias in node.names:
-                roots[alias.asname or alias.name] = f"{node.module}.{alias.name}"
-
-    def path(node: ast.expr) -> str | None:
-        if isinstance(node, ast.Subscript):
-            node = node.value
-        if isinstance(node, ast.Name):
-            return roots.get(node.id)
-        if isinstance(node, ast.Attribute):
-            base = path(node.value)
-            return f"{base}.{node.attr}" if base else None
-        return None
-
+    roots = _import_roots(tree)
     lines = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            func = node.func
-            # A lowercase attribute of Select is a classmethod such as from_values; an
-            # uppercase one (Select.Changed) is a nested message class, not a widget.
-            builds = path(func) in _SELECT_PATHS or (
-                isinstance(func, ast.Attribute)
-                and path(func.value) in _SELECT_PATHS
-                and not func.attr[0].isupper()
-            )
-            if builds:
-                lines.append(node.lineno)
+        if isinstance(node, ast.Call) and _builds_select(roots, node):
+            lines.append(node.lineno)
         elif isinstance(node, ast.ClassDef):
-            lines.extend(node.lineno for base in node.bases if path(base) in _SELECT_PATHS)
+            lines.extend(
+                node.lineno for base in node.bases if _dotted(roots, base) in _SELECT_PATHS
+            )
     return lines
 
 
