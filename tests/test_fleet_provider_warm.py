@@ -505,6 +505,8 @@ def test_a_refused_replica_leaves_its_siblings_serving(monkeypatch: pytest.Monke
     provider, refused, _ = _chat_fleet(monkeypatch, _Swap(CHAT_ON_CPU))
     sibling, _ = _client(WorkerRole.CHAT, LEMONADE.request_profile, {})
     provider._warm_chat_role([refused])
+    # Past the cool-down of a failed request, the refused replica is still not routable.
+    monkeypatch.setattr(client_mod, "_UNHEALTHY_RETRY_S", 0.0)
     assert refused.healthy is False
     assert sibling.healthy is True
     assert provider_mod._least_in_flight([refused, sibling]) is sibling
