@@ -592,7 +592,7 @@ def test_one_kv_cache_type_reaches_k_and_v_on_the_estimator_command_line(
 
     monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
     monkeypatch.setattr(vram_mod, "_run_parser", _capture)
-    monkeypatch.setattr(vram_mod, "_parse_estimate", lambda *_a: object())
+    monkeypatch.setattr(vram_mod, "_parse_estimate", lambda *_a, **_k: object())
     vram_mod._cached_footprint.cache_clear()
 
     vram_mod.estimate_instance_footprint(
