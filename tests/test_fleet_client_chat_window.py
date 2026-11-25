@@ -29,8 +29,9 @@ OVER_ESTIMATE = "x" * (WINDOW * 3 + 30)
 class _Server:
     """A mock server that counts chat and tokenize requests and answers the token count."""
 
-    def __init__(self, tokens: int) -> None:
+    def __init__(self, tokens: int, fail: Callable[[], httpx.Response] | None = None) -> None:
         self.tokens = tokens
+        self.fail = fail
         self.chats: list[dict[str, Any]] = []
         self.tokenized: list[dict[str, Any]] = []
 
@@ -38,6 +39,8 @@ class _Server:
         body = json.loads(request.content)
         if request.url.path == TOKENIZE_PATH:
             self.tokenized.append(body)
+            if self.fail is not None:
+                return self.fail()
             return httpx.Response(200, json={"tokens": [0] * self.tokens})
         if request.url.path == "/v1/chat/completions":
             self.chats.append(body)
@@ -162,3 +165,71 @@ def test_the_text_counted_for_a_message_holds_its_text_parts_and_tool_calls(
     message: dict[str, Any], text: str
 ) -> None:
     assert _message_text(message) == text
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    ["7" * 250, "\u6f22" * 80, "ab12" * 60, "\u00a7" * 120],
+    ids=["digits", "cjk", "hex", "symbols"],
+)
+def test_a_prompt_with_more_bytes_than_the_window_is_counted_even_when_its_estimate_fits(
+    prompt: str,
+) -> None:
+    assert len(prompt) // 3 <= WINDOW < len(prompt.encode())
+    server = _Server(tokens=WINDOW + 1)
+    with pytest.raises(ProviderError) as refused:
+        _client(server).chat(_messages(prompt))
+    assert refused.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+    assert (len(server.chats), len(server.tokenized)) == (0, 1)
+
+
+def test_a_prompt_with_no_more_bytes_than_the_window_is_not_counted() -> None:
+    server = _Server(tokens=WINDOW + 1)
+    _client(server).chat(_messages("y" * WINDOW))
+    assert (len(server.chats), server.tokenized) == (1, [])
+
+
+def _raise(exc: Exception) -> Callable[[], httpx.Response]:
+    def _fail() -> httpx.Response:
+        raise exc
+
+    return _fail
+
+
+@pytest.mark.parametrize(
+    ("fail", "kind"),
+    [
+        (lambda: httpx.Response(404, text="not found"), ProviderErrorKind.UNKNOWN),
+        (lambda: httpx.Response(503, text="down"), ProviderErrorKind.SERVER),
+        (_raise(httpx.ReadTimeout("slow")), ProviderErrorKind.CONNECTION),
+        (_raise(httpx.ConnectError("refused")), ProviderErrorKind.CONNECTION),
+        (lambda: httpx.Response(200, text="not json"), ProviderErrorKind.SERVER),
+    ],
+    ids=["404", "5xx", "timeout", "connect", "bad-body"],
+)
+def test_a_count_that_fails_refuses_the_prompt_with_an_error_that_names_it(
+    fail: Callable[[], httpx.Response], kind: ProviderErrorKind, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    server = _Server(tokens=1, fail=fail)
+    with pytest.raises(ProviderError) as refused:
+        _client(server).chat(_messages(OVER_ESTIMATE))
+    assert "could not count the tokens of the prompt" in str(refused.value)
+    assert refused.value.kind is kind
+    assert server.chats == []
+
+
+def test_the_count_request_is_tracked_as_in_flight() -> None:
+    seen: list[int] = []
+    client = _client(_Server(tokens=1))
+
+    def _watch() -> httpx.Response:
+        seen.append(client.in_flight)
+        return httpx.Response(200, json={"tokens": [0]})
+
+    client._http = httpx.Client(
+        transport=httpx.MockTransport(lambda request: _watch()), base_url="http://gpu0"
+    )
+    client._refuse_past_window(_messages(OVER_ESTIMATE), None)
+    assert seen == [1]
+    assert client.in_flight == 0
