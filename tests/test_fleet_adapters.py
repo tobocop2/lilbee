@@ -429,9 +429,9 @@ def test_no_mmap_help_read_targets_the_launched_binary(monkeypatch, adapter) -> 
         return SimpleNamespace(stdout=helps[Path(cmd[0])], stderr="")
 
     monkeypatch.setattr(binary_mod.subprocess, "run", _run)
-    for launched, other, tokens in (
-        (old_build, new_build, ["--no-mmap"]),
-        (new_build, old_build, ["--load-mode", "none"]),
+    for launched, tokens in (
+        (old_build, ["--no-mmap"]),
+        (new_build, ["--load-mode", "none"]),
     ):
         binary_mod._read_help.cache_clear()
         read.clear()
