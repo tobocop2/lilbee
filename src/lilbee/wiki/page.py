@@ -40,6 +40,7 @@ from lilbee.wiki.citations import (
     wiki_sourced_count,
 )
 from lilbee.wiki.persistence import (
+    IdsHeld,
     delete_drift_draft_if_present,
     divert_concept_collision,
     divert_to_drafts,
@@ -222,6 +223,7 @@ def write_page(
     page_type: str,
     *,
     source_ids: Mapping[str, str],
+    live_ids: IdsHeld | None = None,
 ) -> Path:
     """Write page to disk with drift detection. Returns path written to.
 
@@ -232,13 +234,15 @@ def write_page(
     same slug is kept. A ``drafts/`` target skips drift entirely and routes
     through :func:`_write_draft_page`; ``page_type`` is the subdir the page
     would have published to, which a diverted page carries in its marker. A
-    draft records ``source_ids``, the id of each of *source_names*.
+    draft records ``source_ids``, the id of each of *source_names*. *live_ids*
+    asks the store which ids it still holds: a draft whose ids are all gone
+    (a rebuild) matches by source names.
     """
     page_path = wiki_root / subdir / f"{slug}.md"
     drafts_dir = wiki_root / WikiSubdir.DRAFTS
     if subdir == WikiSubdir.DRAFTS:
         return _write_draft_page(
-            page_path, drafts_dir, slug, full_content, source_names, page_type, source_ids
+            page_path, drafts_dir, slug, full_content, source_names, page_type, source_ids, live_ids
         )
 
     if page_path.exists():
@@ -257,10 +261,13 @@ def write_page(
                 subdir,
                 source_names,
                 source_ids=source_ids,
+                live_ids=live_ids,
             )
 
     atomic_write_text(page_path, full_content)
-    delete_drift_draft_if_present(drafts_dir, slug, source_names, source_ids=source_ids)
+    delete_drift_draft_if_present(
+        drafts_dir, slug, source_names, source_ids=source_ids, live_ids=live_ids
+    )
     return page_path
 
 
@@ -272,6 +279,7 @@ def _write_draft_page(
     source_names: list[str],
     page_type: str,
     source_ids: Mapping[str, str],
+    live_ids: IdsHeld | None,
 ) -> Path:
     """Land a below-threshold page in ``drafts/``, keeping another source's draft.
 
@@ -280,7 +288,7 @@ def _write_draft_page(
     page awaiting review. No drift ratio is computed: a drafts target is a
     proposal, not a published body it could be drifting from.
     """
-    if draft_held_by_other_sources(draft_path, source_names, source_ids):
+    if draft_held_by_other_sources(draft_path, source_names, source_ids, live_ids):
         return divert_concept_collision(
             slug=slug,
             source=", ".join(sorted(source_names)),

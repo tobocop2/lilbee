@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from pathlib import Path
 
 from lilbee.core.config import Config
@@ -105,6 +105,10 @@ def _read_draft(draft_path: Path) -> str | None:
         return None
 
 
+# Asks the store which of the given source ids it still holds.
+IdsHeld = Callable[[Iterable[str]], Collection[str]]
+
+
 def _identities(names: Iterable[str], source_ids: Mapping[str, str]) -> list[str]:
     """Sorted identity of each of *names*: its source id, or the name when it has none.
 
@@ -134,22 +138,40 @@ def _listed_sources(text: str) -> list[str] | None:
     return listed if isinstance(listed, list) else None
 
 
-def _draft_sources_differ(
-    text: str, listed: list[str], source_names: list[str], source_ids: Mapping[str, str]
-) -> bool:
-    """Whether the draft *text*, listing *listed*, holds sources other than *source_names*.
+def _keyed_by_names(text: str, live_ids: IdsHeld | None) -> bool:
+    """Whether the draft *text* is matched by source names, not ids.
 
-    Sources compare by id when the draft records ids; a draft written before
-    ids compares by name.
+    True for a draft written before ids, and for one whose recorded ids are all
+    gone from the store (a rebuild gives every source a new id). A draft with
+    any recorded id still in the store stays matched by id, so a new file at an
+    old path never takes it.
     """
     recorded = recorded_source_ids(text)
     if recorded is None:
+        return True
+    return live_ids is not None and bool(recorded) and not live_ids(recorded.values())
+
+
+def _draft_sources_differ(
+    text: str,
+    listed: list[str],
+    source_names: list[str],
+    source_ids: Mapping[str, str],
+    live_ids: IdsHeld | None,
+) -> bool:
+    """Whether the draft *text*, listing *listed*, holds sources other than *source_names*."""
+    if _keyed_by_names(text, live_ids):
         return sorted(listed) != sorted(source_names)
-    return _identities(listed, recorded) != _identities(source_names, source_ids)
+    return _identities(listed, recorded_source_ids(text) or {}) != _identities(
+        source_names, source_ids
+    )
 
 
 def draft_held_by_other_sources(
-    draft_path: Path, source_names: list[str], source_ids: Mapping[str, str]
+    draft_path: Path,
+    source_names: list[str],
+    source_ids: Mapping[str, str],
+    live_ids: IdsHeld | None = None,
 ) -> bool:
     """Whether the draft at *draft_path* lists sources other than *source_names*.
 
@@ -159,11 +181,14 @@ def draft_held_by_other_sources(
     listed = None if text is None else _listed_sources(text)
     if text is None or listed is None:
         return False
-    return _draft_sources_differ(text, listed, source_names, source_ids)
+    return _draft_sources_differ(text, listed, source_names, source_ids, live_ids)
 
 
 def _draft_belongs_to_other_source(
-    draft_path: Path, source_names: list[str], source_ids: Mapping[str, str]
+    draft_path: Path,
+    source_names: list[str],
+    source_ids: Mapping[str, str],
+    live_ids: IdsHeld | None,
 ) -> bool:
     """Return whether an existing draft holds reviewable content from another source.
 
@@ -181,12 +206,14 @@ def _draft_belongs_to_other_source(
         return False
     first_line = text.splitlines()[0]
     keys = [source_key(source_names, source_ids)]
-    if recorded_source_ids(text) is None:
+    if _keyed_by_names(text, live_ids):
         keys.append(short_source_hash(", ".join(sorted(source_names))))
     if any(f"{_DRIFT_SOURCE_FIELD}{key}" in first_line for key in keys):
         return False
     listed = _listed_sources(text)
-    return listed is None or _draft_sources_differ(text, listed, source_names, source_ids)
+    return listed is None or _draft_sources_differ(
+        text, listed, source_names, source_ids, live_ids
+    )
 
 
 def divert_to_drafts(
@@ -199,6 +226,7 @@ def divert_to_drafts(
     source_names: list[str],
     *,
     source_ids: Mapping[str, str],
+    live_ids: IdsHeld | None = None,
 ) -> Path:
     """Write new content to wiki/drafts/ with a drift note instead of overwriting.
 
@@ -223,7 +251,7 @@ def divert_to_drafts(
         diff_text,
     )
     draft_path = drafts_dir / f"{slug}.md"
-    if _draft_belongs_to_other_source(draft_path, source_names, source_ids):
+    if _draft_belongs_to_other_source(draft_path, source_names, source_ids, live_ids):
         return divert_concept_collision(
             slug=slug,
             source=sources_label,
@@ -284,6 +312,7 @@ def persist_and_finalize(
         source_names,
         target.page_type,
         source_ids=store.source_ids(source_names, SourceType.DOCUMENT),
+        live_ids=store.source_paths,
     )
     published_path = target.wiki_root / target.subdir / f"{target.slug}.md"
     if page_path != published_path:
@@ -386,7 +415,12 @@ def delete_pending_marker_if_present(drafts_dir: Path, slug: str) -> bool:
 
 
 def delete_drift_draft_if_present(
-    drafts_dir: Path, slug: str, source_names: list[str], *, source_ids: Mapping[str, str]
+    drafts_dir: Path,
+    slug: str,
+    source_names: list[str],
+    *,
+    source_ids: Mapping[str, str],
+    live_ids: IdsHeld | None = None,
 ) -> bool:
     """Delete *slug*'s superseded drift draft; return whether one was removed.
 
@@ -400,7 +434,7 @@ def delete_drift_draft_if_present(
     text = _read_draft(draft_path)
     if text is None or not text.lstrip().startswith(_DRIFT_MARKER_PREFIX):
         return False
-    if _draft_belongs_to_other_source(draft_path, source_names, source_ids):
+    if _draft_belongs_to_other_source(draft_path, source_names, source_ids, live_ids):
         log.info("Keeping drift draft %s: it holds another source's proposal", draft_path)
         return False
     draft_path.unlink()
