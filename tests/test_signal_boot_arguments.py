@@ -10,12 +10,10 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from lilbee.app.services import ServicesStoppingError
 from lilbee.cli import app
 from lilbee.cli.commands import servers
 from lilbee.core.config import cfg
 from lilbee.runtime.lock import SERVER_LOCK_TIMEOUT, LockingUnsupportedError
-from lilbee.server import app as server_app
 from lilbee.server.handlers import models as model_handlers
 
 runner = CliRunner()
@@ -66,6 +64,8 @@ def boot(monkeypatch, tmp_path):
         locks=[],
         run_server=[],
         run_main=[],
+        stopped=[],
+        status=0,
         app=object(),
         lock=_Lock(),
         lock_error=None,
@@ -87,7 +87,7 @@ def boot(monkeypatch, tmp_path):
         rec.run_main.append(coro)
         if rec.run_error is not None:
             raise rec.run_error
-        return 0
+        return rec.status
 
     monkeypatch.setattr(servers, "_watch_the_parent", lambda: None)
     monkeypatch.setattr(servers, "apply_overrides", lambda **kwargs: rec.overrides.append(kwargs))
@@ -95,7 +95,7 @@ def boot(monkeypatch, tmp_path):
     monkeypatch.setattr(servers, "setup_server_logging", lambda: None)
     monkeypatch.setattr(servers, "install_health_access_filter", lambda: None)
     monkeypatch.setattr(servers, "stop_on_interrupt", lambda: None)
-    monkeypatch.setattr(servers, "_stop_server", lambda *args: None)
+    monkeypatch.setattr(servers, "_stop_server", lambda *args: rec.stopped.append(args))
     monkeypatch.setattr(servers, "acquire_server_lock", acquire)
     monkeypatch.setattr(servers, "_run_server", run_server)
     monkeypatch.setattr(servers, "run_main", run_main)
@@ -153,10 +153,13 @@ def test_serve_builds_uvicorn_from_the_app_the_host_and_the_port(boot):
     assert host == "127.0.0.9"
 
 
-def test_serve_runs_the_server_coroutine_under_the_main_loop(boot):
-    runner.invoke(app, ["serve"])
+def test_serve_ends_with_the_status_of_the_run_and_frees_its_lock_with_it(boot):
+    boot.status = 3
 
-    assert boot.run_main == ["the-run"]
+    result = runner.invoke(app, ["serve"])
+
+    assert result.exit_code == 3
+    assert boot.stopped == [(3, boot.lock, None)]
 
 
 def test_serve_lowers_the_asyncio_logger_to_errors(boot):
@@ -276,21 +279,6 @@ def test_a_failed_mcp_server_keeps_its_traceback_in_the_debug_log(mcp_boot, capl
     assert records[0].exc_info[0] is RuntimeError
 
 
-def test_the_stopping_response_answers_the_request_it_was_given(monkeypatch):
-    seen = []
-    monkeypatch.setattr(
-        server_app, "_json_error_response", lambda request, exc: seen.append((request, exc))
-    )
-    request = object()
-
-    server_app._services_stopping_response(request, ServicesStoppingError())
-
-    assert len(seen) == 1
-    assert seen[0][0] is request
-    assert seen[0][1].status_code == 503
-    assert "lilbee is stopping" in seen[0][1].detail
-
-
 @pytest.fixture
 def external(monkeypatch):
     """An empty external-model cache, and a provider that lists what the test sets."""
@@ -319,7 +307,7 @@ def test_another_api_key_asks_the_provider_again(external, monkeypatch):
     assert external.calls == 2
 
 
-def test_no_api_key_is_not_the_same_cache_entry_as_any_key(external, monkeypatch):
+def test_an_empty_api_key_and_a_set_key_do_not_share_a_cache_entry(external, monkeypatch):
     monkeypatch.setattr(cfg, "llm_api_key", "")
     asyncio.run(model_handlers.list_external_models())
     monkeypatch.setattr(cfg, "llm_api_key", "XXXX")
