@@ -367,7 +367,7 @@ def test_chat_ends_the_lazy_warm_when_the_pool_check_refuses(monkeypatch) -> Non
     p._warm_tracker.ready()
 
     def _refuse(role):
-        raise ProviderError("the planner refused the launch", provider="fleet")
+        raise ProviderError("the planner refused the launch")
 
     monkeypatch.setattr(p, "_require_clients", _refuse)
     with pytest.raises(ProviderError, match="refused"):
@@ -397,7 +397,7 @@ def test_chat_marks_tracker_ready_when_the_request_fails_but_the_role_loaded(
 
     def _load_then_reject(*args, **kwargs):
         swap.ready.add(WorkerRole.CHAT)
-        raise ProviderError("bad tool schema", provider="fleet")
+        raise ProviderError("bad tool schema")
 
     client.chat_result.side_effect = _load_then_reject
     with pytest.raises(ProviderError, match="bad tool schema"):
@@ -807,7 +807,7 @@ def test_reload_propagates_a_probe_failure_on_the_resurrect_path(monkeypatch) ->
 
     def _wedged(engine) -> None:
         raise ProviderError(
-            "device probe wedged", provider="llama-server", kind=ProviderErrorKind.CONNECTION
+            "device probe wedged", kind=ProviderErrorKind.CONNECTION
         )
 
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _wedged)
@@ -826,7 +826,7 @@ def test_reload_fails_loud_when_the_engine_binary_is_missing(monkeypatch) -> Non
 
     def _no_binary(engine) -> None:
         raise ProviderError(
-            "no engine binary", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
+            "no engine binary", kind=ProviderErrorKind.NOT_FOUND
         )
 
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
@@ -1470,7 +1470,7 @@ def test_fit_chat_context_surfaces_a_render_error() -> None:
 
     client = _fake_client()
     client.count_chat_prompt_tokens.side_effect = ProviderError(
-        "render failed", provider="llama-server", kind=ProviderErrorKind.BAD_REQUEST
+        "render failed", kind=ProviderErrorKind.BAD_REQUEST
     )
     p = _tool_convo_near_budget_provider(client)
 
@@ -1679,7 +1679,7 @@ def _page_cut_after_a_frame(cause: httpx.TransportError) -> Exception:
     from lilbee.providers.fleet.client import StreamInterruptedError
 
     try:
-        raise StreamInterruptedError("llama.cpp") from cause
+        raise StreamInterruptedError() from cause
     except StreamInterruptedError as exc:
         return exc
 
@@ -1785,7 +1785,7 @@ def test_vision_ocr_retries_a_gateway_error_then_succeeds(monkeypatch) -> None:
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
-    gateway = ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
+    gateway = ProviderError("HTTP 502", kind=ProviderErrorKind.SERVER)
     client = _fake_client()
     client.chat_abortable.side_effect = [gateway, gateway, "ocr text"]
     p = _provider_with_clients({WorkerRole.VISION: [client]})
@@ -1801,7 +1801,7 @@ def test_vision_ocr_reports_a_429_after_one_request(monkeypatch) -> None:
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
-    busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+    busy = ProviderError("busy", kind=ProviderErrorKind.RATE_LIMIT)
     client = _fake_client()
     client.chat_abortable.side_effect = [busy, "ocr text"]
     p = _provider_with_clients({WorkerRole.VISION: [client]})
@@ -1820,7 +1820,7 @@ def test_vision_ocr_retries_past_attempt_cap_until_deadline(monkeypatch) -> None
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
-    gateway = ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
+    gateway = ProviderError("HTTP 502", kind=ProviderErrorKind.SERVER)
     client = _fake_client()
     retries = prov_mod._VISION_GATEWAY_RETRIES
     client.chat_abortable.side_effect = [gateway] * (retries + 5) + ["ocr text"]
@@ -1842,7 +1842,7 @@ def test_vision_ocr_gives_up_when_deadline_passes(monkeypatch) -> None:
 
     def _gateway(*_a, **_k):
         clock["t"] += 5.0  # each attempt advances the clock toward the deadline
-        raise ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
+        raise ProviderError("HTTP 502", kind=ProviderErrorKind.SERVER)
 
     client = _fake_client()
     client.chat_abortable.side_effect = _gateway
@@ -1875,7 +1875,7 @@ def test_vision_ocr_does_not_retry_non_busy_errors(monkeypatch) -> None:
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     client = _fake_client()
-    client.chat_abortable.side_effect = ProviderError("boom", provider="llama-server")
+    client.chat_abortable.side_effect = ProviderError("boom")
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     with pytest.raises(ProviderError, match="boom"):
         p.vision_ocr(b"png", "org/repo/v.gguf")
@@ -2089,7 +2089,7 @@ def test_a_failed_vision_start_lets_the_next_page_retry(monkeypatch, ocr_gated_e
     p = _provider_without_preload(monkeypatch)
     p._ensure_fleet()
     reload_pass = p._reload_pass
-    failures = iter([ProviderError("engine refused", provider="llama-server")])
+    failures = iter([ProviderError("engine refused")])
 
     def _fail_once(*args, **kwargs) -> None:
         failure = next(failures, None)
@@ -2802,7 +2802,7 @@ def test_vision_ocr_client_is_not_closed_by_reloads_during_its_request(monkeypat
 def test_vision_ocr_gives_the_reservation_back_when_it_fails(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     client = _counting_client()
-    client.chat_abortable.side_effect = ProviderError("boom", provider="llama-server")
+    client.chat_abortable.side_effect = ProviderError("boom")
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     with pytest.raises(ProviderError, match="boom"):
         p.vision_ocr(b"png", "org/repo/v.gguf")
@@ -5646,7 +5646,7 @@ class TestReplicaHealthRouting:
     def test_model_level_errors_propagate_without_failover(self) -> None:
         from lilbee.providers.base import ProviderError
 
-        broken = _FakeReplica(fail=ProviderError("bad input", provider="llama-server"))
+        broken = _FakeReplica(fail=ProviderError("bad input"))
         sibling = _FakeReplica(in_flight=5)
         p = _provider_with_clients({WorkerRole.EMBED: [broken, sibling]})
         with pytest.raises(ProviderError, match="bad input"):
@@ -5695,7 +5695,7 @@ class TestReplicaHealthRouting:
         from lilbee.providers.base import ProviderError
 
         dead = _FakeReplica(fail=_httpx.ConnectError("refused"))
-        broken = _FakeReplica(in_flight=5, fail=ProviderError("bad input", provider="llama-server"))
+        broken = _FakeReplica(in_flight=5, fail=ProviderError("bad input"))
         p = _provider_with_clients({WorkerRole.EMBED: [dead, broken]})
         with pytest.raises(ProviderError, match="bad input"):
             p.embed(["a"])
@@ -5745,7 +5745,7 @@ class TestVisionTimeout:
         from lilbee.providers.fleet.client import ChatDeadlineError
 
         client = _fake_client(0)
-        client.chat_abortable.side_effect = ChatDeadlineError("deadline", provider="llama-server")
+        client.chat_abortable.side_effect = ChatDeadlineError("deadline")
         with pytest.raises(
             ProviderError, match=f"Vision OCR timed out after {shown}\\."
         ) as excinfo:
@@ -6835,7 +6835,7 @@ def test_a_shutdown_during_a_stuck_start_stops_its_engine_without_waiting(
     def _start_until_the_engine_exits(launches: list, **_kwargs: object) -> None:
         started.set()
         engine_gone.wait(30)
-        raise ProviderError("The local model engine exited before it was ready.", provider="fleet")
+        raise ProviderError("The local model engine exited before it was ready.")
 
     monkeypatch.setattr(prov_mod, "kill_engine", _stop)
     monkeypatch.setattr(swap, "start", _start_until_the_engine_exits)
@@ -6884,7 +6884,7 @@ def test_a_failed_start_leaves_no_membership(monkeypatch, tmp_path: Path) -> Non
 
     def _fail(launches: list, **_kwargs: object) -> None:
         held.append(p._engine_holds[machine])
-        raise ProviderError("engine did not come up", provider="fleet")
+        raise ProviderError("engine did not come up")
 
     monkeypatch.setattr(swap, "start", _fail)
     p = FleetProvider()
@@ -7005,7 +7005,7 @@ def test_a_start_leaves_the_in_progress_set_however_it_ends(
     def _spawn(self: FleetProvider, data_dir: Path) -> bool:
         in_progress_during_spawn.append(set(self._starting_dirs))
         if outcome == "failed":
-            raise ProviderError("engine did not come up", provider="fleet")
+            raise ProviderError("engine did not come up")
         return outcome == "spawned"
 
     monkeypatch.setattr(FleetProvider, "_plan_and_spawn", _spawn)
@@ -8009,7 +8009,7 @@ def _embed_launch() -> InstanceLaunch:
 def _connection_error() -> Exception:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    return ProviderError("refused", provider="llama-server", kind=ProviderErrorKind.CONNECTION)
+    return ProviderError("refused", kind=ProviderErrorKind.CONNECTION)
 
 
 def test_placeable_demand_drops_roles_the_plan_does_not_place(monkeypatch) -> None:
@@ -8565,7 +8565,7 @@ def test_non_connection_errors_do_not_rediscover(monkeypatch, tmp_path: Path) ->
     def _client_factory(_endpoint, _model, **_kw):
         client = _fake_client()
         client.embed.side_effect = ProviderError(
-            "boom", provider="llama-server", kind=ProviderErrorKind.SERVER
+            "boom", kind=ProviderErrorKind.SERVER
         )
         calls.append(1)
         return client
@@ -8773,7 +8773,7 @@ def test_can_build_engine_false_when_binary_unresolvable(monkeypatch) -> None:
 
     def _boom(engine):
         raise ProviderError(
-            "no engine binary", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
+            "no engine binary", kind=ProviderErrorKind.NOT_FOUND
         )
 
     monkeypatch.setattr(planning_mod, "assert_engine_probeable", _boom)
@@ -8802,7 +8802,7 @@ def test_can_build_engine_propagates_a_wedged_probe(monkeypatch) -> None:
 
     def _wedged(engine):
         raise ProviderError(
-            "cuda init failed", provider="llama-server", kind=ProviderErrorKind.CONNECTION
+            "cuda init failed", kind=ProviderErrorKind.CONNECTION
         )
 
     monkeypatch.setattr(planning_mod, "assert_engine_probeable", _wedged)
@@ -8832,7 +8832,7 @@ def test_ladder_does_not_kill_a_replaceable_incumbent_when_the_probe_is_wedged(
 
     def _wedged(engine) -> None:
         raise ProviderError(
-            "cuda init failed", provider="llama-server", kind=ProviderErrorKind.CONNECTION
+            "cuda init failed", kind=ProviderErrorKind.CONNECTION
         )
 
     monkeypatch.setattr(planning_mod, "assert_engine_probeable", _wedged)
@@ -9223,7 +9223,7 @@ def test_a_failed_reload_leaves_the_notice_until_a_pass_succeeds(
     p = _provider_without_preload(monkeypatch)
     p._ensure_fleet()
     reload_pass = p._reload_pass
-    failures = iter([ProviderError("engine refused", provider="llama-server")])
+    failures = iter([ProviderError("engine refused")])
 
     def _fail_once(*args, **kwargs) -> None:
         failure = next(failures, None)
@@ -9280,7 +9280,7 @@ def test_a_failed_engine_write_leaves_the_running_role_working_and_says_so(
     working = served._require_clients(WorkerRole.CHAT)[0]
 
     def _refuse(*args, **kwargs) -> None:
-        raise ProviderError("engine refused", provider="llama-server")
+        raise ProviderError("engine refused")
 
     monkeypatch.setattr(served, "_reload_pass", _refuse)
     with pytest.raises(engine_service.EngineNotAppliedError, match="Restart lilbee"):

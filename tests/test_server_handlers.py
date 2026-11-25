@@ -991,7 +991,7 @@ class TestAskStream:
         mock_svc.provider.chat.side_effect = ProviderError(
             "gemini/m is rate-limited or out of quota. That's a limit on your "
             "provider API key, not a lilbee problem.",
-            provider="remote",
+            
             kind=ProviderErrorKind.RATE_LIMIT,
         )
         events = [e async for e in handlers.ask_stream("question")]
@@ -1009,7 +1009,7 @@ class TestAskStream:
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         text = "llama-server binary not found. Install it with lilbee engine install."
         mock_svc.provider.chat.side_effect = ProviderError(
-            text, provider="fleet", kind=ProviderErrorKind.ENGINE_MISSING
+            text, kind=ProviderErrorKind.ENGINE_MISSING
         )
         events = [e async for e in handlers.ask_stream("question")]
 
@@ -1023,7 +1023,7 @@ class TestAskStream:
         # An UNKNOWN-kind ProviderError still surfaces its message, with no code.
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.side_effect = ProviderError(
-            "Chat failed: something odd", provider="remote"
+            "Chat failed: something odd"
         )
         events = [e async for e in handlers.ask_stream("question")]
 
@@ -1769,7 +1769,7 @@ class TestChatStream:
             async def _gen():
                 raise ProviderError(
                     "gemini/m rejected your API key.",
-                    provider="remote",
+                    
                     kind=ProviderErrorKind.AUTH,
                 )
                 yield  # pragma: no cover

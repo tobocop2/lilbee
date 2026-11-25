@@ -592,8 +592,8 @@ class ChatDeadlineError(ProviderError):
 class StreamInterruptedError(ProviderError):
     """A chat stream broke after it had sent frames, so its answer is cut."""
 
-    def __init__(self, provider: str = "") -> None:
-        super().__init__(_STREAM_INTERRUPTED_MESSAGE, provider=provider)
+    def __init__(self) -> None:
+        super().__init__(_STREAM_INTERRUPTED_MESSAGE)
 
 
 class StreamSilentError(httpx.ReadTimeout):
@@ -777,7 +777,7 @@ class LlamaServerClient:
             raise ProviderError(
                 "The conversation exceeds this model's context window. "
                 "Start a new conversation or shorten the input.",
-                provider=self._profile.label,
+                
                 kind=ProviderErrorKind.CONTEXT_OVERFLOW,
             )
         # llama-swap answers 429 once its concurrency limit for the model is reached.
@@ -786,7 +786,7 @@ class LlamaServerClient:
         if resp.status_code == _HTTP_TOO_MANY_REQUESTS:
             raise ProviderError(
                 "The model is busy with too many requests. Try again in a moment.",
-                provider=self._profile.label,
+                
                 kind=ProviderErrorKind.RATE_LIMIT,
             )
         refusal = self._profile.batch_count_refusal
@@ -794,7 +794,7 @@ class LlamaServerClient:
             raise ProviderError(
                 f"{self._profile.label} refused the request for holding too many inputs. "
                 "Send fewer inputs in one request.",
-                provider=self._profile.label,
+                
                 kind=ProviderErrorKind.BAD_REQUEST,
             )
         kind = _classify_error(resp.status_code, body, self._profile)
@@ -812,13 +812,13 @@ class LlamaServerClient:
                 _upstream_death_message(
                     kind, resp.status_code, self.model_ref, self.engine_log, tail
                 ),
-                provider=self._profile.label,
+                
                 kind=kind,
             )
         detail = f": {body[:600]}" if body else ""
         raise ProviderError(
             f"{self._profile.label} returned HTTP {resp.status_code}{detail}",
-            provider=self._profile.label,
+            
             kind=kind,
         )
 
@@ -827,7 +827,7 @@ class LlamaServerClient:
         subject = self.model_ref if self.model_ref is not None else "the model"
         return WarmTimeoutError(
             _WARM_TIMEOUT_MESSAGE.format(model=subject),
-            provider=self._profile.label,
+            
             wait_s=wait_s,
         )
 
@@ -999,9 +999,7 @@ class LlamaServerClient:
                 if tail:
                     yield tail
         except httpx.TransportError as exc:
-            _raise_stream_failure(
-                exc, started=started, bounded=bounded, provider=self._profile.label
-            )
+            _raise_stream_failure(exc, started=started, bounded=bounded)
             raise
 
     def chat_abortable(
@@ -1048,7 +1046,7 @@ class LlamaServerClient:
             except TimeoutError:
                 raise ChatDeadlineError(
                     f"{self._profile.label} chat exceeded its {deadline_s:g}s deadline.",
-                    provider=self._profile.label,
+                    
                 ) from None
             finally:
                 chat.cancel()
@@ -1070,9 +1068,7 @@ class LlamaServerClient:
                         inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
                     )
         except httpx.TransportError as exc:
-            _raise_stream_failure(
-                exc, started=any(parts), bounded=bounded, provider=self._profile.label
-            )
+            _raise_stream_failure(exc, started=any(parts), bounded=bounded)
             raise
         parts.append(inliner.finish())
         return "".join(parts)
@@ -1236,11 +1232,9 @@ class LlamaServerClient:
                 tail = inliner.finish()
                 if tail:
                     yield tail
-                _raise_if_cut(started=started, ended=ended, provider=self._profile.label)
+                _raise_if_cut(started=started, ended=ended)
         except httpx.TransportError as exc:
-            _raise_stream_failure(
-                exc, started=started, bounded=bounded, provider=self._profile.label
-            )
+            _raise_stream_failure(exc, started=started, bounded=bounded)
             raise
         finally:
             # A stream that dies or is closed mid-prefill must not leave a
@@ -1305,7 +1299,7 @@ class LlamaServerClient:
             )
         else:
             message = f"{label} does not support response_format {reply_format!r}. Use type text."
-        return ProviderError(message, provider=label, kind=ProviderErrorKind.BAD_REQUEST)
+        return ProviderError(message, kind=ProviderErrorKind.BAD_REQUEST)
 
     def _prepare_chat_messages(
         self, messages: Sequence[Mapping[str, Any]]
@@ -1452,7 +1446,7 @@ class LlamaServerClient:
         if resp.status_code == httpx.codes.NOT_FOUND:
             raise ProviderError(
                 f"{self._profile.label} has no such route (HTTP 404): {resp.text.strip()[:200]}",
-                provider=self._profile.label,
+                
                 kind=ProviderErrorKind.NOT_FOUND,
             )
         try:
@@ -1460,7 +1454,7 @@ class LlamaServerClient:
         except ProviderError as exc:
             if resp.status_code not in _ONE_REQUEST_REFUSALS:
                 raise
-            raise _SideRouteRefusalError(str(exc), provider=exc.provider, kind=exc.kind) from exc
+            raise _SideRouteRefusalError(str(exc), kind=exc.kind) from exc
 
     def _pausing(self, route: str) -> Callable[[BaseException], None]:
         """A failure hook for ``_single_flight`` that pauses the check when *route* fails."""
@@ -1708,7 +1702,7 @@ class LlamaServerClient:
         if sorted(by_index) != list(range(len(texts))):
             raise ProviderError(
                 f"The reranker did not return one score for each of the {len(texts)} candidates.",
-                provider=self._profile.label,
+                
             )
         return [by_index[i] for i in range(len(texts))], overflow
 
@@ -1752,7 +1746,7 @@ class LlamaServerClient:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             scores = list(pool.map(lambda c: self._llm_rerank_one(template, query, c), candidates))
         if all(score is None for score in scores):
-            raise ProviderError(_LLM_RERANK_NO_VERDICT_ERROR, provider=self._profile.label)
+            raise ProviderError(_LLM_RERANK_NO_VERDICT_ERROR)
         return [0.0 if score is None else score for score in scores]
 
     def _llm_rerank_one(self, template: str, query: str, candidate: str) -> float | None:
@@ -1804,7 +1798,7 @@ class LlamaServerClient:
             if len(data) != len(inputs):
                 raise ProviderError(
                     f"Embedder returned {len(data)} vectors for {len(inputs)} inputs",
-                    provider=self._profile.label,
+                    
                 )
             return list(data)
 
@@ -2126,13 +2120,13 @@ def _embedding_vector(item: dict[str, Any], profile: RequestProfile) -> npt.NDAr
     # Untyped server JSON: a non-string means the encoding format was not honored.
     if not isinstance(embedding, str):
         raise ProviderError(
-            _UNREADABLE_EMBEDDING_ERROR + profile.unreadable_embedding_hint, provider=profile.label
+            _UNREADABLE_EMBEDDING_ERROR + profile.unreadable_embedding_hint
         )
     try:
         return np.frombuffer(base64.b64decode(embedding), dtype=_EMBED_VECTOR_DTYPE)
     except ValueError as exc:
         raise ProviderError(
-            _UNREADABLE_EMBEDDING_ERROR + profile.unreadable_embedding_hint, provider=profile.label
+            _UNREADABLE_EMBEDDING_ERROR + profile.unreadable_embedding_hint
         ) from exc
 
 
@@ -2140,7 +2134,7 @@ def _rerank_score(item: dict[str, Any], profile: RequestProfile) -> float:
     """Pull one relevance score from a rank-pooling ``/v1/embeddings`` item."""
     vector = _embedding_vector(item, profile)
     if not vector.size:
-        raise ProviderError(_NO_RERANK_SCORE_ERROR, provider=profile.label)
+        raise ProviderError(_NO_RERANK_SCORE_ERROR)
     return float(vector[_RANK_SCORE_INDEX])
 
 
@@ -2298,7 +2292,7 @@ def _bound_body_reads(resp: httpx.Response) -> httpx.Request:
 
 
 def _raise_stream_failure(
-    exc: httpx.TransportError, *, started: bool, bounded: httpx.Request | None, provider: str
+    exc: httpx.TransportError, *, started: bool, bounded: httpx.Request | None
 ) -> None:
     """Raise the error a chat stream that broke with *exc* ends with, if it has one.
 
@@ -2307,20 +2301,20 @@ def _raise_stream_failure(
     caller.
     """
     if started:
-        raise StreamInterruptedError(provider) from exc
+        raise StreamInterruptedError() from exc
     if bounded is not None and isinstance(exc, httpx.ReadTimeout):
         wait = bounded.extensions["timeout"]["read"]
         raise StreamSilentError(wait, request=bounded) from exc
 
 
-def _raise_if_cut(*, started: bool, ended: bool, provider: str) -> None:
+def _raise_if_cut(*, started: bool, ended: bool) -> None:
     """Raise when a started stream's body ended with neither a finish frame nor ``[DONE]``.
 
     The engine died but its proxy closed the body cleanly, so no transport error
     was raised. A stream with no frame at all is left to the caller's retry path.
     """
     if started and not ended:
-        raise StreamInterruptedError(provider)
+        raise StreamInterruptedError()
 
 
 def _is_done_line(line: str) -> bool:

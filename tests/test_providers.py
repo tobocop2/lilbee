@@ -107,7 +107,6 @@ class TestProviderError:
 
         err = ProviderError("something broke")
         assert str(err) == "something broke"
-        assert err.provider == ""
 
     def test_with_provider(self) -> None:
         from lilbee.providers.base import ProviderError
@@ -3419,7 +3418,7 @@ class TestSdkLLMProviderVisionOcr:
         from lilbee.providers.base import ProviderError
 
         provider = self._make_provider()
-        error = ProviderError("backend refused the image", provider="remote")
+        error = ProviderError("backend refused the image")
         with (
             mock.patch.object(provider, "chat", side_effect=error),
             pytest.raises(ProviderError) as exc_info,

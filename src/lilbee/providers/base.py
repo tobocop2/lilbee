@@ -198,10 +198,8 @@ class ProviderError(Exception):
         self,
         message: str,
         *,
-        provider: str = "",
         kind: ProviderErrorKind = ProviderErrorKind.UNKNOWN,
     ) -> None:
-        self.provider = provider
         self.kind = kind
         super().__init__(message)
 
@@ -218,8 +216,8 @@ class EmbeddingOverflowError(ProviderError):
 class WarmTimeoutError(ProviderError):
     """An engine that did not finish starting within *wait_s* seconds (None: not known)."""
 
-    def __init__(self, message: str, *, provider: str = "", wait_s: float | None = None) -> None:
-        super().__init__(message, provider=provider, kind=ProviderErrorKind.WARM_TIMEOUT)
+    def __init__(self, message: str, *, wait_s: float | None = None) -> None:
+        super().__init__(message, kind=ProviderErrorKind.WARM_TIMEOUT)
         self.wait_s = wait_s
 
 
@@ -244,13 +242,13 @@ _ROLE_WORDS: dict[WorkerRole, str] = {
 }
 
 
-def require_role_ref(ref: str, role: WorkerRole, *, provider: str = "") -> str:
+def require_role_ref(ref: str, role: WorkerRole) -> str:
     """Reject an unconfigured role with a clean error instead of parsing ''."""
     if not ref:
         raise ProviderError(
             f"No {_ROLE_WORDS[role]} model is configured. Pick one from the catalog "
             f"or run 'lilbee model pull <model>'.",
-            provider=provider,
+            
             kind=ProviderErrorKind.NOT_FOUND,
         )
     return ref

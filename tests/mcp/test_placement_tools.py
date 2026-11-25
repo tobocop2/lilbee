@@ -70,7 +70,7 @@ def test_get_gpus_tool_returns_error_on_provider_failure(monkeypatch):
     from lilbee.providers.base import ProviderError
 
     def _boom():
-        raise ProviderError("engine binary missing", provider="llama-server")
+        raise ProviderError("engine binary missing")
 
     monkeypatch.setattr(mcp_server, "get_planned_placement", _boom)
     out = mcp_server.get_gpus_tool()

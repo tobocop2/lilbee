@@ -471,7 +471,6 @@ class TestTranslateOptions:
         with pytest.raises(ProviderError, match=option) as caught:
             translate_options({"temperature": 0.5, option: value}, ref)
         assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
-        assert caught.value.provider == "remote"
 
     @pytest.mark.parametrize(
         ("option", "value"),

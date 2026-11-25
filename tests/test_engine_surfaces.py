@@ -714,7 +714,7 @@ def server_cannot_apply(monkeypatch: pytest.MonkeyPatch) -> str:
 
     from lilbee.providers.base import ProviderError
 
-    server = _FailingServer(ProviderError("engine refused", provider="llama-server"))
+    server = _FailingServer(ProviderError("engine refused"))
     empty = SimpleNamespace(source_summary=lambda _n: SimpleNamespace(document_count=0))
     services = SimpleNamespace(provider=server, store=empty)
     monkeypatch.setattr(engine_service, "peek_services", lambda: services)

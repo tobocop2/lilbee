@@ -133,7 +133,7 @@ class BinarylessSpy(SpyEngine):
     """A spy whose binary is missing."""
 
     def binary(self) -> Path:
-        raise ProviderError("spy binary missing", provider="spy", kind=ProviderErrorKind.NOT_FOUND)
+        raise ProviderError("spy binary missing", kind=ProviderErrorKind.NOT_FOUND)
 
 
 @pytest.fixture
@@ -220,7 +220,7 @@ class TestDeviceReads:
 
             def binary(self) -> Path:
                 if not self.installed:
-                    raise ProviderError("spy binary missing", provider="spy")
+                    raise ProviderError("spy binary missing")
                 return super().binary()
 
         late = LateBinary(
@@ -239,7 +239,7 @@ class TestDeviceReads:
         from lilbee.providers.fleet.devices import EngineDllMissingError
 
         def cannot_load(_binary: Path, _engine: object) -> None:
-            raise EngineDllMissingError("DLL missing", provider="llama")
+            raise EngineDllMissingError("DLL missing")
 
         planning.clear_read_device_cache()
         monkeypatch.setattr(planning, "resolve_devices", cannot_load)
@@ -253,7 +253,7 @@ class TestDeviceReads:
         from lilbee.providers.fleet.devices import EngineIllegalInstructionError
 
         def cannot_run(_binary: Path, _engine: object) -> None:
-            raise EngineIllegalInstructionError("illegal instruction", provider="llama")
+            raise EngineIllegalInstructionError("illegal instruction")
 
         planning.clear_read_device_cache()
         monkeypatch.setattr(planning, "resolve_devices", cannot_run)
@@ -267,7 +267,7 @@ class TestDeviceReads:
         from lilbee.providers.fleet.devices import EngineDllMissingError
 
         def cannot_load(_binary: Path, _engine: object) -> None:
-            raise EngineDllMissingError("DLL missing", provider="llama")
+            raise EngineDllMissingError("DLL missing")
 
         planning.clear_read_device_cache()
         monkeypatch.setattr(planning, "resolve_devices", cannot_load)
@@ -285,7 +285,7 @@ class TestDeviceReads:
         from lilbee.providers.fleet.devices import EngineDllMissingError
 
         def cannot_load(_binary: Path, _engine: object) -> None:
-            raise EngineDllMissingError("DLL missing", provider="llama")
+            raise EngineDllMissingError("DLL missing")
 
         services = SimpleNamespace(
             engines=SimpleNamespace(for_role=lambda _role: SimpleNamespace(adapter=spy))
@@ -300,7 +300,7 @@ class TestDeviceReads:
         self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         def wedged(_binary: Path, _engine: object) -> None:
-            raise ProviderError("probe timed out", provider="llama")
+            raise ProviderError("probe timed out")
 
         planning.clear_read_device_cache()
         monkeypatch.setattr(planning, "resolve_devices", wedged)
@@ -486,7 +486,7 @@ class TestMemoryEstimates:
         assert planning._declared_reserve(spy, request, unified=False) == 10 * BYTES_PER_CTX
 
     @pytest.mark.parametrize(
-        "failure", [ProviderError("no estimate", provider="spy"), OSError("gone")]
+        "failure", [ProviderError("no estimate"), OSError("gone")]
     )
     def test_declared_reserve_is_zero_when_the_engine_cannot_estimate(
         self,

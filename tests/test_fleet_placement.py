@@ -968,7 +968,7 @@ class TestUnsizableModelPlacement:
 
         def boom(_role: WorkerRole, _ratio: tuple[int, ...]) -> tuple[int, ...]:
             raise ProviderError(
-                "unparseable", provider="llama-server", kind=ProviderErrorKind.SERVER
+                "unparseable", kind=ProviderErrorKind.SERVER
             )
 
         plan = plan_placement([model], [(0, 24 * _GB), (1, 24 * _GB)], estimate_peak=boom)

@@ -7,7 +7,6 @@ from typing import Any
 
 from lilbee.core.blocked_networks import CONNECT_BLOCKED_NETWORKS
 from lilbee.providers.availability import PROVIDER_SDK_MISSING_MESSAGE
-from lilbee.providers.backends.liter_llm.errors import _PROVIDER_NAME
 from lilbee.providers.base import ProviderError
 from lilbee.providers.local_servers import local_server_for_key
 
@@ -25,7 +24,7 @@ def _require_sdk() -> Any:
     try:
         import liter_llm
     except ImportError as exc:
-        raise ProviderError(PROVIDER_SDK_MISSING_MESSAGE, provider=_PROVIDER_NAME) from exc
+        raise ProviderError(PROVIDER_SDK_MISSING_MESSAGE) from exc
     return liter_llm
 
 

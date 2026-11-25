@@ -112,7 +112,7 @@ class LiterLlmBackend:
             raise NotImplementedError(f"liter-llm has no tokenizer of {ref.for_display()}'s own")
         if ref.name in self._failed_tokenizers:
             raise ProviderError(
-                f"Token count for {ref.for_display()} failed earlier", provider=_PROVIDER_NAME
+                f"Token count for {ref.for_display()} failed earlier"
             )
         liter_llm = _require_sdk()
         try:
@@ -120,7 +120,7 @@ class LiterLlmBackend:
         except liter_llm.LiterLlmError as exc:
             self._failed_tokenizers.add(ref.name)
             raise ProviderError(
-                f"Token count for {ref.for_display()} failed: {exc}", provider=_PROVIDER_NAME
+                f"Token count for {ref.for_display()} failed: {exc}"
             ) from exc
 
     def configure_logging(self, *, suppress_debug: bool) -> None:
@@ -258,7 +258,7 @@ class LiterLlmBackend:
                 f"Embedding response does not match the request: expected {expected} "
                 f"vectors indexed 0-{expected - 1}, got {len(ordered)}. The endpoint "
                 "returned an incomplete or misindexed batch.",
-                provider=_PROVIDER_NAME,
+                
                 kind=ProviderErrorKind.SERVER,
             )
         return EmbeddingResult(
@@ -337,7 +337,7 @@ class LiterLlmBackend:
             data = resp.json()
             return [m["name"] for m in data.get("models", [])]
         except httpx.HTTPError as exc:
-            raise ProviderError(f"Cannot list models: {exc}", provider=_PROVIDER_NAME) from exc
+            raise ProviderError(f"Cannot list models: {exc}") from exc
 
     @staticmethod
     def _list_openai_models(base_url: str, api_key: str) -> list[str]:
@@ -373,7 +373,7 @@ class LiterLlmBackend:
         raise ProviderError(
             f"{server} doesn't download models over the network. "
             f"Add the model in its own app, then pick it here.",
-            provider=_PROVIDER_NAME,
+            
         )
 
     def show_model(self, model: str, *, base_url: str) -> dict[str, Any] | None:

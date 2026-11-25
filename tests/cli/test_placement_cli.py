@@ -296,7 +296,7 @@ def test_show_json_mode_error_emits_error_object(monkeypatch: object) -> None:
     """A known failure in --json mode emits {"error": ...}, not a Rich error line."""
 
     def _boom() -> PlacementView:
-        raise ProviderError("engine binary missing", provider="llama-server")
+        raise ProviderError("engine binary missing")
 
     monkeypatch.setattr(cli_placement, "get_placement", _boom)
     monkeypatch.setattr(cfg, "json_mode", True)

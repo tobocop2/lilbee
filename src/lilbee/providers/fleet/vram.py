@@ -72,7 +72,6 @@ _KEY_NONUMA = "nonuma"
 _KEY_METADATA = "metadata"
 _KEY_FILE_SIZE = "fileSize"
 
-_PROVIDER = "llama-server"
 _PARSE_TIMEOUT_S = 60
 # Bounded wait for a timed-out parser to die before abandoning it (matches the
 # device probe): a parser wedged in driver I/O must not hang the warm-up thread.
@@ -336,7 +335,7 @@ def _run_parser(argv: list[str], path_str: str) -> str:
     """Run gguf-parser, returning its JSON stdout or a user-facing error."""
     failed = ProviderError(
         f"Could not size the model '{path_str}': the memory estimator failed to run.",
-        provider=_PROVIDER,
+        
         kind=ProviderErrorKind.SERVER,
     )
     try:
@@ -378,7 +377,7 @@ def _cached_repacked_bytes(_engine_id: str, path_str: str, _mtime_ns: int) -> in
     except (ValueError, KeyError, TypeError) as exc:
         raise ProviderError(
             f"Could not size the model '{path_str}': the estimator returned unreadable output.",
-            provider=_PROVIDER,
+            
             kind=ProviderErrorKind.SERVER,
         ) from exc
 
@@ -427,7 +426,7 @@ def _cached_attention_shape(
     except (ValueError, KeyError, TypeError) as exc:
         raise ProviderError(
             f"Could not size the model '{path_str}': the estimator returned unreadable output.",
-            provider=_PROVIDER,
+            
             kind=ProviderErrorKind.SERVER,
         ) from exc
 
@@ -459,6 +458,6 @@ def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:
         raise ProviderError(
             f"Could not size the model '{path_str}': unexpected estimator output "
             f"({type(exc).__name__}: {exc}).",
-            provider=_PROVIDER,
+            
             kind=ProviderErrorKind.SERVER,
         ) from exc
