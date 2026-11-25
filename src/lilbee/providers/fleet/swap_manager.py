@@ -49,6 +49,7 @@ from lilbee.providers.fleet.readback import (
     report_missing_log,
 )
 from lilbee.providers.fleet.swap_config import (
+    CONCURRENCY_LIMIT,
     PORT_FLAG,
     ROUTER_FLOOR,
     build_swap_config,
@@ -60,7 +61,39 @@ if TYPE_CHECKING:
     from lilbee.providers.fleet.engines.base import EngineAdapter, ServerProcess
     from lilbee.providers.roles import WorkerRole
 
+if sys.platform == "win32":
+    resource = None
+else:
+    import resource
+
 log = logging.getLogger(__name__)
+
+# llama-swap passes its open-file limit to the engines it spawns, and llama-server
+# holds one socket per admitted request. The extra 64 cover the files each process
+# opens for itself. macOS starts a process with a soft limit of 256.
+_OPEN_FILE_FLOOR = CONCURRENCY_LIMIT + 64
+
+
+def _raise_open_file_limit() -> None:
+    """Raise this process's soft open-file limit to the floor, never past the hard limit.
+
+    llama-swap and its engines inherit the limit. A hard limit under the floor is
+    used as it is, with one warning. A platform with no limit to set is left alone.
+    """
+    if resource is None:
+        return
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft >= _OPEN_FILE_FLOOR:
+        return
+    target = _OPEN_FILE_FLOOR if hard == resource.RLIM_INFINITY else min(_OPEN_FILE_FLOOR, hard)
+    if target < _OPEN_FILE_FLOOR:
+        log.warning(
+            "The open-file limit is capped at %d, under the %d the engine can use at full load.",
+            hard,
+            _OPEN_FILE_FLOOR,
+        )
+    if target > soft:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
 
 _HOST = "127.0.0.1"
 # Where a router older than ROUTER_FLOOR is replaced from, beside ROUTER_GO_INSTALL.
@@ -393,6 +426,7 @@ class SwapManager:
         if lifetime is EngineLifetime.USERS and not ensure_engine_reaper(self._data_dir):
             log.warning("The engine at %s stops with this process.", self._data_dir)
             lifetime = EngineLifetime.BUILDER
+        _raise_open_file_limit()
         self._proc = spawn_bound_child(
             [
                 self._swap_binary,
