@@ -1246,7 +1246,12 @@ def test_the_notice_writer_reads_a_sha256sum_list_of_either_mode(
     sums = tmp_path / "cuda-libs.sha256"
     sums.write_text(
         subprocess.run(
-            ["sha256sum", *mode, *four], cwd=lib, capture_output=True, text=True, check=True
+            ["sha256sum", *mode, *four],
+            cwd=lib,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
         ).stdout,
         encoding="utf-8",
     )
@@ -1258,6 +1263,7 @@ def test_the_notice_writer_reads_a_sha256sum_list_of_either_mode(
         [sys.executable, str(writer), str(notice), "12.8.1", str(sums)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert done.returncode == 0, done.stderr
     assert _EULA_LIBS in notice.read_text(encoding="utf-8")
