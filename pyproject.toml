@@ -156,6 +156,8 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "pytest-cov",
+    # A stalled child run in tests/test_xdist_worker_crash.py dumps the stacks of its processes.
+    "py-spy>=0.4",
     "reportlab",
     "ruff>=0.15.4",
     "httpx>=0.27,<1.0",
