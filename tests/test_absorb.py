@@ -1091,7 +1091,7 @@ class TestACancelledAdd:
         rollback = AddRollback(paths=[notes], at_sync=False)
         cancel = threading.Event()
 
-        def _cancelled(_cancel, before_sync, started_by):
+        def _cancelled(_cancel, before_sync, started_by, analyze_tip=False):
             before_sync()
             cancel.set()
             raise KeyboardInterrupt

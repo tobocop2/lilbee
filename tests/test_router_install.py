@@ -251,7 +251,19 @@ class TestInstall:
         link.symlink_to(target, target_is_directory=True)
         install_router()
         assert not link.is_symlink()
-        assert sorted(p.name for p in link.iterdir()) == [LICENCE_FILE, "llama-swap"]
+        assert sorted(p.name for p in link.iterdir()) == [IN_USE_NAME, LICENCE_FILE, "llama-swap"]
+        assert list(target.iterdir()) == [target / "keep.txt"]
+
+    def test_a_link_given_to_the_folder_remover_is_unlinked_and_its_target_kept(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "elsewhere"
+        target.mkdir()
+        (target / "keep.txt").write_text("mine", encoding="utf-8")
+        link = tmp_path / "link"
+        link.symlink_to(target, target_is_directory=True)
+        router_install._remove_folder(link)
+        assert not link.is_symlink()
         assert list(target.iterdir()) == [target / "keep.txt"]
 
     @pytest.mark.skipif(
@@ -268,24 +280,24 @@ class TestInstall:
         inner.chmod(0o555)
         stale.chmod(0o555)
         install_router()
-        assert sorted(p.name for p in stale.iterdir()) == [LICENCE_FILE, "llama-swap"]
+        assert sorted(p.name for p in stale.iterdir()) == [IN_USE_NAME, LICENCE_FILE, "llama-swap"]
 
-    def test_a_delete_that_leaves_the_router_folder_behind_is_logged_with_its_path(
+    def test_a_delete_that_leaves_a_folder_behind_is_logged_with_its_path(
         self,
-        release: list[str],
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        stale = engines_root(cfg.models_dir) / "router" / ROUTER_VERSION
-        stale.mkdir(parents=True)
+        stale = tmp_path / "stale"
+        stale.mkdir()
         (stale / "stale.txt").write_text("old", encoding="utf-8")
 
         def refuse(path: str | Path, *args: Any, **kwargs: Any) -> None:
             raise PermissionError(13, "Permission denied", str(path))
 
         monkeypatch.setattr(router_install.shutil, "rmtree", refuse)
-        with caplog.at_level("WARNING", logger=router_install.log.name), pytest.raises(OSError):
-            install_router()
+        with caplog.at_level("WARNING", logger=router_install.log.name):
+            router_install._remove_folder(stale)
         assert any(str(stale) in r.getMessage() for r in caplog.records)
 
     def test_removing_a_folder_that_is_already_gone_logs_nothing(
@@ -356,13 +368,13 @@ class TestInstall:
         os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
         reason="needs a user the file mode binds",
     )
-    def test_a_chmod_that_fails_does_not_hide_the_install_error(
+    def test_a_chmod_that_fails_is_logged_with_the_path_of_the_folder(
         self,
-        release: list[str],
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        stale = engines_root(cfg.models_dir) / "router" / ROUTER_VERSION
+        stale = tmp_path / "stale"
         (stale / "old").mkdir(parents=True)
         (stale / "old" / "stale.txt").write_text("old", encoding="utf-8")
         stale.chmod(0o555)
@@ -379,14 +391,10 @@ class TestInstall:
 
         monkeypatch.setattr(router_install, "os", ChmodRefused())
         try:
-            with (
-                caplog.at_level("WARNING", logger=router_install.log.name),
-                pytest.raises(OSError) as raised,
-            ):
-                install_router()
+            with caplog.at_level("WARNING", logger=router_install.log.name):
+                router_install._remove_folder(stale)
         finally:
             stale.chmod(0o755)
-        assert not isinstance(raised.value, PermissionError)
         assert any(str(stale) in r.getMessage() for r in caplog.records)
 
     def test_a_folder_a_running_router_holds_is_not_replaced(self, release: list[str]) -> None:
