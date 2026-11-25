@@ -132,8 +132,8 @@ async def test_the_catalog_screen_resolves_the_file_with_the_container_engine(
             return "model.gguf"
 
         monkeypatch.setattr(catalog_screen, "resolve_filename", _resolve)
-        monkeypatch.setattr(catalog_screen, "download_bytes", lambda *_a, **_kw: 1)
-        monkeypatch.setattr(catalog_screen, "disk_shortfall", lambda *_a, **_kw: None)
+        monkeypatch.setattr(catalog_screen, "remote_shards", lambda *_a, **_kw: [])
+        monkeypatch.setattr(catalog_screen, "reclaimed_shortfall", lambda *_a, **_kw: None)
         monkeypatch.setattr(
             catalog_screen, "get_services", lambda: SimpleNamespace(engines=library_book)
         )

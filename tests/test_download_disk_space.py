@@ -45,13 +45,13 @@ def test_refuses_a_download_larger_than_free_space(
     monkeypatch.setattr(dl.shutil, "disk_usage", lambda _p: _usage(5 * _GB))
 
     with pytest.raises(RuntimeError, match="Not enough disk space"):
-        dl._require_disk_space(_entry(), tmp_path, 8 * _GB)
+        dl._require_disk_space(_entry(), tmp_path, [], 8 * _GB)
 
 
 def test_allows_a_download_that_fits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dl.shutil, "disk_usage", lambda _p: _usage(20 * _GB))
 
-    dl._require_disk_space(_entry(), tmp_path, 8 * _GB)
+    dl._require_disk_space(_entry(), tmp_path, [], 8 * _GB)
 
 
 def test_a_partial_blob_is_not_counted_as_space_the_pull_can_use(
@@ -66,14 +66,14 @@ def test_a_partial_blob_is_not_counted_as_space_the_pull_can_use(
 
     # 8KB wanted and 3KB free; the 6KB partial blob buys the pull nothing.
     with pytest.raises(RuntimeError, match=r"needs 8\.0 GB, 3\.0 GB free"):
-        dl._require_disk_space(_entry(), tmp_path, 8 * 1024)
+        dl._require_disk_space(_entry(), tmp_path, [], 8 * 1024)
 
 
 def test_unknown_size_does_not_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Offline or unresolvable sizes have nothing to compare against."""
     monkeypatch.setattr(dl.shutil, "disk_usage", lambda _p: _usage(0))
 
-    dl._require_disk_space(_entry(), tmp_path, dl._SIZE_UNKNOWN)
+    dl._require_disk_space(_entry(), tmp_path, [], dl._SIZE_UNKNOWN)
 
 
 def test_failure_on_a_full_volume_reports_the_disk(
@@ -316,3 +316,10 @@ def test_a_cache_plain_error_falls_back_to_the_error_text_without_a_reason(
 
     with pytest.raises(RuntimeError, match=r"acme--big-GGUF: disk went away\. Check that"):
         dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
+
+
+def test_reclaiming_no_blobs_touches_nothing_and_accepts_any_ref(tmp_path: Path) -> None:
+    """A ref that is no hub repo id, such as an MLX format ref, has no blob to scope to."""
+    dl.discard_partial_blobs(tmp_path, "org/repo#mlx", [])
+
+    assert list(tmp_path.iterdir()) == []
