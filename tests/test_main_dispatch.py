@@ -473,7 +473,7 @@ class TestPrestartMpResourceTracker:
         try:
             self._run_tui_with_return_code(0, mock.Mock(side_effect=_straggler_logs))
             leaked = [h for h in root.handlers if h not in before]
-            text = tui_log_path().read_text()
+            text = tui_log_path().read_text(encoding="utf-8")
         finally:
             for handler in [h for h in root.handlers if h not in before]:
                 root.removeHandler(handler)
