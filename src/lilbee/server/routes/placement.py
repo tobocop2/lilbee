@@ -31,6 +31,7 @@ from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.server import handlers
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import GpusResponse, PlacementResponse, PlacementSpecBody
+from lilbee.server.routes.engines import NO_LIBRARY_KEY
 
 log = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ def _refused() -> HTTPException:
     return HTTPException(status_code=_HTTP_CONFLICT, detail=placement_refused_message())
 
 
-@get("/api/placement")
+@get("/api/placement", opt={NO_LIBRARY_KEY: True})
 async def placement_route() -> PlacementResponse:
     """Current effective placement."""
     try:
@@ -118,7 +119,7 @@ async def placement_clear_route() -> PlacementResponse:
         return await handlers.placement_clear()
 
 
-@get("/api/gpus")
+@get("/api/gpus", opt={NO_LIBRARY_KEY: True})
 async def gpus_route() -> GpusResponse:
     """Detected GPUs with free/total VRAM, plus the host-level Intel util notice."""
     try:
@@ -127,7 +128,7 @@ async def gpus_route() -> GpusResponse:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
 
 
-@get("/api/gpus/stream", media_type=SSE_MEDIA_TYPE)
+@get("/api/gpus/stream", media_type=SSE_MEDIA_TYPE, opt={NO_LIBRARY_KEY: True})
 async def gpu_stats_stream_route() -> Stream:
     """Live per-GPU utilization + free memory as SSE for the placement view."""
     from lilbee.app.placement import get_planned_placement

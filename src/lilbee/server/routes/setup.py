@@ -29,9 +29,10 @@ from lilbee.crawler import (
 )
 from lilbee.server.handlers import SseStream
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
+from lilbee.server.routes.engines import NO_LIBRARY_KEY
 
 
-@get("/setup/crawler/status")
+@get("/setup/crawler/status", opt={NO_LIBRARY_KEY: True})
 async def setup_crawler_status_route() -> dict[str, Any]:
     """Return whether the crawler is fully ready (Python package + Chromium)."""
     package_installed = crawler_available()

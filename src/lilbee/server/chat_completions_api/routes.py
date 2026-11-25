@@ -57,6 +57,7 @@ from lilbee.server.chat_dispatch.dispatch import (
 )
 from lilbee.server.chat_dispatch.reasoning_cap import cap_aware_chat, cap_aware_chat_stream
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
+from lilbee.server.routes.engines import NO_LIBRARY_KEY
 from lilbee.server.validation_format import format_validation
 
 log = logging.getLogger(__name__)
@@ -64,7 +65,7 @@ log = logging.getLogger(__name__)
 _MULTI_CHOICE_MESSAGE = "lilbee serves one choice per request; set n to 1 or omit it."
 
 
-@get("/v1/models")
+@get("/v1/models", opt={NO_LIBRARY_KEY: True})
 @auth_checked_in_handler
 async def list_models_endpoint(request: Request) -> Response:
     """Return installed chat models in the ``/v1/models`` shape, the configured one leading."""
