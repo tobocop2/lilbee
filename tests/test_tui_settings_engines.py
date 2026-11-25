@@ -477,6 +477,23 @@ async def test_a_build_that_differs_from_the_pin_shows_its_size_and_removes_on_y
         assert await wait_until(pilot, lambda: table.row_count == 1)
 
 
+async def test_the_tab_tells_the_pin_build_from_a_second_build_of_the_same_engine(
+    service: _Rows,
+) -> None:
+    second = EngineRow(
+        "ik_llama.cpp", EngineState.DIFFERS_FROM_PIN, "1.2.3", "cpu", size_bytes=_BUILD_BYTES
+    )
+    service.rows = [_IK, second]
+    app = _SettingsApp()
+    async with app.run_test(size=(140, 40)) as pilot:
+        table = await _open_engines(app, pilot, rows=2)
+        shown = [[_plain(c) for c in table.get_row_at(i)] for i in range(table.row_count)]
+        assert [(row[2], row[4], row[6]) for row in shown] == [
+            ("cuda", "installed", "Remove"),
+            ("cpu", "differs from the pin", "Remove"),
+        ]
+
+
 # --- Install
 
 
