@@ -411,6 +411,7 @@ def _check(
         "RUNNER_TEMP": str(tmp_path),
         "BACKEND": "cpu",
         "PLATFORM": _HOST_PLATFORM,
+        "BUILD_NUMBER": "1",
         "MISTRALRS_CHAT_MODEL": "owner/model",
         **env,
     }
@@ -519,6 +520,15 @@ def test_the_whole_check_fails_a_wheel_with_a_wrong_tag(
     bad = _check(tmp_path, _wheel(tmp_path, **broken))
     assert bad.returncode == 1
     assert message in bad.stderr
+
+
+def test_the_tag_check_takes_the_build_number_of_the_cell(tmp_path: Path) -> None:
+    second = _wheel(tmp_path, name_tag=f"2.cpu-py3-none-{_HOST_PLATFORM}")
+    ok = _check(tmp_path, second, "check_tag", BUILD_NUMBER="2")
+    assert ok.returncode == 0, ok.stderr
+    first = _check(tmp_path, _wheel(tmp_path), "check_tag", BUILD_NUMBER="2")
+    assert first.returncode == 1
+    assert "wrong tag on" in first.stderr
 
 
 _AIR_15 = b"\0air64-apple-macosx15.0.0\0"
@@ -1106,6 +1116,7 @@ def test_the_pack_asks_a_cuda_cell_for_its_cuda_inputs(tmp_path: Path) -> None:
         "ASSET": "a.tar.gz",
         "BACKEND": "cuda-sm86",
         "PLATFORM": "manylinux_2_35_x86_64",
+        "BUILD_NUMBER": "2",
         "RUST_TARGET": "x86_64-unknown-linux-gnu",
         "CARGO_ABOUT_VERSION": "0.9.3",
         "ABOUT_TARGET": "x86_64-unknown-linux-musl",
