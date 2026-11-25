@@ -22,7 +22,7 @@ from lilbee import parent_monitor
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import swap_manager as sm
-from lilbee.providers.fleet.build_use import build_in_use, removing
+from lilbee.providers.fleet.build_use import IN_USE_NAME, build_in_use, removing
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.llama import LlamaCppAdapter
 from lilbee.providers.fleet.groups import SwapGroup
@@ -2785,6 +2785,10 @@ class TestKillRecordedEngine:
 
 
 _SLEEP = [sys.executable, "-c", "import time; time.sleep(60)"]
+# Folder modes bind only a POSIX user who is not root.
+_PERMISSIONS_APPLY = pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0, reason="folder modes do not bind this user"
+)
 
 
 class TestRouterHoldsItsBuilds:
@@ -2854,8 +2858,54 @@ class TestRouterHoldsItsBuilds:
         monkeypatch.setattr(sm, "spawn_bound_child", lambda *a, **k: spawned.append(a))
         with (
             removing(server),
-            pytest.raises(ProviderError, match="Engine llama-cpp 2-cpu is being removed"),
+            pytest.raises(ProviderError, match=r"Engine llama-cpp 2 \(cpu\) is being removed"),
         ):
             self._start(tmp_path, server)
         assert spawned == []
         assert build_in_use(server) is False
+
+    @_PERMISSIONS_APPLY
+    def test_a_start_holds_read_only_builds_and_writes_to_neither(
+        self, tmp_path: Path, builds: tuple[Path, Path]
+    ) -> None:
+        router, server = builds
+        for build in builds:
+            (build / IN_USE_NAME).touch(mode=0o400)
+            build.chmod(0o555)
+        try:
+            mgr = self._start(tmp_path, server)
+            try:
+                assert build_in_use(router) is True
+                assert build_in_use(server) is True
+            finally:
+                self._stop_router(mgr)
+        finally:
+            for build in builds:
+                build.chmod(0o755)
+
+    @_PERMISSIONS_APPLY
+    def test_a_start_from_older_read_only_builds_runs_unheld_and_writes_nothing(
+        self, tmp_path: Path, builds: tuple[Path, Path]
+    ) -> None:
+        router, server = builds
+        for build in builds:
+            build.chmod(0o555)
+        try:
+            mgr = self._start(tmp_path, server)
+            self._stop_router(mgr)
+        finally:
+            for build in builds:
+                build.chmod(0o755)
+        assert not (router / IN_USE_NAME).exists()
+        assert not (server / IN_USE_NAME).exists()
+
+    def test_a_start_from_older_builds_makes_their_in_use_files_and_holds_them(
+        self, tmp_path: Path, builds: tuple[Path, Path]
+    ) -> None:
+        router, server = builds
+        mgr = self._start(tmp_path, server)
+        try:
+            assert (router / IN_USE_NAME).is_file()
+            assert build_in_use(server) is True
+        finally:
+            self._stop_router(mgr)
