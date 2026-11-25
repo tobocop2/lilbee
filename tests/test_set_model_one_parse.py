@@ -198,9 +198,35 @@ class TestAdoptEmbedder:
         services = SimpleNamespace(model_manager=manager)
         monkeypatch.setattr(app_models, "get_services", lambda: services)
         monkeypatch.setattr(cfg, "embedding_model", "org/repo/f.gguf")
-        update = SimpleNamespace(reindex_required=False)
+        update = SimpleNamespace(reindex_required=False, warnings=())
         with patch("lilbee.app.settings.apply_settings_update", return_value=update) as write:
             result = app_models.adopt_embedder("org/repo/f.gguf#gguf")
         assert result.status == app_models.AdoptStatus.ALREADY_ACTIVE
         assert result.model == "org/repo/f.gguf"
         write.assert_called_once_with({"embedding_model": "org/repo/f.gguf"})
+
+    def test_an_installed_embedder_no_engine_loads_carries_the_no_engine_notice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manager = MagicMock()
+        manager.is_installed.return_value = True
+        monkeypatch.setattr(app_models, "get_services", lambda: SimpleNamespace(model_manager=manager))
+        notice = "No installed engine loads this model."
+        update = SimpleNamespace(reindex_required=False, warnings=(notice,))
+        with patch("lilbee.app.settings.apply_settings_update", return_value=update):
+            result = app_models.adopt_embedder("org/repo/f.gguf#gguf")
+        assert result.warning == notice
+
+    def test_the_settings_notice_follows_the_pull_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manager = MagicMock()
+        manager.is_installed.return_value = False
+        monkeypatch.setattr(app_models, "get_services", lambda: SimpleNamespace(model_manager=manager))
+        update = SimpleNamespace(reindex_required=False, warnings=("No engine.",))
+        with (
+            patch("lilbee.app.settings.apply_settings_update", return_value=update),
+            patch.object(app_models, "pull_model_data", return_value=SimpleNamespace(warning="Slow.")),
+        ):
+            result = app_models.adopt_embedder("org/repo/f.gguf#gguf")
+        assert result.warning == "Slow. No engine."
