@@ -188,6 +188,26 @@ def _hold_the_fleet_dir(provider: FleetProvider) -> tuple[Path, MagicMock]:
     return engine_dir, hold
 
 
+def test_a_pass_with_no_group_running_holds_the_fleet_it_starts(
+    engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A resurrect after a failed pass: no group runs and no dir is held, so only
+    # the pass's own hold keeps a peer from stopping the fleet it starts.
+    provider, _swaps = engine_fleet
+    hold = MagicMock()
+    monkeypatch.setattr(prov_mod, "hold_user_lock", lambda _dir: hold)
+    reload_dir = provider._reload_dir()
+    provider._drop_swap_refs()
+    assert provider._engine_holds == {}
+
+    restarted = provider._restart_changed(reload_dir, set(), {}, frozenset(), {}, {})
+
+    assert restarted
+    assert provider._engine_holds == {reload_dir: hold}
+    assert provider._dir_users[reload_dir] == len(provider._swaps)
+    hold.release_and_check_last.assert_not_called()
+
+
 def test_a_rediscover_that_never_took_its_uses_gives_none_back(
     engine_fleet: FleetFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
