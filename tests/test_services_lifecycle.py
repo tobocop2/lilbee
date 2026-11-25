@@ -1673,6 +1673,7 @@ def test_the_wakeup_descriptor_set_before_the_loop_signals_returns_after_them():
     install_engine_lifecycle_hooks()
     reader, writer = socket.socketpair()
     writer.setblocking(False)
+    wakeup = writer.fileno()
 
     async def inside() -> int:
         with loop_takes_signals(asyncio.get_running_loop()):
@@ -1681,15 +1682,15 @@ def test_the_wakeup_descriptor_set_before_the_loop_signals_returns_after_them():
             return current
 
     with reader, writer, asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
-        previous = signal.set_wakeup_fd(writer.fileno())
+        previous = signal.set_wakeup_fd(wakeup)
         try:
             during = runner.run(inside())
             after = signal.set_wakeup_fd(previous)
         finally:
             signal.set_wakeup_fd(previous)
 
-    assert during != writer.fileno()  # the loop's own descriptor while it takes the signals
-    assert after == writer.fileno()
+    assert during not in (wakeup, -1)  # the loop's own descriptor while it takes the signals
+    assert after == wakeup
 
 
 def test_the_thread_seam_lists_the_running_threads():
