@@ -29,6 +29,7 @@ from lilbee.providers.fleet.engine_store import (
     EngineInUseError,
     PackUrlError,
     copy_with_digest,
+    delete_tree,
     discard_build,
     engines_root,
     file_digest,
@@ -241,31 +242,6 @@ def _fetch(
     return downloaded, file_digest(downloaded), None
 
 
-def _remove_folder(path: Path) -> None:
-    """Remove *path* and never follow a link out of it.
-
-    A link is unlinked and its target is kept. A real folder gets the owner write bit inside
-    itself only, then is deleted. A delete that leaves something behind is logged as a warning
-    that names the path; the caller then meets the leftover on its own next step.
-    """
-    try:
-        if path.is_symlink():
-            path.unlink(missing_ok=True)
-            return
-        for folder, _names, _files in os.walk(path):
-            if os.access(folder, os.W_OK):
-                continue
-            try:
-                os.chmod(folder, os.stat(folder).st_mode | stat.S_IWUSR)
-            except FileNotFoundError:
-                continue  # the folder went after the walk listed it
-        shutil.rmtree(path)
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        log.warning("%s stays after the delete: %s. Correct its permissions.", path, exc)
-
-
 def install_router(
     *,
     on_progress: ProgressCallback | None = None,
@@ -296,7 +272,11 @@ def install_router(
                 discard_build(final, _INSTALL_AGAIN)
             stage.rename(final)
         finally:
-            _remove_folder(stage)
+            try:
+                delete_tree(stage)
+            except OSError:
+                # The step's own error is the one the caller needs; the stage is a leftover.
+                log.warning("The stage folder %s stays after the install.", stage, exc_info=True)
     _refusals.forget(_refusal_key())
     return final / asset.binary
 
