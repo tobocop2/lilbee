@@ -420,9 +420,7 @@ def test_a_host_with_an_nvidia_driver_resolves_the_cuda_llama_pack_from_the_ship
     )
 
 
-_MISTRAL_RELEASE = (
-    "https://github.com/tobocop2/lilbee-engine-packs/releases/download/engine-packs-20261125-mistralrs/"
-)
+_MISTRAL_RELEASE = "https://github.com/tobocop2/lilbee-engine-packs/releases/download/engine-packs-20261125-mistralrs/"
 
 SHIPPED_MISTRAL = {
     ("Darwin", "arm64"): (
