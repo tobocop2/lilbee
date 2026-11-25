@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -72,14 +73,8 @@ _ERROR_KINDS: dict[str, ProviderErrorKind] = {
 }
 
 # Messages for single exception types that need their own wording. The SDK refuses a
-# preset's connection to a blocked network with ``OutboundForbiddenError``. It raises
-# ``SerializationError`` when a reply lacks a field of the OpenAI reply format.
+# preset's connection to a blocked network with ``OutboundForbiddenError``.
 _TYPE_MESSAGES: dict[str, str] = {
-    "SerializationError": (
-        "The server for {model} sent a reply that lilbee cannot read: "
-        "a field of the OpenAI reply format is missing. "
-        "Check that the server answers in the OpenAI reply format."
-    ),
     "OutboundForbiddenError": (
         "The server for {model} resolves to an address that a server preset cannot use. "
         "Fix the URL of the preset or pick a different model."
@@ -104,6 +99,20 @@ _UNPROCESSABLE_MESSAGE = (
 _UNPROCESSABLE_NO_REASON = (
     "The server for {model} refused the request with HTTP 422 and gave no readable reason. "
     "Check the request limits of the server."
+)
+
+# liter-llm raises ``SerializationError`` for every JSON failure on a reply. The parser's
+# text names the missing field in one form; every other form keeps the text as the detail.
+_SERIALIZATION_ERROR = "SerializationError"
+_SERIALIZATION_PREFIX = "serialization error: "
+_MISSING_FIELD = re.compile(r"missing field `([^`]+)`")
+_MISSING_FIELD_MESSAGE = (
+    "The server for {model} sent a reply without the field `{field}`. "
+    "Check that the server answers in the OpenAI reply format."
+)
+_UNREADABLE_REPLY_MESSAGE = (
+    "lilbee could not read the reply of the server for {model}: {detail}. "
+    "Check that the server answers in the OpenAI reply format."
 )
 
 # A rerank 404 on a preset names the route of its wire and the wires to set instead.
@@ -179,6 +188,21 @@ def _reason(body: str) -> str | None:
     return flat if len(flat) <= _REASON_LIMIT else flat[:_REASON_LIMIT].rstrip() + "..."
 
 
+def _serialization_message(exc: Exception, model: str) -> str | None:
+    """The message for a reply that the client could not parse as JSON, else None."""
+    if type(exc).__name__ != _SERIALIZATION_ERROR:
+        return None
+    first = exc.args[0] if exc.args else None
+    text = first if isinstance(first, str) else str(exc)
+    detail = " ".join(text.removeprefix(_SERIALIZATION_PREFIX).split())
+    missing = _MISSING_FIELD.search(detail)
+    if missing is not None:
+        return _MISSING_FIELD_MESSAGE.format(model=model, field=missing.group(1))
+    if len(detail) > _REASON_LIMIT:
+        detail = detail[:_REASON_LIMIT].rstrip() + "..."
+    return _UNREADABLE_REPLY_MESSAGE.format(model=model, detail=detail or "no detail")
+
+
 def _unprocessable_message(kind: ProviderErrorKind, exc: Exception, model: str) -> str | None:
     """The message for a bad request that the server answered with 422, else None."""
     if kind is not ProviderErrorKind.BAD_REQUEST or not isinstance(exc, _StatusReply):
@@ -232,6 +256,9 @@ def _provider_error(
     unprocessable = _unprocessable_message(kind, exc, model)
     if unprocessable is not None:
         return ProviderError(unprocessable, provider=_PROVIDER_NAME, kind=kind)
+    unreadable = _serialization_message(exc, model)
+    if unreadable is not None:
+        return ProviderError(unreadable, provider=_PROVIDER_NAME, kind=kind)
     template = _TYPE_MESSAGES.get(type(exc).__name__) or _KIND_MESSAGES.get(kind)
     message = template.format(model=model) if template is not None else f"{fallback}: {exc}"
     return ProviderError(message, provider=_PROVIDER_NAME, kind=kind)
