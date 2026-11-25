@@ -85,6 +85,7 @@ WINDOWS_SYSTEM_DLLS = frozenset(
     {
         "advapi32.dll",
         "bcrypt.dll",
+        "bcryptprimitives.dll",
         "cfgmgr32.dll",
         "combase.dll",
         "comctl32.dll",
@@ -104,6 +105,7 @@ WINDOWS_SYSTEM_DLLS = frozenset(
         "nvcuda.dll",
         "ole32.dll",
         "oleaut32.dll",
+        "pdh.dll",
         "powrprof.dll",
         "psapi.dll",
         "rpcrt4.dll",
