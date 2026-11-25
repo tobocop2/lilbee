@@ -2381,7 +2381,7 @@ class TestRunFullSynthesizeWhenTheModelFails:
         services.provider.get_capabilities.return_value = []
         monkeypatch.setattr("lilbee.wiki.generation.get_services", lambda: services)
 
-        with pytest.raises(RuntimeError, match="The chat model is not running."):
+        with pytest.raises(RuntimeError, match=r"The chat model is not running\."):
             run_full_synthesize(cfg)
 
     def test_a_run_with_no_clusters_does_not_raise(self, monkeypatch):

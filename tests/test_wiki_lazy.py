@@ -100,9 +100,11 @@ class TestGenerateStubPage:
         services = MagicMock()
         services.provider.chat.side_effect = ConnectionError("The chat model is not running.")
         services.provider.get_capabilities.return_value = []
-        with patch("lilbee.wiki.lazy.get_services", return_value=services):
-            with pytest.raises(RuntimeError, match="The chat model is not running."):
-                generate_stub_page("ford", store, cfg)
+        with (
+            patch("lilbee.wiki.lazy.get_services", return_value=services),
+            pytest.raises(RuntimeError, match=r"The chat model is not running\."),
+        ):
+            generate_stub_page("ford", store, cfg)
 
     @pytest.mark.parametrize(
         ("kind", "subdir"),
