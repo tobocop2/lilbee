@@ -59,7 +59,9 @@ _REASONING_BODY = _sse(
 
 def test_the_abortable_chat_inlines_the_reasoning_of_a_chat_client() -> None:
     """The abortable site reads the profile's reasoning field and the client's inline flag."""
-    client = _build(lambda request: httpx.Response(200, text=_REASONING_BODY), inline_reasoning=True)
+    client = _build(
+        lambda request: httpx.Response(200, text=_REASONING_BODY), inline_reasoning=True
+    )
     assert client.chat_abortable(_MESSAGES) == "<think>hmm </think>4"
 
 
@@ -132,7 +134,9 @@ def _fake_client() -> MagicMock:
 
 
 @pytest.mark.parametrize(("timeout", "deadline_s"), [(0.5, 0.5), (1.0, 1.0)])
-def test_a_vision_timeout_of_one_second_or_less_is_the_deadline(timeout: float, deadline_s: float) -> None:
+def test_a_vision_timeout_of_one_second_or_less_is_the_deadline(
+    timeout: float, deadline_s: float
+) -> None:
     client = _fake_client()
     client.chat_abortable.return_value = "text"
     prov_mod._vision_call(client, _MESSAGES, timeout)
