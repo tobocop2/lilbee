@@ -25,9 +25,7 @@ class TestTuiStartupSwapShowsWarnings:
             status=ValidationResult.NOT_INSTALLED,
             reason="it isn't installed",
         )
-        embed_canon = CanonicalRef(
-            original="e/m", effective="e/m", status=ValidationResult.OK
-        )
+        embed_canon = CanonicalRef(original="e/m", effective="e/m", status=ValidationResult.OK)
         toasts: list[str] = []
         snapshot = cfg.chat_model
         try:
@@ -67,9 +65,7 @@ class TestTuiStartupSwapShowsWarnings:
         chat_canon = CanonicalRef(
             original="", effective="adopted/model", status=ValidationResult.UNKNOWN
         )
-        embed_canon = CanonicalRef(
-            original="e/m", effective="e/m", status=ValidationResult.OK
-        )
+        embed_canon = CanonicalRef(original="e/m", effective="e/m", status=ValidationResult.OK)
         toasts: list[str] = []
         with (
             mock.patch(
