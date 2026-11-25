@@ -492,12 +492,8 @@ class TaskBarController:
         a model page runs its cleanup now, while the executors still accept work.
         The drain and the joins spend from the one *budget_s*.
         """
-        # Every start is whole before this hold or sees the stop after it.
-        with self._lock:
-            self._stopped = True
+        self.begin_stop()
         deadline = time.monotonic() + budget_s
-        for task in [*self.queue.queued_tasks, *self.queue.active_tasks]:
-            self._cancel(task.task_id, CancelOrigin.EXIT)
         asyncio_loop.shutdown(budget_s)
         with self._lock:
             threads = [*self._workers.values(), self._detect_thread]
@@ -505,15 +501,23 @@ class TaskBarController:
             if thread is not None:
                 thread.join(max(0.0, deadline - time.monotonic()))
 
-    def has_unwinding_workers(self) -> bool:
-        """True while a worker that left the worker map has not yet returned.
+    def begin_stop(self) -> None:
+        """Refuse new tasks and cancel every row as an exit; harmless to call again."""
+        # Every start is whole before this hold or sees the stop after it.
+        with self._lock:
+            self._stopped = True
+        for task in [*self.queue.queued_tasks, *self.queue.active_tasks]:
+            self._cancel(task.task_id, CancelOrigin.EXIT)
 
-        Such a worker has ended its task, but it still makes one call into the app, so
-        the app must stay up until it returns.
+    def has_running_workers(self) -> bool:
+        """True while a started worker has not returned, including one past its task.
+
+        A worker that left the worker map has ended its task but still makes one call
+        into the app, so the app must stay up until it returns.
         """
         with self._lock:
             self._unwinding = {thread for thread in self._unwinding if thread.is_alive()}
-            return bool(self._unwinding)
+            return bool(self._unwinding) or any(w.is_alive() for w in self._workers.values())
 
     def _run_task_worker(self, task: Task) -> None:
         """Body of the daemon worker thread."""

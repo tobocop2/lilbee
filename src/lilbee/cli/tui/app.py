@@ -816,13 +816,15 @@ class LilbeeApp(App[None]):
             self._theme_index = 0
 
     async def on_unmount(self) -> None:
-        """Wait for task-bar workers that ended their task and still call into this app.
+        """Cancel the tasks, then wait for every task-bar worker that still calls into this app.
 
-        Such a worker is out of the worker map, so ``stop_all`` does not join it. The wait
-        pumps the loop, which runs the worker's last call and lets the thread return.
+        A worker past its task has left the worker map, so ``stop_all`` does not join it, and
+        a worker inside its task may be about to leave. The wait pumps the loop, which runs
+        each worker's calls and lets its thread return.
         """
+        self.task_bar.begin_stop()
         deadline = time.monotonic() + _UNWIND_WAIT_S
-        while self.task_bar.has_unwinding_workers() and time.monotonic() < deadline:
+        while self.task_bar.has_running_workers() and time.monotonic() < deadline:
             await asyncio.sleep(_UNWIND_POLL_S)
 
     async def action_quit(self) -> None:
