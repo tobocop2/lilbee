@@ -328,6 +328,8 @@ def test_run_interruptible_runs_on_a_thread_that_blocks_sigint() -> None:
     before = _wakeup_fd()
     thread, mask, loop = asyncio_loop.run_interruptible(where(), flag)
     assert thread is not threading.main_thread()
+    # The run's thread has ended when the run returns, so no scope counts it as left behind.
+    assert not thread.is_alive()
     assert signal.SIGINT in mask
     assert signal.SIGINT not in signal.pthread_sigmask(signal.SIG_BLOCK, set())
     assert loop.is_closed()
