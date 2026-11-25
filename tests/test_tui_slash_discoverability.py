@@ -1529,9 +1529,9 @@ class TestModelCompletionsOffTheLoopAsync:
                 assert await pump_until(pilot, lambda: notify.call_count == 1)
                 # Each key press lists again, and the same session stays quiet.
                 for text in ("/model q", "/model qw", "/model qwe"):
-                    listed = len(calls)
+                    before = len(calls)
                     inp.value = text
-                    assert await pump_until(pilot, lambda: len(calls) > listed)
+                    assert await pump_until(pilot, lambda n=before: len(calls) > n)
                 for _ in range(5):
                     await pilot.pause()
                 assert notify.call_count == 1
