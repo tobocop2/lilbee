@@ -723,7 +723,7 @@ def test_a_plain_bad_request_on_the_first_replica_does_not_reach_the_sibling(pat
     _, clients = _two_replicas(CHAT_ON_NPU, CHAT_ON_NPU)
     pool = provider_mod._LivePool(threading.RLock(), lambda: list(clients), lambda: None)
     called: list[LlamaServerClient] = []
-    error = ProviderError("bad body", provider="p", kind=ProviderErrorKind.BAD_REQUEST)
+    error = ProviderError("bad body", kind=ProviderErrorKind.BAD_REQUEST)
 
     def call(client: LlamaServerClient) -> NoReturn:
         called.append(client)
