@@ -827,6 +827,54 @@ def _check_markup_parsers(paths: Iterable[Path]) -> Iterator[str]:
             )
 
 
+LIVE_DISPLAY_DOTTED = frozenset(
+    {"rich.progress", "rich.progress.Progress", "rich.live", "rich.status"}
+)
+
+
+def _is_live_display(dotted: str) -> bool:
+    """True for a rich module or class that builds a live display."""
+    return dotted in LIVE_DISPLAY_DOTTED or dotted.startswith(("rich.live.", "rich.status."))
+
+
+def _live_display_hits(path: Path) -> Iterator[tuple[int, str]]:
+    """Yield ``(line, reason)`` for each way *path* gets at a Rich live display."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return
+    bindings = _import_bindings(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            targets = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            targets = [f"{node.module}.{alias.name}" for alias in node.names]
+        elif isinstance(node, ast.Attribute):
+            dotted = _dotted_name(node, bindings)
+            targets = [dotted] if dotted else []
+        else:
+            continue
+        for target in targets:
+            if _is_live_display(target):
+                yield node.lineno, f"gets at {target}"
+
+
+def _check_live_displays(paths: Iterable[Path]) -> Iterator[str]:
+    """Yield findings for a live display built outside the console module.
+
+    Columns stay importable from rich.progress. The display itself comes from
+    live_progress (stderr) or stdout_progress, which fix the stream redirects.
+    """
+    for path in paths:
+        if path == PLAIN_CONSOLE_MODULE:
+            continue
+        for lineno, reason in _live_display_hits(path):
+            yield (
+                f"{path}:{lineno}: {reason}, a live display (build it with "
+                "lilbee.runtime.console.live_progress or stdout_progress)"
+            )
+
+
 def main() -> int:
     src_files = list(_iter_python_files(SRC_DIR))
     test_files = list(_iter_python_files(TESTS_DIR))
@@ -837,6 +885,7 @@ def main() -> int:
     findings.extend(_check_historical_narrative(src_files))
     findings.extend(_check_stale_single_file_paths(src_files))
     findings.extend(_check_markup_parsers(src_files))
+    findings.extend(_check_live_displays(src_files))
 
     base = _smell_base_ref()
     if base is not None:
