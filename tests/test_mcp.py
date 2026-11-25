@@ -746,7 +746,9 @@ class TestReset:
         assert "Nothing was changed." in result["error"]
         assert (cfg.documents_dir / "doc.txt").read_text(encoding="utf-8") == "content"
 
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root writes a read-only file")
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes a read-only file"
+    )
     def test_reset_with_a_read_only_config_returns_the_write_refusal_and_deletes_nothing(self):
         (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
         path = cfg.data_root / "config.toml"
