@@ -74,14 +74,15 @@ def test_mcp_admits_the_current_major_and_stops_below_the_next() -> None:
     assert not req.specifier.contains("3.0.0b1", prereleases=True)
 
 
-def test_typer_floor_is_the_first_release_that_builds_the_cli() -> None:
-    # The option annotations (Path | None, secondary flags on bool options) fail
-    # at command build time on 0.12.x: "Type not yet supported" up to 0.12.3,
-    # "Secondary flag is not valid for non-boolean flag" at 0.12.5. 0.13.0 builds.
+def test_typer_floor_is_the_first_release_that_installs_and_runs_with_lilbee() -> None:
+    # Resolved together with lilbee's other dependencies: huggingface-hub needs
+    # click>=8.4.2, and Typer 0.15.4 and older cap click below 8.2, so they do not
+    # install. 0.15.3 installs but `lilbee --help` fails (Parameter.make_metavar).
+    # 0.12.x fails to build the options (Path | None). 0.16.0 resolves and runs.
     req = _base_requirement("typer")
-    for version in ("0.12.0", "0.12.3", "0.12.5"):
+    for version in ("0.12.0", "0.12.5", "0.13.0", "0.15.3", "0.15.4"):
         assert not req.specifier.contains(version), version
-    assert req.specifier.contains("0.13.0")
+    assert req.specifier.contains("0.16.0")
 
 
 def test_qa_matrix_excludes_vulnerable_anyio() -> None:
