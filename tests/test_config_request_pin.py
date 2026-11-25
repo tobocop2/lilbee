@@ -121,6 +121,7 @@ def test_a_task_a_request_starts_keeps_the_request_config():
 
 async def test_a_stdio_tool_reads_one_config_while_another_check_takes_a_change(monkeypatch):
     _write_from_another_process("top_k", 21, tick=1)
+    cfg.top_k = 21
     server: LilbeeMCP = build_mcp_server()
     server.follow_config_file()
     follower = server._config_follower
