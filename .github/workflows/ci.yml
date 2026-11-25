@@ -307,7 +307,7 @@ jobs:
           if [ "${{ matrix.python-version }}" = "3.11" ]; then
             make test-ci-forked
           elif [ "${{ runner.os }}" = "Windows" ]; then
-            make test-ci COV_FLAGS="--cov-config=.coveragerc-windows"
+            make test-ci COV_FLAGS="--cov-config=.coveragerc-windows" BRANCH_CHECK=true
           elif [ "${{ runner.os }}" = "macOS" ]; then
             make test-ci-split
           else
