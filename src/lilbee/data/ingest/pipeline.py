@@ -21,6 +21,7 @@ from collections.abc import (
     Sequence,
 )
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from itertools import count
 from pathlib import Path
@@ -1023,6 +1024,12 @@ _ENGINE_SILENT = "the model engine failed without a message"
 _RETRY_REASON_LIMIT = 200
 # The text a rebuild embeds once to prove the embedder answers before it drops an index.
 _REBUILD_PROBE = "lilbee"
+# The chunk settings in force when the running sync started. Each sync sets it before
+# it chunks, and the ingest threads copy it, so the index records the settings the
+# sync cut with, not the ones a settings change made current before the write.
+_SYNC_CHUNK_SETTINGS: ContextVar[Mapping[str, Any] | None] = ContextVar(
+    "lilbee_sync_chunk_settings", default=None
+)
 
 
 def _log_excluded(excluded: dict[str, ExclusionReason]) -> None:
@@ -1303,7 +1310,7 @@ def _forget_refused(
 def _finish_in_place_rebuild(store: Store, rules: IgnoreRules, any_failed: bool) -> list[str]:
     """Drop the sources of vanished files; stamp the store when every file was rebuilt."""
     if not any_failed:
-        store.restamp_meta()
+        store.restamp_meta(_SYNC_CHUNK_SETTINGS.get())
     return _forget_vanished(rules)
 
 
@@ -1678,7 +1685,10 @@ async def sync(
     *started_by* names what started this sync, for the message a sync that waits for
     it shows; ``_marks_sync_running`` reads it.
     """
+    from lilbee.app.settings import chunk_drift, reindex_values
+
     config = active_config()
+    _SYNC_CHUNK_SETTINGS.set(reindex_values(config))
     _store = get_services().store
 
     in_place = force_rebuild and (
@@ -1700,7 +1710,8 @@ async def sync(
             on_progress=on_progress,
             cancel=cancel,
         )
-        return merged.model_copy(update={"index_mismatch": index_mismatch})
+        drift = await to_ingest_thread(chunk_drift, config)
+        return merged.model_copy(update={"index_mismatch": index_mismatch, "chunk_drift": drift})
 
     rules = await to_ingest_thread(IgnoreRules.for_corpus, corpus_root)
     # The disk walk and the index reads and drops before planning block, so they run
@@ -1823,6 +1834,7 @@ async def sync(
         truncated=cut_inputs_in_scope(),
         unreadable_folders=list(scan.unreadable),
         index_mismatch=index_mismatch,
+        chunk_drift=await to_ingest_thread(chunk_drift, config),
     )
     on_progress(
         EventType.SYNC_DONE,
@@ -2645,7 +2657,8 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
         gone.add(name)
         return False
 
-    _retry_after_lock_timeout(lambda: store.write_chunks_batch(items, present))
+    settings = _SYNC_CHUNK_SETTINGS.get()
+    _retry_after_lock_timeout(lambda: store.write_chunks_batch(items, present, chunk_settings=settings))
     if gone:
         log.info("Not indexed, the file is gone: %s", ", ".join(sorted(gone)))
     kept = [r for r in buffer if r.name not in gone]

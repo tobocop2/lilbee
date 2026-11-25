@@ -5513,10 +5513,10 @@ class TestOpenTimeMigration:
 
         assert Store(test_config).get_meta()["schema_version"] == 3
 
-    def test_the_stamped_schema_version_is_four(self):
+    def test_the_stamped_schema_version_is_five(self):
         from lilbee.data.store.types import META_SCHEMA_VERSION
 
-        assert META_SCHEMA_VERSION == 4
+        assert META_SCHEMA_VERSION == 5
 
 
 def _shared_key_tables(config):

@@ -28,7 +28,11 @@ def ingesting_services() -> tuple[Services, dict[str, dict[str, Any]]]:
             "source_type": source_type,
         }
 
-    def _write_batch(items: list[Any], present: Callable[[str], bool] | None = None) -> int:
+    def _write_batch(
+        items: list[Any],
+        present: Callable[[str], bool] | None = None,
+        chunk_settings: Any = None,
+    ) -> int:
         items = [item for item in items if present is None or present(item.source)]
         for item in items:
             _upsert(item.source, item.file_hash, len(item.records))

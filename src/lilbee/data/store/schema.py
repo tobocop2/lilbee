@@ -5,6 +5,8 @@ from __future__ import annotations
 import pyarrow as pa
 
 CANARY_VECTORS_COLUMN = "canary_vectors"
+# JSON of the settings the library's chunks were cut with.
+CHUNK_SETTINGS_COLUMN = "chunk_settings"
 
 
 def _meta_schema() -> pa.Schema:
@@ -17,6 +19,7 @@ def _meta_schema() -> pa.Schema:
             pa.field(CANARY_VECTORS_COLUMN, pa.list_(pa.list_(pa.float32()))),
             pa.field("canary_trigger", pa.utf8()),
             pa.field("canary_verified", pa.bool_()),
+            pa.field(CHUNK_SETTINGS_COLUMN, pa.utf8()),
         ]
     )
 

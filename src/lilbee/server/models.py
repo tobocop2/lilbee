@@ -249,6 +249,8 @@ class StatusIndexInfo(BaseModel):
     embedding_dim: int
     engine_mismatch: str | None = None
     """Why search and ingest stop when the embedding engine gives other vectors."""
+    chunk_drift: list[str] = []
+    """The settings now in force that differ from the ones the chunks were cut with."""
 
 
 class ServingInfo(BaseModel):
@@ -652,6 +654,7 @@ class SyncSummary(BaseModel):
     truncated: int = 0
     unreadable_folders: list[str] = []
     index_mismatch: IndexMismatch | None = None
+    chunk_drift: list[str] = []
 
 
 class AddSummary(BaseModel):

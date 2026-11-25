@@ -19,6 +19,7 @@ from lilbee.cli import theme
 from lilbee.core.config import cfg
 from lilbee.core.health_warnings import HealthWarning
 from lilbee.core.text import strip_control_characters
+from lilbee.data.types import rebuild_advice
 from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.lock import LibraryUnlockableError
@@ -144,6 +145,8 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
         )
         if status.index.engine_mismatch is not None:
             yield _label_line("Index mismatch", status.index.engine_mismatch)
+        if status.index.chunk_drift:
+            yield _label_line("Rebuild advised", rebuild_advice(status.index.chunk_drift))
     vision = status.config.vision_model or "(disabled)"
     reranker = status.config.reranker_model or "(disabled)"
     yield _label_line("Vision", vision)

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.app.services import set_services
+from lilbee.app.settings import reindex_values
 from lilbee.core.config import cfg
 from lilbee.data.ingest import sync
 from lilbee.data.store import Store
@@ -182,7 +183,7 @@ async def test_clean_rebuild_stamps_the_store_with_the_current_schema():
     stamped = MagicMock()
     store.restamp_meta = stamped
     await sync(force_rebuild=True, quiet=True)
-    stamped.assert_called_once_with()
+    stamped.assert_called_once_with(reindex_values())
 
 
 async def test_rebuild_with_a_failed_file_leaves_the_schema_stamp_alone():

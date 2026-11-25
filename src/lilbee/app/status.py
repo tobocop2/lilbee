@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from lilbee.app.services import get_services
-from lilbee.app.settings import scanned_pages_state
+from lilbee.app.settings import chunk_drift, scanned_pages_state
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType, OcrMode
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, default_data_dir
@@ -116,6 +116,8 @@ class IndexStatus(BaseModel):
     embedding_dim: int
     engine_mismatch: str | None = None
     """Why search and ingest stop when the embedding engine gives other vectors; None otherwise."""
+    chunk_drift: list[str] = []
+    """The settings now in force that differ from the ones the chunks were cut with."""
 
 
 class SourceInfo(BaseModel):
@@ -201,6 +203,7 @@ def _index_status() -> IndexStatus | None:
         embedding_model=meta["embedding_model"],
         embedding_dim=meta["embedding_dim"],
         engine_mismatch=str(mismatch) if mismatch is not None else None,
+        chunk_drift=chunk_drift(),
     )
 
 
