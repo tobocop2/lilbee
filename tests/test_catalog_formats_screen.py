@@ -239,7 +239,7 @@ async def test_install_of_a_one_format_row_asks_nothing(monkeypatch: pytest.Monk
         monkeypatch.setattr(
             "lilbee.cli.tui.screens.catalog.resolve_filename", lambda *_a, **_kw: "x.gguf"
         )
-        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.download_bytes", lambda *_a: 1)
+        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.remote_shards", lambda *_a: [])
 
         screen._install_model(model)
         assert await wait_until(pilot, lambda: bool(started))

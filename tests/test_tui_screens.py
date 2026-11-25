@@ -4324,7 +4324,7 @@ async def test_catalog_install_new_model():
             with (
                 # Otherwise this asserts on the runner's free space.
                 patch(
-                    "lilbee.cli.tui.screens.catalog.disk_shortfall",
+                    "lilbee.cli.tui.screens.catalog.reclaimed_shortfall",
                     return_value=None,
                 ),
                 patch.object(screen, "_enqueue_download") as mock_enqueue,
@@ -13566,7 +13566,7 @@ async def test_catalog_install_model_resolve_exception():
                 ),
                 # Otherwise this asserts on the runner's free space.
                 patch(
-                    "lilbee.cli.tui.screens.catalog.disk_shortfall",
+                    "lilbee.cli.tui.screens.catalog.reclaimed_shortfall",
                     return_value=None,
                 ),
                 patch.object(screen, "_enqueue_download") as mock_dl,
