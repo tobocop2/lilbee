@@ -368,35 +368,43 @@ class _SlotOwed(NamedTuple):
     states: dict[SwapGroup, SwapState]
 
 
-def _origin(*, held: frozenset[str], followed: frozenset[str] | None) -> PlanOrigin:
-    """This config root and the fleet reload keys config.toml sets, as a state records them.
+def _reload_view(values: Mapping[str, object], held: frozenset[str]) -> str:
+    """The fleet reload keys in *values*, a key in *held* at the value this process runs on.
 
     Only the keys whose change makes the fleet owner rebuild count, so a write of any
-    other key never makes a fleet look older than the file. A key in *held* that this
-    process runs on another value of (a flag, or a start value it holds) records that
-    value. A key the process takes from the file records the file's value, the one it
-    runs on, in the file's spelling. A torn or unreadable file gives no view.
+    other key never makes a fleet look older than the file.
     """
-    _stamp, values = read_persisted(cfg.data_root)
-    view = None
-    if values is not None:
-        picked = {
-            key: getattr(cfg, key) if key in held and value != getattr(cfg, key) else value
-            for key, value in values.items()
-            if key in FLEET_RELOAD_KEYS
-        }
-        view = json.dumps(picked, sort_keys=True, default=str)
-    return PlanOrigin(str(cfg.data_root), view, followed)
+    picked = {
+        key: getattr(cfg, key) if key in held and value != getattr(cfg, key) else value
+        for key, value in values.items()
+        if key in FLEET_RELOAD_KEYS
+    }
+    return json.dumps(picked, sort_keys=True, default=str)
 
 
 def _plan_origin(followed: frozenset[str]) -> PlanOrigin:
-    """The origin a fleet this process plans now is stamped with; *followed* is its builder's."""
-    return _origin(held=FLEET_RELOAD_KEYS - followed, followed=followed)
+    """The origin a fleet this process plans now is stamped with; *followed* is its builder's.
+
+    The file view is config.toml's, as every version records it. The planned view holds
+    the value this process runs on for each reload key it does not follow (a flag, or
+    a start value it holds). A torn or unreadable file gives no view.
+    """
+    _stamp, values = read_persisted(cfg.data_root)
+    if values is None:
+        return PlanOrigin(str(cfg.data_root), None)
+    return PlanOrigin(
+        str(cfg.data_root),
+        _reload_view(values, frozenset()),
+        _reload_view(values, FLEET_RELOAD_KEYS - followed),
+        followed,
+    )
 
 
 def _file_origin() -> PlanOrigin:
     """The origin a fleet planned on config.toml as it is now would carry."""
-    return _origin(held=frozenset(), followed=None)
+    _stamp, values = read_persisted(cfg.data_root)
+    view = None if values is None else _reload_view(values, frozenset())
+    return PlanOrigin(str(cfg.data_root), view)
 
 
 def _owner_owes_the_file(states: dict[SwapGroup, SwapState]) -> bool:
@@ -409,33 +417,44 @@ def _owner_owes_the_file(states: dict[SwapGroup, SwapState]) -> bool:
     now = _file_origin()
     if now.fleet_view is None:
         return False
-    file_values = json.loads(now.fleet_view)
     return any(
         state.origin is not None
         and state.origin.config_root == now.config_root
         and state.origin.fleet_view is not None
-        and _differs_on_a_followed_key(state.origin, file_values)
+        and _differs_on_a_followed_key(state.origin, now.fleet_view)
         for state in states.values()
     )
 
 
-def _differs_on_a_followed_key(origin: PlanOrigin, file_values: Mapping[str, object]) -> bool:
-    """Whether *origin*'s planned values differ from *file_values* on a key its builder takes.
+def _differs_on_a_followed_key(origin: PlanOrigin, file_view: str) -> bool:
+    """Whether *origin* differs from *file_view* on a key its builder takes.
 
-    A key set on one side only differs; a key set on neither does not.
+    A stamp with a planned view and a followed list compares those keys, and a key set on
+    one side only differs. A stamp of an older version has neither: it compares its whole
+    file view, as that version does.
     """
-    planned = json.loads(origin.fleet_view or "{}")
-    followed = FLEET_RELOAD_KEYS if origin.followed is None else origin.followed
+    if origin.planned_view is None or origin.followed is None:
+        return origin.fleet_view != file_view
+    planned = json.loads(origin.planned_view)
+    file_values = json.loads(file_view)
     return any(
         (key in planned, planned.get(key)) != (key in file_values, file_values.get(key))
-        for key in followed
+        for key in origin.followed
     )
 
 
 def _planned_on_the_file_now(states: dict[SwapGroup, SwapState]) -> bool:
-    """True when a fleet of this config root was planned on config.toml as it is now."""
+    """True when a fleet of this config root was planned on config.toml as it is now.
+
+    A stamp of an older version has no planned view, so its file view stands in for it.
+    """
     now = _file_origin()
-    return now.fleet_view is not None and any(state.origin == now for state in states.values())
+    return now.fleet_view is not None and any(
+        state.origin is not None
+        and state.origin.config_root == now.config_root
+        and (state.origin.planned_view or state.origin.fleet_view) == now.fleet_view
+        for state in states.values()
+    )
 
 
 def _held_write_message(writes: Mapping[str, object]) -> str:
