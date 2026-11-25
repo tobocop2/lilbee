@@ -2472,7 +2472,7 @@ class TestTemporalFilter:
         from datetime import UTC, datetime, timedelta
 
         recent = (datetime.now(UTC) - timedelta(days=5)).isoformat()
-        mock_svc.store.source_ingested_at_map.return_value = {
+        mock_svc.store.ingested_at_of.return_value = {
             "old.md": "2020-01-01T00:00:00+00:00",
             "new.md": recent,
         }
@@ -2486,7 +2486,7 @@ class TestTemporalFilter:
 
     def test_result_without_ingested_at_passes_through(self, mock_svc):
         """Sources absent from the ingested_at map are kept (no date info = don't filter)."""
-        mock_svc.store.source_ingested_at_map.return_value = {}
+        mock_svc.store.ingested_at_of.return_value = {}
         results = [_make_result(source="mystery.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "recent changes")
         assert [r.source for r in filtered] == ["mystery.md"]
@@ -2539,23 +2539,19 @@ class TestTemporalFilter:
             cfg.temporal_filtering = old
 
     def test_keeps_results_without_dates(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [{"filename": "a.md", "ingested_at": ""}]
+        mock_svc.store.ingested_at_of.return_value = {"a.md": ""}
         results = [_make_result(source="a.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "today's notes")
         assert len(filtered) == 1
 
     def test_falls_back_when_nothing_matches(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {"filename": "old.md", "ingested_at": "2020-01-01T00:00:00+00:00"},
-        ]
+        mock_svc.store.ingested_at_of.return_value = {"old.md": "2020-01-01T00:00:00+00:00"}
         results = [_make_result(source="old.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "today's notes")
         assert len(filtered) == 1
 
     def test_handles_invalid_date(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {"filename": "a.md", "ingested_at": "not-a-date"}
-        ]
+        mock_svc.store.ingested_at_of.return_value = {"a.md": "not-a-date"}
         results = [_make_result(source="a.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "recent")
         assert len(filtered) == 1
