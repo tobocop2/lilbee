@@ -129,6 +129,20 @@ def _stub_build_summary(paths: list[str], count: int) -> dict:
     return {"paths": paths, "entities": 0, "count": count, "stats": BuildStats().as_dict()}
 
 
+def _partial_build_summary(path: str) -> dict:
+    """A run that wrote *path* and lost two pages to a failed model call."""
+    stats = BuildStats()
+    stats.record_published(path, 1)
+    stats.record_model_call("The chat model is not running.")
+    stats.record_failed_pages(2)
+    return {"paths": [path], "entities": 3, "count": 1, "stats": stats.as_dict()}
+
+
+_PARTIAL_BUILD_ERROR = (
+    "Error: 2 of 3 pages could not be written.\nLast error: The chat model is not running."
+)
+
+
 def _install_real_store() -> None:
     """Swap the mock store for a real one, so held-out records are real rows."""
     from lilbee.data.store import Store
@@ -6020,6 +6034,54 @@ class TestWikiBuild:
         result = runner.invoke(app, ["--json", "wiki", "build"])
         assert result.exit_code == 1
         assert json.loads(result.output) == {"error": str(_real_wiki_build_error())}
+
+    @pytest.mark.parametrize("command", ["build", "update"])
+    def test_a_build_that_lost_some_pages_exits_1_with_the_count(
+        self, mock_svc, isolated_env, monkeypatch, command
+    ):
+        monkeypatch.setattr(
+            "lilbee.wiki.run_full_build", lambda *a, **kw: _partial_build_summary("ford.md")
+        )
+        result = runner.invoke(app, ["wiki", command])
+        assert result.exit_code == 1
+        assert "ford.md" in result.output
+        assert result.output.rstrip().endswith(_PARTIAL_BUILD_ERROR)
+
+    def test_a_build_that_lost_some_pages_gives_the_count_as_json(
+        self, mock_svc, isolated_env, monkeypatch
+    ):
+        cfg.json_mode = True
+        monkeypatch.setattr(
+            "lilbee.wiki.run_full_build", lambda *a, **kw: _partial_build_summary("ford.md")
+        )
+        result = runner.invoke(app, ["--json", "wiki", "build"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["paths"] == ["ford.md"]
+        assert data["stats"]["pages_failed"] == 2
+        assert data["stats"]["last_model_failure"] == "The chat model is not running"
+
+    def test_a_synthesize_that_lost_some_pages_exits_1_with_the_count(
+        self, mock_svc, isolated_env, monkeypatch
+    ):
+        summary = _partial_build_summary("typing.md")
+        del summary["entities"]
+        monkeypatch.setattr("lilbee.wiki.run_full_synthesize", lambda *a, **kw: summary)
+        result = runner.invoke(app, ["wiki", "synthesize"])
+        assert result.exit_code == 1
+        assert "typing.md" in result.output
+        assert result.output.rstrip().endswith(_PARTIAL_BUILD_ERROR)
+
+    def test_a_synthesize_that_lost_some_pages_gives_the_count_as_json(
+        self, mock_svc, isolated_env, monkeypatch
+    ):
+        cfg.json_mode = True
+        summary = _partial_build_summary("typing.md")
+        del summary["entities"]
+        monkeypatch.setattr("lilbee.wiki.run_full_synthesize", lambda *a, **kw: summary)
+        result = runner.invoke(app, ["--json", "wiki", "synthesize"])
+        assert result.exit_code == 1
+        assert json.loads(result.output)["stats"]["pages_failed"] == 2
 
     def test_prints_generated_paths(self, mock_svc, isolated_env, monkeypatch):
         out = isolated_env / "wiki" / "concepts" / "braking.md"

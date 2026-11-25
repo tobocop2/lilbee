@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from lilbee.wiki.stats import BuildStats
+from lilbee.wiki.stats import BuildStats, failed_pages_message
 
 
 class TestBuildStatsCounters:
@@ -15,6 +15,8 @@ class TestBuildStatsCounters:
             "pages_published": 0,
             "pages_drafted": 0,
             "pending_markers": 0,
+            "pages_failed": 0,
+            "last_model_failure": "",
             "citations_rendered": 0,
             "citations_dropped_unverified": 0,
             "verified_by_page": {},
@@ -82,11 +84,15 @@ class TestBuildStatsRendering:
         stats.record_drafted()
         stats.record_pending_marker()
         stats.record_citations(rendered=2, dropped=2)
+        stats.record_model_call("engine down")
+        stats.record_failed_pages(3)
         assert stats.as_dict() == {
             "pages_generated": 2,
             "pages_published": 1,
             "pages_drafted": 1,
             "pending_markers": 1,
+            "pages_failed": 3,
+            "last_model_failure": "engine down",
             "citations_rendered": 2,
             "citations_dropped_unverified": 2,
             "verified_by_page": {"wiki/entities/ford.md": 2},
@@ -101,6 +107,31 @@ class TestBuildStatsRendering:
         stats.record_pending_marker()
         stats.record_citations(rendered=2, dropped=1)
         assert stats.summary_line() == "1 published, 1 drafted, 1 markers, 2/3 citations verified"
+
+
+class TestFailedPagesMessage:
+    def test_a_run_that_lost_no_page_has_no_message(self):
+        stats = BuildStats()
+        stats.record_published("wiki/entities/ford.md", 1)
+        assert failed_pages_message(stats.as_dict()) is None
+
+    def test_a_partial_run_names_the_count_of_all_pages_and_the_cause(self):
+        stats = BuildStats()
+        stats.record_published("wiki/entities/ford.md", 1)
+        stats.record_drafted()
+        stats.record_model_call("engine down.")
+        stats.record_failed_pages(3)
+        assert failed_pages_message(stats.as_dict()) == (
+            "3 of 5 pages could not be written.\nLast error: engine down."
+        )
+
+    def test_a_run_that_lost_every_page_reads_n_of_n(self):
+        stats = BuildStats()
+        stats.record_model_call("engine down")
+        stats.record_failed_pages(2)
+        assert failed_pages_message(stats.as_dict()) == (
+            "2 of 2 pages could not be written.\nLast error: engine down."
+        )
 
 
 class TestBuildStatsEnsure:

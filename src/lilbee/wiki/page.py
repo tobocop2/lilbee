@@ -448,6 +448,7 @@ def generate_page(
     _emit("generating", source=label)
     wiki_text = request_wiki_text(label, prompt, provider, config, stats)
     if wiki_text is None:
+        stats.record_failed_pages(1)
         _emit("failed", error=stats.last_model_failure)
         return None
 
