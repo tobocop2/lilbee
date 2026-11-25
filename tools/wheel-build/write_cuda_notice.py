@@ -22,7 +22,8 @@ FILE_NAME = re.compile(r"\b(lib[\w.+-]*?\.(?:so|a))\b")
 NVIDIA_LIB = re.compile(
     r"cud|cublas|curand|cufft|cusparse|cusolver|culibos|nvrtc|nvptx|nvJit|nvvm|nccl|npp"
 )
-SHIPPED_LINE = re.compile(r"[0-9a-f]{64} \*?(lib[\w+-]+)\.so(?:\.\d+)*")
+# A sha256sum line: the digest, a space, then '*' in binary mode (-b) or a second space.
+SHIPPED_LINE = re.compile(r"[0-9a-f]{64} [ *](lib[\w+-]+)\.so(?:\.\d+)*")
 DRIVER_LIBS = frozenset({"cuda"})
 
 

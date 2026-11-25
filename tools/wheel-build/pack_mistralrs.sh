@@ -89,7 +89,7 @@ is_cuda() {
 add_cuda_notices() {
   local lib="${WHEEL_TREE}/lilbee_engine_mistral_rs/bin/lib"
   is_cuda || return 0
-  (cd "${lib}" && sha256sum libcudart.so.12 libcublas.so.12 libcublasLt.so.12 libcurand.so.10) > cuda-libs.sha256
+  (cd "${lib}" && sha256sum -b libcudart.so.12 libcublas.so.12 libcublasLt.so.12 libcurand.so.10) > cuda-libs.sha256
   python tools/wheel-build/write_cuda_notice.py "${WHEEL_TREE}/NOTICE-NVIDIA-CUDA" "${CUDA_VERSION}" cuda-libs.sha256
   curl -fsSL --retry 3 "https://raw.githubusercontent.com/NVIDIA/nccl/${NCCL_TAG}/LICENSE.txt" > "${WHEEL_TREE}/LICENSE-NCCL"
   ls -l "${lib}"
