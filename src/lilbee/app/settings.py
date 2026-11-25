@@ -226,17 +226,19 @@ def _setting_help(key: str, definition: SettingDef | None) -> str:
 
 def setting_sources() -> dict[str, SettingSource]:
     """The source of every Config field's effective value, from one read of config.toml."""
-    return _sources(read_layers(cfg.data_root))
+    return _sources(read_layers(cfg.data_root), cfg)
 
 
-def _sources(layers: SettingLayers) -> dict[str, SettingSource]:
-    """The source of every Config field's effective value under *layers*."""
-    return {key: _true_source(key, entry) for key, entry in resolve_all(layers).items()}
+def _sources(layers: SettingLayers, live: Config) -> dict[str, SettingSource]:
+    """The source of every Config field's effective value under *layers* and the *live* config."""
+    return {
+        key: _true_source(entry, getattr(live, key)) for key, entry in resolve_all(layers).items()
+    }
 
 
-def _true_source(key: str, entry: Resolved) -> SettingSource:
+def _true_source(entry: Resolved, live_value: Any) -> SettingSource:
     """The source of *entry*; a live value that differs from the built-in is not a built-in."""
-    if entry.source is SettingSource.BUILT_IN and getattr(cfg, key) != entry.value:
+    if entry.source is SettingSource.BUILT_IN and live_value != entry.value:
         return SettingSource.AUTO
     return entry.source
 
@@ -293,7 +295,7 @@ def _parse_group(group: SettingGroup | str) -> SettingGroup:
 def list_settings(group: SettingGroup | str | None = None) -> list[SettingInfo]:
     """List every writable non-secret setting, optionally filtered by group (case-insensitive)."""
     layers = read_layers(cfg.data_root)
-    sources = _sources(layers)
+    sources = _sources(layers, cfg)
     infos = [_setting_info(key, layers, sources[key]) for key in _public_writable_keys()]
     if group is not None:
         wanted = _parse_group(group)
@@ -308,7 +310,7 @@ def get_setting(key: str) -> SettingInfo:
     if _is_write_only(key):
         raise ValueError(f"Setting '{key}' is write-only and cannot be read back")
     layers = read_layers(cfg.data_root)
-    return _setting_info(key, layers, _sources(layers)[key])
+    return _setting_info(key, layers, _sources(layers, cfg)[key])
 
 
 def _is_settable(key: str) -> bool:
