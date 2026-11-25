@@ -550,6 +550,76 @@ class TestMemoryEstimates:
         assert target == 4096
 
 
+class TestEveryEstimateNamesItsRole:
+    """Each planner site that sizes an instance says which role the instance serves."""
+
+    @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK])
+    def test_the_slot_fit_names_the_role(
+        self, spy: SpyEngine, model_file: Path, role: WorkerRole
+    ) -> None:
+        planning._fit_slots(
+            4, role, model_file, 100, mmproj_path=None, unified=False, budget=1 << 40, engine=spy
+        )
+        assert {request.role for request in spy.sized} == {role}
+
+    def test_the_chat_host_estimate_names_chat(self, spy: SpyEngine, model_file: Path) -> None:
+        planning._chat_host_estimate(model_file, 100, 2, spy)
+        assert [request.role for request in spy.sized] == [WorkerRole.CHAT]
+
+    @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK])
+    def test_the_placement_estimate_names_the_role(self, spy: SpyEngine, role: WorkerRole) -> None:
+        planning._estimate_role(role, "ref", engine=spy, slots=1)
+        assert spy.sized[-1].role is role
+
+    @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK])
+    def test_the_split_peak_names_the_role(self, spy: SpyEngine, role: WorkerRole) -> None:
+        planning._peak_estimator({role: "ref"}, engines_for_all_roles(spy))(role, (1, 1))
+        assert spy.sized[-1].role is role
+
+    @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK])
+    def test_the_declared_reserve_of_a_launch_names_the_role(
+        self, spy: SpyEngine, role: WorkerRole
+    ) -> None:
+        device = {SPY_DEVICE.index: SPY_DEVICE}
+        plan = InstancePlan(role=role, devices=(SPY_DEVICE.index,))
+        planning._launch_for(plan, "ref", device, engine=spy)
+        assert spy.sized[-1].role is role
+
+    def test_the_single_context_fit_names_chat(self, spy: SpyEngine, model_file: Path) -> None:
+        fleet_ctx.fit_single_ctx(
+            model_file,
+            engine=spy,
+            meta=dict(SPY_META),
+            slots=1,
+            available_bytes=2048 * BYTES_PER_CTX,
+            gpu_layers=-1,
+            flash_attn=False,
+            kv_cache_type=cfg.kv_cache_type,
+            unified=False,
+            on_cpu=False,
+            ctx_ceiling=4096,
+            expert_offload=(),
+        )
+        assert {request.role for request in spy.sized} == {WorkerRole.CHAT}
+
+    def test_the_split_context_fit_names_chat(self, spy: SpyEngine, model_file: Path) -> None:
+        free = 1024 * BYTES_PER_CTX
+        fleet_ctx.fit_split_ctx(
+            model_file,
+            engine=spy,
+            meta=dict(SPY_META),
+            slots=1,
+            ratio=(1, 1),
+            per_device_free_bytes=[free, free],
+            gpu_layers=-1,
+            flash_attn=False,
+            kv_cache_type=cfg.kv_cache_type,
+            ctx_ceiling=4096,
+            expert_offload=(),
+        )
+        assert {request.role for request in spy.sized} == {WorkerRole.CHAT}
+
+
 class TestModelMeta:
     def test_expert_offload_follows_the_engine_metadata(
         self, spy: SpyEngine, model_file: Path
