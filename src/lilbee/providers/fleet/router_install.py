@@ -318,9 +318,6 @@ def router_on_first_use() -> Path:
     _refusals.raise_if_refused(key)
     try:
         return install_router()
-    except EngineInUseError:
-        # A running router holds the folder now and stops later: the next lookup asks again.
-        raise
     except ROUTER_REFUSALS as exc:
         _refusals.remember(key, exc)
         raise
