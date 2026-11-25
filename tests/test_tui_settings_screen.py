@@ -173,6 +173,30 @@ async def test_settings_model_picker_button_pushes_modal_after_worker():
         )
 
 
+async def test_settings_model_picker_reports_an_unreadable_registry():
+    """An unreadable registry opens no picker and says why, instead of listing nothing."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+
+    app = LazySettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen.query_one("#settings-tabs", TabbedContent).active = "settings-tab-models"
+        await _wait_for_pane_rows(app, pilot, "settings-tab-models")
+        with (
+            patch(
+                "lilbee.cli.tui.widgets.model_bar.classify_installed_models_full",
+                side_effect=OSError("manifests unreadable"),
+            ),
+            patch.object(app.screen, "notify") as notify,
+        ):
+            app.screen._discover_then_open_picker("chat_model", "chat")
+            assert await wait_until(pilot, lambda: notify.called, timeout=5.0)
+        assert "manifests unreadable" in notify.call_args.args[0]
+        assert notify.call_args.kwargs["severity"] == "error"
+        assert not isinstance(app.screen, ModelPickerModal)
+
+
 def test_settings_screen_has_expected_handlers_and_actions() -> None:
     """Structural regression test: SettingsScreen event handlers + action
     bindings must be class methods, not nested functions captured by a

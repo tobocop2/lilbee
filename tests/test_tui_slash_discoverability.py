@@ -1472,6 +1472,39 @@ class TestModelCompletionsOffTheLoopAsync:
                 assert overlay.options == ["mistral:7b"]
             assert listed.call_count == 2
 
+    async def test_an_unreadable_registry_is_reported_and_the_next_edit_lists_again(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        calls = [OSError("manifests unreadable"), list(self._MODELS)]
+
+        def _listing() -> list[str]:
+            outcome = calls.pop(0)
+            if isinstance(outcome, OSError):
+                raise outcome
+            return outcome
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp = screen.query_one("#chat-input")
+            with (
+                mock.patch("lilbee.modelhub.models.list_installed_models", side_effect=_listing),
+                mock.patch.object(screen, "notify") as notify,
+            ):
+                inp.value = "/model "
+                assert await pump_until(pilot, lambda: notify.called)
+                assert "manifests unreadable" in notify.call_args.args[0]
+                assert notify.call_args.kwargs["severity"] == "error"
+                assert screen._model_names is None
+                assert not screen._listing_models
+                inp.value = "/model q"
+                assert await pump_until(pilot, lambda: overlay.options == ["qwen3:8b"])
+
     @pytest.mark.parametrize("clear_handled_first", [True, False])
     async def test_a_listing_from_before_a_submit_does_not_offer_a_removed_model(
         self, _mock_resolve, _mock_services, clear_handled_first

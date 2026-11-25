@@ -785,9 +785,17 @@ class SettingsScreen(MountWhenAttached, Screen[None]):
         from lilbee.cli.tui.widgets.model_bar import classify_installed_models_full
 
         task = picker_scope_to_task(scope)
-        buckets = classify_installed_models_full()
+        try:
+            buckets = classify_installed_models_full()
+        except OSError as exc:
+            call_from_thread(self, self._registry_unreadable, exc)
+            return
         options = list(buckets.get(task, []))
         call_from_thread(self, self._push_model_picker, key, scope, options)
+
+    def _registry_unreadable(self, error: OSError) -> None:
+        """Say why no picker opens: an empty one would read as "nothing installed"."""
+        self.notify(msg.MODEL_REGISTRY_UNREADABLE.format(error=error), severity="error")
 
     def _push_model_picker(self, key: str, scope: PickerScope, options: list[ModelOption]) -> None:
         """Push ModelPickerModal once the worker has resolved options."""

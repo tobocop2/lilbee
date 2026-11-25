@@ -3224,10 +3224,22 @@ class ChatScreen(Screen[None]):
     @work(thread=True, group="model_completions", exit_on_error=False)
     def _list_models(self, session: int) -> None:
         """List the installed models off the event loop: the listing probes local servers."""
-        names = list_model_options()
+        try:
+            names = list_model_options()
+        except OSError as exc:
+            call_from_thread(self, self._models_unreadable, session, exc)
+            return
         if _get_worker().is_cancelled:
             return
         call_from_thread(self, self._models_listed, session, names)
+
+    def _models_unreadable(self, session: int, error: OSError) -> None:
+        """Report an unreadable registry and let the next keystroke list again."""
+        if session != self._model_session:
+            return
+        self._listing_models = False
+        self._model_request = ("", None)
+        self.notify(msg.MODEL_REGISTRY_UNREADABLE.format(error=error), severity="error")
 
     def _models_listed(self, session: int, names: list[str]) -> None:
         """Keep *names* and answer the latest request, unless the input left the model argument.

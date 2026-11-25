@@ -3906,12 +3906,31 @@ async def test_command_provider_model_commands_error():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch(
-            "lilbee.modelhub.models.list_installed_models",
-            side_effect=Exception("no provider"),
+        with (
+            patch(
+                "lilbee.modelhub.models.list_installed_models",
+                side_effect=OSError("manifests unreadable"),
+            ),
+            pytest.raises(OSError, match="manifests unreadable"),
         ):
-            cmds = provider._model_commands()
-            assert cmds == []
+            provider._model_commands()
+
+
+async def test_an_unreadable_registry_is_reported_in_the_palette_not_shown_as_no_models():
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        provider = LilbeeCommandProvider(chat, match_style=None)
+        lookup: asyncio.Future[list] = asyncio.get_running_loop().create_future()
+        lookup.set_exception(OSError("manifests unreadable"))
+        with patch.object(app, "notify") as notify:
+            provider._models_landed(chat, lookup)
+        assert "manifests unreadable" in notify.call_args.args[0]
+        assert notify.call_args.kwargs["severity"] == "error"
+        assert provider._models == []
 
 
 async def test_the_palette_lists_models_once_per_open_and_off_the_event_loop():

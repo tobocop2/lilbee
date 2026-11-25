@@ -140,14 +140,14 @@ def model_completions(text: str, names: list[str]) -> list[str]:
 
 
 def list_model_options() -> list[str]:
-    """The installed model names; can probe a local server over HTTP, so keep it off the loop."""
-    try:
-        from lilbee.modelhub.models import list_installed_models
+    """The installed model names; can probe a local server over HTTP, so keep it off the loop.
 
-        return list_installed_models()
-    except Exception:
-        log.debug("Failed to list models for autocomplete", exc_info=True)
-        return []
+    Raises ``OSError`` when the model registry cannot be read: an empty list would
+    read as "nothing installed".
+    """
+    from lilbee.modelhub.models import list_installed_models
+
+    return list_installed_models()
 
 
 def _setting_options() -> list[str]:
