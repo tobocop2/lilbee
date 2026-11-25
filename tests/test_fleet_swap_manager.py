@@ -242,7 +242,7 @@ class TestStart:
         mgr = SwapManager(tmp_path, _GROUP)
         spill = HealthWarning(code=WarningCode.HOST_SPILL, message="spills")
         divergence = HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan")
-        mgr._record_findings("chat-0", divergence, [spill])
+        mgr._record_findings("chat-0", 0, divergence, [spill])
         assert mgr.health_warnings() == [divergence, spill]
         mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         assert mgr.health_warnings() == []
