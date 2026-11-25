@@ -12161,14 +12161,29 @@ class TestWikify:
             ]
             assert notify.call_args.args[0] == msg.WIKI_BUILD_DONE.format(count=2)
 
-    async def test_a_build_that_lost_some_pages_shows_the_count_as_an_error(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("written", "lost", "concept_calls", "lines"),
+        [
+            (1, 2, (), "2 of 3 pages could not be written."),
+            (0, 1, (), "1 of 1 page could not be written."),
+            (1, 1, (), "1 of 2 pages could not be written."),
+            (1, 0, (True,), "Concepts could not be extracted from 1 of 1 source."),
+        ],
+    )
+    async def test_a_build_that_lost_some_pages_shows_the_count_as_an_error(
+        self, tmp_path, written, lost, concept_calls, lines
+    ):
         cfg.wiki = True
         cfg.data_root = tmp_path
         stats = BuildStats()
-        stats.record_published("a.md", 1)
+        paths = [f"p{index}.md" for index in range(written)]
+        for path in paths:
+            stats.record_published(path, 1)
         stats.record_model_call("engine down")
-        stats.record_failed_pages(2)
-        summary = {"paths": ["a.md"], "entities": 3, "count": 1, "stats": stats.as_dict()}
+        stats.record_failed_pages(lost)
+        for failed in concept_calls:
+            stats.record_concept_call(failed=failed)
+        summary = {"paths": paths, "entities": 3, "count": written, "stats": stats.as_dict()}
 
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -12180,9 +12195,7 @@ class TestWikify:
                 assert await pump_until(pilot, lambda: bool(app.task_bar.queue.history)), (
                     "build never finished"
                 )
-            assert notify.call_args.args[0] == (
-                "2 of 3 pages could not be written.\nLast error: engine down."
-            )
+            assert notify.call_args.args[0] == f"{lines}\nLast error: engine down."
             assert notify.call_args.kwargs["severity"] == "error"
 
     async def test_wikify_refuses_while_a_build_is_already_pending(self, tmp_path):

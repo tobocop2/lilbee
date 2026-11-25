@@ -2268,12 +2268,14 @@ class TestWikiBuildTool:
         stats.record_published("wiki/concepts/p.md", 2)
         stats.record_model_call("engine down")
         stats.record_failed_pages(2)
+        stats.record_concept_call(failed=True)
         summary = {"paths": [str(tmp_path / "p.md")], "count": 1, "stats": stats.as_dict()}
         monkeypatch.setattr(target, lambda *a, **kw: summary)
         result = tool()
         assert "error" not in result
         assert result["count"] == 1
         assert result["stats"]["pages_failed"] == 2
+        assert result["stats"]["concept_sources_failed"] == 1
         assert result["stats"]["last_model_failure"] == "engine down"
 
     def test_dry_run_returns_candidates_without_building(self, mock_svc, monkeypatch):
