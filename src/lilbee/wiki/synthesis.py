@@ -348,7 +348,7 @@ def generate_source_batch(
     # entity list are per-call substitutions the raw template does not carry.
     budgeted = truncate_chunks_to_budget(chunks, config, len(render("")))
     prompt = render(chunks_to_text(budgeted))
-    text = _request_batch_sections(source, prompt, provider, config)
+    text = _request_batch_sections(source, prompt, provider, config, stats)
     if text is None:
         _write_pending_markers(entities, set(), source, drafts_dir, stats)
         return []
@@ -411,18 +411,26 @@ def _request_batch_sections(
     prompt: str,
     provider: LLMProvider,
     config: Config,
+    stats: BuildStats,
 ) -> str | None:
-    """Issue the batched LLM call; None when it raised or came back empty."""
+    """Issue the batched LLM call; None when it raised or came back empty.
+
+    Each outcome is counted in *stats* so the run can tell a build that wrote
+    nothing because every call failed from one that had nothing to write.
+    """
     messages = build_wiki_messages(prompt, provider, config)
     try:
         response = provider.chat(messages, stream=False, options=wiki_generation_options(config))
     except Exception as exc:
         log.warning("Batched LLM call failed for source %s: %s", source, exc)
+        stats.record_model_call(str(exc) or type(exc).__name__)
         return None
     text = strip_reasoning(response.text).strip()
     if not text:
         log.warning("Batched LLM call returned empty response for source %s", source)
+        stats.record_model_call("the model returned no text")
         return None
+    stats.record_model_call(None)
     return text
 
 
