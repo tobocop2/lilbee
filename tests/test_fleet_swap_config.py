@@ -454,3 +454,24 @@ def test_every_model_carries_a_concurrency_limit_for_several_processes(
     )
     entry = _config([launch])["models"][launch.model_id]
     assert entry["concurrencyLimit"] == expected
+
+
+def test_the_smallest_limit_of_a_config_is_read_back(monkeypatch) -> None:
+    monkeypatch.setattr(swap_config_mod, "max_workers", lambda: 14)
+    launches = [
+        InstanceLaunch(
+            role=WorkerRole.CHAT, replica=0, argv=["/bin/s"], env_overrides={}, model="c", slots=40
+        ),
+        InstanceLaunch(
+            role=WorkerRole.EMBED, replica=0, argv=["/bin/s"], env_overrides={}, model="e"
+        ),
+    ]
+    text = swap_config_mod.build_swap_config(
+        launches, {launch.model_id: 5900 + i for i, launch in enumerate(launches)}, engine_logs={}
+    )
+    assert swap_config_mod.smallest_request_limit(text) == 56
+
+
+@pytest.mark.parametrize(("limit", "share"), [(56, 14), (160, 40), (3, 1)])
+def test_a_process_may_hold_a_fourth_of_the_limit(limit: int, share: int) -> None:
+    assert swap_config_mod.process_share(limit) == share

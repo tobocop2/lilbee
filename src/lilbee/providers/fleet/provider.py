@@ -75,7 +75,7 @@ from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.readback import engine_log_of
-from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+from lilbee.providers.fleet.swap_config import cold_load_timeout_s, process_share
 from lilbee.providers.fleet.swap_manager import (
     EngineLifetime,
     EngineReadiness,
@@ -2394,6 +2394,20 @@ class FleetProvider:
         """Batching slots the chat server runs with, or None if not up."""
         with self._lock:
             return self._chat_slots if WorkerRole.CHAT in self._role_group else None
+
+    def ingest_request_share(self) -> int | None:
+        """The requests one process may hold in flight on the embed and vision engines.
+
+        The engine answers 429 past its request limit, and the process that built it sized
+        the limit for its own pool. Only an engine bound from another process reports a
+        share, read from its state file: the builder is never held to a limit it set.
+        None while neither role is bound or the engine recorded no limit.
+        """
+        with self._lock:
+            swaps = [self._swap_for(role) for role in (WorkerRole.EMBED, WorkerRole.VISION)]
+        limits = [swap.concurrency_limit for swap in swaps if swap is not None and swap.bound]
+        known = [limit for limit in limits if limit is not None]
+        return process_share(min(known)) if known else None
 
     def embed_token_cap(self, *, known_only: bool = False) -> int | None:
         """The served embed launch's token cap, or the planned one before it is up.

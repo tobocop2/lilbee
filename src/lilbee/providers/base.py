@@ -640,6 +640,14 @@ class LLMProvider(Protocol):
         """
         return 1
 
+    def ingest_request_share(self) -> int | None:
+        """Requests one process may hold in flight on the embed and vision engines.
+
+        The ingest pool stays inside it. Default ``None``: a provider with no shared
+        engine limit asks for no cap.
+        """
+        return None
+
     def served_chat_ctx(self) -> int | None:
         """Per-slot context the active chat server runs with, or None if unknown.
 

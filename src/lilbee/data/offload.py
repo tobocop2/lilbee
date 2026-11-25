@@ -113,13 +113,34 @@ def max_workers() -> int:
     extraction) that can use more threads; non-positive or unparseable values warn
     and fall back to the default.
 
+    An engine another process built caps it at this process's share of the engine's
+    request limit, so a wide pool cannot bring the engine to 429.
+
     It probes the embed fleet's devices, so call it off the event loop.
     """
-    from lilbee.providers.base import ProviderError
-
     run_workers = _run_workers.get()
     if run_workers is not None:
         return run_workers
+    return _within_engine_share(_sized_workers())
+
+
+def _within_engine_share(workers: int) -> int:
+    """*workers*, cut to the requests one process may hold on a shared engine.
+
+    An engine another process built answers 429 past the limit it was sized for, and
+    the provider reports this process's share of it. Not kept by the sizing cache: the
+    engine may bind after the first call.
+    """
+    from lilbee.app.services import get_services
+
+    share = get_services().provider.ingest_request_share()
+    return workers if share is None else min(workers, share)
+
+
+def _sized_workers() -> int:
+    """The pool size from the override, the fleet sizing or the CPU default."""
+    from lilbee.providers.base import ProviderError
+
     override = _worker_override()
     if override is not None:
         return override

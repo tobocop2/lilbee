@@ -418,6 +418,12 @@ class RoutingProvider(LLMProvider):
             return None
         return self._local.served_chat_ctx()
 
+    def ingest_request_share(self) -> int | None:
+        """The local engine's per-process request share, or None when none exists."""
+        if self._local is None:
+            return None
+        return self._local.ingest_request_share()
+
     def served_chat_slots(self) -> int | None:
         """Chat batching slots of the local engine, or None when none exists."""
         if self._local is None:

@@ -5282,11 +5282,12 @@ class TestIngestRequestShare:
     """The per-process share of the engine's request limit, read from the swaps that ingest calls."""
 
     @staticmethod
-    def _up(limits: dict[WorkerRole, int | None]) -> FleetProvider:
+    def _up(limits: dict[WorkerRole, int | None], *, bound: bool = True) -> FleetProvider:
         p = FleetProvider()
         for role, limit in limits.items():
             swap = _FakeSwap()
             swap.concurrency_limit = limit
+            swap.bound = bound
             p._swaps[SwapGroup(role.value)] = swap
             p._role_group[role] = SwapGroup(role.value)
         return p
@@ -5300,6 +5301,9 @@ class TestIngestRequestShare:
     def test_is_a_fourth_of_the_smallest_embed_or_vision_limit(self) -> None:
         p = self._up({WorkerRole.EMBED: 56, WorkerRole.VISION: 32, WorkerRole.CHAT: 8})
         assert p.ingest_request_share() == 8
+
+    def test_the_builder_is_not_held_to_its_own_limit(self) -> None:
+        assert self._up({WorkerRole.EMBED: 56}, bound=False).ingest_request_share() is None
 
     def test_never_drops_below_one(self) -> None:
         assert self._up({WorkerRole.EMBED: 2}).ingest_request_share() == 1

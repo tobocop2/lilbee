@@ -1086,6 +1086,8 @@ def _default_provider_mock():
     provider.max_concurrent_chats.return_value = 1
     provider.served_chat_ctx.return_value = None
     provider.served_chat_slots.return_value = None
+    # No shared engine, so the ingest pool asks for no cap.
+    provider.ingest_request_share.return_value = None
     provider.chat_prefill_progress.return_value = None
     # The chunker bounds its budget to the embed cap; None keeps the configured budget.
     provider.embed_token_cap.return_value = None

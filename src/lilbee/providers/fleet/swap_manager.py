@@ -53,6 +53,7 @@ from lilbee.providers.fleet.swap_config import (
     ROUTER_FLOOR,
     build_swap_config,
     health_check_timeout_s,
+    smallest_request_limit,
 )
 from lilbee.runtime.engine_lock import clear_keep_warm, reaper_running
 
@@ -101,6 +102,7 @@ _STATE_KEY_CONFIG_ROOT = "config_root"
 _STATE_KEY_FLEET_VIEW = "fleet_view"
 _STATE_KEY_READY_AT = "ready_at"
 _STATE_KEY_SWAP_BINARY = "swap_binary"
+_STATE_KEY_CONCURRENCY_LIMIT = "concurrency_limit"
 # Atomic state writes: the dot prefix keeps half-written tmp files out of the
 # reap scan's glob.
 _STATE_TMP_PREFIX = "."
@@ -240,6 +242,7 @@ class SwapState:
     origin: PlanOrigin | None = None
     ready_at: float | None = None
     swap_binary: str = ""  # the llama-swap executable; empty in a record written before the field
+    concurrency_limit: int | None = None  # requests llama-swap holds before it answers 429
 
 
 @dataclass(frozen=True)
@@ -300,6 +303,7 @@ class SwapManager:
         # state write, so a guest lilbee can bind to this live fleet.
         self._launches_payload: list[dict] = []
         self._swap_binary = ""
+        self._concurrency_limit: int | None = None
         self._origin: PlanOrigin | None = None
         # True when this manager uses an engine another process built: it then
         # never writes state, never reaps, and never signals engine processes.
@@ -372,17 +376,16 @@ class SwapManager:
             self._placement_warnings.clear()
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(
-            self._config_path,
-            build_swap_config(
-                launches,
-                member_ports,
-                swap=self._group.swaps,
-                ttl_seconds=ttl_seconds,
-                engine_logs=self._engine_logs,
-                router_reads_streams=reads_streams,
-            ),
+        config_text = build_swap_config(
+            launches,
+            member_ports,
+            swap=self._group.swaps,
+            ttl_seconds=ttl_seconds,
+            engine_logs=self._engine_logs,
+            router_reads_streams=reads_streams,
         )
+        self._concurrency_limit = smallest_request_limit(config_text)
+        _atomic_write(self._config_path, config_text)
         self._port = ports[0]
         # Capture llama-swap's stdout/stderr to a file so its access log never
         # reaches an inherited terminal (a TUI/CLI parent) and garbles the screen.
@@ -483,6 +486,7 @@ class SwapManager:
             _STATE_KEY_LAUNCHES: self._launches_payload,
             _STATE_KEY_ENGINE_PIN: engine_pin(),
             _STATE_KEY_SWAP_BINARY: self._swap_binary,
+            _STATE_KEY_CONCURRENCY_LIMIT: self._concurrency_limit,
         }
         stamp = linux_start_stamp(swap_pid)
         if stamp is not None:
@@ -636,6 +640,11 @@ class SwapManager:
         return self._proc is not None
 
     @property
+    def concurrency_limit(self) -> int | None:
+        """The fewest requests the engine holds in flight per model, or None when unknown."""
+        return self._concurrency_limit
+
+    @property
     def bound(self) -> bool:
         """Whether this manager rides an engine built by another process."""
         return self._bound
@@ -655,6 +664,7 @@ class SwapManager:
             self._member_ports = []
             return False
         self._launches_payload = [dict(launch) for launch in state.launches]
+        self._concurrency_limit = state.concurrency_limit
         self._bound = True
         return True
 
@@ -1362,6 +1372,7 @@ def _load_state(path: Path) -> SwapState | None:
             else PlanOrigin(str(raw_root), payload.get(_STATE_KEY_FLEET_VIEW))
         )
         raw_ready = payload.get(_STATE_KEY_READY_AT)
+        raw_limit = payload.get(_STATE_KEY_CONCURRENCY_LIMIT)
         return SwapState(
             pid=int(payload[_STATE_KEY_PID]),
             pgid=int(raw_pgid) if raw_pgid is not None else None,
@@ -1375,6 +1386,7 @@ def _load_state(path: Path) -> SwapState | None:
             origin=origin,
             ready_at=float(raw_ready) if raw_ready is not None else None,
             swap_binary=str(payload.get(_STATE_KEY_SWAP_BINARY) or ""),
+            concurrency_limit=int(raw_limit) if raw_limit is not None else None,
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None

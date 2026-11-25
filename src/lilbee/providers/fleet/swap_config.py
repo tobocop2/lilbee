@@ -77,8 +77,9 @@ _CONCURRENCY_PROCESSES = 4
 # concurrencyLimit. 2: an equal split across cards runs tensor parallel. 3: a swap
 # process keeps a residency class loaded together. 4: the llama-swap log holds the
 # output of every engine that writes no log of its own, and a --memory launch
-# writes its own log at the default verbosity.
-SWAP_CONFIG_REVISION = 4
+# writes its own log at the default verbosity. 5: the state file records the
+# request limit, so a peer sizes its ingest pool inside it.
+SWAP_CONFIG_REVISION = 5
 
 # llama-swap config keys.
 _KEY_HEALTH_TIMEOUT = "healthCheckTimeout"
@@ -195,6 +196,21 @@ def _evicting_groups(launches: list[InstanceLaunch]) -> dict[str, object]:
 def _concurrency_limit(launch: InstanceLaunch) -> int:
     """Requests llama-swap lets in flight for *launch* before it answers 429."""
     return _CONCURRENCY_PROCESSES * max(launch.slots, max_workers())
+
+
+def smallest_request_limit(config_text: str) -> int:
+    """The lowest ``concurrencyLimit`` among the models of a rendered config."""
+    models = json.loads(config_text)[_KEY_MODELS]
+    return min(int(entry[_KEY_CONCURRENCY_LIMIT]) for entry in models.values())
+
+
+def process_share(limit: int) -> int:
+    """The requests one lilbee process may hold in flight under an engine *limit*.
+
+    The limit covers :data:`_CONCURRENCY_PROCESSES` processes, so a process whose
+    ingest pool is wider than its share can bring the engine to 429.
+    """
+    return max(1, limit // _CONCURRENCY_PROCESSES)
 
 
 def cold_load_timeout_s(weights_bytes: int, role: WorkerRole) -> int:

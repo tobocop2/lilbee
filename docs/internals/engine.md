@@ -433,7 +433,10 @@ kept or must be corrected.
   answers 429 once a model has `concurrencyLimit` requests in flight and never
   queues them, so each model's config sets that limit to four times the larger of
   its slots and the ingest pool: one engine serves every lilbee process, and
-  llama-server queues past its slots by itself. A 429 is then reported to the
+  llama-server queues past its slots by itself. The builder records that limit in the
+  state file. A process that binds the engine sizes its ingest pool to a fourth of
+  it, so a peer with a wider pool than the builder's does not bring the engine to
+  429. A 429 is then reported to the
   caller as a busy model, not retried; gateway errors (502/503/504) from a
   restarting server are retried with backoff. Each
   server runs in its own process group and claims
