@@ -835,6 +835,21 @@ class TestProvider:
         assert embed_profile.label == LLAMA.request_profile(WorkerRole.EMBED).label
         assert chat_profile.label != embed_profile.label
 
+    def test_a_chat_client_carries_the_served_window_and_an_embed_client_none(
+        self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chat = planning.build_single_role_launch(WorkerRole.CHAT, model_file, engine=spy)
+        embed = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=spy)
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(_mixed_book(spy), {}))
+        provider = FleetProvider()
+        swap = SimpleNamespace(endpoint=lambda: "http://127.0.0.1:1", log_path=tmp_path / "log")
+        with provider._lock:
+            provider._adopt_group("chat", swap, [chat])  # type: ignore[arg-type]
+            provider._adopt_group("embed", swap, [embed])  # type: ignore[arg-type]
+        assert chat.ctx > 0
+        assert provider._clients[WorkerRole.CHAT][0]._chat_ctx == chat.ctx
+        assert provider._clients[WorkerRole.EMBED][0]._chat_ctx is None
+
     def test_adopting_a_role_whose_engine_went_raises_the_engine_text(
         self, spy: SpyEngine, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
