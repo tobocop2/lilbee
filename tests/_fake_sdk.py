@@ -35,6 +35,7 @@ ERROR_NAMES = (
     "OutboundForbiddenError",
     "ProviderQuotaExceededError",
     "RateLimitedError",
+    "SerializationError",
     "ServerError",
     "ServiceUnavailableError",
     "StreamingError",
