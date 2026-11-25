@@ -220,7 +220,14 @@ class TestWatchPool:
 
         providers: list[MagicMock] = []
 
-        def build(config, provider=None, registry=None, interactive=False, config_refresh=None):
+        def build(
+            config,
+            provider=None,
+            registry=None,
+            interactive=False,
+            config_refresh=None,
+            held_writes=None,
+        ):
             providers.append(MagicMock())
             return make_mock_services(provider=providers[-1])
 
@@ -803,7 +810,12 @@ class TestGetServicesThreadSafety:
         builds: list[int] = []
 
         def slow_build(
-            config, provider=None, registry=None, interactive=False, config_refresh=None
+            config,
+            provider=None,
+            registry=None,
+            interactive=False,
+            config_refresh=None,
+            held_writes=None,
         ):
             builds.append(threading.get_ident())
             time.sleep(0.05)
