@@ -18,7 +18,7 @@ from tests.test_fleet_work_orders import _Caller
 __all__ = ["fleet"]
 
 _ROLE = WorkerRole.CHAT
-_NO_BINARY = ProviderError("The llama-server binary is missing.", provider="llama-server")
+_NO_BINARY = ProviderError("The llama-server binary is missing.")
 
 
 def _warnings(services: Any) -> list[str]:

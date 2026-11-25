@@ -1076,7 +1076,6 @@ def test_a_probe_killed_by_sigterm_names_the_signal_and_the_probe_output(
         probe_devices(Path("llama-server"))
     assert "ggml_cuda_init: failed" in str(caught.value)
     assert "does not appear to support" not in str(caught.value)
-    assert caught.value.provider == "llama-server"
     assert caught.value.kind == ProviderErrorKind.SERVER
     assert (
         "before it listed any device, so the engine cannot start. Something ended the "

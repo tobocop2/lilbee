@@ -86,7 +86,7 @@ def test_not_ready_when_the_native_ref_is_missing(isolated_data_dir):
     cfg.chat_model = "owner/chat-GGUF/chat.Q4_K_M.gguf"
     with mock.patch(
         "lilbee.providers.engine_params.resolve_model_path",
-        side_effect=ProviderError("no such model", provider="llama-cpp"),
+        side_effect=ProviderError("no such model"),
     ):
         assert chat_ready() is False
 

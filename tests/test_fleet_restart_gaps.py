@@ -100,7 +100,6 @@ def test_a_stream_that_a_restart_ends_has_the_exact_message_provider_and_kind(
         stream.close()
 
     assert str(caught.value) == _RESTART_TEXT
-    assert caught.value.provider == "llama-server"
     assert caught.value.kind is ProviderErrorKind.CONNECTION
 
 

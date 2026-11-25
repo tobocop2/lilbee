@@ -26,7 +26,6 @@ from lilbee.runtime.vc_runtime import STATUS_DLL_NOT_FOUND, VC_REDIST_URL
 
 log = logging.getLogger(__name__)
 
-_PROVIDER = "llama-server"
 _LIST_DEVICES_TIMEOUT_S = 60.0
 # How long to wait for a killed probe to be reaped before abandoning it: a child
 # wedged in uninterruptible GPU-driver I/O ignores even SIGKILL.
@@ -280,14 +279,14 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
             f"{DLL_MISSING_LEAD} (status "
             f"0x{STATUS_DLL_NOT_FOUND:X}). The usual cause is a missing Microsoft "
             f"Visual C++ runtime. Install it from {VC_REDIST_URL}.",
-            provider=_PROVIDER,
+            
             kind=ProviderErrorKind.SERVER,
         )
     if returncode in _ILLEGAL_INSTRUCTION_STATUSES and not answered:
         raise EngineIllegalInstructionError(
             f"The engine {binary.name} stopped on an instruction this CPU does not have "
             f"(exit {returncode}). Install a build for an older CPU, or pick another engine.",
-            provider=_PROVIDER,
+            
             kind=ProviderErrorKind.CPU_UNSUPPORTED,
         )
     if returncode < 0 and not answered:
@@ -299,7 +298,7 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
             "from the host's Vulkan loader here, because the engine would then fail the "
             "same way.\n"
             f"The probe reported: {_probe_tail(output)}",
-            provider=_PROVIDER,
+            
             kind=ProviderErrorKind.SERVER,
         )
     spoke = returncode == 0 and answered
@@ -342,7 +341,7 @@ def require_clean_probe_exit(binary: Path, returncode: int, output: str) -> None
         "so its device list may be incomplete and the engine cannot be planned from it. "
         "A GPU driver fault, the out-of-memory killer or a service manager can end the probe.\n"
         f"The probe reported: {_probe_tail(output)}",
-        provider=_PROVIDER,
+        
         kind=ProviderErrorKind.SERVER,
     )
 
@@ -412,7 +411,7 @@ def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:
             "most likely wedged; check that your vendor's tool responds (nvidia-smi, "
             "rocm-smi, xpu-smi) and reboot the host if it hangs.\n"
             f"The probe reported: {_probe_tail(_decoded_output(exc.output))}",
-            provider=_PROVIDER,
+            
             kind=ProviderErrorKind.SERVER,
         ) from None
 

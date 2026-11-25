@@ -71,7 +71,7 @@ def _plan_with(monkeypatch: pytest.MonkeyPatch, error: ProviderError) -> None:
 def test_not_installed_warning_shows_the_path_as_typed(monkeypatch, caplog) -> None:
     _plan_with(
         monkeypatch,
-        ProviderError("gone", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND),
+        ProviderError("gone", kind=ProviderErrorKind.NOT_FOUND),
     )
     with caplog.at_level(logging.WARNING):
         planning_mod._server_model_inputs(engines=_CHAT_ENGINES)
@@ -82,7 +82,7 @@ def test_not_installed_warning_shows_the_path_as_typed(monkeypatch, caplog) -> N
 def test_cpu_role_not_installed_warning_shows_the_path_as_typed(monkeypatch, caplog) -> None:
     _plan_with(
         monkeypatch,
-        ProviderError("gone", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND),
+        ProviderError("gone", kind=ProviderErrorKind.NOT_FOUND),
     )
     with caplog.at_level(logging.WARNING):
         planning_mod._server_model_inputs(
@@ -95,7 +95,7 @@ def test_cpu_role_not_installed_warning_shows_the_path_as_typed(monkeypatch, cap
 def test_could_not_size_warning_shows_the_path_as_typed(monkeypatch, caplog) -> None:
     _plan_with(
         monkeypatch,
-        ProviderError("bad", provider="llama-server", kind=ProviderErrorKind.SERVER),
+        ProviderError("bad", kind=ProviderErrorKind.SERVER),
     )
     with caplog.at_level(logging.WARNING):
         planning_mod._server_model_inputs(engines=_CHAT_ENGINES)
