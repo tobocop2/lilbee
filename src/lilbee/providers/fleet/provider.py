@@ -368,19 +368,35 @@ class _SlotOwed(NamedTuple):
     states: dict[SwapGroup, SwapState]
 
 
-def _plan_origin() -> PlanOrigin:
-    """This config root and what its config.toml sets for a fleet plan, as a state records them.
+def _origin(*, planned: bool) -> PlanOrigin:
+    """This config root and the fleet plan keys config.toml sets, as a state records them.
 
     Only the keys whose change makes the fleet owner rebuild count, so a write of any
-    other key never makes a fleet look older than the file. A torn or unreadable file
-    gives no view.
+    other key never makes a fleet look older than the file. With *planned*, a key this
+    process runs on another value of (a flag, or a start value it holds) records that
+    value, so the view equals the file's only when the plan used the file's values. A
+    torn or unreadable file gives no view.
     """
     _stamp, values = read_persisted(cfg.data_root)
     view = None
     if values is not None:
-        picked = {key: value for key, value in values.items() if key in FLEET_RELOAD_KEYS}
+        picked = {
+            key: getattr(cfg, key) if planned and value != getattr(cfg, key) else value
+            for key, value in values.items()
+            if key in FLEET_RELOAD_KEYS
+        }
         view = json.dumps(picked, sort_keys=True, default=str)
     return PlanOrigin(str(cfg.data_root), view)
+
+
+def _plan_origin() -> PlanOrigin:
+    """The origin a fleet this process plans now is stamped with."""
+    return _origin(planned=True)
+
+
+def _file_origin() -> PlanOrigin:
+    """The origin a fleet planned on config.toml as it is now would carry."""
+    return _origin(planned=False)
 
 
 def _owner_owes_the_file(states: dict[SwapGroup, SwapState]) -> bool:
@@ -389,12 +405,29 @@ def _owner_owes_the_file(states: dict[SwapGroup, SwapState]) -> bool:
     Its builder has still to take the write and rebuild, so a peer on the new value waits
     for that rather than load a second fleet beside it.
     """
-    now = _plan_origin()
+    now = _file_origin()
     return now.fleet_view is not None and any(
         state.origin is not None
         and state.origin.config_root == now.config_root
         and state.origin.fleet_view not in (None, now.fleet_view)
         for state in states.values()
+    )
+
+
+def _planned_on_the_file_now(states: dict[SwapGroup, SwapState]) -> bool:
+    """True when a fleet of this config root was planned on config.toml as it is now."""
+    now = _file_origin()
+    return now.fleet_view is not None and any(
+        state.origin == now for state in states.values()
+    )
+
+
+def _held_write_message(writes: Mapping[str, object]) -> str:
+    """The error of a one-off command whose held settings config.toml changed during its run."""
+    changed = " and ".join(f"{key} changed to {value}" for key, value in writes.items())
+    return (
+        f"{changed} in config.toml while this command ran, and the running engine "
+        "now serves it. Run the command again."
     )
 
 
@@ -1375,10 +1408,15 @@ class FleetProvider:
         *,
         hold_warm: bool = False,
         config_refresh: Callable[[], None] | None = None,
+        held_writes: Callable[[], Mapping[str, object]] | None = None,
     ) -> None:
         # Takes config.toml changes now. The process that follows the file injects it,
         # so a retry plans on the settings an owner restarted its fleet with.
         self._config_refresh = config_refresh
+        # Names the held keys config.toml changed during this run. The same process
+        # injects it, so a fleet this process cannot bind only for such a write ends
+        # the command with an error instead of a private fleet beside it.
+        self._held_writes = held_writes
         # An interactive session (the TUI) owns this process for its whole
         # lifetime, so a fleet bound to it stays resident instead of idle-unloading
         # under a user who is still in the app; closing lilbee releases it. A
@@ -1825,7 +1863,7 @@ class FleetProvider:
             if in_use:
                 if may_wait and _owner_owes_the_file(states):
                     return _SlotOwed(states)
-                return self._refuse_live_engine(engine_dir, overflow_dir)
+                return self._refuse_live_engine(engine_dir, overflow_dir, states)
             if overflow_dir is not None:
                 # Lock order: the slot's build lock, then the private dir's. No
                 # path takes the slot's build lock while it holds a private one.
@@ -1878,17 +1916,28 @@ class FleetProvider:
         _watch_bound_engine(engine_dir)
         return True
 
-    def _refuse_live_engine(self, engine_dir: Path, overflow_dir: Path | None) -> bool | None:
+    def _refuse_live_engine(
+        self,
+        engine_dir: Path,
+        overflow_dir: Path | None,
+        states: dict[SwapGroup, SwapState],
+    ) -> bool | None:
         """Leave a live engine this process cannot bind: overflow (None) or serve nothing.
 
         A live engine is never evicted or stacked on. On the machine slot that means
         overflow; in the overflow dir there is nowhere further to go, so serve nothing
         rather than kill the incumbent or load a second fleet's weights beside it (an
-        OOM on a small-VRAM box).
+        OOM on a small-VRAM box). On the slot, a fleet of this config root planned on
+        config.toml as it is now, which this process cannot bind only because the file
+        changed a key it holds, also serves nothing: the error names the write.
         """
         log.info("The engine at %s has a live user and cannot serve this setup", engine_dir)
         if overflow_dir is None:
             self._engine_refusal = _ENGINES_IN_USE_MESSAGE
+            return False
+        writes = self._held_writes() if self._held_writes is not None else {}
+        if writes and _planned_on_the_file_now(states):
+            self._engine_refusal = _held_write_message(writes)
             return False
         return None
 
