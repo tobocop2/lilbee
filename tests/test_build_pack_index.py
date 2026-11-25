@@ -52,7 +52,9 @@ def _gh_output(releases: list[dict[str, object]]) -> str:
     return "\n".join(json.dumps(r) for r in releases) + "\n"
 
 
-def _patch_gh(monkeypatch: pytest.MonkeyPatch, releases: list[dict[str, object]]) -> list[list[str]]:
+def _patch_gh(
+    monkeypatch: pytest.MonkeyPatch, releases: list[dict[str, object]]
+) -> list[list[str]]:
     calls: list[list[str]] = []
 
     def fake(cmd: list[str], **_kw: object) -> str:

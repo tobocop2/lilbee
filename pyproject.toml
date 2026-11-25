@@ -297,6 +297,8 @@ extend-immutable-calls = ["litestar.params.Body"]
 ]
 # Invokes the trusted `gh` CLI with controlled args to build the compat index.
 "tools/build_compat_index.py" = ["S603", "S607"]
+# Same for the engine pack index.
+"tools/build_pack_index.py" = ["S603", "S607"]
 "conftest.py" = ["S101"]
 
 [tool.mypy]
