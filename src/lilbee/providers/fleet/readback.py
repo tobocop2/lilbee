@@ -275,8 +275,12 @@ def check_launch(
     est_by_device: dict[str, int] | None = None,
     unreported_bytes: int = 0,
     est_host_bytes: int = 0,
+    spills: list[HealthWarning] | None = None,
 ) -> HealthWarning | None:
     """Compare the engine's own report for *model_id* against the estimate.
+
+    A host spill found in the report is appended to *spills* when the caller
+    passes a list, because it is a second finding beside the placement one.
 
     Checked per device when *est_by_device* says what each card was planned for,
     because per device is the only dimension the planner decides in: a split is a
@@ -307,7 +311,9 @@ def check_launch(
         # report_missing_log is how a caller that knows the engine is up says so.
         return None
     buffers = parse_device_buffers(text)
-    report_host_spill(role, model, _host_weight_bytes(text), est_host_bytes)
+    spill = report_host_spill(role, model, _host_weight_bytes(text), est_host_bytes)
+    if spill is not None and spills is not None:
+        spills.append(spill)
     per_device = {label: size for label, size in buffers.items() if not _is_host_device(label)}
     actual = sum(per_device.values())
     if actual > 0 and est_by_device:
@@ -344,21 +350,27 @@ def _host_weight_bytes(text: str) -> int:
     )
 
 
-def report_host_spill(role: WorkerRole, model: str, host_bytes: int, est_host_bytes: int) -> None:
+def report_host_spill(
+    role: WorkerRole, model: str, host_bytes: int, est_host_bytes: int
+) -> HealthWarning | None:
     """Warn when the engine's fit left more of *model* in system memory than estimated.
 
     *est_host_bytes* is what the host holds with every layer on the card; 0
     means the engine's fit does not run for this launch, and nothing is said.
+    The warning goes to the log and is returned for the health warnings.
     """
     if est_host_bytes <= 0 or host_bytes <= est_host_bytes * (1.0 + _TOLERANCE):
-        return
-    log.warning(
-        "The %s model %s does not fit in GPU memory: the engine keeps %s of it in "
-        "system memory, where it runs slower. Free GPU memory or use a smaller model.",
-        role.value,
-        model,
-        memory_size_text(host_bytes),
+        return None
+    warning = HealthWarning(
+        code=WarningCode.HOST_SPILL,
+        message=(
+            f"The {role.value} model {model} does not fit in GPU memory: the engine keeps "
+            f"{memory_size_text(host_bytes)} of it in system memory, where it runs slower."
+        ),
+        remedy="Free GPU memory or use a smaller model.",
     )
+    log.warning("%s", warning.line)
+    return warning
 
 
 def _without_unreported(est_by_device: dict[str, int], unreported: int) -> dict[str, int]:
@@ -528,9 +540,10 @@ def check_memory_report(
     est_by_device: dict[str, int] | None,
     payload: object,
     est_host_bytes: int = 0,
+    spills: list[HealthWarning] | None = None,
 ) -> HealthWarning | None:
     """Compare a ``GET /memory`` payload against the estimate; the API-mode twin
-    of :func:`check_launch`.
+    of :func:`check_launch`, with the same *spills* list.
 
     No ``unreported_bytes`` adjustment exists here on purpose: the endpoint
     reports the vision projector per device in its ``mmproj`` field, so the
@@ -543,7 +556,9 @@ def check_memory_report(
     """
     rows = parse_memory_rows(payload)
     weight_rows = parse_memory_rows(payload, fields=_MEMORY_WEIGHT_FIELDS)
-    report_host_spill(role, model, _host_weights(weight_rows), est_host_bytes)
+    spill = report_host_spill(role, model, _host_weights(weight_rows), est_host_bytes)
+    if spill is not None and spills is not None:
+        spills.append(spill)
     per_device = {label: size for label, size in rows.items() if not _is_host_device(label)}
     if not per_device:
         log.warning(
