@@ -33,6 +33,17 @@ _DEFAULT_ARCH = "llama"
 _CHAT_TEMPLATE_KEY = "tokenizer.chat_template"
 _FILE_TYPE_KEY = "general.file_type"
 _NAME_KEY = "general.name"
+# Tokenizer keys -> lilbee field names: the facts a cross-encoder's pair layout
+# is built from (providers/fleet/rerank_pair.py). "seperator" is llama.cpp's spelling.
+_TOKENIZER_FIELDS: dict[str, str] = {
+    "tokenizer.ggml.model": "tokenizer_model",
+    "tokenizer.ggml.bos_token_id": "bos_token_id",
+    "tokenizer.ggml.eos_token_id": "eos_token_id",
+    "tokenizer.ggml.seperator_token_id": "sep_token_id",
+    "tokenizer.ggml.add_bos_token": "add_bos_token",
+    "tokenizer.ggml.add_eos_token": "add_eos_token",
+    "tokenizer.ggml.add_sep_token": "add_sep_token",
+}
 
 # Arch-prefixed metadata key suffix -> the lilbee field name it maps to. The
 # prefix is the GGUF's general.architecture value (e.g. "qwen3.context_length").
@@ -103,7 +114,8 @@ _UNANSWERED: set[tuple[str, int, int]] = set()
 # so an unchanged file would keep serving that answer after the upgrade.
 # Version 3: reads made with no parser, or where the parser did not run, were
 # cached as "no metadata" and indistinguishable from the parser's own answer.
-_DISK_CACHE_VERSION = 3
+# Version 4: the tokenizer fields of the rerank pair layout.
+_DISK_CACHE_VERSION = 4
 _DISK_CACHE_DIRNAME = "gguf-meta"
 # Distinguishes "no entry on disk" from a cached "this file has no metadata".
 _DISK_MISS = object()
@@ -313,6 +325,7 @@ def _read_gguf_metadata_uncached(model_path: Path) -> dict[str, str] | None | _U
         (_CHAT_TEMPLATE_KEY, "chat_template"),
         (_FILE_TYPE_KEY, "file_type"),
         (_NAME_KEY, "name"),
+        *_TOKENIZER_FIELDS.items(),
     ):
         value = kv.get(raw_key)
         if value is not None:

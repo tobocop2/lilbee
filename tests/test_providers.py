@@ -2709,6 +2709,7 @@ def _stub_gguf_parser(monkeypatch: pytest.MonkeyPatch, kv: dict[str, tuple[objec
 
 _GGUF_STRING = 8
 _GGUF_UINT32 = 4
+_GGUF_BOOL = 7
 
 
 class TestReadGgufMetadata:
@@ -2736,6 +2737,38 @@ class TestReadGgufMetadata:
             "chat_template": "template",
             "file_type": "7",
             "name": "Test Model",
+        }
+
+    def test_exposes_the_tokenizer_facts_of_the_rerank_pair_layout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pair layout reads the tokenizer model, the special ids and the add flags."""
+        from lilbee.providers.gguf_meta import read_gguf_metadata
+
+        _stub_gguf_parser(
+            monkeypatch,
+            {
+                "general.architecture": ("bert", _GGUF_STRING),
+                "tokenizer.ggml.model": ("t5", _GGUF_STRING),
+                "tokenizer.ggml.bos_token_id": (0, _GGUF_UINT32),
+                "tokenizer.ggml.eos_token_id": (2, _GGUF_UINT32),
+                "tokenizer.ggml.seperator_token_id": (2, _GGUF_UINT32),
+                "tokenizer.ggml.add_bos_token": (True, _GGUF_BOOL),
+                "tokenizer.ggml.add_eos_token": (True, _GGUF_BOOL),
+                "tokenizer.ggml.add_sep_token": (False, _GGUF_BOOL),
+            },
+        )
+        (tmp_path / "model.gguf").write_bytes(b"GGUF")
+
+        assert read_gguf_metadata(tmp_path / "model.gguf") == {
+            "architecture": "bert",
+            "tokenizer_model": "t5",
+            "bos_token_id": "0",
+            "eos_token_id": "2",
+            "sep_token_id": "2",
+            "add_bos_token": "True",
+            "add_eos_token": "True",
+            "add_sep_token": "False",
         }
 
     def test_exposes_declared_pooling_type(

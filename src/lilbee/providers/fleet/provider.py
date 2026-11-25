@@ -2279,6 +2279,7 @@ class FleetProvider:
                     chat_ctx=launch.ctx if role is WorkerRole.CHAT else None,
                     timeout=_request_timeout_s(launch),
                     rerank_mode=launch.rerank_mode,
+                    rerank_pair=launch.rerank_pair,
                     inline_reasoning=role is WorkerRole.CHAT,
                     on_prefill=self._record_chat_prefill if role is WorkerRole.CHAT else None,
                     engine_log=_output_log_of(engine, launch, swap.log_path),

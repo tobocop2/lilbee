@@ -326,6 +326,20 @@ class TestParserAbsenceIsNotCached:
         assert gguf_meta.read_gguf_metadata(model) is None
         assert len(spawns) == 1
 
+    def test_entries_without_the_tokenizer_fields_are_ignored(self, monkeypatch, tmp_path) -> None:
+        gguf_meta, model = self._model(monkeypatch, tmp_path)
+        stat = model.stat()
+        key = (str(model), stat.st_mtime_ns, stat.st_size)
+        stale = gguf_meta._disk_cache_file(key)
+        assert stale is not None
+        # Version 3 is the last reader that did not record the rerank pair layout.
+        digest = hashlib.sha256("\0".join(str(p) for p in (3, *key)).encode()).hexdigest()
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        old = '{"metadata": {"architecture": "stale"}}'
+        (stale.parent / f"{digest}.json").write_text(old, encoding="utf-8")
+        self._parser(monkeypatch, lambda: (self._PAYLOAD, 0))
+        assert gguf_meta.read_gguf_metadata(model)["architecture"] == "bert"
+
     def test_disk_entries_from_an_older_reader_are_ignored(self, monkeypatch, tmp_path) -> None:
         gguf_meta, model = self._model(monkeypatch, tmp_path)
         stat = model.stat()

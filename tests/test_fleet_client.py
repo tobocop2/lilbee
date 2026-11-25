@@ -30,7 +30,6 @@ from lilbee.providers.engine_params import chat_options_to_kwargs
 from lilbee.providers.fleet.client import (
     _EMBED_BODY_MARGIN,
     _EMBED_PAYLOAD_LIMIT,
-    _RERANK_PAIR_SEPARATOR,
     ChatDeadlineError,
     LlamaServerClient,
     StreamInterruptedError,
@@ -44,6 +43,7 @@ from lilbee.providers.fleet.engines.base import RerankShape
 from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.engines.tei import TEI
+from lilbee.providers.fleet.rerank_pair import RerankPair
 from lilbee.providers.reasoning import ThinkInliner
 from lilbee.providers.roles import RerankMode, WorkerRole
 from lilbee.runtime.cancellation import TaskCancelledError
@@ -116,6 +116,26 @@ def _raise_for_status(resp: httpx.Response) -> None:
     _unprobed_client()._raise_for_status(resp)
 
 
+# A BERT-style layout: [CLS] query [SEP] document [SEP].
+_TEST_PAIR = RerankPair(head=(101,), middle=(102,), tail=(102,))
+
+
+def _pair_client(handler, cap: int | None = None, **changes) -> LlamaServerClient:
+    """A cross-encoder client whose server tokenizes a text to one id per character."""
+
+    def routed(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/tokenize"):
+            text = json.loads(request.content)["content"]
+            return httpx.Response(200, json={"tokens": [ord(c) for c in text]})
+        return handler(request)
+
+    profile = dataclasses.replace(LLAMA.request_profile(WorkerRole.RERANK), **changes)
+    http = httpx.Client(transport=httpx.MockTransport(routed), base_url="http://gpu0")
+    return LlamaServerClient(
+        "http://gpu0", "m", http=http, token_cap=cap, rerank_pair=_TEST_PAIR, profile=profile
+    )
+
+
 def test_rerank_scores_pairs_via_rank_pooling() -> None:
     seen: dict[str, list] = {}
 
@@ -126,10 +146,14 @@ def test_rerank_scores_pairs_via_rank_pooling() -> None:
         n = len(body["input"])
         return httpx.Response(200, json=_embed_body([[float(i)] for i in range(n)]))
 
-    scores = _client(handler).rerank("q", ["a", "b", "c"])
+    scores = _pair_client(handler).rerank("q", ["a", "b", "c"])
     assert scores == [0.0, 1.0, 2.0]
-    # mirrors the in-process pairing exactly
-    assert seen["input"] == ["q</s></s>a", "q</s></s>b", "q</s></s>c"]
+    q = ord("q")
+    assert seen["input"] == [
+        [101, q, 102, ord("a"), 102],
+        [101, q, 102, ord("b"), 102],
+        [101, q, 102, ord("c"), 102],
+    ]
 
 
 # llama-swap's two 429 bodies: the pinned v223 and the v265 error envelope.
@@ -605,7 +629,7 @@ def test_rerank_raises_on_count_mismatch() -> None:
         return httpx.Response(200, json=_embed_body([[0.5]]))  # 1 for 2 pairs
 
     with pytest.raises(ProviderError, match="vectors for"):
-        _client(handler).rerank("q", ["a", "b"])
+        _pair_client(handler).rerank("q", ["a", "b"])
 
 
 def test_rerank_raises_on_bad_score_shape() -> None:
@@ -613,7 +637,7 @@ def test_rerank_raises_on_bad_score_shape() -> None:
         return httpx.Response(200, json={"data": [{"embedding": {"not": "a vector"}}]})
 
     with pytest.raises(ProviderError, match="could not read"):
-        _client(handler).rerank("q", ["a"])
+        _pair_client(handler).rerank("q", ["a"])
 
 
 def test_in_flight_counter_is_atomic_under_threads() -> None:
@@ -1093,7 +1117,7 @@ def test_rerank_reads_score_from_base64_vector() -> None:
         count = len(json.loads(request.content)["input"])
         return httpx.Response(200, json=_embed_body([[float(i), 9.0] for i in range(count)]))
 
-    assert _client(handler).rerank("q", ["a", "b", "c"]) == [0.0, 1.0, 2.0]
+    assert _pair_client(handler).rerank("q", ["a", "b", "c"]) == [0.0, 1.0, 2.0]
 
 
 def test_rerank_raises_on_empty_score_vector() -> None:
@@ -1101,7 +1125,7 @@ def test_rerank_raises_on_empty_score_vector() -> None:
         return httpx.Response(200, json=_embed_body([[]]))
 
     with pytest.raises(ProviderError, match="no relevance score"):
-        _client(handler).rerank("q", ["a"])
+        _pair_client(handler).rerank("q", ["a"])
 
 
 def test_embed_empty_returns_empty_without_request() -> None:
@@ -1836,56 +1860,30 @@ def test_embed_estimates_tokens_without_per_input_tokenize() -> None:
 
 def test_rerank_scores_all_pairs_in_one_request() -> None:
     # Per-pair requests only add HTTP round trips: the server queues one task
-    # per input, so the whole candidate pool goes out as a single POST with no
-    # per-pair /tokenize probe.
+    # per input, so the whole candidate pool goes out as a single POST.
     posts: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         posts.append(request.url.path)
-        if request.url.path.endswith(("/tokenize", "/detokenize")):
-            raise AssertionError("within-cap pairs must not hit the server tokenizer")
         inputs = json.loads(request.content)["input"]
         return httpx.Response(200, json=_embed_body([[float(i)] for i in range(len(inputs))]))
 
     candidates = [f"candidate chunk {i} " + "text " * 20 for i in range(48)]
-    scores = _capped_client(handler, cap=200).rerank("q", candidates)
+    scores = _pair_client(handler, cap=200).rerank("q", candidates)
     assert scores == [float(i) for i in range(48)]
     assert posts == ["/v1/embeddings"]
 
 
-def test_rerank_retruncates_exactly_when_estimate_undercounts() -> None:
-    # The char estimate under-counts token-dense pairs; when an over-cap pair
-    # slips through, the server rejects the batch and it is redone with exact
-    # server-side truncation instead of failing the rerank pass.
-    embed_inputs: list[list[str]] = []
+def test_rerank_cuts_an_oversize_pair_to_the_cap_before_it_sends_it() -> None:
+    sent: list[list[int]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        if request.url.path.endswith("/tokenize"):
-            return httpx.Response(200, json={"tokens": list(range(12))})  # 12 > cap 10
-        if request.url.path.endswith("/detokenize"):
-            return httpx.Response(200, json={"content": "t"})
-        embed_inputs.append(list(body["input"]))
-        if len(embed_inputs) == 1:
-            return httpx.Response(500, text="input is too large to process. increase n_batch")
+        sent.extend(body["input"])
         return httpx.Response(200, json=_embed_body([[0.875] for _ in body["input"]]))
 
-    # 23 chars estimate to 8 tokens (under cap 10), so the pair is sent as-is.
-    assert _capped_client(handler, cap=10).rerank("q", ["under-estimated"]) == [0.875]
-    assert embed_inputs == [["q</s></s>under-estimated"], ["t"]]
-
-
-def test_rerank_truncates_oversize_pairs() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        if request.url.path.endswith("/tokenize"):
-            return httpx.Response(200, json={"tokens": list(range(9))})  # 9 > cap 4
-        if request.url.path.endswith("/detokenize"):
-            return httpx.Response(200, json={"content": "t"})
-        # one score per (truncated) pair
-        return httpx.Response(200, json=_embed_body([[0.875] for _ in body["input"]]))
-
-    assert _capped_client(handler, cap=4).rerank("q", ["cand"]) == [0.875]
+    assert _pair_client(handler, cap=6).rerank("q", ["candidate"]) == [0.875]
+    assert sent == [[101, ord("q"), 102, ord("c"), ord("a"), 102]]
 
 
 def test_embed_surfaces_server_error_body() -> None:
@@ -2252,7 +2250,7 @@ _CLIENT_REQUESTS = {
     "chat_result": ({}, lambda c: c.chat_result(_CHAT_MESSAGES)),
     "chat_stream_items": ({}, lambda c: _drain(c.chat_stream_items(_CHAT_MESSAGES))),
     "embed": ({}, lambda c: c.embed(["a"])),
-    "rerank_rank_pooling": ({}, lambda c: c.rerank("q", ["a"])),
+    "rerank_rank_pooling": ({"rerank_pair": _TEST_PAIR}, lambda c: c.rerank("q", ["a"])),
     "rerank_llm": ({"rerank_mode": RerankMode.LLM}, lambda c: c.rerank("q", ["a"])),
     "count_tokens": ({}, lambda c: c.count_tokens("a")),
     "count_text_tokens": ({}, lambda c: c.count_text_tokens("a")),
@@ -2618,7 +2616,7 @@ def test_rerank_requests_no_normalization() -> None:
         seen.update(json.loads(request.content))
         return httpx.Response(200, json=_embed_body([[0.7]]))
 
-    _client(handler).rerank("q", ["a"])
+    _pair_client(handler).rerank("q", ["a"])
     assert seen["embd_normalize"] == -1
 
 
@@ -4595,14 +4593,13 @@ def test_embed_without_tokenize_route_raises_the_overflow_without_a_resend() -> 
     assert calls == [["x" * 12]]
 
 
-def test_rerank_without_tokenize_route_raises_the_overflow_without_a_resend() -> None:
-    from lilbee.providers.base import ProviderErrorKind
-
+def test_rerank_without_tokenize_route_names_the_missing_route() -> None:
     calls: list[list[str]] = []
-    with pytest.raises(ProviderError) as excinfo:
-        _no_route_client(_overflowing_handler(calls), cap=100).rerank("q", ["alpha"])
-    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
-    assert calls == [[f"q{_RERANK_PAIR_SEPARATOR}alpha"]]
+    client = _no_route_client(_overflowing_handler(calls), cap=100)
+    client._rerank_pair = _TEST_PAIR
+    with pytest.raises(NotImplementedError, match="no tokenize route"):
+        client.rerank("q", ["alpha"])
+    assert calls == []
 
 
 def test_tokenize_without_tokenize_route_names_the_missing_route() -> None:
@@ -4651,35 +4648,15 @@ def test_embed_redo_after_overflow_sends_the_input_truncated_by_the_server_token
     assert sent == [["dense"], ["cut"]]
 
 
-def test_rerank_redo_after_overflow_sends_the_pair_truncated_by_the_server_tokenizer() -> None:
-    sent: list[list[str]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        if path.endswith("/detokenize"):
-            assert json.loads(request.content)["tokens"] == list(range(10))
-            return httpx.Response(200, json={"content": "cut"})
-        if path.endswith("/tokenize"):
-            assert json.loads(request.content)["content"] == f"q{_RERANK_PAIR_SEPARATOR}dense"
-            return httpx.Response(200, json={"tokens": list(range(20))})
-        sent.append(json.loads(request.content)["input"])
-        if len(sent) == 1:
-            return httpx.Response(400, json={"error": {"message": "exceed_context_size"}})
-        return httpx.Response(200, json=_embed_body([[0.5]]))
-
-    assert _capped_client(handler, 10).rerank("q", ["dense"]) == [0.5]
-    assert sent == [[f"q{_RERANK_PAIR_SEPARATOR}dense"], ["cut"]]
-
-
-def test_rerank_does_not_redo_an_error_that_is_not_an_overflow() -> None:
+def test_rerank_does_not_resend_a_pair_the_server_refused() -> None:
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request.url.path)
-        return httpx.Response(500, text="boom")
+        return httpx.Response(400, json={"error": {"message": "exceed_context_size"}})
 
-    with pytest.raises(ProviderError, match="500"):
-        _capped_client(handler, 10).rerank("q", ["dense"])
+    with pytest.raises(ProviderError):
+        _pair_client(handler, 10).rerank("q", ["dense"])
     assert calls == ["/v1/embeddings"]
 
 
@@ -4841,9 +4818,9 @@ def test_rerank_through_embeddings_splits_pairs_at_the_batch_limit() -> None:
         return httpx.Response(200, json=_embed_body([[float(len(text))] for text in inputs]))
 
     candidates = ["a" * n for n in range(1, 6)]
-    scores = _no_route_client(handler, batch_limit=2).rerank("", candidates)
+    scores = _pair_client(handler, batch_limit=2).rerank("", candidates)
     assert sizes == [2, 2, 1]
-    assert scores == [float(len(f"{_RERANK_PAIR_SEPARATOR}{c}")) for c in candidates]
+    assert scores == [float(len(c) + 3) for c in candidates]
 
 
 def test_rerank_with_route_refuses_an_answer_missing_a_candidate() -> None:

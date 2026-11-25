@@ -2005,10 +2005,10 @@ class TestBuildFleetWiring:
         argv = self._launch_role(tmp_path, monkeypatch, WorkerRole.VISION)
         assert argv[argv.index("--flash-attn") + 1] == "off"
 
-    def _launch_rerank(self, tmp_path, monkeypatch, arch: str | None):
+    def _launch_rerank(self, tmp_path, monkeypatch, arch: str | None, **tokenizer: str):
         model = tmp_path / "r.gguf"
         model.write_bytes(GGUF_MAGIC + b"x" * 1000)
-        meta = {"architecture": arch} if arch is not None else {}
+        meta = {"architecture": arch, **tokenizer} if arch is not None else {}
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: meta
@@ -2040,6 +2040,22 @@ class TestBuildFleetWiring:
         assert launch.argv[launch.argv.index("--pooling") + 1] == "rank"
         assert "--batch-size" in launch.argv
         assert "--jinja" not in launch.argv
+
+    def test_launch_for_a_cross_encoder_carries_the_pair_layout_of_its_gguf(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from lilbee.providers.fleet.rerank_pair import RerankPair
+
+        monkeypatch.setattr(cfg, "reranker_type", RerankerType.AUTO)
+        facts = {"tokenizer_model": "t5", "bos_token_id": "0", "eos_token_id": "2"}
+        launch = self._launch_rerank(tmp_path, monkeypatch, "bert", **facts)
+        assert launch.rerank_pair == RerankPair(head=(0,), middle=(2, 2), tail=(2,))
+
+    def test_launch_for_an_llm_reranker_carries_no_pair_layout(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "reranker_type", RerankerType.AUTO)
+        facts = {"tokenizer_model": "gpt2", "bos_token_id": "1", "eos_token_id": "2"}
+        launch = self._launch_rerank(tmp_path, monkeypatch, "qwen3", **facts)
+        assert launch.rerank_pair is None
 
     def test_launch_for_rerank_override_forces_llm_on_encoder(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "reranker_type", RerankerType.LLM)

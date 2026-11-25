@@ -35,6 +35,7 @@ from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
+from lilbee.providers.fleet.rerank_pair import RerankPair
 from lilbee.providers.fleet.swap_manager import EngineLifetime, EngineReadiness
 from lilbee.providers.fleet.windowing import window_messages
 from lilbee.providers.roles import RerankMode, WorkerRole
@@ -1160,6 +1161,32 @@ def test_adopt_group_threads_rerank_mode(monkeypatch) -> None:
     )
     FleetProvider()._ensure_fleet()
     assert captured["rerank_mode"] is RerankMode.LLM
+
+
+def test_adopt_group_threads_the_rerank_pair_layout(monkeypatch) -> None:
+    launch = _fake_launch(WorkerRole.RERANK)
+    launch.rerank_pair = RerankPair(head=(0,), middle=(2, 2), tail=(2,))
+    captured: dict[str, object] = {}
+
+    def _capture(_endpoint, _model, **kw):
+        captured["rerank_pair"] = kw.get("rerank_pair")
+        return _fake_client()
+
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
+    monkeypatch.setattr(
+        prov_mod,
+        "_configured_model_for",
+        lambda role: "m-rerank" if role is WorkerRole.RERANK else "",
+    )
+    monkeypatch.setattr(
+        planning_mod, "role_model_placeable", lambda _role, _ref, _vram, *, engine: True
+    )
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
+    )
+    FleetProvider()._ensure_fleet()
+    assert captured["rerank_pair"] == RerankPair(head=(0,), middle=(2, 2), tail=(2,))
 
 
 def test_adopt_group_gives_each_client_its_engine_request_profile(monkeypatch) -> None:
@@ -2317,6 +2344,7 @@ def _exited_embed_client(
         http=http,
         model_ref=model_ref,
         engine_log=engine_log,
+        rerank_pair=RerankPair(head=(1,), middle=(2,), tail=(2,)),
         profile=LLAMA.request_profile(WorkerRole.CHAT),
     )
 

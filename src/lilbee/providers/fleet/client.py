@@ -44,6 +44,7 @@ from lilbee.providers.base import (
 from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
 from lilbee.providers.fleet.engines.base import RequestProfile, UpstreamCheck
 from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
+from lilbee.providers.fleet.rerank_pair import RerankPair
 from lilbee.providers.fleet.swap_manager import RUNNING_PATH, UNLOAD_PATH, ready_model_ids
 from lilbee.providers.reasoning import ThinkInliner, inline_reasoning
 from lilbee.providers.roles import RerankMode
@@ -69,9 +70,6 @@ _LOOPBACK_SSL_CONTEXT.check_hostname = False
 _LOOPBACK_SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 # Only on Windows does a stream abort close the socket after its shutdown (see abort_streams).
 _CLOSE_AFTER_SHUTDOWN = sys.platform == "win32"
-# Reranker pair format: query and candidate are joined with this separator into
-# one document so a cross-encoder GGUF scores the pair as a single sequence.
-_RERANK_PAIR_SEPARATOR = "</s></s>"
 # LLM reranker: score each candidate by the yes/no first-token logprob.
 _LLM_RERANK_PROMPT = (
     "Judge whether the document is relevant to the query. "
@@ -95,10 +93,7 @@ _EMBED_N_SEQ_MAX = 64
 # path packs sub-batches without a /tokenize round-trip per input. The factor is
 # held below the corpus average (data.extract.chunk.CHARS_PER_TOKEN, 4 for Latin text)
 # so the estimate over-counts tokens and a sub-batch never packs past the
-# server's n_batch (== token_cap). Rerank pairs are token-dense (the separator
-# is several tokens in a few chars), so an under-count can slip an over-cap
-# pair through; the rerank path re-truncates exactly on the server's overflow
-# error instead of paying a /tokenize round trip per pair up front.
+# server's n_batch (== token_cap).
 _EMBED_EST_CHARS_PER_TOKEN = 3
 # TEI 1.9.4 refuses a request body past its --payload-limit (default 2,000,000 bytes) with 413.
 # For an engine that cuts inputs by its own tokens, the client packs each embed request so that
@@ -513,6 +508,10 @@ _UNREADABLE_EMBEDDING_ERROR = (
     "The embedding server returned vectors lilbee could not read. Update the inference engine: "
 )
 _NO_RERANK_SCORE_ERROR = "The reranker returned no relevance score for a candidate."
+_NO_RERANK_PAIR_ERROR = (
+    "The reranker's model file names no start or end token, so its query and "
+    "candidate pairs cannot be built. Choose another reranker GGUF."
+)
 _HEALTH_PATH = "/health"
 _CHAT_PATH = "/v1/chat/completions"
 _CONTEXT_OVERFLOW_TEXT = (
@@ -686,6 +685,7 @@ class LlamaServerClient:
         chat_ctx: int | None = None,
         timeout: float = _DEFAULT_TIMEOUT_S,
         rerank_mode: RerankMode | None = None,
+        rerank_pair: RerankPair | None = None,
         inline_reasoning: bool = False,
         on_prefill: Callable[[tuple[int, int] | None], None] | None = None,
         engine_log: Path | None = None,
@@ -740,6 +740,9 @@ class LlamaServerClient:
         self._chat_ctx = chat_ctx
         # LLM => score candidates by yes/no logprob; None/cross-encoder => rank pooling.
         self._rerank_mode = rerank_mode
+        # The special tokens a cross-encoder reads around each query and candidate;
+        # None for every other client, and for a GGUF that names no such tokens.
+        self._rerank_pair = rerank_pair
         self.in_flight = 0
         # The server's input limit; None until read.
         self._max_input: int | None = None
@@ -1748,16 +1751,14 @@ class LlamaServerClient:
             return data
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
-        """Relevance scores via rank-pooling embeddings.
+        """Relevance scores, in candidate order.
 
-        The server runs with ``--pooling rank``; we send ``query</s></s>candidate``
-        pairs to ``/v1/embeddings`` and read each item's first embedding value as the
-        score, so the ``/v1/rerank`` template-dependency (and its zero-output failure
-        modes) is moot.
-
-        All pairs go out in one request per ``_EMBED_N_SEQ_MAX`` sequences: the
-        server queues one task per input, so splitting a query-time pool into
-        per-pair requests only adds HTTP round trips.
+        The order of the paths is fixed. An engine with a rerank route scores the
+        pairs itself, whatever the mode. An LLM reranker scores by its yes/no verdict
+        and builds no pair. A cross-encoder (``--pooling rank``) gets each pair as
+        token ids in the model's own layout (:class:`RerankPair`), cut to the
+        token cap, through ``/v1/embeddings``; the first value of each item is the
+        score. All pairs go out in one request per ``_EMBED_N_SEQ_MAX`` sequences.
         """
         if not candidates:
             return []
@@ -1765,16 +1766,24 @@ class LlamaServerClient:
             return self._rerank_route(self._profile.rerank_path, query, candidates)
         if self._rerank_mode is RerankMode.LLM:
             return self._rerank_llm(query, candidates)
+        pair = self._rerank_pair
+        if pair is None:
+            raise ProviderError(_NO_RERANK_PAIR_ERROR)
+        query_ids = self._text_ids(query)
         pairs = [
-            self._fit_estimated(f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}")
+            pair.ids(query_ids, self._text_ids(candidate), self._token_cap)
             for candidate in candidates
         ]
         scores: list[float] = []
         step = self._batch_limit or _EMBED_N_SEQ_MAX
         for start in range(0, len(pairs), step):
-            data = self._rerank_batch(pairs[start : start + step])
+            data = self._embeddings_call(pairs[start : start + step])
             scores.extend(_rerank_score(item, self._profile) for item in data)
         return scores
+
+    def _text_ids(self, text: str) -> list[int]:
+        """The token ids of *text* alone: no special tokens added, none parsed from it."""
+        return self._tokenize(text, add_special=False)
 
     def _rerank_route(self, path: str, query: str, candidates: list[str]) -> list[float]:
         """Scores from the engine's rerank route, in candidate order.
@@ -1837,31 +1846,6 @@ class LlamaServerClient:
         """The most inputs one embed or rerank request holds, from the engine's profile."""
         return self._profile.batch_limit
 
-    def _fit_estimated(self, text: str) -> str:
-        """Truncate *text* to the token cap only when its char estimate exceeds it."""
-        if self._token_cap is None:
-            return text
-        return self._fit_input(text, self._token_cap, estimate=True)[0]
-
-    def _rerank_batch(self, batch: list[str]) -> list[dict[str, Any]]:
-        """Score one rerank batch, redoing it with exact truncation on overflow.
-
-        The char estimate under-counts token-dense pairs, so an over-cap pair
-        can slip through untruncated; the server rejects it as CONTEXT_OVERFLOW
-        and the batch is redone with exact server-side tokenization. An engine
-        with no tokenize route raises the overflow with no resend.
-        """
-        try:
-            return self._embeddings_call(batch)
-        except ProviderError as exc:
-            if exc.kind is not ProviderErrorKind.CONTEXT_OVERFLOW or self._token_cap is None:
-                raise
-            if self._profile.tokenize_path is None:
-                raise
-            cap = self._token_cap
-            exact = [self._fit_input(text, cap, estimate=False)[0] for text in batch]
-            return self._embeddings_call(exact)
-
     def _rerank_llm(self, query: str, candidates: list[str]) -> list[float]:
         """Score each candidate by an LLM's yes/no first-token logprob.
 
@@ -1899,7 +1883,7 @@ class LlamaServerClient:
 
         return _llm_rerank_score(_first_token_top_logprobs(retry_on_gateway_error(_call)))
 
-    def _embed_request(self, inputs: list[str]) -> dict[str, Any]:
+    def _embed_request(self, inputs: list[str] | list[list[int]]) -> dict[str, Any]:
         """The body of one ``/v1/embeddings`` request for *inputs*."""
         return {
             "model": self._model,
@@ -1913,8 +1897,8 @@ class LlamaServerClient:
         envelope = _wire_bytes(self._embed_request([]))
         return _EMBED_PAYLOAD_LIMIT - _EMBED_BODY_MARGIN - envelope
 
-    def _embeddings_call(self, inputs: list[str]) -> list[dict[str, Any]]:
-        """POST one already-budgeted sub-batch to ``/v1/embeddings``; return its data."""
+    def _embeddings_call(self, inputs: list[str] | list[list[int]]) -> list[dict[str, Any]]:
+        """POST one already-budgeted sub-batch (texts or token ids) to ``/v1/embeddings``."""
 
         def _call() -> list[dict[str, Any]]:
             with self._track():
@@ -2157,7 +2141,13 @@ class LlamaServerClient:
         except httpx.HTTPError as exc:
             log.warning("Could not stop the upstream of %s: %s", self._model, exc)
 
-    def _tokenize(self, text: str, *, parse_special: bool = _TOKENIZE_PARSE_SPECIAL) -> list[int]:
+    def _tokenize(
+        self,
+        text: str,
+        *,
+        parse_special: bool = _TOKENIZE_PARSE_SPECIAL,
+        add_special: bool = _TOKENIZE_ADD_SPECIAL,
+    ) -> list[int]:
         """Token ids for *text*; a gateway error is retried like an embedding."""
 
         path = self._require_route(self._profile.tokenize_path, "tokenize")
@@ -2167,7 +2157,7 @@ class LlamaServerClient:
                 self._native_route(path),
                 json={
                     "content": text,
-                    "add_special": _TOKENIZE_ADD_SPECIAL,
+                    "add_special": add_special,
                     "parse_special": parse_special,
                 },
             )

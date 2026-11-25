@@ -49,8 +49,8 @@ install or run, and no in-process binding: the engine is 100% llama.cpp, and lil
 adds a placement planner, a process supervisor, and a thin httpx router. All four
 roles run over HTTP: chat and vision use `/v1/chat/completions` (chat with
 `--jinja` for native tool calls; vision adds an `--mmproj` projector), embed and
-rerank use `/v1/embeddings` (rerank with `--pooling rank` and a
-`query</s></s>candidate` pairing, never the template-dependent `/v1/rerank`). A
+rerank use `/v1/embeddings` (rerank with `--pooling rank`; each pair goes as token
+ids in the layout the GGUF's tokenizer facts give, see `providers/fleet/rerank_pair.py`). A
 configured role whose server cannot start surfaces a user-facing `ProviderError`
 rather than degrading silently.
 
