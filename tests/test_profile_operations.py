@@ -744,11 +744,44 @@ def test_your_changes_lists_only_the_values_that_differ_from_the_profile(store):
 
 
 def test_your_changes_treats_an_int_and_a_float_of_the_same_number_as_equal(store):
-    # The setting is a float, so the model coerces 1 to 1.0: the same effective value.
+    # In Python 1 == 1.0, and the setting holds a float either way.
     _write(_global_dir(), "mine", "[values]\nmax_distance = 1.0\n")
     profiles.apply(store, "mine")
     _prepend_config("max_distance = 1\n")
     assert profiles.your_changes() == ()
+
+
+@pytest.mark.parametrize(
+    ("profile_line", "your_line", "listed"),
+    [
+        pytest.param("chunk_size = 512", 'chunk_size = "512"', False, id="string-int"),
+        pytest.param("layout_detection = true", 'layout_detection = "1"', False, id="string-bool"),
+        pytest.param(
+            "force_ocr_pages = [1, 2]", 'force_ocr_pages = ["1", "2"]', False, id="string-list"
+        ),
+        pytest.param("fts_language = 'English'", "fts_language = 'english'", False, id="case"),
+        pytest.param("force_ocr_pages = [1, 2]", "force_ocr_pages = [2, 1]", True, id="order"),
+        pytest.param("chunk_size = 512", "chunk_size = 384", True, id="different"),
+    ],
+)
+def test_your_changes_compares_values_as_the_setting_holds_them(
+    store, profile_line, your_line, listed
+):
+    _write(_global_dir(), "mine", f"[values]\n{profile_line}\n")
+    profiles.apply(store, "mine")
+    _prepend_config(f"{your_line}\n")
+    assert bool(profiles.your_changes()) is listed
+
+
+def test_a_value_its_setting_refuses_is_compared_as_written():
+    row = profiles.ChangeRow(
+        "chunk_size", "many", 512, SettingSource.PROFILE, profiles.ProfileEffect.REINDEX
+    )
+    same = profiles.ChangeRow(
+        "chunk_size", "many", "many", SettingSource.PROFILE, profiles.ProfileEffect.REINDEX
+    )
+    assert profiles._same_setting(row) is False
+    assert profiles._same_setting(same) is True
 
 
 def test_your_changes_under_default_compare_with_the_built_in_value():
