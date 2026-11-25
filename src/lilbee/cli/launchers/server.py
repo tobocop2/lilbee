@@ -377,8 +377,8 @@ def spawn_server(
             env=child_env,
             start_new_session=os.name == "posix",
             # Windows: a group of its own stops a console Ctrl-C reaching serve and
-            # lets CTRL_BREAK target serve alone. The flag is 0 elsewhere.
-            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            # lets CTRL_BREAK target serve alone.
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
         )
     finally:
         # Popen dups the fd into the child; the parent's handle is no longer

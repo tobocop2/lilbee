@@ -285,6 +285,7 @@ _NEW_GROUP = 0x200
 
 def test_spawn_gives_serve_its_own_process_group(monkeypatch, _capture_popen) -> None:
     """A group of its own keeps a console Ctrl-C from reaching serve (Windows)."""
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", _NEW_GROUP, raising=False)
     monkeypatch.setenv("LILBEE_LAUNCHER_SERVE_QUIET", "1")
     server_mod.spawn_server(8080)
@@ -436,6 +437,7 @@ def test_serve_gets_a_session_of_its_own_on_posix_with_or_without_env_overrides(
 
     assert _capture_popen["popen_kwargs"] == {
         "start_new_session": os.name == "posix",
+        "creationflags": 0,
         "bind_lifetime": False,
     }
 
