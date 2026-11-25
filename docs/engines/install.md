@@ -96,6 +96,28 @@ chat screen shows the bytes in the task bar. Each failed attempt prints its
 cause and its number. The MCP tool and the REST route return one result at the
 end and show no progress.
 
+### How each llama.cpp pack reports memory
+
+After a launch, lilbee compares the memory that the engine used with its own
+estimate. An engine that serves `GET /memory` answers this directly. Upstream
+llama.cpp has no `GET /memory` (upstream pull request 26130 is open). Every
+llama.cpp pack is built from an upstream release, so every pack cell reads the
+memory from the startup log of the engine. A `llama-server` built from the
+lilbee source pin serves `GET /memory`.
+
+<!-- readback-cells:start -->
+| Pack cell | Memory readback |
+|---|---|
+| `windows-x86_64-cpu` | startup log |
+| `windows-x86_64-cuda` | startup log |
+| `macos-arm64-metal` | startup log |
+| `linux-x86_64-cuda` | startup log |
+| `linux-x86_64-cpu` | startup log |
+| `windows-x86_64-vulkan` | startup log |
+| `linux-x86_64-vulkan` | startup log |
+| `linux-x86_64-rocm` | startup log |
+<!-- readback-cells:end -->
+
 ### A llama-server that you supply
 
 If lilbee finds a `llama-server` of its own, it runs that one and leaves the
