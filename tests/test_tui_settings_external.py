@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 
 from textual import events
@@ -159,6 +160,10 @@ def test_a_write_in_progress_reverts_nothing(monkeypatch):
     _write_from_another_process("top_k", 31)
     persistent_settings.overlay_persisted_settings(cfg.data_root)
     reading = read_config_state()
+    # The writer below writes in place under the lock; this test is about the lock, so the
+    # file counts as old. The quiet window for an in-place write has its own tests.
+    later = time.time_ns() + 3_600_000_000_000
+    monkeypatch.setattr(persistent_settings, "_now_ns", lambda: later)
     path = cfg.data_root / "config.toml"
     whole = path.read_text(encoding="utf-8").replace("31", "32")
     write_lock = persistent_settings._config_write_lock
