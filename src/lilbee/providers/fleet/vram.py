@@ -503,9 +503,7 @@ def checkpoint_bytes(architecture: Mapping[str, object], kv_element_bytes: float
     if window:
         layers = architecture.get(_ARCH_WINDOW_LAYERS)
         windowed = sum(1 for on in layers if on) if isinstance(layers, list) else blocks
-        kv_heads = _count(architecture.get(_ARCH_KV_HEADS)) or _count(
-            architecture.get(_ARCH_HEADS)
-        )
+        kv_heads = _count(architecture.get(_ARCH_KV_HEADS)) or _count(architecture.get(_ARCH_HEADS))
         key = _count(architecture.get(_ARCH_KEY_LENGTH))
         value = _count(architecture.get(_ARCH_VALUE_LENGTH))
         if not (windowed and kv_heads and key and value):
