@@ -2735,15 +2735,22 @@ class TestArgSources:
         assert "wiki_dir" not in names  # read-only: would be refused by /set
         assert "chat_model" in names
 
-    def test_model_and_document_lookups_log_and_return_empty_on_error(self) -> None:
+    def test_model_lookup_lets_an_unreadable_registry_through(self) -> None:
         from unittest.mock import patch
 
-        from lilbee.cli.tui.widgets.autocomplete import ARG_SEARCHES, ARG_SOURCES
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SOURCES
 
-        with patch(
-            "lilbee.modelhub.models.list_installed_models", side_effect=RuntimeError("boom")
+        with (
+            patch("lilbee.modelhub.models.list_installed_models", side_effect=OSError("boom")),
+            pytest.raises(OSError, match="boom"),
         ):
-            assert ARG_SOURCES["/model"]() == []
+            ARG_SOURCES["/model"]()
+
+    def test_document_lookup_logs_and_returns_empty_on_error(self) -> None:
+        from unittest.mock import patch
+
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SEARCHES
+
         with patch("lilbee.cli.tui.widgets.autocomplete.get_services", side_effect=RuntimeError):
             assert ARG_SEARCHES["/delete"]("") == []
 
@@ -4649,7 +4656,7 @@ class TestModelCardSelected:
 
 
 class TestCollectNativeModelsError:
-    def test_exception_suppressed(self, tmp_path) -> None:
+    def test_an_unreadable_registry_is_not_suppressed(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _collect_native_models
 
         cfg.models_dir = tmp_path / "models"
@@ -4662,8 +4669,8 @@ class TestCollectNativeModelsError:
         seen: set[str] = set()
         with mock.patch(
             "lilbee.modelhub.registry.ModelRegistry",
-            side_effect=RuntimeError("boom"),
-        ):
+            side_effect=OSError("boom"),
+        ), pytest.raises(OSError, match="boom"):
             _collect_native_models(buckets, seen)
         assert buckets["chat"] == []
 
