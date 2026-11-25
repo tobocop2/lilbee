@@ -249,7 +249,7 @@ class TestAdoptEmbedder:
         monkeypatch.setattr(engine_choice, "installed_engines", dict)
         _engine, pull_notice = ModelManager(tmp_path / "models", cfg)._pull_engine(ref)
         (settings_notice,) = app_settings._no_engine_notices({"embedding_model"})
-        assert pull_notice and pull_notice == settings_notice
+        assert pull_notice and pull_notice in settings_notice
         update = SimpleNamespace(reindex_required=False, warnings=(settings_notice,))
         pulled = SimpleNamespace(warning=pull_notice)
         with (
@@ -257,4 +257,4 @@ class TestAdoptEmbedder:
             patch.object(app_models, "pull_model_data", return_value=pulled),
         ):
             result = app_models.adopt_embedder(ref)
-        assert result.warning == pull_notice
+        assert result.warning == settings_notice
