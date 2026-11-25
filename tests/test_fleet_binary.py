@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -372,38 +371,25 @@ class TestEnginePin:
         finally:
             cfg.llama_server_path = original
 
-    def test_signature_tells_a_replacement_apart_when_times_are_whole_seconds(
-        self, tmp_path: Path
+    @pytest.mark.parametrize("term", ["st_size", "st_mtime_ns", "st_ino", "st_ctime_ns"])
+    def test_signature_changes_with_each_stat_term(
+        self, term: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # tar extraction and OCI layers restore whole-second times, so two builds of
-        # equal size can share size and mtime. The inode tells the files apart.
-        exe = tmp_path / "llama-server"
-        exe.write_text("build-A\n", encoding="utf-8")
-        os.utime(exe, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
-        sig_a = binary_mod._binary_signature(exe)
-        staged = tmp_path / "staged"
-        staged.write_text("build-B\n", encoding="utf-8")
-        os.utime(staged, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
-        staged.replace(exe)
-        assert binary_mod._binary_signature(exe) != sig_a
+        # Tar extraction and OCI layers restore whole-second times, so two builds can share
+        # size and mtime. Each stat term must move the signature on its own, on every OS.
+        fields = {
+            "st_size": 100,
+            "st_mtime_ns": 1_700_000_000_000_000_000,
+            "st_ino": 7,
+            "st_ctime_ns": 1_700_000_000_000_000_000,
+        }
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="st_ctime_ns is the creation time on Windows, so an in-place rewrite keeps it",
-    )
-    def test_signature_tells_an_in_place_rewrite_apart_when_times_are_whole_seconds(
-        self, tmp_path: Path
-    ) -> None:
-        # The same inode rewritten to the same size, with the time put back: only the
-        # change time, which a caller cannot set, moves.
-        exe = tmp_path / "llama-server"
-        exe.write_text("build-A\n", encoding="utf-8")
-        os.utime(exe, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
-        sig_a = binary_mod._binary_signature(exe)
-        time.sleep(0.05)  # the kernel stamps the change time on a coarse clock tick
-        exe.write_text("build-B\n", encoding="utf-8")
-        os.utime(exe, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
-        assert binary_mod._binary_signature(exe) != sig_a
+        def signature(**overrides: int) -> str:
+            fake = SimpleNamespace(**{**fields, **overrides})
+            monkeypatch.setattr(Path, "stat", lambda self: fake)
+            return binary_mod._binary_signature(Path("/opt/llama-server"))
+
+        assert signature(**{term: fields[term] + 1}) != signature()
 
     def test_bundled_wheel_pin_wins_when_no_custom_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
