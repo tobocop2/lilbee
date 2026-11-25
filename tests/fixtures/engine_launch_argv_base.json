@@ -226,7 +226,9 @@
       "--max-client-batch-size",
       "64",
       "--max-batch-tokens",
-      "640"
+      "640",
+      "--tokenization-workers",
+      "2"
     ],
     "rerank": [
       "/engines/bin/server",
@@ -237,7 +239,9 @@
       "--max-client-batch-size",
       "64",
       "--max-batch-tokens",
-      "640"
+      "640",
+      "--tokenization-workers",
+      "2"
     ]
   }
 }
