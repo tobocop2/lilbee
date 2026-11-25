@@ -31,7 +31,7 @@ def _load(name: str) -> types.ModuleType:
 
 @pytest.fixture
 def windows_newlines(monkeypatch: pytest.MonkeyPatch) -> Callable[[], Any]:
-    """Return a context manager in which a text file opened for writing with no newline argument gets "\\r\\n"."""
+    """Return a context manager in which a default text write gets "\\r\\n"."""
     real_open = io.open
 
     def windows_open(
@@ -63,7 +63,9 @@ def _assert_lf_only(*paths: Path) -> None:
         assert b"\r" not in data, f"{path.name} holds a carriage return"
 
 
-def test_the_simulation_turns_a_default_write_into_crlf(windows_newlines: Callable[[], Any], tmp_path: Path) -> None:
+def test_the_simulation_turns_a_default_write_into_crlf(
+    windows_newlines: Callable[[], Any], tmp_path: Path
+) -> None:
     with windows_newlines():
         (tmp_path / "plain").write_text("a\nb\n", encoding="utf-8")
         (tmp_path / "lf").write_text("a\nb\n", encoding="utf-8", newline="\n")
@@ -91,7 +93,8 @@ def test_llama_cuda_notice(
 def test_rust_licences(windows_newlines: Callable[[], Any], tmp_path: Path) -> None:
     tool = _load("rust_licences")
     use = {"crate": {"name": "a", "version": "1.0", "repository": None}}
-    report = {"licenses": [{"id": "MIT", "name": "MIT License", "text": "text\n", "used_by": [use]}]}
+    entry = {"id": "MIT", "name": "MIT License", "text": "text\n", "used_by": [use]}
+    report = {"licenses": [entry]}
     with windows_newlines():
         tool.write_licences(report, tmp_path / "out")
     _assert_lf_only(*(tmp_path / "out").iterdir())
@@ -120,7 +123,8 @@ def test_rust_notices(windows_newlines: Callable[[], Any], tmp_path: Path) -> No
 def test_embedded_ui_notices(windows_newlines: Callable[[], Any], tmp_path: Path) -> None:
     tool = _load("embedded_ui_notices")
     bundle = tmp_path / "bundle.js"
-    bundle.write_text("/**\n * @license React\n * Licensed under the MIT License\n */\n", encoding="utf-8")
+    page = "/**\n * @license React\n * Licensed under the MIT License\n */\n"
+    bundle.write_text(page, encoding="utf-8")
     output = tmp_path / "NOTICE-UI"
     with windows_newlines():
         tool.main(["embedded_ui_notices", str(bundle), str(output)])
@@ -131,9 +135,11 @@ def test_mpl_notice(windows_newlines: Callable[[], Any], tmp_path: Path) -> None
     tool = _load("mpl_notice")
     uses = [{"crate": {"name": "a", "version": "1.0"}}]
     about = tmp_path / "about.json"
-    about.write_text(json.dumps({"licenses": [{"id": "MPL-2.0", "used_by": uses}]}), encoding="utf-8")
+    report = {"licenses": [{"id": "MPL-2.0", "used_by": uses}]}
+    about.write_text(json.dumps(report), encoding="utf-8")
     lock = tmp_path / "Cargo.lock"
-    lock.write_text('[[package]]\nname = "a"\nversion = "1.0"\nchecksum = "abc"\n', encoding="utf-8")
+    package = '[[package]]\nname = "a"\nversion = "1.0"\nchecksum = "abc"\n'
+    lock.write_text(package, encoding="utf-8")
     output = tmp_path / "SOURCE-MPL-2.0"
     with windows_newlines():
         tool.main(["mpl_notice", str(about), str(lock), str(output)])
@@ -174,5 +180,6 @@ def test_collect_python_licences(
     _assert_lf_only(terms, mpl)
     terms.write_bytes(b"MIT\n")
     with windows_newlines():
-        tool.main(["--interpreter", str(tmp_path), str(tmp_path), str(tmp_path / "out"), str(terms)])
+        args = ["--interpreter", str(tmp_path), str(tmp_path), str(tmp_path / "out"), str(terms)]
+        tool.main(args)
     _assert_lf_only(terms)
