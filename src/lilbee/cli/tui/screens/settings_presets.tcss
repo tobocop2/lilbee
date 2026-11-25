@@ -2,7 +2,7 @@ PresetDialog {
     align: center middle;
 }
 
-PresetDialog > VerticalScroll {
+PresetDialog > Vertical {
     width: 64;
     height: auto;
     max-height: 90%;
@@ -21,6 +21,16 @@ PresetDialog #preset-title {
 PresetDialog Input,
 PresetDialog Select {
     width: 100%;
+}
+
+PresetDialog #dialog-form {
+    height: auto;
+    max-height: 100%;
+}
+
+PresetDialog #dialog-footer {
+    dock: bottom;
+    height: auto;
 }
 
 PresetDialog #preset-error {

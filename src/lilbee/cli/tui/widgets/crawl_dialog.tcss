@@ -2,7 +2,7 @@ CrawlDialog {
     align: center middle;
 }
 
-CrawlDialog > VerticalScroll {
+CrawlDialog > Vertical {
     width: 64;
     height: auto;
     max-height: 90%;
@@ -28,6 +28,16 @@ CrawlDialog .crawl-field-label {
 
 CrawlDialog Input {
     width: 100%;
+}
+
+CrawlDialog #dialog-form {
+    height: auto;
+    max-height: 100%;
+}
+
+CrawlDialog #dialog-footer {
+    dock: bottom;
+    height: auto;
 }
 
 CrawlDialog #crawl-error {

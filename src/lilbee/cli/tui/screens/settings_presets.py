@@ -58,62 +58,70 @@ class PresetDialog(Dialog[str | None]):
 
     def compose(self) -> ComposeResult:
         preset = self._preset
+        title = (
+            msg.PRESET_DIALOG_ADD_TITLE
+            if preset is None
+            else msg.PRESET_DIALOG_EDIT_TITLE.format(name=preset.name)
+        )
+        # The form scrolls on short terminals. The title, the error and the buttons stay
+        # pinned, so the buttons are on screen without a focus.
+        with Vertical():
+            yield Static(title, id="preset-title", markup=False)
+            with VerticalScroll(id="dialog-form"):
+                yield from self._form_fields()
+            with Vertical(id="dialog-footer"):
+                yield Static("", id="preset-error", markup=False)
+                with Center(), Horizontal(id="preset-buttons"):
+                    yield Button(msg.PRESET_DIALOG_SAVE, variant="primary", id="preset-save")
+                    if preset is not None and preset.has_key:
+                        yield Button(
+                            msg.PRESET_DIALOG_CLEAR_KEY, name=preset.name, id="preset-clear-key"
+                        )
+                    yield Button(msg.PRESET_DIALOG_CANCEL, id="preset-cancel")
+
+    def _form_fields(self) -> ComposeResult:
+        preset = self._preset
         roles = set(preset.roles) if preset else set()
         wire = preset.rerank_wire if preset and preset.rerank_wire else RerankWire.V1
-        with VerticalScroll():
-            title = (
-                msg.PRESET_DIALOG_ADD_TITLE
-                if preset is None
-                else msg.PRESET_DIALOG_EDIT_TITLE.format(name=preset.name)
+        if preset is None:
+            yield Label(msg.PRESET_DIALOG_NAME_LABEL)
+            yield Input(id="preset-name-input")
+        yield Label(msg.PRESET_DIALOG_URL_LABEL)
+        yield Input(
+            value=preset.base_url if preset else "",
+            placeholder=msg.PRESET_DIALOG_URL_PLACEHOLDER,
+            id="preset-url-input",
+        )
+        yield Label(msg.PRESET_DIALOG_ROLES_LABEL)
+        for role in WorkerRole:
+            yield Checkbox(role.value, value=role in roles, id=f"preset-role-{role.value}")
+        yield Label(msg.PRESET_DIALOG_WIRE_LABEL, id="preset-wire-label")
+        yield Select(
+            [(w.value, w) for w in RerankWire],
+            value=wire,
+            allow_blank=False,
+            id="preset-wire-select",
+        )
+        yield Label(msg.PRESET_DIALOG_RESERVE_LABEL)
+        yield Input(
+            value=_reserve_value(preset),
+            placeholder=msg.PRESET_DIALOG_RESERVE_PLACEHOLDER,
+            id="preset-reserve-input",
+        )
+        yield Label(msg.PRESET_DIALOG_KEY_LABEL)
+        yield Input(
+            password=True,
+            placeholder=msg.PRESET_DIALOG_KEY_ADD_PLACEHOLDER
+            if preset is None
+            else msg.PRESET_DIALOG_KEY_EDIT_PLACEHOLDER,
+            id="preset-key-input",
+        )
+        if preset is not None:
+            yield Static(
+                msg.PRESET_DIALOG_KEY_STATE.format(state=key_state_text(preset)),
+                id="preset-key-state",
+                markup=False,
             )
-            yield Static(title, id="preset-title", markup=False)
-            if preset is None:
-                yield Label(msg.PRESET_DIALOG_NAME_LABEL)
-                yield Input(id="preset-name-input")
-            yield Label(msg.PRESET_DIALOG_URL_LABEL)
-            yield Input(
-                value=preset.base_url if preset else "",
-                placeholder=msg.PRESET_DIALOG_URL_PLACEHOLDER,
-                id="preset-url-input",
-            )
-            yield Label(msg.PRESET_DIALOG_ROLES_LABEL)
-            for role in WorkerRole:
-                yield Checkbox(role.value, value=role in roles, id=f"preset-role-{role.value}")
-            yield Label(msg.PRESET_DIALOG_WIRE_LABEL, id="preset-wire-label")
-            yield Select(
-                [(w.value, w) for w in RerankWire],
-                value=wire,
-                allow_blank=False,
-                id="preset-wire-select",
-            )
-            yield Label(msg.PRESET_DIALOG_RESERVE_LABEL)
-            yield Input(
-                value=_reserve_value(preset),
-                placeholder=msg.PRESET_DIALOG_RESERVE_PLACEHOLDER,
-                id="preset-reserve-input",
-            )
-            yield Label(msg.PRESET_DIALOG_KEY_LABEL)
-            yield Input(
-                password=True,
-                placeholder=msg.PRESET_DIALOG_KEY_ADD_PLACEHOLDER
-                if preset is None
-                else msg.PRESET_DIALOG_KEY_EDIT_PLACEHOLDER,
-                id="preset-key-input",
-            )
-            if preset is not None:
-                yield Static(
-                    msg.PRESET_DIALOG_KEY_STATE.format(state=key_state_text(preset)),
-                    id="preset-key-state",
-                    markup=False,
-                )
-            yield Static("", id="preset-error", markup=False)
-            with Center(), Horizontal(id="preset-buttons"):
-                yield Button(msg.PRESET_DIALOG_SAVE, variant="primary", id="preset-save")
-                if preset is not None and preset.has_key:
-                    yield Button(
-                        msg.PRESET_DIALOG_CLEAR_KEY, name=preset.name, id="preset-clear-key"
-                    )
-                yield Button(msg.PRESET_DIALOG_CANCEL, id="preset-cancel")
 
     def on_mount(self) -> None:
         self._show_wire()

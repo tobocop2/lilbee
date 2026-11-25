@@ -7,7 +7,7 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Center, Horizontal, VerticalScroll
+from textual.containers import Center, Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Checkbox, Input, Label, Static
 
 from lilbee.cli.tui import messages as msg
@@ -54,56 +54,61 @@ class CrawlDialog(Dialog[CrawlParams | None]):
     ]
 
     def compose(self) -> ComposeResult:
-        # Scrollable body so the full form (incl. depth + the action buttons)
-        # stays reachable on short terminals rather than clipping at max-height.
-        with VerticalScroll():
+        # The form scrolls on short terminals. The title, the error and the buttons stay
+        # pinned, so the buttons are on screen without a focus.
+        with Vertical():
             yield Static(msg.CRAWL_DIALOG_TITLE, id="crawl-title")
-            yield Label(msg.CRAWL_DIALOG_URL_LABEL)
+            with VerticalScroll(id="dialog-form"):
+                yield from self._form_fields()
+            with Vertical(id="dialog-footer"):
+                yield Static("", id="crawl-error", markup=False)
+                with Center(), Horizontal(id="crawl-buttons"):
+                    yield Button(msg.CRAWL_DIALOG_SUBMIT, variant="primary", id="crawl-submit")
+                    yield Button(msg.CRAWL_DIALOG_CANCEL, variant="default", id="crawl-cancel")
+
+    def _form_fields(self) -> ComposeResult:
+        yield Label(msg.CRAWL_DIALOG_URL_LABEL)
+        yield Input(
+            placeholder=msg.CRAWL_DIALOG_URL_PLACEHOLDER,
+            id="crawl-url-input",
+        )
+        yield Checkbox(
+            msg.CRAWL_DIALOG_RECURSIVE_LABEL,
+            value=True,
+            id="crawl-recursive-checkbox",
+        )
+        # Defaults to the persisted crawl_render_mode; toggling it sticks
+        # (the chat screen writes the choice back when the crawl starts).
+        yield Checkbox(
+            msg.CRAWL_DIALOG_BROWSER_LABEL,
+            value=cfg.crawl_render_mode is CrawlRenderMode.BROWSER,
+            id="crawl-browser-checkbox",
+        )
+        # Max pages is the cap users actually reach for, so it sits at the top
+        # level (not behind Advanced) prefilled with the protective default;
+        # clearing it crawls unlimited without a trip to settings.
+        yield Label(msg.CRAWL_DIALOG_MAX_PAGES_LABEL, classes="crawl-field-label")
+        yield Input(
+            value=str(cfg.crawl_safety_max_pages),
+            placeholder=msg.CRAWL_DIALOG_MAX_PAGES_PLACEHOLDER,
+            id="crawl-max-pages-input",
+        )
+        # Depth sits at the top level (not behind a collapsible) so it is
+        # discoverable and always reachable; it only applies to recursive
+        # crawls and is ignored when Recursive is unchecked.
+        yield Label(msg.CRAWL_DIALOG_DEPTH_LABEL, classes="crawl-field-label")
+        yield Input(
+            placeholder=msg.CRAWL_DIALOG_DEPTH_PLACEHOLDER,
+            id="crawl-depth-input",
+        )
+        yield Label(msg.CRAWL_DIALOG_LOGIN_LABEL, classes="crawl-field-label")
+        for field_id, label, secret in _LOGIN_INPUTS:
+            yield Label(label)
             yield Input(
-                placeholder=msg.CRAWL_DIALOG_URL_PLACEHOLDER,
-                id="crawl-url-input",
+                placeholder=msg.CRAWL_DIALOG_LOGIN_PLACEHOLDER,
+                password=secret,
+                id=field_id,
             )
-            yield Checkbox(
-                msg.CRAWL_DIALOG_RECURSIVE_LABEL,
-                value=True,
-                id="crawl-recursive-checkbox",
-            )
-            # Defaults to the persisted crawl_render_mode; toggling it sticks
-            # (the chat screen writes the choice back when the crawl starts).
-            yield Checkbox(
-                msg.CRAWL_DIALOG_BROWSER_LABEL,
-                value=cfg.crawl_render_mode is CrawlRenderMode.BROWSER,
-                id="crawl-browser-checkbox",
-            )
-            # Max pages is the cap users actually reach for, so it sits at the top
-            # level (not behind Advanced) prefilled with the protective default;
-            # clearing it crawls unlimited without a trip to settings.
-            yield Label(msg.CRAWL_DIALOG_MAX_PAGES_LABEL, classes="crawl-field-label")
-            yield Input(
-                value=str(cfg.crawl_safety_max_pages),
-                placeholder=msg.CRAWL_DIALOG_MAX_PAGES_PLACEHOLDER,
-                id="crawl-max-pages-input",
-            )
-            # Depth sits at the top level (not behind a collapsible) so it is
-            # discoverable and always reachable; it only applies to recursive
-            # crawls and is ignored when Recursive is unchecked.
-            yield Label(msg.CRAWL_DIALOG_DEPTH_LABEL, classes="crawl-field-label")
-            yield Input(
-                placeholder=msg.CRAWL_DIALOG_DEPTH_PLACEHOLDER,
-                id="crawl-depth-input",
-            )
-            yield Label(msg.CRAWL_DIALOG_LOGIN_LABEL, classes="crawl-field-label")
-            for field_id, label, secret in _LOGIN_INPUTS:
-                yield Label(label)
-                yield Input(
-                    placeholder=msg.CRAWL_DIALOG_LOGIN_PLACEHOLDER,
-                    password=secret,
-                    id=field_id,
-                )
-            yield Static("", id="crawl-error", markup=False)
-            with Center(), Horizontal(id="crawl-buttons"):
-                yield Button(msg.CRAWL_DIALOG_SUBMIT, variant="primary", id="crawl-submit")
-                yield Button(msg.CRAWL_DIALOG_CANCEL, variant="default", id="crawl-cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "crawl-submit":
