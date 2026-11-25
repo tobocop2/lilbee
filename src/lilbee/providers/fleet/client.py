@@ -1363,7 +1363,6 @@ class LlamaServerClient:
         if count > self._chat_ctx:
             raise ProviderError(
                 _CONTEXT_OVERFLOW_TEXT,
-                provider=self._profile.label,
                 kind=ProviderErrorKind.CONTEXT_OVERFLOW,
             )
 
@@ -1395,7 +1394,6 @@ class LlamaServerClient:
             raise ProviderError(
                 f"{self._profile.label} could not count the tokens of the prompt, so the "
                 f"prompt was not sent: {exc}",
-                provider=self._profile.label,
                 kind=kind,
             ) from exc
 
