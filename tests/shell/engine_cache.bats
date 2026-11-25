@@ -42,18 +42,12 @@ engine_paths() {
   [ "$output" = "true" ]
 }
 
-@test "the CI engine build runs when an engine path changed" {
-  run yq -r '.jobs.engine.if' "${CI}"
-  [ "$status" -eq 0 ]
-  [ "$output" = "needs.changes.outputs.engine == 'true'" ]
+# ci_result.bats checks that ci-result needs the job and that it runs on the
+# engine group.
+@test "a CI run with no diff to read builds the engines" {
   run yq -r '.jobs.changes.outputs.engine' "${CI}"
-  [ "$output" = "\${{ steps.filter.outputs.engine || 'true' }}" ]
-}
-
-@test "ci-result judges the engine build" {
-  run yq -r '.jobs["ci-result"].needs | index("engine")' "${CI}"
   [ "$status" -eq 0 ]
-  [ "$output" != "null" ]
+  [ "$output" = "\${{ steps.filter.outputs.engine || 'true' }}" ]
 }
 
 @test "the engine paths are the engine key's files and the build workflow" {
@@ -92,5 +86,6 @@ hashed_files() {
 @test "an OpenVINO pin bump does not start the engine build" {
   run engine_paths
   [ "$status" -eq 0 ]
+  [ -n "${output}" ]
   ! echo "${output}" | grep -qxF 'engines/openvino.env'
 }
