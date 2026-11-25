@@ -123,10 +123,9 @@ _CUT_SITES = {
 
 
 @pytest.mark.parametrize("site", sorted(_CUT_SITES))
-def test_a_cut_stream_names_its_engine(site: str) -> None:
-    with pytest.raises(StreamInterruptedError) as caught:
+def test_a_cut_stream_raises_the_interrupted_error(site: str) -> None:
+    with pytest.raises(StreamInterruptedError):
         _CUT_SITES[site](_build(_cut_after_a_frame))
-    assert caught.value.provider == _PROFILE.label
 
 
 def _fake_client() -> MagicMock:
@@ -143,17 +142,16 @@ def test_a_vision_timeout_of_one_second_or_less_is_the_deadline(
     assert client.chat_abortable.call_args.kwargs["deadline_s"] == deadline_s
 
 
-def test_a_vision_deadline_error_names_the_engine() -> None:
+def test_a_vision_deadline_error_says_how_long_it_waited() -> None:
     client = _fake_client()
-    client.chat_abortable.side_effect = ChatDeadlineError("late", provider="x")
-    with pytest.raises(ProviderError, match="timed out after 2s") as caught:
+    client.chat_abortable.side_effect = ChatDeadlineError("late")
+    with pytest.raises(ProviderError, match="timed out after 2s"):
         prov_mod._vision_call(client, _MESSAGES, 2.0)
-    assert caught.value.provider == prov_mod._PROVIDER_NAME
 
 
 def test_a_vision_page_cut_with_no_transport_cause_keeps_its_own_error() -> None:
     client = _fake_client()
-    cut = StreamInterruptedError("llama.cpp")
+    cut = StreamInterruptedError()
     client.chat_abortable.side_effect = cut
     with pytest.raises(StreamInterruptedError) as caught:
         prov_mod._vision_call(client, _MESSAGES, None)
@@ -162,7 +160,7 @@ def test_a_vision_page_cut_with_no_transport_cause_keeps_its_own_error() -> None
 
 def test_a_vision_page_cut_by_a_non_transport_error_keeps_its_own_error() -> None:
     client = _fake_client()
-    cut = StreamInterruptedError("llama.cpp")
+    cut = StreamInterruptedError()
     cut.__cause__ = ValueError("not a transport error")
     client.chat_abortable.side_effect = cut
     with pytest.raises(StreamInterruptedError) as caught:
@@ -170,8 +168,7 @@ def test_a_vision_page_cut_by_a_non_transport_error_keeps_its_own_error() -> Non
     assert caught.value is cut
 
 
-def test_no_healthy_replica_error_names_the_provider() -> None:
+def test_no_healthy_replica_error_is_a_connection_error() -> None:
     with pytest.raises(ProviderError) as caught:
         prov_mod._raise_no_healthy_replica(httpx.ConnectError("refused"))
-    assert caught.value.provider == prov_mod._PROVIDER_NAME
     assert caught.value.kind is ProviderErrorKind.CONNECTION
