@@ -84,6 +84,10 @@ def sigint_cancel() -> Iterator[SignalFlag]:
     normal exit joins every worker thread, also a stuck one. A further Ctrl-C ends
     the process from the handler.
 
+    A cancelled run can leave a worker thread behind that the exit joins. While one
+    lives, a Ctrl-C after the scope ends the process from the handler; once none
+    lives, the previous handler takes the Ctrl-C.
+
     signal.signal only works on the main thread; off it (pytest-xdist workers)
     the token is simply never set and Ctrl-C keeps its default behaviour.
     """
@@ -91,9 +95,11 @@ def sigint_cancel() -> Iterator[SignalFlag]:
     if threading.current_thread() is not threading.main_thread():
         yield token
         return
-    from lilbee.app.services import force_quit, force_quit_from_handler
+    from lilbee.app.services import force_quit, force_quit_from_handler, straggler_threads
 
     previous = signal.getsignal(signal.SIGINT)
+    threads_before = set(straggler_threads())
+    left_behind: set[threading.Thread] = set()
     unwinding = False
 
     def _on_sigint(_signum: int, _frame: object) -> None:
@@ -108,10 +114,18 @@ def sigint_cancel() -> Iterator[SignalFlag]:
             if not token.winding_down:
                 raise KeyboardInterrupt
 
+    def _on_sigint_after(signum: int, _frame: object) -> None:
+        if any(thread.is_alive() for thread in left_behind):
+            force_quit_from_handler()
+        signal.signal(signal.SIGINT, previous)
+        signal.raise_signal(signum)
+
     signal.signal(signal.SIGINT, _on_sigint)
     try:
         yield token
     finally:
         if unwinding:
             force_quit()
-        signal.signal(signal.SIGINT, previous)
+        if token.is_set():
+            left_behind = set(straggler_threads()) - threads_before
+        signal.signal(signal.SIGINT, _on_sigint_after if left_behind else previous)
