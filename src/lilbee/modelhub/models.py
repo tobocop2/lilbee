@@ -245,6 +245,8 @@ def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> No
         literal_text_column("{task.fields[detail]}"),
         transient=True,
         console=console,
+        redirect_stdout=False,
+        redirect_stderr=False,
     ) as progress:
         desc = f"Downloading model '{model}'..."
         ptask = progress.add_task(desc, total=None, detail="")
