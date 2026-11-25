@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import base64
+import functools
+import json
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import numpy as np
@@ -40,9 +43,7 @@ CHAT_ON_NPU = {"all_models_loaded": [{"model_name": "user.lilbee-chat", "device"
 CHAT_ON_CPU = {"all_models_loaded": [{"model_name": "user.lilbee-chat", "device": "cpu"}]}
 READY = {"running": [{"model": MODEL_ID, "state": "ready"}]}
 NOTHING_RUNNING: dict[str, list[object]] = {"running": []}
-NPU_FIX = (
-    "Check that the XDNA driver is installed and that `lemonade system-info` lists the npu device."
-)
+NPU_FIX = "Check that the AMD XDNA driver is installed, then restart lilbee."
 
 Reply = object
 """A route's answer: an httpx.Response, raw bytes, a JSON value, or a callable of the request."""
@@ -85,15 +86,21 @@ def _client(
         reply = routes.get(request.url.path, httpx.Response(NOT_FOUND, content=b"no route"))
         return _answer(reply, request)
 
-    transport = httpx.MockTransport(answer)
     client = LlamaServerClient(
         "http://swap.test",
         MODEL_ID,
-        http=httpx.Client(base_url="http://swap.test", transport=transport),
-        async_transport=transport,
         profile=profile_of(role),
+        load=functools.partial(provider_mod.load_role, role),
     )
+    _attach(client, answer)
     return client, asked
+
+
+def _attach(client: LlamaServerClient, answer: Callable[[httpx.Request], httpx.Response]) -> None:
+    """Send every request of *client*, the abortable chat too, to *answer*."""
+    transport = httpx.MockTransport(answer)
+    client._http = httpx.Client(base_url="http://swap.test", transport=transport)
+    client._async_transport = transport
 
 
 def _replies(*replies: Reply) -> Callable[[httpx.Request], Reply]:
@@ -315,11 +322,19 @@ def test_a_vision_warm_sends_nothing() -> None:
 class _Swap:
     """llama-swap as the provider sees it: the chat role is ready while its upstream runs."""
 
-    def __init__(self, running: set[str]) -> None:
-        self._running = running
+    def __init__(self, health: Reply, *, unload_status: int = 200) -> None:
+        self.running: set[str] = set()
+        # The last user message of each chat request that reached the upstream.
+        self.prompts: list[str] = []
+        self._health = health
+        self._unload_status = unload_status
+        self.log_path = Path("/nonexistent/llama-swap.log")
+
+    def endpoint(self) -> str:
+        return "http://swap.test"
 
     def role_ready(self, role: WorkerRole) -> bool:
-        return role is WorkerRole.CHAT and MODEL_ID in self._running
+        return role is WorkerRole.CHAT and MODEL_ID in self.running
 
     def is_live(self) -> bool:
         return True
@@ -327,92 +342,188 @@ class _Swap:
     def record_ready(self) -> None:
         return None
 
+    def routes(self) -> dict[str, Reply]:
+        """A chat request starts the upstream; the unload route stops it."""
+        return {
+            "/v1/chat/completions": self._chat,
+            RUNNING: self._listing,
+            HEALTH: self._health,
+            UNLOAD: self._unload,
+        }
+
+    def answer(self, asked: list[str]) -> Callable[[httpx.Request], httpx.Response]:
+        routes = self.routes()
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            asked.append(request.url.path)
+            reply = routes.get(request.url.path, httpx.Response(NOT_FOUND, content=b"no route"))
+            return _answer(reply, request)
+
+        return answer
+
+    def _chat(self, request: httpx.Request) -> Reply:
+        self.running.add(MODEL_ID)
+        self.prompts.append(json.loads(request.content)["messages"][-1]["content"])
+        return CHAT_DONE
+
+    def _listing(self, _request: httpx.Request) -> Reply:
+        return {"running": [{"model": m, "state": "ready"} for m in sorted(self.running)]}
+
+    def _unload(self, _request: httpx.Request) -> Reply:
+        if self._unload_status == 200:
+            self.running.discard(MODEL_ID)
+        return httpx.Response(self._unload_status, content=b"OK")
+
+
+QUESTION = "What is in my notes?"
+
 
 def _chat_fleet(
-    monkeypatch: pytest.MonkeyPatch, health: Reply, *, unload_status: int = 200
+    monkeypatch: pytest.MonkeyPatch, swap: _Swap
 ) -> tuple[FleetProvider, LlamaServerClient, list[str]]:
-    """A provider with one Lemonade chat replica behind a llama-swap that can unload it."""
-    running = {MODEL_ID}
-
-    def listing(_request: httpx.Request) -> Reply:
-        return {"running": [{"model": m, "state": "ready"} for m in sorted(running)]}
-
-    def unload(_request: httpx.Request) -> Reply:
-        if unload_status == 200:
-            running.discard(MODEL_ID)
-        return httpx.Response(unload_status, content=b"OK")
-
-    client, asked = _client(
-        WorkerRole.CHAT,
-        LEMONADE.request_profile,
-        {"/v1/chat/completions": CHAT_DONE, RUNNING: listing, HEALTH: health, UNLOAD: unload},
-    )
+    """A provider with one Lemonade chat replica behind *swap*."""
+    client, asked = _client(WorkerRole.CHAT, LEMONADE.request_profile, swap.routes())
     provider = FleetProvider()
     group = SwapGroup(WorkerRole.CHAT.value)
     provider._role_group = {WorkerRole.CHAT: group}
-    provider._swaps = {group: _Swap(running)}  # type: ignore[dict-item]
+    provider._swaps = {group: swap}  # type: ignore[dict-item]
     provider._clients = {WorkerRole.CHAT: [client]}
     monkeypatch.setattr(provider, "_prewarm_chat_weights", lambda: None)
     return provider, client, asked
 
 
+def _ask(provider: FleetProvider) -> ProviderError:
+    """Send one chat request as a caller does: pick a replica of the role, then send to it."""
+    replica = provider_mod._least_in_flight(provider._require_clients(WorkerRole.CHAT))
+    with pytest.raises(ProviderError) as caught:
+        replica.chat([{"role": "user", "content": QUESTION}], stream=False)
+    return caught.value
+
+
+CPU_REFUSAL = "Lemonade loaded user.lilbee-chat on the CPU, not the NPU."
+
+
 def test_d1_a_cpu_device_unloads_the_upstream_and_the_role_serves_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider, client, asked = _chat_fleet(monkeypatch, CHAT_ON_CPU)
+    swap = _Swap(CHAT_ON_CPU)
+    provider, client, asked = _chat_fleet(monkeypatch, swap)
     provider._warm_chat_role([client])
     assert UNLOAD in asked
     assert provider.role_ready(WorkerRole.CHAT) is False
     status, error = _chat_status(provider)
     assert status == "error"
     assert error is not None
-    assert "Lemonade loaded user.lilbee-chat on the CPU, not the NPU." in error
+    assert CPU_REFUSAL in error
     asked_before = len(asked)
-    with pytest.raises(ProviderError) as caught:
-        provider._require_clients(WorkerRole.CHAT)
-    assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
-    assert "not the NPU" in str(caught.value)
+    refusal = _ask(provider)
+    assert refusal.kind is ProviderErrorKind.BAD_REQUEST
+    assert CPU_REFUSAL in str(refusal)
     assert len(asked) == asked_before
+    assert QUESTION not in swap.prompts
 
 
-def test_d1_a_refused_unload_is_logged_and_the_replica_still_leaves(
+def test_d1_after_a_replan_the_refused_role_still_answers_with_the_device_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider, client, _ = _chat_fleet(monkeypatch, _Swap(CHAT_ON_CPU))
+    provider._warm_chat_role([client])
+    # A replan sets the refusals from the new plan (provider.py, the reload and the build).
+    provider._refused_roles = {}
+    refusal = _ask(provider)
+    assert CPU_REFUSAL in str(refusal)
+    assert "No chat model server" not in str(refusal)
+
+
+def test_d1_a_client_built_again_after_a_rediscover_checks_the_device_before_it_serves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    swap = _Swap(CHAT_ON_CPU)
+    provider, client, _ = _chat_fleet(monkeypatch, swap)
+    provider._warm_chat_role([client])
+    # A rediscover builds every client of the live fleet again; the new one knows nothing.
+    rebuilt, asked = _client(WorkerRole.CHAT, LEMONADE.request_profile, swap.routes())
+    provider._clients = {WorkerRole.CHAT: [rebuilt]}
+    refusal = _ask(provider)
+    assert CPU_REFUSAL in str(refusal)
+    # The check loads the model with the warm prompt, reads the device, and stops it again;
+    # the question never reaches the upstream, and the upstream is left stopped.
+    assert swap.prompts == [provider_mod._WARM_PROMPT, provider_mod._WARM_PROMPT]
+    assert asked == ["/v1/chat/completions", RUNNING, HEALTH, UNLOAD]
+    assert swap.running == set()
+    assert CPU_REFUSAL in str(_ask(provider))
+    assert asked == ["/v1/chat/completions", RUNNING, HEALTH, UNLOAD]
+
+
+def test_d1_a_bind_builds_lemonade_clients_that_check_the_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every bind adopts its group, in this process or in another one bound to the fleet."""
+    swap = _Swap(CHAT_ON_CPU)
+    launch = SimpleNamespace(
+        role=WorkerRole.CHAT,
+        engine=EngineName.LEMONADE,
+        model_id=MODEL_ID,
+        model="gemma4e-flash:e2b",
+        token_cap=None,
+        rerank_mode=None,
+        weights_bytes=0,
+        slots=1,
+        ctx=0,
+        replica=0,
+    )
+    monkeypatch.setattr(provider_mod, "_output_log_of", lambda _e, _l, log: log)
+    monkeypatch.setattr(provider_mod.planning, "warn_when_chat_downsized", lambda _l: None)
+    provider = FleetProvider()
+    monkeypatch.setattr(provider, "_prewarm_chat_weights", lambda: None)
+    group = SwapGroup(WorkerRole.CHAT.value)
+    with provider._lock:
+        provider._adopt_group(group, swap, [launch])  # type: ignore[arg-type, list-item]
+    (client,) = provider._clients[WorkerRole.CHAT]
+    asked: list[str] = []
+    _attach(client, swap.answer(asked))
+    refusal = _ask(provider)
+    assert CPU_REFUSAL in str(refusal)
+    assert swap.prompts == [provider_mod._WARM_PROMPT]
+    assert asked == ["/v1/chat/completions", RUNNING, HEALTH, UNLOAD]
+
+
+def test_d1_a_refused_unload_is_logged_and_the_client_still_refuses(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    provider, client, _ = _chat_fleet(monkeypatch, CHAT_ON_CPU, unload_status=500)
+    swap = _Swap(CHAT_ON_CPU, unload_status=500)
+    provider, client, _ = _chat_fleet(monkeypatch, swap)
     with caplog.at_level("WARNING", logger="lilbee.providers.fleet.client"):
         provider._warm_chat_role([client])
     assert "Could not stop the upstream of chat-0" in caplog.text
-    assert provider._clients[WorkerRole.CHAT] == []
+    assert CPU_REFUSAL in str(_ask(provider))
+    assert QUESTION not in swap.prompts
 
 
-def test_a_refused_replica_leaves_its_siblings_serving() -> None:
-    provider = FleetProvider()
+def test_a_refused_replica_leaves_its_siblings_serving(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider, refused, _ = _chat_fleet(monkeypatch, _Swap(CHAT_ON_CPU))
+    sibling, _ = _client(WorkerRole.CHAT, LEMONADE.request_profile, {})
+    provider._warm_chat_role([refused])
+    assert refused.healthy is False
+    assert sibling.healthy is True
+    assert provider_mod._least_in_flight([refused, sibling]) is sibling
+
+
+def test_the_device_check_holds_a_reservation_for_its_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reload on another thread closes only an idle retired client."""
     held: list[int] = []
 
-    def unload(_request: httpx.Request) -> Reply:
-        held.append(refused.in_flight)
-        return b"OK"
+    def health(_request: httpx.Request) -> Reply:
+        held.append(client.in_flight)
+        return CHAT_ON_NPU
 
-    refused, asked = _client(WorkerRole.CHAT, LEMONADE.request_profile, {UNLOAD: unload})
-    sibling, _ = _client(WorkerRole.CHAT, LEMONADE.request_profile, {})
-    provider._clients = {WorkerRole.CHAT: [refused, sibling]}
-    provider._remove_refused_replica(WorkerRole.CHAT, refused, "refused")
-    assert provider._clients[WorkerRole.CHAT] == [sibling]
-    assert WorkerRole.CHAT not in provider._refused_roles
-    assert asked == [UNLOAD]
-    # A reload on another thread closes only an idle retired client, so the unload
-    # holds a reservation, and gives it back after.
+    provider, client, _ = _chat_fleet(monkeypatch, _Swap(health))
+    provider._warm_chat_role([client])
     assert held == [1]
-    assert refused.in_flight == 0
-
-
-def test_a_replica_that_a_reload_already_replaced_changes_nothing() -> None:
-    provider = FleetProvider()
-    client, asked = _client(WorkerRole.CHAT, LEMONADE.request_profile, {UNLOAD: b"OK"})
-    provider._remove_refused_replica(WorkerRole.CHAT, client, "refused")
-    assert asked == []
-    assert WorkerRole.CHAT not in provider._refused_roles
-    assert WorkerRole.CHAT not in provider._clients
+    assert client.in_flight == 0
+    assert client.needs_device_check is False
 
 
 def test_d1_a_later_good_warm_clears_the_error_of_an_unreadable_health_reply(
@@ -420,7 +531,7 @@ def test_d1_a_later_good_warm_clears_the_error_of_an_unreadable_health_reply(
 ) -> None:
     unreadable = httpx.Response(503, content=b"down")
     health = _replies(*[unreadable] * (client_mod._GATEWAY_RETRIES + 1), CHAT_ON_NPU)
-    provider, client, asked = _chat_fleet(monkeypatch, health)
+    provider, client, asked = _chat_fleet(monkeypatch, _Swap(health))
     provider._warm_chat_role([client])
     first = provider.warm_progress()
     assert first is not None
