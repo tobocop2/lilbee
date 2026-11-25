@@ -15,12 +15,8 @@ import numpy as np
 import pytest
 
 from lilbee.app.services import get_services, set_services
-from lilbee.app.settings import (
-    apply_settings_update,
-    chunk_drift,
-    index_has_chunks,
-    reindex_values,
-)
+from lilbee.app import settings as app_settings
+from lilbee.app.settings import apply_settings_update, index_has_chunks, reindex_values
 from lilbee.app.status import gather_status
 from lilbee.cli.helpers import render_status_result
 from lilbee.core.config import cfg
@@ -114,7 +110,7 @@ def test_a_chunk_size_change_during_a_sync_is_still_reported_as_a_rebuild():
     stamp = store.chunk_stamp()
     assert stamp is not None, "the index records no chunk settings, so no check sees the write"
     assert stamp["chunk_size"] == OLD_SIZE
-    assert chunk_drift() == ["chunk_size"]
+    assert app_settings.chunk_drift() == ["chunk_size"]
 
 
 async def test_a_sync_records_the_settings_it_cut_with_and_reports_the_drift():
@@ -139,7 +135,9 @@ async def test_a_sync_records_the_settings_it_cut_with_and_reports_the_drift():
     result = await sync(quiet=True)
 
     assert result.added == ["doc.md"]
-    assert store.chunk_stamp()["chunk_size"] == OLD_SIZE
+    stamp = getattr(store, "chunk_stamp", lambda: None)()
+    assert stamp is not None, "the sync wrote chunks and recorded no chunk settings"
+    assert stamp["chunk_size"] == OLD_SIZE
     assert result.chunk_drift == ["chunk_size"]
     status = gather_status()
     assert status.index is not None
@@ -157,7 +155,13 @@ def test_an_empty_library_records_nothing_and_reports_no_drift():
     store = get_services().store
     assert store.chunk_stamp() is None
     assert store.chunk_drift({"chunk_size": NEW_SIZE}) == []
-    assert not cfg.lancedb_dir.exists()
+
+
+def test_a_data_dir_with_no_library_reports_no_drift_and_creates_none(tmp_path):
+    absent = tmp_path / "absent"
+    store = Store(cfg.model_copy(update={"data_root": absent, "lancedb_dir": absent / "lancedb"}))
+    assert store.chunk_drift({"chunk_size": NEW_SIZE}) == []
+    assert not absent.exists()
 
 
 def test_an_incremental_write_keeps_the_record_of_the_first():
@@ -166,7 +170,7 @@ def test_an_incremental_write_keeps_the_record_of_the_first():
     cfg.chunk_size = NEW_SIZE
     store.add_chunks(_records(["b"], source="other.md"), chunk_settings=reindex_values())
     assert store.chunk_stamp()["chunk_size"] == OLD_SIZE
-    assert chunk_drift() == ["chunk_size"]
+    assert app_settings.chunk_drift() == ["chunk_size"]
 
 
 def test_a_rebuild_replaces_the_record():
@@ -175,7 +179,7 @@ def test_a_rebuild_replaces_the_record():
     cfg.chunk_size = NEW_SIZE
     store.restamp_meta(reindex_values())
     assert store.chunk_stamp()["chunk_size"] == NEW_SIZE
-    assert chunk_drift() == []
+    assert app_settings.chunk_drift() == []
 
 
 def test_a_meta_rewrite_without_settings_keeps_the_record():
@@ -198,7 +202,7 @@ def test_an_inert_setting_does_not_count_as_drift():
     store.add_chunks(_records(["a"]), chunk_settings=reindex_values())
     cfg.topic_threshold = 0.1 if cfg.topic_threshold != 0.1 else 0.2
     assert store.chunk_drift(reindex_values()) == ["topic_threshold"]
-    assert chunk_drift() == []
+    assert app_settings.chunk_drift() == []
 
 
 def test_a_library_built_before_the_record_pins_the_settings_in_force_once(caplog):
@@ -221,7 +225,7 @@ def test_a_change_to_a_library_built_before_the_record_shows_as_drift():
     _legacy_meta(store)
     apply_settings_update({"chunk_size": NEW_SIZE})
     assert store.chunk_stamp()["chunk_size"] == OLD_SIZE
-    assert chunk_drift() == ["chunk_size"]
+    assert app_settings.chunk_drift() == ["chunk_size"]
 
 
 def test_a_sync_into_a_library_built_before_the_record_records_its_settings():

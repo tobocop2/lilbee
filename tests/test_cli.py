@@ -9416,7 +9416,7 @@ class TestSyncCancelledExit:
     def _ctrl_c_then_the_write_fails(events: list[threading.Event]):
         """A store write the Ctrl+C lands in, which then fails."""
 
-        def _write(_items, _present=None):
+        def _write(_items, _present=None, chunk_settings=None):
             # The write runs on a pool thread; the handler's effect is set here directly.
             events[0].set()
             raise OSError("disk full")
