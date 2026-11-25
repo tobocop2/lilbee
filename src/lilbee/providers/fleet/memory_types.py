@@ -61,6 +61,8 @@ class MemoryEstimate:
     """Unified-memory model: bytes on each device."""
     size_known: bool = True
     """False when the figures are a stated reserve because the model's size could not be read."""
+    checkpoint_bytes: int = 0
+    """Host bytes of one context checkpoint of one sequence; 0 for a model that makes none."""
 
     def footprint(self, *, unified: bool) -> int:
         """Total bytes to charge against a shared budget for this memory model."""
