@@ -631,6 +631,35 @@ def test_get_loop_after_a_shutdown_that_timed_out_gives_a_working_loop() -> None
             thread.join(5.0)
 
 
+def test_a_task_that_swallows_its_cancel_does_not_keep_the_old_loop_running() -> None:
+    started = threading.Event()
+    swallowing = threading.Event()
+    stop = threading.Event()
+
+    async def swallower() -> None:
+        started.set()
+        while not stop.is_set():
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                swallowing.set()
+
+    with _no_runtime_warning():
+        loop = asyncio_loop.get_loop()
+        thread = next(t for t in threading.enumerate() if t.name == "lilbee-bg-loop")
+        asyncio.run_coroutine_threadsafe(swallower(), loop)
+        try:
+            assert started.wait(timeout=2.0)
+            asyncio_loop.shutdown(drain_budget_s=0.3)
+            assert swallowing.wait(timeout=2.0), "the drain never cancelled the task"
+            thread.join(5.0)
+            assert not thread.is_alive(), "the old loop runs on beside the new one"
+            assert loop.is_closed()
+        finally:
+            stop.set()
+            thread.join(5.0)
+
+
 def test_run_from_multiple_threads() -> None:
     async def identity(n: int) -> int:
         await asyncio.sleep(0)
