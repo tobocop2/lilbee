@@ -19,9 +19,10 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import TabbedContent
+from textual.widgets import Select, TabbedContent
 from textual.worker import Worker, WorkerCancelled, WorkerFailed
 
+from lilbee.app.settings_map import SettingDef
 from lilbee.cli.tui import app as app_module
 from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.cli.tui.screens import settings as settings_module
@@ -30,6 +31,7 @@ from lilbee.cli.tui.screens.model_picker import ModelPickerModal
 from lilbee.cli.tui.screens.profile_tab import PROFILE_SELECT_ID, ProfileTab, load_snapshot
 from lilbee.cli.tui.screens.settings import PROFILE_PANE_ID, SettingsScreen
 from lilbee.cli.tui.screens.settings_engines import EnginesPane
+from lilbee.cli.tui.screens.settings_widgets import make_select
 from lilbee.cli.tui.screens.settings_presets import PresetDialog, PresetsPane
 from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.screens.task_center import TaskCenter
@@ -112,6 +114,27 @@ async def test_quit_while_mounting_exits_cleanly(site, monkeypatch):
     app = _Host(SITES[site])
     await app.run_async(headless=True, size=(120, 40))
     assert app._exception is None, f"{site} rc={app.return_code} {app._exception!r}"
+    assert app.return_code == 0
+
+
+@pytest.mark.parametrize("value", ["auto", "unknown"], ids=["preset", "unset"])
+async def test_quit_while_a_setting_select_mounts_exits_cleanly(value, monkeypatch):
+    """A quit that lands as a settings Select composes must not break its mount handler.
+
+    A tab fills lazily, so a quit can come while its rows still mount. Textual's Select
+    then mounts none of its overlay but still looks for it.
+    """
+    real_compose = Select.compose
+
+    def compose(self: Select) -> ComposeResult:
+        self.app.exit()
+        yield from real_compose(self)
+
+    monkeypatch.setattr(Select, "compose", compose)
+    defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "remote"))
+    app = _Host(_hold(lambda: make_select("test_key", defn, value)))
+    await app.run_async(headless=True, size=(120, 40))
+    assert app._exception is None, f"rc={app.return_code} {app._exception!r}"
     assert app.return_code == 0
 
 
