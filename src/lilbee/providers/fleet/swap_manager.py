@@ -1333,7 +1333,7 @@ def _log_tail_since(path: Path, offset: int) -> str:
     return f"\n{text}" if text else ""
 
 
-def reap_stale(data_dir: Path) -> None:
+def reap_stale(data_dir: Path) -> bool:
     """Kill every dead or unhealthy recorded engine at *data_dir*.
 
     An OOM-killed lilbee leaves llama-swap (and its servers) holding VRAM,
@@ -1349,11 +1349,15 @@ def reap_stale(data_dir: Path) -> None:
     matched by name plus recorded member port and stopped before the file
     is removed.
 
+    Returns whether it stopped any engine, so a caller can drop a device reading
+    taken while that engine held the card.
+
     Module-level (not a method) because it must run before planning decides
     which role groups exist, when no per-group manager has been built yet.
     """
     _clean_stale_tmp_files(data_dir)
     _clean_stale_configs(data_dir)
+    stopped = False
     for state_path in sorted(data_dir.glob(_STATE_FILE_GLOB)):
         state = _load_state(state_path)
         if state is None:
@@ -1364,6 +1368,8 @@ def reap_stale(data_dir: Path) -> None:
             continue
         _stop_recorded_engine(state)
         state_path.unlink(missing_ok=True)
+        stopped = True
+    return stopped
 
 
 def _clean_stale_tmp_files(data_dir: Path) -> None:

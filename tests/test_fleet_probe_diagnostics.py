@@ -332,16 +332,18 @@ class TestAnEmptyProbeIsRetriedByOneLadder:
         assert engine.probes == 10
 
     @pytest.mark.parametrize(
-        ("incumbent", "probes"), [(True, 10), (False, 5)], ids=["stopped", "none"]
+        ("incumbent", "reaped", "probes"),
+        [(True, False, 10), (False, True, 10), (False, False, 5)],
+        ids=["stopped", "reaped", "none"],
     )
-    def test_the_capture_probes_again_only_after_an_incumbent_was_stopped(
-        self, monkeypatch, tmp_path, incumbent: bool, probes: int
+    def test_the_capture_probes_again_only_after_an_engine_was_stopped_or_reaped(
+        self, monkeypatch, tmp_path, incumbent: bool, reaped: bool, probes: int
     ) -> None:
         from lilbee.providers.fleet import planning as planning_mod
         from lilbee.providers.fleet import provider as prov_mod
 
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 1)
-        monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+        monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: reaped)
         monkeypatch.setattr(prov_mod, "engine_record_exists", lambda _d: incumbent)
         monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
         engine = _FakeEngine([self._empty()])
@@ -349,6 +351,27 @@ class TestAnEmptyProbeIsRetriedByOneLadder:
         prov_mod._clear_engine_dir(tmp_path)
         planning_mod.capture_plan_probe({WorkerRole.CHAT: engine})
         assert engine.probes == probes
+
+    def test_a_same_path_reinstall_between_the_check_and_the_capture_probes_again(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        from lilbee.providers.fleet import planning as planning_mod
+        from lilbee.providers.fleet.binary import engine_binary_identity
+
+        monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 1)
+        monkeypatch.setattr(planning_mod, "engine_binary_identity", engine_binary_identity)
+        binary = tmp_path / "srv"
+        binary.write_bytes(b"v1")
+
+        class _Installed(_FakeEngine):
+            def binary(self) -> Path:
+                return binary
+
+        engine = _Installed([self._empty()])
+        planning_mod.assert_engine_probeable(engine)
+        binary.write_bytes(b"v2")
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: engine})
+        assert engine.probes == 10
 
     def test_an_empty_check_older_than_the_window_is_probed_again(self, monkeypatch) -> None:
         import time
