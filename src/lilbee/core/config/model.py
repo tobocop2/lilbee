@@ -108,6 +108,16 @@ _EXPECTED_BY_ERROR: dict[str, str] = {
 _VALUE_ERROR_PREFIX = "Value error, "
 _USES_ITS_DEFAULT = "uses its default"
 
+# An address can hold a user name and a password, so a refusal does not repeat its value.
+_ADDRESS_SETTINGS = frozenset({"ollama_base_url", "lm_studio_base_url"})
+_VALUE_NOT_SHOWN = "(value not shown)"
+
+
+def _shown(key: str, value: Any) -> str:
+    """*value* as a refusal prints it: its repr, or a note for a setting that can hold a secret."""
+    return _VALUE_NOT_SHOWN if key in _ADDRESS_SETTINGS else repr(value)
+
+
 # A variable its setting refuses stops the command and a write of one is refused,
 # except on these: each takes its default, automatic or off, with a warning.
 _TAKES_DEFAULT_WHEN_REFUSED = frozenset(
@@ -1535,21 +1545,22 @@ class Config(BaseSettings):
 
     @field_validator("ollama_base_url", "lm_studio_base_url", mode="after")
     @classmethod
-    def _strip_trailing_slash(cls, v: str, info: ValidationInfo) -> str:
+    def _strip_trailing_slash(cls, v: str) -> str:
         """Canonicalize a local-server URL once at the write boundary.
 
         Every request to a local server builds its URL from this value, so an address that
         httpx cannot parse is refused here, before any request raises a raw URL error.
         """
-        if not v.strip():
-            return v.rstrip("/")
+        v = v.strip()
+        if not v:
+            return v
         import httpx
 
         try:
-            httpx.Request("GET", v.strip())
+            httpx.Request("GET", v)
         except (httpx.InvalidURL, ValueError):
             raise ValueError(
-                f"{info.field_name} is not a valid web address. "
+                "The address is not a valid web address. "
                 "Write it as http://host:port, for example http://localhost:11434"
             ) from None
         return v.rstrip("/")
@@ -1807,7 +1818,7 @@ class _PlainEnvSource:
     def _stop(self, values: dict[str, Any], refused: dict[str, str]) -> None:
         """Refuse the variables in *refused*, less the ones that take their default."""
         lines = [
-            f"{_variable(self._settings_cls, key)} = {values[key]!r} {reason}"
+            f"{_variable(self._settings_cls, key)} = {_shown(key, values[key])} {reason}"
             for key, reason in refused.items()
             if key not in _TAKES_DEFAULT_WHEN_REFUSED
         ]
@@ -1879,7 +1890,7 @@ class _TomlSource:
         fallback = f"{key} {otherwise}"
         if env_value(key) is not None:
             fallback = f"{_variable(self._settings_cls, key)} sets {key}"
-        return f"{label}: {key} = {values[key]!r} {reason}; {fallback}"
+        return f"{label}: {key} = {_shown(key, values[key])} {reason}; {fallback}"
 
     def _refuse_not_settings(self, data: dict[str, Any]) -> None:
         """Report each key in *data* that is not a setting, as a refused value is reported."""
@@ -1932,7 +1943,7 @@ class _ProfileSource:
             label = f"the {name!r} profile" if name else "the applied profile"
             for key, reason in refused.items():
                 warn_on_load(
-                    f"{label}: {key} = {values[key]!r} {reason}; {key} {_USES_ITS_DEFAULT}"
+                    f"{label}: {key} = {_shown(key, values[key])} {reason}; {key} {_USES_ITS_DEFAULT}"
                 )
         return {key: value for key, value in values.items() if key not in refused}
 
@@ -1967,7 +1978,7 @@ def hard_refusals(values: Mapping[str, Any]) -> dict[str, str]:
 def refusal_sentence(key: str, value: Any) -> str:
     """One plain sentence for a *value* that *key* refuses, with no validator dump."""
     reason = _refusals(Config, {key: value}).get(key, "is not a value it accepts")
-    return f"{key} = {value!r} {reason}"
+    return f"{key} = {_shown(key, value)} {reason}"
 
 
 def canonical_model_ref(ref: str) -> str:
