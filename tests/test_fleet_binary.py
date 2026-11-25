@@ -386,8 +386,9 @@ class TestEnginePin:
 
         def signature(**overrides: int) -> str:
             fake = SimpleNamespace(**{**fields, **overrides})
-            monkeypatch.setattr(Path, "stat", lambda self: fake)
-            return binary_mod._binary_signature(Path("/opt/llama-server"))
+            with monkeypatch.context() as patch:  # undone before the fixtures stat real paths
+                patch.setattr(Path, "stat", lambda self: fake)
+                return binary_mod._binary_signature(Path("/opt/llama-server"))
 
         assert signature(**{term: fields[term] + 1}) != signature()
 
