@@ -775,8 +775,8 @@ class _EngineLifecycle:
     def routed_in_loop(self) -> tuple[signal.Signals, ...]:
         """Signals a running loop takes over: the ones install and route_interrupt routed.
 
-        A signal they left alone keeps its handler, so the TUI's Ctrl-C stays a
-        KeyboardInterrupt.
+        A signal they left alone keeps its handler, so an outside SIGINT stays a
+        KeyboardInterrupt. The TUI's Ctrl-C key is a Textual key binding, not a signal.
         """
         return tuple(
             sig
@@ -1109,7 +1109,7 @@ def loop_takes_signals(loop: asyncio.AbstractEventLoop) -> Iterator[None]:
     the SystemExit it raises always leaves ``run_forever``. The handlers that were
     installed before return when the loop ends, so a late signal still reaches the stop.
     The loop's last remove clears the signal wakeup descriptor, so the one set before
-    (the TUI's) returns too.
+    (the writer that ``run_without_join`` sets) returns too.
     """
     routed = _lifecycle.routed_in_loop()
     previous = {sig: signal.getsignal(sig) for sig in routed}
