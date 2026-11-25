@@ -67,7 +67,7 @@ shows one of four notices. `lilbee engine roles` starts each notice with
   `Engine ik_llama.cpp loads the gguf format of org/repo but cannot run on this host. Xeon lacks AVX2. ik_llama.cpp needs a CPU with AVX2 or NEON.`
   The notice names every such engine. It does not tell you to install an engine.
 - If no installed engine loads the format, the notice is, for example,
-  `No installed engine loads the safetensors format of org/repo. Run lilbee engine list (or GET /api/engines) to see the installed engines.`
+  `No installed engine loads the safetensors format of org/repo. Run lilbee engine list to see the installed engines.`
 
 The text `of org/repo` shows only when lilbee knows the name of the model.
 
@@ -94,7 +94,7 @@ lilbee shows a notice. `lilbee engine roles`, the model bar and the Fleet screen
 the notice.
 
 - If the choice names an engine that is not installed, the notice is, for example,
-  `Engine ik_llama.cpp is not installed. Using llama.cpp. Run lilbee engine list (or GET /api/engines) to see the installed engines.`
+  `Engine ik_llama.cpp is not installed. Using llama.cpp. Run lilbee engine list to see the installed engines.`
 - If the choice names an engine that this computer cannot run, the notice says why
   and names the engine in use.
 - If the choice for a model names an installed engine that cannot load its format,

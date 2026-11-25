@@ -260,14 +260,11 @@ _UPSTREAM_DEATH_MESSAGES: dict[ProviderErrorKind, str] = {
 _UPSTREAM_DEATH_DEFAULT = "The engine for {model} stopped before it could answer"
 _BROKEN_MODEL_FILE_MESSAGE = (
     "The model file for {model} is incomplete or damaged. "
-    "Run 'lilbee model rm {model}' (or DELETE /api/models/{{model}}), "
-    "then 'lilbee model pull {model}' (or POST /api/models/pull)."
+    "Run 'lilbee model rm {model}', then 'lilbee model pull {model}'."
 )
 _BROKEN_UNNAMED_MODEL_FILE_MESSAGE = (
     "The model file is incomplete or damaged. "
-    "Run 'lilbee model list' (or GET /api/models/installed), remove that model with "
-    "'lilbee model rm' (or DELETE /api/models/{model}), "
-    "then pull it again (POST /api/models/pull)."
+    "Run 'lilbee model list', remove that model with 'lilbee model rm', then pull it again."
 )
 # What llama.cpp prints when a GGUF ends before its tensor data does.
 _BROKEN_FILE_MARKERS: tuple[str, ...] = (

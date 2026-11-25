@@ -14,6 +14,7 @@ from lilbee.server.chat_dispatch.dispatch import (
     ModelNotFoundError,
 )
 from lilbee.server.provider_status import retry_after_headers
+from lilbee.server.route_names import name_routes
 
 log = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ def classify_provider_error(exc: BaseException) -> ClassifiedError | None:
     generic fallback (internal_error 500 / service-unavailable 503).
     """
     if isinstance(exc, ModelNotFoundError):
-        return ClassifiedError(404, CompletionsErrorCode.MODEL_NOT_FOUND, str(exc))
+        return ClassifiedError(404, CompletionsErrorCode.MODEL_NOT_FOUND, name_routes(str(exc)))
     if isinstance(exc, ModelDoesNotSupportToolsError):
         return ClassifiedError(400, CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc))
     if isinstance(exc, ConfigReadError):
@@ -132,6 +133,6 @@ def classify_provider_error(exc: BaseException) -> ClassifiedError | None:
                 log.warning("Chat backend failure (%s)", exc.kind, exc_info=exc)
                 message = _BACKEND_FAILURE_MESSAGE
             else:
-                message = str(exc)
+                message = name_routes(str(exc))
             return ClassifiedError(status, code, message, retry_after_headers(exc.kind))
     return None
