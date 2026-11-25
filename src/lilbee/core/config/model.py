@@ -2062,6 +2062,7 @@ class ConfigPin:
 active_pin: ContextVar[ConfigPin | None] = ContextVar("lilbee_active_config", default=None)
 
 _T = TypeVar("_T")
+_NO_VALUE = object()
 
 
 class LiveConfig:
@@ -2070,85 +2071,92 @@ class LiveConfig:
     A read goes to the running request's pin, else to the published Config. The
     published Config never changes in place: a write builds a new Config and
     publishes it by one reference store, so a request keeps reading the Config it
-    started with while another request takes a change. ``cfg.__dict__`` is the
-    field dict of the Config read, so ``mock.patch.object`` restores a field.
+    started with while another request takes a change. Every attribute, ``__dict__``
+    and ``__class__`` included, is the read Config's, so ``mock.patch.object``
+    restores a field and ``isinstance(cfg, Config)`` holds.
     """
 
-    __slots__ = ("_live_lock", "_live_published")
+    __slots__ = ("__weakref__", "_live_published")
     model_fields: ClassVar[dict[str, Any]] = Config.model_fields
-    _live_lock: threading.Lock
-    _live_published: Config
 
     def __init__(self, config: Config) -> None:
         object.__setattr__(self, "_live_published", config)
-        object.__setattr__(self, "_live_lock", threading.Lock())
 
-    def _live_current(self) -> Config:
-        """The Config this scope reads: the request's pin, else the published one."""
+    def __getattribute__(self, name: str) -> Any:
         pin = active_pin.get()
         if pin is not None and pin.follows_writes:
-            return pin.config
-        return self._live_published
-
-    def _live_commit(self, change: Callable[[Config], _T]) -> _T:
-        """Make *change* on a copy of the published Config, then publish what it moved.
-
-        Each assignment validates on the copy, so a refusal raises before anything is
-        published. The fields *change* moved are compared by value against the copy's
-        source, because the model validator can re-derive a field the change does not
-        name. They go onto the Config published at the time of the store, so a field
-        another thread wrote meanwhile keeps its new value. A request pin moves to the
-        new Config. ``model_copy`` is shallow, so *change* must assign a field and
-        never mutate a mutable value in place.
-        """
-        source = self._live_published
-        draft = source.model_copy()
-        result = change(draft)
-        before = source.__dict__
-        moved = {
-            key: value
-            for key, value in draft.__dict__.items()
-            if value is not before[key] and value != before[key]
-        }
-        if not moved:
-            return result
-        with self._live_lock:
-            latest = self._live_published
-            if latest is not source:
-                draft = latest.model_copy()
-                draft.__dict__.update(moved)
-                draft.__pydantic_fields_set__.update(moved)
-            object.__setattr__(self, "_live_published", draft)
-        pin = active_pin.get()
-        if pin is not None and pin.follows_writes:
-            pin.config = draft
-        return result
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._live_current(), name)
+            return getattr(pin.config, name)
+        return getattr(_published_of(self), name)
 
     def __setattr__(self, name: str, value: Any) -> None:
-        self._live_commit(lambda draft: setattr(draft, name, value))
+        published = _published_of(self)
+        if _current_of(self) is published and value is published.__dict__.get(name, _NO_VALUE):
+            return  # the value this scope reads already: nothing to publish
+        commit_config(lambda draft: setattr(draft, name, value))
 
     def __repr__(self) -> str:
-        return repr(self._live_current())
+        return repr(_current_of(self))
+
+
+_published_of: Callable[[LiveConfig], Config] = LiveConfig.__dict__["_live_published"].__get__
+
+
+def _current_of(live: LiveConfig) -> Config:
+    """The Config *live* reads in this scope: the request's pin, else the published one."""
+    pin = active_pin.get()
+    if pin is not None and pin.follows_writes:
+        return pin.config
+    return _published_of(live)
 
 
 # The config.toml that cfg is built from; a later read of it reports only what is new.
 loaded_config_file = _config_file()
 _built, load_warnings = _build_cfg()
 _live = LiveConfig(_built)
+_publish_lock = threading.Lock()
 cfg = cast("Config", _live)
 
 
 def published_config() -> Config:
     """The Config published last, whatever the running scope pins."""
-    return _live._live_published
+    return _published_of(_live)
 
 
 def commit_config(change: Callable[[Config], _T]) -> _T:
-    """Make *change* on a copy of the published Config and publish it; see LiveConfig."""
-    return _live._live_commit(change)
+    """Make *change* on a copy of the published Config, then publish what it moved.
+
+    Each assignment validates on the copy, so a refusal raises before anything is
+    published. The fields *change* moved are compared by value against the copy's
+    source, because the model validator can re-derive a field the change does not
+    name. They go onto the Config published at the time of the store, so a field
+    another thread wrote meanwhile keeps its new value. A request pin moves to the
+    new Config. ``model_copy`` is shallow, so *change* must assign a field and never
+    mutate a mutable value in place.
+    """
+    source = published_config()
+    draft = source.model_copy()
+    result = change(draft)
+    before = source.__dict__
+    moved = {
+        key: value
+        for key, value in draft.__dict__.items()
+        if value is not before[key] and value != before[key]
+    }
+    if not moved:
+        return result
+    with _publish_lock:
+        latest = published_config()
+        if latest is not source:
+            draft = latest.model_copy()
+            draft.__dict__.update(moved)
+            draft.__pydantic_fields_set__.update(moved)
+        object.__setattr__(_live, "_live_published", draft)
+    pin = active_pin.get()
+    if pin is not None and pin.follows_writes:
+        pin.config = draft
+    return result
+
+
 # Once, at import on the main thread: a later warning stays in this process, because
 # a write from a loading thread would race native readers of the environment.
 if shown := shown_marks():
