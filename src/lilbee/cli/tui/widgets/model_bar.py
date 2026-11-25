@@ -109,40 +109,41 @@ def _native_label(hf_repo: str, gguf_filename: str, repo_count: int) -> str:
 
 
 def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
-    """Add native registry models to buckets."""
-    try:
-        from lilbee.modelhub.registry import ModelRegistry
+    """Add native registry models to buckets.
 
-        registry = ModelRegistry(cfg.models_dir)
-        manifests = registry.list_installed()
-        repo_counts: dict[str, int] = {}
-        for m in manifests:
-            repo_counts[m.hf_repo] = repo_counts.get(m.hf_repo, 0) + 1
+    Raises ``OSError`` when the registry cannot be read: an empty picker would read as
+    "nothing installed".
+    """
+    from lilbee.modelhub.registry import ModelRegistry
 
-        loadable = set(loadable_refs(m.ref for m in manifests))
-        for manifest in manifests:
-            ref = manifest.ref
-            if _is_mmproj(manifest.gguf_filename) or ref in seen:
-                continue
-            task = manifest.task
-            if task == ModelTask.CHAT and ref not in loadable:
-                continue
-            label = _native_label(
-                manifest.hf_repo, manifest.gguf_filename, repo_counts[manifest.hf_repo]
-            )
-            primary_bucket = _lookup_bucket(buckets, task, ref)
-            if primary_bucket is None:
-                continue
-            seen.add(ref)
-            primary_bucket.append(ModelOption(label=label, ref=ref))
-            # If the model has an mmproj sidecar it is also vision-capable.
-            # Surface it under the vision picker too without dropping its
-            # primary classification, so a chat model with vision (e.g.
-            # gemma-3 with mmproj) shows up in both pickers.
-            if task == ModelTask.CHAT and registry.has_vision_projector(ref):
-                buckets[ModelTask.VISION].append(ModelOption(label=label, ref=ref))
-    except Exception:
-        log.debug("Could not read native model registry", exc_info=True)
+    registry = ModelRegistry(cfg.models_dir)
+    manifests = registry.list_installed()
+    repo_counts: dict[str, int] = {}
+    for m in manifests:
+        repo_counts[m.hf_repo] = repo_counts.get(m.hf_repo, 0) + 1
+
+    loadable = set(loadable_refs(m.ref for m in manifests))
+    for manifest in manifests:
+        ref = manifest.ref
+        if _is_mmproj(manifest.gguf_filename) or ref in seen:
+            continue
+        task = manifest.task
+        if task == ModelTask.CHAT and ref not in loadable:
+            continue
+        label = _native_label(
+            manifest.hf_repo, manifest.gguf_filename, repo_counts[manifest.hf_repo]
+        )
+        primary_bucket = _lookup_bucket(buckets, task, ref)
+        if primary_bucket is None:
+            continue
+        seen.add(ref)
+        primary_bucket.append(ModelOption(label=label, ref=ref))
+        # If the model has an mmproj sidecar it is also vision-capable.
+        # Surface it under the vision picker too without dropping its
+        # primary classification, so a chat model with vision (e.g.
+        # gemma-3 with mmproj) shows up in both pickers.
+        if task == ModelTask.CHAT and registry.has_vision_projector(ref):
+            buckets[ModelTask.VISION].append(ModelOption(label=label, ref=ref))
 
 
 def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[str]) -> None:
@@ -756,7 +757,11 @@ class ModelBar(Widget, can_focus=False):
     @work(thread=True)
     def _scan_models(self) -> None:
         """Scan installed models off the UI thread and populate every role button."""
-        buckets = classify_installed_models_full()
+        try:
+            buckets = classify_installed_models_full()
+        except OSError as exc:
+            call_from_thread(self, self._scan_failed, exc)
+            return
         scope_to_options: dict[str, list[ModelOption]] = {
             "chat": list(buckets.get(ModelTask.CHAT, [])),
             "embed": list(buckets.get(ModelTask.EMBEDDING, [])),
@@ -764,6 +769,10 @@ class ModelBar(Widget, can_focus=False):
             "rerank": list(buckets.get(ModelTask.RERANK, [])),
         }
         call_from_thread(self, self._populate, scope_to_options)
+
+    def _scan_failed(self, error: OSError) -> None:
+        """Report an unreadable registry; the pickers keep the options they have."""
+        self.notify(msg.MODEL_REGISTRY_UNREADABLE.format(error=error), severity="error")
 
     def _populate(self, scope_to_options: dict[str, list[ModelOption]]) -> None:
         for row in self.query(RoleRow):

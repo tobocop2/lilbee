@@ -69,6 +69,7 @@ MODEL_UNUSABLE_NO_FALLBACK = (
     "{label} model '{original}' is unavailable ({reason}) and nothing is installed to fall back "
     "to. Pick one from the catalog."
 )
+MODEL_REGISTRY_UNREADABLE = "Could not read the installed models: {error}"
 MODEL_ADOPTED_LOG = "{label} model: using installed '{effective}'."
 CMD_CRAWL_SUCCESS = "Crawled {count} page(s) from {url}"
 CMD_CRAWL_PAGES_FAILED = "{count} page(s) failed; last: {reason}"

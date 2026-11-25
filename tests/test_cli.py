@@ -8335,16 +8335,19 @@ class TestSelfCheck:
         assert result.exit_code == 0, result.output
         assert f"Loading chat model {chat}" in result.output
 
-    def test_installed_model_path_none_when_registry_listing_fails(self) -> None:
-        """A broken registry (corrupt manifests) falls back to the download leg."""
+    def test_installed_model_path_raises_when_registry_listing_fails(self) -> None:
+        """An unreadable registry is not "no model installed": it must not trigger a download."""
         from lilbee.catalog.types import ModelTask
         from lilbee.cli.commands.setup import _installed_model_path
 
-        with mock.patch(
-            "lilbee.modelhub.registry.ModelRegistry.list_installed",
-            side_effect=OSError("corrupt manifest"),
+        with (
+            mock.patch(
+                "lilbee.modelhub.registry.ModelRegistry.list_installed",
+                side_effect=OSError("corrupt manifest"),
+            ),
+            pytest.raises(OSError, match="corrupt manifest"),
         ):
-            assert _installed_model_path(ModelTask.CHAT, "acme/x-GGUF/x.gguf") is None
+            _installed_model_path(ModelTask.CHAT, "acme/x-GGUF/x.gguf")
 
     def test_emit_failure_prints_a_bracketed_error_literally(self) -> None:
         """The failure detail is a model exception's repr and can carry a path."""

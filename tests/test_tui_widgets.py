@@ -2405,6 +2405,18 @@ def _classify_chat_embed():
 
 @pytest.mark.real_model_classify
 class TestClassifyInstalledModels:
+    def test_an_unreadable_registry_raises_instead_of_an_empty_picker(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import classify_installed_models_full
+
+        with (
+            mock.patch(
+                "lilbee.modelhub.registry.ModelRegistry.list_installed",
+                side_effect=OSError("manifests unreadable"),
+            ),
+            pytest.raises(OSError, match="manifests unreadable"),
+        ):
+            classify_installed_models_full()
+
     def test_native_models_classified_by_task(self, tmp_path) -> None:
         from lilbee.modelhub.registry import ModelManifest
 
@@ -2723,15 +2735,22 @@ class TestArgSources:
         assert "wiki_dir" not in names  # read-only: would be refused by /set
         assert "chat_model" in names
 
-    def test_model_and_document_lookups_log_and_return_empty_on_error(self) -> None:
+    def test_model_lookup_lets_an_unreadable_registry_through(self) -> None:
         from unittest.mock import patch
 
-        from lilbee.cli.tui.widgets.autocomplete import ARG_SEARCHES, ARG_SOURCES
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SOURCES
 
-        with patch(
-            "lilbee.modelhub.models.list_installed_models", side_effect=RuntimeError("boom")
+        with (
+            patch("lilbee.modelhub.models.list_installed_models", side_effect=OSError("boom")),
+            pytest.raises(OSError, match="boom"),
         ):
-            assert ARG_SOURCES["/model"]() == []
+            ARG_SOURCES["/model"]()
+
+    def test_document_lookup_logs_and_returns_empty_on_error(self) -> None:
+        from unittest.mock import patch
+
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SEARCHES
+
         with patch("lilbee.cli.tui.widgets.autocomplete.get_services", side_effect=RuntimeError):
             assert ARG_SEARCHES["/delete"]("") == []
 
@@ -2994,13 +3013,17 @@ class TestModelOptions:
         with mock.patch("lilbee.modelhub.models.list_installed_models", return_value=["a", "b"]):
             assert list_model_options() == ["a", "b"]
 
-    def test_returns_empty_on_error(self) -> None:
+    def test_an_unreadable_registry_raises_instead_of_listing_nothing(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import list_model_options
 
-        with mock.patch(
-            "lilbee.modelhub.models.list_installed_models", side_effect=Exception("err")
+        with (
+            mock.patch(
+                "lilbee.modelhub.models.list_installed_models",
+                side_effect=OSError("manifests unreadable"),
+            ),
+            pytest.raises(OSError, match="manifests unreadable"),
         ):
-            assert list_model_options() == []
+            list_model_options()
 
 
 class TestSettingOptions:
@@ -4633,7 +4656,7 @@ class TestModelCardSelected:
 
 
 class TestCollectNativeModelsError:
-    def test_exception_suppressed(self, tmp_path) -> None:
+    def test_an_unreadable_registry_is_not_suppressed(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _collect_native_models
 
         cfg.models_dir = tmp_path / "models"
@@ -4644,9 +4667,12 @@ class TestCollectNativeModelsError:
             "vision": [],
         }
         seen: set[str] = set()
-        with mock.patch(
-            "lilbee.modelhub.registry.ModelRegistry",
-            side_effect=RuntimeError("boom"),
+        with (
+            mock.patch(
+                "lilbee.modelhub.registry.ModelRegistry",
+                side_effect=OSError("boom"),
+            ),
+            pytest.raises(OSError, match="boom"),
         ):
             _collect_native_models(buckets, seen)
         assert buckets["chat"] == []
@@ -7764,6 +7790,42 @@ class TestModelBarScanRaces:
             bar._populate({"chat": [ModelOption(label="m", ref="a/b/c.gguf")]})
         assert bar._options_cache == {}  # nothing cached; the next scan retries
         refresh.assert_called_once()
+
+    def test_a_scan_that_cannot_read_the_registry_reports_it_and_populates_nothing(self) -> None:
+        from unittest import mock
+
+        from lilbee.cli.tui.widgets import model_bar
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        bar = mock.MagicMock()
+        error = OSError("manifests unreadable")
+        with (
+            mock.patch.object(model_bar, "classify_installed_models_full", side_effect=error),
+            mock.patch.object(model_bar, "call_from_thread") as post,
+        ):
+            ModelBar._scan_models.__wrapped__(bar)
+        post.assert_called_once_with(bar, bar._scan_failed, error)
+        bar._populate.assert_not_called()
+
+    def test_a_failed_scan_notifies_with_an_error(self) -> None:
+        from unittest import mock
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        bar = mock.MagicMock()
+        ModelBar._scan_failed(bar, OSError("manifests unreadable"))
+        assert "manifests unreadable" in bar.notify.call_args.args[0]
+        assert bar.notify.call_args.kwargs["severity"] == "error"
+
+    def test_a_listing_failure_from_an_ended_completion_session_is_dropped(self) -> None:
+        from unittest import mock
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = mock.MagicMock()
+        screen._model_session = 2
+        ChatScreen._models_unreadable(screen, 1, OSError("manifests unreadable"))
+        screen.notify.assert_not_called()
 
     def test_cloud_warning_refresh_survives_an_unmounted_bar(self) -> None:
         from unittest import mock
