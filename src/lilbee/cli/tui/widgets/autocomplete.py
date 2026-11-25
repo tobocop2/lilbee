@@ -191,6 +191,11 @@ def _path_exists(partial: str) -> bool:
         return False
 
 
+def _path_order(name: str) -> tuple[str, str]:
+    """Row order on every platform: case-folded name, the exact name breaking ties."""
+    return (name.casefold(), name)
+
+
 def _path_options(partial: str = "") -> list[str]:
     """Return basename completions for the path segment being typed.
 
@@ -220,8 +225,7 @@ def _path_options(partial: str = "") -> list[str]:
                     for e in entries
                     if not e.name.startswith(".") and e.name.lower().startswith(prefix)
                 ),
-                # The key the old sorted(Path) used: Windows compares names case-folded.
-                key=os.path.normcase,
+                key=_path_order,
             )
         return [name + "/" if (parent / name).is_dir() else name for name in names]
     except Exception:
