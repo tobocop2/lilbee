@@ -365,10 +365,23 @@ def test_a_stamp_records_the_planned_values_and_the_keys_its_builder_follows(
     monkeypatch.setattr(cfg, "flash_attention", False)  # not yet taken from the file
     followed = ENGINE_TUNING_KEYS - {"num_ctx"}
     origin = FleetProvider(followed_keys=lambda: followed)._stamp_origin()
-    planned = json.loads(origin.fleet_view or "")
+    planned = json.loads(origin.planned_view or "")
     assert (planned["chat_model"], planned["num_ctx"]) == (_OTHER_CHAT_REF, 2048)
     assert planned["flash_attention"] is True
     assert origin.followed == followed
+
+
+def test_a_flagged_stamp_keeps_the_file_view_an_older_peer_reads(monkeypatch) -> None:
+    """Mixed versions, new owner and old peer: the file view is what 0267482 wrote.
+
+    An older peer compares only this view with config.toml, so a fleet planned on a
+    flag looks to it as it did before the upgrade, and it waits no longer than today.
+    """
+    persistent_settings.save(cfg.data_root, {"chat_model": _CHAT_REF})
+    monkeypatch.setattr(cfg, "chat_model", _OTHER_CHAT_REF)  # the command's flag
+    origin = FleetProvider(followed_keys=lambda: ENGINE_TUNING_KEYS)._stamp_origin()
+    assert origin.fleet_view == prov_mod._file_origin().fleet_view
+    assert json.loads(origin.fleet_view or "")["chat_model"] == _CHAT_REF
 
 
 def test_a_one_off_follows_only_the_tuning_keys_no_flag_set(monkeypatch) -> None:
@@ -400,7 +413,12 @@ def test_the_bind_ignores_the_stamp(real_planner, monkeypatch, tmp_path: Path) -
     """Rule 6: a slot fleet whose launches fit binds, whatever its stamp says."""
     persistent_settings.save(cfg.data_root, {"chat_model": _CHAT_REF})
     _owner_provider, states = _owner(monkeypatch, tmp_path)
-    _stamp(states, PlanOrigin(str(cfg.data_root), '{"chat_model": "x"}', FLEET_RELOAD_KEYS))
+    _stamp(
+        states,
+        PlanOrigin(
+            str(cfg.data_root), '{"chat_model": "x"}', '{"chat_model": "x"}', FLEET_RELOAD_KEYS
+        ),
+    )
     peer, built = _peer_beside_the_slot(monkeypatch, tmp_path, states, {})
     assert peer._ensure_fleet() is True
     assert built == []
