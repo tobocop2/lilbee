@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
-from typing import IO, TYPE_CHECKING, TextIO
+from typing import IO, TYPE_CHECKING, Any, TextIO
 
 from rich.console import Console, RenderableType
 from rich.highlighter import ReprHighlighter
+from rich.progress import Progress, ProgressColumn
 from rich.style import StyleType
 from rich.text import Text, TextType
 
 if TYPE_CHECKING:
     from rich.status import Status
+
+
+def live_progress(*columns: str | ProgressColumn, console: Console, **options: Any) -> Progress:
+    """A progress display that leaves ``sys.stdout`` and ``sys.stderr`` alone.
+
+    Rich redirects both streams into the display's console by default. A stderr display would
+    then take the text of a stdout print and show it on stderr. *options* go to ``Progress``.
+    """
+    return Progress(
+        *columns, console=console, redirect_stdout=False, redirect_stderr=False, **options
+    )
 
 
 class PlainConsole(Console):
