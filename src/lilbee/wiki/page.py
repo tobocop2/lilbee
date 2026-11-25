@@ -43,7 +43,7 @@ from lilbee.wiki.persistence import (
     delete_drift_draft_if_present,
     divert_concept_collision,
     divert_to_drafts,
-    draft_source_names,
+    draft_held_by_other_sources,
     origin_marker,
     persist_and_finalize,
     subdir_from_wiki_source,
@@ -260,7 +260,7 @@ def write_page(
             )
 
     atomic_write_text(page_path, full_content)
-    delete_drift_draft_if_present(drafts_dir, slug, source_names)
+    delete_drift_draft_if_present(drafts_dir, slug, source_names, source_ids=source_ids)
     return page_path
 
 
@@ -280,11 +280,11 @@ def _write_draft_page(
     page awaiting review. No drift ratio is computed: a drafts target is a
     proposal, not a published body it could be drifting from.
     """
-    owner = draft_source_names(draft_path)
-    if owner is not None and owner != sorted(source_names):
+    if draft_held_by_other_sources(draft_path, source_names, source_ids):
         return divert_concept_collision(
             slug=slug,
             source=", ".join(sorted(source_names)),
+            source_names=source_names,
             first_source=f"{WikiSubdir.DRAFTS}/{slug}.md",
             content=full_content,
             drafts_dir=drafts_dir,

@@ -288,6 +288,7 @@ def finalize_section(
             divert_concept_collision(
                 slug=slug,
                 source=source,
+                source_names=source_names,
                 first_source=first_source,
                 content=full_content,
                 drafts_dir=drafts_dir,
