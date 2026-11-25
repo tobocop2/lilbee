@@ -1028,7 +1028,7 @@ class TestEveryEntryPoint:
         rollback = AddRollback(paths=[notes], at_sync=False)
         cfg.json_mode = True
 
-        def _run_sync(_cancel, before_sync, started_by):
+        def _run_sync(_cancel, before_sync, started_by, analyze_tip):
             assert started_by == "lilbee add"
             before_sync()
             return MagicMock()
@@ -1505,7 +1505,7 @@ class TestACancelledJsonAdd:
         rollback = AddRollback(paths=[notes], at_sync=False)
         cfg.json_mode = True
 
-        def _cancelled(_cancel, before_sync, started_by):
+        def _cancelled(_cancel, before_sync, started_by, analyze_tip):
             raise KeyboardInterrupt
 
         with (
