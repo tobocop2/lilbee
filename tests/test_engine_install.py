@@ -499,6 +499,7 @@ def test_the_engines_tab_row_of_a_build_of_another_wheel_removes_it_so_install_w
         (engine_service.EngineState.DIFFERS_FROM_PIN, VERSION, "cpu"),
     ]
     stale = rows[1]
+    assert [b.differs_from_pin for b in engine_service.engine_list().builds] == [True]
     assert stale.size_bytes is not None and stale.size_bytes > 0
     assert not stale.outside_store
     # The row names the build that `lilbee engine list` names on its line.
