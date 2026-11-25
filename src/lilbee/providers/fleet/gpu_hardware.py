@@ -55,6 +55,8 @@ _PCI_VENDOR_ID_PATTERN = re.compile(r"ven_([0-9a-f]{4})", re.IGNORECASE)
 def installed_gpu_vendor_ids() -> frozenset[int]:
     """PCI vendor IDs of this host's display controllers that a kernel driver runs.
 
+    AMD processing accelerators (Instinct cards, PCI class 0x12) count as display controllers.
+
     Empty means the device tree holds no such controller or could not be read
     at all (macOS, an ARM SoC whose GPU is not on the PCI bus, a container with
     no ``/sys``, or a Linux host where no display controller has a bound
