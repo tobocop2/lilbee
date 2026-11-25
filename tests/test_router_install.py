@@ -323,6 +323,7 @@ class TestInstall:
         monkeypatch.setattr(os, "unlink", windows_unlink)
         install_router()
         assert sorted(p.name for p in stale.iterdir()) == [IN_USE_NAME, LICENCE_FILE, "llama-swap"]
+        assert [p.name for p in stale.parent.iterdir()] == [ROUTER_VERSION]
 
     def test_an_inner_entry_that_goes_during_the_delete_does_not_stop_the_install(
         self, release: list[str], monkeypatch: pytest.MonkeyPatch
