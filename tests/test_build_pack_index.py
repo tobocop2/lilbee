@@ -204,5 +204,8 @@ def test_pages_workflow_builds_the_pack_index() -> None:
     pages = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "pages.yml"
     workflow = yaml.safe_load(pages.read_text(encoding="utf-8"))
     steps = workflow["jobs"]["build-wheel-indexes"]["steps"]
-    runs = [s["run"] for s in steps if "build_pack_index.py wheel-indexes" in s.get("run", "")]
-    assert len(runs) == 1
+    pack_steps = [s for s in steps if "build_pack_index.py wheel-indexes" in s.get("run", "")]
+    assert len(pack_steps) == 1
+    # gh reads the releases with this token; without it the call is unauthenticated and
+    # the step fails on the runner.
+    assert pack_steps[0]["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
