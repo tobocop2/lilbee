@@ -13,6 +13,7 @@ from lilbee.app.config_follow import ConfigFileFollower
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import CONFIG_FILE_NAME, cfg
 from lilbee.core.config.enums import LlmProvider
+from lilbee.core.config.keys import PROVIDER_SWITCHING_KEYS
 from lilbee.mcp_server import LilbeeMCP, build_mcp_server, main
 from tests import _mcp_client
 from tests._mcp_client import mcp_client
@@ -216,7 +217,9 @@ def test_the_stdio_entry_point_serves_a_server_that_follows_the_file(monkeypatch
     main()
     assert served == [built]
     assert isinstance(built._config_follower, ConfigFileFollower)
-    assert svc_mod._state.config_refresh == built._config_follower.take_now
+    # The engine's retry runs the same follower, which holds only the provider switch.
+    assert built._config_follower is svc_mod._state.follower
+    assert built._config_follower.hold == PROVIDER_SWITCHING_KEYS
 
 
 def test_the_http_mount_builds_a_server_that_does_not_follow_the_file():
