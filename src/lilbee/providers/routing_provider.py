@@ -55,6 +55,7 @@ class RoutingProvider(LLMProvider):
         hold_warm: bool = False,
         config_refresh: Callable[[], None] | None = None,
         held_writes: Callable[[], Mapping[str, object]] | None = None,
+        followed_keys: Callable[[], frozenset[str]] | None = None,
     ) -> None:
         self._noticed: dict[WorkerRole, str] = {}
         self._unread: dict[WorkerRole, str] = {}
@@ -65,6 +66,7 @@ class RoutingProvider(LLMProvider):
         self._hold_warm = hold_warm
         self._config_refresh = config_refresh
         self._held_writes = held_writes
+        self._followed_keys = followed_keys
         # Guards both lazy inits so two concurrent first-callers on the shared
         # daemon don't each build a backend and leak the loser. (Construction is
         # cheap field init; FleetProvider defers the role-server spawn to first
@@ -85,6 +87,7 @@ class RoutingProvider(LLMProvider):
                         hold_warm=self._hold_warm,
                         config_refresh=self._config_refresh,
                         held_writes=self._held_writes,
+                        followed_keys=self._followed_keys,
                     )
         return self._local
 

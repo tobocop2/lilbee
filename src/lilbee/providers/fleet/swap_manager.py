@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
@@ -146,6 +146,7 @@ _STATE_KEY_LAUNCHES = "launches"
 _STATE_KEY_ENGINE_PIN = "engine_pin"
 _STATE_KEY_CONFIG_ROOT = "config_root"
 _STATE_KEY_FLEET_VIEW = "fleet_view"
+_STATE_KEY_FOLLOWED_KEYS = "followed_keys"
 _STATE_KEY_READY_AT = "ready_at"
 _STATE_KEY_STARTED_MONO = "started_mono"
 _STATE_KEY_STARTED_BOOT = "started_boot"
@@ -296,10 +297,17 @@ class SwapState:
 
 @dataclass(frozen=True)
 class PlanOrigin:
-    """The config root a fleet was planned for, and what its config.toml set for the plan then."""
+    """The config root of a fleet, the values its plan used, and the keys its builder follows.
+
+    *fleet_view* holds each fleet reload key config.toml set at plan time, with the value
+    the plan used. *followed* names the reload keys the builder takes from config.toml;
+    ``None`` is a record of an older version and counts every reload key as followed.
+    Two origins are equal when their root and their planned values are.
+    """
 
     config_root: str
     fleet_view: str | None
+    followed: frozenset[str] | None = field(default=None, compare=False)
 
 
 class EngineReadiness(StrEnum):
@@ -562,6 +570,8 @@ class SwapManager:
         if self._origin is not None:
             state[_STATE_KEY_CONFIG_ROOT] = self._origin.config_root
             state[_STATE_KEY_FLEET_VIEW] = self._origin.fleet_view
+            if self._origin.followed is not None:
+                state[_STATE_KEY_FOLLOWED_KEYS] = sorted(self._origin.followed)
         if self._ready_at is not None:
             state[_STATE_KEY_READY_AT] = self._ready_at
         if self._started_mono is not None and self._started_boot is not None:
@@ -1455,10 +1465,15 @@ def _load_state(path: Path) -> SwapState | None:
         raw_ports = payload.get(_STATE_KEY_MEMBER_PORTS) or []
         raw_proxy = payload.get(_STATE_KEY_PROXY_PORT)
         raw_root = payload.get(_STATE_KEY_CONFIG_ROOT)
+        raw_followed = payload.get(_STATE_KEY_FOLLOWED_KEYS)
         origin = (
             None
             if raw_root is None
-            else PlanOrigin(str(raw_root), payload.get(_STATE_KEY_FLEET_VIEW))
+            else PlanOrigin(
+                str(raw_root),
+                payload.get(_STATE_KEY_FLEET_VIEW),
+                None if raw_followed is None else frozenset(str(key) for key in raw_followed),
+            )
         )
         raw_ready = payload.get(_STATE_KEY_READY_AT)
         raw_mono = payload.get(_STATE_KEY_STARTED_MONO)
