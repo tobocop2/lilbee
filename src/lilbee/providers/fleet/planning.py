@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias
 
 from lilbee.catalog.header_probe import SPLIT_GGUF_NAME
+from lilbee.core.config import cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.core.system import is_network_path
 from lilbee.providers import engine_params, model_cache
@@ -490,8 +491,6 @@ def _resolve_vision_slots(
 ) -> int:
     """Largest OCR batching slot count (<= ``cfg.vision_ocr_concurrency``) that fits
     the memory budget; 1 when the ceiling is 1 or nothing larger fits."""
-    from lilbee.core.config import cfg
-
     ceiling = max(1, cfg.vision_ocr_concurrency)
     if ceiling == 1:
         return 1
@@ -731,8 +730,6 @@ def _role_ctx(
     once placement has chosen one. A tensor-split chat is sized against its
     per-device headroom instead (see :func:`fit_split_ctx`).
     """
-    from lilbee.core.config import cfg
-
     if role is not WorkerRole.CHAT:
         return _aux_role_ctx(role, model_path, meta)
     if cfg.num_ctx is not None:
@@ -751,8 +748,6 @@ def _placed_role_ctx(
     engine: EngineAdapter,
 ) -> int:
     """Per-slot context of a placed role; a chat on the cpu target reads system memory."""
-    from lilbee.core.config import cfg
-
     if plan.target is RoleTarget.CPU and plan.role is WorkerRole.CHAT and cfg.num_ctx is None:
         return engine_params.resolve_chat_ctx(
             model_path, meta, engine=engine, available_bytes=_cpu_sizing_budget()
@@ -792,8 +787,6 @@ def _pinned_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
     pin with a guess would break the hosts where the header is the thing that is
     broken.
     """
-    from lilbee.core.config import cfg
-
     pinned = cfg.num_ctx
     assert pinned is not None  # noqa: S101 - callers check; this documents the contract
     ceiling = _known_chat_ceiling(model_path, meta)
@@ -843,8 +836,6 @@ def _first_warning(*key: object) -> bool:
 
 def _served_pinned_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
     """:func:`_pinned_chat_ctx`, warning once per plan when the pin is past the trained window."""
-    from lilbee.core.config import cfg
-
     served = _pinned_chat_ctx(model_path, meta)
     if served != cfg.num_ctx and _first_warning(
         _LaunchWarning.PINNED_WINDOW, model_path.name, cfg.num_ctx, served
@@ -866,8 +857,6 @@ def _known_chat_ceiling(model_path: Path, meta: dict[str, str] | None) -> int | 
     ``None`` when the GGUF header gave no usable context length and the user set
     no ``cfg.num_ctx_max``: there is then no measured ceiling, only a default.
     """
-    from lilbee.core.config import cfg
-
     trained = _trained_chat_window(model_path, meta)
     known = [value for value in (trained, cfg.num_ctx_max) if value is not None and value > 0]
     return min(known) if known else None
@@ -884,8 +873,6 @@ def _trained_chat_window(model_path: Path, meta: dict[str, str] | None) -> int |
 
 def _rerank_mode_for(meta: dict[str, str] | None) -> RerankMode:
     """Resolve the RERANK serving mode from cfg + the reranker GGUF arch."""
-    from lilbee.core.config import cfg
-
     arch = meta.get("architecture") if meta else None
     return resolve_rerank_mode(cfg.reranker_type, arch)
 
@@ -911,8 +898,6 @@ def _role_gpu_layers(role: WorkerRole) -> int:
 
 def _flash_enabled() -> bool:
     """Flash attention is on unless ``cfg.flash_attention`` is explicitly ``False``."""
-    from lilbee.core.config import cfg
-
     return cfg.flash_attention is not False
 
 
@@ -1019,8 +1004,6 @@ def _role_kv_cache_type(role: WorkerRole, *, engine: EngineAdapter) -> KvCacheTy
     K != V on MLA models, forces flash attention on for a quantized V under
     ``auto``, and refuses a quantized V under ``off``.
     """
-    from lilbee.core.config import cfg
-
     if role is WorkerRole.CHAT and flash_attn_flag(engine) == _FLASH_ON:
         return cfg.kv_cache_type
     return KvCacheType.F16
@@ -1045,8 +1028,6 @@ def launch_settings(
     (see contract.chat_ctx_covers). The model is not here: the bind matches
     (role, model) pairs.
     """
-    from lilbee.core.config import cfg
-
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
     with_flash = _role_launches_with_flash(role, rerank_mode, engine=engine)
     flash = _flash_enabled() if with_flash else None
@@ -1196,8 +1177,6 @@ def _chat_serve_budget_footprint(footprint: int) -> int:
     its context. Small models are unaffected -- they fit the serve budget with KV
     room to spare.
     """
-    from lilbee.core.config import cfg
-
     # Never below 1.0. The ratio only compensates while the serve budget is the
     # smaller of the two; a gpu_memory_fraction raised past the usable fraction
     # inverts it, and the same line that exists to charge chat more starts
@@ -1207,8 +1186,6 @@ def _chat_serve_budget_footprint(footprint: int) -> int:
 
 def configured_chat_ctx() -> int:
     """The chat window the settings ask for: the ``num_ctx`` pin, else the target above a floor."""
-    from lilbee.core.config import cfg
-
     if cfg.num_ctx is not None:
         return cfg.num_ctx
     return max(cfg.chat_n_ctx_target, _MIN_USABLE_CHAT_CTX)
@@ -1226,8 +1203,6 @@ def _placement_estimate_ctx(
     single-card placement) nor the full trained ceiling (which over-reserves). A
     model that cannot hold weights + this floor on one card is tensor-split.
     """
-    from lilbee.core.config import cfg
-
     if role is not WorkerRole.CHAT:
         return apply_ctx_downshift(role, _aux_role_ctx(role, model_path, meta))
     if cfg.num_ctx is None and engine.memory_kind is not MemoryKind.FIXED_RESERVE:
@@ -1239,8 +1214,6 @@ def _placement_estimate_ctx(
 
 def planned_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
     """The per-slot chat context of a launch: the pin, else the target within the ceiling."""
-    from lilbee.core.config import cfg
-
     if cfg.num_ctx is not None:
         return _pinned_chat_ctx(model_path, meta)
     return engine_params.chat_ctx_bound(meta, model_path)
@@ -1254,8 +1227,6 @@ def _placement_estimate_slots(role: WorkerRole, meta: dict[str, str] | None) -> 
     real headroom with as many full-context slots as fit (``_resolve_split_chat_slots``),
     never exceeding what those cards hold, so a larger launch count can't OOM.
     """
-    from lilbee.core.config import cfg
-
     if role is WorkerRole.CHAT:
         return _SPLIT_CHAT_SLOTS
     if role is WorkerRole.VISION:
@@ -1376,8 +1347,6 @@ def _is_moe(meta: dict[str, str] | None) -> bool:
 
 def expert_offload_all(meta: dict[str, str] | None) -> bool:
     """Whether to keep every layer's experts in system memory; MoE models only."""
-    from lilbee.core.config import cfg
-
     return bool(cfg.cpu_moe) and _is_moe(meta)
 
 
@@ -1387,8 +1356,6 @@ def expert_offload_layers(meta: dict[str, str] | None) -> int | None:
     A non-positive ``n_cpu_moe`` offloads nothing (it would emit a no-op
     ``--n-cpu-moe 0``), so it reads as unset.
     """
-    from lilbee.core.config import cfg
-
     if cfg.n_cpu_moe is None or cfg.n_cpu_moe < 1 or not _is_moe(meta):
         return None
     return cfg.n_cpu_moe
@@ -1413,8 +1380,6 @@ def _expert_offload_configured() -> bool:
 
     A non-positive ``n_cpu_moe`` offloads nothing, so it does not count.
     """
-    from lilbee.core.config import cfg
-
     return bool(cfg.cpu_moe) or (cfg.n_cpu_moe is not None and cfg.n_cpu_moe >= 1)
 
 
@@ -1444,8 +1409,6 @@ def _weights_exceed_hardware(size: int, total_vram: int, *, is_moe: bool) -> boo
     standing the bound down entirely, since the user has said where the weights
     should go.
     """
-    from lilbee.core.config import cfg
-
     if cfg.n_gpu_layers is not None:
         return False
     if is_moe and _expert_offload_configured():
@@ -1774,8 +1737,6 @@ def _cpu_offload_in_play() -> bool:
     everything on the card and the estimator's host figure describes memory
     nobody will allocate.
     """
-    from lilbee.core.config import cfg
-
     return _expert_offload_configured() or cfg.n_gpu_layers is not None
 
 
@@ -2428,8 +2389,6 @@ def _draft_launch(
     model_path = model_path or engine_params.resolve_model_path(model_ref)
     weights_bytes = _weights_bytes(model_path)
     meta = engine.model_meta(model_path)
-    from lilbee.core.config import cfg
-
     pinned = _pinned_devices(chosen, plan, engine)
     reserved = _reserved_by_engine_index(reserved_by_device or {}, planned, chosen)
     reserved_after = _reserved_by_engine_index(reserved_after_chat or {}, planned, chosen)
@@ -2662,8 +2621,6 @@ def build_single_role_launch(
     auto entry, gets the target that serving plans for it. A role with no entry in a
     placement that serving drops it for is refused with serving's error.
     """
-    from lilbee.core.config import cfg
-
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
     if spec is not None:
         refuse_role_without_entry(spec, role)
@@ -3209,8 +3166,6 @@ def downshifted_ctx(role: WorkerRole, ctx: int) -> int:
 
 def _downshift_exempt(role: WorkerRole) -> bool:
     """True for a chat under a ``cfg.num_ctx`` pin, which no downshift touches."""
-    from lilbee.core.config import cfg
-
     return role is WorkerRole.CHAT and cfg.num_ctx is not None
 
 
@@ -3666,8 +3621,6 @@ def _plan_devices(binary: Path, engine: EngineAdapter) -> list[FleetDevice]:
 
 def plan_sizing_budget(engine: EngineAdapter, device: FleetDevice | None = None) -> int:
     """Usable memory for ctx/slot sizing: *device*'s own, else the snapshot, else live."""
-    from lilbee.core.config import cfg
-
     if device is not None:
         return int(device.total_bytes * cfg.gpu_memory_fraction)
     probe = _current_plan_probe(engine)
@@ -3705,8 +3658,6 @@ def _device_sizing_budget(devices: Sequence[FleetDevice]) -> int:
     System memory only when the engine reports no device at all, where the fleet
     runs on the CPU and system memory is the budget.
     """
-    from lilbee.core.config import cfg
-
     if devices:
         return int(min(d.total_bytes for d in devices) * cfg.gpu_memory_fraction)
     return int(model_cache.total_system_memory() * cfg.gpu_memory_fraction)
@@ -3837,8 +3788,6 @@ def _system_memory_floor() -> int:
     a fixed reserve leaves a 7-8 GB host with no budget at all and refuses even
     tiny models, so the proportional cap holds however the reserve is set.
     """
-    from lilbee.core.config import cfg
-
     total = model_cache.total_system_memory()
     return min(int(cfg.system_memory_reserve_gb * 1024**3), total // _SYSTEM_MEMORY_FLOOR_DIVISOR)
 
@@ -5026,8 +4975,6 @@ def _unusable_chat_ctx_reason(launch: InstanceLaunch, devices: list[FleetDevice]
     cards the launch runs on; they let the reason name memory that other
     processes hold.
     """
-    from lilbee.core.config import cfg
-
     if launch.role is not WorkerRole.CHAT or cfg.num_ctx is not None:
         return None
     needed = engine_params.min_usable_chat_ctx()
@@ -5120,8 +5067,6 @@ def _planned_launches(
     snapshot_engine: EngineAdapter,
 ) -> FleetPlan:
     """The placement and launches for *roles*, sized and placed against one snapshot."""
-    from lilbee.core.config import cfg
-
     unified_budget = _unified_memory_budget(devices, snapshot_engine)
     # Only the clean-box snapshot's free bytes mean "what other tenants hold";
     # a live probe is also missing the fleet's own residency.
@@ -5304,8 +5249,6 @@ def revoke_vision_on_request() -> None:
 
 def vision_role_wanted(ref: str) -> bool:
     """Whether a plan serves vision on *ref*: the OCR setting uses it, or a request asked."""
-    from lilbee.core.config import cfg
-
     chosen = OcrBackendUsed.chosen(cfg.ocr, ref)
     return chosen is OcrBackendUsed.VISION or _vision_request_grant.granted
 
@@ -5316,8 +5259,6 @@ def _launched_roles(engines: Mapping[WorkerRole, EngineAdapter]) -> tuple[Worker
     A role is covered when its engine serves it or when it has no engine, so the
     plan reports that role as left without one.
     """
-    from lilbee.core.config import cfg
-
     return tuple(
         role
         for role in ROLE_REGISTRY
@@ -5328,8 +5269,6 @@ def _launched_roles(engines: Mapping[WorkerRole, EngineAdapter]) -> tuple[Worker
 
 def _local_model_ref(role: WorkerRole) -> str | None:
     """The model *role* is set to, or ``None`` when it has none or is served by a remote SDK."""
-    from lilbee.core.config import cfg
-
     ref = str(getattr(cfg, ROLE_REGISTRY[role].config_field))
     return None if not ref or parse_model_ref(ref).is_remote else ref
 
