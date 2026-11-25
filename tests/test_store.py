@@ -5209,6 +5209,16 @@ class TestOpenTimeMigration:
         names = db.open_table(SOURCES_TABLE).schema.names
         assert "path" in names and "filename" not in names and "held_out" in names
 
+    def test_a_meta_folder_with_no_committed_version_does_not_stop_the_upgrade(self, test_config):
+        (test_config.lancedb_dir).mkdir(parents=True, exist_ok=True)
+        (test_config.lancedb_dir / f"{META_TABLE}.lance").mkdir()
+        store = _path_keyed_library(test_config)
+        db = store.get_db()
+
+        assert META_TABLE in table_names(db)
+        assert "source_id" in db.open_table(CHUNKS_TABLE).schema.names
+        assert store.get_meta() is None
+
     def test_an_existing_source_takes_the_md5_of_its_path(self, test_config):
         store = _path_keyed_library(test_config)
 
