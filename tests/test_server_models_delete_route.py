@@ -68,6 +68,14 @@ class TestDeleteWithSlashRef:
         assert installed_model.call_args.args[0] == "ollama/llama3:latest"
         assert installed_model.call_args.args[1].value == "ollama"
 
+    def test_extra_leading_slashes_are_all_dropped(self, client, installed_model):
+        client.delete(f"/api/models//{SLASH_REF}")
+        assert installed_model.call_args.args[0] == SLASH_REF
+
+    def test_only_slashes_are_dropped_from_the_start(self, client, installed_model):
+        client.delete("/api/models/XX/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf")
+        assert installed_model.call_args.args[0] == "XX/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+
     def test_a_ref_with_one_segment_still_matches(self, client, installed_model):
         resp = client.delete("/api/models/test")
         assert resp.status_code == 200
