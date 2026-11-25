@@ -271,6 +271,20 @@ class TestFixtureJson:
 
 
 class TestReplayMatching:
+    @staticmethod
+    def _post_to_replay(exchanges: list, sent: dict) -> tuple[int, str]:
+        from tests.conformance.preset_check import replaying
+
+        with replaying(exchanges) as url:
+            request = urllib.request.Request(  # noqa: S310
+                url + "/x", data=json.dumps(sent).encode(), method="POST"
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=10) as resp:  # noqa: S310
+                    return resp.status, resp.read().decode()
+            except urllib.error.HTTPError as exc:
+                return exc.code, ""
+
     @pytest.mark.parametrize(
         ("recorded", "sent", "status"),
         [
@@ -294,22 +308,70 @@ class TestReplayMatching:
             "one-knob-added",
         ],
     )
-    def test_a_knob_the_recording_holds_must_match(
+    def test_a_marked_fixture_drops_a_knob_only_where_it_lacks_it(
         self, recorded: dict, sent: dict, status: int
     ) -> None:
-        from tests.conformance.preset_check import Exchange, replaying
+        from tests.conformance.preset_check import UnrecordedKnobsExchange
 
-        exchange = Exchange("POST", "/x", recorded, 200, "application/json", "{}")
-        with replaying([exchange]) as url:
-            request = urllib.request.Request(  # noqa: S310
-                url + "/x", data=json.dumps(sent).encode(), method="POST"
-            )
-            try:
-                with urllib.request.urlopen(request, timeout=10) as resp:  # noqa: S310
-                    got = resp.status
-            except urllib.error.HTTPError as exc:
-                got = exc.code
-        assert got == status
+        exchange = UnrecordedKnobsExchange("POST", "/x", recorded, 200, "application/json", "{}")
+        assert self._post_to_replay([exchange], sent)[0] == status
+
+    @pytest.mark.parametrize(
+        "sent",
+        [{"m": "a", "temperature": 0, "max_tokens": 1024}, {"m": "a", "temperature": 0}],
+        ids=["two-knobs-added", "one-knob-added"],
+    )
+    def test_a_recording_that_is_not_marked_matches_on_the_whole_body(self, sent: dict) -> None:
+        from tests.conformance.preset_check import Exchange
+
+        exchange = Exchange("POST", "/x", {"m": "a"}, 200, "application/json", "{}")
+        assert self._post_to_replay([exchange], sent)[0] == 599
+
+    def test_a_wrong_temperature_does_not_take_the_reply_of_another_recording(self) -> None:
+        from tests.conformance.preset_check import Exchange
+
+        template = Exchange(
+            "POST", "/x", {"m": "a", "temperature": 0, "max_tokens": 1024}, 200, "text/plain", "t"
+        )
+        named = Exchange("POST", "/x", {"m": "a", "max_tokens": 1024}, 200, "text/plain", "n")
+        right = {"m": "a", "temperature": 0, "max_tokens": 1024}
+        wrong = {"m": "a", "temperature": 0.7, "max_tokens": 1024}
+        assert self._post_to_replay([template, named], right) == (200, "t")
+        assert self._post_to_replay([template, named], wrong)[0] == 599
+
+    def test_a_fixture_file_marks_its_exchanges(self, tmp_path) -> None:
+        from tests.conformance.preset_check import (
+            KNOBS_NOT_RECORDED,
+            SAMPLING_KNOBS_KEY,
+            Exchange,
+            UnrecordedKnobsExchange,
+            load_fixture,
+        )
+
+        doc = {
+            "server": "s",
+            "roles": [],
+            "models": {},
+            "rerank_wire": "v1",
+            "embed_dim": 1,
+            "results": {},
+            "exchanges": [
+                {
+                    "method": "POST",
+                    "path": "/x",
+                    "request": {},
+                    "status": 200,
+                    "content_type": "text/plain",
+                    "body": "",
+                }
+            ],
+        }
+        plain = tmp_path / "plain.json"
+        plain.write_text(json.dumps(doc), encoding="utf-8")
+        marked = tmp_path / "marked.json"
+        marked.write_text(json.dumps({**doc, SAMPLING_KNOBS_KEY: KNOBS_NOT_RECORDED}))
+        assert type(load_fixture(plain)[2][0]) is Exchange
+        assert type(load_fixture(marked)[2][0]) is UnrecordedKnobsExchange
 
 
 class TestOverflowStep:

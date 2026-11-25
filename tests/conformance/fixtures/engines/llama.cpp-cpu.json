@@ -1,5 +1,6 @@
 {
  "server": "llama.cpp-cpu",
+ "sampling_knobs": "not_recorded",
  "version": "memory-20261019-152820 62be051e9 llama-server 0.7.0-dev (build 1, commit 62be051)",
  "roles": [
   "chat",

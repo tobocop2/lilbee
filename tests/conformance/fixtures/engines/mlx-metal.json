@@ -1,5 +1,6 @@
 {
  "server": "mlx-metal",
+ "sampling_knobs": "not_recorded",
  "version": "0.32.2",
  "roles": [
   "chat",
