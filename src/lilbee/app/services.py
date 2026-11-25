@@ -388,9 +388,11 @@ def get_services() -> Services:
         with _state.pool_watchers_lock, _reset_swap_lock:
             stopping = _lifecycle.stop_requested
             if not stopping:
-                _state.singleton = services
+                # Attached before the container is visible, so a thread on the unlocked
+                # fast path above cannot spawn a role while the watchers are missing.
                 for on_spawning, on_spawned in _state.pool_watchers:
                     services.add_pool_listener(on_spawning=on_spawning, on_spawned=on_spawned)
+                _state.singleton = services
         if stopping:
             services.provider.shutdown()
             services.store.close()
