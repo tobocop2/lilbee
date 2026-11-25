@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
 from urllib.parse import urlparse
 
 import httpx2
+from filelock import FileLock, Timeout
 from pydantic import BaseModel
 
 from lilbee.catalog.compat import UnsupportedQuantError, classify, file_header
@@ -156,24 +157,41 @@ def discard_partial_blobs(models_dir: Path, hf_repo: str, blobs: Iterable[str]) 
     repo downloads into the same directory at the same time and its temporary
     file is live.
 
+    A blob whose huggingface_hub lock another process holds is skipped: that
+    process is mid-transfer and the partial in the folder is its own. The hub
+    holds the lock for the whole transfer, and the OS frees it when the holder
+    dies, so a terminated child never blocks its own cleanup.
+
     Raises RuntimeError naming the folder when the cache cannot be listed.
     """
     from huggingface_hub.file_download import repo_folder_name
 
-    repo_dir = models_dir / repo_folder_name(repo_id=hf_repo, repo_type="model")
+    repo_folder = repo_folder_name(repo_id=hf_repo, repo_type="model")
+    repo_dir = models_dir / repo_folder
     for blob in blobs:
+        lock_path = models_dir / ".locks" / repo_folder / f"{blob}.lock"
         try:
-            partials = list(repo_dir.glob(f"blobs/{blob}.*.incomplete"))
-        except OSError as exc:
-            raise RuntimeError(
-                f"Cannot read the model cache folder {repo_dir}: {exc.strerror or exc}. "
-                "Check that lilbee can read and write that folder."
-            ) from exc
-        for partial in partials:
-            try:
-                partial.unlink()
-            except OSError:
-                log.warning("Left a partial download behind: %s", partial)
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with FileLock(lock_path, timeout=0):
+                _unlink_partials(repo_dir, blob)
+        except Timeout:
+            log.info("Kept the partial download of %s: another transfer holds it.", blob)
+
+
+def _unlink_partials(repo_dir: Path, blob: str) -> None:
+    """Delete the temporary files of one blob; a failed delete is logged."""
+    try:
+        partials = list(repo_dir.glob(f"blobs/{blob}.*.incomplete"))
+    except OSError as exc:
+        raise RuntimeError(
+            f"Cannot read the model cache folder {repo_dir}: {exc.strerror or exc}. "
+            "Check that lilbee can read and write that folder."
+        ) from exc
+    for partial in partials:
+        try:
+            partial.unlink()
+        except OSError:
+            log.warning("Left a partial download behind: %s", partial)
 
 
 def _require_disk_space(entry: CatalogModel, models_dir: Path, needed: int) -> None:
