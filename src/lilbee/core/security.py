@@ -26,6 +26,10 @@ class FileLockUnavailableError(OSError):
     """Raised when a file lock cannot be taken; the guarded file is untouched."""
 
 
+class FileLockTimeoutError(FileLockUnavailableError):
+    """Raised when another process holds the lock past the wait."""
+
+
 @contextmanager
 def file_lock(path: Path, timeout_s: float) -> Iterator[None]:
     """Serialize access to *path* across processes via a sibling ``.lock`` file.
@@ -45,7 +49,7 @@ def file_lock(path: Path, timeout_s: float) -> Iterator[None]:
         os.close(os.open(lock_path, os.O_CREAT | os.O_RDWR, OWNER_ONLY_MODE))
         flock.acquire(timeout=timeout_s)
     except FileLockTimeout:
-        raise FileLockUnavailableError(
+        raise FileLockTimeoutError(
             f"another lilbee process held the lock on {path.name} for {timeout_s:g} seconds"
         ) from None
     except OSError as exc:

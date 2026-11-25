@@ -29,7 +29,7 @@ from lilbee.catalog.runnable import refresh_session_host
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
-from lilbee.core.security import FileLockUnavailableError
+from lilbee.core.security import FileLockTimeoutError, FileLockUnavailableError
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.binary import llama_server_ready
@@ -80,7 +80,7 @@ STORE_REFUSALS = (
     EngineNotInstalledError,
     StorePathError,
 )
-STORE_BUSY = "Another lilbee is using the engine store. Try again."
+STORE_BUSY = "Another lilbee process is using the engine store. Run the command again."
 NO_BUILDS = "No engine builds are installed."
 FOLDER_LINE = (
     "Engines folder: {folder} (shared by every data directory; LILBEE_MODELS_DIR moves it)"
@@ -429,8 +429,10 @@ def remove_build(
         store.remove(engine, version, backend, in_use=partial(launch_uses_engine, store.root))
     except STORE_REFUSALS as exc:
         raise EngineRefusedError(str(exc)) from exc
-    except FileLockUnavailableError as exc:
+    except FileLockTimeoutError as exc:
         raise EngineRefusedError(STORE_BUSY) from exc
+    except FileLockUnavailableError as exc:
+        raise EngineRefusedError(f"The engine store lock cannot be taken: {exc}.") from exc
     return BuildView(engine, version, backend).plain_label
 
 

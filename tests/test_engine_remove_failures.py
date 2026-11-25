@@ -17,7 +17,7 @@ from lilbee.app.engine_service import EngineRow, EngineState
 from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import run_engine_command
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-from lilbee.core.security import FileLockUnavailableError
+from lilbee.core.security import FileLockTimeoutError, FileLockUnavailableError
 from lilbee.providers.fleet import engine_store
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from tests._async_wait import wait_until
@@ -31,7 +31,8 @@ from tests.test_tui_settings_engines import (
     _toasts,
 )
 
-BUSY = "Another lilbee is using the engine store. Try again."
+BUSY = "Another lilbee process is using the engine store. Run the command again."
+REFUSED_LOCK = "the lock on fx cannot be taken (Permission denied)"
 MOVE = "lilbee cannot move the engine folder"
 _real_rename = Path.rename
 
@@ -39,13 +40,17 @@ _real_rename = Path.rename
 def _lock_timeout(monkeypatch: pytest.MonkeyPatch) -> str:
     """Make the store lock time out, as it does while another lilbee holds it."""
 
+    _fail_lock(monkeypatch, FileLockTimeoutError("another lilbee process held the lock"))
+    return BUSY
+
+
+def _fail_lock(monkeypatch: pytest.MonkeyPatch, error: FileLockUnavailableError) -> None:
     @contextmanager
-    def held(_path: Path, _timeout_s: float) -> Iterator[None]:
-        raise FileLockUnavailableError("another lilbee process held the lock for 300 seconds")
+    def failing(_path: Path, _timeout_s: float) -> Iterator[None]:
+        raise error
         yield
 
-    monkeypatch.setattr(engine_store, "file_lock", held)
-    return BUSY
+    monkeypatch.setattr(engine_store, "file_lock", failing)
 
 
 def _rename_fails(monkeypatch: pytest.MonkeyPatch) -> str:
@@ -79,6 +84,19 @@ def test_the_service_refuses_instead_of_raising_the_os_error(
     with pytest.raises(engine_service.EngineRefusedError) as raised:
         engine_service.remove_build("fx", "1", "cpu")
     assert text in str(raised.value)
+    _kept(models_dir)
+
+
+def test_a_lock_the_system_refuses_shows_its_own_text_not_the_busy_text(
+    models_dir: Path,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install(models_dir)
+    _fail_lock(monkeypatch, FileLockUnavailableError(REFUSED_LOCK))
+    with pytest.raises(engine_service.EngineRefusedError) as raised:
+        engine_service.remove_build("fx", "1", "cpu")
+    assert REFUSED_LOCK in str(raised.value)
+    assert BUSY not in str(raised.value)
     _kept(models_dir)
 
 
