@@ -41,6 +41,7 @@ from lilbee.runtime.asyncio_loop import hold_exit
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from lilbee.app.config_follow import ConfigFileFollower
     from lilbee.app.engine_choice import EngineBook
     from lilbee.catalog.hf_client import HfClient
     from lilbee.core.config import Config
@@ -221,8 +222,11 @@ class _ServicesState:
         self.interactive: bool = False
         # Where this process shows a library upgrade; each surface sets its own.
         self.on_upgrade: DetailedProgressCallback | None = None
-        # How this process takes config.toml now; set by each surface that follows the file.
-        self.config_refresh: Callable[[], None] | None = None
+        # This process's one config.toml follower, built by its entry point (the CLI,
+        # serve, the stdio MCP server, the TUI); the engine's retry looks it up at each
+        # take. None in a process with no entry point, such as a host of the library API.
+        self.follower: ConfigFileFollower | None = None
+        self.follower_lock = threading.Lock()
         # Every store this process built, so the exit can wait for any library open
         # (the first, the one /reset makes, a lazy one) without each path telling it.
         self.stores: weakref.WeakSet[Store] = weakref.WeakSet()
@@ -282,8 +286,14 @@ def build_services(
     provider: LLMProvider | None = None,
     registry: ModelRegistry | None = None,
     interactive: bool = False,
+    config_refresh: Callable[[], None] | None = None,
 ) -> Services:
     """Build a full Services container bound to *config*, without caching it.
+
+    *config_refresh* is what the local engine runs before it retries a call;
+    ``get_services`` passes a take through the process's current config.toml
+    follower. A container of the library API gets none, so its engine takes nothing
+    from the file.
 
     ``get_services()`` calls this with the process-global cfg; the library API
     calls it per instance. Service modules are imported inside the function to
@@ -317,7 +327,7 @@ def build_services(
     engines = EngineBook(config)
     owns_provider = provider is None
     provider = provider or create_provider(
-        config, hold_warm=interactive, config_refresh=refresh_config
+        config, hold_warm=interactive, config_refresh=config_refresh
     )
     store: Store | None = None
     try:
@@ -407,7 +417,12 @@ def get_services() -> Services:
         # Pin the store width to the embedder before Store(); pass the registry so
         # resolution doesn't re-enter this half-built get_services.
         reconcile_embedding_dim(registry)
-        services = build_services(cfg, registry=registry, interactive=_state.interactive)
+        services = build_services(
+            cfg,
+            registry=registry,
+            interactive=_state.interactive,
+            config_refresh=_take_through_the_process_follower,
+        )
         # A stop asked for during the build may already have swapped the singleton
         # out, so this container is shut down here instead of outliving the stop.
         with _state.pool_watchers_lock, _reset_swap_lock:
@@ -483,20 +498,51 @@ def mark_interactive_session() -> None:
     _state.interactive = True
 
 
-def set_config_refresh(hook: Callable[[], None] | None) -> None:
-    """Register how this process takes config.toml changes now (None clears it).
+def _take_through_the_process_follower() -> None:
+    """Take config.toml through this process's follower as it is now; nothing without one.
 
-    serve, the stdio MCP server and the TUI register the check they already run, so
-    the local engine can take an owner's new settings before it retries a call.
+    The engine runs this before it retries a call. It looks the follower up at each
+    take, so a follower that replaced another after the services were built is the
+    one that takes.
     """
-    _state.config_refresh = hook
+    follower = _state.follower
+    if follower is not None:
+        follower.take_now()
 
 
-def refresh_config() -> None:
-    """Take config.toml changes now through the registered check; nothing without one."""
-    hook = _state.config_refresh
-    if hook is not None:
-        hook()
+def follow_config_long_running(hold: frozenset[str], *, keeper: str) -> ConfigFileFollower:
+    """The config.toml follower of a process that runs until it is stopped.
+
+    serve, the stdio MCP server and the TUI call it; their follower takes every key
+    but *hold*. *keeper* names the process in the log line of a failed take. It
+    replaces the follower of the CLI command that started the process, and a second
+    call returns the first follower.
+    """
+    from lilbee.app.config_follow import ConfigFileFollower
+
+    with _state.follower_lock:
+        current = _state.follower
+        if current is None or not current.long_running:
+            current = ConfigFileFollower(hold, long_running=True, keeper=keeper)
+            _state.follower = current
+        return current
+
+
+def follow_config_one_off(flag_keys: frozenset[str]) -> None:
+    """Build the config.toml follower of a one-off CLI command.
+
+    It takes only the engine tuning keys, and holds *flag_keys*, the keys the
+    command's flags set, so a flag wins over a write to config.toml. A follower of a
+    long-running process stays.
+    """
+    from lilbee.app.config_follow import ONE_OFF_HOLD, ConfigFileFollower
+
+    with _state.follower_lock:
+        current = _state.follower
+        if current is None or not current.long_running:
+            _state.follower = ConfigFileFollower(
+                ONE_OFF_HOLD | flag_keys, long_running=False, keeper="the command"
+            )
 
 
 def report_library_upgrade(callback: DetailedProgressCallback | None) -> None:

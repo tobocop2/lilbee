@@ -19,20 +19,20 @@ from litestar.openapi import OpenAPIConfig
 from litestar.openapi.spec import Components, SecurityScheme
 from litestar.status_codes import HTTP_503_SERVICE_UNAVAILABLE
 
-from lilbee.app.config_follow import ConfigFileFollower
 from lilbee.app.endpoints import MCP_PATH
 from lilbee.app.services import (
     ServicesStoppingError,
+    follow_config_long_running,
     get_services,
     logged_services_build,
     peek_services,
     reset_services,
-    set_config_refresh,
     wait_for_opens,
 )
 from lilbee.app.settings import config_write_failure_message, fill_empty_chat_model
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
+from lilbee.core.config.keys import PROVIDER_SWITCHING_KEYS
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.core.settings import ReadOnlyConfigError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
@@ -321,8 +321,8 @@ class _ConfigFileReload(ASGIMiddleware):
     """
 
     def __init__(self) -> None:
-        self._follower = ConfigFileFollower()
-        set_config_refresh(self._follower.take_now)
+        # Built with the app; the engine's retry takes through it too.
+        self._follower = follow_config_long_running(PROVIDER_SWITCHING_KEYS, keeper="the server")
 
     async def handle(self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp) -> None:
         await self._follower.take()
