@@ -458,10 +458,17 @@ class TestEnsureChatModel:
         real list_installed_models through reclassify_by_name (no mock of the
         classifier)."""
         from lilbee.catalog.types import ModelTask
+        from lilbee.modelhub.registry import ModelManifest
 
         # A manifest that declares task="chat" but whose ref names a reranker; the
-        # name-based reclassifier must demote it so it never counts as a chat model.
-        reranker = mock.Mock(ref="bge-reranker-v2-m3", task=ModelTask.CHAT)
+        # manifest demotes it by name so it never counts as a chat model.
+        reranker = ModelManifest(
+            hf_repo="BAAI/bge-reranker-v2-m3",
+            gguf_filename="bge-reranker-v2-m3-Q8_0.gguf",
+            size_bytes=1,
+            task=ModelTask.CHAT,
+            downloaded_at="2026-05-15T00:00:00+00:00",
+        )
         with (
             mock.patch.object(models, "ModelRegistry") as mock_registry,
             mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
