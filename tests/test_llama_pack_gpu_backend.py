@@ -77,7 +77,12 @@ def test_the_backend_follows_the_gpu_and_the_host_libraries(host: HostCaps, back
 
 
 def _sysfs_host(
-    root: Path, monkeypatch: pytest.MonkeyPatch, devices: list[tuple[str, str]]
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    devices: list[tuple[str, str]],
+    *,
+    gfx: tuple[str, ...] = (),
+    numa: bool = False,
 ) -> HostCaps:
     """A Linux host whose PCI devices are (class, vendor) pairs under a fake sysfs."""
     for index, (class_code, vendor) in enumerate(devices):
@@ -94,16 +99,45 @@ def _sysfs_host(
         cpu_info={},
         nvidia=None,
         display_vendors=gpu_hardware.installed_gpu_vendor_ids(),
+        amd_gfx=gfx,
         vulkan_loader=True,
-        libnuma=False,
+        libnuma=numa,
     )
 
 
-def test_an_instinct_card_beside_a_bmc_chip_gets_the_vulkan_pack(
+_INSTINCT = ("0x120000", "0x1002")
+_BMC = ("0x030000", "0x1a03")
+
+
+def test_an_instinct_card_beside_a_bmc_chip_gets_the_cpu_pack_without_libnuma(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    host = _sysfs_host(tmp_path, monkeypatch, [("0x030000", "0x1a03"), ("0x120000", "0x1002")])
+    """RADV does not support Instinct cards: the Vulkan pack loses the device on an MI350."""
+    host = _sysfs_host(tmp_path, monkeypatch, [_BMC, _INSTINCT], gfx=("gfx950",))
+    assert pack_backend(host) == "cpu"
+
+
+def test_an_instinct_card_beside_a_bmc_chip_gets_the_rocm_pack_with_libnuma(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = _sysfs_host(tmp_path, monkeypatch, [_BMC, _INSTINCT], gfx=("gfx950",), numa=True)
+    assert pack_backend(host) == "rocm"
+
+
+def test_an_instinct_card_beside_a_radeon_card_gets_the_vulkan_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Radeon card is class 0x03 and keeps the pick; the Instinct card adds nothing."""
+    host = _sysfs_host(tmp_path, monkeypatch, [_BMC, ("0x030000", "0x1002"), _INSTINCT])
+    assert host.display_vendors == {0x1A03, AMD}
     assert pack_backend(host) == "vulkan"
+
+
+def test_an_intel_npu_beside_a_bmc_chip_gets_the_cpu_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = _sysfs_host(tmp_path, monkeypatch, [_BMC, ("0x120000", "0x8086")])
+    assert pack_backend(host) == "cpu"
 
 
 def test_a_host_with_only_a_bmc_chip_gets_the_cpu_pack(
