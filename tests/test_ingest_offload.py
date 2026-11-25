@@ -169,6 +169,35 @@ def test_the_shared_pool_keeps_the_worker_override(monkeypatch: pytest.MonkeyPat
     assert offload._ingest_executor()._max_workers == 5
 
 
+def _engine_share(monkeypatch: pytest.MonkeyPatch, share: int | None) -> None:
+    from lilbee.app import services
+
+    provider = SimpleNamespace(ingest_request_share=lambda: share)
+    monkeypatch.setattr(services, "get_services", lambda: SimpleNamespace(provider=provider))
+
+
+def test_a_pool_past_the_engine_share_shrinks_to_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An engine another process built answers 429 past the limit it was sized for,
+    # so a peer with a wider pool (here an operator override) stays inside it.
+    monkeypatch.setattr(offload.os, "cpu_count", lambda: 8)
+    monkeypatch.setenv("LILBEE_INGEST_MAX_WORKERS", "200")
+    _engine_share(monkeypatch, 14)
+    assert offload.max_workers() == 14
+
+
+def test_a_pool_inside_the_engine_share_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(offload.os, "cpu_count", lambda: 8)
+    _engine_share(monkeypatch, 64)
+    assert offload.max_workers() == 12
+
+
+def test_a_pool_with_no_engine_limit_known_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(offload.os, "cpu_count", lambda: 8)
+    monkeypatch.setenv("LILBEE_INGEST_MAX_WORKERS", "200")
+    _engine_share(monkeypatch, None)
+    assert offload.max_workers() == 200
+
+
 def test_embed_inflight_target_is_zero_when_the_device_probe_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

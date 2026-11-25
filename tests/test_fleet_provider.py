@@ -5278,6 +5278,33 @@ class TestChatCapacityAndCtxGetters:
         assert p.served_chat_slots() == 2
 
 
+class TestIngestRequestShare:
+    """The per-process share of the engine's request limit, read from the swaps that ingest calls."""
+
+    @staticmethod
+    def _up(limits: dict[WorkerRole, int | None]) -> FleetProvider:
+        p = FleetProvider()
+        for role, limit in limits.items():
+            swap = _FakeSwap()
+            swap.concurrency_limit = limit
+            p._swaps[SwapGroup(role.value)] = swap
+            p._role_group[role] = SwapGroup(role.value)
+        return p
+
+    def test_is_none_before_any_engine_is_up(self) -> None:
+        assert FleetProvider().ingest_request_share() is None
+
+    def test_is_none_when_the_engine_recorded_no_limit(self) -> None:
+        assert self._up({WorkerRole.EMBED: None}).ingest_request_share() is None
+
+    def test_is_a_fourth_of_the_smallest_embed_or_vision_limit(self) -> None:
+        p = self._up({WorkerRole.EMBED: 56, WorkerRole.VISION: 32, WorkerRole.CHAT: 8})
+        assert p.ingest_request_share() == 8
+
+    def test_never_drops_below_one(self) -> None:
+        assert self._up({WorkerRole.EMBED: 2}).ingest_request_share() == 1
+
+
 class TestEmbedTokenCap:
     """The chunker bounds to the served embed cap, or the planned one before the engine is up."""
 

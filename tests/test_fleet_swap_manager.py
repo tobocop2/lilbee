@@ -19,6 +19,7 @@ import pytest
 from lilbee import parent_monitor
 from lilbee.core.health_warnings import WarningCode
 from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet import swap_config as swap_config_mod
 from lilbee.providers.fleet import swap_manager as sm
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.llama import LlamaCppAdapter
@@ -1951,6 +1952,22 @@ class TestStateFilePersistenceKeys:
         assert state is not None
         assert state.proxy_port == mgr._port
 
+    def test_start_records_the_smallest_request_limit_of_its_models(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The limit in the config is what the engine enforces; a peer reads the
+        # same number back from the state file.
+        monkeypatch.setattr(swap_config_mod, "max_workers", lambda: 14)
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        big_chat = dataclasses.replace(_launch(WorkerRole.CHAT), slots=40)
+        mgr.start([big_chat, _launch(WorkerRole.EMBED)], engines=engines_for_all_roles(LLAMA))
+        assert mgr.concurrency_limit == 56
+        state = sm._load_state(mgr._state_path)
+        assert state is not None
+        assert state.concurrency_limit == 56
+
     def test_start_writes_an_owned_state(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2086,6 +2103,31 @@ class TestBindToLiveEngine:
         assert mgr.bind(state) is True
         assert mgr.endpoint() == "http://127.0.0.1:4100"
         assert mgr.bound is True
+
+    def test_a_binder_reads_the_request_limit_the_builder_recorded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_path = self._live_state(tmp_path)
+        recorded = json.loads(state_path.read_text())
+        recorded["concurrency_limit"] = 56
+        state_path.write_text(json.dumps(recorded))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._load_state(state_path)
+        assert state is not None
+        assert mgr.concurrency_limit is None
+        assert mgr.bind(state) is True
+        assert mgr.concurrency_limit == 56
+
+    def test_a_state_without_a_request_limit_binds_with_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state = sm._load_state(self._live_state(tmp_path))
+        assert state is not None
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        assert mgr.bind(state) is True
+        assert mgr.concurrency_limit is None
 
     def test_bind_refuses_a_state_without_a_proxy_port(self, tmp_path: Path) -> None:
         mgr = SwapManager(tmp_path, _GROUP)
