@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -370,6 +371,35 @@ class TestEnginePin:
             assert engine_build_id() != pin_a
         finally:
             cfg.llama_server_path = original
+
+    def test_signature_tells_a_replacement_apart_when_times_are_whole_seconds(
+        self, tmp_path: Path
+    ) -> None:
+        # tar extraction and OCI layers restore whole-second times, so two builds of
+        # equal size can share size and mtime. The inode tells the files apart.
+        exe = tmp_path / "llama-server"
+        exe.write_text("build-A\n")
+        os.utime(exe, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+        sig_a = binary_mod._binary_signature(exe)
+        staged = tmp_path / "staged"
+        staged.write_text("build-B\n")
+        os.utime(staged, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+        staged.replace(exe)
+        assert binary_mod._binary_signature(exe) != sig_a
+
+    def test_signature_tells_an_in_place_rewrite_apart_when_times_are_whole_seconds(
+        self, tmp_path: Path
+    ) -> None:
+        # The same inode rewritten to the same size, with the time put back: only the
+        # change time, which a caller cannot set, moves.
+        exe = tmp_path / "llama-server"
+        exe.write_text("build-A\n")
+        os.utime(exe, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+        sig_a = binary_mod._binary_signature(exe)
+        time.sleep(0.05)  # the kernel stamps the change time on a coarse clock tick
+        exe.write_text("build-B\n")
+        os.utime(exe, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+        assert binary_mod._binary_signature(exe) != sig_a
 
     def test_bundled_wheel_pin_wins_when_no_custom_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
