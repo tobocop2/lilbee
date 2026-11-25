@@ -1685,10 +1685,39 @@ async def sync(
     *started_by* names what started this sync, for the message a sync that waits for
     it shows; ``_marks_sync_running`` reads it.
     """
-    from lilbee.app.settings import chunk_drift, reindex_values
+    from lilbee.app.settings import reindex_values
+
+    token = _SYNC_CHUNK_SETTINGS.set(reindex_values(active_config()))
+    try:
+        return await _sync(
+            force_rebuild,
+            quiet,
+            on_progress=on_progress,
+            cancel=cancel,
+            retry_skipped=retry_skipped,
+            prune_ignored=prune_ignored,
+            shard=shard,
+            started_by=started_by,
+        )
+    finally:
+        _SYNC_CHUNK_SETTINGS.reset(token)
+
+
+async def _sync(
+    force_rebuild: bool,
+    quiet: bool,
+    *,
+    on_progress: DetailedProgressCallback,
+    cancel: CancelSignal | None,
+    retry_skipped: bool,
+    prune_ignored: bool,
+    shard: ShardId | None,
+    started_by: str,
+) -> SyncResult:
+    """The body of ``sync``, run while the sync's chunk settings snapshot is set."""
+    from lilbee.app.settings import chunk_drift
 
     config = active_config()
-    _SYNC_CHUNK_SETTINGS.set(reindex_values(config))
     _store = get_services().store
 
     in_place = force_rebuild and (
