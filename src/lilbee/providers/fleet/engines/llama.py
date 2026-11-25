@@ -306,6 +306,8 @@ class LlamaCppAdapter:
             memory_endpoint=request.memory_endpoint,
             fit_target_mib=request.fit_target_mib,
             kv_unified_per_slot=request.kv_unified_per_slot,
+            cache_ram_mib=request.cache_ram_mib,
+            ctx_checkpoints=request.ctx_checkpoints,
         )
 
     def discover_devices(self, binary: Path) -> DeviceProbe:

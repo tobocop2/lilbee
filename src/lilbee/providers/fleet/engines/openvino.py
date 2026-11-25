@@ -236,6 +236,8 @@ class OpenvinoAdapter:
             cache_type=request.cache_type,
             batch_size=request.batch_size,
             no_mmap=request.no_mmap,
+            cache_ram_mib=request.cache_ram_mib,
+            ctx_checkpoints=request.ctx_checkpoints,
         )
         return [_ENV, f"{_DEVICE_VAR}={device}", *argv]
 

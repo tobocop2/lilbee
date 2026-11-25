@@ -89,6 +89,8 @@ class LaunchRequest:
     memory_endpoint: bool = False
     fit_target_mib: tuple[int, ...] = ()
     kv_unified_per_slot: int | None = None
+    cache_ram_mib: int | None = None
+    ctx_checkpoints: int | None = None
     target: RoleTarget = RoleTarget.GPU
     replica: int = 0
 

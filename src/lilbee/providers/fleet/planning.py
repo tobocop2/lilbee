@@ -23,9 +23,12 @@ from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import ctx as fleet_ctx
 from lilbee.providers.fleet import gpu_hardware
 from lilbee.providers.fleet.adapters import (
+    FLAG_CACHE_RAM,
+    FLAG_CTX_CHECKPOINTS,
     LLM_RERANK_CONCURRENCY,
     NO_DEVICE,
     RankPoolingMissingError,
+    RoleServerSpec,
     resolve_rerank_mode,
 )
 from lilbee.providers.fleet.binary import (
@@ -214,6 +217,15 @@ def warn_when_chat_downsized(launch: InstanceLaunch) -> None:
 # (see _resolve_split_chat_slots) when the cards measurably have room for several
 # full windows, so this is a planning floor, not the served slot count.
 _SPLIT_CHAT_SLOTS = 1
+# The context checkpoints each completion slot keeps, at most: the current turn and the
+# three answers before it, which a follow-up and a fork at an answer return to. The
+# engine's own default is 32, and one 4B sliding-window checkpoint is 116 MiB at f16.
+_CHECKPOINT_CAP = 4
+# The engine's own --cache-ram default, in MiB; the plan never grants a cache more.
+_CACHE_RAM_CEILING_MIB = 8192
+# The prompt caches share this fraction of the free room (1/2); the other half is the
+# margin for estimate error and for lilbee itself.
+_CACHE_ROOM_DIVISOR = 2
 # Floor context the PLACEMENT estimate of a sized engine reserves KV for, so a large model is never
 # single-carded into a KV corner too small for real use (a 17GB model on a 24GB
 # card leaves ~no KV room -> n_ctx collapses to a few hundred tokens). Sizing the
@@ -787,6 +799,7 @@ class _LaunchWarning(StrEnum):
     PINNED_WINDOW = "pinned_window"
     NETWORK_FS = "network_fs"
     PCIE_SPLIT = "pcie_split"
+    NO_PROMPT_CACHE = "no_prompt_cache"
 
 
 _WarningKey: TypeAlias = tuple[object, ...]
@@ -2150,6 +2163,144 @@ def _engine_shares_kv(binary: Path, *, engine: EngineAdapter) -> bool:
     return engine.supports_shared_kv(binary)
 
 
+@dataclass(frozen=True)
+class _LaunchDraft:
+    """One instance's launch before the plan sizes its host caches, and what the sizing reads.
+
+    The draft's argv already carries the bounds of a plan with no room: ``--cache-ram 0``,
+    and ``--ctx-checkpoints 0`` on a role that keeps prompts.
+    """
+
+    launch: InstanceLaunch
+    spec: RoleServerSpec
+    request: LaunchRequest
+    engine: EngineAdapter
+    held_bytes: int
+    """System memory the instance holds before its caches: its whole footprint in one pool."""
+    checkpoint_bytes: int
+    """One context checkpoint of one sequence; 0 for a model that makes none."""
+    keeps_prompts: bool
+    """Whether the engine was told to bound a prompt cache and checkpoints for this instance."""
+
+
+@dataclass(frozen=True)
+class _HostCache:
+    """The bounds the plan gives one instance's prompt cache and context checkpoints."""
+
+    cache_ram_mib: int
+    ctx_checkpoints: int
+
+
+def _keeps_prompts(role: WorkerRole, rerank_mode: RerankMode | None) -> bool:
+    """Whether *role* serves completions, whose prompts and checkpoints the engine keeps.
+
+    Chat, vision and an LLM reranker do. Embed and a cross-encoder reranker see each
+    input once, so they get no prompt cache at all.
+    """
+    if role is WorkerRole.RERANK:
+        return rerank_mode is RerankMode.LLM
+    return role in (WorkerRole.CHAT, WorkerRole.VISION)
+
+
+def _held_host_memory(
+    engine: EngineAdapter, request: MemoryRequest, *, one_pool: bool, weights_bytes: int
+) -> tuple[int, int]:
+    """System memory one instance holds, and one checkpoint's bytes, from its estimate.
+
+    In one pool that is the whole footprint with the mapped weights; beside a card it is
+    the host half. A model the estimator cannot size holds at least its weights.
+    """
+    try:
+        estimate = engine.estimate_memory(request)
+    except (ProviderError, OSError):
+        return weights_bytes, 0
+    held = estimate.resident_footprint(unified=True) if one_pool else estimate.host_bytes
+    return held, estimate.checkpoint_bytes
+
+
+def _host_cache_budget() -> int:
+    """System memory the plan's instances and their caches may hold.
+
+    Installed RAM less the OS reserve and the loopback reserves, as admission charges
+    one pool, without the device cap: the caches are host heap, never device memory.
+    Never live free RAM, so one plan writes one argv in every process.
+    """
+    held_back = _system_memory_floor() + loopback_reserve_bytes()
+    return max(0, model_cache.total_system_memory() - held_back)
+
+
+def _host_cache_bounds(drafts: Sequence[_LaunchDraft], budget: int) -> list[_HostCache]:
+    """The bounds of each draft's caches, sized from the room the plan leaves free.
+
+    The room is *budget* less what every instance holds. Each instance that keeps
+    prompts gets up to ``_CHECKPOINT_CAP`` checkpoints per slot, fewer when the room left
+    cannot hold them; then half the room left is shared out as their prompt caches, at
+    most the engine's own default each.
+    """
+    room = budget - sum(draft.held_bytes for draft in drafts)
+    counts: list[int] = []
+    for draft in drafts:
+        count = 0
+        if draft.keeps_prompts:
+            per_checkpoint = draft.launch.slots * draft.checkpoint_bytes
+            count = (
+                _CHECKPOINT_CAP
+                if per_checkpoint == 0
+                else min(_CHECKPOINT_CAP, max(0, room // per_checkpoint))
+            )
+            room -= count * per_checkpoint
+        counts.append(count)
+    keepers = max(1, sum(1 for draft in drafts if draft.keeps_prompts))
+    cache_mib = min(_CACHE_RAM_CEILING_MIB, max(0, room) // _CACHE_ROOM_DIVISOR // keepers // MIB)
+    return [
+        _HostCache(cache_mib if d.keeps_prompts else 0, n)
+        for d, n in zip(drafts, counts, strict=True)
+    ]
+
+
+def _warn_without_prompt_cache(launch: InstanceLaunch, cache: _HostCache, checkpoint: int) -> None:
+    """Warn once for a launch that the plan leaves no system memory for its prompt cache."""
+    if cache.cache_ram_mib > 0 or not _first_warning(
+        _LaunchWarning.NO_PROMPT_CACHE, launch.role, launch.replica
+    ):
+        return
+    no_checkpoints = (
+        " Each turn reprocesses the whole conversation."
+        if cache.ctx_checkpoints == 0 and checkpoint > 0
+        else ""
+    )
+    log.warning(
+        "The %s model %s starts without its prompt cache: this plan leaves no free system "
+        "memory for it. A conversation that returns after another one reprocesses its whole "
+        "prompt.%s Close other programs, use a smaller model, or lower the context.",
+        launch.role.value,
+        launch.model,
+        no_checkpoints,
+    )
+
+
+def _finished_launch(draft: _LaunchDraft, cache: _HostCache) -> InstanceLaunch:
+    """*draft*'s launch with its sized cache bounds and their charge.
+
+    The charge counts only the bounds the argv carries: a build whose ``--help`` lists
+    neither flag drops it, and an engine that is not llama-server takes neither.
+    """
+    if not draft.keeps_prompts:
+        return draft.launch
+    request = replace(
+        draft.request, cache_ram_mib=cache.cache_ram_mib, ctx_checkpoints=cache.ctx_checkpoints
+    )
+    argv = draft.engine.launch_argv(draft.spec, request)
+    charge = (cache.cache_ram_mib * MIB if FLAG_CACHE_RAM in argv else 0) + (
+        draft.launch.slots * cache.ctx_checkpoints * draft.checkpoint_bytes
+        if FLAG_CTX_CHECKPOINTS in argv
+        else 0
+    )
+    launch = replace(draft.launch, argv=argv, est_host_cache_bytes=charge)
+    _warn_without_prompt_cache(launch, cache, draft.checkpoint_bytes)
+    return replace(launch, swap_extras=draft.engine.swap_extras(launch))
+
+
 def _launch_for(
     plan: InstancePlan,
     model_ref: str,
@@ -2163,7 +2314,39 @@ def _launch_for(
     model_path: Path | None = None,
     engine: EngineAdapter,
 ) -> InstanceLaunch:
-    """Build the launch spec (argv + device-pinning env) for one planned instance.
+    """The launch for one instance that has the machine to itself, caches sized.
+
+    Raises :class:`CardNotListedError` when the engine lists a planned card as another card.
+    """
+    draft = _draft_launch(
+        plan,
+        model_ref,
+        by_index,
+        unified_budget=unified_budget,
+        chat_reservation=chat_reservation,
+        reserved_by_device=reserved_by_device,
+        reserved_after_chat=reserved_after_chat,
+        est_vram_bytes=est_vram_bytes,
+        model_path=model_path,
+        engine=engine,
+    )
+    return _finished_launch(draft, _host_cache_bounds([draft], _host_cache_budget())[0])
+
+
+def _draft_launch(
+    plan: InstancePlan,
+    model_ref: str,
+    by_index: dict[int, FleetDevice],
+    *,
+    unified_budget: int | None = None,
+    chat_reservation: int = 0,
+    reserved_by_device: dict[int, int] | None = None,
+    reserved_after_chat: dict[int, int] | None = None,
+    est_vram_bytes: int | None = None,
+    model_path: Path | None = None,
+    engine: EngineAdapter,
+) -> _LaunchDraft:
+    """Build the launch draft (argv + device-pinning env) for one planned instance.
 
     Raises :class:`CardNotListedError` when the engine lists a planned card as another card.
     """
@@ -2250,6 +2433,7 @@ def _launch_for(
         )
     rerank_mode = _role_rerank_mode(plan.role, meta)
     is_llm_rerank = rerank_mode is RerankMode.LLM
+    keeps_prompts = _keeps_prompts(plan.role, rerank_mode)
     # A multi-card chat runs as many full-context slots as its cards' KV headroom
     # holds (split_slots, one when a num_ctx pin skips the fit); other roles size
     # --parallel against the budget the same way the estimator did.
@@ -2305,6 +2489,9 @@ def _launch_for(
             _chat_fit_target_mib(binary, chosen, reserved_after, engine=engine) if is_chat else ()
         ),
         kv_unified_per_slot=ctx if is_chat and _engine_shares_kv(binary, engine=engine) else None,
+        # The bounds of a plan with no room; _finished_launch writes the sized ones.
+        cache_ram_mib=0,
+        ctx_checkpoints=0 if keeps_prompts else None,
     )
     if est_vram_bytes is None:
         est_vram_bytes = _declared_reserve(
@@ -2353,7 +2540,39 @@ def _launch_for(
         server_binary=str(binary),
         engine=str(engine.name),
     )
-    return replace(launch, swap_extras=engine.swap_extras(launch))
+    launch = replace(launch, swap_extras=engine.swap_extras(launch))
+    one_pool = unified_budget is not None or plan.target is RoleTarget.CPU
+    layers = 0 if plan.target is RoleTarget.CPU else _role_gpu_layers(plan.role)
+    on_cpu = one_pool and _weights_on_cpu(engine, layers)
+    held_bytes, checkpoint_bytes = _held_host_memory(
+        engine,
+        MemoryRequest(
+            model_path=model_path,
+            ctx=ctx,
+            slots=slots,
+            gpu_layers=layers,
+            flash_attn=_role_flash(plan.role, rerank_mode, engine=engine, on_cpu=on_cpu),
+            kv_cache_type=_role_kv_cache_type(plan.role, engine=engine),
+            mmproj_path=mmproj,
+            # The parser counts cards only from a ratio, so a tight split sizes on as many.
+            tensor_split=plan.tensor_split or ((1,) * len(chosen) if len(chosen) > 1 else ()),
+            batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
+            expert_offload=_role_expert_offload(model_path, engine=engine),
+            on_cpu=on_cpu,
+        ),
+        one_pool=one_pool,
+        weights_bytes=weights_bytes,
+    )
+    return _LaunchDraft(
+        launch=launch,
+        spec=spec,
+        request=request,
+        engine=engine,
+        held_bytes=held_bytes,
+        checkpoint_bytes=checkpoint_bytes,
+        keeps_prompts=keeps_prompts
+        and (FLAG_CACHE_RAM in launch.argv or FLAG_CTX_CHECKPOINTS in launch.argv),
+    )
 
 
 def build_single_role_launch(
@@ -3953,14 +4172,14 @@ def _launching_instances(
         if inst.role is not WorkerRole.CHAT:
             return True
         try:
-            launch = _launch_for(
+            launch = _draft_launch(
                 inst,
                 model_refs[inst.role],
                 by_index,
                 reserved_by_device=reserved,
                 est_vram_bytes=0,
                 engine=engines[inst.role],
-            )
+            ).launch
         except CardNotListedError:
             return False
         return _unusable_chat_ctx_reason(launch, []) is None
@@ -4932,14 +5151,14 @@ def _launches_and_refusals(
         and inp.kind is MemoryKind.FIXED_RESERVE
         and inp.role in placement.tight_roles
     }
-    launches: list[InstanceLaunch] = []
+    drafts: list[_LaunchDraft] = []
     refused: dict[WorkerRole, str] = {}
     for plan in placement.instances:
         if text_only := _text_only_vision_reason(plan.role, model_refs[plan.role]):
             refused[plan.role] = text_only
             continue
         try:
-            launch = _launch_for(
+            draft = _draft_launch(
                 plan,
                 model_refs[plan.role],
                 by_index,
@@ -4953,6 +5172,7 @@ def _launches_and_refusals(
         except (RankPoolingMissingError, CardNotListedError) as exc:
             refused[plan.role] = str(exc)
             continue
+        launch = draft.launch
         launch.swap_class = class_label(plan.role, placement.swap_classes)
         reason = _unusable_chat_ctx_reason(
             launch, [by_index[i] for i in plan.devices if i in by_index] if clean_box else []
@@ -4979,8 +5199,10 @@ def _launches_and_refusals(
         if reason is not None:
             refused[launch.role] = reason
             continue
-        launches.append(launch)
-    return launches, refused
+        drafts.append(draft)
+    # Sized once every resident instance is known: the room is what all of them leave.
+    bounds = _host_cache_bounds(drafts, _host_cache_budget())
+    return [_finished_launch(d, b) for d, b in zip(drafts, bounds, strict=True)], refused
 
 
 class _VisionRequestGrant:
