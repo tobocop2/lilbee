@@ -80,6 +80,7 @@ from tests._crawlberg_stub import StubCrawlberg, complete
 from tests._crawlberg_stub import error as crawlberg_error
 from tests._held import held_kinds, hold_failed
 from tests._mcp_client import mcp_client
+from tests._signals import child_preexec
 from tests.conftest import summary_of
 
 
@@ -1500,6 +1501,7 @@ class TestMcpProcessSignals:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            preexec_fn=child_preexec(),
         )
         try:
             assert server.stdin is not None
@@ -1574,6 +1576,7 @@ class TestMcpProcessBuild:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            preexec_fn=child_preexec(),
         )
 
     def test_a_failed_build_exits_one_with_one_plain_line(self, tmp_path):
@@ -3887,13 +3890,6 @@ class TestImportDataset:
 class TestMcpCommandExit:
     """A signal ends the server through SystemExit; the command finishes the exit."""
 
-    @pytest.fixture(autouse=True)
-    def _restore_sigint(self):
-        """The command routes Ctrl-C to the stop; later tests get the old handler back."""
-        previous = signal.getsignal(signal.SIGINT)
-        yield
-        signal.signal(signal.SIGINT, previous)
-
     def test_the_signal_status_goes_to_the_exit_after_teardown(self, tmp_path):
         from typer.testing import CliRunner
 
@@ -3935,6 +3931,9 @@ class TestMcpCommandExit:
         from lilbee.app import services as services_mod
         from lilbee.cli import app
 
+        # A worker started as a background job ignores SIGINT, and the command keeps an
+        # inherited ignore. This test is about a terminal launch.
+        signal.signal(signal.SIGINT, signal.default_int_handler)
         seen: list[object] = []
         with mock.patch(
             "lilbee.mcp_server.main",
