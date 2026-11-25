@@ -283,7 +283,7 @@ def test_the_engine_retry_take_and_a_request_take_settle_one_write_once(
     client, monkeypatch, caplog
 ):
     follower = svc_mod._state.config_refresh.__self__  # type: ignore[union-attr]
-    assert svc_mod._state.config_refresh == follower.take_now
+    assert svc_mod._state.config_refresh == follower.refresh_now
     lock = _LockThatSeesWaiters(follower._lock)
     monkeypatch.setattr(follower, "_lock", lock)
     real_adopt = config_follow.adopt_external_changes
