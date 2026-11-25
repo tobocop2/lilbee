@@ -199,7 +199,9 @@ _PICK_RULES: tuple[_PickRule, ...] = (
     ),
     _PickRule(CODE_REPOSITORY, CODE_REPOSITORY_SHARE, lambda s: s.code_share, "of files are code"),
     _PickRule(NOTES_AND_MARKDOWN, NOTES_SHARE, _notes_share, "of files are Markdown or text"),
-    _PickRule(RESEARCH_PAPERS, RESEARCH_TABLES_SHARE, _tables_share, "of documents are PDFs with tables"),
+    _PickRule(
+        RESEARCH_PAPERS, RESEARCH_TABLES_SHARE, _tables_share, "of documents are PDFs with tables"
+    ),
 )
 
 
