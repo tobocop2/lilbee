@@ -237,24 +237,28 @@ class TestAdoptEmbedder:
     def test_a_missing_non_gguf_embedder_shows_the_no_engine_notice_once(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """The pull and the settings update each report the real notice of the same model."""
+        """A real pull yields the no-engine notice and another one; the update repeats the first."""
         from lilbee.app import settings as app_settings
 
         ref = "org/repo#safetensors"
-        manager = MagicMock()
-        manager.is_installed.return_value = False
+        manager = ModelManager(tmp_path / "models", cfg)
         services = SimpleNamespace(model_manager=manager)
         monkeypatch.setattr(app_models, "get_services", lambda: services)
         monkeypatch.setattr(cfg, "embedding_model", ref)
         monkeypatch.setattr(engine_choice, "installed_engines", dict)
-        _engine, pull_notice = ModelManager(tmp_path / "models", cfg)._pull_engine(ref)
+        monkeypatch.setattr(app_models, "ensure_vision_projector", lambda *a, **k: None)
         (settings_notice,) = app_settings._no_engine_notices({"embedding_model"})
-        assert pull_notice and pull_notice in settings_notice
+
+        def download(model, engine, *, on_notice, **_kw):
+            on_notice("The download size is unknown.")
+            return tmp_path / "model"
+
         update = SimpleNamespace(reindex_required=False, warnings=(settings_notice,))
-        pulled = SimpleNamespace(warning=pull_notice)
         with (
+            patch.object(ModelManager, "is_installed", return_value=False),
+            patch.object(ModelManager, "enforce_arch_compat"),
+            patch.object(ModelManager, "_pull_native", side_effect=download),
             patch("lilbee.app.settings.apply_settings_update", return_value=update),
-            patch.object(app_models, "pull_model_data", return_value=pulled),
         ):
             result = app_models.adopt_embedder(ref)
-        assert result.warning == settings_notice
+        assert result.warning == f"The download size is unknown. {settings_notice}"
