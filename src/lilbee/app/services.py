@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, NoReturn
 
+from lilbee.core.config.model import follow_published_config
 from lilbee.runtime.asyncio_loop import hold_exit
 
 if TYPE_CHECKING:
@@ -498,8 +499,6 @@ def refresh_config() -> None:
     The caller asked for the newest settings, so a request's pin then moves to the
     Config published last.
     """
-    from lilbee.core.config.model import follow_published_config
-
     hook = _state.config_refresh
     if hook is not None:
         hook()
