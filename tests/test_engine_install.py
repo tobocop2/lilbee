@@ -514,6 +514,67 @@ def test_the_engines_tab_row_of_a_build_of_another_wheel_removes_it_so_install_w
     assert [r.state for r in rows] == [engine_service.EngineState.INSTALLED]
 
 
+def _install_second_build(tmp_path: Path) -> None:
+    """Put a build of the engine beside the pin build, as a store that kept an older pin does."""
+    wheel = tmp_path / "second.whl"
+    sha = make_wheel(wheel)
+    lock = engine_store.PinLock(ENGINE.value, SECOND_VERSION, "cuda", {}, ("MIT",), sha, "server")
+    EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
+
+
+SECOND_VERSION = "git-0000000000aa"
+
+
+def _cli_list_json() -> dict[str, Any]:
+    result = CliRunner().invoke(cli_app, ["--json", "engine", "list"])
+    return json.loads(result.output.strip().splitlines()[-1])
+
+
+def test_a_second_build_of_an_installed_engine_differs_from_the_pin_in_the_tab(
+    good: Path, tmp_path: Path
+) -> None:
+    engine_service.install(ENGINE.value, good)
+    _install_second_build(tmp_path)
+    rows = [r for r in engine_service.engine_rows() if r.engine == ENGINE.value]
+    assert [(r.version, r.backend, r.state) for r in rows] == [
+        (VERSION, "cpu", engine_service.EngineState.INSTALLED),
+        (SECOND_VERSION, "cuda", engine_service.EngineState.DIFFERS_FROM_PIN),
+    ]
+    assert not rows[1].outside_store
+
+
+def test_every_surface_marks_the_second_build_with_the_same_term(
+    good: Path, tmp_path: Path
+) -> None:
+    engine_service.install(ENGINE.value, good)
+    _install_second_build(tmp_path)
+    expected = [
+        {
+            "engine": ENGINE.value,
+            "version": version,
+            "backend": backend,
+            "not_run_on": mock.ANY,
+            "differs_from_pin": differs,
+        }
+        for version, backend, differs in [(VERSION, "cpu", False), (SECOND_VERSION, "cuda", True)]
+    ]
+    assert engine_service.engine_list().payload()["builds"] == expected
+    assert _cli_list_json()["builds"] == expected
+    assert mcp_server.engine_list_tool()["builds"] == expected
+    with create_test_client([routes.engine_builds_route], debug=False) as client:
+        assert client.get("/api/engines").json()["builds"] == expected
+    lines = CliRunner().invoke(cli_app, ["engine", "list"]).output.splitlines()
+    term = engine_service.DIFFERS_FROM_PIN_TEXT
+    assert [term in line for line in lines if SECOND_VERSION in line] == [True]
+    assert not any(term in line for line in lines if VERSION in line)
+
+
+def test_the_term_is_the_same_in_the_tab_and_the_service() -> None:
+    from lilbee.cli.tui import messages as msg
+
+    assert engine_service.DIFFERS_FROM_PIN_TEXT == msg.ENGINE_STATE_DIFFERS_FROM_PIN
+
+
 def test_a_pin_that_names_no_backend_is_refused(
     good: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
