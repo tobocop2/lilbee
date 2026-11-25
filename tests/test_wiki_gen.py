@@ -129,6 +129,7 @@ def _orthogonal_body_vector() -> list[float]:
 def _mock_store() -> MagicMock:
     store = MagicMock(spec=Store)
     store.replace_chunks.side_effect = lambda source, chunk_type, records: len(records)
+    store.source_ids.return_value = {}
     return store
 
 
@@ -2411,7 +2412,7 @@ class TestPersistAndFinalizeDrafts:
             target,
             [],
             ["doc.md"],
-            MagicMock(spec=Store),
+            _mock_store(),
             cfg,
             stats=stats,
         )
