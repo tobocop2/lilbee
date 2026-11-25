@@ -2328,23 +2328,30 @@ def _host_cache_bounds(drafts: Sequence[_LaunchDraft], budget: int) -> list[_Hos
 
 
 def _warn_without_prompt_cache(launch: InstanceLaunch, cache: _HostCache, checkpoint: int) -> None:
-    """Warn once for a launch that the plan leaves no system memory for its prompt cache."""
-    if cache.cache_ram_mib > 0 or not _first_warning(
+    """Warn once for a launch that lost its prompt cache or its context checkpoints.
+
+    A checkpoint bound of 0 is a loss only on a model that makes checkpoints.
+    """
+    no_cache = cache.cache_ram_mib == 0
+    no_checkpoints = cache.ctx_checkpoints == 0 and checkpoint > 0
+    if not (no_cache or no_checkpoints) or not _first_warning(
         _LaunchWarning.NO_PROMPT_CACHE, launch.role, launch.replica
     ):
         return
-    no_checkpoints = (
-        " Each turn reprocesses the whole conversation."
-        if cache.ctx_checkpoints == 0 and checkpoint > 0
-        else ""
+    lost = (
+        "without its prompt cache: this plan leaves no free system memory for it. A "
+        "conversation that returns after another one reprocesses its whole prompt."
+        if no_cache
+        else "without context checkpoints: this plan leaves too little free system memory "
+        "for them."
     )
     log.warning(
-        "The %s model %s starts without its prompt cache: this plan leaves no free system "
-        "memory for it. A conversation that returns after another one reprocesses its whole "
-        "prompt.%s Close other programs, use a smaller model, or lower the context.",
+        "The %s model %s starts %s%s Close other programs, use a smaller model, or lower "
+        "the context.",
         launch.role.value,
         launch.model,
-        no_checkpoints,
+        lost,
+        " Each turn reprocesses the whole conversation." if no_checkpoints else "",
     )
 
 
