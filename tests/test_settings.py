@@ -2724,12 +2724,12 @@ class TestResetRemovesTheUserValue:
         assert settings.load(root)["max_distance"] == 0.3
 
     @pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
-    def test_reset_refusal_keeps_a_profile_address_password_out(self, key):
+    def test_reset_refusal_keeps_a_fallback_address_password_out(self, monkeypatch, key):
+        """A reset falls back to the variable's value; the refusal must not print its password."""
         from lilbee.app import settings as appset
 
-        self._write_config(
-            f'{key} = "http://h:1"\n[profile.values]\n{key} = "http://u:s3cret@ollama:abc"\n'
-        )
+        self._write_config(f'{key} = "http://h:1"\n')
+        monkeypatch.setenv(f"LILBEE_{key.upper()}", "http://u:s3cret@ollama:abc")
         with pytest.raises(ValueError, match=f"Cannot reset '{key}'") as refused:
             appset.reset_settings([key])
         assert "s3cret" not in str(refused.value)
