@@ -1689,8 +1689,20 @@ def test_a_tokenize_route_keeps_an_input_its_tokenizer_counts_within_the_cap() -
     """8 words are 8 tokens to the tokenizer, within the cap of 10, though the estimate is 13."""
     router = _CountRouter()
     texts = _wide_texts(2)
-    _count_client(router, tokenize_path="/tok").embed(texts)
+    _count_client(
+        router, tokenize_path="/tok", input_count_path=None, input_limit_path=None
+    ).embed(texts)
     assert router.embedded == [texts]
+
+
+def test_a_profile_cannot_have_both_a_tokenize_route_and_an_input_limit_route() -> None:
+    """With both, one cut input counts twice: the client cuts it, then the check counts it cut.
+
+    The client cuts to the cap by its own tokenizer; the check then counts the cut text past a
+    server limit below the cap. The profile refuses the pair, so the second count cannot happen.
+    """
+    with pytest.raises(ValueError, match="tokenize_path"):
+        dataclasses.replace(TEI.request_profile(WorkerRole.EMBED), tokenize_path="/tok")
 
 
 def test_an_input_with_an_estimate_of_exactly_the_cap_is_not_cut() -> None:
