@@ -9455,3 +9455,9 @@ class TestReportsReadAfterTheLoad:
         p._lazy_warming = True
         p._end_lazy_warm("boom")
         assert swap.loaded_reads == []
+
+    def test_a_client_names_its_replica_id(self) -> None:
+        client = LlamaServerClient(
+            "http://127.0.0.1:1", "chat-3", profile=LLAMA.request_profile(WorkerRole.CHAT)
+        )
+        assert client.model_id == "chat-3"
