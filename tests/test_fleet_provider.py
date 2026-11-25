@@ -139,7 +139,7 @@ class _FakeSwap:
     def role_ready(self, role: WorkerRole) -> bool:
         return role in self.ready
 
-    def record_ready(self) -> None:
+    def engine_ready(self, role: WorkerRole) -> None:
         self.ready_records += 1
 
     def health_warnings(self) -> list:

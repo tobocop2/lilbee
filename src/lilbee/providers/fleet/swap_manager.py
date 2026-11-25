@@ -596,6 +596,21 @@ class SwapManager:
         self._ready_at = time.time()
         self._write_state()
 
+    def engine_ready(self, role: WorkerRole) -> None:
+        """Record that *role*'s engines loaded, and read their memory reports.
+
+        Called by whoever saw the load finish (the warm request that returned),
+        so a serve that nothing polls still checks each engine once per load.
+        Only replicas that /running lists as ready are read, so a replica that failed
+        to load is not reported as one that did not answer. If the listing is empty or
+        fails, the next readiness poll reads them. The probes block: call this from a
+        worker thread.
+        """
+        self.record_ready()
+        prefix = role_model_prefix(role)
+        loaded = self._ready_models() or set()
+        self._check_new({model for model in loaded if model.startswith(prefix)})
+
     @property
     def log_path(self) -> Path:
         """The llama-swap log for this group, which records each member's exit."""
@@ -634,7 +649,11 @@ class SwapManager:
             with self._warnings_lock:
                 self._placement_warnings.pop(model_id, None)
                 self._spill_warnings.pop(model_id, None)
-        for model_id in ready - self._estimate_checked:
+        self._check_new(ready)
+
+    def _check_new(self, loaded: set[str]) -> None:
+        """Read the report of each engine in *loaded* that has not been read since it loaded."""
+        for model_id in loaded - self._estimate_checked:
             launch = self._launch_by_model.get(model_id)
             self._estimate_checked.add(model_id)
             if launch is None:

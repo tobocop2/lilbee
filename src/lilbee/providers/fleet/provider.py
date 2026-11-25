@@ -3570,7 +3570,7 @@ class FleetProvider:
             with self._lock:
                 swap = self._swap_for(role)
             if swap is not None:
-                swap.record_ready()
+                swap.engine_ready(role)
         return warmed
 
     def _warm_chat_role(self, clients: list[LlamaServerClient]) -> None:
