@@ -64,6 +64,7 @@ from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
 from lilbee.wiki.drafts import StaleDraftError
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
+from lilbee.wiki.stats import BuildStats
 from tests._async_wait import subtree_mounted, wait_for_widget, wait_until
 from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
 from tests._crawlberg_stub import StubCrawlberg, refusing_patterns
@@ -12129,7 +12130,12 @@ class TestWikify:
     async def test_b_runs_a_full_build_as_a_wiki_task(self, tmp_path):
         cfg.wiki = True
         cfg.data_root = tmp_path
-        summary = {"paths": ["a.md", "b.md"], "entities": 4, "count": 2}
+        summary = {
+            "paths": ["a.md", "b.md"],
+            "entities": 4,
+            "count": 2,
+            "stats": BuildStats().as_dict(),
+        }
 
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -12151,6 +12157,30 @@ class TestWikify:
                 (TaskType.WIKI.value, TaskStatus.DONE)
             ]
             assert notify.call_args.args[0] == msg.WIKI_BUILD_DONE.format(count=2)
+
+    async def test_a_build_that_lost_some_pages_shows_the_count_as_an_error(self, tmp_path):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        stats = BuildStats()
+        stats.record_published("a.md", 1)
+        stats.record_model_call("engine down")
+        stats.record_failed_pages(2)
+        summary = {"paths": ["a.md"], "entities": 3, "count": 1, "stats": stats.as_dict()}
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with (
+                patch("lilbee.wiki.generation.run_full_build", return_value=summary),
+                patch.object(app, "notify") as notify,
+            ):
+                await pilot.press("b")
+                assert await pump_until(pilot, lambda: bool(app.task_bar.queue.history)), (
+                    "build never finished"
+                )
+            assert notify.call_args.args[0] == (
+                "2 of 3 pages could not be written.\nLast error: engine down."
+            )
+            assert notify.call_args.kwargs["severity"] == "error"
 
     async def test_wikify_refuses_while_a_build_is_already_pending(self, tmp_path):
         """A second press must not queue a duplicate corpus-wide build."""
