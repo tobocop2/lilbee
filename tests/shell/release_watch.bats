@@ -172,10 +172,12 @@ summary() { cat "${FIXTURE}/summary.md"; }
   rc_jobs "build-binaries (compat-windows):cancelled:timeout"
   touch "${FIXTURE}/fail_annotations"
   run watch
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"could not read candidate"* ]]
   run summary
   [[ "$output" != *"release-selfheal owns this"* ]]
+  [[ "$output" != *"Every channel published"* ]]
+  [[ "$output" == *"| (candidate) | unknown |"* ]]
 }
 
 @test "a candidate already at the attempt bound is watched rather than deferred to" {
@@ -248,12 +250,13 @@ summary() { cat "${FIXTURE}/summary.md"; }
   [[ "$output" == *"unsettled"* ]]
 }
 
-@test "an unreadable candidate is watched, not mistaken for one that is healing" {
+@test "an unreadable candidate is watched, but never reported as every channel published" {
   touch "${FIXTURE}/fail_api"
   run watch
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"could not read candidate"* ]]
   run summary
   [[ "$output" != *"release-selfheal owns this"* ]]
-  [[ "$output" == *"Every channel published"* ]]
+  [[ "$output" != *"Every channel published"* ]]
+  [[ "$output" == *"| (candidate) | unknown |"* ]]
 }
