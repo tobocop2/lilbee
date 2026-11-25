@@ -561,18 +561,19 @@ def _call_reserved(
     """Run *call* on the least-busy client, holding its reservation for the whole call.
 
     A replica whose device check refuses the request hands it to a sibling through
-    the same retry as a dead replica.
+    the same retry as a dead replica, after the refused replica gives its slot back.
     """
     client = pool.pick(_reserve_least_busy)
     try:
         return call(client)
     except DeviceRefusedError as exc:
-        return _retry_on_other_replica(pool, client, call, exc)
+        refusal = exc
     except Exception as exc:
         _raise_if_restarted(client, exc)
         raise
     finally:
         client.release()
+    return _retry_on_other_replica(pool, client, call, refusal)
 
 
 def _call_with_failover(
