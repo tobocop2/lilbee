@@ -4359,7 +4359,7 @@ class TestAskNamesTheMissingEngine:
         assert result.exit_code == 1
         flat = " ".join(result.output.split())
         assert f"No installed engine loads the gguf format of {ref}." in flat
-        assert "Run lilbee engine list to see the installed engines." in flat
+        assert "Run lilbee engine list (or GET /api/engines) to see the installed engines." in flat
 
 
 class TestAskWithoutEmbedder:

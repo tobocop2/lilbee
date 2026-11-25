@@ -52,7 +52,7 @@ ALL_ROUTES = [routes.engine_roles_route, routes.engine_use_route, routes.engine_
 SURFACES = ("cli", "rest", "mcp", "slash")
 FALLBACK = (
     "Engine mlx is not installed. Using llama.cpp. "
-    "Run lilbee engine list to see the installed engines."
+    "Run lilbee engine list (or GET /api/engines) to see the installed engines."
 )
 
 
@@ -536,7 +536,7 @@ def test_the_first_rerank_request_shows_the_notice_once(
         assert provider.rerank("q", ["a"]) == [0.5]
     rerank_notice = (
         "Engine mlx is not installed. Using llama.cpp. "
-        "Run lilbee engine list to see the installed engines."
+        "Run lilbee engine list (or GET /api/engines) to see the installed engines."
     )
     assert [r.getMessage() for r in caplog.records].count(rerank_notice) == 1
 
