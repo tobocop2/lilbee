@@ -204,7 +204,7 @@ def run_async(_integration_loop):
 
 
 @pytest.fixture(scope="session")
-def rag_pipeline(tmp_path_factory, _integration_loop):
+def rag_pipeline(tmp_path_factory, _integration_loop, code_parsers_ready):
     """Set up a real RAG pipeline with downloaded models and test documents.
     Session-scoped: downloads models once, creates documents, runs sync,
     yields pipeline data, then restores config.
