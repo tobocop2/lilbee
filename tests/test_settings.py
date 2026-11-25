@@ -19,7 +19,13 @@ from lilbee.core.config.enums import SettingSource
 from lilbee.core.config.keys import PROVIDER_API_KEYS
 from lilbee.core.config.model import toml_value as _toml_value
 from lilbee.core.config.model import toml_values as _toml_values
-from lilbee.core.config.resolve import _read_toml, builtin_value, read_layers, resolve
+from lilbee.core.config.resolve import (
+    builtin_value,
+    read_config_table,
+    read_layers,
+    read_profile_table,
+    resolve,
+)
 from lilbee.core.config.resolve import toml_is_readable as _toml_is_readable
 from lilbee.core.project_state import ProjectState
 from tests._private_mode import posix_only
@@ -2095,7 +2101,7 @@ _LOCK_FREE_READERS = {
     "persisted_values": lambda root: settings.persisted_values(root),
     "toml_values": lambda root: _toml_values(root / "config.toml"),
     "toml_value": lambda root: _toml_value(root / "config.toml", "top_k"),
-    "read_toml": lambda root: _read_toml(root / "config.toml"),
+    "read_toml": lambda root: read_config_table(root / "config.toml"),
     "toml_is_readable": lambda root: _toml_is_readable(root / "config.toml"),
 }
 
@@ -2997,6 +3003,12 @@ class TestThePersistedValuesReadTheFileOnce:
         else:
             assert {k: values[k] for k in expected} == expected
         assert len(reads) == parses
+
+    def test_an_unparsable_file_gives_an_empty_profile_table_and_empty_layers(self, tmp_path):
+        (tmp_path / "config.toml").write_text("top_k = = 9\n", encoding="utf-8")
+        table = read_profile_table(tmp_path)
+        assert (table.name, dict(table.values)) == (None, {})
+        assert read_layers(tmp_path).user == {}
 
     @pytest.mark.parametrize(
         ("stored", "readable"), [("top_k = 4\n", True), ("top_k = = 9\n", False)]
