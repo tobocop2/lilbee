@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from unittest import mock
 
 import pytest
@@ -13,7 +14,7 @@ from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.data.types import SyncResult
 from lilbee.server.handlers import SseStream, cancel_add
-from lilbee.server.handlers.ingest import _ingest_stream, _run_add
+from lilbee.server.handlers.ingest import _ingest_stream, _run_add, _run_upload
 from lilbee.server.models import AddSummary
 from tests.server.conftest import parse_sse_events
 from tests.server.test_handlers import (  # noqa: F401 (autouse fixtures)
@@ -325,3 +326,76 @@ class TestACancelOfAnAddByPath:
 
         assert summary.cancelled is True
         assert summary.copied == ["notes"] and summary.absorbed == ["work"]
+
+
+class TestACancelOfAnUpload:
+    async def test_the_cancel_deletes_a_file_the_upload_created(self):
+        sse = SseStream()
+        with mock.patch("lilbee.data.ingest.sync", new=_stopping_sync(sse)):
+            summary = await _run_upload([("sub/new.md", b"# new\n")], sse)
+
+        assert summary.cancelled is True
+        assert summary.not_added == ["sub/new.md"] and summary.copied == []
+        assert not (cfg.documents_dir / "sub" / "new.md").exists()
+
+    async def test_the_cancel_keeps_a_file_the_upload_overwrote(self):
+        (cfg.documents_dir / "old.md").write_bytes(b"# before\n")
+        sse = SseStream()
+        with mock.patch("lilbee.data.ingest.sync", new=_stopping_sync(sse)):
+            summary = await _run_upload([("old.md", b"# after\n")], sse)
+
+        assert summary.not_added == [] and summary.copied == ["old.md"]
+        assert (cfg.documents_dir / "old.md").read_bytes() == b"# after\n"
+
+    async def test_the_cancel_keeps_a_file_the_upload_moved(self):
+        content = b"# same\n"
+        (cfg.documents_dir / "was.md").write_bytes(content)
+        get_services().store.get_sources.return_value = [
+            {"filename": "was.md", "file_hash": hashlib.sha256(content).hexdigest()}
+        ]
+        sse = SseStream()
+        with mock.patch("lilbee.data.ingest.sync", new=_stopping_sync(sse)):
+            summary = await _run_upload([("now.md", content)], sse)
+
+        assert summary.not_added == []
+        assert (cfg.documents_dir / "now.md").read_bytes() == content
+
+    async def test_the_cancel_keeps_a_created_file_the_sync_indexed(self):
+        sse = SseStream()
+
+        async def _indexed_then_stopped(**_kwargs) -> SyncResult:
+            get_services().store.get_sources.return_value = [
+                {"filename": "done.md", "ingested_at": "2026-11-25T10:00:00", "file_hash": "h"}
+            ]
+            _stop_as_user(sse)
+            raise asyncio.CancelledError
+
+        with mock.patch("lilbee.data.ingest.sync", new=_indexed_then_stopped):
+            summary = await _run_upload([("done.md", b"# done\n"), ("not.md", b"# not\n")], sse)
+
+        assert summary.not_added == ["not.md"] and summary.copied == ["done.md"]
+        assert (cfg.documents_dir / "done.md").is_file()
+        assert not (cfg.documents_dir / "not.md").exists()
+
+    async def test_an_error_after_the_cancel_is_named_with_it(self):
+        sse = SseStream()
+        sync = _stopping_sync(sse, error=RuntimeError("the embedder went away"))
+        with mock.patch("lilbee.data.ingest.sync", new=sync):
+            summary = await _run_upload([("new.md", b"# new\n")], sse)
+
+        assert summary.cancelled is True and summary.errors == ["the embedder went away"]
+
+    async def test_a_dropped_stream_keeps_the_file_the_upload_created(self):
+        sse = SseStream()
+
+        async def _dropped(**_kwargs) -> SyncResult:
+            sse.cancel.set()
+            raise asyncio.CancelledError
+
+        with (
+            mock.patch("lilbee.data.ingest.sync", new=_dropped),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await _run_upload([("new.md", b"# new\n")], sse)
+
+        assert (cfg.documents_dir / "new.md").is_file()

@@ -11,9 +11,16 @@ import os
 import re
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
 
-from lilbee.app.ingest import AddRollback, RegisterResult, leave_as_cancel, register_sources
+from lilbee.app.ingest import (
+    AddRollback,
+    RegisterResult,
+    indexed_stamps,
+    leave_as_cancel,
+    register_sources,
+    unfinished_since,
+)
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import OcrMode
@@ -441,24 +448,54 @@ async def _run_upload(
     hashes each source), so there is no separate force flag. A data root that
     the sync cannot lock refuses the upload before any file is written. A
     stream that stops during the writes stops the sync, not the writes: an
-    uploaded file exists only in the request, so a cancel must not drop it.
+    uploaded file exists only in the request, so a dropped stream must not drop
+    it. A cancel by the user (``POST /api/add/cancel``) deletes each file this
+    upload created that the sync did not index; a file it overwrote or moved stays.
     """
     from lilbee.app.ingest import temporary_ocr_config
     from lilbee.data.ingest import sync
 
     try:
         written = await _to_thread_unbroken(functools.partial(_write_uploads, files))
-        with temporary_ocr_config(ocr, ocr_timeout):
-            sync_result = await sync(
-                quiet=True, on_progress=sse.callback, cancel=sse.cancel, started_by=_SYNC_STARTER
+        rollback = AddRollback()
+        try:
+            with (
+                leave_as_cancel(rollback, sse.cancel, _not_by_user),
+                temporary_ocr_config(ocr, ocr_timeout),
+            ):
+                sync_result = await sync(
+                    quiet=True,
+                    on_progress=sse.callback,
+                    cancel=sse.cancel,
+                    started_by=_SYNC_STARTER,
+                )
+        except asyncio.CancelledError:
+            if not sse.stopped_by_user:
+                raise
+            not_added = await _to_thread_unbroken(
+                functools.partial(_delete_unfinished_uploads, written)
+            )
+            return AddSummary(
+                copied=[name for name in written.names if name not in not_added],
+                errors=[] if rollback.error is None else [rollback.error],
+                cancelled=True,
+                not_added=not_added,
             )
         return AddSummary(
-            copied=written,
+            copied=written.names,
             errors=[],
             sync=SyncSummary(**sync_result.model_dump()),
         )
     finally:
         sse.queue.put_nowait(None)
+
+
+def _delete_unfinished_uploads(written: _Written) -> list[str]:
+    """Delete each file the upload created that the sync did not index; return their names."""
+    unfinished = unfinished_since(written.created, written.before)
+    for name in unfinished:
+        (cfg.documents_dir / name).unlink(missing_ok=True)
+    return unfinished
 
 
 def _move_same_content(name: str, content: bytes, dest: Path) -> bool:
@@ -479,20 +516,37 @@ def _move_same_content(name: str, content: bytes, dest: Path) -> bool:
     return True
 
 
-def _place_upload(name: str, content: bytes, dest: Path) -> None:
-    """Put an uploaded file at *dest*: a move of the same indexed content, else a write."""
+def _place_upload(name: str, content: bytes, dest: Path) -> bool:
+    """Put an uploaded file at *dest*: a move of the same indexed content, else a write.
+
+    Returns whether the upload created the file: a write where no file was.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if not _move_same_content(name, content, dest):
-        dest.write_bytes(content)
+    existed = dest.exists()
+    if _move_same_content(name, content, dest):
+        return False
+    dest.write_bytes(content)
+    return not existed
 
 
-def _write_uploads(files: list[tuple[str, bytes]]) -> list[str]:
-    """Write every uploaded file into ``cfg.documents_dir``; return the names written."""
+class _Written(NamedTuple):
+    """What an upload wrote, and what its cancel by the user needs to undo it."""
+
+    names: list[str]
+    created: list[str]
+    """The names of the files the upload created."""
+    before: dict[str, str]
+    """The index stamps of *created* before the sync."""
+
+
+def _write_uploads(files: list[tuple[str, bytes]]) -> _Written:
+    """Write every uploaded file into ``cfg.documents_dir``; return what was written."""
     refuse_where_a_sync_cannot_lock(cfg.data_root)
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
-    for name, content in files:
-        _place_upload(name, content, cfg.documents_dir / name)
-    return [name for name, _content in files]
+    created = [
+        name for name, content in files if _place_upload(name, content, cfg.documents_dir / name)
+    ]
+    return _Written([name for name, _content in files], created, indexed_stamps(created))
 
 
 async def add_uploads_stream(

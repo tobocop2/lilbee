@@ -125,7 +125,8 @@ class TestStoreCallsStayOffTheLoop:
         sse = SseStream()
         with patch("lilbee.data.ingest.sync", new=AsyncMock(return_value=SyncResult())):
             await ingest_handlers._run_upload([("note.md", b"# note\n")], sse)
-        _assert_off_the_loop(threads, 1)
+        # The same-content lookup, then the stamps a cancel by the user compares against.
+        _assert_off_the_loop(threads, 2)
 
 
 class TestFileWalksStayOffTheLoop:
