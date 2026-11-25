@@ -143,7 +143,7 @@ build_wheel() {
     # A relative path: Windows Python does not read a Git Bash path.
     install_build_tools python ../../tools/wheel-build/build-tools.constraints ../../tools/wheel-build/windows-bundle-tools.constraints
     prune_windows_runtime
-    build_wheel_with_tools python -C--build-option="--build-number=1.${BACKEND}"
+    build_wheel_with_tools python -C--build-option="--build-number=1.${BACKEND//-/_}"
     python -m wheel tags --remove --platform-tag "${PLATFORM}" dist/*.whl
     ls dist
   )
