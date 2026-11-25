@@ -427,7 +427,7 @@ def test_fails_when_the_install_has_no_redistribution_terms(tree) -> None:
     [
         ".github/actions/bundle-llama-server/action.yml",
         ".github/workflows/build-multigpu.yml",
-        ".github/workflows/warm-engine-cache.yml",
+        ".github/workflows/ci.yml",
     ],
 )
 def test_every_engine_cache_key_hashes_the_helper(workflow: str) -> None:

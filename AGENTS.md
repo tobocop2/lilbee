@@ -571,8 +571,11 @@ closure. These rules exist because each one shipped a broken artifact once.
   reason; do not blanket it in `continue-on-error`.
 - **Engine build cache** is keyed on backend + build-env + toolkit + the hash of
   the build scripts, so editing a build script busts it. Tag-ref cache saves are
-  not restorable by later runs, so `warm-engine-cache.yml` builds the matrix on
-  `main`; release runs restore. Bust manually by touching a build script.
+  not restorable by later runs, so the `engine` job of `ci.yml` builds the
+  matrix when an engine path changes, and `warm-engine-cache.yml` rebuilds it
+  weekly; release runs restore. The `engine` job sits under `ci-result`, so a
+  backend that does not compile blocks the merge. Bust manually by touching a
+  build script.
 - **The Nuitka object cache is keyed on the dependency set, not on `uv.lock` as
   it stands.** `scripts/release.sh` rewrites lilbee's own version inside the
   lock on every release commit, so hashing the file directly rotates the key
