@@ -240,6 +240,48 @@ def test_a_lock_folder_that_cannot_be_made_is_named_in_a_plain_error(tmp_path: P
         dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
 
 
+def test_a_filesystem_without_flock_still_cleans_the_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hub falls back to a soft lock there; the check cannot see it and cleans as before."""
+    blobs = tmp_path / "models--acme--big-GGUF" / "blobs"
+    blobs.mkdir(parents=True)
+    partial = blobs / "abc123.4f2a91cc.incomplete"
+    partial.write_bytes(b"x" * 16)
+
+    def _no_flock(*args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError("FileSystem does not appear to support flock; use SoftFileLock")
+
+    monkeypatch.setattr(dl, "FileLock", _no_flock)
+
+    dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
+
+    assert not partial.exists()
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("C:\\cache\\.locks\\x.lock", "C:\\cache\\.locks\\x.lock"),
+        ("C:\\" + "a" * 260 + "\\x.lock", "\\\\?\\C:\\" + "a" * 260 + "\\x.lock"),
+        ("\\\\?\\C:\\" + "a" * 260 + "\\x.lock", "\\\\?\\C:\\" + "a" * 260 + "\\x.lock"),
+        ("\\\\srv\\share\\" + "a" * 260, "\\\\?\\UNC\\srv\\share\\" + "a" * 260),
+    ],
+    ids=["short", "long", "already-extended", "network-share"],
+)
+def test_a_lock_path_over_the_windows_limit_takes_the_extended_prefix(
+    path: str, expected: str
+) -> None:
+    """Same rule as the hub, so both open one lock file."""
+    assert dl.extended_path(Path(path), windows=True) == expected
+
+
+def test_a_lock_path_is_unchanged_off_windows(tmp_path: Path) -> None:
+    long_path = tmp_path / ("a" * 300) / "x.lock"
+
+    assert dl.extended_path(long_path, windows=False) == str(long_path)
+
+
 def test_a_cache_plain_error_covers_a_listing_that_fails_while_iterating(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
