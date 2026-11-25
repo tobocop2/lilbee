@@ -13,11 +13,11 @@ from typing import Any
 
 import pytest
 
+from conftest import make_hf_client
 from lilbee.app import engine_choice, placement
 from lilbee.app import services as services_mod
 from lilbee.app.engine_choice import EngineBook, engine_for_ref
 from lilbee.catalog import runnable
-from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.cli.commands import setup as setup_cmd
@@ -669,7 +669,7 @@ def pulls(no_mlx_engine: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     from lilbee.modelhub.model_manager.core import ModelManager
 
     started: list[str] = []
-    hf_client = HfClient(cfg)
+    hf_client = make_hf_client(cfg)
     manager = ModelManager(no_mlx_engine, cfg, hf_client=hf_client)
     services = SimpleNamespace(model_manager=manager, hf_client=hf_client)
     monkeypatch.setattr("lilbee.app.models.get_services", lambda: services)

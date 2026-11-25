@@ -371,7 +371,7 @@ class HfClient:
         self,
         config: Config,
         *,
-        engine_for_format: Callable[[ModelFormat], EngineAdapter | None] | None = None,
+        engine_for_format: Callable[[ModelFormat], EngineAdapter | None],
     ) -> None:
         self._config = config
         self._engine_for_format = engine_for_format
@@ -398,7 +398,7 @@ class HfClient:
         With no engine the rows stay unknown, because browsing needs none and a
         pull refuses on its own. The caller's layer supplies the engine lookup.
         """
-        if fmt != ModelFormat.GGUF or self._engine_for_format is None:
+        if fmt != ModelFormat.GGUF:
             return None
         return self._engine_for_format(fmt)
 
