@@ -4,6 +4,8 @@
 #
 # Usage: mlx_wheel.sh <outdir>
 #
+# BUILD_NUMBER, the build_number of the cell, is required. It goes into the Build line of the wheel.
+#
 # The pins are in engines/mlx.env; the package files and the hashed requirements are in
 # packaging/engine-mlx/. The PATH holds uv and delocate-wheel at the versions of the pin, and
 # python3 with the wheel package, curl, and zstd. The steps, in order:
@@ -39,6 +41,10 @@ test "$#" -eq 1 || {
   exit 2
 }
 outdir="$1"
+[ -n "${BUILD_NUMBER:-}" ] || {
+  echo "mlx_wheel.sh: BUILD_NUMBER is not set" >&2
+  exit 2
+}
 here="$(cd "$(dirname "$0")" && pwd)"
 top="$(cd "${here}/../.." && pwd)"
 # shellcheck source=/dev/null
@@ -171,7 +177,7 @@ done <"${outdir}/terms.txt"
   echo "Generator: lilbee"
   echo "Root-Is-Purelib: false"
   echo "Tag: py3-none-${platform}"
-  echo "Build: 1.${MLX_BACKEND}"
+  echo "Build: ${BUILD_NUMBER}.${MLX_BACKEND}"
 } >"${dist}/WHEEL"
 
 mkdir -p "${scratch}/packed" "${scratch}/repaired"
