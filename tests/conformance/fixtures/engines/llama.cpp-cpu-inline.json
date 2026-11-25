@@ -1,5 +1,6 @@
 {
  "server": "llama.cpp-cpu-inline",
+ "sampling_knobs": "not_recorded",
  "version": "version: 0.8.0-dev (build 1, commit dde879b)",
  "roles": [
   "chat"

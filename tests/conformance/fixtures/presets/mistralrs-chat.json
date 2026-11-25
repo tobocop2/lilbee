@@ -1,5 +1,6 @@
 {
  "server": "mistralrs-chat",
+ "sampling_knobs": "not_recorded",
  "version": "mistralrs 0.9.5 v0.9.5 cpu",
  "roles": [
   "chat"
