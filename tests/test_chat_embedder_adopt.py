@@ -216,6 +216,40 @@ class TestDoAdoptAndRetry:
         adopt.assert_called_once_with("orgA/repoA/built.gguf")
         screen._send_message.assert_called_once_with("q")
 
+    def test_the_download_warning_is_shown_after_the_adopt(self):
+        screen = _bare_screen()
+        screen._send_message = MagicMock()  # type: ignore[method-assign]
+        no_engine = "No engine loads this model."
+        with (
+            patch(
+                "lilbee.app.models.adopt_embedder",
+                return_value=MagicMock(reindex_required=False, warning=no_engine),
+            ),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+            ),
+        ):
+            screen._do_adopt_and_retry("orgA/repoA/built.gguf", "q")
+        warned = [c for c in screen.notify.call_args_list if c.kwargs.get("severity") == "warning"]
+        assert [c.args[0] for c in warned] == [no_engine]
+
+    def test_no_warning_means_no_warning_toast(self):
+        screen = _bare_screen()
+        screen._send_message = MagicMock()  # type: ignore[method-assign]
+        with (
+            patch(
+                "lilbee.app.models.adopt_embedder",
+                return_value=MagicMock(reindex_required=False, warning=None),
+            ),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+            ),
+        ):
+            screen._do_adopt_and_retry("orgA/repoA/built.gguf", "q")
+        assert not [c for c in screen.notify.call_args_list if c.kwargs.get("severity")]
+
     def test_an_index_that_still_mismatches_offers_a_rebuild_and_does_not_resend(self):
         screen = _bare_screen()
         screen._send_message = MagicMock()  # type: ignore[method-assign]
