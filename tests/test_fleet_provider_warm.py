@@ -133,7 +133,9 @@ def test_d1_a_warm_whose_model_lemond_lists_on_the_cpu_fails_with_the_fix() -> N
     )
     with pytest.raises(ProviderError) as caught:
         provider_mod._warm_role(WorkerRole.CHAT, client)
-    assert str(caught.value) == f"Lemonade loaded the model on the CPU, not the NPU. {NPU_FIX}"
+    assert str(caught.value) == (
+        f"Lemonade loaded user.lilbee-chat on the CPU, not the NPU. {NPU_FIX}"
+    )
 
 
 def test_d1_a_reply_that_lists_only_another_model_fails_the_chat_warm() -> None:
@@ -142,7 +144,7 @@ def test_d1_a_reply_that_lists_only_another_model_fails_the_chat_warm() -> None:
         LEMONADE.request_profile,
         {"/v1/chat/completions": CHAT_DONE, HEALTH: _reply("health-cpu-v2026.44.1.json")},
     )
-    with pytest.raises(ProviderError, match="does not list the model as loaded"):
+    with pytest.raises(ProviderError, match="does not list user.lilbee-chat as loaded"):
         provider_mod._warm_role(WorkerRole.CHAT, client)
 
 
@@ -181,8 +183,12 @@ def test_d1_health_is_never_read_from_an_upstream_that_is_not_running() -> None:
         LEMONADE.request_profile,
         {"/v1/embeddings": EMBEDDING, RUNNING: NOTHING_RUNNING, HEALTH: ON_NPU},
     )
-    with pytest.raises(ProviderError, match="Lemonade did not report the device of the model"):
+    with pytest.raises(ProviderError) as caught:
         provider_mod._warm_role(WorkerRole.EMBED, client)
+    assert str(caught.value) == (
+        "Lemonade did not report the device of the model: Lemonade is not running the model."
+        " Check that the Lemonade server is running, then restart lilbee."
+    )
     assert HEALTH not in asked
 
 
@@ -360,7 +366,7 @@ def test_d1_a_cpu_device_unloads_the_upstream_and_the_role_serves_nothing(
     status, error = _chat_status(provider)
     assert status == "error"
     assert error is not None
-    assert "Lemonade loaded the model on the CPU, not the NPU." in error
+    assert "Lemonade loaded user.lilbee-chat on the CPU, not the NPU." in error
     asked_before = len(asked)
     with pytest.raises(ProviderError) as caught:
         provider._require_clients(WorkerRole.CHAT)
@@ -381,13 +387,23 @@ def test_d1_a_refused_unload_is_logged_and_the_replica_still_leaves(
 
 def test_a_refused_replica_leaves_its_siblings_serving() -> None:
     provider = FleetProvider()
-    refused, asked = _client(WorkerRole.CHAT, LEMONADE.request_profile, {UNLOAD: b"OK"})
+    held: list[int] = []
+
+    def unload(_request: httpx.Request) -> Reply:
+        held.append(refused.in_flight)
+        return b"OK"
+
+    refused, asked = _client(WorkerRole.CHAT, LEMONADE.request_profile, {UNLOAD: unload})
     sibling, _ = _client(WorkerRole.CHAT, LEMONADE.request_profile, {})
     provider._clients = {WorkerRole.CHAT: [refused, sibling]}
     provider._remove_refused_replica(WorkerRole.CHAT, refused, "refused")
     assert provider._clients[WorkerRole.CHAT] == [sibling]
     assert WorkerRole.CHAT not in provider._refused_roles
     assert asked == [UNLOAD]
+    # A reload on another thread closes only an idle retired client, so the unload
+    # holds a reservation, and gives it back after.
+    assert held == [1]
+    assert refused.in_flight == 0
 
 
 def test_a_replica_that_a_reload_already_replaced_changes_nothing() -> None:

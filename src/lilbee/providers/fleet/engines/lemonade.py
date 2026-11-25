@@ -109,8 +109,8 @@ def npu_refusal(health: Any, name: str) -> str | None:
             if isinstance(device, str) and _DEVICE_NPU in device.split():
                 return None
             where = f"the {device.upper()}" if isinstance(device, str) else "another device"
-            return f"Lemonade loaded the model on {where}, not the NPU. {_NPU_FIX}"
-    return f"Lemonade does not list the model as loaded, so it cannot confirm the NPU. {_NPU_FIX}"
+            return f"Lemonade loaded {name} on {where}, not the NPU. {_NPU_FIX}"
+    return f"Lemonade does not list {name} as loaded, so it cannot confirm the NPU. {_NPU_FIX}"
 
 
 def no_npu_refusal(info: Any) -> str | None:

@@ -3366,6 +3366,8 @@ class FleetProvider:
         leaves the pool, because llama-swap starts a stopped upstream on its next request.
         A role left with no replica refuses its requests with *reason*. A replica that a
         reload already replaced is left alone: its model id may now name the new upstream.
+        The reservation keeps the retired client open for the unload, so a reload on
+        another thread does not close it first.
         """
         with self._lock:
             pool = self._clients.get(role, [])
@@ -3374,8 +3376,12 @@ class FleetProvider:
             self._clients[role] = [kept for kept in pool if kept is not client]
             if not self._clients[role]:
                 self._refused_roles[role] = reason
+            client.reserve()
             self._retire_clients([client])
-        client.unload_upstream()
+        try:
+            client.unload_upstream()
+        finally:
+            client.release()
 
     def _warm_chat_role(self, clients: list[LlamaServerClient]) -> None:
         """Warm the chat role, driving the tracker through read -> load -> ready/fail.
