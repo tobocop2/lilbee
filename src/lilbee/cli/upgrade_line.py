@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import ExitStack
 from time import monotonic
-
-from collections.abc import Callable
 
 from rich.progress import ProgressColumn, SpinnerColumn, Task
 from rich.text import Text
