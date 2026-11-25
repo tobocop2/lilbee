@@ -89,6 +89,7 @@ from lilbee.providers.fleet.placement_spec import (
     TargetRefusedError,
 )
 from lilbee.providers.fleet.replicas import resolve_replica_count
+from lilbee.providers.fleet.rerank_pair import RerankPair, rerank_pair_from_meta
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.gguf_meta import declares_vision_config, needs_sidecar_projector
 from lilbee.providers.model_cache import total_system_memory
@@ -1044,7 +1045,19 @@ def launch_settings(
         "rerank_mode": rerank_mode,
         "embed_window": _aux_role_ctx(role, model_path, meta) if role in _EMBED_ROLES else None,
     }
+    if role is WorkerRole.RERANK:
+        # A record from before the pair layout was recorded serves no pair, so it must not bind.
+        values["rerank_pair"] = _rerank_pair(role, rerank_mode, meta)
     return ";".join(f"{key}={value}" for key, value in values.items())
+
+
+def _rerank_pair(
+    role: WorkerRole, rerank_mode: RerankMode | None, meta: dict[str, str] | None
+) -> RerankPair | None:
+    """The pair layout a cross-encoder RERANK launch reads, from its GGUF; None for the rest."""
+    if role is not WorkerRole.RERANK or rerank_mode is RerankMode.LLM:
+        return None
+    return rerank_pair_from_meta(meta)
 
 
 def _replica_count(role: WorkerRole, device_count: int) -> int:
@@ -2572,6 +2585,7 @@ def _draft_launch(
         ),
         replica=plan.replica,
         rerank_mode=rerank_mode,
+        rerank_pair=_rerank_pair(plan.role, rerank_mode, meta),
         # What placement charged this instance, for the post-launch check against
         # the engine's own report of what it really allocated.
         est_vram_bytes=est_vram_bytes,
