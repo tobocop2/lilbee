@@ -192,6 +192,8 @@ class TestProviderTokenizers:
         assert first_name.startswith(f"{TokenizerBackendName.LILBEE}-")
         assert tokenizers.failures("never-registered") is None
         assert [b.name() for b in registered] == [first_name, second_name]
+        other_name = _ProviderTokenizers().name_for(_WordCounter())
+        assert tokenizers.failures(other_name) is None
         assert tokenizers.failures(first_name) == 0
         with pytest.raises(ProviderError, match="The embedding server stopped"):
             registered[0].count_tokens("two words")
