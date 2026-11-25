@@ -74,6 +74,14 @@ class TestDeleteWithSlashRef:
         assert installed_model.call_args.args[0] == "test"
 
 
+class TestDeleteSchema:
+    def test_the_schema_tells_a_client_the_ref_can_span_segments(self, client):
+        paths = client.get("/schema/openapi.json").json()["paths"]
+        params = paths["/api/models/{model}"]["delete"]["parameters"]
+        model = next(p for p in params if p["name"] == "model")
+        assert model["schema"]["format"] == "path"
+
+
 class TestFixedModelPathsStayReachable:
     """The wider delete match must not capture the fixed sub-paths of /api/models/."""
 

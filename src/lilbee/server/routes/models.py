@@ -10,7 +10,7 @@ from typing import Annotated
 
 from litestar import delete, get, post, put
 from litestar.exceptions import HTTPException
-from litestar.params import FromPath, FromQuery, QueryParameter
+from litestar.params import FromQuery, Parameter, QueryParameter
 from litestar.response import Stream
 from pydantic import BaseModel
 
@@ -165,9 +165,14 @@ async def models_show_route(data: SetModelRequest) -> ModelsShowResponse:
     return await handlers.models_show(model=data.model)
 
 
+# OpenAPI writes ``{model:path}`` as ``{model}``, the same as a one-segment param.
+# The format tells a client that the ref can span segments, as ``org/repo/m.gguf`` does.
+ModelRefPath = Annotated[str, Parameter(schema_extra={"format": "path"})]
+
+
 @delete("/api/models/{model:path}", status_code=200)
 async def models_delete_route(
-    model: FromPath[str], source: FromQuery[str] = ModelSource.NATIVE.value
+    model: ModelRefPath, source: FromQuery[str] = ModelSource.NATIVE.value
 ) -> ModelsDeleteResponse:
     """Delete a model from the specified source.
 
