@@ -104,6 +104,14 @@ def test_read_settled_reads_an_old_file(monkeypatch):
     assert values["top_k"] == 21
 
 
+def test_read_settled_reads_a_file_dated_in_the_future(monkeypatch):
+    _write("top_k", 21, tick=1)
+    _clock_at(monkeypatch, 1, -_SECOND_NS)
+    stamp, values = persistent_settings.read_settled(cfg.data_root)
+    assert stamp is not None
+    assert values is not None
+
+
 def test_read_settled_without_a_file_reads_defaults(monkeypatch):
     _clock_at(monkeypatch, 1, 0)
     assert persistent_settings.read_settled(cfg.data_root) == (None, {})
