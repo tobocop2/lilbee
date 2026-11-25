@@ -900,7 +900,7 @@ def test_an_install_reads_the_host_now_and_a_list_reads_the_cached_host(
     runnable.session_host()
     has_gpu[0] = True
     sha = make_pack(tmp_path / "pack.whl")
-    publish(monkeypatch, EngineName.MISTRAL, sha)
+    publish(monkeypatch, EngineName.MISTRAL, sha, key="linux-x86_64-cuda-sm89")
     installed_engines()
     assert reads == [False]
     built = engine_service.install("mistral.rs", tmp_path / "pack.whl")
