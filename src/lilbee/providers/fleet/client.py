@@ -367,15 +367,11 @@ _ILLEGAL_INSTRUCTION_MARKER = "illegal instruction"
 def classify_upstream_death(tail: str) -> ProviderErrorKind | None:
     """The kind of failure an engine's dying output describes, or ``None``.
 
-    ``CAPACITY`` for a load that ran out of device memory: retrying the identical
-    launch respawns it into a crash loop, while a smaller context might fit.
-    ``PORT_CONFLICT`` for losing the port-bind race, which is worth retrying
-    because the retry re-drives llama-swap's spawn, and worth naming because a
-    port held for good needs a different port rather than another attempt at the
-    same one. ``None`` leaves the existing classification alone rather than
-    guessing at an unfamiliar death. ``CPU_UNSUPPORTED`` for an engine the CPU
-    cannot run, which no retry or smaller plan can fix. ``MISSING_LIBRARY`` for a
-    shared library the host lacks, which only an install can fix.
+    Return ``CAPACITY`` for a load that ran out of device memory.
+    Return ``PORT_CONFLICT`` for a lost port-bind race.
+    Return ``CPU_UNSUPPORTED`` for an engine the CPU cannot run.
+    Return ``MISSING_LIBRARY`` for a shared library the host lacks.
+    Return ``None`` for any other death, so the existing classification stays.
     """
     fatal = [
         line
@@ -2031,8 +2027,7 @@ class LlamaServerClient:
     def _read_check(self, check: UpstreamCheck) -> str | None:
         """The error that the engine's reply on the route of *check* shows, or None.
 
-        The route is read only while llama-swap lists the model as running, because a
-        request through the upstream route of a stopped model starts it. A reply that
+        Read the route only while llama-swap lists the model as running. A reply that
         cannot be read raises a SERVER-kind error, which the gateway retry reads again.
         """
         label = self._profile.label
