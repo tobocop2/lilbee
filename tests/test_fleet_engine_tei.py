@@ -41,7 +41,8 @@ from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import ENCODER_RUNTIME_BYTES, UNKNOWN_SIZE_RESERVE_BYTES
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from lilbee.providers.truncation import note_truncated, truncation_scope
-from tests._safetensors import safetensors_bytes, safetensors_header
+from tests._safetensors import safetensors_bytes
+from tests._stated_sizes import state_size
 
 FIXTURES = Path(__file__).parent / "conformance" / "fixtures" / "engines"
 L4 = ("NVIDIA L4", (8, 9))
@@ -217,13 +218,13 @@ _MIB = 1024**2
 def _sparse_encoder_folder(
     root: Path, weight_mib: float, vocab_size: int | None, dtype: str | None = None
 ) -> Path:
-    """A folder whose whole safetensors file is sparse, so a large size costs no disk or memory."""
-    size = int(weight_mib * _MIB)
+    """A folder whose weight file states its size, so a large size costs no disk or memory.
+
+    The test must use the ``stated_sizes`` fixture.
+    """
     folder = root / "sparse-encoder"
     folder.mkdir()
-    with (folder / "model.safetensors").open("wb") as handle:
-        handle.write(safetensors_header(size))
-        handle.truncate(size)
+    state_size(folder / "model.safetensors", int(weight_mib * _MIB))
     config: dict[str, Any] = {} if vocab_size is None else {"vocab_size": vocab_size}
     if dtype is not None:
         config["torch_dtype"] = dtype
@@ -231,6 +232,7 @@ def _sparse_encoder_folder(
     return folder
 
 
+@pytest.mark.usefixtures("stated_sizes")
 def test_a_large_vocabulary_is_charged_its_load_peak_on_a_cpu_build(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -240,6 +242,7 @@ def test_a_large_vocabulary_is_charged_its_load_peak_on_a_cpu_build(
     assert charge >= 4617 * _MIB
 
 
+@pytest.mark.usefixtures("stated_sizes")
 def test_a_small_vocabulary_is_charged_within_1_3_times_its_load_peak_on_a_cpu_build(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -249,6 +252,7 @@ def test_a_small_vocabulary_is_charged_within_1_3_times_its_load_peak_on_a_cpu_b
     assert 742 * _MIB <= charge <= 742 * _MIB * 1.3
 
 
+@pytest.mark.usefixtures("stated_sizes")
 def test_a_config_with_no_vocabulary_is_charged_as_a_large_one_on_a_cpu_build(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -260,6 +264,7 @@ def test_a_config_with_no_vocabulary_is_charged_as_a_large_one_on_a_cpu_build(
     assert missing.device_bytes == large.device_bytes >= 418 * _MIB + 3584 * _MIB
 
 
+@pytest.mark.usefixtures("stated_sizes")
 def test_a_cuda_build_keeps_the_weights_plus_allowance_charge_for_a_large_vocabulary(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
