@@ -15,8 +15,8 @@ from tests._engine_launch_argv import launch_argvs
 # `serve` for mistral.rs: the `text` word in chat and the `vision` word in vision.
 # Updated again after commits 37f0ca6eb and 1e7fbaf0e: the mistral.rs vision
 # subcommand is `multimodal`, and the TEI roles carry `--max-batch-tokens`.
-# The TEI roles carry `--tokenization-workers 2`: the router starts one tokenizer per core by default,
-# and each copy of a large vocabulary adds to the load peak.
+# The TEI roles carry `--tokenization-workers 2`: the router starts one tokenizer per core by
+# default, and each copy of a large vocabulary adds to the load peak.
 # The mistral.rs vision argv carries no context flag, as its multimodal loader refuses one.
 # The mlx chat argv carries `--max-tokens` at the window, because mlx-lm otherwise stops
 # every answer at 512 tokens. It also carries llama-server's sampling defaults, because
