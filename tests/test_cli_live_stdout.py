@@ -17,6 +17,7 @@ from lilbee.cli import model as model_cli
 from lilbee.cli.commands import analyze as analyze_cli
 from lilbee.cli.commands import ingest_sync, wiki
 from lilbee.cli.upgrade_line import UpgradeLine
+from lilbee.modelhub import models as models_hub
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.progress import EventType, LibraryUpgradeEvent, UpgradePhase
 
@@ -89,6 +90,20 @@ def test_engine_install_progress_leaves_a_stdout_print_on_stdout(capsys, stderr_
         mock.patch.object(engine_cli, "_print_engines_folder"),
     ):
         engine_cli.install("llama", None)
+    _assert_whole_on_stdout(capsys)
+
+
+def test_model_hub_pull_progress_leaves_a_stdout_print_on_stdout(capsys, stderr_terminal):
+    def pull(*_args, **_kwargs):
+        print(MARKER)
+
+    services = mock.Mock()
+    services.model_manager.pull = pull
+    with (
+        mock.patch("lilbee.app.services.get_services", return_value=services),
+        mock.patch("lilbee.app.models.ensure_vision_projector", return_value=None),
+    ):
+        models_hub.pull_with_progress("org/repo", console=PlainConsole(stderr=True))
     _assert_whole_on_stdout(capsys)
 
 
