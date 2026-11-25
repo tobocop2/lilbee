@@ -1,7 +1,6 @@
 """Catalog filtering, sorting, lookup, and ad-hoc HF resolution."""
 
 import heapq
-import logging
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import replace
 from itertools import islice
@@ -33,8 +32,6 @@ from lilbee.catalog.runnable import (
 )
 from lilbee.catalog.types import CatalogSize, CatalogSort, ModelFormat, ModelTask
 from lilbee.providers.fleet.host_caps import HostCaps
-
-log = logging.getLogger(__name__)
 
 
 def _search_blob(m: CatalogModel) -> str:
@@ -226,7 +223,8 @@ def _installed_filter(
     """Row predicate for the installed filter, or None when it is off."""
     if installed is None or model_manager is None:
         return None
-    refs = _get_installed_models(model_manager)
+    # An unreadable registry raises: "none installed" would answer "unknown" with "no".
+    refs = set(model_manager.list_installed())
     # A row is installed if its repo has a manifest in the row's own format.
     keys = installed_keys(refs)
     return lambda m: ((m.hf_repo, m.format) in keys) == installed
@@ -281,20 +279,6 @@ _PIPELINE_TO_TASK: dict[str, ModelTask] = {
 def pipeline_to_task(pipeline_tag: str) -> ModelTask:
     """Map HuggingFace pipeline tag to internal task name."""
     return _PIPELINE_TO_TASK.get(pipeline_tag, ModelTask.CHAT)
-
-
-def _get_installed_models(model_manager: Any) -> set[str]:
-    """Get set of installed model names from model_manager.
-
-    Treats a manager failure as "nothing installed" so the browse list still
-    renders, but logs it: silently swallowing would hide a broken registry that
-    makes every model look uninstalled.
-    """
-    try:
-        return set(model_manager.list_installed())
-    except Exception:
-        log.warning("Could not read installed models; treating as none installed", exc_info=True)
-        return set()
 
 
 _SORT_KEYS: dict[CatalogSort, tuple] = {
