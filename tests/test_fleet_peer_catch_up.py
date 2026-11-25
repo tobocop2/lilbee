@@ -237,11 +237,8 @@ def test_a_one_off_owner_on_a_tuning_write_keeps_the_peer_waiting(
     assert gap.built == [private_engine_dir(cfg.data_root)]
 
 
-def test_a_stamp_of_an_older_version_counts_every_key_as_followed(
-    real_planner, monkeypatch, tmp_path: Path
-) -> None:
-    """A state file with no followed keys: a chat_model write makes the peer wait, as before."""
-    gap = _gap(monkeypatch, tmp_path)
+def _old_form_origin(tmp_path: Path) -> PlanOrigin:
+    """The origin of a state file in the 0267482 form: a root and a file view, nothing more."""
     old_state = tmp_path / "old.json"
     old_state.write_text(
         json.dumps(
@@ -254,9 +251,19 @@ def test_a_stamp_of_an_older_version_counts_every_key_as_followed(
         encoding="utf-8",
     )
     loaded = swap_mod._load_state(old_state)
-    assert loaded is not None and loaded.origin is not None and loaded.origin.followed is None
+    assert loaded is not None and loaded.origin is not None
+    assert (loaded.origin.planned_view, loaded.origin.followed) == (None, None)
+    return loaded.origin
+
+
+def test_a_stamp_of_an_older_version_that_differs_from_the_file_makes_the_peer_wait(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    """Mixed versions, old owner and new peer: the whole file view decides, as at 0267482."""
+    gap = _gap(monkeypatch, tmp_path)
+    loaded = _old_form_origin(tmp_path)
     for group, state in list(gap.states.items()):
-        gap.states[group] = dataclasses.replace(state, origin=loaded.origin)
+        gap.states[group] = dataclasses.replace(state, origin=loaded)
     monkeypatch.setattr(prov_mod, "_OWNER_CATCH_UP_WAIT_S", 0.02)
     persistent_settings.update_values(cfg.data_root, {"chat_model": _OTHER_CHAT_REF})
     _bind_fails_in_memory(monkeypatch)
