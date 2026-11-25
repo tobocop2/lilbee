@@ -20,7 +20,8 @@
 #   ci_mirror.sh fetch      <key> <dir>    extract it into <dir>, or exit 1; with
 #                                          MIRROR_REFRESH_DAYS, exit 3 when only
 #                                          the previous age bucket was restored
-#   ci_mirror.sh publish    <key> <dir>    upload <dir> under <key>
+#   ci_mirror.sh publish    <key> <dir>    upload <dir> under <key>, or exit 1
+#                                          when the upload did not happen
 #   ci_mirror.sh check                     validate the environment, then exit 0
 #
 # Reads:
@@ -161,8 +162,11 @@ fetch_one() {
     echo "Restored ${asset}"
 }
 
-# Every failure is soft: the mirror is an optimisation with the Actions cache and
-# a source build behind it, so a publish problem must not fail a release build.
+# Exits 1, with the reason, when the asset was not uploaded and the mirror does
+# not carry it. The mirror is an optimisation with the Actions cache and a
+# source build behind it, so every caller runs this step with
+# continue-on-error: the build still passes, and the step shows that the upload
+# did not happen.
 cmd_publish() {
     local key="${1:?usage: ci_mirror.sh publish <key> <dir>}"
     local src="${2:?usage: ci_mirror.sh publish <key> <dir>}"
@@ -177,7 +181,7 @@ cmd_publish() {
     tmp="$(mktemp -d)"
     if ! tar -czf "${tmp}/${asset}" -C "${src}" .; then
         echo "Could not pack ${src}; skipping the mirror upload." >&2
-        return 0
+        return 1
     fi
 
     local size
@@ -185,13 +189,13 @@ cmd_publish() {
     echo "Packed ${asset}: $((size / 1048576)) MB"
     if [ "${size}" -gt "${MAX_ASSET_BYTES}" ]; then
         echo "Packed ${asset} is $((size / 1048576)) MB, over the $((MAX_ASSET_BYTES / 1048576)) MB release-asset limit; skipping the mirror upload." >&2
-        return 0
+        return 1
     fi
 
     release_id="$(resolve_release_id)"
     if [ -z "${release_id}" ]; then
         echo "Could not resolve or create ${release_tag}; skipping the mirror upload." >&2
-        return 0
+        return 1
     fi
 
     if mirror_carries "${release_id}" "${asset}"; then
@@ -199,16 +203,17 @@ cmd_publish() {
         return 0
     fi
 
-    if curl -fsSL -X POST \
+    local err
+    if ! err="$(curl -fsSL -X POST \
         -H "Authorization: Bearer ${GH_TOKEN}" \
         -H "Content-Type: application/gzip" \
         --data-binary @"${tmp}/${asset}" \
-        "https://uploads.github.com/repos/${repo}/releases/${release_id}/assets?name=${asset}" >/dev/null 2>&1; then
-        echo "Mirrored ${asset}."
-        rm -rf "${tmp}"
-    else
-        echo "Mirror upload of ${asset} failed; consumers fall back to rebuilding it." >&2
+        "https://uploads.github.com/repos/${repo}/releases/${release_id}/assets?name=${asset}" 2>&1 >/dev/null)"; then
+        echo "Mirror upload of ${asset} failed: ${err:-no reason given}. Consumers fall back to rebuilding it." >&2
+        return 1
     fi
+    echo "Mirrored ${asset}."
+    rm -rf "${tmp}"
 }
 
 main() {

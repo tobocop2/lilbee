@@ -25,4 +25,5 @@ jobs:
     uses: ./.github/workflows/build-multigpu.yml
     with:
       required: true
+      mirror: true
     secrets: inherit

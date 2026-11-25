@@ -35,14 +35,19 @@ on:
         description: "Fail the run when a backend cell fails, instead of dropping that artifact."
         type: boolean
         default: false
+      mirror:
+        description: "Upload each engine this run compiles to the mirror release. The caller job must grant contents: write."
+        type: boolean
+        default: false
 
 # No permissions here: the token is the caller's. A called workflow that asks
 # for contents: write fails at startup when the caller's token is read-only,
 # as on a fork or Dependabot pull request, and then ci-result never reports.
-# The job reads the repo (checkout, mirror fetch) and, on a push, schedule or
-# dispatch, writes the mirror release; each caller job grants contents: write.
-# A dispatch of this workflow alone gets the repo's read-only default, so it
-# builds but does not mirror; dispatch warm-engine-cache to mirror.
+# The job reads the repo (checkout, mirror fetch) and, when the caller passes
+# `mirror: true`, writes the mirror release; each such caller job grants
+# contents: write. A dispatch of this workflow alone has no `mirror` input and
+# the repo's read-only default token, so it builds and skips the mirror step;
+# dispatch warm-engine-cache to mirror.
 
 jobs:
   build-multigpu:
@@ -225,8 +230,13 @@ jobs:
       # key, and main and the release fetch it without compiling, so an
       # unreviewed tree must not write one. A merged engine change compiles
       # again on the main push and uploads from there.
+      #
+      # Only when the caller asks for it and grants the write token. A run
+      # without that token would fail the upload, so the step is skipped
+      # instead of red. A failed upload turns the step red, and
+      # continue-on-error keeps the build going.
       - name: Mirror the built engine
-        if: steps.engine.outputs.needs-build == 'true' && github.ref_type != 'tag' && github.event_name != 'pull_request'
+        if: inputs.mirror && steps.engine.outputs.needs-build == 'true' && github.ref_type != 'tag' && github.event_name != 'pull_request'
         continue-on-error: true
         uses: ./.github/actions/publish-engine-asset
         with:
