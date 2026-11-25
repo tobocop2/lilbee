@@ -1,6 +1,5 @@
 {
  "server": "mistralrs-cpu",
- "sampling_knobs": "not_recorded",
  "version": "mistralrs 0.9.5 v0.9.5 cpu",
  "roles": [
   "chat",
@@ -53,11 +52,18 @@
    "detail": "log=['served by engine=mistralrs-cpu version=preset build=none role=chat model=mistralrs-cpu/Qwen/Qwen3-0.6B'] status={<WorkerRole.CHAT: 'chat'>: 'mistralrs-cpu', <WorkerRole.EMBED: 'embed'>: 'mistralrs-cpu'}"
   }
  },
+ "error_answers": [
+  [
+   400,
+   "{\"error\":{\"message\":\"Prompt sequence length is greater than 40960, perhaps consider using `truncate_sequence`?\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+  ]
+ ],
  "exchanges": [
   {
    "method": "POST",
    "path": "/v1/chat/completions",
    "request": {
+    "max_tokens": 1024,
     "messages": [
      {
       "content": "You answer in one short sentence.",
@@ -77,16 +83,19 @@
      }
     ],
     "model": "Qwen/Qwen3-0.6B",
-    "stream": false
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"id\":\"1\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"\\n\\nRome.\",\"role\":\"assistant\",\"tool_calls\":null,\"reasoning_content\":\"\\nOkay, the user first asked about the capital of France, and I provided the answer. Now they're asking about Italy. I need to make sure I'm answering correctly. Let me think. Italy's capital is Rome. I should check if there's any recent change, but I don't think there's been any significant shift. So the answer should be Rome. Just a simple sentence.\\n\"},\"logprobs\":null}],\"created\":1793447370,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":87,\"prompt_tokens\":43,\"total_tokens\":130,\"avg_tok_per_sec\":9.292352,\"avg_prompt_tok_per_sec\":96.84685,\"avg_compl_tok_per_sec\":6.42256,\"total_time_sec\":13.99,\"total_prompt_time_sec\":0.444,\"total_completion_time_sec\":13.546}}"
+   "body": "{\"id\":\"1\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"\\n\\nRome.\",\"role\":\"assistant\",\"tool_calls\":null,\"reasoning_content\":\"\\nOkay, the user first asked about the capital of France, and I correctly answered Paris. Now they're asking about Italy. I need to make sure I provide the correct answer. Italy's capital is Rome, right? Let me confirm that. Yes, Rome is the capital. I should state it clearly and concisely in one sentence. No need for extra information. Just the capital name. Alright, that should do it.\\n\"},\"logprobs\":null}],\"created\":1795575623,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":95,\"prompt_tokens\":43,\"total_tokens\":138,\"avg_tok_per_sec\":6.2344704,\"avg_prompt_tok_per_sec\":55.844154,\"avg_compl_tok_per_sec\":4.4465246,\"total_time_sec\":22.135,\"total_prompt_time_sec\":0.77,\"total_completion_time_sec\":21.365}}"
   },
   {
    "method": "POST",
    "path": "/v1/chat/completions",
    "request": {
+    "max_tokens": 1024,
     "messages": [
      {
       "content": "What is the weather in Paris? Use the tool.",
@@ -94,7 +103,9 @@
      }
     ],
     "model": "Qwen/Qwen3-0.6B",
+    "seed": 7,
     "stream": false,
+    "temperature": 0.0,
     "tool_choice": "auto",
     "tools": [
      {
@@ -119,12 +130,13 @@
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"id\":\"2\",\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"content\":null,\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call-9f19e438-7e6b-4bb1-a9d4-f1498c51550c\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}],\"reasoning_content\":\"\\nOkay, the user is asking about the weather in Paris. I need to use the get_weather function. The function requires the city parameter. Since they mentioned Paris, I should call the function with \\\"Paris\\\" as the city. Let me make sure there are no typos. Alright, the tool call should be correct.\\n\"},\"logprobs\":null}],\"created\":1793447384,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":90,\"prompt_tokens\":158,\"total_tokens\":248,\"prompt_tokens_details\":{\"cached_tokens\":3},\"avg_tok_per_sec\":16.852406,\"avg_prompt_tok_per_sec\":218.23206,\"avg_compl_tok_per_sec\":6.4322467,\"total_time_sec\":14.716,\"total_prompt_time_sec\":0.724,\"total_completion_time_sec\":13.992}}"
+   "body": "{\"id\":\"2\",\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"content\":null,\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call-f7ad2025-6c0f-4977-868f-374a627b7b11\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}],\"reasoning_content\":\"\\nOkay, the user is asking for the weather in Paris. I need to use the get_weather function. The function requires the city parameter. So I should call get_weather with \\\"Paris\\\" as the argument. Let me make sure the city name is correctly spelled and matches what the function expects. Once I get the response, I can relay the weather information back to the user.\\n\"},\"logprobs\":null}],\"created\":1795575645,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":101,\"prompt_tokens\":158,\"total_tokens\":259,\"prompt_tokens_details\":{\"cached_tokens\":3},\"avg_tok_per_sec\":7.0949183,\"avg_prompt_tok_per_sec\":120.61069,\"avg_compl_tok_per_sec\":2.869726,\"total_time_sec\":36.505,\"total_prompt_time_sec\":1.31,\"total_completion_time_sec\":35.195}}"
   },
   {
    "method": "POST",
    "path": "/v1/chat/completions",
    "request": {
+    "max_tokens": 16,
     "messages": [
      {
       "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
@@ -132,7 +144,9 @@
      }
     ],
     "model": "Qwen/Qwen3-0.6B",
-    "stream": false
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
    },
    "status": 400,
    "content_type": "application/json",
@@ -142,6 +156,7 @@
    "method": "POST",
    "path": "/v1/chat/completions",
    "request": {
+    "max_tokens": 256,
     "messages": [
      {
       "content": "Reply with a JSON object for Paris: city is the name and pop is the population.",
@@ -152,16 +167,19 @@
     "response_format": {
      "type": "json_object"
     },
-    "stream": false
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"id\":\"3\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"{\\n\\n\\n    \\\"city\\\": \\\"Paris\\\",\\n    \\\"pop\\\": 21000000\\n}\",\"role\":\"assistant\",\"tool_calls\":null},\"logprobs\":null}],\"created\":1793447399,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":24,\"prompt_tokens\":26,\"total_tokens\":50,\"prompt_tokens_details\":{\"cached_tokens\":1},\"avg_tok_per_sec\":12.936611,\"avg_prompt_tok_per_sec\":90.59233,\"avg_compl_tok_per_sec\":6.7076583,\"total_time_sec\":3.865,\"total_prompt_time_sec\":0.287,\"total_completion_time_sec\":3.578}}"
+   "body": "{\"id\":\"3\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"{\\\"city\\\": \\\"Paris\\\", \\\"pop\\\": 21000000}\",\"role\":\"assistant\",\"tool_calls\":null},\"logprobs\":null}],\"created\":1795575682,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":20,\"prompt_tokens\":26,\"total_tokens\":46,\"prompt_tokens_details\":{\"cached_tokens\":1},\"avg_tok_per_sec\":5.6448646,\"avg_prompt_tok_per_sec\":19.461079,\"avg_compl_tok_per_sec\":2.9355643,\"total_time_sec\":8.149,\"total_prompt_time_sec\":1.336,\"total_completion_time_sec\":6.813}}"
   },
   {
    "method": "POST",
    "path": "/v1/chat/completions",
    "request": {
+    "max_tokens": 256,
     "messages": [
      {
       "content": "Reply with a JSON object for Paris: city is the name and pop is the population.",
@@ -192,11 +210,13 @@
      },
      "type": "json_schema"
     },
-    "stream": false
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"id\":\"4\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"{\\\"city\\\": \\\"Paris\\\", \\\"pop\\\": 21100000}\",\"role\":\"assistant\",\"tool_calls\":null},\"logprobs\":null}],\"created\":1793447403,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":20,\"prompt_tokens\":26,\"total_tokens\":46,\"avg_tok_per_sec\":13.233603,\"avg_prompt_tok_per_sec\":66.15776,\"avg_compl_tok_per_sec\":6.487188,\"total_time_sec\":3.476,\"total_prompt_time_sec\":0.393,\"total_completion_time_sec\":3.083}}"
+   "body": "{\"id\":\"4\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"{\\\"city\\\": \\\"Paris\\\", \\\"pop\\\": 21000000}\",\"role\":\"assistant\",\"tool_calls\":null},\"logprobs\":null}],\"created\":1795575691,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":20,\"prompt_tokens\":26,\"total_tokens\":46,\"avg_tok_per_sec\":5.630355,\"avg_prompt_tok_per_sec\":17.150396,\"avg_compl_tok_per_sec\":3.0057108,\"total_time_sec\":8.17,\"total_prompt_time_sec\":1.516,\"total_completion_time_sec\":6.654}}"
   },
   {
    "method": "POST",
@@ -209,11 +229,13 @@
      }
     ],
     "model": "Qwen/Qwen3-0.6B",
-    "stream": false
+    "stream": false,
+    "temperature": 0,
+    "seed": 7
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"id\":\"5\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"\\n\\nTo find the sum of 17 and 25, we add the numbers digit by digit:\\n\\n17  \\n+25  \\n= 42\\n\\nThis calculation confirms that $17 + 25 = 42$.\",\"role\":\"assistant\",\"tool_calls\":null,\"reasoning_content\":\"\\nOkay, let's see. The question is asking, \\\"What is 17 plus 25?\\\" Hmm, so I need to add these two numbers together. Let me think. First, I remember that when you add numbers, you just add their digits one by one. So, starting with the units place. 17 has a 7 in the ones place and 1 in the tens place. Then 25 has a 5 in the ones place and 2 in the tens place. \\n\\nSo, adding the ones first: 7 plus 5 equals 12. Then, since we're adding two numbers, the tens place would be 1 (from 17) plus 2 (from 25) which is 3. So putting that together, it should be 13. Wait, but let me check again. 17 plus 25. Let me do it another way. Maybe breaking it down. 17 plus 25 can be thought of as 17 + 20 + 5. That's easier. 17 + 20 is 37, and then adding 5 to that gives 42. Oh, wait, that's different from the first method. Which one is correct? \\n\\nWait, hold on. If I break it down into 17 + 25, maybe I made a mistake in the first approach. Let me recalculate. 17 + 25. Let's add the tens first: 1 + 2 = 3. Then the ones: 7 + 5 = 12. So 3 + 12 = 15. Wait, that's different again. Now I'm confused. \\n\\nHold on, maybe I miscalculated earlier. Let me do it step by step. \\n\\nStarting with 17 + 25. Let's write it vertically:\\n\\n  1 7  \\n+ 2 5  \\n------\\n\\nAdding the ones place: 7 + 5 = 12. Write down 2, carry over 1. \\n\\nThen adding the tens place: 1 + 2 = 3, plus the carried over 1 makes 4. \\n\\nSo the total is 42. Wait, so why did I get 15 before? Oh, because I must have added the tens first incorrectly. So the correct answer is 42. \\n\\nBut let me check once more. Maybe I can add them as 17 + 25. Let's do 17 + 25. 17 + 25 is the same as 10 + 10 + 7 + 5 = 20 + 12 = 32. Wait, no, that's not right. Wait, 10 + 10 is 20, plus 7 + 5 is 12, so 20 + 12 = 32. Wait, but earlier I thought it was 42. What's going on here?\\n\\nWait, no, hold on. If I do 17 + 25, maybe I'm adding 10 + 10 and then 7 + 5. But 10 + 10 is 20, and 7 + 5 is 12. So 20 + 12 is 32. But earlier, when I added the digits, I thought it was 42. Which is correct? \\n\\nWait, there's a mistake here. Let me do it numerically. 17 + 25. Let's compute 17 + 25. 25 is 20 + 5. So 17 + 20 is 37, plus 5 is 42. Yes, that's correct. So earlier when I broke it into 17 + 25 as 10 + 10 + 7 + 5, that's 20 + 12 = 32, which is not the same. Wait, that's conflicting. \\n\\nWait, no. Wait, 10 + 10 is 20, and 7 + 5 is 12, so 20 + 12 is 32. But 17 + 25 is 42. So where is the mistake? Oh, maybe I confused the breakdown. 17 + 25 can't be broken into 10 + 10 + 7 + 5. Wait, 17 is 10 + 7, and 25 is 20 + 5. So adding them together would be 10 + 20 + 7 + 5 = 32. But that's not the same as 17 + 25. Wait, that's impossible. \\n\\nWait, no. 17 is 10 + 7, and 25 is 20 + 5. So adding them together: 10 + 20 is 30, plus 7 + 5 is 12. Total is 30 + 12 = 42. Oh! So that's correct. So my earlier breakdown was wrong. I must have thought 10 + 10 + 7 + 5, but actually, 17 is 10 + 7 and 25 is 20 + 5. So adding them gives 30 + 12 = 42. \\n\\nSo that confirms that 17 + 25 is 42. Therefore, the answer is 42.\\n\"},\"logprobs\":null}],\"created\":1793447406,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":1252,\"prompt_tokens\":25,\"total_tokens\":1277,\"prompt_tokens_details\":{\"cached_tokens\":3},\"avg_tok_per_sec\":6.4196663,\"avg_prompt_tok_per_sec\":72.04611,\"avg_compl_tok_per_sec\":6.304986,\"total_time_sec\":198.92,\"total_prompt_time_sec\":0.347,\"total_completion_time_sec\":198.573}}"
+   "body": "{\"id\":\"5\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"\\n\\n17 plus 25 equals 42. \\n\\n**Step-by-Step Explanation:**  \\n1. Break down the numbers:  \\n   - 17 = 10 + 7  \\n   - 25 = 20 + 5  \\n\\n2. Add the parts separately:  \\n   - 10 + 20 = 30  \\n   - 7 + 5 = 12  \\n\\n3. Combine the results:  \\n   - 30 + 12 = 42  \\n\\n**Answer:** 42\",\"role\":\"assistant\",\"tool_calls\":null,\"reasoning_content\":\"\\nOkay, so I need to figure out what 17 plus 25 is. Let me start by recalling how to add numbers. I think when you add two numbers, you just add their digits one by one. Let me check that.\\n\\nFirst, I can break down the numbers to make it easier. 17 is the same as 10 + 7, and 25 is 20 + 5. Adding those together would be 10 + 20 and 7 + 5. That gives me 30 + 12, which equals 42. Wait, is that right? Let me add them again step by step.\\n\\nStarting with 17 + 25. Let's add the ones place first: 7 + 5 equals 12. Then, carry over the 1 from the ones place to the tens place. So, 17 + 25 is 42. Yeah, that seems correct. \\n\\nAlternatively, I can add them in a different order. 17 + 25 is the same as 25 + 17, which is the same result. So, no matter how I approach it, the answer should be 42. \\n\\nI don't think there's any trick here. It's a straightforward addition problem. Maybe if there were any carries or something, but in this case, there's no carry-over because 7 + 5 is 12, which is two digits. So, the final answer is 42.\\n\"},\"logprobs\":null}],\"created\":1795575699,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":441,\"prompt_tokens\":25,\"total_tokens\":466,\"prompt_tokens_details\":{\"cached_tokens\":3},\"avg_tok_per_sec\":2.655967,\"avg_prompt_tok_per_sec\":19.654087,\"avg_compl_tok_per_sec\":2.5318344,\"total_time_sec\":175.454,\"total_prompt_time_sec\":1.272,\"total_completion_time_sec\":174.182}}"
   },
   {
    "method": "POST",
@@ -255,7 +277,7 @@
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"id\":\"1\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Red.\",\"role\":\"assistant\",\"tool_calls\":null},\"logprobs\":null}],\"created\":1793447610,\"model\":\"HuggingFaceTB/SmolVLM-256M-Instruct\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":3,\"prompt_tokens\":1146,\"total_tokens\":1149,\"avg_tok_per_sec\":75.053894,\"avg_prompt_tok_per_sec\":75.683525,\"avg_compl_tok_per_sec\":17.964073,\"total_time_sec\":15.309,\"total_prompt_time_sec\":15.142,\"total_completion_time_sec\":0.167}}"
+   "body": "{\"id\":\"1\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Red.\",\"role\":\"assistant\",\"tool_calls\":null},\"logprobs\":null}],\"created\":1795575876,\"model\":\"HuggingFaceTB/SmolVLM-256M-Instruct\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":3,\"prompt_tokens\":1146,\"total_tokens\":1149,\"avg_tok_per_sec\":19.668932,\"avg_prompt_tok_per_sec\":19.921774,\"avg_compl_tok_per_sec\":3.3632286,\"total_time_sec\":58.417,\"total_prompt_time_sec\":57.525,\"total_completion_time_sec\":0.892}}"
   },
   {
    "method": "POST",
@@ -283,12 +305,13 @@
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"id\":\"2\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Blue.\",\"role\":\"assistant\",\"tool_calls\":null},\"logprobs\":null}],\"created\":1793447625,\"model\":\"HuggingFaceTB/SmolVLM-256M-Instruct\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":3,\"prompt_tokens\":1146,\"total_tokens\":1149,\"prompt_tokens_details\":{\"cached_tokens\":5},\"avg_tok_per_sec\":73.9906,\"avg_prompt_tok_per_sec\":74.575386,\"avg_compl_tok_per_sec\":18.518518,\"total_time_sec\":15.529,\"total_prompt_time_sec\":15.367,\"total_completion_time_sec\":0.162}}"
+   "body": "{\"id\":\"2\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Blue.\",\"role\":\"assistant\",\"tool_calls\":null},\"logprobs\":null}],\"created\":1795575935,\"model\":\"HuggingFaceTB/SmolVLM-256M-Instruct\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":3,\"prompt_tokens\":1146,\"total_tokens\":1149,\"prompt_tokens_details\":{\"cached_tokens\":5},\"avg_tok_per_sec\":14.868782,\"avg_prompt_tok_per_sec\":15.00216,\"avg_compl_tok_per_sec\":3.3821871,\"total_time_sec\":77.276,\"total_prompt_time_sec\":76.389,\"total_completion_time_sec\":0.887}}"
   },
   {
    "method": "POST",
    "path": "/v1/chat/completions",
    "request": {
+    "max_tokens": 1024,
     "messages": [
      {
       "content": "You answer in one short sentence.",
@@ -308,11 +331,13 @@
      }
     ],
     "model": "Qwen/Qwen3-0.6B",
-    "stream": false
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
    },
    "status": 200,
    "content_type": "application/json",
-   "body": "{\"id\":\"1\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"\\n\\nRome.\",\"role\":\"assistant\",\"tool_calls\":null,\"reasoning_content\":\"\\nOkay, the user first asked about the capital of France, and I provided the answer. Now they're asking about Italy. I need to make sure I'm answering correctly. Let me think. Italy's capital is Rome. I should check if there's any recent change, but I don't think there's been any significant shift. So the answer should be Rome. Just a simple sentence.\\n\"},\"logprobs\":null}],\"created\":1793447645,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":87,\"prompt_tokens\":43,\"total_tokens\":130,\"avg_tok_per_sec\":9.539185,\"avg_prompt_tok_per_sec\":97.06546,\"avg_compl_tok_per_sec\":6.5984073,\"total_time_sec\":13.628,\"total_prompt_time_sec\":0.443,\"total_completion_time_sec\":13.185}}"
+   "body": "{\"id\":\"6\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"\\n\\nRome.\",\"role\":\"assistant\",\"tool_calls\":null,\"reasoning_content\":\"\\nOkay, the user first asked about the capital of France, and I correctly answered Paris. Now they're asking about Italy. I need to make sure I provide the correct answer. Italy's capital is Rome, right? Let me confirm that. Yes, Rome is the capital. I should state it clearly and concisely in one sentence. No need for extra information. Just the capital name. Alright, that should do it.\\n\"},\"logprobs\":null}],\"created\":1795576014,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":95,\"prompt_tokens\":43,\"total_tokens\":138,\"avg_tok_per_sec\":2.3599827,\"avg_prompt_tok_per_sec\":20.216267,\"avg_compl_tok_per_sec\":1.6859516,\"total_time_sec\":58.475,\"total_prompt_time_sec\":2.127,\"total_completion_time_sec\":56.348}}"
   }
  ]
 }
