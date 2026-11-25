@@ -9,6 +9,7 @@ import logging
 import os
 import selectors
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -1651,16 +1652,44 @@ def test_the_loop_takes_only_the_signals_the_process_routes():
     install_engine_lifecycle_hooks()
     routed = signal.getsignal(signal.SIGTERM)
 
-    async def inside() -> tuple[object, object]:
+    async def inside() -> tuple[object, object, object]:
+        # The runner puts its own Ctrl-C handler in place for the run.
+        interrupt_before = signal.getsignal(signal.SIGINT)
         with loop_takes_signals(asyncio.get_running_loop()):
-            return signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)
+            interrupt = signal.getsignal(signal.SIGINT)
+            return interrupt_before, interrupt, signal.getsignal(signal.SIGTERM)
 
     with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
-        interrupt, terminate = runner.run(inside())
+        interrupt_before, interrupt, terminate = runner.run(inside())
 
-    assert interrupt is signal.default_int_handler
+    assert interrupt == interrupt_before
     assert terminate != routed  # the loop's own handler took the terminate
     assert signal.getsignal(signal.SIGTERM) == routed
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
+def test_the_wakeup_descriptor_set_before_the_loop_signals_returns_after_them():
+    """The TUI's descriptor wakes its loop again once the loop gives the signals back."""
+    install_engine_lifecycle_hooks()
+    reader, writer = socket.socketpair()
+    writer.setblocking(False)
+
+    async def inside() -> int:
+        with loop_takes_signals(asyncio.get_running_loop()):
+            current = signal.set_wakeup_fd(-1)
+            signal.set_wakeup_fd(current)
+            return current
+
+    with reader, writer, asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+        previous = signal.set_wakeup_fd(writer.fileno())
+        try:
+            during = runner.run(inside())
+            after = signal.set_wakeup_fd(previous)
+        finally:
+            signal.set_wakeup_fd(previous)
+
+    assert during != writer.fileno()  # the loop's own descriptor while it takes the signals
+    assert after == writer.fileno()
 
 
 def test_the_thread_seam_lists_the_running_threads():
