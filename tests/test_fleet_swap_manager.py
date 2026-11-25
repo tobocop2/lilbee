@@ -19,7 +19,7 @@ import psutil
 import pytest
 
 from lilbee import parent_monitor
-from lilbee.core.health_warnings import WarningCode
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import swap_manager as sm
 from lilbee.providers.fleet.engines import LLAMA
@@ -139,6 +139,19 @@ class TestStart:
         mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         assert mgr.log_path == tmp_path / "logs" / "llama-swap-chat.log"
         assert mgr.log_path.is_file()
+
+    def test_a_start_forgets_the_findings_of_the_engine_before_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        spill = HealthWarning(code=WarningCode.HOST_SPILL, message="spills")
+        divergence = HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan")
+        mgr._record_findings("chat-0", divergence, [spill])
+        assert mgr.health_warnings() == [divergence, spill]
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
+        assert mgr.health_warnings() == []
 
     def test_a_worker_without_its_own_log_has_its_output_copied_to_the_group_log(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
