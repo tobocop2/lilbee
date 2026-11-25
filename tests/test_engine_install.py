@@ -521,7 +521,7 @@ def _install_second_build(tmp_path: Path) -> None:
     EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
 
 
-SECOND_VERSION = "git-0000000000aa"
+SECOND_VERSION = "git-ffffffffffff"
 
 
 def _cli_list_json() -> dict[str, Any]:
@@ -566,6 +566,33 @@ def test_every_surface_marks_the_second_build_with_the_same_term(
     term = engine_service.DIFFERS_FROM_PIN_TEXT
     assert [term in line for line in lines if SECOND_VERSION in line] == [True]
     assert not any(term in line for line in lines if VERSION in line)
+    slash = run_engine_command("list").text.splitlines()
+    assert [term in line for line in slash if SECOND_VERSION in line] == [True]
+
+
+def test_a_build_of_an_engine_whose_pin_names_no_pack_differs_from_the_pin(
+    good: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine_service.install(ENGINE.value, good)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(None))  # type: ignore[arg-type]
+    assert [b.differs_from_pin for b in engine_service.builds()] == [True]
+
+
+def test_a_llama_build_differs_from_the_pin_when_its_backend_is_not_the_one_of_the_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / "llama.whl"
+    sha = make_wheel(wheel)
+    version = engine_service.LLAMA.pin_record()["version"]
+    store = EngineStore(engines_root(cfg.models_dir))
+    for backend in ("cpu", "cuda"):
+        lock = engine_store.PinLock("llama.cpp", version, backend, {}, ("MIT",), sha, "server")
+        store.install_from_wheel(lock, wheel)
+    monkeypatch.setattr(engine_service, "_bundled_backend", lambda _name: "cpu")
+    assert [(b.backend, b.differs_from_pin) for b in engine_service.builds()] == [
+        ("cpu", False),
+        ("cuda", True),
+    ]
 
 
 def test_the_term_is_the_same_in_the_tab_and_the_service() -> None:
