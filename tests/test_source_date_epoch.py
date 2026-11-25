@@ -159,6 +159,7 @@ def _wrap_tei(tmp_path: Path, run: str, checkout_time: int) -> str:
         "REAL_PYTHON": sys.executable,
         "UV": UV,
         "WHEEL_VERSION": "1.0.0",
+        "BUILD_NUMBER": "1",
     }
     subprocess.run(
         [

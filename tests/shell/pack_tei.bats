@@ -44,13 +44,13 @@ setup() {
   export DOCKER_LOG="${BATS_TEST_TMPDIR}/docker.log" PYTHON_LOG="${BATS_TEST_TMPDIR}/python.log" PYTHON_CALLS="${BATS_TEST_TMPDIR}/calls.log"
   export QEMU_LOG="${BATS_TEST_TMPDIR}/qemu.log" ROUTER_LOG="${BATS_TEST_TMPDIR}/router.log" ROUTER_FAIL=
   export STEP_LOG="${BATS_TEST_TMPDIR}/step.log" TMPDIR="${BATS_TEST_TMPDIR}/tmp/"
-  export TEI_REPO="${BATS_TEST_TMPDIR}/tei-origin" TEI_TAG=v1.9.4 RUSTC_VERSION=1.92.0 WHEEL_VERSION=1.9.4
+  export TEI_REPO="${BATS_TEST_TMPDIR}/tei-origin" TEI_TAG=v1.9.4 RUSTC_VERSION=1.92.0 WHEEL_VERSION=1.9.4 BUILD_NUMBER=2
   export CUDA_VERSION=12.9.1 CUDA_PACKAGE_SUFFIX=12-9 CUDA_CC= BACKEND=cpu PLATFORM=manylinux_2_34_x86_64
   export MANYLINUX_IMAGE=quay.io/pypa/x@sha256:abc RUNNER_OS=Linux OUT="${BATS_TEST_TMPDIR}/packs-out"
   export PIP_NO_INDEX=1 PIP_FIND_LINKS="${BATS_TEST_TMPDIR}/wheels" PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_CONFIG_FILE=/dev/null
   unset SOURCE_DATE_EPOCH EMULATE_CPU STUB_DIR PIP_CONSTRAINT PIP_REQUIRE_HASHES CARGO_HOME RUSTFLAGS
-  WHEEL=lilbee_engine_tei-1.9.4-1.cpu-py3-none-manylinux_2_34_x86_64.whl
-  cd "${BATS_TEST_TMPDIR}"
+  WHEEL=lilbee_engine_tei-1.9.4-2.cpu-py3-none-manylinux_2_34_x86_64.whl
+  cd"${BATS_TEST_TMPDIR}"
 }
 
 # Write one tool of BIN from its lines.
@@ -63,13 +63,13 @@ tool() {  # name line...
 
 cuda() {
   export BACKEND=cuda-sm80 CUDA_CC=80
-  WHEEL=lilbee_engine_tei-1.9.4-1.cuda_sm80-py3-none-manylinux_2_34_x86_64.whl
+  WHEEL=lilbee_engine_tei-1.9.4-2.cuda_sm80-py3-none-manylinux_2_34_x86_64.whl
 }
 
 # Set up the macOS cell. The Rust and Mac tools append to STEP_LOG, in the order of the calls.
 metal() {
   export BACKEND=metal PLATFORM=macosx_14_0_arm64 MACOSX_DEPLOYMENT_TARGET=14.0 RUNNER_OS=macOS UNAME_S=Darwin
-  WHEEL=lilbee_engine_tei-1.9.4-1.metal-py3-none-macosx_14_0_arm64.whl
+  WHEEL=lilbee_engine_tei-1.9.4-2.metal-py3-none-macosx_14_0_arm64.whl
   WORK="${BATS_TEST_TMPDIR}/tmp/lilbee-tei-v1.9.4"
   SRC="${WORK}/src"
   tool otool 'echo /usr/lib/libSystem.B.dylib'
@@ -122,7 +122,7 @@ source_commit() {  # commit time
 
 @test "every variable of the contract is required" {
   local name
-  for name in TEI_REPO TEI_TAG RUSTC_VERSION WHEEL_VERSION BACKEND PLATFORM OUT CUDA_VERSION CUDA_PACKAGE_SUFFIX MANYLINUX_IMAGE; do
+  for name in TEI_REPO TEI_TAG RUSTC_VERSION WHEEL_VERSION BUILD_NUMBER BACKEND PLATFORM OUT CUDA_VERSION CUDA_PACKAGE_SUFFIX MANYLINUX_IMAGE; do
     run env "${name}=" bash "${SCRIPT}"
     [ "$status" -eq 2 ]
     [[ "$output" == *"${name} is not set"* ]]
@@ -205,7 +205,7 @@ source_commit() {  # commit time
   local want
   want="$(printf '%s\n' run --rm -v "${ROOT}:/work" -w /work)"
   local name
-  for name in TEI_REPO TEI_TAG RUSTC_VERSION WHEEL_VERSION BACKEND CUDA_CC CUDA_PACKAGE_SUFFIX CUDA_VERSION; do
+  for name in TEI_REPO TEI_TAG RUSTC_VERSION WHEEL_VERSION BUILD_NUMBER BACKEND CUDA_CC CUDA_PACKAGE_SUFFIX CUDA_VERSION; do
     want="${want}
 -e
 ${name}"
@@ -239,11 +239,12 @@ bash
 @test "a wheel with a wrong tag in its name is refused" {
   local name
   for name in \
-    lilbee_engine_tei-1.9.4-1.cpu-py3-none-linux_x86_64.whl \
-    lilbee_engine_tei-1.9.4-1.cpu-py3-none-manylinux_2_34_x86_64.manylinux_2_28_x86_64.whl \
-    lilbee_engine_tei-1.9.4-1.metal-py3-none-manylinux_2_34_x86_64.whl \
-    lilbee_engine_tei-1.9.5-1.cpu-py3-none-manylinux_2_34_x86_64.whl \
-    lilbee_engine_tei-1.9.4-1.cpu-cp312-none-manylinux_2_34_x86_64.whl; do
+    lilbee_engine_tei-1.9.4-2.cpu-py3-none-linux_x86_64.whl \
+    lilbee_engine_tei-1.9.4-2.cpu-py3-none-manylinux_2_34_x86_64.manylinux_2_28_x86_64.whl \
+    lilbee_engine_tei-1.9.4-2.metal-py3-none-manylinux_2_34_x86_64.whl \
+    lilbee_engine_tei-1.9.5-2.cpu-py3-none-manylinux_2_34_x86_64.whl \
+    lilbee_engine_tei-1.9.4-1.cpu-py3-none-manylinux_2_34_x86_64.whl \
+    lilbee_engine_tei-1.9.4-2.cpu-cp312-none-manylinux_2_34_x86_64.whl; do
     mkdir -p "${ROOT}-${name}"
     cp -R "${ROOT}/." "${ROOT}-${name}/"
     WHEEL_NAME="${name}" run bash "${ROOT}-${name}/tools/wheel-build/pack_tei.sh"
@@ -507,7 +508,7 @@ other_cargo_about() {  # triple
   run bash "${SCRIPT}"
   [ "$status" -eq 0 ]
   grep -qxF "wheel candle,metal,http aarch64-apple-darwin metal macosx_14_0_arm64 out | src=${SRC} router=${SRC}/target/release/text-embeddings-router python=python locale=C path=${WORK}/bin" "${STEP_LOG}"
-  grep -qxF 'build --wheel --no-isolation -C--build-option=--build-number=1.metal | cwd=engine-wheel-tei' "${STEP_LOG}"
+  grep -qxF 'build --wheel --no-isolation -C--build-option=--build-number=2.metal | cwd=engine-wheel-tei' "${STEP_LOG}"
 }
 
 @test "the Metal build installs each tool of its two files, and no other, with the pip that the Python bundles" {
