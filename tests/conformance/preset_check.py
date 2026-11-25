@@ -12,10 +12,10 @@ import urllib.parse
 import urllib.request
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterator
-from itertools import combinations
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
