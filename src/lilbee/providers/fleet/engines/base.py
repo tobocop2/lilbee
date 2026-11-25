@@ -135,6 +135,12 @@ class RequestProfile:
 
     Such a server makes every later request wait, so a timed-out request restarts it.
     """
+    silent_prefill: bool = False
+    """Whether the server may send its headers and then no byte until its first frame.
+
+    The client then starts the silence bound of a chat stream at the first frame, not at the
+    headers. Until that frame, the wait is the client timeout.
+    """
     rerank_path: str | None = None
     """The route that scores a query against texts, or None to rank through embeddings."""
     batch_limit: int | None = None
