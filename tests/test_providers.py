@@ -661,7 +661,13 @@ class TestRoutingProvider:
         count_lock = threading.Lock()
 
         class FakeFleet:
-            def __init__(self, *, hold_warm: bool = False, config_refresh: object = None) -> None:
+            def __init__(
+                self,
+                *,
+                hold_warm: bool = False,
+                config_refresh: object = None,
+                held_writes: object = None,
+            ) -> None:
                 with count_lock:
                     construct_count["n"] += 1
                 # Widen the check-then-set window: without it the cheap __init__
@@ -696,24 +702,31 @@ class TestRoutingProvider:
         assert construct_count["n"] == 1
         assert len({id(r) for r in results}) == 1
 
-    def test_get_local_hands_the_refresh_to_the_fleet(self, monkeypatch) -> None:
+    def test_get_local_hands_the_refresh_and_the_held_writes_to_the_fleet(
+        self, monkeypatch
+    ) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 
         built: dict[str, object] = {}
 
         class FakeFleet:
-            def __init__(self, *, hold_warm: bool = False, config_refresh=None) -> None:
-                built.update(config_refresh=config_refresh)
+            def __init__(
+                self, *, hold_warm: bool = False, config_refresh=None, held_writes=None
+            ) -> None:
+                built.update(config_refresh=config_refresh, held_writes=held_writes)
 
             def shutdown(self) -> None: ...
 
         def refresh() -> None: ...
 
+        def held_writes() -> dict[str, object]:
+            return {}
+
         monkeypatch.setattr("lilbee.providers.fleet.provider.FleetProvider", FakeFleet)
-        rp = RoutingProvider(config_refresh=refresh)
+        rp = RoutingProvider(config_refresh=refresh, held_writes=held_writes)
         self._to_shutdown.append(rp)
         rp._get_local()
-        assert built == {"config_refresh": refresh}
+        assert built == {"config_refresh": refresh, "held_writes": held_writes}
 
     def test_get_sdk_provider_single_init_under_concurrency(self, monkeypatch) -> None:
         """Concurrent first-callers construct exactly one SdkLLMProvider.
