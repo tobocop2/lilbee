@@ -1396,6 +1396,19 @@ class TestModelCallOutcomes:
     def test_a_run_with_no_calls_did_not_fail(self):
         assert not BuildStats().every_model_call_failed
 
+    @pytest.mark.parametrize("cause", [" ", "...", ". .", ""])
+    def test_a_direct_blank_cause_is_recorded_as_unknown_error(self, cause):
+        stats = BuildStats()
+        stats.record_model_call(cause)
+        with pytest.raises(RuntimeError) as err:
+            stats.raise_if_nothing_written(0)
+        assert "Last error: unknown error. Check that" in str(err.value)
+
+    def test_a_direct_blank_cause_falls_back_to_the_given_type_name(self):
+        stats = BuildStats()
+        stats.record_model_call("...", error_type="TimeoutError")
+        assert stats.last_model_failure == "TimeoutError"
+
     @pytest.mark.parametrize(
         ("cause", "named"),
         [
