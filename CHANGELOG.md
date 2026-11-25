@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+`DELETE /api/models/{model}` now removes a model whose ref holds slashes, such as `org/repo/model.gguf`. Before, the route matched one path segment, so the server answered with an error for these refs and a REST client could not remove the model.
+
 When an engine has a second build on disk that is not the build its pin names, `lilbee engine list`, the `/engine list` command and the Engines tab in Settings now mark that build as "differs from the pin". lilbee runs only the pin build, and Remove stays on the row of the other build. Each build in the `builds` field of `GET /api/engines` and the `engine_list` MCP tool has a new field, `differs_from_pin`.
 
 A chat, vision or LLM reranker model now starts with a bounded prompt cache and at most 4 context checkpoints a slot. Before, the engine could keep up to 8 GiB of idle prompts and 32 checkpoints a slot in system memory, which the plan did not count, and a small machine could swap. The cache is half the system memory that the plan leaves free, at most 8 GiB. An embedding model and a cross-encoder reranker keep no prompt cache. If the plan leaves no room, the model still loads without a prompt cache, and lilbee logs one warning. If the plan leaves no room for a checkpoint, lilbee logs one warning that each turn reprocesses the whole conversation, also when the prompt cache stays.
