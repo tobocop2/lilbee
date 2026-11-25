@@ -14,6 +14,7 @@ from lilbee.app.analyze import AnalyzeRequest, server_directory, validate_reques
 from lilbee.server.handlers import analyze as handlers
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import AnalyzeRequestBody, AnalyzeResponse, AnalyzeStateResponse
+from lilbee.server.routes.engines import NO_LIBRARY_KEY
 
 
 def _request(data: AnalyzeRequestBody) -> AnalyzeRequest:
@@ -52,7 +53,7 @@ async def analyze_route(data: AnalyzeRequestBody | None = None) -> Stream:
     return Stream(handlers.analyze_stream(request), media_type=SSE_MEDIA_TYPE)
 
 
-@get("/api/analyze/state")
+@get("/api/analyze/state", opt={NO_LIBRARY_KEY: True})
 async def analyze_state_route() -> AnalyzeStateResponse:
     """Whether the project was analyzed, hid the tip, and would see the tip now."""
     return await handlers.analyze_state()
