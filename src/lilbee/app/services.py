@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
+from lilbee.runtime.add_registry import AddRegistry
 from lilbee.runtime.asyncio_loop import hold_exit
 
 if TYPE_CHECKING:
@@ -157,6 +158,7 @@ class Services:
     known_models: KnownModelCache
     session_store: SessionStore = field(default_factory=_default_session_store)
     profile_store: ProfileStore = field(default_factory=_default_profile_store)
+    add_registry: AddRegistry = field(default_factory=AddRegistry)
 
     def cancel_inference(self) -> None:
         """Interrupt any in-flight generation. Idempotent.
