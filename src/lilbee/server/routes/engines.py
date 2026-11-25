@@ -73,7 +73,11 @@ def _require_engines_enabled(_connection: ASGIConnection, _handler: BaseRouteHan
         raise HTTPException(status_code=_HTTP_CONFLICT, detail=service.http_refused_message())
 
 
-@get("/api/engines")
+#: Route option that tells the library-open middleware this route never reads the library.
+NO_LIBRARY_KEY = "no_library"
+
+
+@get("/api/engines", opt={NO_LIBRARY_KEY: True})
 async def engine_builds_route() -> EngineBuildsResponse:
     """The engine builds installed beside the models."""
     view = await _call(service.engine_list)
@@ -101,7 +105,7 @@ async def engine_remove_route(
     return EngineRemovedResponse(removed=removed)
 
 
-@get("/api/engines/roles")
+@get("/api/engines/roles", opt={NO_LIBRARY_KEY: True})
 async def engine_roles_route() -> EngineRolesResponse:
     """The engine of every role, with the notice for a role that fell back or has none."""
     views = await _call(service.roles)
