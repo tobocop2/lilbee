@@ -354,35 +354,19 @@ class _SlotOwed(NamedTuple):
     states: dict[SwapGroup, SwapState]
 
 
-def _origin(*, planned: bool) -> PlanOrigin:
-    """This config root and the fleet plan keys config.toml sets, as a state records them.
+def _plan_origin() -> PlanOrigin:
+    """This config root and what its config.toml sets for a fleet plan, as a state records them.
 
     Only the keys whose change makes the fleet owner rebuild count, so a write of any
-    other key never makes a fleet look older than the file. With *planned*, a key this
-    process runs on another value of (a flag, or a start value it holds) records that
-    value, so the view equals the file's only when the plan used the file's values. A
-    torn or unreadable file gives no view.
+    other key never makes a fleet look older than the file. A torn or unreadable file
+    gives no view.
     """
     _stamp, values = read_persisted(cfg.data_root)
     view = None
     if values is not None:
-        picked = {
-            key: getattr(cfg, key) if planned and value != getattr(cfg, key) else value
-            for key, value in values.items()
-            if key in FLEET_RELOAD_KEYS
-        }
+        picked = {key: value for key, value in values.items() if key in FLEET_RELOAD_KEYS}
         view = json.dumps(picked, sort_keys=True, default=str)
     return PlanOrigin(str(cfg.data_root), view)
-
-
-def _plan_origin() -> PlanOrigin:
-    """The origin a fleet this process plans now is stamped with."""
-    return _origin(planned=True)
-
-
-def _file_origin() -> PlanOrigin:
-    """The origin a fleet planned on config.toml as it is now would carry."""
-    return _origin(planned=False)
 
 
 def _owner_owes_the_file(states: dict[SwapGroup, SwapState]) -> bool:
@@ -391,7 +375,7 @@ def _owner_owes_the_file(states: dict[SwapGroup, SwapState]) -> bool:
     Its builder has still to take the write and rebuild, so a peer on the new value waits
     for that rather than load a second fleet beside it.
     """
-    now = _file_origin()
+    now = _plan_origin()
     return now.fleet_view is not None and any(
         state.origin is not None
         and state.origin.config_root == now.config_root
@@ -402,17 +386,14 @@ def _owner_owes_the_file(states: dict[SwapGroup, SwapState]) -> bool:
 
 def _planned_on_the_file_now(states: dict[SwapGroup, SwapState]) -> bool:
     """True when a fleet of this config root was planned on config.toml as it is now."""
-    now = _file_origin()
+    now = _plan_origin()
     return now.fleet_view is not None and any(state.origin == now for state in states.values())
 
 
 def _held_write_message(writes: Mapping[str, object]) -> str:
     """The error of a one-off command whose held settings config.toml changed during its run."""
-    changed = " and ".join(f"{key} changed to {value}" for key, value in writes.items())
-    return (
-        f"{changed} in config.toml while this command ran, and the running engine "
-        "now serves it. Run the command again."
-    )
+    changed = ", ".join(f"{key} to {value}" for key, value in writes.items())
+    return f"config.toml changed {changed} while this command ran. Run the command again."
 
 
 def _await_slot_change(
