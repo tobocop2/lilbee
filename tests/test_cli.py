@@ -2807,11 +2807,12 @@ class TestRemove:
     def test_remove_folder_expands_to_members(self, isolated_env, mock_svc):
         from lilbee.data.store import RemoveResult
 
-        mock_svc.store.get_sources.return_value = [
+        mock_svc.store.iter_source_heads.side_effect = lambda: iter([
             {"filename": "docs/a.txt"},
             {"filename": "docs/b.txt"},
             {"filename": "other.txt"},
-        ]
+        ])
+        mock_svc.store.missing_sources.return_value = set()
         captured: dict = {}
 
         def _remove(names, held=None):
@@ -2827,10 +2828,11 @@ class TestRemove:
         # Without --yes, a folder that expands to several docs prompts for confirm.
         from lilbee.data.store import RemoveResult
 
-        mock_svc.store.get_sources.return_value = [
+        mock_svc.store.iter_source_heads.side_effect = lambda: iter([
             {"filename": "docs/a.txt"},
             {"filename": "docs/b.txt"},
-        ]
+        ])
+        mock_svc.store.missing_sources.return_value = set()
         mock_svc.store.remove_documents.side_effect = lambda names, held=None: RemoveResult(
             removed=list(names), not_found=[]
         )
@@ -2842,11 +2844,12 @@ class TestRemove:
     def test_remove_glob_pattern(self, isolated_env, mock_svc):
         from lilbee.data.store import RemoveResult
 
-        mock_svc.store.get_sources.return_value = [
+        mock_svc.store.iter_source_heads.side_effect = lambda: iter([
             {"filename": "a.log"},
             {"filename": "b.log"},
             {"filename": "c.txt"},
-        ]
+        ])
+        mock_svc.store.missing_sources.return_value = set()
         captured: dict = {}
 
         def _remove(names, held=None):
