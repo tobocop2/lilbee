@@ -9467,10 +9467,11 @@ class TestReportsReadAfterTheLoad:
 
         p, swap = self._warming(monkeypatch)
         order: list[object] = []
-        swap.claim_loaded = lambda ids: lambda: (  # type: ignore[method-assign]
-            order.append(p.warm_progress().phase),
-            swap.read_done.set(),
-        )
+        def read() -> None:
+            order.append(p.warm_progress().phase)
+            swap.read_done.set()
+
+        swap.claim_loaded = lambda ids: read  # type: ignore[method-assign]
         listeners = ((), (lambda _r: order.append("spawned"),))
         p._warm_chain([WorkerRole.CHAT], {WorkerRole.CHAT: [self._replica("chat-0")]}, listeners)
         assert swap.read_done.wait(5)
@@ -9496,10 +9497,11 @@ class TestReportsReadAfterTheLoad:
 
         p, swap = self._cold(self._replica("chat-0"))
         phases: list[object] = []
-        swap.claim_loaded = lambda ids: lambda: (  # type: ignore[method-assign]
-            phases.append(p.warm_progress().phase),
-            swap.read_done.set(),
-        )
+        def read() -> None:
+            phases.append(p.warm_progress().phase)
+            swap.read_done.set()
+
+        swap.claim_loaded = lambda ids: read  # type: ignore[method-assign]
         p.chat(list(_HELLO_TURN))
         assert swap.read_done.wait(5)
         assert phases == [WarmPhase.READY]
