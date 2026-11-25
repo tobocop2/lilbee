@@ -22,6 +22,7 @@ from lilbee.app.profiles import (
     ProfileStatus,
 )
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.mount_guard import GuardedSelect
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.profile_dialogs import (
     SaveProfileDialog,
@@ -131,7 +132,7 @@ class ProfileTab(Vertical):
         )
         yield Static(msg.PROFILE_TAB_HELP, classes="setting-help")
         with Horizontal(classes="setting-editor-row"):
-            yield Select[str](
+            yield GuardedSelect[str](
                 [(_NOT_LOADED, _NOT_LOADED)],
                 id=PROFILE_SELECT_ID,
                 classes="setting-editor",

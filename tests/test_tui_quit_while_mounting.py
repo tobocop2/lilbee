@@ -10,7 +10,9 @@ running but detached, and the resumed work must not touch it.
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, TypeVar
 
@@ -136,6 +138,50 @@ async def test_quit_while_a_setting_select_mounts_exits_cleanly(value, monkeypat
     await app.run_async(headless=True, size=(120, 40))
     assert app._exception is None, f"rc={app.return_code} {app._exception!r}"
     assert app.return_code == 0
+
+
+_TUI_DIR = Path(app_module.__file__).parent
+
+
+def _builds_plain_select(tree: ast.AST) -> list[int]:
+    """Lines that call or subclass textual's Select by its bare name."""
+
+    def is_select(node: ast.expr) -> bool:
+        if isinstance(node, ast.Subscript):
+            node = node.value
+        return isinstance(node, ast.Name) and node.id == "Select"
+
+    lines = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and is_select(node.func):
+            lines.append(node.lineno)
+        elif isinstance(node, ast.ClassDef):
+            lines.extend(node.lineno for base in node.bases if is_select(base))
+    return lines
+
+
+def test_no_tui_module_builds_a_plain_select():
+    """Every Select the TUI builds is a GuardedSelect, so a quit mid-mount cannot break it."""
+    found = [
+        f"{path.relative_to(_TUI_DIR)}:{line}"
+        for path in sorted(_TUI_DIR.rglob("*.py"))
+        if path.name != "mount_guard.py"
+        for line in _builds_plain_select(ast.parse(path.read_text()))
+    ]
+    assert found == [], f"build a GuardedSelect, not Select: {found}"
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["Select(x)", "Select[str](x)", "class Mine(Select): ...", "class Mine(Select[str]): ..."],
+)
+def test_the_plain_select_scan_sees_each_way_to_build_one(source):
+    assert _builds_plain_select(ast.parse(source)) == [1]
+
+
+@pytest.mark.parametrize("source", ["GuardedSelect(x)", "query_one(Select)", "Select.Changed"])
+def test_the_plain_select_scan_leaves_other_uses_alone(source):
+    assert _builds_plain_select(ast.parse(source)) == []
 
 
 GUARDED: dict[str, Callable[[], Any]] = {

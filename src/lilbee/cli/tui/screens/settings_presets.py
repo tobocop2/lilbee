@@ -22,7 +22,7 @@ from lilbee.app.presets import (
     with_reserve_note,
 )
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.mount_guard import MountWhenAttached
+from lilbee.cli.tui.mount_guard import GuardedSelect, MountWhenAttached
 from lilbee.cli.tui.preset_commands import key_state_text, preset_line
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
@@ -93,7 +93,7 @@ class PresetDialog(Dialog[str | None]):
             for role in WorkerRole:
                 yield Checkbox(role.value, value=role in roles, id=f"preset-role-{role.value}")
             yield Label(msg.PRESET_DIALOG_WIRE_LABEL, id="preset-wire-label")
-            yield Select(
+            yield GuardedSelect(
                 [(w.value, w) for w in RerankWire],
                 value=wire,
                 allow_blank=False,
