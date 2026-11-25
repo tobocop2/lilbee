@@ -53,6 +53,7 @@ def create_provider(
     hold_warm: bool = False,
     config_refresh: Callable[[], None] | None = None,
     held_writes: Callable[[], Mapping[str, object]] | None = None,
+    followed_keys: Callable[[], frozenset[str]] | None = None,
 ) -> LLMProvider:
     """Create a new LLM provider instance from the given config.
 
@@ -64,7 +65,9 @@ def create_provider(
     *config_refresh* takes config.toml changes now; the local engine runs it
     before it retries a call on an engine that went away. *held_writes* names the
     held keys config.toml changed during this run; the local engine asks it before
-    it starts a private fleet beside one it cannot bind.
+    it starts a private fleet beside one it cannot bind. *followed_keys* names the
+    fleet reload keys this process takes from config.toml; the local engine records
+    them on the fleets it plans.
     """
     match config.llm_provider:
         case LlmProvider.AUTO:
@@ -72,7 +75,10 @@ def create_provider(
             from lilbee.providers.routing_provider import RoutingProvider
 
             return RoutingProvider(
-                hold_warm=hold_warm, config_refresh=config_refresh, held_writes=held_writes
+                hold_warm=hold_warm,
+                config_refresh=config_refresh,
+                held_writes=held_writes,
+                followed_keys=followed_keys,
             )
 
         case LlmProvider.REMOTE:

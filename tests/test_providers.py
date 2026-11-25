@@ -667,6 +667,7 @@ class TestRoutingProvider:
                 hold_warm: bool = False,
                 config_refresh: object = None,
                 held_writes: object = None,
+                followed_keys: object = None,
             ) -> None:
                 with count_lock:
                     construct_count["n"] += 1
@@ -702,7 +703,7 @@ class TestRoutingProvider:
         assert construct_count["n"] == 1
         assert len({id(r) for r in results}) == 1
 
-    def test_get_local_hands_the_refresh_and_the_held_writes_to_the_fleet(
+    def test_get_local_hands_the_refresh_the_held_writes_and_the_followed_keys_to_the_fleet(
         self, monkeypatch
     ) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
@@ -711,9 +712,18 @@ class TestRoutingProvider:
 
         class FakeFleet:
             def __init__(
-                self, *, hold_warm: bool = False, config_refresh=None, held_writes=None
+                self,
+                *,
+                hold_warm: bool = False,
+                config_refresh=None,
+                held_writes=None,
+                followed_keys=None,
             ) -> None:
-                built.update(config_refresh=config_refresh, held_writes=held_writes)
+                built.update(
+                    config_refresh=config_refresh,
+                    held_writes=held_writes,
+                    followed_keys=followed_keys,
+                )
 
             def shutdown(self) -> None: ...
 
@@ -722,11 +732,20 @@ class TestRoutingProvider:
         def held_writes() -> dict[str, object]:
             return {}
 
+        def followed_keys() -> frozenset[str]:
+            return frozenset()
+
         monkeypatch.setattr("lilbee.providers.fleet.provider.FleetProvider", FakeFleet)
-        rp = RoutingProvider(config_refresh=refresh, held_writes=held_writes)
+        rp = RoutingProvider(
+            config_refresh=refresh, held_writes=held_writes, followed_keys=followed_keys
+        )
         self._to_shutdown.append(rp)
         rp._get_local()
-        assert built == {"config_refresh": refresh, "held_writes": held_writes}
+        assert built == {
+            "config_refresh": refresh,
+            "held_writes": held_writes,
+            "followed_keys": followed_keys,
+        }
 
     def test_get_sdk_provider_single_init_under_concurrency(self, monkeypatch) -> None:
         """Concurrent first-callers construct exactly one SdkLLMProvider.

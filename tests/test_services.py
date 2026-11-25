@@ -227,6 +227,7 @@ class TestWatchPool:
             interactive=False,
             config_refresh=None,
             held_writes=None,
+            followed_keys=None,
         ):
             providers.append(MagicMock())
             return make_mock_services(provider=providers[-1])
@@ -816,6 +817,7 @@ class TestGetServicesThreadSafety:
             interactive=False,
             config_refresh=None,
             held_writes=None,
+            followed_keys=None,
         ):
             builds.append(threading.get_ident())
             time.sleep(0.05)
