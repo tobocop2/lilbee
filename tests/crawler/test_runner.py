@@ -38,10 +38,10 @@ from lilbee.crawler.models import (
 from lilbee.crawler.runner import crawl_and_save, crawl_recursive
 from lilbee.runtime.progress import CrawlDoneEvent, CrawlStartEvent, EventType
 from tests._crawlberg_stub import StubCrawlberg, complete, refusing_patterns
+from tests._crawlberg_stub import page as crawlberg_page
 
 # The autouse fixture replaces the sitemap count; keep the real one for the crawl test below.
 _REAL_COUNT_SITEMAP_URLS = sitemap_mod._count_sitemap_urls
-from tests._crawlberg_stub import page as crawlberg_page
 
 
 @pytest.fixture(autouse=True)
