@@ -1,5 +1,6 @@
 {
  "server": "vllmmlx-chat",
+ "sampling_knobs": "not_recorded",
  "version": "vllm-mlx 0.4.1 metal",
  "roles": [
   "chat"

@@ -418,6 +418,14 @@ class Exchange:
         return self.__dict__.copy()
 
 
+class UnrecordedKnobsExchange(Exchange):
+    """An exchange of a fixture recorded before the recorder sent sampling knobs.
+
+    The replay lets a sent request drop its sampling knobs to match such an exchange. It matches
+    every other exchange on the whole body.
+    """
+
+
 @dataclass
 class _Tape:
     exchanges: list[Exchange] = field(default_factory=list)
@@ -551,17 +559,22 @@ def recording(
 _SAMPLING_KNOBS = ("temperature", "max_tokens")
 """Request fields that shape how a reply is sampled, not what is asked."""
 
+SAMPLING_KNOBS_KEY = "sampling_knobs"
+KNOBS_NOT_RECORDED = "not_recorded"
+"""The value of ``SAMPLING_KNOBS_KEY`` in a fixture recorded before the recorder sent the knobs.
+
+Remove the key when the fixture is recorded again."""
+
 
 def _queue_key(method: str, path: str, request: Any) -> tuple[str, str, str]:
     return method, path, json.dumps(request, sort_keys=True)
 
 
 def _replay_keys(method: str, path: str, request: Any) -> Iterator[tuple[str, str, str]]:
-    """The keys a sent request may match: itself, then itself less some of its sampling knobs.
+    """The keys a sent request may match: itself first, then itself less some of its knobs.
 
-    A knob the sent request holds may be left out only to match a recording that does not
-    hold it, so a recording made before the recorder sent the knob still answers. A recording
-    that holds the knob matches only the same value.
+    Only the first key matches any recording. The others match an ``UnrecordedKnobsExchange``,
+    and only when the recording lacks the knob that the key left out.
     """
     yield _queue_key(method, path, request)
     if not isinstance(request, dict):
@@ -587,9 +600,10 @@ def _replay_handler(
             sent = _scrubbed(_decoded(raw))
             queue = next(
                 (
-                    queues[key]
-                    for key in _replay_keys(self.command, self.path, sent)
-                    if queues.get(key)
+                    queue
+                    for position, key in enumerate(_replay_keys(self.command, self.path, sent))
+                    if (queue := queues.get(key))
+                    and (position == 0 or isinstance(queue[0], UnrecordedKnobsExchange))
                 ),
                 None,
             )
@@ -618,7 +632,7 @@ def _replay_handler(
 def replaying(exchanges: list[Exchange]) -> Iterator[str]:
     """A server that answers each recorded request in order, matched on method, path and body.
 
-    A sampling knob of the sent request counts only when the recording holds it.
+    A sent request drops its sampling knobs only to match an ``UnrecordedKnobsExchange``.
     """
     queues: dict[tuple[str, str, str], deque[Exchange]] = defaultdict(deque)
     for exchange in exchanges:
@@ -666,4 +680,6 @@ def load_fixture(path: Path) -> tuple[Setup, dict[str, Outcome], list[Exchange],
         doc.get("engine", ""),
     )
     results = {step: Outcome(**value) for step, value in doc["results"].items()}
-    return setup, results, [Exchange(**e) for e in doc["exchanges"]], doc
+    old = doc.get(SAMPLING_KNOBS_KEY) == KNOBS_NOT_RECORDED
+    kind = UnrecordedKnobsExchange if old else Exchange
+    return setup, results, [kind(**e) for e in doc["exchanges"]], doc

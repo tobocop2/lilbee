@@ -1,5 +1,6 @@
 {
  "server": "omlx-chat",
+ "sampling_knobs": "not_recorded",
  "version": "omlx 0.7.3 metal",
  "roles": [
   "chat"

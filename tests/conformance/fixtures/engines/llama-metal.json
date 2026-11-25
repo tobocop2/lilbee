@@ -1,5 +1,6 @@
 {
  "server": "llama-metal",
+ "sampling_knobs": "not_recorded",
  "version": "1.12032.1",
  "roles": [
   "chat",
