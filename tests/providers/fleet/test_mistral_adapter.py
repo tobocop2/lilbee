@@ -29,7 +29,12 @@ from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
 from lilbee.providers.fleet.engines import mistral as mistral_module
-from lilbee.providers.fleet.engines.base import PORT_SLOT, EngineName, LaunchRequest
+from lilbee.providers.fleet.engines.base import (
+    PORT_SLOT,
+    EngineName,
+    LaunchRequest,
+    SplitRefusedError,
+)
 from lilbee.providers.fleet.engines.choice import (
     NoPublishedPackError,
     installed_engines,
