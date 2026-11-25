@@ -152,8 +152,6 @@ if TYPE_CHECKING:
         ClosableIterator,
     )
 
-# User-facing name for this engine in error messages.
-_PROVIDER_NAME = "llama-server"
 RELOADING_NOTICE = "A change to the engines is being applied; roles may run their previous engine."
 RELOAD_FAILED_NOTICE = "The last engine reload failed; a role may still run its previous engine."
 NO_ENGINE_NOTICE = "The last engine start failed; no local engine group is running."
@@ -649,7 +647,7 @@ def _raise_no_healthy_replica(cause: Exception) -> NoReturn:
         raise cause
     message = str(cause) if isinstance(cause, StreamSilentError) else _NOT_RESPONDING_MESSAGE
     raise ProviderError(
-        message, provider=_PROVIDER_NAME, kind=ProviderErrorKind.CONNECTION
+        message, kind=ProviderErrorKind.CONNECTION
     ) from cause
 
 
@@ -689,7 +687,7 @@ class _EngineRestartedError(ProviderError):
     """
 
     def __init__(self, message: str) -> None:
-        super().__init__(message, provider=_PROVIDER_NAME, kind=ProviderErrorKind.CONNECTION)
+        super().__init__(message, kind=ProviderErrorKind.CONNECTION)
 
 
 def _raise_if_restarted(client: LlamaServerClient, exc: BaseException) -> None:
@@ -1011,7 +1009,7 @@ def _vision_call(
     except ChatDeadlineError:
         raise ProviderError(
             f"Vision OCR timed out after {timeout:g}s.",
-            provider=_PROVIDER_NAME,
+            
         ) from None
     except StreamInterruptedError as exc:
         # No part of a page reaches the user, so a page cut after a frame fails over
@@ -1568,13 +1566,13 @@ class FleetProvider:
         if self._stop_waiting and not finished:
             raise ProviderError(
                 SERVER_STOPPING_MESSAGE,
-                provider=_PROVIDER_NAME,
+                
                 kind=ProviderErrorKind.STARTING,
             )
         if not finished:
             raise ProviderError(
                 f"The engines are still starting after {_FLEET_WAIT_S:.0f} s.",
-                provider=_PROVIDER_NAME,
+                
                 kind=ProviderErrorKind.STARTING,
             )
         work.result()
@@ -2197,7 +2195,7 @@ class FleetProvider:
             if not clients and not settled:
                 stuck = role in self._stuck_roles
                 message = _restart_message(role) if stuck else _reload_timeout_message(role)
-                raise ProviderError(message, provider=_PROVIDER_NAME)
+                raise ProviderError(message)
             swap = self._swap_for(role)
             fleet_is_empty = not self._swaps
             start_failed = role in self._failed_starts
@@ -2220,13 +2218,13 @@ class FleetProvider:
         # actionable refusal in a 4xx body instead of a generic 500.
         reason = self._engine_refusal or self._refused_roles.get(role)
         if reason is not None:
-            raise ProviderError(reason, provider=_PROVIDER_NAME, kind=ProviderErrorKind.BAD_REQUEST)
+            raise ProviderError(reason, kind=ProviderErrorKind.BAD_REQUEST)
         # A missing engine binary is ENGINE_MISSING, a 503 that names the cause. Only
         # a model that is not installed is NOT_FOUND, a 404.
         engine_reason = self._unusable_engine_reason()
         raise ProviderError(
             _no_server_message(role, engine_reason),
-            provider=_PROVIDER_NAME,
+            
             kind=(
                 ProviderErrorKind.NOT_FOUND
                 if engine_reason is None
@@ -2261,7 +2259,7 @@ class FleetProvider:
                 if now >= deadline:
                     raise ProviderError(
                         "The vision model did not come back from its reload in time.",
-                        provider=_PROVIDER_NAME,
+                        
                         kind=ProviderErrorKind.STARTING,
                     )
                 # Each slice re-checks the cancel and never runs past the deadline.
@@ -2412,7 +2410,7 @@ class FleetProvider:
                 if self._failed_starts.get(role) is not err:
                     raise
             raise ProviderError(
-                _failed_start_message(role, str(err)), provider=_PROVIDER_NAME, kind=err.kind
+                _failed_start_message(role, str(err)), kind=err.kind
             ) from err
 
     def _force_restart(
@@ -2734,7 +2732,7 @@ class FleetProvider:
         if model and canonical_ref(model) != configured:
             raise ProviderError(
                 configured_model_message(role, configured, model),
-                provider=_PROVIDER_NAME,
+                
                 kind=ProviderErrorKind.BAD_REQUEST,
             )
 
@@ -2899,7 +2897,7 @@ class FleetProvider:
                 f"{budget}-token prompt budget for '{model}' "
                 f"({self._chat_ctx}-token window minus reserve and margin). "
                 "Shorten the conversation or the system prompt.",
-                provider=_PROVIDER_NAME,
+                
                 kind=ProviderErrorKind.CONTEXT_OVERFLOW,
             )
         return result.messages
@@ -3006,7 +3004,7 @@ class FleetProvider:
         except _PageBudgetExhausted:
             raise ProviderError(
                 "Vision OCR timed out waiting for a free vision slot.",
-                provider=_PROVIDER_NAME,
+                
             ) from None
 
     def vision_slot_capacity(self) -> int | None:

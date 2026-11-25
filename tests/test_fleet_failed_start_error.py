@@ -45,7 +45,6 @@ def test_a_chat_after_a_restart_that_did_not_start_hears_the_exact_failed_start_
 
     assert isinstance(heard, ProviderError)
     assert str(heard) == _FAILED_START_TEXT
-    assert heard.provider == "llama-server"
     assert heard.kind is ProviderErrorKind.SERVER
 
 
@@ -61,4 +60,3 @@ def test_a_request_that_waits_out_a_restart_hears_an_error_from_the_llama_server
     with pytest.raises(ProviderError) as heard:
         provider._require_clients(WorkerRole.EMBED)
 
-    assert heard.value.provider == "llama-server"

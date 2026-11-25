@@ -218,7 +218,6 @@ def _probe_client() -> httpx.Client:
     return httpx.Client(trust_env=False)
 
 
-_PROVIDER = "llama-server"
 # /running JSON shape: {"running": [{"model": <id>, "state": "ready", ...}, ...]}.
 _KEY_RUNNING = "running"
 _KEY_MODEL = "model"
@@ -592,7 +591,7 @@ class SwapManager:
         if self._port is None:
             raise ProviderError(
                 "The local model engine is not running.",
-                provider=_PROVIDER,
+                
                 kind=ProviderErrorKind.SERVER,
             )
         return f"http://{_HOST}:{self._port}"
@@ -849,7 +848,7 @@ class SwapManager:
         tail = self._boot_log_tail()
         if tail:
             message = f"{message} Engine log ({self._log_path}):\n{tail}"
-        raise ProviderError(message, provider=_PROVIDER, kind=ProviderErrorKind.SERVER)
+        raise ProviderError(message, kind=ProviderErrorKind.SERVER)
 
 
 # Linux publishes the range here; every other platform is asked via sysctl.

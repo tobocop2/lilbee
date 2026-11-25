@@ -301,7 +301,7 @@ def test_retry_on_gateway_error_deadline_retries_gateway_error(monkeypatch) -> N
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
-    gateway = ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
+    gateway = ProviderError("HTTP 502", kind=ProviderErrorKind.SERVER)
     calls = {"n": 0}
 
     def _call() -> str:
@@ -338,7 +338,7 @@ def test_retry_on_gateway_error_does_not_retry_a_rate_limit(monkeypatch) -> None
     from lilbee.providers.fleet.client import retry_on_gateway_error
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
-    busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+    busy = ProviderError("busy", kind=ProviderErrorKind.RATE_LIMIT)
     calls = {"n": 0}
 
     def _call() -> str:
@@ -359,7 +359,7 @@ def test_retry_on_gateway_error_deadline_retries_past_attempt_cap(monkeypatch) -
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
-    gateway = ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
+    gateway = ProviderError("HTTP 502", kind=ProviderErrorKind.SERVER)
     attempts = _GATEWAY_RETRIES + 5  # more 502s than the attempt cap would tolerate
     calls = {"n": 0}
 
@@ -380,7 +380,7 @@ def test_retry_on_gateway_error_deadline_gives_up_when_deadline_passes(monkeypat
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     clock = {"t": 0.0}
     monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: clock["t"])
-    gateway = ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
+    gateway = ProviderError("HTTP 502", kind=ProviderErrorKind.SERVER)
     calls = {"n": 0}
 
     def _call() -> str:
@@ -3490,13 +3490,13 @@ class TestIsConnectionFailure:
         from lilbee.providers.base import ProviderErrorKind
         from lilbee.providers.fleet.client import is_connection_failure
 
-        exc = ProviderError("dead", provider="llama-server", kind=ProviderErrorKind.CONNECTION)
+        exc = ProviderError("dead", kind=ProviderErrorKind.CONNECTION)
         assert is_connection_failure(exc) is True
 
     def test_false_for_model_level_errors(self) -> None:
         from lilbee.providers.fleet.client import is_connection_failure
 
-        assert is_connection_failure(ProviderError("bad", provider="llama-server")) is False
+        assert is_connection_failure(ProviderError("bad")) is False
         assert is_connection_failure(ValueError("nope")) is False
 
 
@@ -4423,7 +4423,6 @@ def test_stream_cut_after_first_frame_says_the_answer_is_cut() -> None:
     assert not isinstance(caught.value, httpx.HTTPError)
     assert not is_connection_failure(caught.value)
     assert isinstance(caught.value.__cause__, httpx.TransportError)
-    assert caught.value.provider == LLAMA.request_profile(WorkerRole.CHAT).label
 
 
 def test_stream_cut_by_a_read_timeout_keeps_its_cause_and_text() -> None:
@@ -4512,7 +4511,6 @@ def test_stream_ending_with_no_finish_and_no_sentinel_is_cut() -> None:
     server.close()
     assert "The model server stopped answering and the answer is cut." in str(caught.value)
     assert "Send your message again." in str(caught.value)
-    assert caught.value.provider == LLAMA.request_profile(WorkerRole.CHAT).label
 
 
 def test_stream_with_no_frame_at_all_is_not_called_cut() -> None:
@@ -5127,7 +5125,6 @@ def test_json_schema_refused_on_mlx() -> None:
     assert str(refused.value) == (
         "mlx-lm does not enforce a JSON schema. Use a llama.cpp model for structured output."
     )
-    assert refused.value.provider == "mlx-lm"
     assert sent == []
 
 
@@ -5168,7 +5165,6 @@ def test_unsupported_response_format_refused_on_mlx_and_sent_on_llama(
     assert str(refused.value) == (
         f"mlx-lm does not support response_format {reply_format!r}. Use type text."
     )
-    assert refused.value.provider == "mlx-lm"
     assert refused.value.kind is ProviderErrorKind.BAD_REQUEST
     assert mlx_sent == []
     llama, llama_sent = _recording_client(LLAMA)

@@ -320,7 +320,7 @@ def test_a_write_that_cannot_find_the_engine_binary_is_not_reported_as_applied(
     def _no_binary(*, engines: Any) -> None:
         raise ProviderError(
             "llama-server binary not found.",
-            provider="llama-server",
+            
             kind=ProviderErrorKind.NOT_FOUND,
         )
 
@@ -345,7 +345,7 @@ def test_a_write_that_joins_a_reload_that_fails_reports_the_failure(
 ) -> None:
     gate = threading.Event()
     _ProcessSwap.start_gate = gate
-    _ProcessSwap.start_failure = ProviderError("engine did not start", provider="llama-server")
+    _ProcessSwap.start_failure = ProviderError("engine did not start")
     outcomes: dict[str, BaseException | str] = {}
 
     def write(name: str, action: Any) -> None:
@@ -435,7 +435,7 @@ def test_a_reload_that_fails_on_the_disk_is_not_applied(fleet: Services) -> None
 def test_the_failed_reload_notice_and_a_role_fallback_show_together(
     fleet: Services, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _ProcessSwap.start_failure = ProviderError("engine did not start", provider="llama-server")
+    _ProcessSwap.start_failure = ProviderError("engine did not start")
     with pytest.raises(engine_service.EngineNotAppliedError):
         engine_service.use_for_role(WorkerRole.CHAT, GGUF_CHAT, "mlx")
     monkeypatch.delitem(choice.ADAPTERS, EngineName.MLX)
@@ -452,7 +452,7 @@ def test_the_failed_reload_notice_and_a_role_fallback_show_together(
 @pytest.mark.parametrize(
     "failure",
     [
-        ProviderError("engine did not start", provider="llama-server"),
+        ProviderError("engine did not start"),
         OSError("no space left on the device"),
     ],
     ids=["provider-error", "disk-error"],

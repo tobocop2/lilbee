@@ -101,7 +101,6 @@ def test_provider_error_recognized_kind_drops_raw_blob(sdk: fakes.FakeSdk) -> No
         "Chat failed", sdk.error("RateLimitedError", blob), "gemini/gemini-3.1-pro"
     )
     assert err.kind == ProviderErrorKind.RATE_LIMIT
-    assert err.provider == "remote"
     assert "gemini-3.1-pro" in str(err)
     assert "quota" in str(err).lower() or "rate" in str(err).lower()
     assert "lilbee" in str(err).lower()
@@ -373,7 +372,6 @@ def test_the_error_text_and_kind_of_each_mapping(
     error = _provider_error("Embedding failed", sdk.error(exc_name), "m", preset=preset)
     assert str(error) == expected_text
     assert error.kind is expected_kind
-    assert error.provider == "remote"
 
 
 _OPENAI_FORMAT = "Check that the server answers in the OpenAI reply format."
@@ -444,5 +442,4 @@ def test_a_422_error_names_the_remote_provider_and_the_bad_request_kind(
     error = _provider_error(
         "Embedding failed", sdk.error("BadRequestError", "too many", status=422), "m"
     )
-    assert error.provider == "remote"
     assert error.kind is ProviderErrorKind.BAD_REQUEST

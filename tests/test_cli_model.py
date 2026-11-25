@@ -832,7 +832,7 @@ class TestEnsureVisionProjector:
         )
 
         def _no_projector(_path):
-            raise ProviderError("no mmproj", provider="llama-server")
+            raise ProviderError("no mmproj")
 
         monkeypatch.setattr("lilbee.providers.gguf_meta.find_mmproj_for_model", _no_projector)
         assert model_mod._vision_projector_missing("org/vision-GGUF") is True
