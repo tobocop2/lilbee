@@ -12,6 +12,7 @@ import signal
 import socket
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -328,8 +329,6 @@ def test_run_interruptible_runs_on_a_thread_that_blocks_sigint() -> None:
     before = _wakeup_fd()
     thread, mask, loop = asyncio_loop.run_interruptible(where(), flag)
     assert thread is not threading.main_thread()
-    # The run's thread has ended when the run returns, so no scope counts it as left behind.
-    assert not thread.is_alive()
     assert signal.SIGINT in mask
     assert signal.SIGINT not in signal.pthread_sigmask(signal.SIG_BLOCK, set())
     assert loop.is_closed()
@@ -346,6 +345,26 @@ def test_a_run_takes_the_main_threads_context() -> None:
         return marker.get()
 
     assert asyncio_loop.run_interruptible(read(), SignalFlag()) == "main"
+
+
+@posix_only
+def test_the_thread_of_a_run_has_ended_when_the_run_returns(monkeypatch) -> None:
+    """No scope counts the thread of an ended run as a thread the run left behind."""
+    real_set_event_loop = asyncio.set_event_loop
+
+    def slow_unset(loop: asyncio.AbstractEventLoop | None) -> None:
+        # The run's thread lingers after it reports the end, so only a join waits for it.
+        if loop is None and threading.current_thread() is not threading.main_thread():
+            time.sleep(0.3)
+        real_set_event_loop(loop)
+
+    monkeypatch.setattr(asyncio, "set_event_loop", slow_unset)
+
+    async def where() -> threading.Thread:
+        return threading.current_thread()
+
+    thread = asyncio_loop.run_interruptible(where(), SignalFlag())
+    assert not thread.is_alive()
 
 
 @posix_only
