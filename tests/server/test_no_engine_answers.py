@@ -12,6 +12,7 @@ from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.server import app as app_module
 from lilbee.server.app import create_app
+from lilbee.server.route_names import name_routes
 from lilbee.server.routes import search as search_routes
 
 _TEXT = "For chat: No installed engine loads the mlx format. Run lilbee engine list."
@@ -33,7 +34,7 @@ def _app_status(error: Exception) -> tuple[int, str]:
 
 
 def test_a_route_with_no_handler_of_its_own_answers_400_with_the_text() -> None:
-    assert _app_status(_NO_ENGINE) == (400, _TEXT)
+    assert _app_status(_NO_ENGINE) == (400, name_routes(_TEXT))
 
 
 def test_any_bad_request_provider_failure_answers_400_with_its_text() -> None:
