@@ -2657,8 +2657,10 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
         gone.add(name)
         return False
 
-    settings = _SYNC_CHUNK_SETTINGS.get()
-    _retry_after_lock_timeout(lambda: store.write_chunks_batch(items, present, chunk_settings=settings))
+    write = functools.partial(
+        store.write_chunks_batch, items, present, chunk_settings=_SYNC_CHUNK_SETTINGS.get()
+    )
+    _retry_after_lock_timeout(write)
     if gone:
         log.info("Not indexed, the file is gone: %s", ", ".join(sorted(gone)))
     kept = [r for r in buffer if r.name not in gone]

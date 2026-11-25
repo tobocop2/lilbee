@@ -682,6 +682,7 @@ def apply_settings_update(
             # so a legacy meta row is always canonicalized on the first swap
             # attempt.
             _pin_legacy_store_meta()
+        _pin_chunk_settings(updates.keys())
         before = snapshot_settings(updates)
 
         def change(draft: Config) -> tuple[dict[str, Any], list[str]]:
@@ -833,10 +834,7 @@ def _settle(
     """
     effective = keys if changed is None else changed
     reindex_effective = effective if reindex_changed is None else reindex_changed
-    if REINDEX_FIELDS & reindex_effective:
-        # Asked before the change, an index built before it recorded chunk settings
-        # records the ones in force now, so the change shows as drift afterwards.
-        chunk_drift()
+    _pin_chunk_settings(reindex_effective)
 
     def change(draft: Config) -> None:
         if values is None:
@@ -1034,6 +1032,19 @@ def reindex_values(config: Config | None = None) -> dict[str, Any]:
     """
     source = cfg if config is None else config
     return {key: getattr(source, key) for key in REINDEX_FIELDS | {CHUNK_LIMIT_KEY}}
+
+
+def _pin_chunk_settings(keys: Iterable[str]) -> None:
+    """Before a change to *keys*, let an index with no chunk-settings record record cfg's.
+
+    The check records the values in force, so call it before cfg changes: the change
+    then shows as drift. An index that holds a record, or no chunks, is left as it is.
+    """
+    if REINDEX_FIELDS.isdisjoint(keys):
+        return
+    from lilbee.app.services import chunk_drift_in_store
+
+    chunk_drift_in_store(reindex_values())
 
 
 def chunk_drift(config: Config | None = None) -> list[str]:
