@@ -591,22 +591,28 @@ def parse_text(text: str, stem: str, folder: ProfileFolder) -> ProfileFile:
     return parse_profile(_parse_toml(text), stem, folder)
 
 
-def _clash(
-    directory: Path, folder: ProfileFolder, planned: Path, replacing: Path | None
-) -> Path | None:
+def _clash(directory: Path, planned: Path, replacing: Path | None) -> Path | None:
     """A file in *directory*, other than *replacing*, at *planned* or holding the same name."""
     if not directory.is_dir():
         return None
     key = planned.stem.casefold()
     for path in sorted(directory.glob(f"*{PROFILE_SUFFIX}")):
-        if path != replacing and key in _name_keys(read_entry(path, folder)):
+        if path != replacing and key in _name_keys(_file_name(path), path):
             return path
     return None
 
 
-def _name_keys(entry: ProfileEntry) -> tuple[str, str]:
-    """The keys *entry* takes: its name and its file stem, since a file system can fold case."""
-    return profile_key(entry.name), entry.path.stem.casefold()
+def _file_name(path: Path) -> str:
+    """The name the file at *path* shows under, read without validating its values."""
+    try:
+        return _entry_name(_load_toml(path), path.stem)
+    except ProfileFileError:
+        return path.stem
+
+
+def _name_keys(name: str, path: Path) -> tuple[str, str]:
+    """The keys a profile takes: its name and its file stem, since a file system can fold case."""
+    return profile_key(name), path.stem.casefold()
 
 
 def name_problem(name: str, folder: ProfileFolder, catalog: ProfileCatalog) -> NameProblem | None:
@@ -618,7 +624,7 @@ def name_problem(name: str, folder: ProfileFolder, catalog: ProfileCatalog) -> N
     key = profile_key(name)
     if key in RESERVED_NAME_KEYS:
         return NameProblem.RESERVED_WORD
-    taken = {(e.folder, k) for e in catalog.entries for k in _name_keys(e)}
+    taken = {(e.folder, k) for e in catalog.entries for k in _name_keys(e.name, e.path)}
     if (ProfileFolder.BUILTIN, key) in taken:
         return NameProblem.RESERVED
     return NameProblem.TAKEN if (folder, key) in taken else None
@@ -637,7 +643,7 @@ def plan_write(
     if key in builtin_keys():
         raise ProfileFileError(_reserved_reason(profile.name))
     path = directory / f"{key}{PROFILE_SUFFIX}"
-    clash = _clash(directory, folder, path, replacing)
+    clash = _clash(directory, path, replacing)
     if clash is not None:
         raise ProfileNameClashError(f"A profile named {profile.name} already exists: {clash}")
     return PlannedWrite(path, folder, profile, text, replacing)

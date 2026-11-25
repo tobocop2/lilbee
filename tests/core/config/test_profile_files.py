@@ -615,3 +615,40 @@ def test_builtin_keys_reads_the_built_in_files_once_per_folder(monkeypatch):
     assert profile_files.builtin_keys() == first
     assert len(reads) == 1
     assert profile_key(DEFAULT_PROFILE_NAME) in first
+
+
+@pytest.mark.parametrize(
+    ("stem", "text", "name"),
+    [
+        ("court", '[profile]\nname = "Court"\n[values]\n', "Court"),
+        ("other", '[profile]\nname = "Court Filings"\n[values]\n', "court filings"),
+        ("court", '[profile]\nname = "Else"\n[values]\n', "COURT"),
+        ("court", "not toml [", "Court"),
+        ("other", '[profile]\nname = "Court filings"\n[values]\ntop_k = "x"\n', "court-filings"),
+    ],
+    ids=["same-name", "folded-name", "folded-stem", "broken-file", "bad-value"],
+)
+def test_plan_write_refuses_a_name_or_stem_held_without_parsing_the_values(
+    tmp_path, monkeypatch, stem, text, name
+):
+    _write(tmp_path, stem, text)
+
+    def parsed(*_args):
+        raise AssertionError("the clash check validated a file")
+
+    monkeypatch.setattr(profile_files, "read_entry", parsed)
+    new = f'[profile]\nname = "{name}"\n[values]\n'
+    with pytest.raises(profile_files.ProfileNameClashError):
+        profile_files.plan_write(tmp_path, ProfileFolder.GLOBAL, new, stem="x")
+
+
+def test_plan_write_lets_a_file_be_replaced_by_its_own_name(tmp_path):
+    path = _write(tmp_path, "court", '[profile]\nname = "Court"\n[values]\n')
+    planned = profile_files.plan_write(
+        tmp_path,
+        ProfileFolder.GLOBAL,
+        '[profile]\nname = "Court"\n[values]\n',
+        stem="x",
+        replacing=path,
+    )
+    assert planned.path == path
