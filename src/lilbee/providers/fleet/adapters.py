@@ -39,6 +39,10 @@ FLAG_NO_CONTEXT_SHIFT = "--no-context-shift"
 # environment, and the client's idle bound after the headers relies on the comment.
 FLAG_SSE_PING = "--sse-ping-interval"
 SSE_PING_SECONDS = "30"
+# The host memory the engine may keep idle prompts in, in MiB, and the context
+# checkpoints each slot keeps. Both live in system memory, and the plan sizes both.
+FLAG_CACHE_RAM = "--cache-ram"
+FLAG_CTX_CHECKPOINTS = "--ctx-checkpoints"
 
 
 @dataclass(frozen=True)
@@ -220,6 +224,16 @@ def _fit_and_kv_pool_args(
     return args
 
 
+def _host_cache_args(cache_ram_mib: int | None, ctx_checkpoints: int | None) -> list[str]:
+    """``--ctx-checkpoints`` and ``--cache-ram``, each only when given."""
+    args: list[str] = []
+    if ctx_checkpoints is not None:
+        args += [FLAG_CTX_CHECKPOINTS, str(ctx_checkpoints)]
+    if cache_ram_mib is not None:
+        args += [FLAG_CACHE_RAM, str(cache_ram_mib)]
+    return args
+
+
 def _thread_args() -> list[str]:
     """``--threads`` when a CPU cap applies to this process, else empty.
 
@@ -279,6 +293,8 @@ _OPTIONAL_FLAGS: dict[str, _OptionalFlag] = {
     FLAG_KV_UNIFIED: _OptionalFlag(0, "the slots keep separate KV caches"),
     FLAG_NO_CONTEXT_SHIFT: _OptionalFlag(0, "the engine keeps its own context shift default"),
     FLAG_SSE_PING: _OptionalFlag(1, "a prefill with no output for 120 s ends the chat stream"),
+    FLAG_CTX_CHECKPOINTS: _OptionalFlag(1, "each slot keeps the engine's default checkpoints"),
+    FLAG_CACHE_RAM: _OptionalFlag(1, "the prompt cache keeps the engine's default size"),
 }
 
 
@@ -355,6 +371,8 @@ def build_server_argv(
     memory_endpoint: bool = False,
     fit_target_mib: tuple[int, ...] = (),
     kv_unified_per_slot: int | None = None,
+    cache_ram_mib: int | None = None,
+    ctx_checkpoints: int | None = None,
 ) -> list[str]:
     """Assemble the llama-server command line for one instance, minus ``--port``.
 
@@ -369,7 +387,8 @@ def build_server_argv(
     ``--device`` order.
     ``kv_unified_per_slot`` makes the slots share one KV pool, each slot capped
     at that window. Every argv carries ``--no-context-shift`` when the binary's
-    ``--help`` lists it.
+    ``--help`` lists it. ``cache_ram_mib`` and ``ctx_checkpoints`` bound the engine's
+    prompt cache and the context checkpoints of each slot; each stays absent when unset.
     """
     argv = [
         str(binary),
@@ -415,6 +434,7 @@ def build_server_argv(
     elif cpu_moe:
         optional += ["--cpu-moe"]
     optional += _fit_and_kv_pool_args(fit_target_mib, kv_unified_per_slot)
+    optional += _host_cache_args(cache_ram_mib, ctx_checkpoints)
     if memory_endpoint:
         from lilbee.providers.fleet.readback import MEMORY_FLAG
 

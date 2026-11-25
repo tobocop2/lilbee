@@ -72,6 +72,13 @@ class InstanceLaunch:
     The readback says the engine left chat weights in system memory when the
     host holds more than this. 0 where the engine's fit does not run.
     """
+    est_host_cache_bytes: int = 0
+    """System memory the plan grants the engine's prompt cache and context checkpoints.
+
+    The ``--cache-ram`` limit plus every slot's checkpoints. Apart from
+    ``est_host_bytes``: the readback compares that with the engine's buffers, and
+    these caches are not buffers.
+    """
     swap_extras: Mapping[str, Any] = field(default_factory=dict)
     """Keys the engine adds to its llama-swap model entry; empty for llama.cpp."""
     server_binary: str = ""
@@ -107,6 +114,7 @@ class InstanceLaunch:
             "est_vram_by_device": dict(self.est_vram_by_device),
             "est_unreported_bytes": self.est_unreported_bytes,
             "est_host_bytes": self.est_host_bytes,
+            "est_host_cache_bytes": self.est_host_cache_bytes,
             "settings": self.settings,
             "swap_extras": dict(self.swap_extras),
             "server_binary": self.server_binary,
@@ -129,6 +137,7 @@ class InstanceLaunch:
             est_vram_bytes=int(payload.get("est_vram_bytes") or 0),
             est_unreported_bytes=int(payload.get("est_unreported_bytes") or 0),
             est_host_bytes=int(payload.get("est_host_bytes") or 0),
+            est_host_cache_bytes=int(payload.get("est_host_cache_bytes") or 0),
             est_vram_by_device={
                 str(k): int(v) for k, v in (payload.get("est_vram_by_device") or {}).items()
             },
