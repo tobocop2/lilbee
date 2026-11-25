@@ -722,6 +722,25 @@ def test_the_install_command_retries_after_a_failed_first_use(
     assert first_use.first_use_tool("llama-server").is_file()
 
 
+def test_a_first_use_install_does_not_remember_an_in_use_refusal(
+    fetched, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.providers.fleet.engine_store import EngineInUseError
+
+    real = first_use.install_pack
+
+    def held() -> Any:
+        raise EngineInUseError("llama.cpp is in use")
+
+    monkeypatch.setattr(first_use, "install_pack", held)
+    for _ in range(2):
+        with pytest.raises(EngineInUseError):
+            first_use.first_use_tool("llama-server")
+    monkeypatch.setattr(first_use, "install_pack", real)
+    assert first_use.first_use_tool("llama-server").is_file()
+    assert fetched == [CELL]
+
+
 def test_the_pack_install_refuses_a_damaged_pack_that_a_launch_holds(
     fetched, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

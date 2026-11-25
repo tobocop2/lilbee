@@ -81,7 +81,9 @@ class RefusedInstalls:
         self._by_pack: dict[tuple[str, str, str], Exception] = {}
 
     def remember(self, key: tuple[str, str, str], refusal: Exception) -> None:
-        self._by_pack[key] = refusal
+        """Keep *refusal* for *key*, except an in-use refusal, which ends when the holder stops."""
+        if not isinstance(refusal, EngineInUseError):
+            self._by_pack[key] = refusal
 
     def forget(self, key: tuple[str, str, str]) -> None:
         self._by_pack.pop(key, None)
