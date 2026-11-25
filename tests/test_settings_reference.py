@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from enum import Enum
 from pathlib import Path
 from unittest.mock import patch
 
@@ -146,32 +147,60 @@ _SAMPLE_OVERRIDES = {
     # A valid value for each key whose built-in value is empty or None and needs a real shape.
     "placement": '{"chat": {"devices": [0]}}',
     "gpu_devices": "0",
-    "crawl_login_host": "",
     "num_ctx_max": "4096",
 }
 
-
-def _sample_cli_value(key: str) -> str:
-    """A value for `lilbee settings set <key>`, taken from the field's built-in value."""
-    from lilbee.core.config.resolve import builtin_value
-    from lilbee.core.config.schema import field_type_name
-
-    if key in _SAMPLE_OVERRIDES:
-        return _SAMPLE_OVERRIDES[key]
-    value = builtin_value(key)
-    kind = field_type_name(key)
-    if kind == "list":
-        return "\n".join(str(item) for item in value)
-    if value is None:
-        return {"int|null": "1", "float|null": "0.5", "bool|null": "true"}.get(kind, "x")
-    return str(value).lower() if isinstance(value, bool) else str(value)
+# Settings that accept one text only, so no sample can differ from the value they hold.
+_ONE_LEGAL_VALUE: dict[str, str] = {}
 
 
 def _as_text(value: object) -> str:
     """The text a value would be typed as: a list is one item per line, a bool is lower case."""
     if isinstance(value, list):
         return "\n".join(str(item) for item in value)
+    if isinstance(value, Enum):
+        return str(value.value)
     return str(value).lower() if isinstance(value, bool) else str(value)
+
+
+def _candidate_samples(key: str, value: object) -> list[str]:
+    """Texts that differ from *value*, most likely legal first, for the type of the field."""
+    from lilbee.core.config.schema import field_type_name, field_value_set
+
+    kind = field_type_name(key).split("|")[0]
+    members = field_value_set(key)
+    if members:
+        return [member for member in members if member != _as_text(value)]
+    if kind == "bool":
+        return ["false" if value is True else "true"]
+    if kind == "int":
+        base = value if isinstance(value, int) else 0
+        return [str(n) for n in (base + 1, base - 1, base * 2 + 1, 7)]
+    if kind == "float":
+        base = float(value) if isinstance(value, int | float) else 0.0
+        return [str(n) for n in (round(base + 0.1, 3), round(base - 0.1, 3), base + 1, 0.5)]
+    if kind == "list":
+        return ["distinct-a\ndistinct-b", "7\n9", "distinct-a"]
+    return ["distinct-value", "/distinct/path", "http://distinct.example", "7"]
+
+
+def _sample_cli_value(key: str, current: object = None) -> str:
+    """A text for `lilbee settings set <key>` that differs from the built-in and current values.
+
+    A sample equal to the default lets a set path that drops the typed value pass.
+    """
+    from lilbee.core.config.resolve import builtin_value
+
+    avoid = {_as_text(builtin_value(key)), _as_text(current)}
+    if key in _ONE_LEGAL_VALUE:
+        return _ONE_LEGAL_VALUE[key]
+    if key in _SAMPLE_OVERRIDES:
+        candidates = [_SAMPLE_OVERRIDES[key]]
+    else:
+        candidates = _candidate_samples(key, builtin_value(key))
+    fresh = [text for text in candidates if text not in avoid]
+    accepted = [text for text in fresh if not _refusals(Config, {key: text})]
+    return (accepted or fresh or candidates)[0]
 
 
 class TestSurfaceColumns:
@@ -259,7 +288,8 @@ class TestSurfaceColumns:
         monkeypatch.delenv("LILBEE_DATA", raising=False)
         snapshot = cfg.model_copy()
         svc_mod.set_services(make_mock_services())
-        sample = _sample_cli_value(key)
+        before = getattr(snapshot, key)
+        sample = _sample_cli_value(key, before)
         try:
             result = CliRunner().invoke(
                 app,
@@ -285,6 +315,9 @@ class TestSurfaceColumns:
         on_disk = live if isinstance(live, bool | int | float | type(None)) else _as_text(live)
         assert stored[key] == on_disk, f"config.toml holds {stored[key]!r}, expected {on_disk!r}"
         assert _as_text(live) == sample, f"`lilbee settings set {key} {sample!r}` stored {live!r}"
+        assert key in _ONE_LEGAL_VALUE or sample != _as_text(before), (
+            f"the sample for {key} equals its value before the set, so a dropped value would pass"
+        )
 
     def test_cli_column_keeps_the_dedicated_commands(self, generator):
         assert "use-embedder" in generator._cli_cell("embedding_model")
