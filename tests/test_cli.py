@@ -2044,6 +2044,24 @@ class TestEveryCommandBuiltToRefuseKeepsItsHelp:
         not_refusing = [" ".join(path) for path, c in leaves if not isinstance(c, RefusingCommand)]
         assert not_refusing == []
 
+    def test_a_group_without_an_app_is_skipped_and_the_rest_still_refuse(self):
+        from typer import Typer
+        from typer.models import TyperInfo
+
+        from lilbee.cli.app import RefusingCommand, refuse_environment_in
+
+        outer = Typer()
+        inner = Typer()
+        outer.registered_groups.append(TyperInfo(None, name="empty"))
+        outer.add_typer(inner, name="inner")
+        inner.command("go")(lambda: None)
+        outer.command("top")(lambda: None)
+
+        refuse_environment_in(outer)
+
+        assert outer.registered_commands[0].cls is RefusingCommand
+        assert inner.registered_commands[0].cls is RefusingCommand
+
 
 class TestARetiredOcrVariableIsNotRefused:
     """LILBEE_ENABLE_OCR and LILBEE_OCR_FORCE are plain unknown variables."""
@@ -7402,6 +7420,20 @@ class TestLoginCommand:
             assert result.exit_code == 0
             assert "Already logged in" in result.output
 
+    def test_login_already_logged_in_confirm_logs_in_again(self):
+        """Answering yes to "Log in again?" goes on to take and use a new token."""
+        with (
+            mock.patch("huggingface_hub.login") as mock_hf_login,
+            mock.patch("huggingface_hub.get_token", return_value="existing-token"),
+            mock.patch("webbrowser.open") as opened,
+        ):
+            result = runner.invoke(app, ["login"], input="y\nhf_new_token_456\n")
+            assert result.exit_code == 0, result.output
+            assert "Already logged in" in result.output
+            assert "Logged in!" in result.output
+            opened.assert_called_once()
+            assert mock_hf_login.call_args.kwargs["token"] == "hf_new_token_456"
+
     def test_login_fresh(self):
         """Login with fresh token."""
         with (
@@ -8093,6 +8125,20 @@ class TestSelfCheck:
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         assert payload["ok"] is True
         assert "embedding_dims" not in payload
+
+    def test_skip_embedding_prints_no_dims_line_in_text_mode(self, tmp_path: Path) -> None:
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        chat_patch, embed_patch = self._patch_self_check()
+        with (
+            mock.patch("lilbee.cli.commands.setup._download_self_check_model", return_value=chat),
+            chat_patch,
+            embed_patch,
+        ):
+            result = runner.invoke(app, ["self-check", "--skip-embedding"])
+        assert result.exit_code == 0, result.output
+        assert "Chat response:" in result.output
+        assert "Embedding dims" not in result.output
 
     def test_self_check_invokes_helpers_for_each_leg(self, tmp_path: Path) -> None:
         """Both legs must route through _self_check_chat and _self_check_embed."""

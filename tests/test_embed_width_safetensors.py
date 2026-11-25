@@ -137,6 +137,18 @@ def test_a_header_reader_that_finds_nothing_gives_no_width(
     assert appset._embedder_dim("ref") is None
 
 
+def test_an_ephemeral_swap_to_a_model_with_no_known_width_keeps_the_stored_width(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(appset, "_pin_legacy_store_meta", lambda: None)
+    monkeypatch.setattr(appset, "_embedder_dim", lambda ref: None)
+    monkeypatch.setattr(cfg, "embedding_model", "old/ref")
+    monkeypatch.setattr(cfg, "embedding_dim", 768)
+    appset.apply_ephemeral_model_swap("embedding_model", "new/ref")
+    assert cfg.embedding_model == "new/ref"
+    assert cfg.embedding_dim == 768
+
+
 _POOLED_WIDTH = 512
 
 

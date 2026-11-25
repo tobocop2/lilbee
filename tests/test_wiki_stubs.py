@@ -612,6 +612,18 @@ class TestDropRemovedFromIndex:
         )
         assert result["ford"].sources == ("b.md",)
 
+    def test_an_index_the_recount_leaves_unchanged_is_not_written_again(self):
+        """A document gone from the listing whose mention rows are still in the
+        store recounts to the same entry, so the index file stays as it is."""
+        store = _FakeStore({})
+        _seed_full(store, [_entity("ford", [("a.md", 0), ("b.md", 0)])])
+        before = load_stub_index()
+        store._chunks.pop("a.md")
+        with patch("lilbee.wiki.stubs.save_stub_index") as written:
+            drop_removed_sources(store, cfg)
+        written.assert_not_called()
+        assert load_stub_index() == before
+
     def test_an_absent_index_is_not_created(self):
         drop_removed_sources(_FakeStore({}))
         assert not stub_index_path().exists()

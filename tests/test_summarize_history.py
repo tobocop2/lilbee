@@ -125,6 +125,17 @@ def test_a_single_message_overflow_still_fails_safe() -> None:
     assert result.stranded == 1
 
 
+def test_a_split_batch_whose_halves_all_overflow_yields_no_notes() -> None:
+    """When even the halves overflow, the batch returns "" so the caller strands it."""
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    provider = MagicMock()
+    provider.chat.side_effect = ProviderError("too big", kind=ProviderErrorKind.CONTEXT_OVERFLOW)
+    assert _searcher(provider)._summarize_batch(_msgs(2, size=10)) == ""
+    # whole batch, then each half
+    assert provider.chat.call_count == 3
+
+
 def test_summarizes_a_small_backlog_in_one_call() -> None:
     provider = _provider("they compared torque specs")
     cfg.chat_n_ctx_target = 8192

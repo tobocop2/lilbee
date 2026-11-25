@@ -67,6 +67,10 @@ class TestMergeAdjacentTexts:
         merged = merge_adjacent_texts([left, right])
         assert merged == f"# Guide > ## Install\n\nword0 word1 {overlap} word223 word224"
 
+    def test_breadcrumb_without_real_overlap_keeps_the_right_side_whole(self):
+        right = "# Guide > ## Install\n\nunrelated body"
+        assert merge_adjacent_texts(["alpha beta", right]) == f"alpha beta\n{right}"
+
     def test_no_overlap_joins_with_a_newline_seam(self):
         assert merge_adjacent_texts(["alpha", "delta"]) == "alpha\ndelta"
 

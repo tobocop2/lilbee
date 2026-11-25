@@ -3217,6 +3217,14 @@ class TestSavePage:
             save_page(CrawlResult(url=url, markdown="# P"), crawl_record(), MagicMock())
         assert recorded()[url].content_hash == content_hash("# P")
 
+    def test_forgetting_a_page_before_the_table_exists_changes_nothing(self, isolated_env):
+        record = crawl_record()
+        page = CrawlPage("https://example.com/never", "never.md", "h", "2026-01-01T00:00:00+00:00")
+        with record.pages.held():
+            record.pages.forget(page)
+        assert recorded() == {}
+        assert _rows() == set()
+
     def test_a_page_whose_row_was_lost_is_adopted_and_updated_later(self, isolated_env):
         urls = ["https://example.com/a", "https://example.com/b"]
         record = crawl_record()

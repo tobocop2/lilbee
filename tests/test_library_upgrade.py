@@ -802,6 +802,20 @@ class TestCliShowsTheUpgrade:
         assert out.getvalue().rstrip().endswith("Library upgrade finished in 3.0 s.")
         assert _stays(out)
 
+    def test_a_second_running_event_keeps_the_same_live_line(self):
+        console, out = _console(terminal=True)
+        line = UpgradeLine(console)
+
+        line(EventType.LIBRARY_UPGRADE, _table(0))
+        first = line._status
+        line(EventType.LIBRARY_UPGRADE, _table(1))
+
+        assert first is not None
+        assert line._status is first
+        assert out.getvalue().count(UPGRADE_HEADLINE) == 1
+        line(EventType.LIBRARY_UPGRADE, _done())
+        assert line._status is None
+
     def test_a_failed_upgrade_stops_the_live_line(self):
         console, out = _console(terminal=True)
         line = UpgradeLine(console)

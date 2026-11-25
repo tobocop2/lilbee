@@ -1125,6 +1125,28 @@ class TestModelRegistryResolve:
         bad.write_text("not valid json at all")
         assert registry.resolve(_REPO) == blob.resolve()
 
+    def test_resolve_bare_repo_ref_skips_a_manifest_whose_file_is_truncated(
+        self, tmp_path: Path
+    ) -> None:
+        """A manifest whose bytes are not on disk in full does not hide the cached file."""
+        registry = ModelRegistry(tmp_path)
+        blob = _seed_hf_cache(tmp_path)
+        registry._write_manifest(_make_manifest(size_bytes=1000))
+        assert registry.resolve(_REPO) == blob.resolve()
+
+    def test_resolve_bare_repo_ref_ignores_a_cached_file_that_links_outside_the_cache(
+        self, tmp_path: Path
+    ) -> None:
+        models_dir = tmp_path / "models"
+        _seed_hf_cache(models_dir)
+        outside = tmp_path / "outside.gguf"
+        outside.write_bytes(b"GGUF\x00\x00")
+        link = next((models_dir / f"models--{repo_to_dir(_REPO)}" / "snapshots").rglob("*.gguf"))
+        link.unlink()
+        link.symlink_to(outside)
+        with pytest.raises(KeyError, match="not installed"):
+            ModelRegistry(models_dir).resolve(_REPO)
+
     def test_resolve_bare_repo_ref_not_installed(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
         with pytest.raises(KeyError, match="not installed"):
@@ -1624,6 +1646,21 @@ class TestModelRegistryWriteManifestErrors:
         repo_dir = tmp_path / "manifests" / repo_to_dir(_REPO)
         leftovers = [p for p in repo_dir.iterdir() if p.suffix == ".tmp"]
         assert leftovers == []
+
+    def test_a_temp_file_that_cannot_be_created_raises_and_leaves_no_manifest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.modelhub import registry as registry_mod
+
+        def no_temp_file(*_args: object, **_kwargs: object) -> None:
+            raise OSError("no space for a temp file")
+
+        monkeypatch.setattr(registry_mod.tempfile, "NamedTemporaryFile", no_temp_file)
+        with pytest.raises(OSError, match="no space for a temp file"):
+            ModelRegistry(tmp_path)._write_manifest(_make_manifest())
+
+        repo_dir = tmp_path / "manifests" / repo_to_dir(_REPO)
+        assert list(repo_dir.iterdir()) == []
 
 
 class TestInstalledRefForRepo:

@@ -133,6 +133,17 @@ class TestExtractorToolWiring:
         assert rows is not None  # regex type still extracted
         assert any("spaCy model unavailable" in r.message for r in caplog.records)
 
+    def test_spacy_types_are_skipped_when_concepts_are_unavailable(self, mock_svc):
+        cfg.entity_extraction = True
+        _persist_schema(mock_svc, self._schema_with({"spacy"}))
+        with (
+            mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=False),
+            mock.patch("lilbee.retrieval.concepts.nlp.load_spacy_pipeline") as load,
+        ):
+            rows = asyncio.run(build_entity_records(_records(), "a.txt"))
+        load.assert_not_called()
+        assert rows is not None  # the regex type is still extracted
+
     def test_llm_types_fetch_the_provider(self, mock_svc):
         cfg.entity_extraction = True
         _persist_schema(mock_svc, self._schema_with({"llm"}))

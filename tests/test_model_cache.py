@@ -202,6 +202,19 @@ class TestGetAvailableMemory:
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
         assert get_available_memory(0.5) == 500_000_000
 
+    def test_other_systems_use_psutil_total_without_asking_nvidia(self, monkeypatch) -> None:
+        fake_psutil = mock.MagicMock()
+        fake_psutil.virtual_memory.return_value.total = 600_000_000
+        monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+        monkeypatch.setattr(platform, "system", lambda: "FreeBSD")
+        asked: list[object] = []
+        monkeypatch.setattr(
+            "lilbee.providers.model_cache._try_nvidia_memory",
+            lambda reducer=min: asked.append(reducer) or 9_000_000_000,
+        )
+        assert get_available_memory(0.5) == 300_000_000
+        assert asked == []
+
     def test_linux_falls_back_to_psutil_when_no_nvidia(self, monkeypatch) -> None:
         fake_psutil = mock.MagicMock()
         fake_psutil.virtual_memory.return_value.total = 800_000_000

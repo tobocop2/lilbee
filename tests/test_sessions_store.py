@@ -259,6 +259,17 @@ def test_torn_final_line_is_skipped(store: SessionStore, tmp_path) -> None:
     assert session.messages[0].content == "intact"
 
 
+def test_an_unknown_event_type_is_ignored(store: SessionStore, tmp_path) -> None:
+    session_id = store.create(model_ref="m", scope="both")
+    store.add_message(session_id, _msg("intact"))
+    path = tmp_path / "data" / SESSIONS_DIRNAME / f"{session_id}.jsonl"
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "from-a-newer-version", "ts": "2030-01-01T00:00:00Z"}) + "\n")
+    session = store.get(session_id)
+    assert session.meta.message_count == 1
+    assert [m.content for m in session.messages] == ["intact"]
+
+
 def test_blank_lines_are_ignored(store: SessionStore, tmp_path) -> None:
     session_id = store.create(model_ref="m", scope="both")
     path = tmp_path / "data" / SESSIONS_DIRNAME / f"{session_id}.jsonl"

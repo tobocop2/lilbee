@@ -2105,6 +2105,29 @@ class TestGroupEntitiesByPrimarySource:
         assert group_entities_by_primary_source([ent]) == {}
 
 
+class TestEntityScoringChunks:
+    def test_a_label_whose_refs_all_fell_outside_the_budget_is_absent(self):
+        from lilbee.wiki.synthesis import _entity_scoring_chunks
+
+        kept = _make_chunk("kept", source="a.md", chunk_index=0)
+        in_budget = ExtractedEntity(
+            slug="x",
+            kind=EntityKind.ENTITY,
+            label="X",
+            type_hint="PERSON",
+            chunk_refs=(ChunkRef("a.md", 0), ChunkRef("a.md", 7)),
+        )
+        dropped = ExtractedEntity(
+            slug="y",
+            kind=EntityKind.ENTITY,
+            label="Y",
+            type_hint="PERSON",
+            chunk_refs=(ChunkRef("a.md", 8),),
+        )
+        scoped = _entity_scoring_chunks([in_budget, dropped], [kept])
+        assert scoped == {"X": [kept]}
+
+
 class TestLegacyConceptsMigration:
     def test_archives_concept_pages_and_deletes_their_rows(self, tmp_path: Path):
         wiki_root = tmp_path / "wiki"

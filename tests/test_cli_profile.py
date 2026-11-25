@@ -314,6 +314,14 @@ def test_save_update_and_discard(project):
     assert "no values of profile settings" in _invoke(project, "discard").output
 
 
+def test_save_with_no_settings_of_yours_prints_no_holds_line(project):
+    saved = _invoke(project, "save", "Mine", "--target", "project")
+    assert saved.exit_code == 0, saved.output
+    assert "Saved Mine" in saved.output
+    assert "It now holds your settings of" not in saved.output
+    assert _json(project, "update")["absorbed"] == []
+
+
 def test_duplicate_rename_and_delete(project):
     dup = _invoke(project, "duplicate", "Scanned archive", "My scans")
     assert dup.exit_code == 0, dup.output
@@ -396,6 +404,18 @@ def test_show_says_when_the_applied_file_changed_or_broke(project):
     broken = _invoke(project, "show")
     assert "Its file is broken; the copy saved when you applied it stays in use." in broken.output
     assert "Profiles cannot set chat_model" in broken.output
+
+
+def test_show_of_an_applied_profile_whose_file_is_gone_prints_no_about_lines(project):
+    path = _write(_global_dir(), "court-filings", CREDITED)
+    _invoke(project, "apply", "Court filings")
+    path.unlink()
+    gone = _invoke(project, "show")
+    assert gone.exit_code == 0, gone.output
+    assert "Profile: Court filings" in gone.output
+    assert "Its file is gone; the copy saved when you applied it stays in use." in gone.output
+    assert "Jane Doe" not in gone.output
+    assert "Tested on" not in gone.output
 
 
 def test_diff_says_when_nothing_changes_and_names_the_values_it_keeps(project):

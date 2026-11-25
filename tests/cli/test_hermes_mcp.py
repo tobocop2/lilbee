@@ -176,3 +176,26 @@ def test_interpreter_falls_back_to_sys_executable_for_windows_exe(tmp_path, monk
     monkeypatch.setattr(hermes_mcp.sys, "platform", "win32")
     result = hermes_mcp.hermes_interpreter(str(exe))
     assert result == hermes_mcp.sys.executable
+
+
+def test_interpreter_ignores_a_windows_wrapper_that_embeds_a_non_python_program(
+    tmp_path, monkeypatch
+):
+    """A .cmd wrapper that launches something other than python is not taken as the interpreter."""
+    cmd = tmp_path / "hermes.cmd"
+    cmd.write_text('@"C:\\tools\\node.exe" "%~dp0hermes.js" %*\n')
+    monkeypatch.setattr(hermes_mcp.sys, "platform", "win32")
+    assert hermes_mcp.hermes_interpreter(str(cmd)) == hermes_mcp.sys.executable
+
+
+def test_ensure_guides_without_a_reason_when_the_install_prints_nothing(tmp_path):
+    binary = _script(tmp_path, "#!/opt/venv/bin/python")
+    msgs: list[str] = []
+    proc = SimpleNamespace(returncode=1, stderr="", stdout="")
+    with (
+        patch.object(hermes_mcp, "has_http_mcp", side_effect=repeat_last(False, False)),
+        patch.object(hermes_mcp, "_mcp_extra_requirements", return_value=["mcp"]),
+        patch.object(hermes_mcp.subprocess, "run", return_value=proc),
+    ):
+        assert _ensure(binary, msgs) is False
+    assert msgs[1:] == [hermes_mcp.MCP_EXTRA_HINT]

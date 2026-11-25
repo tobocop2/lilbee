@@ -185,14 +185,14 @@ def shutdown(drain_budget_s: float = _DRAIN_BUDGET_S) -> None:
     with _lock:
         loop, _loop = _loop, None
         thread, _thread = _thread, None
-    if loop is None or loop.is_closed():
+    # get_loop sets the loop and its thread together, so one is None only when both are.
+    if loop is None or thread is None or loop.is_closed():
         return
     # Best-effort drain; always stop the loop even if drain raised.
     with contextlib.suppress(Exception):
         asyncio.run_coroutine_threadsafe(_drain(loop), loop).result(timeout=drain_budget_s)
     loop.call_soon_threadsafe(loop.stop)
-    if thread is not None:
-        thread.join(timeout=10.0)
+    thread.join(timeout=10.0)
     loop.close()
 
 
