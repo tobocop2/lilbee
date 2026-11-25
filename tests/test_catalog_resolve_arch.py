@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from conftest import make_hf_client
 from lilbee.catalog import compat
 from lilbee.catalog.compat import resolve_arch_for_pull
 from lilbee.catalog.header_probe import GgufHeader
@@ -13,7 +14,7 @@ from lilbee.core.config import cfg
 
 @pytest.fixture
 def client() -> HfClient:
-    return HfClient(cfg)
+    return make_hf_client(cfg)
 
 
 def test_resolve_hits_arch_cache(client: HfClient) -> None:

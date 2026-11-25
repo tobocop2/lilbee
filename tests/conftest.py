@@ -1379,6 +1379,15 @@ def counting_provider():
     svc_mod.set_services(None)
 
 
+def make_hf_client(config=None):
+    """An HfClient with the engine lookup that the services container injects."""
+    from lilbee.app.engine_choice import engine_for_page
+    from lilbee.catalog.hf_client import HfClient
+
+    target = cfg if config is None else config
+    return HfClient(target, engine_for_format=lambda fmt: engine_for_page(fmt, target))
+
+
 def make_mock_services(**overrides):
     """Create a mock Services container. Override individual services via kwargs.
 
@@ -1389,7 +1398,6 @@ def make_mock_services(**overrides):
     """
     from lilbee.app.engine_choice import EngineBook
     from lilbee.app.services import CrawlerSyncState, Services
-    from lilbee.catalog.hf_client import HfClient
     from lilbee.retrieval.query import Searcher
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
@@ -1404,7 +1412,7 @@ def make_mock_services(**overrides):
         cfg, provider, store, embedder, reranker, concepts
     )
     registry = overrides.pop("registry", None) or MagicMock()
-    hf_client = overrides.pop("hf_client", None) or HfClient(cfg)
+    hf_client = overrides.pop("hf_client", None) or make_hf_client(cfg)
     ingest_lock_registry = overrides.pop("ingest_lock_registry", None) or IngestLockRegistry()
     model_manager = overrides.pop("model_manager", None) or MagicMock()
     crawler_semaphore = overrides.pop("crawler_semaphore", None)

@@ -10,8 +10,8 @@ from litestar.exceptions import HTTPException
 from textual.app import ComposeResult
 from textual.widgets import Static
 
+from conftest import make_hf_client
 from lilbee.app import engine_choice
-from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import cfg
@@ -59,7 +59,9 @@ def test_the_manager_downloads_a_model_with_no_engine_installed(
         mock.patch("lilbee.catalog.pull_fit.chat_pull_fit") as fit,
         mock.patch("lilbee.catalog.download_model", return_value=dest) as download,
     ):
-        path = ModelManager(models_dir, cfg, hf_client=HfClient(cfg)).pull(ref, ModelSource.NATIVE)
+        path = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg)).pull(
+            ref, ModelSource.NATIVE
+        )
     assert path == dest
     assert download.call_args.args[1] is None
     fit.assert_not_called()
@@ -75,7 +77,7 @@ def test_the_no_engine_notice_arrives_after_the_download(tmp_path: Path) -> None
             side_effect=lambda *_a, **_k: events.append("download") or tmp_path,
         ),
     ):
-        ModelManager(tmp_path, cfg, hf_client=HfClient(cfg)).pull(
+        ModelManager(tmp_path, cfg, hf_client=make_hf_client(cfg)).pull(
             SAFETENSORS_REF, ModelSource.NATIVE, on_notice=events.append
         )
     assert events == [
@@ -93,7 +95,7 @@ def test_a_failed_download_gives_no_engine_notice(tmp_path: Path) -> None:
         mock.patch("lilbee.catalog.download_model", side_effect=OSError("disk full")),
         pytest.raises(OSError, match="disk full"),
     ):
-        ModelManager(tmp_path, cfg, hf_client=HfClient(cfg)).pull(
+        ModelManager(tmp_path, cfg, hf_client=make_hf_client(cfg)).pull(
             SAFETENSORS_REF, ModelSource.NATIVE, on_notice=notices.append
         )
     assert notices == []
@@ -104,7 +106,9 @@ def test_a_gguf_pull_with_no_engine_installed_names_the_missing_engine(tmp_path:
         mock.patch("lilbee.catalog.download_model") as download,
         pytest.raises(NoEngineError, match="No installed engine loads the gguf format"),
     ):
-        ModelManager(tmp_path, cfg, hf_client=HfClient(cfg)).pull(GGUF_REF, ModelSource.NATIVE)
+        ModelManager(tmp_path, cfg, hf_client=make_hf_client(cfg)).pull(
+            GGUF_REF, ModelSource.NATIVE
+        )
     download.assert_not_called()
 
 
@@ -115,7 +119,7 @@ def test_a_gguf_pull_that_allows_unsupported_still_needs_an_engine(tmp_path: Pat
         mock.patch("lilbee.catalog.download_model", return_value=tmp_path) as download,
         pytest.raises(NoEngineError, match="No installed engine loads the gguf format"),
     ):
-        ModelManager(tmp_path, cfg, hf_client=HfClient(cfg)).pull(
+        ModelManager(tmp_path, cfg, hf_client=make_hf_client(cfg)).pull(
             GGUF_REF, ModelSource.NATIVE, allow_unsupported=True
         )
     download.assert_not_called()
@@ -123,7 +127,7 @@ def test_a_gguf_pull_that_allows_unsupported_still_needs_an_engine(tmp_path: Pat
 
 @pytest.mark.asyncio
 async def test_the_pull_preflight_lets_a_model_with_no_engine_through(tmp_path: Path) -> None:
-    manager = ModelManager(tmp_path, cfg, hf_client=HfClient(cfg))
+    manager = ModelManager(tmp_path, cfg, hf_client=make_hf_client(cfg))
     with mock.patch(
         "lilbee.server.handlers.models.get_services",
         return_value=mock.MagicMock(model_manager=manager),
@@ -134,7 +138,7 @@ async def test_the_pull_preflight_lets_a_model_with_no_engine_through(tmp_path: 
 
 @pytest.mark.asyncio
 async def test_the_pull_preflight_refuses_a_gguf_with_no_engine(tmp_path: Path) -> None:
-    manager = ModelManager(tmp_path, cfg, hf_client=HfClient(cfg))
+    manager = ModelManager(tmp_path, cfg, hf_client=make_hf_client(cfg))
     with (
         mock.patch(
             "lilbee.server.handlers.models.get_services",
@@ -159,7 +163,7 @@ def test_no_file_is_named_for_a_gguf_entry_without_an_engine(tmp_path: Path) -> 
     entry = _entry(GGUF_REF, ModelFormat.GGUF)
     with mock.patch("lilbee.catalog.download.resolve_filename") as resolve:
         assert (
-            ModelManager(tmp_path, cfg, hf_client=HfClient(cfg))._resolved_entry(
+            ModelManager(tmp_path, cfg, hf_client=make_hf_client(cfg))._resolved_entry(
                 entry, None, verify=True
             )
             is entry

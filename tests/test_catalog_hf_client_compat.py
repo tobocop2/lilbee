@@ -72,7 +72,7 @@ def test_a_client_given_no_engine_lookup_lists_the_rows_as_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: _mock_response([_hf_row("llama")]))
-    models = HfClient(cfg).fetch_models().models
+    models = HfClient(cfg, engine_for_format=lambda fmt: None).fetch_models().models
     assert [m.compat for m in models] == [ModelCompat.UNKNOWN]
 
 

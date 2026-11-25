@@ -11,6 +11,7 @@ from unittest import mock
 import httpx
 import pytest
 
+from conftest import make_hf_client
 from lilbee.app.services import get_services
 from lilbee.catalog import download, formats
 from lilbee.catalog.formats import (
@@ -18,7 +19,6 @@ from lilbee.catalog.formats import (
     hf_listing_params,
     select_files,
 )
-from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.models import CatalogModel, estimate_size_gb
 from lilbee.catalog.types import ModelCompat, ModelFormat, ModelTask
 from lilbee.core.config.model import cfg
@@ -852,7 +852,7 @@ class TestPullOfAnInstalledModel:
         paths = _seed_snapshot(tmp_path, {"model.safetensors": b"w" * 8, "config.json": b"{}"})
         with mock.patch.object(cfg, "models_dir", tmp_path):
             register_downloaded_model(_entry(ModelFormat.SAFETENSORS), paths["model.safetensors"])
-        manager = ModelManager(tmp_path, cfg, hf_client=HfClient(cfg))
+        manager = ModelManager(tmp_path, cfg, hf_client=make_hf_client(cfg))
         assert manager.is_installed(self._REF, ModelSource.NATIVE)
         with (
             mock.patch.object(manager, "pull") as pull,
