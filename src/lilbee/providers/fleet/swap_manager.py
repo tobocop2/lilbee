@@ -63,7 +63,7 @@ if TYPE_CHECKING:
     from lilbee.providers.fleet.engines.base import EngineAdapter, ServerProcess
     from lilbee.providers.roles import WorkerRole
 
-if sys.platform == "win32":
+if sys.platform == "win32":  # pragma: no cover - Windows has no resource module
     resource = None
 else:
     import resource
