@@ -96,9 +96,8 @@ def stuck_teardown():
 
 teardown = os.environ.get("X_TEARDOWN")
 if teardown == "release":
-    app_mod.reset_services = never.set
+    services.reset_services = never.set
 elif teardown == "stuck":
-    app_mod.reset_services = stuck_teardown
     services.reset_services = stuck_teardown
 
 if os.environ.get("X_HOLD_REPLACE"):

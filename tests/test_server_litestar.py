@@ -2853,7 +2853,7 @@ class TestLifespanWaitsForTheOpen:
             return True
 
         with (
-            mock.patch("lilbee.server.app.reset_services", side_effect=shutdown),
+            mock.patch("lilbee.app.services.reset_services", side_effect=shutdown),
             mock.patch("lilbee.server.app.wait_for_opens", side_effect=wait),
         ):
             async with _lifespan(mock.MagicMock()):
@@ -2875,7 +2875,7 @@ class TestLifespanWaitsForTheOpen:
 
         with (
             mock.patch(
-                "lilbee.server.app.reset_services",
+                "lilbee.app.services.reset_services",
                 side_effect=RuntimeError("the fleet stop failed"),
             ),
             mock.patch("lilbee.server.app.wait_for_opens", side_effect=wait),
