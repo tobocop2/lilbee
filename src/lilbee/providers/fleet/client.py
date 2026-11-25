@@ -214,6 +214,21 @@ def _estimate_tokens(text: str) -> int:
     return max(1, -(-len(text) // _EMBED_EST_CHARS_PER_TOKEN))
 
 
+def _message_text(message: Mapping[str, Any]) -> str:
+    """The text of one chat message: its content, text parts, and the tool calls it holds."""
+    content = message.get("content")
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(
+            part["text"] for part in content if isinstance(part, Mapping) and "text" in part
+        )
+    else:
+        text = ""
+    calls = message.get("tool_calls")
+    return f"{text}\n{json.dumps(calls, ensure_ascii=False)}" if calls else text
+
+
 def _wire_bytes(value: Any) -> int:
     """The bytes *value* takes in a request body: httpx encodes ``json=`` with these options."""
     encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
@@ -501,6 +516,10 @@ _UNREADABLE_EMBEDDING_ERROR = (
 _NO_RERANK_SCORE_ERROR = "The reranker returned no relevance score for a candidate."
 _HEALTH_PATH = "/health"
 _CHAT_PATH = "/v1/chat/completions"
+_CONTEXT_OVERFLOW_TEXT = (
+    "The conversation exceeds this model's context window. "
+    "Start a new conversation or shorten the input."
+)
 _EMBED_PATH = "/v1/embeddings"
 # llama-swap proxies native (non-OpenAI) engine routes only under
 # /upstream/<model>/...; the bare tokenize path 404s (it routes /v1/* by the
@@ -652,6 +671,7 @@ class LlamaServerClient:
         http: httpx.Client | None = None,
         async_transport: httpx.AsyncBaseTransport | None = None,
         token_cap: int | None = None,
+        chat_ctx: int | None = None,
         timeout: float = _DEFAULT_TIMEOUT_S,
         rerank_mode: RerankMode | None = None,
         inline_reasoning: bool = False,
@@ -689,6 +709,9 @@ class LlamaServerClient:
         # token-truncated (via the server's tokenizer) before embedding, mirroring
         # the in-process backstop. None for chat/vision, which don't truncate inputs.
         self._token_cap = token_cap
+        # Per-slot context of a chat server whose engine does not bound a prompt itself: the
+        # client refuses a longer prompt before it sends it. None for every other client.
+        self._chat_ctx = chat_ctx
         # LLM => score candidates by yes/no logprob; None/cross-encoder => rank pooling.
         self._rerank_mode = rerank_mode
         self.in_flight = 0
@@ -775,8 +798,7 @@ class LlamaServerClient:
             self._profile.context_overflow.search(body) or is_prompt_length_overflow(body)
         ):
             raise ProviderError(
-                "The conversation exceeds this model's context window. "
-                "Start a new conversation or shorten the input.",
+                _CONTEXT_OVERFLOW_TEXT,
                 provider=self._profile.label,
                 kind=ProviderErrorKind.CONTEXT_OVERFLOW,
             )
@@ -953,6 +975,7 @@ class LlamaServerClient:
         ``timeout`` overrides the client default for either path, so a
         caller-enforced deadline (vision OCR) ends the request itself.
         """
+        self._refuse_past_window(messages, None)
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
@@ -1020,6 +1043,7 @@ class LlamaServerClient:
         (total seconds, ``None`` for no limit) raises :class:`ChatDeadlineError`;
         a set *cancel*, or a close of this client, raises ``TaskCancelledError``.
         """
+        self._refuse_past_window(messages, None)
         payload = {
             "model": self._model,
             "messages": messages,
@@ -1091,6 +1115,7 @@ class LlamaServerClient:
         tool-call syntax into structured ``message.tool_calls``. When a model
         instead emits a bare-JSON call as content (a native miss), recover it.
         """
+        self._refuse_past_window(messages, tools)
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": self._prepare_chat_messages(messages),
@@ -1258,6 +1283,7 @@ class LlamaServerClient:
         stream: bool,
     ) -> dict[str, Any]:
         """Build the chat-completions request body shared by the stream and non-stream paths."""
+        self._refuse_past_window(messages, tools)
         payload: dict[str, Any] = {"model": self._model, "messages": messages, "stream": stream}
         if stream:
             # include_usage makes llama-server emit a final SSE chunk carrying the
@@ -1270,6 +1296,45 @@ class LlamaServerClient:
             payload["tool_choice"] = tool_choice
         payload.update(self._wire_options(options))
         return payload
+
+    def _refuse_past_window(
+        self, messages: Sequence[Mapping[str, Any]], tools: Sequence[Mapping[str, Any]] | None
+    ) -> None:
+        """Raise the context-overflow error for a prompt past the served window, before it is sent.
+
+        Only an engine that names a count route is checked: it accepts any prompt up to the
+        model's own length, so the client holds the window. The character estimate clears the
+        common short prompt with no request; a longer one is counted by the engine's tokenizer
+        over the message text and the tool definitions, which leaves out the chat template.
+        """
+        path = self._profile.window_tokenize_path
+        if path is None or not self._chat_ctx:
+            return
+        text = "\n".join(_message_text(message) for message in messages)
+        if tools:
+            text += "\n" + json.dumps(tools, ensure_ascii=False)
+        if _estimate_tokens(text) <= self._chat_ctx:
+            return
+        count = len(self._count_window_tokens(path, text))
+        if count > self._chat_ctx:
+            raise ProviderError(
+                _CONTEXT_OVERFLOW_TEXT,
+                provider=self._profile.label,
+                kind=ProviderErrorKind.CONTEXT_OVERFLOW,
+            )
+
+    def _count_window_tokens(self, path: str, text: str) -> list[int]:
+        """Token ids of *text* from the engine's count route; a gateway error is retried."""
+
+        def _call() -> list[int]:
+            resp = self._http.post(
+                self._native_route(path),
+                json={"model": self._profile.window_tokenize_model, "text": text},
+            )
+            self._raise_for_status(resp)
+            return list(resp.json()["tokens"])
+
+        return retry_on_gateway_error(_call)
 
     def _wire_options(self, options: dict[str, Any] | None) -> dict[str, Any]:
         """*options* without the fields this server's engine does not read or enforce.

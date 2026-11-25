@@ -157,6 +157,12 @@ class RequestProfile:
     """The shape of the rerank route; it matters only when ``rerank_path`` is set."""
     rerank_model: str | None = None
     """The model name the rerank request body carries, or None for a route that takes none."""
+    window_tokenize_path: str | None = None
+    """The route that counts the tokens of a chat prompt, or None for an engine that bounds a prompt
+    at the served window itself. An engine with a route has the client refuse a prompt past the
+    window, because the engine accepts any prompt up to the model's own length."""
+    window_tokenize_model: str | None = None
+    """The model name the count request body carries."""
 
     def rerank_body(
         self, query: str, texts: list[str], extra: Mapping[str, Any] | None = None

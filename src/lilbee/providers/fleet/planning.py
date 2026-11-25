@@ -2322,6 +2322,7 @@ def _launch_for(
                 kv_cache_type=_role_kv_cache_type(plan.role, engine=engine),
                 mmproj_path=mmproj,
                 expert_offload=_role_expert_offload(model_path, engine=engine),
+                on_cpu=plan.target is RoleTarget.CPU,
                 role=plan.role,
             ),
             unified=unified_budget is not None,
