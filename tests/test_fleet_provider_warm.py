@@ -379,6 +379,17 @@ def test_d1_a_refused_unload_is_logged_and_the_replica_still_leaves(
     assert provider._clients[WorkerRole.CHAT] == []
 
 
+def test_a_refused_replica_leaves_its_siblings_serving() -> None:
+    provider = FleetProvider()
+    refused, asked = _client(WorkerRole.CHAT, LEMONADE.request_profile, {UNLOAD: b"OK"})
+    sibling, _ = _client(WorkerRole.CHAT, LEMONADE.request_profile, {})
+    provider._clients = {WorkerRole.CHAT: [refused, sibling]}
+    provider._remove_refused_replica(WorkerRole.CHAT, refused, "refused")
+    assert provider._clients[WorkerRole.CHAT] == [sibling]
+    assert WorkerRole.CHAT not in provider._refused_roles
+    assert asked == [UNLOAD]
+
+
 def test_a_replica_that_a_reload_already_replaced_changes_nothing() -> None:
     provider = FleetProvider()
     client, asked = _client(WorkerRole.CHAT, LEMONADE.request_profile, {UNLOAD: b"OK"})
