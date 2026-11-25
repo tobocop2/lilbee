@@ -14,6 +14,7 @@ from lilbee.catalog.formats import ir_parts, ir_weights_file
 from lilbee.catalog.header_probe import gguf_bytes_on_disk, gguf_is_incomplete
 from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.catalog.xdna import read_footprint, read_task
+from lilbee.core.config import cfg
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.vram import (
     GgufVramEstimate,
@@ -92,8 +93,10 @@ _SCORE_BYTES_PER_KV_HEAD = 6
 
 # The OVMS constants below are fitted to readings of the OVMS process (VmHWM) on CPU, OVMS
 # 2026.4.1, x86 without AVX-512. They do not cover GPU, NPU or ARM hosts.
-_OVMS_KV_ELEMENT_BYTES = 1
+_OVMS_CPU_KV_ELEMENT_BYTES = 1
 """The CPU plugin holds each cache element as one byte (u8)."""
+_OVMS_KV_ELEMENT_BYTES = 2
+"""Off the CPU the cache default is f16. Charged until GPU and NPU hosts are read."""
 _OVMS_CHAT_RUNTIME_BYTES = 928 * _MIB
 """What a chat role holds beyond its two copies of the weights and its cache."""
 _OVMS_ENCODER_RUNTIME_BYTES = 576 * _MIB
@@ -511,8 +514,6 @@ def _estimate_openvino(request: MemoryRequest) -> MemoryEstimate:
     encoder request is sized by the tokens of the largest request lilbee sends: a batch of
     sequences, each no longer than the window or the chunk size.
     """
-    from lilbee.core.config import cfg
-
     sizes = _installed_sizes(request.model_path)
     if _ir_bin_is_cut_off(request.model_path, sizes):
         return _unknown_estimate(None)
@@ -526,8 +527,9 @@ def _estimate_openvino(request: MemoryRequest) -> MemoryEstimate:
     if request.role is WorkerRole.RERANK:
         tokens = OVMS_RERANK_BATCH * min(request.ctx, cfg.chunk_size)
         return _ovms_encoder_estimate(weights, config, tokens, _OVMS_RERANK_BYTES_PER_TOKEN_WIDTH)
+    element_bytes = _OVMS_CPU_KV_ELEMENT_BYTES if request.on_cpu else _OVMS_KV_ELEMENT_BYTES
     kv = (
-        kv_per_token_from_config(config, element_bytes=_OVMS_KV_ELEMENT_BYTES)
+        kv_per_token_from_config(config, element_bytes=element_bytes)
         if config is not None
         else None
     )
