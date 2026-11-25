@@ -169,6 +169,34 @@ def stated_sizes(monkeypatch) -> Generator[None]:
     stated_sizes_module.uninstall()
 
 
+CALLER_THREAD = "work-order-caller"
+
+
+@pytest.fixture
+def joined(fleet, monkeypatch) -> Callable[[], None]:
+    """Blocks until two callers have joined the fleet work, each after it set what it wants.
+
+    A caller thread is one named ``CALLER_THREAD``. The product sets the counter that
+    a write wants before it joins, so the join is the event a test waits on.
+    """
+    local = fleet.provider._local
+    entered = threading.Semaphore(0)
+    real = local._join_fleet_work
+
+    def _entered(work, **kwargs) -> None:
+        if threading.current_thread().name == CALLER_THREAD:
+            entered.release()
+        real(work, **kwargs)
+
+    monkeypatch.setattr(local, "_join_fleet_work", _entered)
+
+    def _both() -> None:
+        entered.acquire()
+        entered.acquire()
+
+    return _both
+
+
 @pytest.fixture(autouse=True)
 def _serve_never_ends_the_test_process(monkeypatch):
     """Keep ``serve`` from reaching the real process exit while a library open runs.

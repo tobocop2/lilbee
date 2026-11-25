@@ -11,7 +11,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -35,6 +35,7 @@ from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.provider import RELOAD_FAILED_NOTICE, FleetProvider
 from lilbee.providers.roles import WorkerRole
+from tests.conftest import CALLER_THREAD
 from tests.test_engine_real_fleet import _GIB, _MESSAGES, GGUF_CHAT, GGUF_EMBED, MLX_REF, _Gguf
 
 _REPO = Path(__file__).resolve().parents[1]
@@ -340,7 +341,7 @@ def test_a_write_that_cannot_find_the_engine_binary_is_not_reported_as_applied(
     ids=["one-group-still-up", "every-group-stopped"],
 )
 def test_a_write_that_joins_a_reload_that_fails_reports_the_failure(
-    fleet: Services, first_write: Any
+    fleet: Services, first_write: Any, joined: Callable[[], None]
 ) -> None:
     gate = threading.Event()
     _ProcessSwap.start_gate = gate
@@ -353,17 +354,19 @@ def test_a_write_that_joins_a_reload_that_fails_reports_the_failure(
         except engine_service.EngineNotAppliedError as exc:
             outcomes[name] = exc
 
-    first = threading.Thread(target=write, args=("first", first_write))
+    first = threading.Thread(target=write, args=("first", first_write), name=CALLER_THREAD)
     first.start()
-    assert _ProcessSwap.starting.wait(_WAIT_S)
-    second = threading.Thread(target=write, args=("second", lambda: engine_service.prefer("auto")))
+    _ProcessSwap.starting.wait()
+    second = threading.Thread(
+        target=write,
+        args=("second", lambda: engine_service.prefer("auto")),
+        name=CALLER_THREAD,
+    )
     second.start()
-    _wait_for(lambda: _local(fleet)._writes_wanted == 2)
+    joined()
     gate.set()
-    first.join(_WAIT_S)
-    second.join(_WAIT_S)
-    assert not first.is_alive()
-    assert not second.is_alive()
+    first.join()
+    second.join()
     assert {name: type(value) for name, value in outcomes.items()} == {
         "first": engine_service.EngineNotAppliedError,
         "second": engine_service.EngineNotAppliedError,
@@ -382,7 +385,9 @@ def test_vision_at_the_bound_fails_the_call_and_leaves_no_vision_role(
     local = _local(fleet)
     monkeypatch.setattr(cfg, "preferred_engine", EngineSetting.MLX)
     first.start()
-    assert _ProcessSwap.starting.wait(_WAIT_S)
+    _ProcessSwap.starting.wait()
+    work = local._fleet_work
+    assert work is not None
     wanted = local._writes_wanted
     with pytest.raises(ProviderError, match=r"still starting after 0 s") as raised:
         local._serve_vision_on_request()
@@ -391,8 +396,9 @@ def test_vision_at_the_bound_fails_the_call_and_leaves_no_vision_role(
     # One write asked for the grant; a second, after the revoke, plans without it.
     assert local._writes_wanted == wanted + 2
     gate.set()
-    first.join(_WAIT_S)
-    _wait_for(lambda: local._fleet_work is None)
+    first.join()
+    work.wait()
+    assert local._fleet_work is None
     assert local._writes_done == local._writes_wanted
     assert WorkerRole.VISION not in {
         launch.role for group in local._launches.values() for launch in group
@@ -400,25 +406,25 @@ def test_vision_at_the_bound_fails_the_call_and_leaves_no_vision_role(
 
 
 def test_a_write_while_a_reload_has_every_group_stopped_reaches_the_engines(
-    fleet: Services,
+    fleet: Services, joined: Callable[[], None]
 ) -> None:
     gate = threading.Event()
     _ProcessSwap.start_gate = gate
-    first = threading.Thread(target=engine_service.prefer, args=("mlx",))
+    first = threading.Thread(target=engine_service.prefer, args=("mlx",), name=CALLER_THREAD)
     first.start()
-    assert _ProcessSwap.starting.wait(_WAIT_S)
+    _ProcessSwap.starting.wait()
     local = _local(fleet)
     assert local._swaps == {}
     second = threading.Thread(
-        target=engine_service.use_for_role, args=(WorkerRole.CHAT, GGUF_CHAT, "llama.cpp")
+        target=engine_service.use_for_role,
+        args=(WorkerRole.CHAT, GGUF_CHAT, "llama.cpp"),
+        name=CALLER_THREAD,
     )
     second.start()
-    _wait_for(lambda: local._writes_wanted == 2)
+    joined()
     gate.set()
-    first.join(_WAIT_S)
-    second.join(_WAIT_S)
-    assert not first.is_alive()
-    assert not second.is_alive()
+    first.join()
+    second.join()
     launches = {launch.role: launch.argv for group in local._launches.values() for launch in group}
     assert set(launches) == {WorkerRole.CHAT, WorkerRole.EMBED}
     assert "--mlx" not in launches[WorkerRole.CHAT]

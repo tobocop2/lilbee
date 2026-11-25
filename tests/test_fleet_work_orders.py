@@ -21,6 +21,7 @@ from lilbee.providers.fleet.provider import (
     FleetProvider,
 )
 from lilbee.providers.roles import WorkerRole
+from tests.conftest import CALLER_THREAD
 from tests.test_engine_real_fleet import GGUF_CHAT
 from tests.test_engine_write_applied import (
     _local,
@@ -31,7 +32,6 @@ from tests.test_engine_write_applied import (
 __all__ = ["fleet"]
 
 _WAIT_S = 10.0
-_CALLER = "work-order-caller"
 _FAILED = ProviderError("engine did not start")
 _STILL_STARTING = "The engines are still starting after 0 s."
 _MLX = "mlx"
@@ -58,34 +58,13 @@ def passes(fleet: Any, monkeypatch: pytest.MonkeyPatch) -> list[int]:
     return seen
 
 
-@pytest.fixture
-def joined(fleet: Any, monkeypatch: pytest.MonkeyPatch) -> Callable[[], None]:
-    """Blocks until two callers have joined the fleet work, each after it set what it wants."""
-    local = _local(fleet)
-    entered = threading.Semaphore(0)
-    real = local._join_fleet_work
-
-    def _entered(work: Any, **kwargs: Any) -> None:
-        if threading.current_thread().name == _CALLER:
-            entered.release()
-        real(work, **kwargs)
-
-    monkeypatch.setattr(local, "_join_fleet_work", _entered)
-
-    def _both() -> None:
-        entered.acquire()
-        entered.acquire()
-
-    return _both
-
-
 class _Caller:
     """Runs one call on a thread and keeps what it heard, or None when it returned."""
 
     def __init__(self, call: Callable[[], Any]) -> None:
         self.heard: BaseException | None = None
         self._call = call
-        self._thread = threading.Thread(target=self._run, name=_CALLER)
+        self._thread = threading.Thread(target=self._run, name=CALLER_THREAD)
         self._thread.start()
 
     def _run(self) -> None:
