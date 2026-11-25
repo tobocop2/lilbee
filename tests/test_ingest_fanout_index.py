@@ -547,13 +547,13 @@ class TestEqualToOneProcess:
         self, tmp_path, monkeypatch
     ):
         full_flags: list[bool] = []
-        real = pipeline_mod._rebuild_concept_clusters
+        real = pipeline_mod._update_concept_graph
 
         async def recording(*args, full=False, **kwargs):
             full_flags.append(full)
             return await real(*args, full=full, **kwargs)
 
-        monkeypatch.setattr(pipeline_mod, "_rebuild_concept_clusters", recording)
+        monkeypatch.setattr(pipeline_mod, "_update_concept_graph", recording)
         library = Library(tmp_path / "lib", 2)
         library.write_notes("note", 12)
         await library.sync()

@@ -666,6 +666,19 @@ class ConceptGraph:
         best = max(rows, key=lambda r: r["degree"])
         return str(best["concept"])
 
+    def can_extract(self) -> bool:
+        """Whether the spaCy model loads, so an extraction finds concepts at all."""
+        return self._ensure_nlp() is not None
+
+    def sources_with_concepts(self, source_ids: Collection[str]) -> set[str]:
+        """The ids of *source_ids* that hold a concept row."""
+        table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
+        if table is None or not source_ids:
+            return set()
+        query = table.search().where(f"source_id IN ({_quoted(source_ids)})")
+        ids = query.select(["source_id"]).limit(None).to_arrow().column("source_id")
+        return set(pc.unique(ids).to_pylist())
+
     def get_graph(self) -> bool:
         """Check whether a concept graph exists in the store."""
         if not self._config.concept_graph:

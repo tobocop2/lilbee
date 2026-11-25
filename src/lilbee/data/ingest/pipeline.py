@@ -192,35 +192,45 @@ def _max_concurrent() -> int:
     return max(cpu_quota(), embed_inflight_target())
 
 
-async def _rebuild_concept_clusters(
+async def _update_concept_graph(
     added: Collection[str] = (),
     updated: Collection[str] = (),
     removed: Collection[str] = (),
     *,
     full: bool = False,
+    cancel: CancelSignal | None = None,
 ) -> None:
-    """Re-run Leiden clustering after sync. No-op if disabled.
+    """Backfill the sources ingest did not cover, then re-run Leiden. No-op if disabled.
 
-    Removals force a full pass: their rows are already gone, so the touched
-    communities are unrecoverable, and so does a rebuild, which re-ingests every
-    source. Adds and updates recluster incrementally.
+    The backfill gives concept rows to each source indexed while the setting
+    was off (see :mod:`lilbee.retrieval.concepts.backfill`); any it writes
+    force a full pass. Removals force one too: their rows are already gone, so
+    the touched communities are unrecoverable, and so does a rebuild, which
+    re-ingests every source. Adds and updates recluster incrementally. The
+    backfill's checkpoint is recorded only after the recluster, so a sync that
+    stops between the two runs both again.
     """
     if not active_config().concept_graph:
         return
     from lilbee.retrieval.concepts import concepts_available
+    from lilbee.retrieval.concepts.backfill import backfill_concepts
 
     if not concepts_available():
         return
     try:
-        cg = get_services().concepts
-        if not cg.get_graph():
-            return
-        if removed or full:
-            await to_ingest_thread(cg.rebuild_clusters)
-        else:
-            await to_ingest_thread(cg.rebuild_clusters, set(added), set(updated))
+        services = get_services()
+        cg = services.concepts
+        backfill = await to_ingest_thread(backfill_concepts, services.store, cg, cancel)
+        backfilled = backfill is not None and backfill.written > 0
+        if (backfilled or added or updated or removed) and cg.get_graph():
+            if removed or full or backfilled:
+                await to_ingest_thread(cg.rebuild_clusters)
+            else:
+                await to_ingest_thread(cg.rebuild_clusters, set(added), set(updated))
+        if backfill is not None and backfill.checkpoint is not None:
+            services.store.record_concepts_covered(backfill.checkpoint)
     except Exception:
-        log.warning("Concept cluster rebuild failed", exc_info=True)
+        log.warning("Concept graph update failed", exc_info=True)
 
 
 async def build_entity_records(records: list[ChunkRecord], source_name: str) -> list[dict] | None:
@@ -1453,11 +1463,14 @@ async def _run_post_ingest_passes(
     """Index maintenance, concept clusters, the wiki hook, and the entity lifecycle.
 
     The index pass only runs when this sync indexed something. The concept
-    clusters are recomputed only when a source was added, updated or removed: a
-    relocation changes no co-occurrence. Every sync renders again each wiki
-    page that shows a path its cited source no longer has, so the next sync
-    repairs a page a stopped one left. The wiki hook and the entity lifecycle
-    run every sync (a cheap no-op when off or already current): the wiki index
+    clusters are recomputed only when a source was added, updated or removed,
+    or the concept backfill wrote rows: a relocation changes no co-occurrence.
+    The backfill runs every sync and costs nothing once it is current, so
+    turning the concept setting on needs no separate operation. Every sync
+    renders again each wiki page that shows a path its cited source no longer
+    has, so the next sync repairs a page a stopped one left. The wiki hook and
+    the entity lifecycle run every sync (a cheap no-op when off or already
+    current): the wiki index
     takes what any sync wrote and no refresh read, and turning the entity
     setting on takes effect without a separate operation.
     """
@@ -1466,10 +1479,9 @@ async def _run_post_ingest_passes(
         store.ensure_scalar_indexes()
         store.ensure_vector_index()
         store.optimize_sources()
-    if cluster_added or cluster_updated or cluster_removed:
-        await _rebuild_concept_clusters(
-            cluster_added, cluster_updated, cluster_removed, full=recluster_all
-        )
+    await _update_concept_graph(
+        cluster_added, cluster_updated, cluster_removed, full=recluster_all, cancel=cancel
+    )
     await to_ingest_thread(_show_current_paths_in_wiki)
     await _update_wiki(touched, active_config())
 

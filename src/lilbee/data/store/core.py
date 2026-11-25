@@ -445,6 +445,9 @@ _CITATION_LOOKUP_IDS = 128
 # Beside the tables: the checkpoint up to which the wiki's page index covers the source rows.
 _WIKI_REFRESHED_NAME = ".wiki_refreshed"
 _WIKI_REFRESHED_UNREADABLE = "Cannot read %s (%s): the wiki index reads every source again"
+# Beside the tables: the checkpoint up to which the concept graph covers the source rows.
+_CONCEPTS_COVERED_NAME = ".concepts_covered"
+_CONCEPTS_COVERED_UNREADABLE = "Cannot read %s (%s): the concept graph reads every source again"
 
 # Rows per Arrow batch when a filtered read walks the whole source table.
 _SOURCE_SCAN_BATCH_ROWS = 20_000
@@ -2956,15 +2959,25 @@ class Store:
         return chunk_hits, len(sources)
 
     def chunk_batches(
-        self, columns: list[str], batch_rows: int
+        self,
+        columns: list[str],
+        batch_rows: int,
+        *,
+        source_ids: Collection[str] | None = None,
     ) -> Iterator[list[Mapping[str, Any]]]:
-        """Every chunk row in batches of *batch_rows*, for *columns*; ``source`` is the path."""
+        """Every chunk row in batches of *batch_rows*, for *columns*; ``source`` is the path.
+
+        With *source_ids*, only the chunks of those sources.
+        """
         table = self.open_table(CHUNKS_TABLE)
-        if table is None:
+        if table is None or (source_ids is not None and not source_ids):
             return
         paths = self._all_source_paths()
         read = [_SOURCE_ID if column == "source" else column for column in columns]
-        arrow = table.search().select(read).limit(None).to_arrow()
+        query = table.search()
+        if source_ids is not None:
+            query = query.where(f"{_SOURCE_ID} IN ({_in_list(sorted(source_ids))})")
+        arrow = query.select(read).limit(None).to_arrow()
         for batch in arrow.to_batches(max_chunksize=batch_rows):
             rows: list[Mapping[str, Any]] = list(_pathed(batch.to_pylist(), "source", paths))
             yield rows
@@ -3331,7 +3344,44 @@ class Store:
         None with no record or an unreadable one: every source row is owed.
         An unreadable record is reported and deleted, so the next read is silent.
         """
-        record = self._config.lancedb_dir / _WIKI_REFRESHED_NAME
+        return self._read_checkpoint(_WIKI_REFRESHED_NAME, _WIKI_REFRESHED_UNREADABLE)
+
+    def record_wiki_refreshed(self, checkpoint: SourcesCheckpoint) -> None:
+        """Record that the wiki's page index covers the source rows up to *checkpoint*.
+
+        A write that fails leaves the record as it was.
+        """
+        self._write_checkpoint(_WIKI_REFRESHED_NAME, checkpoint)
+
+    def forget_wiki_refreshed(self) -> None:
+        """Delete the record: the wiki's page index covers no source row."""
+        (self._config.lancedb_dir / _WIKI_REFRESHED_NAME).unlink(missing_ok=True)
+
+    def concepts_covered(self) -> SourcesCheckpoint | None:
+        """The checkpoint up to which the concept graph covers the source rows.
+
+        None with no record or an unreadable one: every source row is owed.
+        An unreadable record is reported and deleted, so the next read is silent.
+        """
+        return self._read_checkpoint(_CONCEPTS_COVERED_NAME, _CONCEPTS_COVERED_UNREADABLE)
+
+    def record_concepts_covered(self, checkpoint: SourcesCheckpoint) -> None:
+        """Record that the concept graph covers the source rows up to *checkpoint*.
+
+        A write that fails leaves the record as it was.
+        """
+        self._write_checkpoint(_CONCEPTS_COVERED_NAME, checkpoint)
+
+    def forget_concepts_covered(self) -> None:
+        """Delete the record: the concept graph covers no source row."""
+        (self._config.lancedb_dir / _CONCEPTS_COVERED_NAME).unlink(missing_ok=True)
+
+    def _read_checkpoint(self, name: str, unreadable: str) -> SourcesCheckpoint | None:
+        """The checkpoint the record *name* beside the tables holds, or None.
+
+        An unreadable record is reported with the message *unreadable* and deleted.
+        """
+        record = self._config.lancedb_dir / name
         try:
             fields = json.loads(record.read_text(encoding="utf-8"))
             version = fields["version"]
@@ -3339,23 +3389,15 @@ class Store:
         except FileNotFoundError:
             return None
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            log.warning(_WIKI_REFRESHED_UNREADABLE, record, exc)
+            log.warning(unreadable, record, exc)
             # A record that cannot be deleted stays, and the next read reports it again.
             with suppress(OSError):
-                self.forget_wiki_refreshed()
+                record.unlink(missing_ok=True)
             return None
 
-    def record_wiki_refreshed(self, checkpoint: SourcesCheckpoint) -> None:
-        """Record that the wiki's page index covers the source rows up to *checkpoint*.
-
-        A write that fails leaves the record as it was.
-        """
-        record = self._config.lancedb_dir / _WIKI_REFRESHED_NAME
-        write_private_text(record, json.dumps(checkpoint._asdict()))
-
-    def forget_wiki_refreshed(self) -> None:
-        """Delete the record: the wiki's page index covers no source row."""
-        (self._config.lancedb_dir / _WIKI_REFRESHED_NAME).unlink(missing_ok=True)
+    def _write_checkpoint(self, name: str, checkpoint: SourcesCheckpoint) -> None:
+        """Write *checkpoint* to the record *name* beside the tables."""
+        write_private_text(self._config.lancedb_dir / name, json.dumps(checkpoint._asdict()))
 
     def sources_ingested_since(self, since: str) -> list[str]:
         """The filename of each source row written at or after *since*, an ISO time in UTC."""
@@ -4385,6 +4427,7 @@ class Store:
             db = self.get_db()
             # Before the tables: a record that outlives them would describe the next ones.
             self.forget_wiki_refreshed()
+            self.forget_concepts_covered()
             kept = {MEMORIES_TABLE, CRAWL_PAGES_TABLE}
             dropped = [name for name in table_names(db) if name not in kept]
             # The source rows go first: a drop that stops part way leaves no file unchanged.
