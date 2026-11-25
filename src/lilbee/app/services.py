@@ -493,10 +493,17 @@ def set_config_refresh(hook: Callable[[], None] | None) -> None:
 
 
 def refresh_config() -> None:
-    """Take config.toml changes now through the registered check; nothing without one."""
+    """Take config.toml changes now through the registered check; nothing without one.
+
+    The caller asked for the newest settings, so a request's pin then moves to the
+    Config published last.
+    """
+    from lilbee.core.config.model import follow_published_config
+
     hook = _state.config_refresh
     if hook is not None:
         hook()
+        follow_published_config()
 
 
 def report_library_upgrade(callback: DetailedProgressCallback | None) -> None:
