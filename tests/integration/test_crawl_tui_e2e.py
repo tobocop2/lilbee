@@ -21,6 +21,7 @@ from lilbee.cli.tui.widgets.crawl_dialog import CrawlDialog
 from lilbee.cli.tui.widgets.task_row import TaskRow
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
+from lilbee.core.config.model import published_config
 from lilbee.crawler import require_valid_crawl_url
 from tests._windows_loop import windows_proactor_loop
 from tests.integration import _crawl_site as site_mod
@@ -311,7 +312,7 @@ async def test_config_render_mode_applies_without_a_flag(
 async def test_a_crawl_crawlberg_refuses_ends_as_a_failed_task_with_the_reason(
     root: Path, crawl_site: CrawlSite
 ) -> None:
-    object.__setattr__(cfg, "crawl_exclude_patterns", [REFUSED_PATTERN])
+    object.__setattr__(published_config(), "crawl_exclude_patterns", [REFUSED_PATTERN])
     url = crawl_site.url("/rel/child.html")
     app = _CrawlApp()
     async with app.run_test(size=(120, 40)) as pilot:

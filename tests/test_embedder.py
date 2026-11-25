@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.core.config.model import published_config
 from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 from lilbee.providers.truncation import cut_inputs_in_scope, truncation_scope
 from lilbee.retrieval.embedder import Embedder, is_model_available
@@ -297,7 +298,7 @@ class TestValidateModel:
 
         old = cfg.embedding_model
         # Bypass pydantic validation to simulate edge case
-        object.__setattr__(cfg, "embedding_model", "")
+        object.__setattr__(published_config(), "embedding_model", "")
         try:
             embedder = Embedder(cfg, mock_provider)
             assert embedder.embedding_available() is False

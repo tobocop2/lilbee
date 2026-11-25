@@ -66,14 +66,11 @@ class ConfigFileFollower:
     def take_now(self) -> None:
         """Take the changes another process made to config.toml, and log what was taken.
 
-        The check compares against the published Config and publishes a new one. The
-        caller asked for the newest settings, so its pin then moves to the published
-        Config. The config-reload middleware runs the check before it binds the
-        request's pin, so no other request's pin moves.
+        The check compares against the published Config and publishes a new one. It
+        leaves every pin as it is; ``refresh_now`` also moves its caller's pin.
         """
         with published_config_scope():
             result = self._adopt()
-        follow_published_config()
         if result is None:
             return
         log.info("Took %s from config.toml.", ", ".join(result.updated))
@@ -83,3 +80,12 @@ class ConfigFileFollower:
             )
         for warning in result.warnings:
             log.warning("%s", warning)
+
+    def refresh_now(self) -> None:
+        """Take the changes in config.toml, then move the caller's pin to the published Config.
+
+        The refresh hook runs this: its caller (the fleet's last retry) asks for the
+        newest settings, also inside a request.
+        """
+        self.take_now()
+        follow_published_config()

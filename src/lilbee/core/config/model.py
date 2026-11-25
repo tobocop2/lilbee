@@ -2131,11 +2131,12 @@ def commit_config(change: Callable[[Config], _T]) -> _T:
     Each assignment validates on the copy, so a refusal raises before anything is
     published. The fields *change* moved are compared by value against the copy's
     source, because the model validator can re-derive a field the change does not
-    name. They go onto the Config published at the time of the store, so a field
-    another thread wrote meanwhile keeps its new value. A request pin moves to the
-    new Config, or to the published one when the write moved nothing, so the request
-    reads its own write either way. ``model_copy`` is shallow, so *change* must
-    assign a field and never mutate a mutable value in place.
+    name. Only they go onto a copy of the Config published at the time of the store:
+    a field another thread wrote meanwhile keeps its new value, and a field the
+    validator re-derived to an equal value keeps its object. A request pin moves to
+    the new Config, or to the published one when the write moved nothing, so the
+    request reads its own write either way. ``model_copy`` is shallow, so *change*
+    must assign a field and never mutate a mutable value in place.
     """
     source = published_config()
     draft = source.model_copy()
@@ -2147,16 +2148,14 @@ def commit_config(change: Callable[[Config], _T]) -> _T:
         if value is not before[key] and value != before[key]
     }
     if not moved:
-        _move_pin(source)
+        _move_pin(published_config())
         return result
     with _publish_lock:
-        latest = published_config()
-        if latest is not source:
-            draft = latest.model_copy()
-            draft.__dict__.update(moved)
-            draft.__pydantic_fields_set__.update(moved)
-        object.__setattr__(_live, "_live_published", draft)
-    _move_pin(draft)
+        published = published_config().model_copy()
+        published.__dict__.update(moved)
+        published.__pydantic_fields_set__.update(moved)
+        object.__setattr__(_live, "_live_published", published)
+    _move_pin(published)
     return result
 
 

@@ -19,6 +19,7 @@ from filelock import FileLock, Timeout
 from lilbee.app.services import get_services, reset_services, set_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
+from lilbee.core.config.model import published_config
 from lilbee.crawler import (
     CRAWLER_MISSING_MESSAGE,
     CrawlResult,
@@ -2541,7 +2542,7 @@ def _oversized_number(config: cb.Recorded) -> str | None:
 
 def _oversized_setting() -> None:
     """Force the timeout past its bound, which no entry point lets through, to reach the engine."""
-    object.__setattr__(cfg, "crawl_timeout", OVERSIZED_TIMEOUT)
+    object.__setattr__(published_config(), "crawl_timeout", OVERSIZED_TIMEOUT)
 
 
 def _refuse_or_overflow(config: cb.Recorded) -> str | None:
@@ -2784,7 +2785,7 @@ class TestRefusedEngine:
 
     async def test_an_error_while_lilbee_builds_the_config_stays_a_failed_crawl(self, isolated_env):
         # Past the validator, which refuses an infinite delay on every entry point.
-        object.__setattr__(cfg, "crawl_mean_delay", float("inf"))
+        object.__setattr__(published_config(), "crawl_mean_delay", float("inf"))
         events: list[EventType] = []
         stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0)])
         with stub.installed():

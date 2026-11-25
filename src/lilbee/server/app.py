@@ -324,7 +324,7 @@ class _ConfigFileReload(ASGIMiddleware):
 
     def __init__(self) -> None:
         self._follower = ConfigFileFollower()
-        set_config_refresh(self._follower.take_now)
+        set_config_refresh(self._follower.refresh_now)
 
     async def handle(self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp) -> None:
         await self._follower.take()

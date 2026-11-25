@@ -42,6 +42,7 @@ from lilbee.core import settings as persistent_settings  # noqa: E402
 from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, Config, cfg  # noqa: E402
 from lilbee.core.config.defaults import SKIP_TOML_ENV  # noqa: E402
 from lilbee.core.config.enums import CrawlRenderMode  # noqa: E402
+from lilbee.core.config.model import published_config  # noqa: E402
 from lilbee.core.crawl_patterns import refused_exclude_patterns  # noqa: E402
 from lilbee.core.web_names import page_stem  # noqa: E402
 from lilbee.crawler import bootstrap, crawl_and_save, save, url_filter  # noqa: E402
@@ -214,7 +215,7 @@ OVERSIZED_REASON = "int too big to convert"
 
 def _force_oversized_timeout() -> None:
     """Set the timeout past its bound, which no entry point lets through, to reach the engine."""
-    object.__setattr__(cfg, "crawl_timeout", OVERSIZED_TIMEOUT)
+    object.__setattr__(published_config(), "crawl_timeout", OVERSIZED_TIMEOUT)
 
 
 # How the user agent of crawlberg's own HTTP client starts.
@@ -1397,7 +1398,7 @@ class TestShellThatCannotRun:
 
 def _force_exclude_patterns(patterns: list[str]) -> None:
     """Set patterns past the setting's check, to reach the refusal crawlberg makes at a crawl."""
-    object.__setattr__(cfg, "crawl_exclude_patterns", patterns)
+    object.__setattr__(published_config(), "crawl_exclude_patterns", patterns)
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
