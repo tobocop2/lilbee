@@ -1474,6 +1474,17 @@ class TestCrossRunReaping:
         assert corrupt.read_text() == "{not json"
         assert json.loads(_own_state_path(tmp_path).read_text())["pid"] == 4321
 
+    def test_reap_reports_whether_it_stopped_an_engine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert sm.reap_stale(tmp_path) is False
+        _write_state(tmp_path, pid=7777, created_at=42.0)
+        stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=42.0)
+        _patch_psutil_process(monkeypatch, {7777: stale})
+        monkeypatch.setattr(sm, "_stop_stale_swap", lambda _state: None)
+        assert sm.reap_stale(tmp_path) is True
+        assert sm.reap_stale(tmp_path) is False
+
     def test_torn_state_file_is_left_in_place_by_reap(self, tmp_path: Path) -> None:
         torn = tmp_path / "llama-swap.state.json"
         torn.write_text('{"pid": 77')  # a sibling's write, caught mid-flight
