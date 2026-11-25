@@ -1135,6 +1135,7 @@ class EngineBuildResponse(BaseModel):
     version: str
     backend: str
     not_run_on: list[str] = []
+    differs_from_pin: bool = False
 
 
 class EngineDamagedResponse(BaseModel):
