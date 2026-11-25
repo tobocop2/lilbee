@@ -26,6 +26,12 @@ def restored_signals():
 
 
 @pytest.fixture
+def pool_exit_stubbed(monkeypatch):
+    """Keep the thread pools' exit hook from running: it sets a flag for the whole process."""
+    monkeypatch.setattr(services_mod, "_end_pool_workers", lambda status: status)
+
+
+@pytest.fixture
 def stop_steps(monkeypatch):
     """Replace the two teardown calls with recorders that note the stop step they run in."""
     lifecycle = _EngineLifecycle()
@@ -189,9 +195,22 @@ def test_flushing_the_logs_survives_a_handler_that_cannot_flush(error):
 @pytest.mark.parametrize("error", [AttributeError, OSError, ValueError])
 @pytest.mark.parametrize("name", ["stdout", "stderr"])
 def test_flushing_the_logs_survives_a_stream_that_cannot_flush(monkeypatch, name, error):
+    # logging.shutdown flushes the handlers first and reads sys.stderr for its last-resort
+    # handler, so it is replaced here: this test is about the two stdio flushes after it.
+    events: list[str] = []
+    other = "stderr" if name == "stdout" else "stdout"
+
+    class _Recorder:
+        def flush(self) -> None:
+            events.append(f"{other} flushed")
+
+    monkeypatch.setattr(services_mod.logging, "shutdown", lambda: events.append("handlers"))
     monkeypatch.setattr(services_mod.sys, name, _FlushFails(error))
+    monkeypatch.setattr(services_mod.sys, other, _Recorder())
 
     services_mod._flush_logs()
+
+    assert events == ["handlers", f"{other} flushed"]
 
 
 def test_the_stragglers_are_the_live_non_daemon_threads_besides_the_caller():
@@ -201,7 +220,7 @@ def test_the_stragglers_are_the_live_non_daemon_threads_besides_the_caller():
     daemon.start()
     straggler.start()
     try:
-        found = services_mod._straggler_threads()
+        found = services_mod.straggler_threads()
     finally:
         release.set()
         straggler.join()
@@ -220,7 +239,7 @@ def test_the_straggler_join_waits_the_time_left_before_the_deadline(monkeypatch)
             waited.append(timeout)
 
     pending = [[_Thread()], []]
-    monkeypatch.setattr(services_mod, "_straggler_threads", lambda: pending.pop(0))
+    monkeypatch.setattr(services_mod, "straggler_threads", lambda: pending.pop(0))
 
     services_mod._exit_if_stragglers(0, time.monotonic() + 2.0)
 
@@ -237,14 +256,14 @@ def test_the_straggler_join_waits_no_time_once_the_deadline_passed(monkeypatch):
             waited.append(timeout)
 
     pending = [[_Thread()], []]
-    monkeypatch.setattr(services_mod, "_straggler_threads", lambda: pending.pop(0))
+    monkeypatch.setattr(services_mod, "straggler_threads", lambda: pending.pop(0))
 
     services_mod._exit_if_stragglers(0, time.monotonic() - 10.0)
 
     assert waited == [0.0]
 
 
-def test_the_straggler_exit_gives_the_stragglers_the_whole_budget(monkeypatch):
+def test_the_straggler_exit_gives_the_stragglers_the_whole_budget(monkeypatch, pool_exit_stubbed):
     deadlines: list[float] = []
     monkeypatch.setattr(services_mod._state, "interactive", True)
     monkeypatch.setattr(
@@ -260,7 +279,7 @@ def test_the_straggler_exit_gives_the_stragglers_the_whole_budget(monkeypatch):
 
 
 def test_the_exit_after_a_signal_gives_the_stragglers_the_whole_budget(
-    monkeypatch, restored_signals
+    monkeypatch, restored_signals, pool_exit_stubbed
 ):
     deadlines: list[float] = []
     monkeypatch.setattr(services_mod._lifecycle, "stop_for_exit", lambda: False)
