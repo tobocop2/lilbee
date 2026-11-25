@@ -101,6 +101,8 @@ def _wiki_progress() -> Iterator[DetailedProgressCallback]:
         transient=True,
         console=PlainConsole(stderr=True),
         disable=cfg.json_mode,
+        redirect_stdout=False,
+        redirect_stderr=False,
     ) as progress:
         task = progress.add_task(msg.WIKI_BUILD_STARTING, total=None)
 
