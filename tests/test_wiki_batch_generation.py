@@ -1396,13 +1396,29 @@ class TestModelCallOutcomes:
     def test_a_run_with_no_calls_did_not_fail(self):
         assert not BuildStats().every_model_call_failed
 
-    @pytest.mark.parametrize("cause", ["engine down", "engine down.", "engine down..."])
-    def test_the_cause_in_the_message_ends_with_one_period(self, cause):
+    @pytest.mark.parametrize(
+        ("cause", "named"),
+        [
+            ("engine down", "engine down"),
+            ("engine down.", "engine down"),
+            ("engine down...", "engine down"),
+            (" ", "RuntimeError"),
+            ("...", "RuntimeError"),
+            (". .", "RuntimeError"),
+            ("", "RuntimeError"),
+        ],
+    )
+    def test_the_cause_in_the_message_is_named_and_ends_with_one_period(self, cause, named):
+        from lilbee.wiki.page import request_wiki_text
+
+        provider = MagicMock()
+        provider.chat.side_effect = RuntimeError(cause)
+        provider.get_capabilities.return_value = []
         stats = BuildStats()
-        stats.record_model_call(cause)
+        assert request_wiki_text("s.txt", "prompt", provider, cfg, stats) is None
         with pytest.raises(RuntimeError) as err:
             stats.raise_if_nothing_written(0)
-        assert "Last error: engine down. Check that" in str(err.value)
+        assert f"Last error: {named}. Check that" in str(err.value)
 
     def test_failed_calls_with_a_page_written_do_not_raise(self):
         stats = BuildStats()

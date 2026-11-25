@@ -68,10 +68,9 @@ class BuildStats:
     def raise_if_nothing_written(self, pages: int) -> None:
         """Raise :class:`WikiBuildError` when *pages* is 0 because every model call failed."""
         if pages == 0 and self.every_model_call_failed:
-            cause = self.last_model_failure.rstrip(". ")
             raise WikiBuildError(
                 f"No wiki pages were written because every model call failed "
-                f"({self.model_calls}). Last error: {cause}. "
+                f"({self.model_calls}). Last error: {self.last_model_failure}. "
                 "Check that the chat model is available, then run the command again."
             )
 
