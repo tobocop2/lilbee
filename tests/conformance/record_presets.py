@@ -88,6 +88,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Startup output of the engine, for an engine whose server has no /memory route.",
     )
     parser.add_argument("--front", default="", help="Proxy in front of the server, if any.")
+    parser.add_argument(
+        "--server-flags",
+        default="",
+        help="Flags the server was started with, saved in the log so a later run can repeat them.",
+    )
     parser.add_argument("--out", required=True, type=Path)
     return parser
 
@@ -285,6 +290,8 @@ def run_log(
         f"devices-from: {source}",
         f"models: {args.models}",
     ]
+    if args.server_flags:
+        lines.append(f"server-flags: {args.server_flags}")
     if args.front:
         lines.append(f"front: {args.front}")
     lines += [f"STEP {args.server} {step} ok={o.ok} {o.detail}" for step, o in results.items()]
