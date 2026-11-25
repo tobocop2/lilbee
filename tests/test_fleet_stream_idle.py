@@ -462,3 +462,55 @@ def test_a_connection_lost_after_the_first_frame_of_a_silent_prefill_is_a_cut_an
         with pytest.raises(StreamInterruptedError) as caught:
             list(stream)
     assert not isinstance(caught.value.__cause__, fleet_client.StreamSilentError)
+
+
+def _live_watchdogs() -> list[threading.Thread]:
+    """The watchdog threads that are alive: the thread name carries its target, ``_run``."""
+    return [thread for thread in threading.enumerate() if thread.name.endswith("(_run)")]
+
+
+def _end_normally(client: LlamaServerClient) -> None:
+    assert "w2" in list(client.chat_stream_items(_MESSAGES))
+
+
+def _end_cut(client: LlamaServerClient) -> None:
+    with pytest.raises(StreamInterruptedError):
+        list(client.chat_stream_items(_MESSAGES))
+
+
+def _end_by_caller_error(client: LlamaServerClient) -> None:
+    stream = client.chat_stream_items(_MESSAGES)
+    assert [next(stream), next(stream)] == ["w0", "w1"]
+    assert len(_live_watchdogs()) == 1
+    with pytest.raises(RuntimeError):
+        stream.throw(RuntimeError("the caller failed"))
+
+
+def _end_by_close(client: LlamaServerClient) -> None:
+    stream = client.chat_stream_items(_MESSAGES)
+    assert [next(stream), next(stream)] == ["w0", "w1"]
+    assert len(_live_watchdogs()) == 1
+    stream.close()
+
+
+@pytest.mark.parametrize(
+    ("script", "end"),
+    [
+        pytest.param(_Script(frames=3, end=True), _end_normally, id="normal-end"),
+        pytest.param(_Script(frames=3), _end_cut, id="cut-by-silence"),
+        pytest.param(_Script(frames=3), _end_by_caller_error, id="caller-error"),
+        pytest.param(_Script(frames=3), _end_by_close, id="close"),
+    ],
+)
+def test_no_watchdog_thread_outlives_its_stream(
+    script: _Script, end: Callable[[LlamaServerClient], None]
+) -> None:
+    """The stream joins its watchdog before it returns, so no thread is left to count.
+
+    Each pass starts one watchdog; the repeats make a join that is missing show as a thread
+    that is still alive at the check.
+    """
+    with _serve(script, silent_prefill=True) as (_server, client):
+        for _ in range(10):
+            end(client)
+            assert _live_watchdogs() == []
