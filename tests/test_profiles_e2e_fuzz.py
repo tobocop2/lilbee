@@ -228,6 +228,9 @@ def _fuzz_and_hostile(
             body(*args, **kwargs)
 
         case.__name__ = body.__name__.replace("test_", "test_hostile_", 1)
+        # Pytest collects a test by its name in the module, so the case is stored there. A
+        # parametrized function needs its own name; stacking marks on the body cannot split it.
+        assert case.__name__ not in body.__globals__, f"{case.__name__} is already defined"
         body.__globals__[case.__name__] = hostile(case)
         return FUZZ(given(**strategies)(body))
 

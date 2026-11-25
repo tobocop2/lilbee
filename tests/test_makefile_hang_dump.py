@@ -1,7 +1,8 @@
-"""The Makefile test recipe arms the hang watchdog with the same setting as CI."""
+"""The Makefile owns the hang watchdog seconds, and no test recipe can run without them."""
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -9,31 +10,53 @@ from pathlib import Path
 
 import pytest
 
+import tests.test_formats as formats
+
 ROOT = Path(__file__).resolve().parent.parent
-CI_SECONDS = re.compile(r'^\s*LILBEE_TEST_HANG_DUMP_S:\s*"(\d+)"', re.MULTILINE)
-RECIPE_SECONDS = re.compile(r"LILBEE_TEST_HANG_DUMP_S=(\S*)")
-RECIPE_DIR = re.compile(r"LILBEE_TEST_HANG_DUMP_DIR=(\S*)")
+SECONDS = "LILBEE_TEST_HANG_DUMP_S"
+FOLDER = "LILBEE_TEST_HANG_DUMP_DIR"
+
+needs_make = pytest.mark.skipif(shutil.which("make") is None, reason="make is not installed")
 
 
-def _ci_seconds() -> str:
-    workflow = ROOT / ".github" / "workflows" / "ci.yml"
-    found = CI_SECONDS.findall(workflow.read_text(encoding="utf-8"))
-    assert len(found) == 1, "CI must set LILBEE_TEST_HANG_DUMP_S once"
-    return found[0]
+def _env() -> dict[str, str]:
+    """The environment of a developer who set neither variable."""
+    return {key: value for key, value in os.environ.items() if key not in (SECONDS, FOLDER)}
 
 
-@pytest.mark.skipif(shutil.which("make") is None, reason="make is not installed")
-def test_the_test_recipe_arms_the_watchdog_with_the_ci_seconds() -> None:
-    recipe = subprocess.run(
-        ["make", "-n", "test"], cwd=ROOT, capture_output=True, encoding="utf-8", check=True
-    ).stdout
-    seconds = RECIPE_SECONDS.search(recipe)
-    folder = RECIPE_DIR.search(recipe)
-    assert seconds is not None and seconds.group(1) == _ci_seconds(), recipe
-    assert folder is not None and folder.group(1), recipe
+def _make(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["make", *args], cwd=ROOT, capture_output=True, encoding="utf-8", env=_env(), check=False
+    )
 
 
-def test_the_makefile_holds_no_second_copy_of_the_seconds() -> None:
-    """The Makefile reads the number from CI; a literal there could drift from it."""
-    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    assert not re.search(r"LILBEE_TEST_HANG_DUMP_S=\d", makefile)
+@needs_make
+def test_every_recipe_inherits_the_watchdog_variables(tmp_path: Path) -> None:
+    """A recipe sees the variables the way pytest does: through its environment."""
+    probe = tmp_path / "probe.mk"
+    probe.write_text(f"show:\n\t@echo $${SECONDS} $${FOLDER}\n", encoding="utf-8")
+    shown = _make("-f", "Makefile", "-f", str(probe), "show")
+    assert shown.returncode == 0, shown.stderr
+    seconds, folder = shown.stdout.split()
+    assert int(seconds) > 0
+    assert folder
+
+
+@needs_make
+def test_an_empty_value_stops_make_instead_of_switching_the_watchdog_off() -> None:
+    stopped = _make("-n", "test", f"{SECONDS}=")
+    assert stopped.returncode != 0
+    assert "the hang watchdog would be off" in stopped.stderr
+
+
+def test_ci_keeps_no_copy_of_the_seconds() -> None:
+    """One owner: a second number in CI could drift from the Makefile's."""
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert not re.search(rf"^\s*{SECONDS}:", workflow, re.MULTILINE)
+    assert re.search(rf"^\s*{FOLDER}:", workflow, re.MULTILINE)
+
+
+def test_the_code_sync_tests_use_the_shared_parser_cache() -> None:
+    """A cold parser download per test once took five workers down together."""
+    marks = [mark for mark in formats.TestSyncCode.pytestmark if mark.name == "usefixtures"]
+    assert [mark.args for mark in marks] == [("code_parsers_ready",)]
