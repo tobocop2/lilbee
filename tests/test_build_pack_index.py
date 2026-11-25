@@ -14,6 +14,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+import yaml
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "build_pack_index.py"
 
@@ -173,3 +174,14 @@ def test_main_fails_when_no_pack_is_public(
     assert bpi.main() == 1
     assert "no engine pack wheels" in capsys.readouterr().err
     assert not (tmp_path / "packs").exists()
+
+
+def test_pages_workflow_builds_the_pack_index() -> None:
+    # The index only reaches lilbee.sh if the deploy job's input holds it: the step
+    # must run the generator into the same dir the compat and backend indexes use.
+    workflow = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "pages.yml").read_text()
+    )
+    steps = workflow["jobs"]["build-wheel-indexes"]["steps"]
+    runs = [s["run"] for s in steps if "build_pack_index.py wheel-indexes" in s.get("run", "")]
+    assert len(runs) == 1
