@@ -6409,14 +6409,16 @@ class TestSigintCancel:
         assert signal.getsignal(signal.SIGINT) is previous
 
     @staticmethod
-    def _left_thread(release: threading.Event) -> threading.Thread:
-        """A non-daemon thread that waits for *release*, as a stuck worker of a run does."""
-        thread = threading.Thread(target=release.wait)
+    def _left_thread(release: threading.Event, *, daemon: bool = False) -> threading.Thread:
+        """A thread that waits for *release*, as a stuck worker of a run does."""
+        thread = threading.Thread(target=release.wait, daemon=daemon)
         thread.start()
         return thread
 
+    # The exit joins an executor's workers also when they are daemon threads.
+    @pytest.mark.parametrize("daemon", [False, True])
     def test_a_sigint_after_a_cancel_force_quits_while_a_left_thread_lives(
-        self, monkeypatch
+        self, monkeypatch, daemon: bool
     ) -> None:
         from lilbee.runtime.cancellation import sigint_cancel
 
@@ -6427,22 +6429,22 @@ class TestSigintCancel:
             raise _Quit
 
         monkeypatch.setattr(svc_mod, "force_quit_from_handler", _quit)
-        previous = signal.getsignal(signal.SIGINT)
+        outer_calls: list[int] = []
+        original = signal.signal(signal.SIGINT, lambda signum, _frame: outer_calls.append(signum))
         release = threading.Event()
         try:
             with sigint_cancel():
                 signal.raise_signal(signal.SIGINT)
-                thread = self._left_thread(release)
+                thread = self._left_thread(release, daemon=daemon)
             with pytest.raises(_Quit):
                 signal.raise_signal(signal.SIGINT)
+            assert outer_calls == []
         finally:
-            signal.signal(signal.SIGINT, previous)
+            signal.signal(signal.SIGINT, original)
             release.set()
         thread.join(timeout=5)
 
-    def test_a_sigint_after_the_left_thread_ends_goes_to_the_previous_handler(
-        self, quits
-    ) -> None:
+    def test_a_sigint_after_the_left_thread_ends_goes_to_the_previous_handler(self, quits) -> None:
         from lilbee.runtime.cancellation import sigint_cancel
 
         outer_calls: list[int] = []
