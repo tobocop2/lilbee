@@ -28,7 +28,7 @@ from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, Host
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS, NpuVendor
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.fleet.model_memory import estimate_memory
+from lilbee.providers.fleet.model_memory import OVMS_RERANK_BATCH, estimate_memory
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "2026.4.1"
@@ -47,8 +47,6 @@ _HOST = "127.0.0.1"
 _INTEL_PCI_VENDOR = 0x8086
 _SERVED_NAME = "default_model"
 """The one name OVMS serves the model under; llama-swap rewrites the model of a request to it."""
-_BATCH_LIMIT = 100
-"""The most documents lilbee sends in one rerank request. The server allows 10000 by default."""
 _TASKS = {
     WorkerRole.CHAT: "text_generation",
     WorkerRole.EMBED: "embeddings",
@@ -92,7 +90,7 @@ _RERANK_PROFILE = replace(
     rerank_path="/v3/rerank",
     rerank_shape=RerankShape.DOCUMENTS,
     rerank_model=_SERVED_NAME,
-    batch_limit=_BATCH_LIMIT,
+    batch_limit=OVMS_RERANK_BATCH,
 )
 
 
@@ -190,6 +188,8 @@ class OvmsAdapter:
 
         An embed launch on the NPU bounds the input and cuts a longer one: the NPU compiles for
         one fixed length. The bound is the smaller of the window and the model's position limit.
+        A chat launch caps the sequences at the slots: lilbee sends the server more requests than
+        it has slots, and the cache of each running sequence is memory the charge does not hold.
         """
         device = _DEVICES.get(request.target, _DEVICES[RoleTarget.CPU])
         bound: list[str] = []
@@ -197,6 +197,8 @@ class OvmsAdapter:
             limit = _position_limit(request.model_path) or request.ctx_per_slot
             limit = min(limit, request.ctx_per_slot)
             bound = ["--max_length", str(limit), "--truncate", "true"]
+        elif spec.role is WorkerRole.CHAT:
+            bound = ["--max_num_seqs", str(request.slots)]
         return [
             str(request.binary),
             "--model_path",
