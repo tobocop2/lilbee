@@ -55,8 +55,7 @@ def _py_spy_dump(pid: int, py_spy: str | None) -> str:
     if py_spy is None:
         return f"{_PY_SPY} is not on PATH"
     try:
-        done = subprocess.run(  # noqa: S603 - a resolved binary and an integer pid
-            [py_spy, "dump", "--pid", str(pid)],
+        done = subprocess.run(            [py_spy, "dump", "--pid", str(pid)],
             capture_output=True,
             encoding="utf-8",
             errors="replace",
