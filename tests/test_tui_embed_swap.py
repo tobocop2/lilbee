@@ -945,7 +945,7 @@ async def test_a_cancel_whose_row_was_cleared_still_stops_the_worker() -> None:
         assert steps == []
 
 
-async def test_a_worker_that_left_the_map_is_unwinding_until_it_makes_its_last_call() -> None:
+async def test_a_worker_that_left_the_map_is_running_until_it_makes_its_last_call() -> None:
     from lilbee.cli.tui.widgets import task_bar_controller
 
     in_last_call = threading.Event()
@@ -961,13 +961,13 @@ async def test_a_worker_that_left_the_map_is_unwinding_until_it_makes_its_last_c
     with mock.patch.object(task_bar_controller, "call_from_thread", held):
         async with _ChatRun() as run:
             controller = run.app.task_bar
-            assert not controller.has_unwinding_workers()
+            assert not controller.has_running_workers()
             controller.start_task("Pull", TaskType.DOWNLOAD, lambda _reporter: None)
             assert await pump_until(run.pilot, in_last_call.is_set)
             assert not controller._workers
-            assert controller.has_unwinding_workers()
+            assert controller.has_running_workers()
             let_go.set()
-            assert await pump_until(run.pilot, lambda: not controller.has_unwinding_workers())
+            assert await pump_until(run.pilot, lambda: not controller.has_running_workers())
 
 
 @pytest.mark.usefixtures("slow_worker_final_call")
