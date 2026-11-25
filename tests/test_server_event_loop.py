@@ -271,6 +271,18 @@ class TestChatSummaryPersistStaysOffTheLoop:
             [f async for f in rag_handlers._context_management_frames([], "", "s1")]
         services.session_store.set_summary.assert_called_once_with("s1", "notes")
 
+    async def test_the_stream_without_a_fresh_summary_saves_and_announces_nothing(self, services):
+        persist = MagicMock()
+        with (
+            patch.object(rag_handlers, "_compaction_pending", return_value=True),
+            patch.object(rag_handlers, "_manage_history", return_value=(["kept"], None)),
+            patch.object(rag_handlers, "_persist_summary", persist),
+        ):
+            frames = [f async for f in rag_handlers._context_management_frames([], "", "s1")]
+        assert frames[-1] == (["kept"], None)
+        assert not any(isinstance(f, str) and "event: compaction" in f for f in frames)
+        persist.assert_not_called()
+
 
 _ANSWER = CanonicalResponse(
     id="msg_test",

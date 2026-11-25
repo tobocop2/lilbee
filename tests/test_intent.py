@@ -24,6 +24,13 @@ class TestDocumentReferences:
     def test_quoted_reference(self):
         assert document_references('what does "harbor survey 2010" say') == ["harbor survey 2010"]
 
+    def test_blank_quoted_span_is_not_a_reference(self):
+        assert document_references('what does "   " say about "harbor survey"') == ["harbor survey"]
+
+    def test_repeated_reference_is_listed_once_ignoring_case(self):
+        refs = document_references("compare report.pdf with REPORT.pdf and Report.pdf")
+        assert refs == ["report.pdf"]
+
     def test_filename_beats_doc_number(self):
         refs = document_references("compare report 12 with summary_final.md")
         assert refs[0] == "summary_final.md"
@@ -71,6 +78,18 @@ class TestTermMentionPhrasings:
         assert parsed is not None
         assert parsed.kind is AggregateKind.TERM_MENTIONS
         assert parsed.term == term
+
+    def test_empty_quoted_term_is_not_a_term_count(self):
+        parsed = parse_aggregate('how many books mention ""?')
+        assert parsed is not None
+        assert parsed.kind is AggregateKind.UNSUPPORTED
+        assert parsed.term == ""
+
+    def test_known_item_with_only_quotes_yields_no_title(self):
+        from lilbee.retrieval.query.intent import title_candidates
+
+        assert title_candidates('summarize ""') == []
+        assert title_candidates("summarize Frankenstein") == ["Frankenstein"]
 
     @pytest.mark.parametrize(
         "question",

@@ -1626,6 +1626,17 @@ class TestAskStream:
             SourceRef("b.pdf", "b.pdf", 2, "page 1"),
         ]
 
+    def test_a_context_without_results_streams_the_answer_and_no_sources(self, mock_svc):
+        from lilbee.retrieval.query.searcher import RagContext
+
+        searcher = get_services().searcher
+        mock_svc.provider.chat.return_value = iter(["Plain answer."])
+        empty = RagContext([], [{"role": "user", "content": "q"}])
+        with mock.patch.object(searcher, "build_rag_context", return_value=empty):
+            events = list(searcher.ask_stream("q"))
+        assert _shown(events) == "Plain answer."
+        assert not any(isinstance(e, AnswerSources) for e in events)
+
     def test_an_answer_with_no_sources_has_no_sources_block(self):
         assert AnswerSources([], {}).block("Oil.") == ""
 
@@ -1961,6 +1972,22 @@ class TestApplyGuardrails:
 
     def test_empty_variants(self, mock_svc):
         assert get_services().searcher._apply_guardrails([], [1.0, 0.0, 0.0]) == []
+
+
+class TestGreedyCover:
+    def test_picks_by_idf_gain_without_relevance_weights(self):
+        from lilbee.retrieval.query.dedup import _greedy_cover
+
+        chunk_tokens = [{"alpha"}, {"beta"}]
+        picked = _greedy_cover(chunk_tokens, {"alpha", "beta"}, {"alpha": 1.0, "beta": 2.0}, 1)
+        assert picked == [1]
+
+    def test_budget_above_chunk_count_returns_every_chunk_in_retrieval_order(self):
+        from lilbee.retrieval.query.dedup import _greedy_cover
+
+        chunk_tokens = [{"alpha"}, {"unrelated"}, {"other"}]
+        picked = _greedy_cover(chunk_tokens, {"alpha"}, {"alpha": 1.0}, 10, [1.0, 1.0, 1.0])
+        assert picked == [0, 1, 2]
 
 
 class TestSelectContext:
@@ -2901,6 +2928,20 @@ class TestSearchContextIntegration:
             cfg.hyde_weight = 0.7
 
 
+class TestHydeMergeLegacyScore:
+    def test_hit_without_a_score_is_appended_unchanged(self, mock_svc):
+        """A pre-score row has nothing to discount, so it joins the pool as it is."""
+        legacy = _make_result(source="legacy.md", score=None)
+        results: list = []
+        seen: set = set()
+        searcher = get_services().searcher
+        with mock.patch.object(searcher, "_hyde_search", return_value=[legacy]):
+            searcher._merge_hyde_results("q", results, seen, 5, None, [])
+        assert results == [legacy]
+        assert results[0].score is None
+        assert seen == {("legacy.md", 0)}
+
+
 class TestKnownItemTitleRoute:
     """Human titles resolve like filenames (repro: 'summarize Frankenstein'
     on a corpus of '<Title>.txt' novels ran topical top-k and pulled a stray
@@ -3751,6 +3792,12 @@ class TestHistoryCondensation:
         )
         assert rewritten == "standalone question"
         assert mock_svc.provider.chat.call_args.kwargs["options"]["think"] is False
+
+    def test_blank_rewrite_falls_back_to_the_raw_question(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("  \n ")
+        question = "and when was it written?"
+        rewritten = get_services().searcher._condense_question(question, list(self._HISTORY))
+        assert rewritten == question
 
     def test_repeats_the_rewrite_with_a_seed_and_no_prompt_cache(self, mock_svc):
         """An unseeded, cached rewrite gives other words, and so other rows, on a second run."""

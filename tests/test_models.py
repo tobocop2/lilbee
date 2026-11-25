@@ -10,6 +10,7 @@ from conftest import PICKS_CHAT, install_fake_model
 from lilbee.core.config import cfg
 from lilbee.modelhub import models
 from lilbee.modelhub.models import ModelInfo
+from lilbee.providers.fleet.engines.choice import ADAPTERS
 from tests._mock_effects import repeat_last
 from tests._unreadable import POSIX_DENIES_READS
 
@@ -569,3 +570,11 @@ class TestEnsureChatModelWithNoEngine:
             pytest.raises(RuntimeError, match="No chat model is installed"),
         ):
             models.ensure_chat_model()
+
+    def test_an_installed_engine_that_loads_the_model_raises_nothing(self, monkeypatch):
+        install_fake_model("tiny/Tiny-1B-GGUF", "tiny-1b-Q4_K_M.gguf", "chat")
+        monkeypatch.setattr(
+            "lilbee.modelhub.models.installed_engines",
+            lambda: {name: adapter.formats for name, adapter in ADAPTERS.items()},
+        )
+        assert models._refuse_a_model_with_no_engine() is None

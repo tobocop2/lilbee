@@ -1303,6 +1303,16 @@ class TestReasoningModePresentation:
         )
         assert body.choices[0].message.content == "all thought, no answer"
 
+    def test_inline_response_without_thinking_passes_the_answer_through(self) -> None:
+        body = canonical_to_completions_response(
+            self._resp("Just the answer."),
+            response_id=_RESPONSE_ID,
+            mode=ReasoningMode.INLINE,
+        )
+        message = body.choices[0].message
+        assert message.content == "Just the answer."
+        assert message.reasoning_content is None
+
     def test_off_response_still_splits_leaked_thinking(self) -> None:
         # A template that ignores enable_thinking still thinks; presentation
         # falls back to the separate split so content stays clean.

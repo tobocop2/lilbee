@@ -579,6 +579,14 @@ class TestRunWorkersRefusal:
             fanout._final_verdicts([FakeProcess(lambda: None, (), "w0")], messages, {})
         assert raised.value is _WARM_REFUSAL
 
+    def test_a_verdict_without_a_refusal_still_in_flight_is_returned(self, monkeypatch):
+        monkeypatch.setattr(fanout, "_FINAL_DRAIN_S", 0.0)
+        messages = queue_mod.Queue()
+        verdict = fanout.ShardDone(kind="done", index=0, result=None, error=None, refusal=None)
+        messages.put(verdict)
+        late = fanout._final_verdicts([FakeProcess(lambda: None, (), "w0")], messages, {})
+        assert late == {0: verdict}
+
 
 class TestRunWorkers:
     async def test_every_worker_reports_and_progress_is_aggregated(self, fake_context, monkeypatch):

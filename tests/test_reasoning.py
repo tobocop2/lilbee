@@ -561,6 +561,30 @@ class TestStreamChatWithCap:
         assert second_closed["value"]
 
 
+class TestTextOnly:
+    def test_non_text_frames_are_dropped(self):
+        from lilbee.retrieval.reasoning import _text_only
+
+        frames = iter(["a", object(), {"usage": 3}, "b"])
+        assert list(_text_only(frames)) == ["a", "b"]
+
+
+class TestCapEventsAsStreamTokens:
+    def test_empty_tokens_are_dropped_and_notices_become_reasoning(self):
+        from lilbee.retrieval.reasoning import CAP_NOTICE_TEMPLATE, cap_events_as_stream_tokens
+
+        events = [
+            StreamToken(content="", is_reasoning=False),
+            StreamToken(content="hi", is_reasoning=False),
+            CapNotice(cap_chars=5),
+        ]
+        out = list(cap_events_as_stream_tokens(iter(events)))
+        assert out == [
+            StreamToken(content="hi", is_reasoning=False),
+            StreamToken(content=CAP_NOTICE_TEMPLATE.format(chars=5), is_reasoning=True),
+        ]
+
+
 class TestStripReasoning:
     def test_strips_think_block(self):
         assert strip_reasoning("<think>internal</think>answer") == "answer"

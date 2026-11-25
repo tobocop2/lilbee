@@ -290,6 +290,24 @@ def test_canonicalize_chat_prefixes_bare_provider_name():
     assert canon.effective == "openai/chatgpt-4o-latest"
 
 
+def test_canonicalize_chat_skips_a_provider_with_no_models():
+    """A provider that lists nothing is passed over for the next keyed one."""
+    cfg.chat_model = "missing/model"
+    listed = mock.MagicMock()
+    listed.name = "gpt-4-test"
+    listed.provider = "OpenAI"
+    with (
+        mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls,
+        mock.patch(
+            "lilbee.modelhub.model_manager.validation.discover_api_models",
+            return_value={"Anthropic": [], "OpenAI": [listed]},
+        ),
+    ):
+        _holding(registry_cls, [])
+        canon = canonicalize_chat_model()
+    assert canon.effective == "openai/gpt-4-test"
+
+
 def test_canonicalize_chat_handles_discover_failure():
     """If discover_api_models throws, canonicalize falls back to local."""
     from lilbee.catalog.types import ModelTask

@@ -4191,6 +4191,18 @@ class TestClassifyResult:
         _classify_result(result, {}, {}, {}, {}, reasons)
         assert reasons["scan.pdf"] == reason
 
+    def test_a_refused_file_is_skipped_without_a_reasons_map(self):
+        from lilbee.data.ingest.pipeline import _classify_result
+        from lilbee.data.types import _IngestResult
+        from lilbee.runtime.progress import BatchStatus
+
+        skipped: dict = {}
+        result = _IngestResult(
+            "big.pdf", Path("big.pdf"), chunk_count=0, error=None, skip_reason="too large"
+        )
+        assert _classify_result(result, {}, {}, {}, skipped) is BatchStatus.SKIPPED
+        assert "big.pdf" in skipped
+
     def test_zero_chunks_not_recorded_as_added(self):
         from lilbee.data.ingest.pipeline import _classify_result
         from lilbee.data.types import _IngestResult
@@ -6455,6 +6467,16 @@ class TestPageTextAccumulator:
         assert {p["page"] for p in pages} == {1, 2}
         assert all(p["content_type"] == "pdf" for p in pages)
 
+    def test_blank_unpaginated_doc_records_no_page(self):
+        from xberg import ExtractedDocument
+
+        from lilbee.data.extract.document import _capture_result_page_texts
+
+        pages: list = []
+        doc = ExtractedDocument(content="  \n\t ", mime_type="text/plain")
+        _capture_result_page_texts(doc, "blank.txt", "text", pages)
+        assert pages == []
+
 
 class TestIngestDocumentEdgeCases:
     async def test_empty_extraction_returns_empty(self, isolated_env):
@@ -8455,6 +8477,13 @@ class TestDetectMoves:
         moves = pipeline._detect_moves(files, added, pool)
         assert [move.new for move in moves] == ["new/a.txt", "new/b.txt"]
         assert {move.candidates for move in moves} == {("old/a.txt", "old/b.txt")}
+
+    def test_an_absent_name_with_no_source_record_offers_no_candidate(self):
+        from lilbee.data.ingest import pipeline
+
+        existing = {"old/a.txt": self._record("old/a.txt", "h1")}
+        pool = pipeline._MovePool(["old/a.txt", "old/unrecorded.txt"], existing)
+        assert pool.candidates("h1") == ("old/a.txt",)
 
     def test_files_of_one_hash_share_one_tuple_of_candidates(self):
         """The plan holds the old names of a content once, however many new files have it."""

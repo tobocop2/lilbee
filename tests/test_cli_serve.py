@@ -249,6 +249,20 @@ class TestRunServer:
 
         assert not (cfg.data_dir / "server.port").exists()
 
+    def test_failed_startup_releases_the_hook_and_skips_shutdown(self):
+        from lilbee.app.services import request_server_exit
+        from lilbee.cli.commands.servers import _run_server
+
+        fake_server_obj = mock.MagicMock()
+        fake_server_obj.startup = mock.AsyncMock(side_effect=RuntimeError("bind failed"))
+        fake_server_obj.shutdown = mock.AsyncMock()
+
+        with pytest.raises(RuntimeError, match="bind failed"):
+            asyncio.run(_run_server(fake_server_obj, mock.MagicMock(), "127.0.0.1"))
+
+        fake_server_obj.shutdown.assert_not_awaited()
+        assert request_server_exit(0) is False
+
     def test_no_servers_skips_port_file(self):
         from lilbee.cli.commands.servers import _run_server
 

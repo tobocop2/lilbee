@@ -212,6 +212,14 @@ class TestLabelPropagation:
         labels = label_propagation(adjacency, order=[0, 1])
         assert labels == [0, 1]
 
+    def test_stops_after_iteration_cap_when_labels_keep_changing(self, monkeypatch):
+        """A pass that still changes labels at the cap ends the loop and returns them."""
+        monkeypatch.setattr("lilbee.retrieval.clustering_embedding.helpers._MAX_LPA_ITERATIONS", 1)
+        adjacency = {0: {1}, 1: {0, 2}, 2: {1}}
+        labels = label_propagation(adjacency, order=[0, 1, 2])
+        # One pass moved nodes 0 and 2 onto label 1; a second pass never ran.
+        assert labels == [1, 1, 1]
+
 
 class TestCommunitiesByLabel:
     def test_groups_by_label(self):

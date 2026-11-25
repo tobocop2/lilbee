@@ -527,6 +527,19 @@ def test_wait_chat_ready_holds_while_a_warm_is_pending(monkeypatch):
     assert app_placement.wait_chat_ready(timeout_s=5) is True
 
 
+def test_wait_chat_ready_keeps_polling_within_the_grace(monkeypatch):
+    """No warm in flight but the grace has not run out: keep polling until chat serves."""
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    done = WarmProgress(phase=WarmPhase.READY)
+    provider = _WaitProvider(ready_after=2, snapshots=[done])
+    monkeypatch.setattr(app_placement, "peek_services", lambda: _WaitServices(provider))
+    monkeypatch.setattr(app_placement, "_CHAT_READY_POLL_S", 0.0)
+    monkeypatch.setattr(app_placement, "_CHAT_READY_GRACE_S", 60.0)
+    assert app_placement.wait_chat_ready(timeout_s=5) is True
+    assert provider.polls == 3
+
+
 def test_wait_chat_ready_stops_on_warm_error(monkeypatch):
     from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 

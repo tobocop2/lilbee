@@ -624,6 +624,17 @@ class TestRerankMinScore:
             cfg.rerank_min_score = None
         assert [r.source for r in reranked] == ["2.md"]
 
+    def test_floor_below_every_score_keeps_all_candidates(self, reranker):
+        cfg.reranker_model = _RERANKER_MODEL
+        cfg.rerank_min_score = 0.1
+        results = [_chunk("a.md", "text a", distance=0.3), _chunk("b.md", "text b", distance=0.4)]
+        try:
+            with _patch_provider(lambda q, docs: [0.2, 0.9]):
+                reranked = reranker.rerank("query", results)
+        finally:
+            cfg.rerank_min_score = None
+        assert sorted(r.source for r in reranked) == ["a.md", "b.md"]
+
     def test_unset_floor_is_off(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
         cfg.rerank_min_score = None

@@ -435,3 +435,26 @@ def test_open_pipe_ref_returns_the_fd_on_posix(monkeypatch):
     from lilbee.runtime._splash_runner import _open_pipe_ref
 
     assert _open_pipe_ref(7) == 7
+
+
+def test_animate_frames_clears_each_frame_when_the_wait_runs_its_full_length(monkeypatch):
+    """A frame that is not stopped during its wait is drawn, waited out, then moved over."""
+    from lilbee.runtime import _splash_runner as sr
+
+    polls_per_frame = int(sr.FRAME_INTERVAL / sr.POLL_INTERVAL)
+    checks = {"n": 0}
+
+    def should_stop() -> bool:
+        checks["n"] += 1
+        # Check 1 starts the loop, then one per wait step, one before the clear, one to end.
+        return checks["n"] > 1 + polls_per_frame + 1
+
+    writes: list[bytes] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr(sr.os, "write", lambda _fd, data: writes.append(data))
+    monkeypatch.setattr(sr.time, "sleep", lambda interval: sleeps.append(interval))
+
+    sr._animate_frames(1, [["logo"]], ["bar"], 0, 4, should_stop)
+
+    assert writes == [sr.render_frame(["logo"], "bar", 0), sr.move_up_and_clear(4)]
+    assert sleeps == [sr.POLL_INTERVAL] * polls_per_frame

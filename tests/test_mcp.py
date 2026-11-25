@@ -3550,6 +3550,59 @@ class TestInlineEnumDefs:
         assert _strip_schema(schema) == schema
 
 
+class TestStripSchemaOddShapes:
+    """The tools wire trims what it understands and passes the rest through untouched."""
+
+    def test_a_union_of_two_real_types_keeps_its_anyof(self):
+        from lilbee.mcp_server import _strip_schema
+
+        union = [{"type": "string"}, {"type": "integer"}]
+        stripped = _strip_schema({"properties": {"v": {"anyOf": union, "title": "V"}}})
+        assert stripped == {"properties": {"v": {"anyOf": union}}}
+
+    def test_a_single_arm_anyof_without_null_keeps_its_anyof(self):
+        from lilbee.mcp_server import _strip_schema
+
+        only = [{"type": "string"}]
+        stripped = _strip_schema({"properties": {"v": {"anyOf": only}}})
+        assert stripped == {"properties": {"v": {"anyOf": only}}}
+
+    def test_a_properties_value_that_is_not_a_mapping_is_left_alone(self):
+        from lilbee.mcp_server import _strip_schema
+
+        stripped = _strip_schema({"title": "T", "properties": ["a", "b"]})
+        assert stripped == {"properties": ["a", "b"]}
+
+    def test_a_property_that_is_not_a_mapping_is_skipped_and_its_siblings_stripped(self):
+        from lilbee.mcp_server import _strip_schema
+
+        stripped = _strip_schema(
+            {"properties": {"odd": "free-form", "n": {"title": "N", "type": "integer"}}}
+        )
+        assert stripped == {"properties": {"odd": "free-form", "n": {"type": "integer"}}}
+
+
+class TestListToolsWithoutDescription:
+    """A tool the framework lists with no description stays without one."""
+
+    async def test_a_tool_without_a_description_keeps_none_and_still_gets_a_trimmed_schema(self):
+        from mcp.server.mcpserver import MCPServer
+        from mcp.types import Tool
+
+        from lilbee.mcp_server import build_mcp_server
+
+        bare = Tool(
+            name="bare",
+            input_schema={"type": "object", "title": "BareArgs", "properties": {}},
+        )
+        assert bare.description is None
+        with mock.patch.object(MCPServer, "list_tools", AsyncMock(return_value=[bare])):
+            tools = await build_mcp_server().list_tools()
+        assert [t.name for t in tools] == ["bare"]
+        assert tools[0].description is None
+        assert "title" not in tools[0].input_schema
+
+
 class TestToolsSchemaSize:
     """Schema budget: keep the per-request OpenAI tools schema under a ceiling
     so any model with ``n_ctx >= ~16K`` has room for system + history + content
