@@ -281,6 +281,8 @@ class SwapManager:
         # Placement divergences by model id, surfaced on health. Guarded because
         # role_ready probes off the provider lock while health reads anytime.
         self._placement_warnings: dict[str, HealthWarning] = {}
+        # Host spills by model id; a spill and a divergence can both hold for one model.
+        self._spill_warnings: dict[str, HealthWarning] = {}
         # Set by a start that finds a router too old to copy a member's output.
         self._router_warning: HealthWarning | None = None
         self._warnings_lock = threading.Lock()
@@ -368,8 +370,7 @@ class SwapManager:
         reads_streams = self._router_reads_streams(router, launches)
         self._estimate_checked.clear()
         self._ready_at = None
-        with self._warnings_lock:
-            self._placement_warnings.clear()
+        self._clear_placement_warnings()
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(
@@ -542,6 +543,9 @@ class SwapManager:
             self._estimate_checked.add(model_id)
             if launch is None:
                 continue
+            # A reload is read afresh: a spill from the last load must not outlive it.
+            with self._warnings_lock:
+                self._spill_warnings.pop(model_id, None)
             # Ready means this role's context loaded, so any reduction taken to
             # get here has done its job and must not follow the role into the
             # next plan, a freed machine, or a model the user switched to.
@@ -560,6 +564,7 @@ class SwapManager:
                 continue
             if launch.est_vram_bytes <= 0:
                 continue
+            spills: list[HealthWarning] = []
             warning = check_launch(
                 self._log_path.parent,
                 model_id,
@@ -569,10 +574,9 @@ class SwapManager:
                 launch.est_vram_by_device,
                 launch.est_unreported_bytes,
                 launch.est_host_bytes,
+                spills,
             )
-            if warning is not None:
-                with self._warnings_lock:
-                    self._placement_warnings[model_id] = warning
+            self._record_findings(model_id, warning, spills)
 
     def _check_memory_estimate(self, model_id: str, launch: InstanceLaunch) -> None:
         """Run the estimate check off the engine's own ``GET /memory``.
@@ -602,6 +606,7 @@ class SwapManager:
             return
         if launch.est_vram_bytes <= 0:
             return
+        spills: list[HealthWarning] = []
         warning = check_memory_report(
             launch.role,
             launch.model,
@@ -609,15 +614,30 @@ class SwapManager:
             launch.est_vram_by_device,
             payload,
             launch.est_host_bytes,
+            spills,
         )
-        if warning is not None:
-            with self._warnings_lock:
-                self._placement_warnings[model_id] = warning
+        self._record_findings(model_id, warning, spills)
+
+    def _record_findings(
+        self, model_id: str, placement: HealthWarning | None, spills: list[HealthWarning]
+    ) -> None:
+        """Keep what a readback found for *model_id*, for :meth:`health_warnings`."""
+        with self._warnings_lock:
+            if placement is not None:
+                self._placement_warnings[model_id] = placement
+            if spills:
+                self._spill_warnings[model_id] = spills[-1]
+
+    def _clear_placement_warnings(self) -> None:
+        """Forget every readback finding; the engines they describe are gone or restarting."""
+        with self._warnings_lock:
+            self._placement_warnings.clear()
+            self._spill_warnings.clear()
 
     def health_warnings(self) -> list[HealthWarning]:
-        """Placement divergences from ready engines in this group, and an outdated router."""
+        """Placement divergences and host spills of ready engines, and an outdated router."""
         with self._warnings_lock:
-            warnings = list(self._placement_warnings.values())
+            warnings = [*self._placement_warnings.values(), *self._spill_warnings.values()]
             if self._router_warning is not None:
                 warnings.append(self._router_warning)
             return warnings
@@ -685,6 +705,7 @@ class SwapManager:
             self._launches_payload = []
             return
         _stop_own_fleet(self._config_path, tuple(self._member_ports))
+        self._clear_placement_warnings()
         # Nothing is coming back to bind these, so the picker can offer them again.
         release_reserved_ports([*self._member_ports, *([self._port] if self._port else [])])
         self._state_path.unlink(missing_ok=True)
