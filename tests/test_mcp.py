@@ -1470,6 +1470,11 @@ class TestAddWithUrls:
             assert "error" in result
             assert "pip install" in result["error"].lower()
 
+    async def test_add_url_with_a_crawler_that_cannot_load(self, isolated_env, broken_crawlberg):
+        result = await add(paths=["https://example.com"])
+        assert broken_crawlberg in result["error"]
+        assert "pip install --force-reinstall 'lilbee[crawler]'" in result["error"]
+
     @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
@@ -1832,6 +1837,11 @@ class TestCrawl:
             result = await crawl(url="https://example.com")
             assert "error" in result
             assert "pip install" in result["error"].lower()
+
+    async def test_crawler_that_cannot_load(self, broken_crawlberg):
+        result = await crawl(url="https://example.com")
+        assert broken_crawlberg in result["error"]
+        assert "pip install --force-reinstall 'lilbee[crawler]'" in result["error"]
 
     def test_crawl_is_async_so_it_runs_on_the_loop(self):
         """crawl must be a coroutine function: _offload_sync passes async handlers
