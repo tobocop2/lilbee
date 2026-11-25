@@ -1054,7 +1054,7 @@ class TestDiagnosticsRouting:
 
         set_explicit_verbosity(False)
         with mock.patch("pathlib.Path.mkdir", side_effect=OSError("read-only fs")):
-            assert route_diagnostics_to_log_file() is None
+            assert route_diagnostics_to_log_file(mock.MagicMock()) is None
 
     def test_routing_removes_the_stderr_stream_handler(self, tmp_path: Path) -> None:
         """The console handler basicConfig installed is detached so diagnostics
@@ -1070,7 +1070,7 @@ class TestDiagnosticsRouting:
         try:
             with mock.patch("lilbee.cli.log_routing.cfg") as m_cfg:
                 m_cfg.data_root = tmp_path
-                path = route_diagnostics_to_log_file()
+                path = route_diagnostics_to_log_file(mock.MagicMock())
             assert path is not None
             assert stderr_handler not in root.handlers
         finally:
@@ -1121,6 +1121,18 @@ class TestDiagnosticsRouting:
         assert "Sync reconciliation" not in result.stdout
         log_text = (isolated_env / "logs" / "cli.log").read_text()
         assert "Sync reconciliation" in log_text
+
+    def test_search_leaves_no_log_handler_and_capture_off_when_it_ends(self, mock_svc, isolated_env):
+        import warnings
+
+        mock_svc.searcher.search_report.return_value = SearchReport([])
+        root = logging.getLogger()
+        handlers_before = list(root.handlers)
+        result = runner.invoke(app, ["search", "q"])
+        assert result.exit_code == 0
+        assert (isolated_env / "logs" / "cli.log").exists()
+        assert root.handlers == handlers_before
+        assert warnings.showwarning.__module__ != "logging"
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_explicit_log_level_keeps_stderr_routing(self, mock_sync, mock_svc, isolated_env):
