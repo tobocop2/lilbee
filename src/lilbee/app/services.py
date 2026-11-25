@@ -1055,10 +1055,9 @@ def end_command(stop: SystemExit) -> NoReturn:
     The interpreter joins every non-daemon thread and every pool worker before atexit,
     with no bound, and a signal during that join loses its status. With such a thread
     left, the pools' own exit hook first ends their idle workers (``_end_pool_workers``).
-    A thread still
-    busy after that takes the bounded exit: the engine stop, the straggler budget, then
-    the end of the process. A signal meanwhile sets the status. With no thread left, it
-    raises *stop*, so the interpreter's exit and atexit run as before.
+    A thread still busy after that takes the bounded exit: the engine stop, the straggler
+    budget, then the end of the process. A signal meanwhile sets the status. With no
+    thread left, it raises *stop*, so the interpreter's exit and atexit run as before.
     """
     if straggler_threads():
         code = exit_code_of(stop)
