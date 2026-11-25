@@ -67,15 +67,15 @@ export ENGINE_PACKS_CELLS
 LILBEE_TEST_HANG_DUMP_S ?= 90
 LILBEE_TEST_HANG_DUMP_DIR ?= $(or $(TMPDIR),/tmp)/lilbee-hang-dumps
 UNIT_TEST_RECIPES := test test-ci test-ci-split test-ci-serial test-ci-forked
-LONG_TEST_RECIPES := test-integration test-presets
 .PHONY: hang-dump-guard
 hang-dump-guard:
 	@$(if $(strip $(LILBEE_TEST_HANG_DUMP_S)),:,$(error LILBEE_TEST_HANG_DUMP_S is empty: the hang watchdog would be off))
 $(UNIT_TEST_RECIPES): hang-dump-guard
 $(UNIT_TEST_RECIPES): export LILBEE_TEST_HANG_DUMP_S := $(LILBEE_TEST_HANG_DUMP_S)
 $(UNIT_TEST_RECIPES): export LILBEE_TEST_HANG_DUMP_DIR := $(LILBEE_TEST_HANG_DUMP_DIR)
-# A value from the developer's shell reaches every recipe, so the long ones drop it.
-$(LONG_TEST_RECIPES): unexport LILBEE_TEST_HANG_DUMP_S LILBEE_TEST_HANG_DUMP_DIR
+# A value from the developer's shell reaches every recipe. Only the unit recipes above
+# export it again, so the long recipes never see the variables.
+unexport LILBEE_TEST_HANG_DUMP_S LILBEE_TEST_HANG_DUMP_DIR
 
 test:
 	uv run pytest --cov=lilbee --cov-report=term-missing -v $(XDIST)
