@@ -617,6 +617,14 @@ class DeviceRefusedError(ProviderError):
     """The engine reports the model on a device other than the one the role was placed on."""
 
 
+def is_replica_failure(exc: Exception) -> bool:
+    """Whether *exc* means this replica cannot serve the request but a sibling might.
+
+    A dead replica, or one whose device check refused it before any request was sent.
+    """
+    return is_connection_failure(exc) or isinstance(exc, DeviceRefusedError)
+
+
 def retry_on_gateway_error(
     call: Callable[[], _T], *, retries: int = _GATEWAY_RETRIES, deadline: float | None = None
 ) -> _T:
@@ -696,7 +704,10 @@ class LlamaServerClient:
         self._load = load
         self._device_ok = False
         self._device_refusal: str | None = None
-        self._device_lock = threading.Lock()
+        # The condition guards the state below and is never held across the load: a
+        # request that waits for the check waits on the condition, with its lock free.
+        self._device_cond = threading.Condition()
+        self._device_checking = False
         # The thread that runs the check; its own load request passes the gate.
         self._device_checker: int | None = None
         # Chat-role clients re-inline server-extracted reasoning as <think> text;
@@ -1048,7 +1059,7 @@ class LlamaServerClient:
             **self._wire_options(options),
             "stream": True,
         }
-        with self._track():
+        with self._track(cancel):
             return asyncio.run(self._chat_until_stopped(payload, deadline_s, cancel))
 
     async def _chat_until_stopped(
@@ -1972,7 +1983,7 @@ class LlamaServerClient:
         if refusal is not None:
             raise DeviceRefusedError(refusal, provider=label, kind=ProviderErrorKind.BAD_REQUEST)
 
-    def ensure_device(self) -> None:
+    def ensure_device(self, cancel: CancelSignal | None = None) -> None:
         """Raise unless the engine reports the model on the device it was placed on.
 
         Every request counted in flight runs this first (see :meth:`_track`), so the
@@ -1982,31 +1993,42 @@ class LlamaServerClient:
         goes on. A refusal stops the upstream and stays on this client: every later
         request raises it and none reaches the upstream. An unreadable reply raises,
         and the next request reads again.
+
+        A request that waits for another request's check ends with
+        ``TaskCancelledError`` once *cancel* is set or this client closes.
         """
         check = self._profile.device_check
         if check is None or self._device_ok or self._device_checker == threading.get_ident():
             return
         self._raise_device_refusal()
-        with self._device_lock:
+        with self._device_cond:
+            while self._device_checking:
+                if self._closing.is_set() or (cancel is not None and cancel.is_set()):
+                    raise TaskCancelledError
+                self._device_cond.wait(_CANCEL_POLL_S)
             self._raise_device_refusal()
             if self._device_ok:
                 return
             # The reservation keeps a reload on another thread from closing this
             # client between the requests of the check.
             self.reserve()
+            self._device_checking = True
             self._device_checker = threading.get_ident()
-            try:
-                if self._load is not None:
-                    self._load(self)
-                self._confirm_device(check)
-            except DeviceRefusedError as exc:
-                self._device_refusal = str(exc)
-                self.unload_upstream()
-                raise
-            finally:
-                self._device_checker = None
-                self.release()
+        try:
+            if self._load is not None:
+                self._load(self)
+            self._confirm_device(check)
             self._device_ok = True
+        except DeviceRefusedError as exc:
+            self._device_refusal = str(exc)
+            self.unload_upstream()
+            raise
+        finally:
+            with self._device_cond:
+                self._device_checking = False
+                self._device_checker = None
+                self._device_cond.notify_all()
+            self.release()
 
     @property
     def needs_device_check(self) -> bool:
@@ -2202,9 +2224,9 @@ class LlamaServerClient:
         if self._owns_http:
             self._http.close()
 
-    def _track(self) -> _InFlight:
-        """Count one request in flight; the device gate runs first."""
-        self.ensure_device()
+    def _track(self, cancel: CancelSignal | None = None) -> _InFlight:
+        """Count one request in flight; the device gate runs first and honours *cancel*."""
+        self.ensure_device(cancel)
         return _InFlight(self)
 
 
