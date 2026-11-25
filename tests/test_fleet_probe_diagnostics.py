@@ -305,6 +305,58 @@ class TestAnEmptyProbeIsRetriedByOneLadder:
         planning_mod._current_plan_probe(engine)
         assert engine.probes - captured == 5
 
+    def test_a_cold_build_with_an_always_empty_probe_takes_one_ladder(
+        self, monkeypatch, _host
+    ) -> None:
+        from lilbee.providers.fleet import planning as planning_mod
+
+        monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 1)
+        engine = _FakeEngine([self._empty()])
+        planning_mod.assert_engine_probeable(engine)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: engine})
+        assert engine.probes == 5
+        assert sum(_host) == pytest.approx(2.0)
+
+    def test_a_binary_change_between_the_check_and_the_capture_probes_again(
+        self, monkeypatch
+    ) -> None:
+        from lilbee.providers.fleet import planning as planning_mod
+
+        monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 1)
+        identity = ["v1"]
+        monkeypatch.setattr(planning_mod, "engine_binary_identity", lambda _b: identity[0])
+        engine = _FakeEngine([self._empty()])
+        planning_mod.assert_engine_probeable(engine)
+        identity[0] = "v2"
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: engine})
+        assert engine.probes == 10
+
+    def test_an_empty_check_older_than_the_window_is_probed_again(self, monkeypatch) -> None:
+        import time
+        from types import SimpleNamespace
+
+        from lilbee.providers.fleet import planning as planning_mod
+
+        now = [1000.0]
+        monkeypatch.setattr(
+            planning_mod, "time", SimpleNamespace(monotonic=lambda: now[0], sleep=time.sleep)
+        )
+        monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 1)
+        engine = _FakeEngine([self._empty()])
+        planning_mod.assert_engine_probeable(engine)
+        now[0] += planning_mod._DEVICE_PROBE_TTL_S + 1
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: engine})
+        assert engine.probes == 10
+
+    def test_a_check_that_found_a_card_is_followed_by_a_fresh_capture(self, monkeypatch) -> None:
+        from lilbee.providers.fleet import planning as planning_mod
+
+        monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 1)
+        engine = _FakeEngine([self._card()])
+        planning_mod.assert_engine_probeable(engine)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: engine})
+        assert engine.probes == 2
+
     def test_the_missing_gpu_warning_is_logged_once_per_probe(self, caplog) -> None:
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
             self._build(_FakeEngine([self._empty()]))
