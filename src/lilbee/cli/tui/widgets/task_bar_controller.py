@@ -153,6 +153,9 @@ class TaskBarController:
         self._task_targets: dict[str, tuple[TaskTarget, Callable[[], None] | None]] = {}
         # task_id -> its started worker thread, joined by stop_all at exit.
         self._workers: dict[str, _TaskWorker] = {}
+        # Workers that left _workers and have not returned yet: each still has its last
+        # call into the app to make. Guarded by _lock; a finished thread is dropped on read.
+        self._unwinding: set[threading.Thread] = set()
         # Held to enqueue a task with its target, to promote a row with the start of its
         # worker, to start a detection, to begin the stop, and for every use of _workers.
         self._lock = threading.Lock()
@@ -502,6 +505,16 @@ class TaskBarController:
             if thread is not None:
                 thread.join(max(0.0, deadline - time.monotonic()))
 
+    def has_unwinding_workers(self) -> bool:
+        """True while a worker that left the worker map has not yet returned.
+
+        Such a worker has ended its task, but it still makes one call into the app, so
+        the app must stay up until it returns.
+        """
+        with self._lock:
+            self._unwinding = {thread for thread in self._unwinding if thread.is_alive()}
+            return bool(self._unwinding)
+
     def _run_task_worker(self, task: Task) -> None:
         """Body of the daemon worker thread."""
         task_id = task.task_id
@@ -529,7 +542,8 @@ class TaskBarController:
         finally:
             self._task_targets.pop(task_id, None)
             with self._lock:
-                self._workers.pop(task_id, None)
+                if self._workers.pop(task_id, None) is not None:
+                    self._unwinding.add(threading.current_thread())
             # After the pop, so a listener that asks has_live_work sees this worker gone.
             call_from_thread(self.app, self._work_ended, task_id)
 
