@@ -134,6 +134,7 @@ class _FakeManager:
         on_notice=None,
         on_retry=None,
         allow_unsupported=False,
+        report_no_engine=True,
         cancel=None,
     ):
         self.pull_calls.append((model, source))
