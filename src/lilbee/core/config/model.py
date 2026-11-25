@@ -1545,7 +1545,7 @@ class Config(BaseSettings):
 
     @field_validator("ollama_base_url", "lm_studio_base_url", mode="after")
     @classmethod
-    def _strip_trailing_slash(cls, v: str) -> str:
+    def _strip_trailing_slash(cls, v: str, info: ValidationInfo) -> str:
         """Canonicalize a local-server URL once at the write boundary.
 
         Every request to a local server builds its URL from this value, so an address that
@@ -1559,10 +1559,13 @@ class Config(BaseSettings):
         try:
             httpx.Request("GET", v)
         except (httpx.InvalidURL, ValueError):
+            from lilbee.providers.local_servers import LOCAL_SERVERS
+
+            # The setting is "<server key>_base_url"; the example is that server's own default.
+            spec = next(s for s in LOCAL_SERVERS if f"{s.key}_base_url" == info.field_name)
             raise ValueError(
                 "The address is not a valid web address. "
-                "Write it as a URL with a scheme, host and port, "
-                "for example http://localhost:11434"
+                f"Write it with a scheme and a host, for example {spec.default_base_url}"
             ) from None
         return v.rstrip("/")
 
