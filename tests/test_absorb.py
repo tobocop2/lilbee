@@ -1705,6 +1705,7 @@ def _generate(store: Store, subdir: str, sources: list[str], body: str) -> Path:
         sources,
         "entities",
         source_ids=store.source_ids(sources, SourceType.DOCUMENT),
+        live_ids=store.source_paths,
     )
 
 
@@ -1795,6 +1796,48 @@ class TestADraftSurvivesAMoveOfItsSources:
         )
 
         assert _drafts() == []
+
+    def test_a_rebuild_keeps_one_draft_after_the_page_is_generated_again(
+        self, library, notes, pending
+    ):
+        store, keys = pending
+        before = store.source_ids(keys, SourceType.DOCUMENT)
+        store.drop_all()
+        for name in keys:
+            _seed(store, name)
+        assert set(store.source_ids(keys, SourceType.DOCUMENT).values()).isdisjoint(
+            before.values()
+        )
+
+        _generate(store, "entities", keys, _SECOND)
+
+        assert _drafts() == ["boeing.md"]
+
+    def test_a_collision_draft_for_the_same_sources_keeps_its_name_after_a_move(
+        self, library, notes, pending
+    ):
+        from lilbee.wiki.persistence import divert_concept_collision
+
+        store, _keys_before = pending
+
+        def collide(names: list[str]) -> Path:
+            return divert_concept_collision(
+                slug="boeing",
+                source=", ".join(names),
+                source_names=names,
+                first_source="wiki/entities/boeing.md",
+                content=_page_text(names, _SECOND),
+                drafts_dir=cfg.data_root / cfg.wiki_dir / "drafts",
+                origin_subdir="entities",
+                source_ids=store.source_ids(names, SourceType.DOCUMENT),
+            )
+
+        first = collide(["work/budget.md", "work/plan.md"])
+        store.relocate_sources([SourceMove(("work/plan.md",), "work/sub/plan.md", None)])
+        second = collide(["work/budget.md", "work/sub/plan.md"])
+
+        assert second == first
+        assert [name for name in _drafts() if "-collision-" in name] == [first.name]
 
     def test_another_pages_sources_still_collide(self, library, notes, pending):
         store, _keys_before = pending
