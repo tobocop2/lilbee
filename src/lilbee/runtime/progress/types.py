@@ -2,7 +2,7 @@
 
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 from lilbee.core.config.enums import OcrMode
 
@@ -298,11 +298,39 @@ class UpgradePhase(StrEnum):
 
 
 class TableWork(StrEnum):
-    """What an upgrade does to the table in progress, as the line words it."""
+    """What an upgrade does to the table in progress. The values are stable for clients."""
 
     UPDATING = "updating"
     CHECKING = "checking"
-    ADDING_IDS = "adding ids to"
+    ADDING_IDS = "adding_ids"
+
+
+class UpgradeTable(StrEnum):
+    """The table an upgrade works on. The values are stable for clients."""
+
+    SOURCES = "sources"
+    CHUNKS = "chunks"
+    PAGE_TEXTS = "page_texts"
+    CHUNK_CONCEPTS = "chunk_concepts"
+    ENTITIES = "entities"
+    CITATIONS = "citations"
+    WIKI_MENTIONS = "wiki_mentions"
+
+
+_WORK_WORDS: dict[TableWork, str] = {
+    TableWork.UPDATING: "updating",
+    TableWork.CHECKING: "checking",
+    TableWork.ADDING_IDS: "adding ids to",
+}
+_TABLE_WORDS: dict[UpgradeTable, str] = {
+    UpgradeTable.SOURCES: "source list",
+    UpgradeTable.CHUNKS: "search chunks",
+    UpgradeTable.PAGE_TEXTS: "page text",
+    UpgradeTable.CHUNK_CONCEPTS: "concept links",
+    UpgradeTable.ENTITIES: "entities",
+    UpgradeTable.CITATIONS: "citations",
+    UpgradeTable.WIKI_MENTIONS: "wiki mentions",
+}
 
 
 UPGRADE_HEADLINE = (
@@ -328,14 +356,15 @@ class LibraryUpgradeEvent(BaseModel):
     """Emitted while an open upgrades the library: the wait, each table, then the end.
 
     ``tables_done`` of ``tables_total`` counts finished tables, so it only rises;
-    ``work``, ``table`` and ``rows`` say what is done to the one in progress;
-    ``elapsed_s`` is the time since the upgrade began, wait included. A table event that
-    names no table says the upgrade runs a step that reports no table.
+    ``work``, ``table`` and ``rows`` say what is done to the one in progress, as stable
+    machine values; ``text`` is the display line for them. ``elapsed_s`` is the time
+    since the upgrade began, wait included. A table event that names no table says the
+    upgrade runs a step that reports no table.
     """
 
     phase: UpgradePhase
     work: TableWork | None = None
-    table: str = ""
+    table: UpgradeTable | None = None
     rows: int = 0
     tables_done: int = 0
     tables_total: int = 0
@@ -348,11 +377,18 @@ class LibraryUpgradeEvent(BaseModel):
 
     def line_at(self, elapsed_s: float) -> str:
         """The line every surface shows for this event, *elapsed_s* into the upgrade."""
-        fields = self.model_dump() | {"elapsed_s": elapsed_s, "seconds": int(elapsed_s)}
-        if self.phase is UpgradePhase.TABLE and not self.table:
-            return _UPGRADE_START_TEXT.format(**fields)
-        return _UPGRADE_TEXT[self.phase].format(**fields)
+        if self.phase is UpgradePhase.TABLE and self.table is None:
+            return _UPGRADE_START_TEXT.format(seconds=int(elapsed_s))
+        return _UPGRADE_TEXT[self.phase].format(
+            tables_done=self.tables_done,
+            tables_total=self.tables_total,
+            work="" if self.work is None else _WORK_WORDS[self.work],
+            table="" if self.table is None else _TABLE_WORDS[self.table],
+            seconds=int(elapsed_s),
+            elapsed_s=elapsed_s,
+        )
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def text(self) -> str:
         """The line every surface shows for this event, at the time it was emitted."""
