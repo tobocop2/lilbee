@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from filelock import FileLock
 
 from lilbee.catalog import download_process as dp
 from lilbee.catalog.download import ListingFailedError, ListingOfflineError
@@ -945,6 +946,73 @@ def test_a_sibling_download_of_the_same_repo_keeps_its_partial(
 
     assert not mine.exists()
     assert sibling.exists()
+
+
+def _hold_blob_lock(tmp_path: Path, blob: str) -> FileLock:
+    """Take the lock huggingface_hub holds for the whole transfer of *blob*."""
+    lock_file = tmp_path / ".locks" / "models--acme--x-GGUF" / f"{blob}.lock"
+    lock_file.parent.mkdir(parents=True)
+    lock = FileLock(lock_file)
+    lock.acquire()
+    return lock
+
+
+def test_a_stalled_child_does_not_delete_the_partial_of_a_live_transfer_of_its_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Two downloads of one file: the hub lets one write and the other wait on the lock.
+
+    The terminated child may be the waiting one. The partial in the folder then
+    belongs to the healthy transfer that holds the lock, and it must stay.
+    """
+    blobs = tmp_path / "models--acme--x-GGUF" / "blobs"
+    blobs.mkdir(parents=True)
+    healthy = blobs / "abc123.4f2a91cc.incomplete"
+    healthy.write_bytes(b"x" * 16)
+    lock = _hold_blob_lock(tmp_path, "abc123")
+    _shorten_deadline(monkeypatch, 0.05, 1024)
+    _wire_attempts(
+        monkeypatch,
+        [
+            [dp._Probed(kind="probed", blob="abc123")],
+            [dp._Done(kind="done", path=str(tmp_path / "x.gguf"))],
+        ],
+        [_FakeWorker(), _FakeWorker()],
+    )
+    try:
+        dp.download_in_subprocess(
+            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+        )
+    finally:
+        lock.release()
+
+    assert healthy.exists()
+
+
+def test_a_stalled_child_deletes_its_partial_once_the_blob_lock_is_free(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A lock file left behind by a finished transfer holds nobody, so the cleanup runs."""
+    blobs = tmp_path / "models--acme--x-GGUF" / "blobs"
+    blobs.mkdir(parents=True)
+    partial = blobs / "abc123.4f2a91cc.incomplete"
+    partial.write_bytes(b"x" * 16)
+    _hold_blob_lock(tmp_path, "abc123").release()
+    _shorten_deadline(monkeypatch, 0.05, 1024)
+    _wire_attempts(
+        monkeypatch,
+        [
+            [dp._Probed(kind="probed", blob="abc123")],
+            [dp._Done(kind="done", path=str(tmp_path / "x.gguf"))],
+        ],
+        [_FakeWorker(), _FakeWorker()],
+    )
+
+    dp.download_in_subprocess(
+        _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+    )
+
+    assert not partial.exists()
 
 
 def test_a_child_that_never_named_a_blob_deletes_nothing(
