@@ -314,6 +314,18 @@ def test_windows_stop_kills_serve_that_ignores_ctrl_break(monkeypatch) -> None:
     proc.kill.assert_called_once()
 
 
+def test_windows_stop_kills_serve_when_ctrl_break_cannot_be_sent(monkeypatch) -> None:
+    """A launcher with no console (pythonw, a service) cannot send CTRL_BREAK."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(signal, "CTRL_BREAK_EVENT", _CTRL_BREAK, raising=False)
+    proc = mock.MagicMock()
+    proc.poll.return_value = None
+    proc.send_signal.side_effect = OSError("no console")
+    server_mod.stop_spawned_server(proc)
+    proc.kill.assert_called_once()
+    proc.wait.assert_called_once_with(timeout=server_mod._KILL_GRACE_S)
+
+
 def test_quiet_mode_routes_output_to_devnull(monkeypatch, _capture_popen) -> None:
     monkeypatch.setenv("LILBEE_LAUNCHER_SERVE_QUIET", "1")
     server_mod.spawn_server(8080)
