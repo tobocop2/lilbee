@@ -976,9 +976,10 @@ class TestSyncMark:
         resetter.start()
         assert held.wait(5)
         sync_task = asyncio.create_task(_sync())
-        started = time.monotonic()
         await asyncio.sleep(0.3)
-        assert time.monotonic() - started < 2, "the wait for the reset blocked the event loop"
+        # The reset still holds the mark: a wait that held the loop could only end after
+        # the reset gave up its own 5 s wait.
+        assert resetter.is_alive(), "the wait for the reset blocked the event loop"
         assert not entered.is_set()
         release.set()
         await asyncio.wait_for(sync_task, 5)
