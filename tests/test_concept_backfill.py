@@ -5,9 +5,11 @@ A real store and a real concept graph; spaCy and Leiden are stand-ins.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pyarrow as pa
 import pytest
 
 from lilbee.app.services import set_services
@@ -47,13 +49,18 @@ class _FakeNlp:
         return [self._doc(text) for text in texts]
 
 
+# The community the Leiden stand-in assigns. A concept write puts each node in
+# community 0, so a node in this one was clustered.
+CLUSTERED = 7
+
+
 def _one_community(edge_rows):
-    """Leiden stand-in: every concept in community 0."""
+    """Leiden stand-in: every concept in community CLUSTERED, degree = its edge count."""
     degrees: dict[str, int] = {}
     for row in edge_rows:
         for node in (row["source"], row["target"]):
             degrees[node] = degrees.get(node, 0) + 1
-    return {node: 0 for node in degrees}, degrees
+    return {node: CLUSTERED for node in degrees}, degrees
 
 
 @pytest.fixture(autouse=True)
@@ -120,11 +127,22 @@ class _Library:
     def _ids(self) -> dict[str, str]:
         return self.store.source_ids(list(WORDS), SourceType.DOCUMENT)
 
+    @staticmethod
+    def add_blank(name: str) -> None:
+        """A document in which the stand-in finds no concept."""
+        (cfg.documents_dir / name).write_text("zzz qqq. " * 40, encoding="utf-8")
+
     def clustered_concepts(self) -> set[str]:
         table = self.store.open_table(CONCEPT_NODES_TABLE)
         if table is None:
             return set()
         return {row["concept"] for row in table.search().limit(None).to_list()}
+
+    def node_rows(self) -> list[tuple[str, int, int]]:
+        """(concept, cluster id, degree) of every node row, sorted."""
+        table = self.store.open_table(CONCEPT_NODES_TABLE)
+        rows = table.search().limit(None).to_list()
+        return sorted((row["concept"], row["cluster_id"], row["degree"]) for row in rows)
 
     def extracted_words(self) -> set[str]:
         words = {word.strip(".") for text in self.nlp.texts for word in text.split()}
@@ -141,12 +159,71 @@ async def test_turning_the_graph_on_builds_it_for_the_indexed_documents():
     await sync(quiet=True)
 
     assert library.sources_with_concepts() == {"a.txt", "b.txt"}
-    assert {"apple", "banana", "durian", "elder"} <= library.clustered_concepts()
+    # One clustered row per concept: the recluster replaced the rows each write added.
+    words = sorted(f"{WORDS['a.txt']} {WORDS['b.txt']}".split())
+    assert library.node_rows() == [(word, CLUSTERED, 2) for word in words]
+
+
+async def test_the_backfill_logs_its_start_each_batch_and_its_end(caplog):
+    library = _Library()
+    library.add("a.txt", "b.txt", "c.txt")
+    await sync(quiet=True)
+    cfg.concept_graph = True
+
+    with (
+        patch("lilbee.retrieval.concepts.backfill._SOURCES_PER_BATCH", 2),
+        caplog.at_level(logging.INFO, logger="lilbee.retrieval.concepts.backfill"),
+    ):
+        await sync(quiet=True)
+
+    assert [r.getMessage() for r in caplog.records if r.name.endswith("backfill")] == [
+        "Building concept rows for 3 sources indexed without them",
+        "Concept rows built for 2 of 3 sources",
+        "Concept rows built for 3 of 3 sources",
+    ]
+
+
+async def test_a_failed_recluster_after_the_backfill_runs_on_the_next_sync():
+    library = _Library()
+    library.add("a.txt", "b.txt")
+    await sync(quiet=True)
+    cfg.concept_graph = True
+    with patch.object(ConceptGraph, "_rebuild_all", side_effect=RuntimeError("stopped")):
+        await sync(quiet=True)
+    assert library.store.concepts_covered() is None
+    assert {cluster for _, cluster, _ in library.node_rows()} == {0}
+
+    await sync(quiet=True)
+
+    words = sorted(f"{WORDS['a.txt']} {WORDS['b.txt']}".split())
+    assert library.node_rows() == [(word, CLUSTERED, 2) for word in words]
+    assert library.store.concepts_covered().version == library.store.sources_version()
+
+
+async def test_a_failed_recluster_after_a_later_backfill_runs_on_the_next_sync():
+    library = _Library()
+    library.add("a.txt")
+    cfg.concept_graph = True
+    await sync(quiet=True)
+    cfg.concept_graph = False
+    library.add("b.txt")
+    await sync(quiet=True)
+    cfg.concept_graph = True
+    with patch.object(ConceptGraph, "_rebuild_all", side_effect=RuntimeError("stopped")):
+        await sync(quiet=True)
+    assert library.sources_with_concepts() == {"a.txt", "b.txt"}
+
+    await sync(quiet=True)
+
+    words = sorted(f"{WORDS['a.txt']} {WORDS['b.txt']}".split())
+    assert library.node_rows() == [(word, CLUSTERED, 2) for word in words]
 
 
 async def test_a_sync_after_the_backfill_extracts_nothing_again():
     library = _Library()
     library.add("a.txt", "b.txt")
+    # No concept row ever holds it, so only the checkpoint keeps it from being read again.
+    library.add_blank("blank.txt")
     await sync(quiet=True)
     cfg.concept_graph = True
     await sync(quiet=True)
@@ -155,6 +232,36 @@ async def test_a_sync_after_the_backfill_extracts_nothing_again():
     await sync(quiet=True)
 
     assert library.nlp.texts == []
+
+
+async def test_a_sync_reads_only_the_documents_written_since_the_checkpoint():
+    library = _Library()
+    library.add("a.txt")
+    library.add_blank("blank.txt")
+    await sync(quiet=True)
+    cfg.concept_graph = True
+    await sync(quiet=True)
+    library.nlp.texts.clear()
+    library.add("b.txt")
+
+    await sync(quiet=True)
+
+    assert library.extracted_words() == set(WORDS["b.txt"].split())
+    assert not any("zzz" in text for text in library.nlp.texts)
+
+
+async def test_a_sync_that_changed_nothing_returns_at_the_checkpoint():
+    from lilbee.retrieval.concepts.backfill import backfill_concepts
+
+    library = _Library()
+    library.add("a.txt")
+    cfg.concept_graph = True
+    await sync(quiet=True)
+
+    assert backfill_concepts(library.store, library.graph) is None
+    with patch("lilbee.retrieval.concepts.concepts_available") as available:
+        await sync(quiet=True)
+    available.assert_not_called()
 
 
 async def test_documents_indexed_while_the_graph_was_off_are_backfilled():
@@ -213,7 +320,7 @@ async def test_a_cancelled_backfill_records_nothing_and_the_next_sync_finishes_i
     from lilbee.retrieval.concepts.backfill import backfill_concepts
 
     stop = SimpleNamespace(is_set=lambda: True)
-    assert backfill_concepts(library.store, library.graph, stop).checkpoint is None
+    assert backfill_concepts(library.store, library.graph, cancel=stop).checkpoint is None
     assert library.sources_with_concepts() == set()
 
     await sync(quiet=True)
@@ -265,6 +372,29 @@ async def test_a_read_of_no_sources_reads_no_chunks():
 
     assert list(library.store.chunk_batches(["chunk"], 10, source_ids=[])) == []
     assert library.graph.sources_with_concepts([]) == set()
+
+
+def test_a_read_of_many_sources_sends_bounded_in_lists():
+    from lilbee.retrieval.concepts.graph import _SOURCE_ID_BATCH
+
+    store = MagicMock()
+    table = store.open_table.return_value
+    predicates: list[str] = []
+
+    def where(predicate):
+        predicates.append(predicate)
+        query = MagicMock()
+        ids = pa.table({"source_id": ["id-0000"]})
+        query.select.return_value.limit.return_value.to_arrow.return_value = ids
+        return query
+
+    table.search.return_value.where.side_effect = where
+    ids = [f"id-{i:04d}" for i in range(_SOURCE_ID_BATCH + 1)]
+
+    holding = ConceptGraph(cfg, store).sources_with_concepts(ids)
+
+    assert holding == {"id-0000"}
+    assert [predicate.count("'") // 2 for predicate in predicates] == [_SOURCE_ID_BATCH, 1]
 
 
 async def test_dropping_the_index_forgets_what_the_backfill_covered():
