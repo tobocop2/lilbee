@@ -14,8 +14,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from lilbee.app.services import get_services, set_services
 from lilbee.app import settings as app_settings
+from lilbee.app.services import get_services, set_services
 from lilbee.app.settings import apply_settings_update, index_has_chunks, reindex_values
 from lilbee.app.status import gather_status
 from lilbee.cli.helpers import render_status_result
@@ -246,6 +246,14 @@ def test_a_library_with_a_meta_row_and_no_chunks_records_nothing_on_a_check():
 
 def _summary(result: SyncResult) -> list[str]:
     return ["".join(part for part, _style in line) for line in result._lines()]
+
+
+def test_a_library_with_chunks_and_no_meta_row_is_left_to_its_identity_pin():
+    store = get_services().store
+    store.add_chunks(_records(["a"]))
+    store.get_db().drop_table("_meta")
+    assert store.chunk_drift(reindex_values()) == []
+    assert store.get_meta() is None
 
 
 def test_the_sync_summary_names_the_drift_and_the_remedy():
