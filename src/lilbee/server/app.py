@@ -57,6 +57,7 @@ from lilbee.server.routes.agent_config import (
 from lilbee.server.routes.analyze import analyze_router
 from lilbee.server.routes.crawl import crawl_route
 from lilbee.server.routes.documents import (
+    add_cancel_route,
     add_route,
     add_upload_route,
     documents_list_route,
@@ -543,6 +544,7 @@ def create_app() -> Litestar:
             sync_route,
             add_route,
             add_upload_route,
+            add_cancel_route,
             models_list_route,
             models_external_route,
             models_set_chat_route,

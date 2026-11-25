@@ -459,6 +459,15 @@ def add_is_running(add_id: str) -> bool:
     return get_services().add_registry.is_running(add_id)
 
 
+def cancel_add(add_id: str) -> bool:
+    """Stop the add with *add_id* as the user's cancel; False when no add with it runs.
+
+    The add removes what it did not finish, and its stream ends with a ``done``
+    event that carries ``cancelled`` and ``not_added``.
+    """
+    return get_services().add_registry.cancel(add_id)
+
+
 async def _run_import_with_sentinel(sse: SseStream, data: bytes, fmt: str) -> ImportSummary:
     """Run the dataset import and guarantee the drain sentinel is enqueued."""
     from lilbee.app.dataset import import_from_bytes

@@ -154,6 +154,19 @@ class AddRequest(_OcrRequest):
     add_id: AddId | None = None
 
 
+class AddCancelRequest(BaseModel):
+    """Request body for /api/add/cancel."""
+
+    add_id: AddId
+
+
+class AddCancelResponse(BaseModel):
+    """Answer of /api/add/cancel: the add stops, and its stream ends with a ``done`` event."""
+
+    add_id: str
+    cancelling: bool
+
+
 class SetModelRequest(BaseModel):
     """Request body for /api/models/chat."""
 
@@ -689,6 +702,10 @@ class AddSummary(BaseModel):
     terminal event so a client that missed the earlier ``already_ingesting``
     frames can still tell the batch was partial.
     """
+    cancelled: bool = False
+    """True when ``POST /api/add/cancel`` stopped the add."""
+    not_added: list[str] = []
+    """The names a cancelled add did not add: nothing of them stays in the knowledge base."""
 
 
 class WikiCitationRecord(BaseModel):
