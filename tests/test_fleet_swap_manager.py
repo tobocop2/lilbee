@@ -1485,6 +1485,15 @@ class TestCrossRunReaping:
         assert sm.reap_stale(tmp_path) is True
         assert sm.reap_stale(tmp_path) is False
 
+    def test_reap_of_a_dead_record_with_nothing_alive_reports_no_stop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_path = _write_state(tmp_path, pid=7777, created_at=42.0)
+        monkeypatch.setattr(sm, "_is_live_llama_swap", lambda _state: False)
+        monkeypatch.setattr(sm, "_find_orphan_servers", lambda _ports: [])
+        assert sm.reap_stale(tmp_path) is False
+        assert not state_path.exists()
+
     def test_torn_state_file_is_left_in_place_by_reap(self, tmp_path: Path) -> None:
         torn = tmp_path / "llama-swap.state.json"
         torn.write_text('{"pid": 77')  # a sibling's write, caught mid-flight
