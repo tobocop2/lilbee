@@ -135,7 +135,29 @@ def test_e2_an_unreadable_system_info_keeps_the_engine_failure() -> None:
         LEMONADE.request_profile,
         {
             "/v1/chat/completions": httpx.Response(NOT_FOUND, content=refused),
-            f"/upstream/{MODEL_ID}/v1/system-info": httpx.Response(500, content=b"down"),
+            # An error status with a body that would refuse: the status alone decides.
+            f"/upstream/{MODEL_ID}/v1/system-info": httpx.Response(
+                500, content=_reply("system-info-no-npu-v2026.44.1.json")
+            ),
+        },
+    )
+    with pytest.raises(ProviderError) as caught:
+        provider_mod._warm_role(WorkerRole.CHAT, client)
+    assert caught.value.__cause__ is None
+    assert "Requires AMD XDNA 2 AMD NPU Detected processor" in str(caught.value)
+
+
+def test_e2_a_system_info_that_shows_no_refusal_keeps_the_engine_failure() -> None:
+    # Not a recorded reply: the flm reply of a host that runs it is owed by an XDNA2 run.
+    runnable = {"recipes": {"flm": {"backends": {"npu": {"state": "installed"}}}}}
+    client, _ = _client(
+        WorkerRole.CHAT,
+        LEMONADE.request_profile,
+        {
+            "/v1/chat/completions": httpx.Response(
+                NOT_FOUND, content=_reply("load-refused-no-npu-v2026.44.1.json")
+            ),
+            f"/upstream/{MODEL_ID}/v1/system-info": runnable,
         },
     )
     with pytest.raises(ProviderError) as caught:
@@ -152,7 +174,7 @@ def test_e2_an_engine_without_a_failure_route_keeps_its_failure() -> None:
     )
     with pytest.raises(ProviderError):
         provider_mod._warm_role(WorkerRole.EMBED, client)
-    assert f"/upstream/{MODEL_ID}/v1/system-info" not in asked
+    assert asked == ["/v1/embeddings"]
 
 
 def test_a_vision_warm_sends_nothing() -> None:
