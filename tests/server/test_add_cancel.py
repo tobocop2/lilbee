@@ -10,7 +10,7 @@ from litestar.testing import AsyncTestClient
 
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
-from lilbee.server.handlers import SseStream
+from lilbee.server.handlers import SseStream, cancel_add
 from lilbee.server.handlers.ingest import _ingest_stream
 from lilbee.server.models import AddSummary
 from tests.server.conftest import parse_sse_events
@@ -34,6 +34,35 @@ def _app():
     from lilbee.server.app import create_app
 
     return create_app()
+
+
+class TestTheCancelRoute:
+    async def test_a_cancel_stops_the_add_that_runs_under_the_id(self):
+        run = _Stub()
+        with get_services().add_registry.running("a-1", run.stop):
+            async with AsyncTestClient(_app()) as client:
+                resp = await client.post(
+                    "/api/add/cancel", json={"add_id": "a-1"}, headers=_auth_headers()
+                )
+        assert resp.status_code == 200
+        assert resp.json() == {"add_id": "a-1", "cancelling": True}
+        assert run.stops == 1
+
+    async def test_a_cancel_of_an_id_that_does_not_run_answers_404(self):
+        async with AsyncTestClient(_app()) as client:
+            resp = await client.post(
+                "/api/add/cancel", json={"add_id": "gone"}, headers=_auth_headers()
+            )
+        assert resp.status_code == 404
+        assert "gone" in resp.json()["detail"]
+
+    @pytest.mark.parametrize("add_id", ["", "has space", "a/b", "x" * 65])
+    async def test_a_cancel_with_a_bad_id_answers_400(self, add_id):
+        async with AsyncTestClient(_app()) as client:
+            resp = await client.post(
+                "/api/add/cancel", json={"add_id": add_id}, headers=_auth_headers()
+            )
+        assert resp.status_code == 400
 
 
 class TestTheAddIdOfTheAddRoutes:
@@ -80,6 +109,17 @@ class TestTheAddIdOfTheAddRoutes:
         assert resp.status_code == 409
         assert not (cfg.documents_dir / "a.md").exists()
 
+    async def test_the_schema_publishes_the_answers_of_the_cancel(self):
+        async with AsyncTestClient(_app()) as client:
+            paths = (await client.get("/schema/openapi.json", headers=_auth_headers())).json()[
+                "paths"
+            ]
+        assert {"200", "400", "404"} <= set(paths["/api/add/cancel"]["post"]["responses"])
+        assert "409" in paths["/api/add"]["post"]["responses"]
+        assert "409" in paths["/api/add/upload"]["post"]["responses"]
+        params = {p["name"] for p in paths["/api/add/upload"]["post"]["parameters"]}
+        assert "add_id" in params
+
 
 class TestTheStreamHoldsTheId:
     async def test_the_id_runs_while_the_stream_runs_and_is_free_after(self):
@@ -106,6 +146,30 @@ class TestTheStreamHoldsTheId:
         assert "'s-1' is already running" in events[0][1]["message"]
         run.assert_not_called()
         assert get_services().ingest_lock_registry._locks == {}
+
+    async def test_a_stop_by_the_user_cancels_the_run_and_still_ends_with_done(self):
+        summary = AddSummary(copied=[], errors=[], cancelled=True, not_added=["a.md"])
+        parked = asyncio.Event()
+
+        async def run(_locked, sse) -> AddSummary:
+            try:
+                parked.set()
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                assert sse.stopped_by_user
+            sse.queue.put_nowait(None)
+            return summary
+
+        async def _cancel_when_parked() -> bool:
+            await parked.wait()
+            return cancel_add("s-2")
+
+        canceller = asyncio.create_task(_cancel_when_parked())
+        frames = [f async for f in _ingest_stream([("a.md", "a")], run, "Test stream", "s-2")]
+
+        assert await canceller is True
+        events = parse_sse_events("".join(frames).encode())
+        assert [data for event, data in events if event == "done"] == [summary.model_dump()]
 
 
 class TestAStopByTheUser:

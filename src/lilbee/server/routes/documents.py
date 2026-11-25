@@ -11,10 +11,10 @@ from typing import Annotated
 
 from litestar import Request, Response, get, post
 from litestar.datastructures import UploadFile
-from litestar.exceptions import ClientException, ValidationException
+from litestar.exceptions import ClientException, NotFoundException, ValidationException
 from litestar.params import FromQuery, MultipartBody, QueryParameter
 from litestar.response import Stream
-from litestar.status_codes import HTTP_409_CONFLICT
+from litestar.status_codes import HTTP_200_OK, HTTP_409_CONFLICT
 from pydantic import BaseModel, Field
 
 from lilbee.core.config import validate_ocr_timeout
@@ -26,6 +26,8 @@ from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import (
     ADD_ID_MAX_LENGTH,
     ADD_ID_PATTERN,
+    AddCancelRequest,
+    AddCancelResponse,
     AddRequest,
     DocumentListResponse,
     DocumentRemoveResponse,
@@ -138,6 +140,21 @@ async def add_upload_route(
         media_type=SSE_MEDIA_TYPE,
         status_code=201,
     )
+
+
+@post("/api/add/cancel", status_code=HTTP_200_OK, raises=[NotFoundException])
+async def add_cancel_route(data: AddCancelRequest) -> AddCancelResponse:
+    """Stop the add or upload that runs under ``add_id``, as the user's cancel.
+
+    The add removes what it did not finish: a source with no file indexed is no
+    longer added, and an uploaded file the server did not index is deleted. The
+    stream of the add still ends with its ``done`` event, which carries
+    ``cancelled`` and ``not_added``. A stream that only closes keeps its sources.
+    Answers 404 when no add runs under ``add_id``.
+    """
+    if not handlers.cancel_add(data.add_id):
+        raise NotFoundException(detail=f"No add is running with the add_id '{data.add_id}'")
+    return AddCancelResponse(add_id=data.add_id, cancelling=True)
 
 
 @get("/api/documents")

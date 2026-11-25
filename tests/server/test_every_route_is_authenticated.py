@@ -68,7 +68,14 @@ class TestNoRouteAnswersWithoutAToken:
         routes = _get_routes(client.app)
         assert len(routes) > 30
         paths = {p for _, p in routes}
-        for expected in ("/api/health", "/api/export", "/api/search", "/api/wiki"):
+        expected_paths = (
+            "/api/health",
+            "/api/export",
+            "/api/search",
+            "/api/wiki",
+            "/api/add/cancel",
+        )
+        for expected in expected_paths:
             assert expected in paths, expected
 
     def test_no_route_answers_an_unauthenticated_caller(self, client):
