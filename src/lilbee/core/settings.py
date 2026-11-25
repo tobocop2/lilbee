@@ -412,10 +412,11 @@ def read_settled(root: Path) -> tuple[tuple[int, int, int] | None, dict[str, Any
 
     Another program can truncate the file and write it back a moment later, and the
     empty file in between is stable to ``read_persisted``. A file that young gives
-    values None and stamp None, so the next check reads it again.
+    values None and stamp None, so the next check reads it again. A modification time
+    in the future (a skewed clock) is not young: the file would never be taken.
     """
     stamp, values = read_persisted(root)
-    if stamp is not None and _now_ns() - stamp[0] < SETTLE_NS:
+    if stamp is not None and 0 <= _now_ns() - stamp[0] < SETTLE_NS:
         return None, None
     return stamp, values
 
