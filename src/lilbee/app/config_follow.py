@@ -65,8 +65,8 @@ class ConfigFileFollower:
     def take_now(self) -> None:
         """Take the changes another process made to config.toml, and log what was taken.
 
-        The check compares against the published Config and publishes a new one; a
-        request that runs it (or pins a Config) keeps the Config it pinned.
+        The check compares against the published Config and publishes a new one. It
+        leaves every pin as it is; ``refresh_config`` then moves its caller's pin.
         """
         with published_config_scope():
             result = self._adopt()
