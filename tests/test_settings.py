@@ -2780,6 +2780,16 @@ class TestSourceOfAValueNoLayerSupplies:
         assert appset.setting_sources()["chat_model"] is SettingSource.AUTO
         assert appset.get_setting("chat_model").source is SettingSource.AUTO
 
+    def test_the_source_reads_the_config_it_is_given_not_the_global_one(self, tmp_path):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import Config
+
+        layers = read_layers(tmp_path)
+        live = Config.model_validate({"data_root": tmp_path, "chunk_size": 900})
+        builtin = Config.model_validate({"data_root": tmp_path})
+        assert appset._sources(layers, live)["chunk_size"] is SettingSource.AUTO
+        assert appset._sources(layers, builtin)["chunk_size"] is not SettingSource.AUTO
+
     def test_a_root_that_does_not_parse_keeps_a_value_that_does_not_say_built_in(
         self, monkeypatch, tmp_path
     ):
