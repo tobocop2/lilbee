@@ -281,10 +281,10 @@ class TestSurfaceColumns:
             assert key not in stored, f"a refused set of {key} wrote it to config.toml"
             return
         assert key in stored, f"`lilbee settings set {key}` exited 0 but config.toml lacks it"
-        assert stored[key] == live, f"config.toml holds {stored[key]!r}, the live value is {live!r}"
-        assert _as_text(live) == sample.lower() or _as_text(live) == sample, (
-            f"`lilbee settings set {key} {sample!r}` stored {live!r}"
-        )
+        # config.toml keeps a list as one item per line and a path as text.
+        on_disk = live if isinstance(live, bool | int | float | type(None)) else _as_text(live)
+        assert stored[key] == on_disk, f"config.toml holds {stored[key]!r}, expected {on_disk!r}"
+        assert _as_text(live) == sample, f"`lilbee settings set {key} {sample!r}` stored {live!r}"
 
     def test_cli_column_keeps_the_dedicated_commands(self, generator):
         assert "use-embedder" in generator._cli_cell("embedding_model")
