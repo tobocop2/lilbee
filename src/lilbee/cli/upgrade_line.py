@@ -15,14 +15,19 @@ from lilbee.runtime.progress import UPGRADE_HEADLINE, EventType, LibraryUpgradeE
 
 
 class _LineColumn(ProgressColumn):
-    """A progress column that shows *line* at each redraw, as literal text."""
+    """One column that shows the spinner and then *line* at each redraw, as literal text.
+
+    The spinner and the line share one cell, so a line longer than the terminal wraps flush
+    left under the spinner, as Rich's own status does.
+    """
 
     def __init__(self, line: Callable[[], Text]) -> None:
         super().__init__()
         self._line = line
+        self._spinner = SpinnerColumn("dots", style="status.spinner")
 
     def render(self, task: Task) -> Text:
-        return self._line()
+        return Text.assemble(self._spinner.render(task), " ", self._line())
 
 
 class UpgradeLine:
@@ -63,7 +68,6 @@ class UpgradeLine:
             self._write(event.text)
         elif self._status is None:
             progress = live_progress(
-                SpinnerColumn("dots", style="status.spinner"),
                 _LineColumn(self.__rich__),
                 console=self._console,
                 transient=True,
