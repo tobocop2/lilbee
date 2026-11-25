@@ -4470,7 +4470,7 @@ class TestOcrFlags:
         """--ocr-timeout sets cfg.ocr_timeout for add."""
         src = tmp_path / "source" / "test.txt"
         src.parent.mkdir()
-        src.write_text("content")
+        src.write_text("content", encoding="utf-8")
         result = runner.invoke(app, ["add", "--ocr", "off", "--ocr-timeout=90", str(src)])
         assert result.exit_code == 0
         assert cfg.ocr is OcrMode.OFF
