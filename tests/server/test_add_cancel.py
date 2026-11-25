@@ -315,9 +315,7 @@ class TestACancelOfAnAddByPath:
         ):
             await _run_add([str(tmp_path)], False, None, None, sse)
 
-    async def test_a_root_that_took_in_a_source_names_it_in_the_cancelled_summary(
-        self, tmp_path
-    ):
+    async def test_a_root_that_took_in_a_source_names_it_in_the_cancelled_summary(self, tmp_path):
         sse = SseStream()
         registration = RegisterResult(
             registered=["notes"], absorbed_into={"notes": ["work"]}, absorbed_roots={}
