@@ -292,26 +292,41 @@ def _refuse_to_build(_config: object, **_kwargs: object) -> None:
     raise _FactorySeen
 
 
-def test_add_stops_with_the_clear_error_on_a_chat_model_write(
-    cli_env: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The fleet demand covers chat, so `lilbee add` ends on the write and builds nothing."""
+_ENGINE_CALLS = (
+    "embed",
+    "count_tokens",
+    "embed_token_cap",
+    "chat",
+    "chat_with_tools",
+    "vision_ocr",
+    "rerank",
+)
+
+
+def _engine_refuses_on_the_write(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Every engine call ends with the held-write error, as the fleet does; returns the calls."""
+    calls: list[str] = []
 
     def refusing_provider(_config: object, **kwargs: object) -> MagicMock:
         # The owner writes chat_model once this command's settings are loaded.
         persistent_settings.save(cfg.data_root, {"chat_model": _OTHER_CHAT_REF})
         held_writes = kwargs["held_writes"]
 
-        def refuse(*_a: object, **_kw: object) -> None:
-            raise ProviderError(
-                prov_mod._held_write_message(held_writes()),  # type: ignore[operator]
-                kind=ProviderErrorKind.BAD_REQUEST,
-            )
+        def refusing(name: str):
+            def refuse(*_a: object, **_kw: object) -> None:
+                calls.append(name)
+                raise ProviderError(
+                    prov_mod._held_write_message(held_writes()),  # type: ignore[operator]
+                    kind=ProviderErrorKind.BAD_REQUEST,
+                )
+
+            return refuse
 
         provider = MagicMock()
-        for name in ("embed", "count_tokens", "embed_token_cap", "chat", "vision_ocr", "rerank"):
-            getattr(provider, name).side_effect = refuse
+        for name in _ENGINE_CALLS:
+            getattr(provider, name).side_effect = refusing(name)
         provider.max_concurrent_chats.return_value = 1
+        provider.supports_rerank.return_value = False
         for name in ("vision_slot_capacity", "served_chat_ctx", "served_chat_slots"):
             getattr(provider, name).return_value = None
         return provider
@@ -320,7 +335,34 @@ def test_add_stops_with_the_clear_error_on_a_chat_model_write(
     monkeypatch.setattr(
         "lilbee.retrieval.embedder.Embedder.validate_model", lambda _self, *_a, **_kw: True
     )
+    return calls
+
+
+def test_add_stops_with_the_clear_error_on_a_chat_model_write(
+    cli_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fleet demand covers chat, so `lilbee add` ends on the write and builds nothing."""
+    _engine_refuses_on_the_write(monkeypatch)
     result = runner.invoke(app, ["add", str(cli_env)])
     print(f"add rc={result.exit_code} output={result.output!r}")
+    assert result.exit_code == 1, result.output
+    assert "chat_model changed to" in result.output and "again" in result.output, result.output
+
+
+# The commands besides add that reach the engine on this one-document library. ask reaches
+# it only with an installed chat model (the real-model end to end covers it), topics never
+# starts an engine, and a wiki build logs a failed model call per source and goes on.
+_ENGINE_COMMANDS = ("rebuild", "search", "sync")
+
+
+@pytest.mark.parametrize("command", _ENGINE_COMMANDS)
+def test_each_one_off_command_ends_with_the_clear_error(
+    cli_env: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    """A command that reaches the engine prints the error and exits 1, with no traceback."""
+    calls = _engine_refuses_on_the_write(monkeypatch)
+    args = [arg.format(doc=cli_env) for arg in _ONE_OFF_COMMANDS[command]]
+    result = runner.invoke(app, args)
+    assert calls, f"{command} never reached the engine"
     assert result.exit_code == 1, result.output
     assert "chat_model changed to" in result.output and "again" in result.output, result.output
