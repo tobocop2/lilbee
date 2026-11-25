@@ -355,15 +355,6 @@ _PRESET = PresetCall("http://box:8080/v1", WorkerRole.EMBED)
             id="a-type-message-wins-over-the-kind-message",
         ),
         pytest.param(
-            "SerializationError",
-            None,
-            ProviderErrorKind.UNKNOWN,
-            "The server for m sent a reply that lilbee cannot read: "
-            "a field of the OpenAI reply format is missing. "
-            "Check that the server answers in the OpenAI reply format.",
-            id="a-reply-the-sdk-cannot-read-gets-a-plain-sentence",
-        ),
-        pytest.param(
             "InternalError",
             None,
             ProviderErrorKind.UNKNOWN,
@@ -383,6 +374,68 @@ def test_the_error_text_and_kind_of_each_mapping(
     assert str(error) == expected_text
     assert error.kind is expected_kind
     assert error.provider == "remote"
+
+
+_OPENAI_FORMAT = "Check that the server answers in the OpenAI reply format."
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_text"),
+    [
+        pytest.param(
+            "serialization error: missing field `id`",
+            f"The server for m sent a reply without the field `id`. {_OPENAI_FORMAT}",
+            id="a-missing-field-names-the-field",
+        ),
+        pytest.param(
+            "serialization error: expected value at line 1 column 1",
+            "lilbee could not read the reply of the server for m: "
+            f"expected value at line 1 column 1. {_OPENAI_FORMAT}",
+            id="a-body-that-is-not-json",
+        ),
+        pytest.param(
+            'serialization error: invalid type: string "x", expected f64 at line 1 column 9',
+            "lilbee could not read the reply of the server for m: "
+            f'invalid type: string "x", expected f64 at line 1 column 9. {_OPENAI_FORMAT}',
+            id="a-field-of-the-wrong-type",
+        ),
+        pytest.param(
+            "serialization error: EOF while parsing an object at line 1 column 5",
+            "lilbee could not read the reply of the server for m: "
+            f"EOF while parsing an object at line 1 column 5. {_OPENAI_FORMAT}",
+            id="a-reply-cut-short",
+        ),
+        pytest.param(
+            "",
+            f"lilbee could not read the reply of the server for m: no detail. {_OPENAI_FORMAT}",
+            id="no-detail",
+        ),
+        pytest.param(
+            "serialization error: " + "x" * 300,
+            "lilbee could not read the reply of the server for m: "
+            f"{'x' * 200}.... {_OPENAI_FORMAT}",
+            id="a-long-detail-is-capped",
+        ),
+    ],
+)
+def test_a_json_failure_of_the_client_gets_a_sentence_for_its_cause(
+    sdk: fakes.FakeSdk, raw: str, expected_text: str
+) -> None:
+    error = _provider_error("Chat failed", sdk.error("SerializationError", raw), "m")
+    assert str(error) == expected_text
+    assert error.kind is ProviderErrorKind.UNKNOWN
+
+
+def test_the_sentence_reads_the_message_of_the_client_error_not_its_tuple(
+    sdk: fakes.FakeSdk,
+) -> None:
+    """The real client error carries the message first and then codes; the codes never show."""
+    cls = type(sdk.error("SerializationError"))
+    message = "serialization error: missing field `model`"
+    raised = cls(message, 113, 0, False, "Serialization", None)
+    error = _provider_error("Embedding failed", raised, "m")
+    expected = f"The server for m sent a reply without the field `model`. {_OPENAI_FORMAT}"
+    assert str(error) == expected
 
 
 def test_a_422_error_names_the_remote_provider_and_the_bad_request_kind(
