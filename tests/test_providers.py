@@ -108,11 +108,11 @@ class TestProviderError:
         err = ProviderError("something broke")
         assert str(err) == "something broke"
 
-    def test_with_provider(self) -> None:
+    def test_the_error_takes_no_engine_name(self) -> None:
         from lilbee.providers.base import ProviderError
 
-        err = ProviderError("fail", provider="test")
-        assert err.provider == "test"
+        with pytest.raises(TypeError):
+            ProviderError("fail", provider="test")  # type: ignore[call-arg]
 
 
 # ---------------------------------------------------------------------------
