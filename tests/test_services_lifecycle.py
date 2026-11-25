@@ -1578,9 +1578,90 @@ def _signal_once_the_loop_runs(ready: threading.Event) -> None:
     signal.raise_signal(signal.SIGINT)
 
 
-def test_a_signal_on_another_thread_ends_an_idle_loop_with_its_status():
+class _NoSignalHandlerLoop(asyncio.SelectorEventLoop):
+    """A loop shaped like the Windows proactor: no signal handlers, its own wakeup descriptor.
+
+    The proactor points the signal wakeup descriptor at its self-pipe when it is made on
+    the main thread, so a signal that lands while it waits wakes it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._wakeup_before = signal.set_wakeup_fd(self._csock.fileno())
+
+    def add_signal_handler(self, sig, callback, *args):
+        raise NotImplementedError
+
+    def close(self) -> None:
+        signal.set_wakeup_fd(self._wakeup_before)
+        super().close()
+
+
+# On Windows the real proactor runs the no-handler cases; elsewhere a loop shaped like it.
+_LOOPS = [
+    pytest.param(
+        asyncio.SelectorEventLoop,
+        id="loop-handlers",
+        marks=pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop handlers"),
+    ),
+    pytest.param(
+        getattr(asyncio, "ProactorEventLoop", _NoSignalHandlerLoop), id="no-loop-handlers"
+    ),
+]
+
+
+def _record_loop_signals(monkeypatch) -> list[int]:
+    """Record every signal that reaches the stop as a loop callback.
+
+    The plain SIGINT handler is the same function, so only this record shows that a
+    loop callback, not the plain handler, took a press.
+    """
+    taken: list[int] = []
+    on_loop_signal = services_mod._lifecycle.on_loop_signal
+
+    def recording_loop_signal(signum: int) -> None:
+        taken.append(signum)
+        on_loop_signal(signum)
+
+    monkeypatch.setattr(services_mod._lifecycle, "on_loop_signal", recording_loop_signal)
+    return taken
+
+
+@pytest.mark.parametrize("loop_factory", _LOOPS)
+def test_a_ctrl_c_inside_a_catch_all_step_still_ends_the_loop(monkeypatch, loop_factory):
+    """A press that lands in a step whose library swallows every exception still stops the loop."""
+    provider = _install_stub_services()
+    loop_signals = _record_loop_signals(monkeypatch)
+    swallowed: list[BaseException] = []
+
+    async def serve() -> None:
+        with loop_takes_signals(asyncio.get_running_loop()):
+            try:
+                signal.raise_signal(signal.SIGINT)
+            except BaseException as exc:  # a library's catch-all
+                swallowed.append(exc)
+            await asyncio.sleep(30)
+
+    install_engine_lifecycle_hooks()
+    stop_on_interrupt()
+    started = time.monotonic()
+    with pytest.raises(SystemExit) as raised, asyncio.Runner(loop_factory=loop_factory) as runner:
+        runner.run(serve())
+    waited = time.monotonic() - started
+    _join_teardown()
+
+    assert swallowed == []
+    assert raised.value.code == 128 + signal.SIGINT
+    assert loop_signals == [signal.SIGINT]
+    assert waited < 10  # the stop ended the loop; it did not sleep out the 30 s
+    provider.shutdown.assert_called_once()
+
+
+@pytest.mark.parametrize("loop_factory", _LOOPS)
+def test_a_signal_on_another_thread_ends_an_idle_loop_with_its_status(monkeypatch, loop_factory):
     """The loop takes the signal as a callback, so it ends the loop wherever the signal lands."""
     provider = _install_stub_services()
+    loop_signals = _record_loop_signals(monkeypatch)
     previous = signal.getsignal(signal.SIGINT)
     ready = threading.Event()
     sender = threading.Thread(target=_signal_once_the_loop_runs, args=(ready,))
@@ -1598,7 +1679,7 @@ def test_a_signal_on_another_thread_ends_an_idle_loop_with_its_status():
         interrupt_handler = signal.getsignal(signal.SIGINT)
         with (
             pytest.raises(SystemExit) as raised,
-            asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner,
+            asyncio.Runner(loop_factory=loop_factory) as runner,
         ):
             runner.run(idle())
         _join_teardown()
@@ -1608,26 +1689,18 @@ def test_a_signal_on_another_thread_ends_an_idle_loop_with_its_status():
         sender.join(timeout=5)
 
     assert raised.value.code == 128 + signal.SIGINT
+    assert loop_signals == [signal.SIGINT]
     assert after == interrupt_handler
     provider.shutdown.assert_called_once()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
-def test_a_second_ctrl_c_in_a_loop_owned_loop_force_quits(monkeypatch):
+@pytest.mark.parametrize("loop_factory", _LOOPS)
+def test_a_second_ctrl_c_in_a_loop_owned_loop_force_quits(monkeypatch, loop_factory):
     """The loop callback reaches the one handler: the second press ends the process."""
     provider = _install_stub_services()
     forced: list[int] = []
     monkeypatch.setattr(services_mod, "_force_quit_from_handler", forced.append)
-    # The plain SIGINT handler is the same function, so only the callback record
-    # shows that the loop, not the plain handler, took both presses.
-    loop_signals: list[int] = []
-    on_loop_signal = services_mod._lifecycle.on_loop_signal
-
-    def recording_loop_signal(signum: int) -> None:
-        loop_signals.append(signum)
-        on_loop_signal(signum)
-
-    monkeypatch.setattr(services_mod._lifecycle, "on_loop_signal", recording_loop_signal)
+    loop_signals = _record_loop_signals(monkeypatch)
     # A registered server hook takes the first press, so the callback does not raise.
     set_server_exit_hook(lambda _status: None)
     previous = signal.getsignal(signal.SIGINT)
@@ -1639,16 +1712,17 @@ def test_a_second_ctrl_c_in_a_loop_owned_loop_force_quits(monkeypatch):
 
     async def serve() -> None:
         with loop_takes_signals(asyncio.get_running_loop()):
-            os.kill(os.getpid(), signal.SIGINT)
+            # raise_signal, not os.kill: on Windows os.kill(SIGINT) ends the process outright.
+            signal.raise_signal(signal.SIGINT)
             await until(lambda: services_mod._lifecycle._signalled)
             first_press_forced = list(forced)
-            os.kill(os.getpid(), signal.SIGINT)
+            signal.raise_signal(signal.SIGINT)
             await until(lambda: forced)
             assert first_press_forced == []
 
     try:
         stop_on_interrupt()
-        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+        with asyncio.Runner(loop_factory=loop_factory) as runner:
             runner.run(serve())
         _join_teardown()
     finally:
@@ -1661,8 +1735,8 @@ def test_a_second_ctrl_c_in_a_loop_owned_loop_force_quits(monkeypatch):
     provider.shutdown.assert_called_once()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
-def test_an_ordinary_exception_in_the_loop_signals_block_still_restores_the_handlers():
+@pytest.mark.parametrize("loop_factory", _LOOPS)
+def test_an_ordinary_exception_in_the_loop_signals_block_still_restores_the_handlers(loop_factory):
     """The restore is a finally: a body that raises anything leaves the earlier handlers back."""
     install_engine_lifecycle_hooks()
     stop_on_interrupt()
@@ -1675,7 +1749,7 @@ def test_an_ordinary_exception_in_the_loop_signals_block_still_restores_the_hand
 
     with (
         pytest.raises(RuntimeError, match="the body failed"),
-        asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner,
+        asyncio.Runner(loop_factory=loop_factory) as runner,
     ):
         runner.run(failing())
 
@@ -1698,8 +1772,8 @@ def test_an_ignored_sighup_stays_ignored_inside_the_loop_signals():
     assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
-def test_the_loop_takes_only_the_signals_the_process_routes():
+@pytest.mark.parametrize("loop_factory", _LOOPS)
+def test_the_loop_takes_only_the_signals_the_process_routes(loop_factory):
     """With Ctrl-C not routed, as in the TUI, the loop leaves it a KeyboardInterrupt."""
     install_engine_lifecycle_hooks()
     routed = signal.getsignal(signal.SIGTERM)
@@ -1711,11 +1785,11 @@ def test_the_loop_takes_only_the_signals_the_process_routes():
             interrupt = signal.getsignal(signal.SIGINT)
             return interrupt_before, interrupt, signal.getsignal(signal.SIGTERM)
 
-    with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+    with asyncio.Runner(loop_factory=loop_factory) as runner:
         interrupt_before, interrupt, terminate = runner.run(inside())
 
     assert interrupt == interrupt_before
-    assert terminate != routed  # the loop's own handler took the terminate
+    assert terminate != routed  # the loop's handler, or the one that queues for it, took it
     assert signal.getsignal(signal.SIGTERM) == routed
 
 
