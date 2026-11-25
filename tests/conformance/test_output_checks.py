@@ -204,7 +204,7 @@ class _Provider:
     """A stand-in for the SDK provider that returns one canned answer."""
 
     def __init__(self, **answers: Any) -> None:
-        self.answers = answers
+        self.answers = {k: list(v) if isinstance(v, list) else v for k, v in answers.items()}
 
     def chat(self, *_args: Any, **_kwargs: Any) -> ChatResult:
         return self.answers["chat"]
