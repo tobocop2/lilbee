@@ -32,11 +32,6 @@ if TYPE_CHECKING:
 # PCI base class 0x03 is "display controller"; sysfs writes the full 24-bit
 # class code (0x030000 for VGA), so the base class is its high byte.
 _PCI_DISPLAY_CONTROLLER_CLASS = 0x03
-# AMD Instinct cards enumerate as base class 0x12 (processing accelerator), not 0x03, yet they
-# run the Mesa Vulkan driver. Only AMD is read from this class: Intel's 0x12 device is the NPU,
-# which has no Vulkan driver, and counting it would pick the Vulkan pack for a host with no GPU.
-_PCI_ACCELERATOR_CLASS = 0x12
-_PCI_AMD_VENDOR = 0x1002
 _PCI_CLASS_CODE_BASE_SHIFT = 16
 _SYSFS_PCI_DEVICE_DIR = Path("/sys/bus/pci/devices")
 _SYSFS_CLASS_FILE = "class"
@@ -54,8 +49,6 @@ _PCI_VENDOR_ID_PATTERN = re.compile(r"ven_([0-9a-f]{4})", re.IGNORECASE)
 
 def installed_gpu_vendor_ids() -> frozenset[int]:
     """PCI vendor IDs of this host's display controllers that a kernel driver runs.
-
-    AMD processing accelerators (Instinct cards, PCI class 0x12) count as display controllers.
 
     Empty means the device tree holds no such controller or could not be read
     at all (macOS, an ARM SoC whose GPU is not on the PCI bus, a container with
@@ -101,13 +94,10 @@ def _linux_display_controllers() -> Iterator[tuple[int, bool]]:
         class_code = _read_sysfs_hex(device / _SYSFS_CLASS_FILE)
         if class_code is None:
             continue
-        base_class = class_code >> _PCI_CLASS_CODE_BASE_SHIFT
-        if base_class not in (_PCI_DISPLAY_CONTROLLER_CLASS, _PCI_ACCELERATOR_CLASS):
+        if class_code >> _PCI_CLASS_CODE_BASE_SHIFT != _PCI_DISPLAY_CONTROLLER_CLASS:
             continue
         vendor_id = _read_sysfs_hex(device / _SYSFS_VENDOR_FILE)
         if vendor_id is None:
-            continue
-        if base_class == _PCI_ACCELERATOR_CLASS and vendor_id != _PCI_AMD_VENDOR:
             continue
         try:
             bound = (device / _SYSFS_DRIVER_LINK).exists()
