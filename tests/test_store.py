@@ -3025,6 +3025,29 @@ class TestGetSourcesPagination:
         # Offset runs in LanceDB, so exactly 5 of the 10 come back.
         assert len(filenames) == 5
 
+    def test_newest_first_lists_the_last_ingested_source_first(self, store):
+        self._seed(store, 6)
+        names = [s["filename"] for s in store.get_sources(newest_first=True)]
+        assert names == [f"doc{i:02d}.md" for i in reversed(range(6))]
+
+    def test_newest_first_pages_join_into_one_ordered_listing(self, store):
+        self._seed(store, 6)
+        pages = [store.get_sources(newest_first=True, limit=2, offset=o) for o in (0, 2, 4)]
+        joined = [s["filename"] for page in pages for s in page]
+        assert joined == [f"doc{i:02d}.md" for i in reversed(range(6))]
+
+    def test_newest_first_breaks_a_tie_by_filename(self, store, monkeypatch):
+        class _Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 1, 1, tzinfo=tz)
+
+        monkeypatch.setattr("lilbee.data.store.core.datetime", _Frozen)
+        for name in ("c.md", "a.md", "b.md"):
+            store.upsert_source(name, "h", 1)
+        names = [s["filename"] for s in store.get_sources(newest_first=True)]
+        assert names == ["a.md", "b.md", "c.md"]
+
     def test_search_filters_by_filename_case_insensitive(self, store):
         store.upsert_source("README.md", "h1", 1)
         store.upsert_source("setup.py", "h2", 1)
