@@ -212,8 +212,10 @@ at_day() {  # day-number command...
 
 # The steps that run a publish: the engine action anywhere, and the Nuitka
 # cache action in its publish phase. One continue-on-error value per step.
+# The default sits inside an array: after a select with no match, yq 4.44 prints
+# the default once and yq 4.54 prints nothing.
 publish_steps() {  # yq path to a step list, file
-  yq -r "$1 | select(.uses == \"./.github/actions/publish-engine-asset\" or (.uses == \"./.github/actions/nuitka-object-cache\" and .with.phase == \"publish\")) | .[\"continue-on-error\"] // \"none\"" "$2"
+  yq -r "$1 | select(.uses == \"./.github/actions/publish-engine-asset\" or (.uses == \"./.github/actions/nuitka-object-cache\" and .with.phase == \"publish\")) | [.[\"continue-on-error\"] // \"none\"] | .[]" "$2"
 }
 
 @test "every caller of the publish swallows its failure" {
@@ -232,6 +234,18 @@ publish_steps() {  # yq path to a step list, file
   [ "${found}" -eq 4 ]
 }
 
+# The workflow readers above print one default per matching step and nothing
+# for a file with no match, under every yq version.
+@test "the publish query prints nothing for a file with no publish step" {
+  printf 'jobs:\n  a:\n    steps:\n      - uses: other\n' > "${BATS_TEST_TMPDIR}/none.yml"
+  run publish_steps '.jobs[].steps[]?' "${BATS_TEST_TMPDIR}/none.yml"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  printf 'jobs:\n  a:\n    steps:\n      - uses: ./.github/actions/publish-engine-asset\n' > "${BATS_TEST_TMPDIR}/one.yml"
+  run publish_steps '.jobs[].steps[]?' "${BATS_TEST_TMPDIR}/one.yml"
+  [ "$output" = "none" ]
+}
+
 @test "the Nuitka cache action sets a refresh period for the check, the restore and the publish" {
   run yq -r '[.runs.steps[].env.MIRROR_REFRESH_DAYS] | map(select(. != null)) | length' "${ACTION}"
   [ "$status" -eq 0 ]
@@ -246,7 +260,7 @@ publish_steps() {  # yq path to a step list, file
 
 @test "no workflow lets the restore phase continue past an error" {
   for wf in release.yml build-gpu-executables.yml; do
-    run yq -r '.jobs[].steps[] | select(.id == "nuitka-mirror") | (.["continue-on-error"] // "none")' "${REPO_ROOT}/.github/workflows/${wf}"
+    run yq -r '.jobs[].steps[] | select(.id == "nuitka-mirror") | [.["continue-on-error"] // "none"] | .[]' "${REPO_ROOT}/.github/workflows/${wf}"
     [ "$status" -eq 0 ]
     [ "$output" = "none" ]
   done

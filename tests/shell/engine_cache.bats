@@ -73,7 +73,9 @@ engine_paths() {
 @test "every caller of the engine build asks for the mirror upload" {
   found=0
   for wf in "${REPO_ROOT}"/.github/workflows/*.yml; do
-    asks=$(yq -r '.jobs[] | select(.uses == "./.github/workflows/build-multigpu.yml") | .with.mirror // "none"' "${wf}")
+    # The default sits inside an array: after a select with no match, yq 4.44
+    # prints it once and yq 4.54 prints nothing.
+    asks=$(yq -r '.jobs[] | select(.uses == "./.github/workflows/build-multigpu.yml") | [.with.mirror // "none"] | .[]' "${wf}")
     for a in ${asks}; do
       echo "$(basename "${wf}"): mirror=${a}"
       [ "${a}" = "true" ]
