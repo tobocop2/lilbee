@@ -102,9 +102,9 @@ def sigint_cancel() -> Iterator[SignalFlag]:
     on the first Ctrl-C. A second Ctrl-C before a run raises KeyboardInterrupt, and
     during a run the run's wait raises it, so the command unwinds and its rollback and
     its message run on the main thread. After a run, in the wind-down, it raises
-    nothing, so the rollback finishes. Either way the scope's exit then ends the process, because a
-    normal exit joins every worker thread, also a stuck one. A further Ctrl-C ends
-    the process from the handler.
+    nothing, so the rollback finishes. Either way the scope's exit then ends the
+    process, because a normal exit joins every worker thread, also a stuck one. A
+    further Ctrl-C ends the process from the handler.
 
     A cancelled run can leave a stuck thread behind that the exit joins. While a
     thread that the exit joins and that was born in the scope lives, a Ctrl-C after
