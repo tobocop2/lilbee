@@ -147,6 +147,32 @@ def test_raise_for_status_maps_429_to_a_busy_rate_limit(body) -> None:
         _raise_for_status(httpx.Response(429, json=body))
     assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
     assert "warming" not in str(excinfo.value)
+    assert str(excinfo.value) == "The model is busy with too many requests. Try again in a moment."
+
+
+def _refusal_text(resp: httpx.Response) -> str:
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(resp)
+    return str(excinfo.value)
+
+
+def test_a_failed_answer_with_no_body_names_only_the_status() -> None:
+    label = LLAMA.request_profile(WorkerRole.CHAT).label
+    assert _refusal_text(httpx.Response(500, text="")) == f"{label} returned HTTP 500"
+
+
+def test_a_failed_answer_keeps_the_first_600_characters_of_its_body() -> None:
+    label = LLAMA.request_profile(WorkerRole.CHAT).label
+    message = _refusal_text(httpx.Response(500, text="x" * 700))
+    assert message == f"{label} returned HTTP 500: " + "x" * 600
+
+
+def test_a_warm_timeout_names_the_model_of_the_client() -> None:
+    client = _unprobed_client()
+    client.model_ref = "org/repo/chat.gguf"
+    error = client._warm_timeout_error(30.0)
+    assert str(error) == "The engine for org/repo/chat.gguf did not finish starting in time."
+    assert error.wait_s == 30.0
 
 
 @pytest.mark.parametrize("status", [502, 503, 504])
