@@ -1880,6 +1880,84 @@ def test_a_remove_whose_rename_meets_a_launch_names_the_engine(
         store.remove("fx", "1", "cpu", in_use=lambda *_name: False)
 
 
+def test_a_remove_whose_rename_is_refused_with_no_launch_names_the_folder(
+    store: EngineStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A refusal from the system on every platform, without folder modes, which Windows lacks.
+    installed_store(store, tmp_path)
+    monkeypatch.setattr(Path, "rename", mock.Mock(side_effect=PermissionError("refused")))
+    monkeypatch.setattr(engine_store, "build_in_use", lambda _build: False)
+    with pytest.raises(
+        engine_store.ReadOnlyFolderError,
+        match=r"^lilbee cannot change the engine folder .*fx\. Make it writable",
+    ):
+        store.remove("fx", "1", "cpu", in_use=lambda *_name: False)
+    assert (store.root / "fx" / "1-cpu" / RECORD_NAME).is_file()
+
+
+def _refuse_the_engines_folder(store: EngineStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make each read of the engines folder fail as a denied read does, on every platform."""
+    real = engine_store._entries
+
+    def entries(folder: Path, engine: str) -> list[os.DirEntry[str]]:
+        if Path(folder) == store.root:
+            raise engine_store.EngineFolderError(folder, engine, PermissionError(13, "denied"))
+        return real(folder, engine)
+
+    monkeypatch.setattr(engine_store, "_entries", entries)
+
+
+def test_an_unreadable_engines_folder_is_listed_as_damage_with_its_fix(
+    store: EngineStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _refuse_the_engines_folder(store, monkeypatch)
+    (damage,) = store.damaged()
+    assert damage.folder == store.root
+    assert str(damage) == (
+        f"lilbee cannot read the engines folder {store.root}. Correct its "
+        "permissions and run the command again."
+    )
+
+
+def test_a_sweep_of_an_unreadable_engines_folder_removes_nothing_and_warns(
+    store: EngineStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _refuse_the_engines_folder(store, monkeypatch)
+    with caplog.at_level("WARNING", logger=engine_store.__name__):
+        assert store.sweep() == []
+    (record,) = caplog.records
+    assert record.getMessage().startswith(f"The engine sweep cannot clear {store.root}: ")
+
+
+def test_a_build_whose_read_fails_raises_from_the_complete_build_check(
+    store: EngineStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sha = installed_store(store, tmp_path)
+    lock = pin(sha)
+    fault = engine_store.EngineFolderError(store.build_dir(lock), "fx", OSError(5, "I/O error"))
+    monkeypatch.setattr(engine_store, "_builds", lambda _engine: [(store.build_dir(lock), fault)])
+    with pytest.raises(engine_store.EngineFolderError) as raised:
+        store.complete_build(lock)
+    assert raised.value is fault
+
+
+def test_a_folder_that_stays_in_a_read_only_parent_names_the_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The delete leaves the folder and the parent refuses writes, as folder modes or a
+    # Windows ACL make it; the simulation runs on every platform.
+    folder = tmp_path / "parent" / "build"
+    folder.mkdir(parents=True)
+    monkeypatch.setattr(engine_store.shutil, "rmtree", lambda *_args, **_kwargs: None)
+    with monkeypatch.context() as patch, caplog.at_level("WARNING", logger=engine_store.__name__):
+        patch.setattr(engine_store.os, "access", lambda *_args: False)
+        assert engine_store.delete_tree(folder) is False
+    assert [r.getMessage() for r in caplog.records] == [
+        f"The folder {folder.parent} is read-only, so {folder} stays. "
+        "Make it writable; the next start removes it."
+    ]
+
+
 def test_a_remove_of_a_missing_build_raises_the_file_error(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError), build_use.removing(tmp_path / "gone"):
         pass
