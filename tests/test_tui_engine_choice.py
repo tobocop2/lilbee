@@ -229,7 +229,9 @@ async def test_the_key_e_opens_the_picker_and_saves_the_pick(size: tuple[int, in
             pilot,
             lambda: _text(app, "#model-bar-engine-chips").startswith("engine: chat ■ openvino"),
         )
-        assert any(t.endswith("uses engine openvino.") for t in _toasts())
+        assert await wait_until(
+            pilot, lambda: any(t.endswith("uses engine openvino.") for t in _toasts())
+        )
 
 
 async def test_a_refused_save_shows_the_refusal_and_keeps_the_live_choice() -> None:
@@ -509,7 +511,7 @@ async def test_the_slash_command_repaints_the_chips_and_clears_the_notice(
             ),
         )
         assert _text(chat, "#model-bar-engine-notice") == ""
-        assert any("uses engine openvino" in t for t in _toasts())
+        assert await wait_until(pilot, lambda: any("uses engine openvino" in t for t in _toasts()))
 
 
 async def test_the_slash_prefer_repaints_the_chips() -> None:
@@ -581,7 +583,9 @@ async def test_a_refused_slash_install_marks_its_task_failed() -> None:
                 pilot,
                 lambda: [t.status for t in app.task_bar.queue.history] == [TaskStatus.FAILED],
             )
-        assert any("cannot run on this computer" in t for t in _toasts())
+        assert await wait_until(
+            pilot, lambda: any("cannot run on this computer" in t for t in _toasts())
+        )
 
 
 def test_only_an_install_with_an_engine_name_is_an_install_command() -> None:
