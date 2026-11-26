@@ -13,7 +13,7 @@ from lilbee.cli.placement import placement_app
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import EngineBackend, WorkerRole
 from tests._cli_text import plain_cli_text
 
 runner = CliRunner()
@@ -140,7 +140,9 @@ def test_show_prints_a_line_for_a_model_of_unknown_size(monkeypatch: object) -> 
 
 
 def test_show_prints_no_size_line_when_every_size_is_known(monkeypatch: object) -> None:
-    monkeypatch.setattr(cli_placement, "get_placement", lambda: _view())
+    monkeypatch.setattr(
+        cli_placement, "get_placement", lambda: replace(_view(), engine_backend=EngineBackend.CUDA)
+    )
     result = runner.invoke(placement_app, ["show"], terminal_width=300)
     assert "unknown" not in result.stdout
 
