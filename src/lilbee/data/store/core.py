@@ -3175,13 +3175,28 @@ class Store:
         search: str | None = None,
         limit: int | None = None,
         offset: int = 0,
+        newest_first: bool = False,
     ) -> list[SourceRecord]:
-        """Return source records, filtered by *search* and sliced by offset/limit."""
+        """Return source records, filtered by *search* and sliced by offset/limit.
+
+        With *newest_first* the store sorts by ingest time, latest first, and by path
+        among equal times, so each offset names the same row on every read. Without it
+        the rows come in storage order, and a caller that pages should not rely on it.
+        """
         table = self.open_table(SOURCES_TABLE)
         if table is None:
             return []
         locations = self._locations()
         query = table.search().where(_listed_matching(search, locations))
+        if newest_first:
+            from lancedb.query import ColumnOrdering
+
+            query = query.order_by(
+                [
+                    ColumnOrdering(column_name="ingested_at", ascending=False),
+                    ColumnOrdering(column_name=_PATH),
+                ]
+            )
         if offset:
             query = query.offset(offset)
         return [_source_record(row, locations) for row in query.limit(limit).to_list()]
