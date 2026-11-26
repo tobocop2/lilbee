@@ -371,7 +371,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-22.04, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
         # Browser-mode and TUI crawl tests run in one cell per OS.
         include:
@@ -468,12 +468,14 @@ jobs:
       # action restores the engine the warm run mirrored, or builds it, and installs the
       # engine wheel into the venv, where resolve_llama_server() finds it first. After
       # the sync, which would not keep a wheel installed before it. Keyed as the warm run keys
-      # its CPU cells, so a mirrored engine is a hit.
+      # its CPU cells, so a mirrored engine is a hit. The Linux cell runs on the pinned
+      # runner the warm run builds on, so its key names the glibc the engine is built against.
       - name: Install the llama.cpp fork engine
+        timeout-minutes: 75
         uses: ./.github/actions/bundle-llama-server
         with:
           backend: cpu
-          cache-env: ${{ runner.os == 'Linux' && 'ubuntu-22.04' || matrix.os }}
+          cache-env: ${{ matrix.os }}
 
       - name: Install spacy model
         # `uv pip install` retries 3 times internally; a 502 from GitHub
