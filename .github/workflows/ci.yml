@@ -1,34 +1,24 @@
 name: CI
 
-# Probe branch only: the Windows crawl loop policy and crawl settings e2e files on Python 3.12, at each
-# commit of the union 77 to 80 range, with the failing add's exit, output and
-# exception printed.
+# Probe branch only: at the fix/wincrawl head, the Windows crawl loop policy and
+# crawl settings e2e files on Python 3.11, 3.12 and 3.13, with the failing add's
+# exit, output and exception printed; and the Windows unit suite on 3.12.
 on:
   push:
     branches: [probe/wincrawl]
   workflow_dispatch:
 
+env:
+  PROBE_REF: 3f4aebb3e9ca6ad784989e4e56466dbe6a2854ed
+
 jobs:
-  probe-wincrawl:
+  probe-unit:
     timeout-minutes: 120
     runs-on: windows-latest
-    env:
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-    strategy:
-      fail-fast: false
-      matrix:
-        ref:
-          - 5dc8371b3c194e74f28ae10fc4daba01e181ab21
-          - 724f5b7e881e2bcaf0f97189cd0764b1ec26c35e
-          - ecb490d6cd722a9cf76de5237ae8996ecd43be62
-          - bc43854f3f9bc1754e830d3001849bed8ae37ac5
-          - 4f10ea0dfc5b3fd636e937a8f16b5c626171b62e
-          - a7c6775063162dff152600bfc0560c1d0b195441
-          - 364c03501a6b89b4f468b52f0e804a44bdc0aa60
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ matrix.ref }}
+          ref: ${{ env.PROBE_REF }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -38,6 +28,48 @@ jobs:
 
       - name: Set up Python 3.12
         run: uv python install 3.12
+
+      - uses: ./.github/actions/checkout-engine-packs
+
+      - name: Install make
+        shell: bash
+        run: bash scripts/ci_retry.sh 3 choco install make -y
+
+      - name: Install dependencies
+        run: uv sync --locked --python 3.12
+
+      - name: Run unit tests
+        shell: bash
+        run: |
+          echo "SUITE-HEAD $(git rev-parse HEAD)"
+          make test-ci COV_FLAGS="--cov-config=.coveragerc-windows" BRANCH_CHECK=true
+        env:
+          LILBEE_DATA: ${{ runner.temp }}/lilbee
+          LILBEE_TEST_HANG_DUMP_DIR: ${{ runner.temp }}/hang-dumps
+          UV_PYTHON: "3.12"
+
+  probe-wincrawl:
+    timeout-minutes: 120
+    runs-on: windows-latest
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.PROBE_REF }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
 
       - name: Install make (Windows)
         shell: bash
@@ -74,7 +106,7 @@ jobs:
           cygpath -w "${helperdir}" >> "${GITHUB_PATH}"
 
       - name: Install dependencies
-        run: uv sync --locked --all-extras --python 3.12
+        run: uv sync --locked --all-extras --python ${{ matrix.python }}
 
       - name: Install the llama.cpp fork engine
         timeout-minutes: 75
@@ -154,3 +186,4 @@ jobs:
           LILBEE_LLM_PROVIDER: auto
           PYTEST_DEBUG_TEMPROOT: ${{ runner.temp }}/pytest-tmp
           PYTHONIOENCODING: utf-8
+          UV_PYTHON: ${{ matrix.python }}
