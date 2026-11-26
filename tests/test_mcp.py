@@ -35,6 +35,7 @@ from lilbee.data.store import (
     DOCUMENTS_PAGE_MAX,
     FailedPage,
     SearchChunk,
+    SourceSummary,
     Store,
 )
 from lilbee.data.types import PartialFile
@@ -371,6 +372,7 @@ class TestStatus:
 
     def test_status_lists_the_partly_read_files_and_counts_them_all(self, mock_svc):
         page = FailedPage(page=2, error="timed out", recovered=False)
+        mock_svc.store.source_summary.return_value = SourceSummary(0, 0, {}, [], partly_read=2)
         mock_svc.store.partly_read_sources.return_value = ({"scan.pdf": [page]}, 2)
         result = status()
         assert result["partial_total"] == 2

@@ -752,7 +752,6 @@ async def test_status_screen_lists_partly_read_files_with_a_line_for_each_page(
     """A source with failed OCR pages shows one line for each page, in an open section."""
     from textual.widgets import Collapsible, DataTable
 
-    from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.screens import status as status_screen
     from lilbee.data.store import FailedPage
 
@@ -765,7 +764,7 @@ async def test_status_screen_lists_partly_read_files_with_a_line_for_each_page(
     async with app.run_test(size=(120, 40)) as pilot:
         table = app.screen.query_one("#partly-read-table", DataTable)
         await _wait_for_row_count(pilot, table, 2)
-        assert table.get_row_at(1) == [msg.STATUS_PARTLY_READ_MORE.format(count=2), ""]
+        assert table.get_row_at(1) == ["1 of 3 partly read files shown", ""]
         filename, pages = table.get_row_at(0)
         assert filename.plain == "scan[1].pdf"
         assert pages.plain.splitlines() == [
@@ -3728,7 +3727,8 @@ async def test_command_provider_retry_skipped_action(mock_svc):
             provider._action_retry_skipped()
             await app.workers.wait_for_complete()
             await wait_until(pilot, lambda: mock_sync.called)
-            mock_sync.assert_called_once()
+            # True is retry_skipped: the sync reads the partly read files again too.
+            mock_sync.assert_called_once_with(True)
         notify.assert_called_once_with(retry_skipped_message(1))
     assert held_hashes(store) == {"gone.txt": "cafef00d"}
     assert released_on and released_on[0] is not threading.main_thread()

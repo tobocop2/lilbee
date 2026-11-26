@@ -242,8 +242,8 @@ def _render_partly_read(status: StatusResult) -> Generator[RenderableType, None,
             Text("\n".join(failed_page_lines(source.pages))),
         )
     yield table
-    hidden = status.partial_total - len(status.partly_read)
-    more = f" ({hidden} more not shown)" if hidden > 0 else ""
+    shown = len(status.partly_read)
+    more = f" ({shown} of {status.partial_total} shown)" if status.partial_total > shown else ""
     yield styled((str(status.partial_total), theme.LABEL), PARTLY_READ_RETRY_HINT.format(more=more))
     yield ""
 
