@@ -17,6 +17,7 @@ from lilbee.retrieval.query.compaction import CompactionResult
 from lilbee.retrieval.query.formatting import SourceRef
 from lilbee.retrieval.reasoning import StreamToken
 from lilbee.sessions import MessageRole, SessionMessage, StoredSourceRef, TitleSource
+from tests._async_wait import wait_for_turn_end
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
 
@@ -554,7 +555,7 @@ async def _fold_then(app, pilot, switch) -> None:
             switch()
         finally:
             release.set()
-        assert await pump_until(pilot, lambda: not screen.streaming)
+        await wait_for_turn_end(pilot, screen)
 
 
 async def test_resuming_during_a_fold_leaves_the_resumed_conversation_alone(sessions):
@@ -650,7 +651,7 @@ async def test_resuming_mid_answer_keeps_the_old_answer_out_of_the_resumed_histo
                 app.resume_session(other)
             finally:
                 release.set()
-            assert await pump_until(pilot, lambda: not screen.streaming)
+            await wait_for_turn_end(pilot, screen)
         assert screen._history == [
             {"role": "user", "content": "other q"},
             {"role": "assistant", "content": "other a"},
@@ -735,7 +736,7 @@ async def test_a_streamed_turn_saves_its_sources_beside_the_answer(sessions):
             patch.object(get_services().searcher, "ask_stream", side_effect=stream),
         ):
             screen._send_message("oil?")
-            assert await pump_until(pilot, lambda: not screen.streaming)
+            await wait_for_turn_end(pilot, screen)
             await pilot.pause()
         session_id = screen._session_id
         live = _bubble_text(screen.query(AssistantMessage).last())
@@ -767,7 +768,7 @@ async def test_a_live_answer_that_keeps_a_sources_heading_shows_its_sources_list
             patch.object(get_services().searcher, "ask_stream", side_effect=stream),
         ):
             screen._send_message("q?")
-            assert await pump_until(pilot, lambda: not screen.streaming)
+            await wait_for_turn_end(pilot, screen)
             await pilot.pause()
         live = _bubble_text(screen.query(AssistantMessage).last())
         assert live.startswith(prose)
@@ -854,7 +855,7 @@ async def test_a_resumed_turn_keeps_the_page_and_line_locators_it_showed_live(se
             patch.object(get_services().searcher, "ask_stream", side_effect=stream),
         ):
             screen._send_message("q?")
-            assert await pump_until(pilot, lambda: not screen.streaming)
+            await wait_for_turn_end(pilot, screen)
             await pilot.pause()
         session_id = screen._session_id
         live = _bubble_text(screen.query(AssistantMessage).last()).rpartition("Sources:")[2]

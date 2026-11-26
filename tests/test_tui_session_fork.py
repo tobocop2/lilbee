@@ -20,6 +20,7 @@ from lilbee.core.config import cfg
 from lilbee.retrieval.query.compaction import CompactionResult
 from lilbee.retrieval.reasoning import StreamToken
 from lilbee.sessions import MessageRole, SessionMessage, SessionOrigin, TitleSource
+from tests._async_wait import wait_for_turn_end
 from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
@@ -396,10 +397,6 @@ def _failing_assistant_save(store, error: Exception):
     return add
 
 
-async def _turn_ends(pilot, screen) -> None:
-    assert await pump_until(pilot, lambda: not screen.streaming)
-
-
 async def test_fork_in_the_gap_before_the_reply_is_saved_is_refused(sessions):
     """The busy gate stays up until the assistant reply is on disk.
 
@@ -432,7 +429,7 @@ async def test_fork_in_the_gap_before_the_reply_is_saved_is_refused(sessions):
                 await _submit(pilot, "/fork")
             finally:
                 release.set()
-            await _turn_ends(pilot, screen)
+            await wait_for_turn_end(pilot, screen)
         assert msg.CHAT_BUSY in _notified(notify)
         assert not isinstance(app.screen, ForkPicker)
         assert sessions.get(source).messages[-1].content == "A3"
@@ -453,7 +450,7 @@ async def test_the_reply_lands_in_the_session_its_turn_started_in(sessions):
             assert await pump_until(pilot, reply.started.is_set)
             screen._session_id = other
             reply.release.set()
-            await _turn_ends(pilot, screen)
+            await wait_for_turn_end(pilot, screen)
         assert sessions.get(source).messages[-1].content == "A3"
         assert sessions.get(other).meta.message_count == 4
 
@@ -473,7 +470,7 @@ async def test_a_failed_save_still_finishes_the_turn_and_says_so(sessions):
             patch.object(AssistantMessage, "finish") as finish,
         ):
             await _submit(pilot, "Q3")
-            await _turn_ends(pilot, screen)
+            await wait_for_turn_end(pilot, screen)
             await pilot.pause()
         finish.assert_called_once()
         assert _notified(notify) == [msg.SESSIONS_SAVE_FAILED.format(error="disk full")]
@@ -509,7 +506,7 @@ async def test_an_unexpected_save_error_still_clears_the_busy_gate(sessions):
             await _submit(pilot, "Q3")
             assert threads, "the turn must have started"
             await _join(pilot, threads[0])
-            await _turn_ends(pilot, screen)
+            await wait_for_turn_end(pilot, screen)
         assert [str(e) for e in errors] == ["bug"]
 
 
@@ -534,7 +531,7 @@ async def test_fork_after_a_cancel_waits_for_the_reply_the_source_keeps(sessions
             assert not isinstance(app.screen, ForkPicker)
             refused = _notified(notify)
             reply.release.set()
-            await _turn_ends(pilot, screen)
+            await wait_for_turn_end(pilot, screen)
         assert sessions.get(source).messages[-1].content == "A3-partial"
         # The refused /fork stays in the input, so a second Enter sends it.
         await pilot.press("enter")
@@ -582,7 +579,7 @@ async def test_fork_during_a_fold_after_cancel_is_refused(sessions):
                 await _submit(pilot, "/fork")
             finally:
                 release.set()
-            await _turn_ends(pilot, screen)
+            await wait_for_turn_end(pilot, screen)
         assert msg.CHAT_STOPPING in _notified(notify)
         assert not isinstance(app.screen, ForkPicker)
         assert [meta.id for meta in sessions.list()] == [source]
@@ -600,7 +597,7 @@ async def test_a_turn_stopped_before_it_ran_ends_and_lets_fork_proceed(sessions)
             # One synchronous step: the stop lands before the worker first runs.
             screen._send_message("Q3")
             screen.action_cancel_stream()
-            await _turn_ends(pilot, screen)
+            await wait_for_turn_end(pilot, screen)
             await _open_picker(app, pilot)
         assert not reply.started.is_set()
         assert [m.content for m in sessions.get(source).messages][-1] == "Q3"

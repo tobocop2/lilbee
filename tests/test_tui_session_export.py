@@ -18,7 +18,7 @@ from lilbee.cli.tui.widgets.notice_dialog import NoticeDialog
 from lilbee.core.config import cfg
 from lilbee.retrieval.reasoning import StreamToken
 from lilbee.sessions import MessageRole, SessionMessage, TitleSource
-from tests._async_wait import wait_until
+from tests._async_wait import wait_for_turn_end, wait_until
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests._toasts import posted_toasts
 from tests.conftest import make_mock_services
@@ -214,7 +214,7 @@ async def test_export_while_a_turn_is_stopping_waits_for_the_turn_to_end(session
                 written_while_stopping = list(workdir.iterdir())
             finally:
                 release.set()
-            assert await pump_until(pilot, lambda: not screen.streaming)
+            await wait_for_turn_end(pilot, screen)
         # The refused command stays in the input, so a second Enter sends it.
         with patch.object(screen, "notify") as done:
             await pilot.press("enter")
