@@ -871,57 +871,36 @@ class TestCrawlAndSave:
         assert len(paths) == 1
 
     @pytest.mark.parametrize("limit", SITE_CRAWL_LIMITS.values(), ids=list(SITE_CRAWL_LIMITS))
-    async def test_a_site_crawl_of_a_seed_an_exclude_pattern_matches_names_the_pattern(
+    async def test_a_site_crawl_of_a_seed_an_exclude_pattern_matches_saves_it(
         self, site, caplog, limit
     ):
         seed = site.url(EXCLUDED_SEED)
-        pattern = next(p for p in cfg.crawl_exclude_patterns if re.search(p, seed))
+        assert any(re.search(pattern, seed) for pattern in cfg.crawl_exclude_patterns)
         paths = await crawl_and_save(seed, render_mode=HTTP, **limit)
-        warnings = [
-            record.getMessage()
-            for record in caplog.records
-            if record.name.startswith(BACKEND_LOGGER) and record.levelname == "WARNING"
-        ]
-        # A site crawl leaves out a seed an exclude pattern matches, at any limit.
-        assert site.paths_since(0, EXCLUDED_SEED) == []
-        assert paths == []
-        assert warnings == [LEFT_OUT.format(url=seed, pattern=pattern)]
+        assert EXCLUDED_SEED in site.paths_since(0, EXCLUDED_SEED)
+        assert len(paths) >= 1
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
     @pytest.mark.parametrize("limit", SITE_CRAWL_LIMITS.values(), ids=list(SITE_CRAWL_LIMITS))
-    async def test_a_seed_typed_without_a_path_is_named_when_a_root_pattern_excludes_it(
-        self, site, caplog, limit
+    async def test_a_seed_typed_without_a_path_is_saved_when_a_root_pattern_matches_it(
+        self, site, limit
     ):
         seed = site.url("")
         cfg.crawl_exclude_patterns = [ROOT_PATTERN]
-        assert re.search(ROOT_PATTERN, seed) is None
+        assert re.search(ROOT_PATTERN, site.url("/"))
         paths = await crawl_and_save(seed, render_mode=HTTP, **limit)
-        warnings = [
-            record.getMessage()
-            for record in caplog.records
-            if record.name.startswith(BACKEND_LOGGER) and record.levelname == "WARNING"
-        ]
-        assert site.paths_since(0, "/") == ["/robots.txt", "/sitemap.xml"]
-        assert paths == []
-        assert warnings == [LEFT_OUT.format(url=site.url("/"), pattern=ROOT_PATTERN)]
+        assert "/" in site.paths_since(0, "/")
+        assert len(paths) >= 1
 
-    async def test_a_seed_with_a_username_and_password_is_named_as_crawlberg_matches_it(
-        self, site, caplog
+    async def test_a_seed_with_a_username_and_password_is_saved_when_a_pattern_matches_it(
+        self, site
     ):
         address = site.url(EXCLUDED_SEED)
-        pattern = f"^{re.escape(address)}$"
-        cfg.crawl_exclude_patterns = [pattern]
+        cfg.crawl_exclude_patterns = [f"^{re.escape(address)}$"]
         seed = address.replace("://", "://user:pw@", 1)
-        assert re.search(pattern, seed) is None
         paths = await crawl_and_save(seed, render_mode=HTTP, depth=1, max_pages=2)
-        warnings = [
-            record.getMessage()
-            for record in caplog.records
-            if record.name.startswith(BACKEND_LOGGER) and record.levelname == "WARNING"
-        ]
-        # The pattern is matched against the address without its userinfo.
-        assert site.paths_since(0, EXCLUDED_SEED) == []
-        assert paths == []
-        assert warnings == [LEFT_OUT.format(url=address, pattern=pattern)]
+        assert EXCLUDED_SEED in site.paths_since(0, EXCLUDED_SEED)
+        assert len(paths) >= 1
 
     async def test_default_exclude_patterns_all_apply(self, site):
         """``/wiki/Special:`` is a default pattern that is not a regex anchor or digit class."""

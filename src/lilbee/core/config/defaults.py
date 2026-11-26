@@ -95,11 +95,13 @@ _WP_EXCLUDE: tuple[str, ...] = (
     r"\?elementor_library",
 )
 
-# Pagination and archive permalinks (WP + other CMSes share this shape).
+# Pagination and archive permalinks (WP + other CMSes share this shape). A year alone is an
+# archive only as the first path segment: /2024/ is, /wiki/2023 is an article.
 _ARCHIVE_EXCLUDE: tuple[str, ...] = (
     r"/page/\d+/?$",
     r"\?paged?=\d+",
-    r"/20\d{2}(/\d{2}(/\d{2})?)?/?$",
+    r"/20\d{2}/\d{2}(/\d{2})?/?$",
+    r"^https?://[^/?#]+/20\d{2}/?$",
     r"/tag/",
     r"/category/",
     r"/author/",
