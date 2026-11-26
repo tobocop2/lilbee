@@ -655,9 +655,12 @@ def test_two_ctrl_cs_in_the_start_of_a_run_interrupt_it_from_its_wait(
 
     monkeypatch.setattr(asyncio, "new_event_loop", new_event_loop)
     try:
-        with pytest.raises(KeyboardInterrupt) as raised, sigint_cancel() as cancel:
-            with _two_presses_as_the_start_wakes() as pressed:
-                asyncio_loop.run_interruptible(waits_forever(), cancel)
+        with (
+            pytest.raises(KeyboardInterrupt) as raised,
+            sigint_cancel() as cancel,
+            _two_presses_as_the_start_wakes() as pressed,
+        ):
+            asyncio_loop.run_interruptible(waits_forever(), cancel)
         assert pressed == ["twice"]
         assert raised.traceback[-1].name == "_wait_for"
         assert cancel.is_set()
