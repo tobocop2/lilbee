@@ -39,17 +39,17 @@ dependencies = [
     # The engine user-lock protocol leans on release(), is_singleton reentrancy
     # and the SoftFileLock fallback; the ceiling is the line verified against it.
     "filelock>=4.2.9,<4.3",
-    "tree-sitter-language-pack>=1.8.0,<2.0",
-    "typer>=0.12",
-    "tiktoken",
-    "textual>=0.75",
+    "tree-sitter-language-pack>=1.8.1,<2.0",
+    "typer>=0.26.0",
+    "tiktoken>=0.13.0",
+    "textual>=8.2.8",
     # Floor is 2.2.0: it bounds StreamableHTTP sessions (CVE-2026-59951); 1.x lacks mcp.server.mcpserver.
     "mcp>=2.2.0,<3",
     "pillow>=13.0.0",
-    "litestar>=2.0",
+    "litestar>=2.23.0",
     "uvicorn>=0.30",
-    "httpx",
-    "httpx2",
+    "httpx>=0.28.1",
+    "httpx2>=2.12.0",
     "diskcache>=5.6.1",
     "jinja2>=2.11.3",
     "typing-extensions>=4.5.0",
@@ -57,11 +57,11 @@ dependencies = [
     "psutil>=5.9",
     "pydantic-settings>=2.14.2",
     # 2.5 drops the 3.11 floor and ships 3.12-only stubs mypy rejects at the 3.11 target.
-    "numpy<2.5",
+    "numpy>=2.4.6,<2.5",
     # Entity schema patterns are LLM-authored, so their matches need a wall-clock
     # bound; regex takes a per-match timeout where the stdlib re module cannot.
     # Already present transitively via tiktoken.
-    "regex",
+    "regex>=2026.7.10",
     # llama.cpp's own Python package, for the ggml block and type sizes the
     # download-size estimate prices a quant with. It is not a second GGUF
     # reader: gguf-parser is, built from the pin that builds llama-server.
@@ -108,9 +108,9 @@ crawler = ["crawlberg>=1.12.3", "playwright>=1.61.0", "ada-url>=4.0.0"]
 # (build_llama_server.sh), so this is only needed for an engine built elsewhere.
 # Linux x86_64 only: macOS and aarch64 have no CUDA build to feed.
 cuda12 = [
-    "nvidia-cuda-runtime-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
-    "nvidia-cublas-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
-    "nvidia-cuda-nvrtc-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
+    "nvidia-cuda-runtime-cu12>=12.9.79; platform_system=='Linux' and platform_machine=='x86_64'",
+    "nvidia-cublas-cu12>=12.9.2.10; platform_system=='Linux' and platform_machine=='x86_64'",
+    "nvidia-cuda-nvrtc-cu12>=12.9.86; platform_system=='Linux' and platform_machine=='x86_64'",
 ]
 release = ["lilbee[crawler,providers,graph]"]
 
@@ -169,13 +169,13 @@ dev = [
     "cryptography>=44",
     "hypothesis>=6.100",
     "mypy>=1.19.1",
-    "pytest",
-    "pytest-asyncio",
-    "pytest-cov",
-    "reportlab",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "reportlab>=5.0.0",
     "ruff>=0.15.4",
     "httpx>=0.27",
-    "pytest-httpserver",
+    "pytest-httpserver>=1.1.5",
     "types-pyyaml>=6.0.12.20250915",
     "pytest-xdist>=3.8.0",
     "pytest-forked>=1.6.0",
