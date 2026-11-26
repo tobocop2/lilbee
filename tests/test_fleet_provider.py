@@ -9639,3 +9639,95 @@ class TestReportsReadAfterTheLoad:
             "http://127.0.0.1:1", "chat-3", profile=LLAMA.request_profile(WorkerRole.CHAT)
         )
         assert client.model_id == "chat-3"
+
+
+class TestAdoptGroupPins:
+    """The values adoption hands to each client and to the retiring pool."""
+
+    def test_only_the_chat_client_inlines_reasoning(self, monkeypatch) -> None:
+        launches = [_fake_launch(WorkerRole.CHAT), _fake_launch(WorkerRole.EMBED)]
+        for launch in launches:
+            launch.rerank_mode = None
+            launch.model_id = launch.role
+        inline: dict[WorkerRole, object] = {}
+
+        def _capture(_endpoint, model, **kw):
+            inline[model] = kw.get("inline_reasoning")
+            return _fake_client()
+
+        monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
+        monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_all_launches",
+            lambda *, engines: planning_mod.FleetPlan(tuple(launches)),
+        )
+        FleetProvider()._ensure_fleet()
+        assert inline[WorkerRole.CHAT] is True
+        assert inline[WorkerRole.EMBED] is False
+
+    def test_the_old_clients_wait_in_the_dir_of_the_group_they_ran_in(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        launch = _fake_launch(WorkerRole.EMBED)
+        swap = _install_engine(monkeypatch, tmp_path, launches=[launch])
+        p = FleetProvider()
+        old = _fake_client()
+        old_dir = tmp_path / "old-engine"
+        p._clients = {WorkerRole.EMBED: [old]}
+        p._role_group = {WorkerRole.EMBED: SwapGroup.CO_TENANT}
+        p._group_dirs = {SwapGroup.CO_TENANT: old_dir}
+        retired: list[tuple[tuple, dict]] = []
+        monkeypatch.setattr(p, "_retire_clients", lambda *a, **kw: retired.append((a, kw)))
+        with p._lock:
+            p._adopt_group(SwapGroup.EMBED, swap, [launch])
+        assert retired == [(([old], old_dir), {})]
+
+    def test_a_chat_group_gets_no_embed_window_warning(self, monkeypatch, tmp_path: Path) -> None:
+        launch = _fake_launch(WorkerRole.CHAT)
+        swap = _install_engine(monkeypatch, tmp_path, launches=[launch])
+        seen: list[object] = []
+        monkeypatch.setattr(planning_mod, "warn_when_chat_downsized", lambda _launch: None)
+        monkeypatch.setattr(planning_mod, "warn_when_embed_window_below_chunk", seen.append)
+        p = FleetProvider()
+        with p._lock:
+            p._adopt_group(SwapGroup.CHAT, swap, [launch])
+        assert seen == []
+
+
+class TestEmbedTokenCapPins:
+    def test_the_embed_profile_decides_whether_the_engine_reports_its_window(
+        self, monkeypatch
+    ) -> None:
+        _book_of(monkeypatch, TEI)
+        real = TEI.request_profile
+        monkeypatch.setattr(
+            TEI,
+            "request_profile",
+            lambda role: (
+                real(role)
+                if role is WorkerRole.EMBED
+                else dataclasses.replace(real(WorkerRole.EMBED), input_limit_path=None)
+            ),
+        )
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: 2040)
+        assert FleetProvider().embed_token_cap() is None
+
+    def test_the_planned_cap_is_read_through_the_embed_engine(self, monkeypatch) -> None:
+        _book_of(monkeypatch, LLAMA)
+        engines: list[object] = []
+
+        def _planned(_ref: str, *, engine) -> int:
+            engines.append(engine)
+            return 8184
+
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", _planned)
+        assert FleetProvider().embed_token_cap() == 8184
+        assert engines == [LLAMA]
+
+    def test_the_routing_provider_asks_for_a_full_read_by_default(self, monkeypatch) -> None:
+        routing = TestRoutingProviderEmbedCap._routing_over_a_capped_engine(
+            monkeypatch, "org/repo/e.gguf"
+        )
+        routing.embed_token_cap()
+        routing._local.embed_token_cap.assert_called_once_with(known_only=False)
