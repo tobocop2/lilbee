@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pyarrow as pa
 import pytest
@@ -198,6 +198,35 @@ async def test_a_failed_recluster_after_the_backfill_runs_on_the_next_sync():
     words = sorted(f"{WORDS['a.txt']} {WORDS['b.txt']}".split())
     assert library.node_rows() == [(word, CLUSTERED, 2) for word in words]
     assert library.store.concepts_covered().version == library.store.sources_version()
+
+
+async def test_an_owed_recluster_covers_every_source_when_the_sync_also_adds_one():
+    library = _Library()
+    library.add("a.txt", "b.txt")
+    await sync(quiet=True)
+    cfg.concept_graph = True
+    with patch.object(ConceptGraph, "_rebuild_all", side_effect=RuntimeError("stopped")):
+        await sync(quiet=True)
+    library.add("c.txt")
+
+    await sync(quiet=True)
+
+    words = sorted(f"{WORDS['a.txt']} {WORDS['b.txt']} {WORDS['c.txt']}".split())
+    assert library.node_rows() == [(word, CLUSTERED, 2) for word in words]
+    assert library.store.concepts_covered().version == library.store.sources_version()
+
+
+async def test_a_sync_that_adds_a_file_with_no_recluster_owed_reclusters_only_that_file():
+    library = _Library()
+    library.add("a.txt")
+    cfg.concept_graph = True
+    await sync(quiet=True)
+    library.add("b.txt")
+
+    with patch.object(ConceptGraph, "rebuild_clusters", autospec=True) as rebuild:
+        await sync(quiet=True)
+
+    assert rebuild.call_args_list == [call(library.graph, {"b.txt"}, set())]
 
 
 async def test_a_failed_recluster_after_a_later_backfill_runs_on_the_next_sync():
