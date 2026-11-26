@@ -9,6 +9,7 @@ import hashlib
 import logging
 import os
 import re
+import weakref
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
@@ -26,12 +27,11 @@ from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.security import validate_path_within
 from lilbee.data.ingest.discovery import excluded_extension_reasons
-from lilbee.runtime.add_registry import AddIdRunningError
 from lilbee.runtime.cancellation import CancelSignal
 from lilbee.runtime.ingest_lock import IngestLockRegistry
 from lilbee.runtime.lock import refuse_where_a_sync_cannot_lock
 from lilbee.runtime.progress import SseEvent
-from lilbee.server.handlers.sse import SseStream, sse_error, sse_event
+from lilbee.server.handlers.sse import SseStream, sse_event
 from lilbee.server.models import AddSummary, SyncSummary
 
 if TYPE_CHECKING:
@@ -202,7 +202,9 @@ async def _run_add(
             return await _rolled_back(rollback, errors)
 
         errors.extend(reg_result.refused)
-        if stopped and not sse.stopped_by_user:
+        if sse.stopped_by_user:
+            return await _rolled_back(rollback, errors, reg_result)
+        if stopped:
             return AddSummary(
                 copied=reg_result.registered,
                 name_taken=reg_result.name_taken,
@@ -220,11 +222,13 @@ async def _run_add(
                 leave_as_cancel(rollback, sse.cancel, _not_by_user),
                 temporary_ocr_config(ocr, ocr_timeout),
             ):
-                sync_result = await sync(
-                    quiet=True,
-                    on_progress=sse.callback,
-                    cancel=sse.cancel,
-                    started_by=_SYNC_STARTER,
+                sync_result = await sse.stoppable(
+                    sync(
+                        quiet=True,
+                        on_progress=sse.callback,
+                        cancel=sse.cancel,
+                        started_by=_SYNC_STARTER,
+                    )
                 )
         except asyncio.CancelledError:
             if not sse.stopped_by_user:
@@ -293,11 +297,34 @@ def _parse_ocr_params(data: dict[str, Any]) -> tuple[OcrMode | None, float | Non
     return parse_ocr_mode(data.get("ocr")), ocr_timeout
 
 
-async def _ingest_stream(
+def _ingest_stream(
     items: list[tuple[str, _Payload]],
     run: Callable[[list[_Payload], SseStream], Coroutine[Any, Any, AddSummary]],
     label: str,
     add_id: str | None = None,
+) -> AsyncGenerator[str, None]:
+    """Reserve *add_id* now, and return the stream of :func:`_locked_stream`.
+
+    The id is held from this call, before the route answers, so a cancel that
+    arrives before the run starts still reaches it: the run starts stopped and
+    ends with its ``done`` event. Raises
+    :class:`~lilbee.runtime.add_registry.AddIdRunningError` when another add
+    holds *add_id*.
+    """
+    sse = SseStream()
+    release = get_services().add_registry.reserve(add_id, sse.stop_by_user)
+    stream = _locked_stream(items, run, label, sse, release)
+    # A body that is never iterated never runs its finally, so the id goes with the stream.
+    weakref.finalize(stream, release)
+    return stream
+
+
+async def _locked_stream(
+    items: list[tuple[str, _Payload]],
+    run: Callable[[list[_Payload], SseStream], Coroutine[Any, Any, AddSummary]],
+    label: str,
+    sse: SseStream,
+    release: Callable[[], None],
 ) -> AsyncGenerator[str, None]:
     """Lock per source, run ``run`` over the acquired subset, and stream SSE.
 
@@ -316,48 +343,43 @@ async def _ingest_stream(
     then stops the acquired subset as any close does, after the run's first
     uninterruptible step (the registration, or the file writes of an upload).
 
-    With an *add_id*, ``POST /api/add/cancel`` can stop the run from the
-    moment the locks are taken until the run ends. That cancel is the user's:
-    the stream still ends with the run's ``done`` event. An *add_id* that
-    another run holds ends the stream with an ``error`` event.
+    *release* lets go of the run's ``add_id``. It runs when the run has ended,
+    before the terminal frame, so a cancel after the ``done`` event answers 404.
     """
-    services = get_services()
-    registry = services.ingest_lock_registry
-    acquired, busy = await registry.acquire([key for key, _payload in items])
-    rejections = [_already_ingesting(label, name) for name in busy]
+    registry = get_services().ingest_lock_registry
+    acquired: list[tuple[str, asyncio.Lock]] = []
     try:
+        acquired, busy = await registry.acquire([key for key, _payload in items])
+        rejections = [_already_ingesting(label, name) for name in busy]
         if not acquired:
             for rejection in rejections:
                 yield rejection
             return
-        if add_id is not None and services.add_registry.is_running(add_id):
-            yield sse_error(str(AddIdRunningError(add_id)))
-            return
 
         acquired_names = {name for name, _lock in acquired}
         locked = [payload for key, payload in items if key in acquired_names]
-        sse = SseStream()
         for rejection in rejections:
             sse.queue.put_nowait(rejection)
         task = asyncio.create_task(run(locked, sse))
         try:
-            with services.add_registry.running(add_id, functools.partial(sse.stop_by_user, task)):
-                async for event in sse.drain(task, label):
-                    yield event
-                # already_ingesting names the sources this run never attempted, so
-                # a client reading only the terminal event still sees a partial batch.
-                frame = sse.terminal_frame(
-                    task,
-                    lambda s: s.model_copy(update={"already_ingesting": list(busy)}).model_dump(),
-                )
-                if frame is not None:
-                    yield frame
+            async for event in sse.drain(task, label):
+                yield event
+            release()
+            # already_ingesting names the sources this run never attempted, so
+            # a client reading only the terminal event still sees a partial batch.
+            frame = sse.terminal_frame(
+                task,
+                lambda s: s.model_copy(update={"already_ingesting": list(busy)}).model_dump(),
+            )
+            if frame is not None:
+                yield frame
         finally:
             if not task.done():
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
     finally:
+        release()
         registry.release(acquired)
 
 
@@ -367,7 +389,7 @@ def _already_ingesting(label: str, name: str) -> str:
     return sse_event(SseEvent.ALREADY_INGESTING, {"source": name})
 
 
-async def add_files_stream(
+def add_files_stream(
     paths: list[str],
     *,
     force: bool = False,
@@ -378,15 +400,15 @@ async def add_files_stream(
     """Register server-side files, sync, and yield SSE progress events.
 
     Takes the already-validated/parsed values from ``validate_add_paths`` so the
-    request dict is decoded once. *add_id* names the add for ``cancel_add``.
+    request dict is decoded once. *add_id* names the add for ``cancel_add``; it
+    is reserved by this call, which raises ``AddIdRunningError`` when it is taken.
     """
-    async for event in _ingest_stream(
+    return _ingest_stream(
         [(IngestLockRegistry.canonical_source_name(p), p) for p in paths],
         lambda locked, sse: _run_add(locked, force, ocr, ocr_timeout, sse),
         "Add files stream",
         add_id,
-    ):
-        yield event
+    )
 
 
 def _clean_upload_name(name: str) -> str:
@@ -463,11 +485,13 @@ async def _run_upload(
                 leave_as_cancel(rollback, sse.cancel, _not_by_user),
                 temporary_ocr_config(ocr, ocr_timeout),
             ):
-                sync_result = await sync(
-                    quiet=True,
-                    on_progress=sse.callback,
-                    cancel=sse.cancel,
-                    started_by=_SYNC_STARTER,
+                sync_result = await sse.stoppable(
+                    sync(
+                        quiet=True,
+                        on_progress=sse.callback,
+                        cancel=sse.cancel,
+                        started_by=_SYNC_STARTER,
+                    )
                 )
         except asyncio.CancelledError:
             if not sse.stopped_by_user:
@@ -522,7 +546,8 @@ def _place_upload(name: str, content: bytes, dest: Path) -> bool:
     Returns whether the upload created the file: a write where no file was.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    existed = dest.exists()
+    # lexists: a dangling symlink at *dest* is the user's, so the upload did not create it.
+    existed = os.path.lexists(dest)
     if _move_same_content(name, content, dest):
         return False
     dest.write_bytes(content)
@@ -549,7 +574,7 @@ def _write_uploads(files: list[tuple[str, bytes]]) -> _Written:
     return _Written([name for name, _content in files], created, indexed_stamps(created))
 
 
-async def add_uploads_stream(
+def add_uploads_stream(
     files: list[tuple[str, bytes]],
     *,
     ocr: OcrMode | None = None,
@@ -560,20 +585,15 @@ async def add_uploads_stream(
 
     Locks per source name (the validated relative path) so an upload never
     races an in-flight add of the same source. *add_id* names the upload for
-    ``cancel_add``.
+    ``cancel_add``; it is reserved by this call, which raises
+    ``AddIdRunningError`` when it is taken.
     """
-    async for event in _ingest_stream(
+    return _ingest_stream(
         [(name, (name, content)) for name, content in files],
         lambda locked, sse: _run_upload(locked, sse, ocr, ocr_timeout),
         "Add uploads stream",
         add_id,
-    ):
-        yield event
-
-
-def add_is_running(add_id: str) -> bool:
-    """Whether an add with *add_id* runs now."""
-    return get_services().add_registry.is_running(add_id)
+    )
 
 
 def cancel_add(add_id: str) -> bool:

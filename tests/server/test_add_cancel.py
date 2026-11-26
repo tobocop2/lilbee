@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from unittest import mock
 
 import pytest
@@ -13,6 +16,7 @@ from lilbee.app.ingest import RegisterResult
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.data.types import SyncResult
+from lilbee.runtime.add_registry import AddIdRunningError
 from lilbee.server.handlers import SseStream, cancel_add
 from lilbee.server.handlers.ingest import _ingest_stream, _run_add, _run_upload
 from lilbee.server.models import AddSummary
@@ -39,6 +43,20 @@ def _app():
     return create_app()
 
 
+@contextmanager
+def _held(add_id: str, stop) -> Iterator[None]:
+    """Hold *add_id* in the registry of the services, with *stop*, for the block."""
+    release = get_services().add_registry.reserve(add_id, stop)
+    try:
+        yield
+    finally:
+        release()
+
+
+def _is_held(add_id: str) -> bool:
+    return add_id in get_services().add_registry._stops
+
+
 def _stop_as_user(sse: SseStream) -> None:
     """What a cancel by the user leaves on *sse*; the run's task is not cancelled here."""
     sse.stopped_by_user = True
@@ -60,7 +78,7 @@ def _stopping_sync(sse: SseStream, *, error: BaseException | None = None):
 class TestTheCancelRoute:
     async def test_a_cancel_stops_the_add_that_runs_under_the_id(self):
         run = _Stub()
-        with get_services().add_registry.running("a-1", run.stop):
+        with _held("a-1", run.stop):
             async with AsyncTestClient(_app()) as client:
                 resp = await client.post(
                     "/api/add/cancel", json={"add_id": "a-1"}, headers=_auth_headers()
@@ -108,7 +126,7 @@ class TestTheAddIdOfTheAddRoutes:
         assert not (cfg.documents_dir / "a.md").exists()
 
     async def test_an_add_with_an_id_that_runs_answers_409(self, tmp_path):
-        with get_services().add_registry.running("busy", _Stub().stop):
+        with _held("busy", _Stub().stop):
             async with AsyncTestClient(_app()) as client:
                 resp = await client.post(
                     "/api/add",
@@ -119,7 +137,7 @@ class TestTheAddIdOfTheAddRoutes:
         assert "busy" in resp.json()["detail"]
 
     async def test_an_upload_with_an_id_that_runs_answers_409_and_writes_nothing(self):
-        with get_services().add_registry.running("busy", _Stub().stop):
+        with _held("busy", _Stub().stop):
             async with AsyncTestClient(_app()) as client:
                 resp = await client.post(
                     "/api/add/upload",
@@ -143,39 +161,74 @@ class TestTheAddIdOfTheAddRoutes:
 
 
 class TestTheStreamHoldsTheId:
-    async def test_the_id_runs_while_the_stream_runs_and_is_free_after(self):
+    async def test_the_id_is_held_from_the_open_of_the_stream_until_the_run_ends(self):
         seen: list[bool] = []
 
         async def run(_locked, sse) -> AddSummary:
-            seen.append(get_services().add_registry.is_running("s-1"))
+            seen.append(_is_held("s-1"))
             sse.queue.put_nowait(None)
             return AddSummary(copied=[], errors=[])
 
-        frames = [f async for f in _ingest_stream([("a.md", "a")], run, "Test stream", "s-1")]
+        stream = _ingest_stream([("a.md", "a")], run, "Test stream", "s-1")
+        assert _is_held("s-1")
+        frames = [f async for f in stream]
 
         assert seen == [True]
-        assert not get_services().add_registry.is_running("s-1")
+        assert not _is_held("s-1")
         assert [event for event, _data in parse_sse_events("".join(frames).encode())] == ["done"]
 
-    async def test_a_stream_whose_id_another_add_holds_ends_with_an_error(self):
+    async def test_a_stream_whose_id_another_add_holds_is_refused_before_it_opens(self):
         run = mock.AsyncMock()
-        with get_services().add_registry.running("s-1", _Stub().stop):
-            frames = [f async for f in _ingest_stream([("a.md", "a")], run, "Test stream", "s-1")]
-
-        events = parse_sse_events("".join(frames).encode())
-        assert [event for event, _data in events] == ["error"]
-        assert "'s-1' is already running" in events[0][1]["message"]
+        with _held("s-1", _Stub().stop), pytest.raises(AddIdRunningError, match="'s-1'"):
+            _ingest_stream([("a.md", "a")], run, "Test stream", "s-1")
         run.assert_not_called()
         assert get_services().ingest_lock_registry._locks == {}
+
+    async def test_a_stream_that_is_never_read_frees_its_id(self):
+        stream = _ingest_stream([("a.md", "a")], mock.AsyncMock(), "Test stream", "s-4")
+        assert _is_held("s-4")
+        del stream
+        gc.collect()
+        assert not _is_held("s-4")
+
+    async def test_a_cancel_after_the_run_ended_answers_not_found(self):
+        async def run(_locked, sse) -> AddSummary:
+            sse.queue.put_nowait(None)
+            return AddSummary(copied=[], errors=[])
+
+        found: list[bool] = []
+        async for frame in _ingest_stream([("a.md", "a")], run, "Test stream", "s-3"):
+            if frame.startswith("event: done"):
+                found.append(cancel_add("s-3"))
+
+        assert found == [False]
+
+    async def test_a_cancel_before_the_stream_starts_reaches_the_run(self):
+        summary = AddSummary(copied=[], errors=[], cancelled=True, not_added=["a.md"])
+
+        async def run(_locked, sse) -> AddSummary:
+            assert sse.stopped_by_user and sse.cancel.is_set()
+            sse.queue.put_nowait(None)
+            return summary
+
+        stream = _ingest_stream([("a.md", "a")], run, "Test stream", "s-5")
+        assert cancel_add("s-5") is True
+        frames = [f async for f in stream]
+
+        events = parse_sse_events("".join(frames).encode())
+        assert [data for event, data in events if event == "done"] == [summary.model_dump()]
 
     async def test_a_stop_by_the_user_cancels_the_run_and_still_ends_with_done(self):
         summary = AddSummary(copied=[], errors=[], cancelled=True, not_added=["a.md"])
         parked = asyncio.Event()
 
+        async def _park() -> None:
+            parked.set()
+            await asyncio.Event().wait()
+
         async def run(_locked, sse) -> AddSummary:
             try:
-                parked.set()
-                await asyncio.Event().wait()
+                await sse.stoppable(_park())
             except asyncio.CancelledError:
                 assert sse.stopped_by_user
             sse.queue.put_nowait(None)
@@ -193,53 +246,75 @@ class TestTheStreamHoldsTheId:
         assert [data for event, data in events if event == "done"] == [summary.model_dump()]
 
 
-async def _started_task() -> asyncio.Task[None]:
-    """A task that has taken its first step and waits until it is cancelled."""
+async def _parked_work(sse: SseStream) -> asyncio.Task[None]:
+    """A run that awaits work through *sse* which waits until it is cancelled."""
     started = asyncio.Event()
 
-    async def run() -> None:
+    async def work() -> None:
         started.set()
         await asyncio.Event().wait()
 
-    task = asyncio.create_task(run())
+    task = asyncio.create_task(sse.stoppable(work()))
     await started.wait()
     return task
 
 
 class TestAStopByTheUser:
-    async def test_the_stop_cancels_a_running_task(self):
+    async def test_the_stop_cancels_the_work_the_run_awaits(self):
         sse = SseStream()
-        task = await _started_task()
+        run = await _parked_work(sse)
 
-        sse.stop_by_user(task)
+        sse.stop_by_user()
 
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await run
         assert sse.stopped_by_user and sse.cancel.is_set()
+        assert sse._work is None
 
-    async def test_the_stop_leaves_a_task_that_has_not_started_to_see_the_cancel(self):
+    async def test_the_stop_cancels_only_the_work_not_the_run(self):
         sse = SseStream()
+        started = asyncio.Event()
 
-        async def run() -> bool:
-            return sse.cancel.is_set()
+        async def work() -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        async def run() -> str:
+            try:
+                await sse.stoppable(work())
+            except asyncio.CancelledError:
+                await asyncio.to_thread(lambda: None)
+                return "rolled back"
+            return "finished"
 
         task = asyncio.create_task(run())
-        sse.stop_by_user(task)
+        await started.wait()
+        sse.stop_by_user()
 
-        assert await task is True
+        assert await task == "rolled back"
+        assert not task.cancelled()
+
+    async def test_the_stop_before_any_work_leaves_the_work_to_see_the_cancel(self):
+        sse = SseStream()
+        sse.stop_by_user()
+
+        async def work() -> bool:
+            return sse.cancel.is_set()
+
+        assert await sse.stoppable(work()) is True
         assert sse.stopped_by_user
 
     async def test_the_stop_leaves_a_run_that_already_stops_alone(self):
         sse = SseStream()
         sse.cancel.set()
-        task = await _started_task()
+        run = await _parked_work(sse)
 
-        sse.stop_by_user(task)
+        sse.stop_by_user()
 
-        assert not sse.stopped_by_user and not task.cancelling()
-        task.cancel()
+        assert not sse.stopped_by_user and not run.cancelling()
+        run.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await run
 
 
 class TestACancelOfAnAddByPath:
@@ -273,16 +348,14 @@ class TestACancelOfAnAddByPath:
         src.write_text("contents", encoding="utf-8")
         sse = SseStream()
         _stop_as_user(sse)
+        sync = mock.AsyncMock()
 
-        async def _sync(**kwargs) -> SyncResult:
-            assert kwargs["cancel"].is_set()
-            raise asyncio.CancelledError
-
-        with mock.patch("lilbee.data.ingest.sync", new=_sync):
+        with mock.patch("lilbee.data.ingest.sync", new=sync):
             summary = await _run_add([str(src)], False, None, None, sse)
 
         assert summary.cancelled is True and summary.not_added == ["scan.txt"]
         assert "scan.txt" not in cfg.linked_roots
+        sync.assert_not_called()
 
     async def test_a_registration_that_fails_after_the_cancel_ends_as_the_cancel(self, tmp_path):
         src = tmp_path / "src"
@@ -368,6 +441,16 @@ class TestACancelOfAnUpload:
 
         assert summary.not_added == []
         assert (cfg.documents_dir / "now.md").read_bytes() == content
+
+    async def test_the_cancel_keeps_a_dangling_symlink_the_upload_wrote_through(self, tmp_path):
+        link = cfg.documents_dir / "link.md"
+        link.symlink_to(tmp_path / "elsewhere.md")
+        sse = SseStream()
+        with mock.patch("lilbee.data.ingest.sync", new=_stopping_sync(sse)):
+            summary = await _run_upload([("link.md", b"# through\n")], sse)
+
+        assert summary.not_added == [] and summary.copied == ["link.md"]
+        assert link.is_symlink()
 
     async def test_the_cancel_keeps_a_created_file_the_sync_indexed(self):
         sse = SseStream()

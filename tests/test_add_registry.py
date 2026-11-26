@@ -15,49 +15,44 @@ class _Run:
         self.stops += 1
 
 
-def test_an_id_runs_while_its_block_runs_and_not_after():
-    registry = AddRegistry()
-    with registry.running("a1", _Run().stop):
-        assert registry.is_running("a1")
-    assert not registry.is_running("a1")
-
-
-def test_an_id_is_free_again_after_a_block_that_raised():
-    registry = AddRegistry()
-    with pytest.raises(RuntimeError), registry.running("a1", _Run().stop):
-        raise RuntimeError("the add failed")
-    assert not registry.is_running("a1")
-
-
-def test_a_cancel_calls_the_stop_of_its_id():
+def test_a_reserved_id_is_held_until_its_release():
     registry, run = AddRegistry(), _Run()
-    with registry.running("a1", run.stop):
-        assert registry.cancel("a1") is True
+    release = registry.reserve("a1", run.stop)
+    assert registry.cancel("a1") is True
+    release()
+    assert registry.cancel("a1") is False
     assert run.stops == 1
 
 
 def test_a_cancel_of_an_id_that_does_not_run_stops_nothing():
     registry, run = AddRegistry(), _Run()
-    with registry.running("a1", run.stop):
-        assert registry.cancel("other") is False
-    assert registry.cancel("a1") is False
+    registry.reserve("a1", run.stop)
+    assert registry.cancel("other") is False
     assert run.stops == 0
 
 
 def test_an_add_with_no_id_holds_nothing_a_cancel_can_reach():
     registry, run = AddRegistry(), _Run()
-    with registry.running(None, run.stop):
-        assert registry._stops == {}
+    release = registry.reserve(None, run.stop)
+    assert registry._stops == {}
+    release()
     assert run.stops == 0
 
 
 def test_a_second_add_with_a_running_id_is_refused_and_keeps_the_first():
     registry, first = AddRegistry(), _Run()
-    with registry.running("a1", first.stop):
-        with (
-            pytest.raises(AddIdRunningError, match="'a1' is already running"),
-            registry.running("a1", _Run().stop),
-        ):
-            pass
-        assert registry.cancel("a1") is True
+    registry.reserve("a1", first.stop)
+    with pytest.raises(AddIdRunningError, match="'a1' is already running"):
+        registry.reserve("a1", _Run().stop)
+    assert registry.cancel("a1") is True
     assert first.stops == 1
+
+
+def test_a_second_release_leaves_the_next_holder_of_the_id_alone():
+    registry, first, second = AddRegistry(), _Run(), _Run()
+    release_first = registry.reserve("a1", first.stop)
+    release_first()
+    registry.reserve("a1", second.stop)
+    release_first()
+    assert registry.cancel("a1") is True
+    assert (first.stops, second.stops) == (0, 1)
