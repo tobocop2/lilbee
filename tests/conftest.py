@@ -163,10 +163,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_collection_finish() -> None:
-    """Freeze the objects of import and collection, so full collections skip them.
-
-    They live until the session ends, and a worker holds about two million of them.
-    """
+    """Freeze the objects of import and collection, which live until the session ends."""
     gc.collect()
     gc.freeze()
 
