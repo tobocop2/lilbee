@@ -94,7 +94,9 @@ def test_a_module_loaded_under_a_reset_services_patch_keeps_no_copy_of_it(module
         "services.reset_services = real\n"
         "assert vars(module).get('reset_services', real) is real\n"
     )
-    done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+    done = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, encoding="utf-8"
+    )
     assert done.returncode == 0, done.stderr
 
 

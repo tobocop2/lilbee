@@ -17,7 +17,6 @@ import lilbee.app.services as svc_mod
 from lilbee.app import dataset as dataset_mod
 from lilbee.app.ingest import register_sources, remove_documents_durably
 from lilbee.app.settings import apply_settings_update
-from lilbee.cli.tui.widgets import model_bar as model_bar_mod
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.data.ingest.pipeline import sync as pipeline_sync
@@ -323,7 +322,7 @@ class TestTheServicesAreBuiltBeforeTheSyncLock:
 
 
 def _reset_from_the_model_bar() -> None:
-    model_bar_mod.reset_services()
+    svc_mod.reset_services()
 
 
 def _reset_from_a_settings_change() -> None:
