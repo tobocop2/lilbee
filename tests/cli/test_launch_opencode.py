@@ -32,9 +32,16 @@ def _write_server_session() -> None:
 def posix_stop(monkeypatch):
     """Pin the platform so the launcher stops serve with terminate(), as on POSIX.
 
-    Windows stops serve with CTRL_BREAK instead; that stop has its own tests.
+    Windows stops serve with CTRL_BREAK instead; that stop has its own tests. The pin
+    holds for the whole process, so a test that runs a command does not take it: the
+    command's own signal setup would ask Windows for POSIX signals.
     """
     monkeypatch.setattr(sys, "platform", "linux")
+
+
+def _stop_of(proc: MagicMock) -> MagicMock:
+    """The call that stops serve on this platform: CTRL_BREAK on Windows, else terminate()."""
+    return proc.send_signal if sys.platform == "win32" else proc.terminate
 
 
 @pytest.fixture(autouse=True)
@@ -146,7 +153,6 @@ def test_launch_opencode_with_running_server_writes_provider_into_config(tmp_pat
 
 
 @pytest.mark.no_health_default
-@pytest.mark.usefixtures("posix_stop")
 def test_launch_opencode_spawns_fresh_server_when_session_files_are_stale(tmp_path):
     """A leftover server.port from a crashed server must not poison reuse."""
     _write_server_session()
@@ -173,7 +179,7 @@ def test_launch_opencode_spawns_fresh_server_when_session_files_are_stale(tmp_pa
         result = runner.invoke(app, ["launch", "opencode"])
 
     assert result.exit_code == 0
-    fake_proc.terminate.assert_called_once()
+    _stop_of(fake_proc).assert_called_once()
 
 
 @pytest.mark.no_health_default
@@ -529,7 +535,6 @@ def test_launch_opencode_warns_when_configured_chat_model_not_installed(tmp_path
     assert "is not installed" in result.output
 
 
-@pytest.mark.usefixtures("posix_stop")
 def test_launch_opencode_spawns_server_when_none_running():
     fake_opencode = "/usr/local/bin/opencode"
     completed = MagicMock(returncode=0)
@@ -550,10 +555,9 @@ def test_launch_opencode_spawns_server_when_none_running():
         result = runner.invoke(app, ["launch", "opencode"])
 
     assert result.exit_code == 0
-    fake_proc.terminate.assert_called_once()
+    _stop_of(fake_proc).assert_called_once()
 
 
-@pytest.mark.usefixtures("posix_stop")
 def test_launch_opencode_health_timeout_terminates_spawn_and_exits_1():
     from lilbee.cli.launchers.server import _SPAWN_ATTEMPTS
 
@@ -570,10 +574,9 @@ def test_launch_opencode_health_timeout_terminates_spawn_and_exits_1():
     assert result.exit_code == 1
     assert "failed to start" in result.stderr
     # Every bounded attempt spawned a server and then stopped it.
-    assert fake_proc.terminate.call_count == _SPAWN_ATTEMPTS
+    assert _stop_of(fake_proc).call_count == _SPAWN_ATTEMPTS
 
 
-@pytest.mark.usefixtures("posix_stop")
 def test_launch_opencode_health_ok_but_session_missing_exits_1():
     """Health endpoint replies but server.json never lands (rare race)."""
     fake_opencode = "/usr/local/bin/opencode"
@@ -588,7 +591,7 @@ def test_launch_opencode_health_ok_but_session_missing_exits_1():
         result = runner.invoke(app, ["launch", "opencode"])
     assert result.exit_code == 1
     assert "did not write a session file" in result.stderr
-    fake_proc.terminate.assert_called_once()
+    _stop_of(fake_proc).assert_called_once()
 
 
 def test_free_port_returns_open_port():
