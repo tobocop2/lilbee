@@ -1,0 +1,60 @@
+name: Minimum versions
+
+# Every direct dependency in pyproject.toml declares a lower bound. The lock pins
+# recent releases, so a wrong bound passes the normal test job. This job resolves
+# each direct dependency to its lowest allowed release and runs the full suite.
+# A pull request that changes pyproject.toml runs it. The weekly run catches code
+# that starts to use a newer API without a change to pyproject.toml.
+on:
+  pull_request:
+    paths:
+      - pyproject.toml
+      - .github/workflows/min-versions.yml
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: min-versions-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  min-versions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Copy the checkout so uv.lock stays unchanged
+        run: cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/min-versions"
+
+      - name: Resolve every direct dependency to its lowest version
+        # Explicit bash turns on pipefail, so a failed sync fails the step and not only tee.
+        shell: bash
+        working-directory: ${{ runner.temp }}/min-versions
+        run: uv sync --resolution lowest-direct --all-extras --python 3.11 2>&1 | tee "$RUNNER_TEMP/sync.log"
+
+      - name: Fail on a dependency with no lower bound
+        run: |
+          if grep -F 'is unpinned' "$RUNNER_TEMP/sync.log"; then
+            echo "::error::A direct dependency has no lower bound. Add one in pyproject.toml."
+            exit 1
+          fi
+
+      - name: Run the full test suite
+        working-directory: ${{ runner.temp }}/min-versions
+        run: .venv/bin/python -m pytest -p no:cacheprovider -q --no-cov -n 8 tests/
+        env:
+          LILBEE_DATA: ${{ runner.temp }}/lilbee
