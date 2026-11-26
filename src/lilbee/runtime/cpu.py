@@ -22,16 +22,12 @@ import math
 import os
 from pathlib import Path
 
+from lilbee.core.system import _CGROUP_ROOT, _PROC_CGROUP, _cgroup_chain, _own_cgroup_paths
 from lilbee.runtime.shard_process import shard_process
 
 log = logging.getLogger(__name__)
 
 _ENV_VAR = "LILBEE_CPU_QUOTA"
-
-_CGROUP_ROOT = Path("/sys/fs/cgroup")
-
-
-_PROC_CGROUP = Path("/proc/self/cgroup")
 
 _V1_CPU_CONTROLLER = "cpu"
 
@@ -54,37 +50,6 @@ def _v1_dir_quota(directory: Path) -> float | None:
     except (OSError, ValueError):
         return None
     return quota / period if quota > 0 and period > 0 else None
-
-
-def _own_cgroup_paths(proc_cgroup: Path) -> dict[str, str]:
-    """Map each controller (v2 unified hierarchy: the empty name) to this process's cgroup path."""
-    try:
-        lines = os.fsdecode(proc_cgroup.read_bytes()).splitlines()
-    except OSError:
-        return {}
-    paths: dict[str, str] = {}
-    for line in lines:
-        _, _, rest = line.partition(":")
-        controllers, _, path = rest.partition(":")
-        for name in controllers.split(",") if controllers else [""]:
-            paths[name] = path
-    return paths
-
-
-def _cgroup_chain(base: Path, relative: str | None) -> list[Path]:
-    """The process's cgroup directory and each ancestor up to ``base``.
-
-    A level that does not exist or cannot be read gives no limit, so a path
-    absent under ``base`` (a container with its own cgroup namespace, or a
-    runtime that mounts the container's cgroup at the controller root) leaves
-    the mount's own limit.
-    """
-    if relative is None or ".." in Path(relative).parts:
-        return [base]
-    chain = [base / relative.lstrip("/")]
-    while chain[-1] != base:
-        chain.append(chain[-1].parent)
-    return chain
 
 
 def _cgroup_cpu_quota(root: Path | None = None, proc_cgroup: Path | None = None) -> float | None:
