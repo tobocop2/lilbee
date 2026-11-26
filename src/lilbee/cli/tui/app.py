@@ -11,7 +11,7 @@ from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from rich.console import Console
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.await_complete import AwaitComplete
 from textual.binding import Binding, BindingType
@@ -337,8 +337,37 @@ class LilbeeApp(App[None]):
     # Production never sets it. See tests/_lilbee_app_test_host.py.
     _test_skip_auto_init: ClassVar[bool] = False
 
-    # Keys pressed while the startup gate showed; the chat prompt takes them on show.
-    type_ahead: str = ""
+    # Text typed while chat starts, kept for the chat prompt. None when nothing
+    # is kept: before the gate shows, and after the prompt took the text.
+    _type_ahead: list[str] | None = None
+
+    async def on_event(self, event: events.Event) -> None:
+        if not self._keep_for_the_prompt(event):
+            await super().on_event(event)
+
+    def _keep_for_the_prompt(self, event: events.Event) -> bool:
+        """Keep a typed key or a paste for the chat prompt while chat starts.
+
+        The app keeps the text as it reads the event, before it routes the
+        event to a screen. Chat replaces the gate in one step but focuses its
+        prompt some steps later, and a key routed in that gap reaches no input.
+        """
+        if self._type_ahead is None or event.is_forwarded:
+            return False
+        if not (self._gate_is_showing() or self.screen is self.chat_screen()):
+            return False
+        if isinstance(event, events.Key) and event.is_printable and event.character:
+            self._type_ahead.append(event.character)
+            return True
+        if isinstance(event, events.Paste):
+            self._type_ahead.append(event.text)
+            return True
+        return False
+
+    def take_type_ahead(self) -> str:
+        """Return the text typed while chat started, and stop keeping more."""
+        typed, self._type_ahead = self._type_ahead or [], None
+        return "".join(typed)
 
     async def on_mount(self) -> None:
         # The app's own signal graph is part of being a working app, not
@@ -357,6 +386,7 @@ class LilbeeApp(App[None]):
         from lilbee.cli.tui.screens.startup_gate import StartupGate
 
         gate = StartupGate()
+        self._type_ahead = []
         # Awaited: the gate's boot worker treats an unmounted gate as "torn down",
         # so it must be mounted before start_boot can hand over.
         await self.push_screen(gate)
@@ -428,7 +458,7 @@ class LilbeeApp(App[None]):
             if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
                 self.switch_view(self._initial_view)
         else:
-            self.type_ahead = ""
+            self._type_ahead = None
             self.switch_view(msg.CATALOG_VIEW)
         # Cheap detection only: filesystem walk + hash compare. The user
         # initiates sync explicitly via S or the command palette.
@@ -977,8 +1007,9 @@ class LilbeeApp(App[None]):
         # priority bindings too), so `t`/`m` type literals there and the guard
         # exists purely to keep the footer honest.
         # run_sync (S) is a priority binding. Live at the gate, it swaps chat in
-        # under the gate, which then skips its handover. Off, the gate keeps the
-        # key as typed text.
+        # under the gate, which then skips its handover. A key typed at the gate
+        # is kept for the prompt before any binding sees it, so this guard stops
+        # the other ways to run the action there.
         if (action == "run_sync" and self._gate_is_showing()) or (
             action in ("open_tasks", "open_catalog", "open_chat")
             and isinstance(self.focused, (Input, TextArea))
@@ -987,7 +1018,7 @@ class LilbeeApp(App[None]):
         # Nothing to jump to when Chat is already the active view. [ and ] are
         # priority bindings, which run before a modal screen's own handling, so
         # over a dialog they would switch views and close it with no answer. While
-        # chat loads no view opens, so the gate keeps them as typed text.
+        # chat loads no view opens.
         if (action == "open_chat" and self.active_view == msg.DEFAULT_VIEW) or (
             action in ("nav_prev", "nav_next") and (self.screen.is_modal or self._chat_is_loading())
         ):

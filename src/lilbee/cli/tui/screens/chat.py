@@ -617,7 +617,7 @@ class ChatScreen(Screen[None]):
                 self._enter_insert_mode()
             else:
                 self.set_focus(self._chat_log)
-        typed, self.app.type_ahead = self.app.type_ahead, ""
+        typed = self.app.take_type_ahead()
         if typed:
             self._enter_insert_mode()
             self._chat_input.insert(typed)
