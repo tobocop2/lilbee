@@ -184,6 +184,22 @@ class TestTheStreamHoldsTheId:
         run.assert_not_called()
         assert get_services().ingest_lock_registry._locks == {}
 
+    async def test_a_stream_whose_sources_are_all_busy_frees_its_id(self):
+        locks = get_services().ingest_lock_registry
+        held = await locks.try_acquire("a.md")
+        assert held is not None
+        run = mock.AsyncMock()
+        try:
+            frames = [f async for f in _ingest_stream([("a.md", "a")], run, "Test stream", "s-6")]
+        finally:
+            locks.release([("a.md", held)])
+
+        assert [event for event, _data in parse_sse_events("".join(frames).encode())] == [
+            "already_ingesting"
+        ]
+        assert not _is_held("s-6")
+        run.assert_not_called()
+
     async def test_a_stream_that_is_never_read_frees_its_id(self):
         stream = _ingest_stream([("a.md", "a")], mock.AsyncMock(), "Test stream", "s-4")
         assert _is_held("s-4")
