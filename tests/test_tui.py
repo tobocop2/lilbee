@@ -973,7 +973,7 @@ class TestStatusScreenAsync:
         finally:
             set_services(None)
         assert first_hint == msg.STATUS_DOCS_MORE.format(count=DOCUMENTS_PAGE_DEFAULT)
-        assert rows == [[f"doc-{n:03d}.txt", str(n + 1)] for n in range(total)]
+        assert rows == [[f"doc-{n:03d}.txt", str(n + 1)] for n in reversed(range(total))]
 
 
 class TestCLIIntegration:
