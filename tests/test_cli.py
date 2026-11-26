@@ -9785,6 +9785,7 @@ class TestSyncCancelledExit:
     ):
         """A Ctrl+C before the add's work is done exits 130 and names what was not added."""
         from tests._ingesting_services import ingesting_services
+        from tests._windows_loop import windows_proactor_loop
 
         corpus = tmp_path / "source" / "corpus"
         corpus.mkdir(parents=True)
@@ -9797,7 +9798,10 @@ class TestSyncCancelledExit:
         args = [*flags, "add", "--data-dir", str(tmp_path), str(corpus)]
         if stage in self._STAGES_WITH_A_URL:
             args.append("https://example.com")
-        with stage_patch, sync_patch:
+        # The planning press comes from a pool thread. On Windows, only the proactor loop
+        # that production uses wakes for it; the suite's selector loop sets no wakeup fd.
+        loop_scope = windows_proactor_loop() if stage == "planning" else contextlib.nullcontext()
+        with stage_patch, sync_patch, loop_scope:
             result = runner.invoke(app, args)
         # A page the crawl saved stays, and a sync that starts sees the Ctrl+C.
         assert (cfg.documents_dir / "_web" / "page.md").is_file() is (
