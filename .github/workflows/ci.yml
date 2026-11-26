@@ -1,25 +1,34 @@
 name: CI
 
-# Probe branch only: the Windows unit suite on Python 3.12 and 3.13, at union 79,
-# with the Windows coverage config and its 100% gate.
+# Probe branch only: the Windows crawl settings e2e file on Python 3.12, at each
+# commit of the union 77 to 80 range, with the failing add's exit, output and
+# exception printed.
 on:
   push:
-    branches: [probe/e774p]
-  pull_request:
+    branches: [probe/wincrawl]
   workflow_dispatch:
 
 jobs:
-  probe-e774p-suite:
+  probe-wincrawl:
     timeout-minutes: 120
     runs-on: windows-latest
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.12", "3.13"]
+        ref:
+          - 5dc8371b3c194e74f28ae10fc4daba01e181ab21
+          - 724f5b7e881e2bcaf0f97189cd0764b1ec26c35e
+          - ecb490d6cd722a9cf76de5237ae8996ecd43be62
+          - bc43854f3f9bc1754e830d3001849bed8ae37ac5
+          - 4f10ea0dfc5b3fd636e937a8f16b5c626171b62e
+          - a7c6775063162dff152600bfc0560c1d0b195441
+          - 364c03501a6b89b4f468b52f0e804a44bdc0aa60
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: e89efb8d04fa9283400448f8198789ee17c0fbb9
+          ref: ${{ matrix.ref }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -27,24 +36,120 @@ jobs:
           version: "latest"
           enable-cache: true
 
-      - name: Set up Python ${{ matrix.python }}
-        run: uv python install ${{ matrix.python }}
+      - name: Set up Python 3.12
+        run: uv python install 3.12
 
-      - uses: ./.github/actions/checkout-engine-packs
-
-      - name: Install make
+      - name: Install make (Windows)
         shell: bash
         run: bash scripts/ci_retry.sh 3 choco install make -y
 
-      - name: Install dependencies
-        run: uv sync --locked --python ${{ matrix.python }}
+      - name: Read the pinned Go toolchain
+        shell: bash
+        run: |
+          source engine-versions.env
+          echo "ENGINE_GO_VERSION=${ENGINE_GO_VERSION}" >> "${GITHUB_ENV}"
 
-      - name: Run unit tests
+      - name: Set up Go (engine helpers)
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.ENGINE_GO_VERSION }}
+          cache-dependency-path: engine-versions.env
+
+      - name: Install llama-swap + gguf-parser (engine helpers)
+        shell: bash
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          set -euxo pipefail
+          source engine-versions.env
+          helperdir="${HOME}/engine-helpers"
+          mkdir -p "${helperdir}"
+          work="$(mktemp -d)"
+          git clone -q --depth 1 --branch "${ENGINE_LLAMA_SWAP_VERSION}" \
+            https://github.com/mostlygeek/llama-swap.git "${work}/llama-swap"
+          ( cd "${work}/llama-swap" && go build -trimpath -o "${helperdir}/llama-swap.exe" . )
+          git clone -q --depth 1 --branch "${ENGINE_GGUF_PARSER_REF}" \
+            "${ENGINE_GGUF_PARSER_REPO}" "${work}/gguf-parser-go"
+          ( cd "${work}/gguf-parser-go/cmd/gguf-parser" && go build -trimpath -o "${helperdir}/gguf-parser.exe" . )
+          cygpath -w "${helperdir}" >> "${GITHUB_PATH}"
+
+      - name: Install dependencies
+        run: uv sync --locked --all-extras --python 3.12
+
+      - name: Install the llama.cpp fork engine
+        timeout-minutes: 75
+        uses: ./.github/actions/bundle-llama-server
+        with:
+          backend: cpu
+          cache-env: windows-latest
+
+      - name: Install spacy model
+        shell: bash
+        env:
+          SPACY_MODEL_URL: https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+        run: bash scripts/ci_retry.sh 5 uv pip install "${SPACY_MODEL_URL}"
+
+      - name: Restore GGUF models from release mirror
+        id: ci-models
+        uses: ./.github/actions/restore-ci-models
+
+      - name: Pre-download GGUF models from HuggingFace (fallback)
+        if: steps.ci-models.outputs.restored != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci_retry.sh 3 uv run lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF
+          bash scripts/ci_retry.sh 3 uv run lilbee model pull Qwen/Qwen3-0.6B-GGUF
+
+      - name: Map the crawl fixture hostnames to loopback
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '\r\n%s\r\n' "127.0.0.1 site.test docs.site.test" >> /c/Windows/System32/drivers/etc/hosts
+
+      - name: Make the pytest temp root
+        shell: bash
+        run: mkdir -p "${RUNNER_TEMP}/pytest-tmp"
+
+      # Probe only: print the exit code, the output and the exception of a failed CLI run.
+      - name: Print the failing add's error
+        shell: bash
+        run: |
+          uv run python - <<'EOF'
+          from pathlib import Path
+          p = Path("tests/integration/_crawl_site.py")
+          old = "    assert result.exit_code == 0, result.output\n"
+          new = (
+              "    if result.exit_code != 0:\n"
+              "        import sys as _s, traceback as _tb\n"
+              "        _err = ''.join(_tb.format_exception(*result.exc_info)) if result.exc_info else None\n"
+              "        try:\n"
+              "            _stderr = result.stderr\n"
+              "        except Exception as _e:\n"
+              "            _stderr = repr(_e)\n"
+              "        print('PROBE-EXIT', result.exit_code, 'OUTPUT', repr(result.output), 'STDERR', repr(_stderr), 'EXC', repr(result.exception), file=_s.__stderr__, flush=True)\n"
+              "        print('PROBE-TB', _err, file=_s.__stderr__, flush=True)\n"
+              "    assert result.exit_code == 0, (result.exit_code, result.output, repr(result.exception))\n"
+          )
+          text = p.read_text(encoding="utf-8")
+          assert text.count(old) == 1, "probe anchor not found"
+          p.write_text(text.replace(old, new), encoding="utf-8")
+          EOF
+          git diff --stat
+
+      - name: Run the crawl settings e2e file twice
         shell: bash
         run: |
           echo "SUITE-HEAD $(git rev-parse HEAD)"
-          make test-ci COV_FLAGS="--cov-config=.coveragerc-windows" BRANCH_CHECK=true
+          rc=0
+          for pass in 1 2; do
+            echo "PROBE-PASS ${pass}"
+            uv run pytest tests/integration/test_crawl_settings_e2e.py -v -s || rc=1
+          done
+          exit "${rc}"
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
-          LILBEE_TEST_HANG_DUMP_DIR: ${{ runner.temp }}/hang-dumps
-          UV_PYTHON: ${{ matrix.python }}
+          LILBEE_ENGINE_DIR: ${{ runner.temp }}/lilbee-engine
+          LILBEE_LLM_PROVIDER: auto
+          PYTEST_DEBUG_TEMPROOT: ${{ runner.temp }}/pytest-tmp
+          PYTHONIOENCODING: utf-8
