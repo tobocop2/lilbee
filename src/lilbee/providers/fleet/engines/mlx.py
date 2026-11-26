@@ -107,6 +107,8 @@ _PROFILE = RequestProfile(
     context_overflow=re.compile(r"(?!)"),
     batch_overflow=None,
     unreadable_embedding_hint="mlx-lm serves no embeddings.",
+    # mlx-lm reads the penalty as "repetition_penalty" (mlx_lm/server.py v0.32.2, line 1318).
+    option_names={"repeat_penalty": "repetition_penalty"},
     reasoning_field="reasoning",
     structured_output=False,
     # A request that is not streamed runs to its end after the client goes: the server
