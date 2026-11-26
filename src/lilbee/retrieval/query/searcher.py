@@ -225,7 +225,7 @@ _OVERFLOW_RETRY_SCALE = 0.6
 _MAX_SCALED_MEASUREMENTS = 3
 # Share of the source budget a refit after an overflow leaves free. A fit packs
 # to the brim, and the ratio is an average over the whole prompt, so a refit
-# by the ratio alone overflowed again on the K2 bench of a mixed list.
+# by the ratio alone can overflow again on a mixed list.
 _REFIT_MARGIN = 0.05
 # Approximate token cost of the Context/Question template wrapper.
 _CONTEXT_TEMPLATE_TOKENS = 16
@@ -1307,8 +1307,8 @@ class Searcher:
         _MAX_SCALED_MEASUREMENTS overflows, or when a refit repeats the prompt
         that overflowed, a binary search over the kept count finds the most
         sources that a measurement says fit. No prompt is measured twice. A
-        failed measurement sends the latest assembly, which the character rule
-        bounds.
+        failed measurement sends the best fit already measured in the search,
+        or else the latest assembly, which the character rule bounds.
         """
         target = prompt_token_budget(self._chat_window())
         ratio, fill = 1.0, scale
@@ -1375,7 +1375,7 @@ class Searcher:
             probe = prefix(middle)
             measured = self._measure(probe.messages)
             if measured is None:
-                return probe
+                return best or probe
             if measured.tokens <= target:
                 best, low = probe, middle + 1
             else:

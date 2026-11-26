@@ -124,6 +124,24 @@ class TestEngineTokenizerBudget:
         assert _measured(rag, _mixed_tokens) <= prompt_token_budget(_WINDOW)
         assert _sent(rag) in _counted(_services)
 
+    def test_the_refit_margin_saves_a_measurement_on_a_mixed_list(self, _services):
+        """The ratio is an average over the prompt.
+
+        A refit packed to the brim by the ratio alone overflows again on this
+        list, so it takes a third measurement.
+        """
+        dense = "一二三四" * 400
+        sparse = "plain english words " * 120
+        _services.provider.count_chat_text_tokens.side_effect = _mixed_tokens
+        results = [
+            _make_result(source=f"d{i}.pdf", chunk=dense, chunk_index=i) for i in range(3)
+        ] + [_make_result(source=f"s{i}.pdf", chunk=sparse, chunk_index=i) for i in range(10)]
+        rag = get_services().searcher._finalize_context(results, "what is in them?", None)
+        counted = _counted(_services)
+        assert len(counted) == 2
+        assert counted[-1] == _sent(rag)
+        assert _measured(rag, _mixed_tokens) <= prompt_token_budget(_WINDOW)
+
     def test_a_cost_the_ratio_misses_ends_in_a_search_that_measures_a_fit(self, _services):
         """Three scaled measurements still overflow, so the kept count is searched."""
         _services.provider.count_chat_text_tokens.side_effect = _fixed_cost_tokens
@@ -179,6 +197,53 @@ class TestEngineTokenizerBudget:
         _services.provider.count_chat_text_tokens.side_effect = fourth_fails
         rag = _build(count=30)
         assert _counted(_services)[-1] == _sent(rag)
+
+    def test_a_failed_measurement_in_the_search_sends_the_best_measured_fit(self, _services):
+        """The probe that the failed request was for is not sent; the last measured fit is."""
+        target = prompt_token_budget(_WINDOW)
+
+        def fit_then_fail(text: str) -> int:
+            call = _services.provider.count_chat_text_tokens.call_count
+            if call <= 3:
+                return target + 20
+            if call == 4:
+                return 1
+            raise ProviderError("engine down", kind=ProviderErrorKind.CONNECTION)
+
+        _services.provider.count_chat_text_tokens.side_effect = fit_then_fail
+        rag = _build()
+        counted = _counted(_services)
+        assert len(counted) == 5
+        assert _sent(rag) == counted[3]
+
+    def test_the_top_source_alone_is_sent_when_every_probe_overflows(self, _services):
+        """The assembly that overflowed holds more sources than the top one; it is not sent."""
+        target = prompt_token_budget(_WINDOW)
+
+        def near_then_huge(text: str) -> int:
+            near = _services.provider.count_chat_text_tokens.call_count <= 3
+            return target + 20 if near else 10**6
+
+        _services.provider.count_chat_text_tokens.side_effect = near_then_huge
+        rag = _build()
+        counted = _counted(_services)
+        assert len(rag.results) == 1
+        assert len(counted[2]) > len(_sent(rag))
+
+    def test_a_count_within_the_message_overhead_of_the_target_overflows(self, _services):
+        """The chat template adds tokens per message, so the measurement charges them."""
+        target = prompt_token_budget(_WINDOW)
+
+        def just_under(text: str) -> int:
+            if _services.provider.count_chat_text_tokens.call_count == 1:
+                return target - 5
+            return len(text) // 6
+
+        _services.provider.count_chat_text_tokens.side_effect = just_under
+        rag = _build()
+        counted = _counted(_services)
+        assert len(counted) == 2
+        assert counted[1] == _sent(rag)
 
     def test_the_top_source_stays_when_it_alone_overflows(self, _services):
         _services.provider.count_chat_text_tokens.return_value = 10**6
