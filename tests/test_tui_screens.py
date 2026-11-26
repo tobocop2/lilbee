@@ -64,7 +64,7 @@ from lilbee.wiki.drafts import StaleDraftError
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
 from lilbee.wiki.stats import BuildStats
 from tests import _tui_screen_fixtures as _fixtures
-from tests._async_wait import wait_for_widget, wait_until
+from tests._async_wait import wait_for_pull_check, wait_for_widget, wait_until
 from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
 from tests._crawlberg_stub import StubCrawlberg
 from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
@@ -4323,6 +4323,7 @@ async def test_catalog_install_already_installed(tmp_path):
                 patch.object(screen, "notify") as mock_notify,
             ):
                 screen._install_model(m)
+                await wait_for_pull_check(screen.app)
                 mock_notify.assert_called_once()
                 assert "already installed" in mock_notify.call_args[0][0]
 
@@ -4351,6 +4352,7 @@ async def test_catalog_install_new_model():
                 patch.object(screen, "_enqueue_download") as mock_enqueue,
             ):
                 screen._install_model(m)
+                await wait_for_pull_check(screen.app)
                 await _pilot.pause()
                 mock_enqueue.assert_called_once_with(m)
 
@@ -11941,6 +11943,7 @@ async def test_catalog_install_model_already_exists(tmp_path):
                 patch.object(screen, "notify") as mock_notify,
             ):
                 screen._install_model(m)
+                await wait_for_pull_check(screen.app)
                 mock_notify.assert_called_once()
                 assert "already installed" in mock_notify.call_args[0][0]
 
@@ -13589,6 +13592,7 @@ async def test_catalog_install_model_shows_a_resolve_failure_and_enqueues_nothin
                 patch.object(screen, "_enqueue_download") as mock_dl,
             ):
                 screen._install_model(cm)
+                await wait_for_pull_check(screen.app)
                 mock_dl.assert_not_called()
                 mock_notify.assert_called_once_with("fail", severity="error")
 

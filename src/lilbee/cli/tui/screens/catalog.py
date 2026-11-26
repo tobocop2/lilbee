@@ -15,6 +15,7 @@ from textual.containers import Container, Horizontal, VerticalScroll
 from textual.css.query import NoMatches
 from textual.events import Click, Key, MouseScrollDown
 from textual.message import Message
+from textual.notifications import SeverityLevel
 from textual.screen import Screen
 from textual.timer import Timer
 from textual.widget import Widget
@@ -133,12 +134,39 @@ def _model_field_for_task(task: ModelTask | str) -> str:
     return _TASK_TO_MODEL_FIELD.get(ModelTask(task), "chat_model")
 
 
+def _pull_refusal(model: CatalogModel) -> tuple[str, SeverityLevel] | None:
+    """Why the pull of *model* should not be enqueued, or None when it should.
+
+    Charges the pull plan the download itself runs. It asks the Hub, so it
+    runs on a worker thread, never the UI thread.
+    """
+    try:
+        engine = None
+        if model.format is ModelFormat.GGUF:
+            engine = get_services().engines.for_ref(model.pull_ref)
+        plan = plan_pull(model, cfg.models_dir, engine, hf_token())
+        if plan.files and not plan.missing:
+            return msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name), "information"
+        shortfall = preflight(plan, cfg.models_dir)
+    except (ListingOfflineError, ListingFailedError):
+        # No listing, no file set: the row's own approximation is the only figure.
+        log.debug("Could not list %s", model.hf_repo, exc_info=True)
+        shortfall = disk_shortfall(
+            cfg.models_dir, model.hf_repo, int(model.size_gb * _BYTES_PER_GB)
+        )
+    except Exception as exc:
+        # The download would fail the same way, so say why and enqueue nothing.
+        return str(exc), "error"
+    return None if shortfall is None else (shortfall, "warning")
+
+
 _WORKER_FETCH_HF = "fetch_hf_models"
 _WORKER_FETCH_MORE_HF = "fetch_more_hf"
 _WORKER_FETCH_REMOTE = "fetch_remote_models"
 _WORKER_FETCH_SEARCH = "fetch_hf_search"
 _WORKER_FETCH_FRONTIER = "fetch_frontier_models"
 _WORKER_FETCH_FAMILIES = "fetch_families"
+_WORKER_CHECK_PULL = "check_pull"
 
 _GRID_PAGE_ROWS = 3
 _LIST_PAGE_ROWS = 10
@@ -2161,36 +2189,39 @@ class CatalogScreen(Screen[None]):
         self.app.push_screen(FormatPicker(model.display_name, rows), _after_pick)
 
     def _install_format(self, model: CatalogModel) -> None:
-        if self.app.task_bar.pending_download(model) is not None:
-            self.notify(msg.CATALOG_ALREADY_DOWNLOADING.format(name=model.display_name))
-            return
-        # The check charges the pull plan the download itself runs, and refuses
-        # before the enqueue: a task that fails instantly is terminal, so dedupe
-        # would not stop a second row.
-        try:
-            engine = None
-            if model.format is ModelFormat.GGUF:
-                engine = get_services().engines.for_ref(model.pull_ref)
-            plan = plan_pull(model, cfg.models_dir, engine, hf_token())
-            if plan.files and not plan.missing:
-                self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name))
-                return
-            shortfall = preflight(plan, cfg.models_dir)
-        except (ListingOfflineError, ListingFailedError):
-            # No listing, no file set: the row's own approximation is the only figure.
-            log.debug("Could not list %s", model.hf_repo, exc_info=True)
-            shortfall = disk_shortfall(
-                cfg.models_dir, model.hf_repo, int(model.size_gb * _BYTES_PER_GB)
-            )
-        except Exception as exc:
-            # The download would fail the same way, so say why and enqueue nothing.
-            self.notify(str(exc), severity="error")
-            return
-        if shortfall is not None:
-            self.notify(shortfall, severity="warning")
-            return
+        if not self._is_pending(model):
+            self._check_pull(model)
 
-        self._enqueue_download(model)
+    def _is_pending(self, model: CatalogModel) -> bool:
+        """Say so and return True when a pull of *model* is queued or running."""
+        if self.app.task_bar.pending_download(model) is None:
+            return False
+        self.notify(msg.CATALOG_ALREADY_DOWNLOADING.format(name=model.display_name))
+        return True
+
+    def _enqueue_unless_pending(self, model: CatalogModel) -> None:
+        """Enqueue *model* unless a check that ended first already queued it.
+
+        A second press while the first check runs starts a second check, so
+        the queue is read again when each check ends.
+        """
+        if not self._is_pending(model):
+            self._enqueue_download(model)
+
+    @work(thread=True, name=_WORKER_CHECK_PULL)
+    def _check_pull(self, model: CatalogModel) -> None:
+        """Run the pull plan off the UI thread, then enqueue *model* or say why not.
+
+        The plan asks the Hub, so the UI thread must not wait on it. The check
+        refuses before the enqueue: a task that fails instantly is terminal, so
+        dedupe would not stop a second row.
+        """
+        refusal = _pull_refusal(model)
+        if refusal is None:
+            call_from_thread(self, self._enqueue_unless_pending, model)
+            return
+        text, severity = refusal
+        call_from_thread(self, self.notify, text, severity=severity)
 
     def _on_chat_ready_changed(self, ready: bool) -> None:
         """Show the first-run welcome only while no chat model resolves."""

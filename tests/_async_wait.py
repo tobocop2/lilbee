@@ -72,6 +72,19 @@ def subtree_mounted(root: Widget) -> bool:
     return all(widget.is_mounted for widget in root.walk_children(with_self=True))
 
 
+async def wait_for_pull_check(app: App) -> None:
+    """Wait until the catalog's pull checks have ended and posted their verdicts.
+
+    The check posts its verdict with a blocking hop to the UI thread, so a
+    finished worker has already run the enqueue or the notice.
+    """
+    from lilbee.cli.tui.screens.catalog import _WORKER_CHECK_PULL
+
+    await app.workers.wait_for_complete(
+        [worker for worker in app.workers if worker.name == _WORKER_CHECK_PULL]
+    )
+
+
 def poll_until(predicate: Callable[[], bool], timeout: float = 10.0) -> bool:
     """Poll *predicate* until it holds or *timeout* seconds pass; returns whether it held."""
     deadline = time.monotonic() + timeout

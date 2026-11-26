@@ -21,6 +21,7 @@ from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.host_caps import collect
 from lilbee.server import handlers
+from tests._async_wait import wait_for_pull_check
 from tests._lilbee_app_test_host import LilbeeAppHost
 from tests.conformance.fake_adapter import BundledFakeAdapter
 
@@ -140,4 +141,5 @@ async def test_the_catalog_screen_resolves_the_file_with_the_container_engine(
         monkeypatch.setattr(screen, "_enqueue_download", lambda _m: None)
         monkeypatch.setattr(screen, "notify", lambda *_a, **_kw: None)
         screen._install_model(model)
+        await wait_for_pull_check(screen.app)
         assert seen == [LIBRARY_ENGINE]

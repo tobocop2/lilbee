@@ -9,7 +9,7 @@ import pytest
 from textual.app import ComposeResult
 from textual.widgets import OptionList, Static
 
-from _async_wait import wait_until
+from _async_wait import wait_for_pull_check, wait_until
 from conftest import stub_hf_listing
 from lilbee.app.engine_service import EngineOption
 from lilbee.catalog import query as _query
@@ -159,6 +159,7 @@ async def test_install_of_a_two_format_row_offers_the_formats_and_pulls_the_chos
         _quiet(monkeypatch, screen)
 
         screen._install_model(model)
+        await wait_for_pull_check(screen.app)
         assert await wait_until(
             pilot,
             lambda: (
@@ -201,6 +202,7 @@ async def test_install_of_a_format_no_engine_loads_downloads_it(
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(str(message)))
 
         screen._install_model(model)
+        await wait_for_pull_check(screen.app)
         assert await wait_until(pilot, lambda: isinstance(pilot.app.screen, FormatPicker))
         await pilot.press("down", "enter")
         assert await wait_until(pilot, lambda: bool(started))
@@ -222,6 +224,7 @@ async def test_escape_in_the_format_picker_installs_nothing(
         _quiet(monkeypatch, screen)
 
         screen._install_model(model)
+        await wait_for_pull_check(screen.app)
         assert await wait_until(pilot, lambda: isinstance(pilot.app.screen, FormatPicker))
         await pilot.press("escape")
         assert await wait_until(pilot, lambda: pilot.app.screen is screen)
@@ -248,6 +251,7 @@ async def test_install_of_a_one_format_row_asks_nothing(monkeypatch: pytest.Monk
         _plan_resolves(monkeypatch, "x.gguf")
 
         screen._install_model(model)
+        await wait_for_pull_check(screen.app)
         assert await wait_until(pilot, lambda: bool(started))
         assert pilot.app.screen is screen
         assert [m.pull_ref for m in started] == ["acme/one"]
@@ -364,6 +368,7 @@ async def test_install_of_a_file_already_on_disk_says_so_and_pulls_nothing(
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(str(message)))
 
         screen._install_model(_row("acme/one", frozenset({ModelFormat.GGUF})))
+        await wait_for_pull_check(screen.app)
 
         assert started == []
         assert any("already installed" in n for n in notices)
