@@ -63,9 +63,9 @@ if TYPE_CHECKING:
     from lilbee.providers.fleet.engines.base import EngineAdapter, ServerProcess
     from lilbee.providers.roles import WorkerRole
 
-if sys.platform == "win32":  # pragma: no cover - Windows has no resource module
+if sys.platform == "win32":  # pragma: windows only - Windows has no resource module
     resource = None
-else:
+else:  # pragma: posix only - Windows takes the branch above
     import resource
 
 log = logging.getLogger(__name__)

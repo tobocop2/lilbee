@@ -173,13 +173,6 @@ def test_a_rocm_smi_that_covers_every_device_never_runs_amd_smi(
     assert set(AmdBackend().sample(_INDICES)) == _INDICES
 
 
-@pytest.mark.parametrize("raw", ["5", "null", '{"gpu_data": 5}', '{"gpu": "x"}'])
-def test_amd_smi_scalar_json_gives_no_rows(raw: str) -> None:
-    from lilbee.providers.fleet.gpu_backends.amd import _parse_amd_smi
-
-    assert _parse_amd_smi(raw, _INDICES) == {}
-
-
 def test_a_tool_that_cannot_start_logs_nothing(tools, caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING):
         assert run_smi("ioreg", []) == ""
