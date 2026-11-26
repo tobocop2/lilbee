@@ -19,6 +19,7 @@ from litestar.openapi import OpenAPIConfig
 from litestar.openapi.spec import Components, SecurityScheme
 from litestar.status_codes import HTTP_503_SERVICE_UNAVAILABLE
 
+from lilbee.app import services as app_services
 from lilbee.app.endpoints import MCP_PATH
 from lilbee.app.services import (
     ServicesStoppingError,
@@ -26,7 +27,6 @@ from lilbee.app.services import (
     get_services,
     logged_services_build,
     peek_services,
-    reset_services,
     wait_for_opens,
 )
 from lilbee.app.settings import config_write_failure_message, fill_empty_chat_model
@@ -377,7 +377,7 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
             None, wait_for_opens, _OPEN_EXIT_WAIT_SECONDS
         )
         try:
-            reset_services()
+            app_services.reset_services()
         except Exception:
             # A failed shutdown must not leave the open wait unawaited.
             log.warning("A server shutdown step failed", exc_info=True)

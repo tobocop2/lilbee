@@ -20,7 +20,8 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from lilbee.app import engine_service
-from lilbee.app.services import peek_services, reset_services
+from lilbee.app import services as app_services
+from lilbee.app.services import peek_services
 from lilbee.catalog import clean_display_name, display_label_for_ref, extract_quant
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg
@@ -435,7 +436,7 @@ class ModelPickerButton(Static, can_focus=True):
         if isinstance(screen, ChatScreen):
             screen.apply_model_change()
         else:
-            reset_services()
+            app_services.reset_services()
 
 
 class ChatModePill(Static, can_focus=True):
