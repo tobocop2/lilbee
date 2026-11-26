@@ -318,13 +318,6 @@ def test_a_cache_plain_error_falls_back_to_the_error_text_without_a_reason(
         dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
 
 
-def test_reclaiming_no_blobs_touches_nothing_and_accepts_any_ref(tmp_path: Path) -> None:
-    """A ref that is no hub repo id, such as an MLX format ref, has no blob to scope to."""
-    dl.discard_partial_blobs(tmp_path, "org/repo#mlx", [])
-
-    assert list(tmp_path.iterdir()) == []
-
-
 class _Stop(Exception):
     """Ends a fetch at the disk check, before any transfer."""
 

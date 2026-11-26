@@ -12,7 +12,7 @@ from textual.widgets import Static
 
 from lilbee.catalog.download import RemoteFile
 from lilbee.catalog.models import CatalogModel
-from lilbee.catalog.types import ModelTask
+from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.cli.tui.task_queue import TaskQueue, TaskType
 from lilbee.cli.tui.widgets.task_bar_controller import download_key
 from tests._lilbee_app_test_host import LilbeeAppHost
@@ -325,3 +325,40 @@ async def test_an_unreadable_cache_is_reported_and_nothing_is_enqueued(
 
         assert enqueued == []
         assert notices == [("Cannot read the model cache folder /models: denied.", "error")]
+
+
+async def test_a_non_gguf_pull_that_fits_only_after_reclaim_is_enqueued(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An MLX pull downloads into the same hub cache, so its partial is reclaimed too."""
+    from lilbee.catalog import download as dl
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.core.config import cfg
+
+    blobs = tmp_path / "models--acme--already-GGUF" / "blobs"
+    blobs.mkdir(parents=True)
+    partial = blobs / "b1.4f2a91cc.incomplete"
+    partial.write_bytes(b"x" * 90)
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+        pilot.app.task_bar.queue = TaskQueue()
+
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(dl, "_free_bytes", lambda _p: 40 if partial.exists() else 130)
+        monkeypatch.setattr(dl, "_repo_sibling_files", lambda _repo, **_kw: ["model.safetensors"])
+        monkeypatch.setattr(
+            dl, "fetch_remote_file", lambda _repo, _name: RemoteFile(size=50, blob="b1")
+        )
+        enqueued: list[str] = []
+        monkeypatch.setattr(screen, "_enqueue_download", lambda m: enqueued.append(m.hf_repo))
+        notices: list[str] = []
+        monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(str(message)))
+
+        screen._install_model(dataclasses.replace(_model(), format=ModelFormat.MLX))
+
+        assert notices == []
+        assert enqueued == ["acme/already-GGUF"]
+        assert not partial.exists()

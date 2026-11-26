@@ -34,6 +34,7 @@ from lilbee.catalog.download import (
     _BYTES_PER_GB,
     cache_blobs,
     reclaimed_shortfall,
+    remote_format_files,
     remote_shards,
     shards_bytes,
 )
@@ -2179,6 +2180,10 @@ class CatalogScreen(Screen[None]):
                 shards = remote_shards(model.hf_repo, filename)
                 needed = shards_bytes(shards)
                 blobs = cache_blobs(shards)
+            else:
+                files = remote_format_files(model, cfg.models_dir)
+                needed = shards_bytes(files)
+                blobs = cache_blobs(files)
         except NoEngineError as exc:
             self.notify(str(exc), severity="error")
             return
