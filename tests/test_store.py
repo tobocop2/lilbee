@@ -6136,6 +6136,18 @@ class TestPartlyReadSources:
         assert store.partly_read_sources(5) == ({"scan.pdf": [self._PAGE]}, 1)
         assert _partly_read_index_types(store) == ["Bitmap"]
 
+    def test_the_upgrade_of_an_empty_table_adds_the_column_and_no_index(self, test_config):
+        self._write(Store(test_config), "scan.pdf", [self._PAGE])
+        sources = _sources_table_at(test_config)
+        sources.delete("true")
+        sources.drop_columns(["partly_read"])
+
+        store = Store(test_config)
+
+        assert "partly_read" in store.open_table(SOURCES_TABLE).schema.names
+        assert _partly_read_index_types(store) == []
+        assert store.partly_read_sources(5) == ({}, 0)
+
 
 def _sources_table_at(test_config):
     """The ``_sources`` table of the library at *test_config*, opened without a Store."""
