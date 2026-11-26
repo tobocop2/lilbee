@@ -77,4 +77,6 @@ def test_a_finished_test_leaves_its_server_app_to_the_collector(
 
 
 def test_full_collections_skip_the_objects_of_collection() -> None:
-    assert gc.get_freeze_count() > 0
+    # The collector lists only the objects it still walks, and collection made this function.
+    collected = test_full_collections_skip_the_objects_of_collection
+    assert all(obj is not collected for obj in gc.get_objects())
