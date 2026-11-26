@@ -12,12 +12,13 @@ import pytest
 from lilbee.app.services import get_services, set_services
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
-from lilbee.cli.tui.screens.chat import ChatScreen
+from lilbee.cli.tui.screens.chat import _TURN_WORKER_GROUP, ChatScreen
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.core.config import cfg
 from lilbee.retrieval.query.compaction import CompactionResult
 from lilbee.retrieval.reasoning import StreamToken
 from lilbee.sessions import MessageRole, SessionMessage
+from tests._async_wait import group_done, wait_until
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
 
@@ -101,8 +102,10 @@ async def _start_held_turn(app, pilot, held: _HeldStream, question: str = "Q1") 
 
 
 async def _finish(pilot, screen: ChatScreen, held: _HeldStream) -> None:
+    """Release the answer and wait until the turn's worker ended and its end was handled."""
     held.release.set()
-    assert await pump_until(pilot, lambda: not screen.streaming)
+    await group_done(pilot.app, _TURN_WORKER_GROUP)
+    assert await wait_until(pilot, lambda: not screen.streaming)
 
 
 async def test_a_cancelled_turn_keeps_the_chat_busy_until_its_body_ends(held):
