@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import traceback
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -2873,6 +2874,23 @@ class TestReadDeviceCacheFailure:
             with pytest.raises(ProviderError, match="probe wedged"):
                 cache.get(Path("/bin/llama-server"), engine=LLAMA)
         assert calls["n"] == 1  # later reads served from the cached failure
+
+    def test_each_read_of_the_cached_failure_keeps_only_its_own_frames(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+
+        def _wedged(_binary: Path, engine) -> planning_mod.DeviceReading:
+            raise ProviderError("probe wedged")
+
+        monkeypatch.setattr(planning_mod, "_read_devices", _wedged)
+        cache = self._cache()
+        with pytest.raises(ProviderError):
+            cache.get(Path("/bin/llama-server"), engine=LLAMA)
+        depths = []
+        for _ in range(3):
+            with pytest.raises(ProviderError) as later:
+                cache.get(Path("/bin/llama-server"), engine=LLAMA)
+            depths.append(len(traceback.extract_tb(later.value.__traceback__)))
+        assert depths == [depths[0]] * 3
 
     def test_clear_drops_the_cached_failure(self, monkeypatch) -> None:
         from lilbee.providers.base import ProviderError

@@ -2889,7 +2889,8 @@ class _ReadDeviceCache:
         with self._lock:
             fresh = self._is_fresh(identity)
             if fresh and self._failure is not None:
-                raise self._failure
+                # A raise keeps the old traceback behind the new frames, so each read starts clean.
+                raise self._failure.with_traceback(None)
             if self._reading is None or not fresh:
                 self._engine = identity
                 self._at = None
