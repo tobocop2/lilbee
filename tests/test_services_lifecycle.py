@@ -1021,6 +1021,7 @@ import sys
 import time
 
 from lilbee.app.services import install_engine_lifecycle_hooks
+from lilbee.runtime.asyncio_loop import run_main
 
 # The stop thread logs a signal after the handler took it: the test waits for that line.
 logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(message)s")
@@ -1036,12 +1037,12 @@ async def _main() -> None:
 
 
 install_engine_lifecycle_hooks()
-asyncio.run(_main())
+run_main(_main())
 """
 
 
 def _start_worker_child(tmp_path, worker_s: float) -> subprocess.Popen[str]:
-    """Start a process whose asyncio.run waits on a worker thread for *worker_s* seconds."""
+    """Start a process whose run_main waits on a worker thread for *worker_s* seconds."""
     script = tmp_path / "stuck_worker.py"
     script.write_text(_STUCK_WORKER_CHILD, encoding="utf-8")
     child = subprocess.Popen(
