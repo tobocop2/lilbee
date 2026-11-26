@@ -127,7 +127,12 @@ async def test_keys_typed_before_a_catalog_landing_never_reach_the_prompt(monkey
         await pilot.press(*KEYS[:4])
         app.chat_is_ready = False
         gate._release()
-        assert await wait_until(pilot, lambda: app.active_view == msg.CATALOG_VIEW, timeout=10.0)
+        # A switch made while the catalog switch still runs is dropped, so wait for it to end.
+        assert await wait_until(
+            pilot,
+            lambda: app.active_view == msg.CATALOG_VIEW and not app._switching,
+            timeout=10.0,
+        )
         app.switch_view(msg.DEFAULT_VIEW)
         chat = await await_chat(app, pilot)
         assert chat.query_one("#chat-input", ChatInput).value == ""
