@@ -71,6 +71,7 @@ class _ExcludedLinks:
 
     crawlberg counts the addresses it excludes and names none. This makes crawlberg's
     decision again for each link of a page, so the log can name the address and the pattern.
+    A seed is never left out: crawlberg fetches it whatever the patterns say.
     """
 
     def __init__(self, spec: _CrawlSpec, seed_url: str) -> None:
@@ -79,26 +80,10 @@ class _ExcludedLinks:
         self._include_subdomains = spec.filters.include_subdomains
         self._patterns = _python_patterns(spec.filters.exclude_patterns)
         self._seen_links: set[str] = set()
-        self._checked: set[str] = set()
+        # The seed is fetched whatever the patterns say, so a link back to it is never left out.
+        seed = url_filter.parsed_address(seed_url)
+        self._checked: set[str] = set() if seed is None else {_queued_url(seed)}
         self._left_out: Counter[str] = Counter()
-
-    def record_seed(self, seed_url: str) -> bool:
-        """Warn about the seed and return True when a pattern matches it.
-
-        crawlberg fetches a seed that an exclude pattern matches, so the crawl of a matched
-        seed does not start. The seed is matched as crawlberg's URL parser writes it; a seed
-        that does not parse is one crawlberg refuses, so no pattern applies to it.
-        """
-        address = url_filter.parsed_address(seed_url)
-        if address is None:
-            return False
-        url = _queued_url(address)
-        self._checked.add(url)
-        matched = self._matching(url)
-        if matched is None:
-            return False
-        log.warning(_LEFT_OUT, url, matched)
-        return True
 
     def record(self, event: _Event) -> None:
         """Count each link of *event* that the crawl leaves out, the first time a page holds it.

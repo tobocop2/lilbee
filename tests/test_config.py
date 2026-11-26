@@ -1657,7 +1657,8 @@ ADDRESS_FOR_EACH_DEFAULT_PATTERN = {
     r"\?elementor_library": "https://blog.example/?elementor_library=header",
     r"/page/\d+/?$": "https://blog.example/news/page/5/",
     r"\?paged?=\d+": "https://blog.example/?paged=3",
-    r"/20\d{2}(/\d{2}(/\d{2})?)?/?$": "https://blog.example/2024/06/15/",
+    r"/20\d{2}/\d{2}(/\d{2})?/?$": "https://blog.example/2024/06/15/",
+    r"^https?://[^/?#]+/20\d{2}/?$": "https://blog.example/2024/",
     r"/tag/": "https://blog.example/tag/gardening/",
     r"/category/": "https://blog.example/category/growing/",
     r"/author/": "https://blog.example/author/tobias/",
@@ -1841,6 +1842,9 @@ CONTENT_PATHS = [
     "/docs/payments/checkout",
     "/guides/login",
     "/api/account",
+    "/wiki/2023",
+    "/wiki/2024/",
+    "/events/2023",
 ]
 
 
