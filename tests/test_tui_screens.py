@@ -724,7 +724,9 @@ async def test_status_screen_first_load_is_one_page_of_a_huge_library(mock_svc):
     assert hint == msg.STATUS_DOCS_MORE.format(count=DOCUMENTS_PAGE_DEFAULT)
     assert "lilbee status" not in hint
     assert "8800000" in storage.replace(",", "")
-    mock_svc.store.get_sources.assert_called_once_with(limit=DOCUMENTS_PAGE_DEFAULT, offset=0)
+    mock_svc.store.get_sources.assert_called_once_with(
+        limit=DOCUMENTS_PAGE_DEFAULT, offset=0, newest_first=True
+    )
     mock_svc.store.source_summary.assert_not_called()
 
 

@@ -356,9 +356,7 @@ class StatusScreen(MountWhenAttached, Screen[None]):
             log.debug("Failed to read store for status screen", exc_info=True)
             return _DocsResult(sources=[], load_failed=True)
 
-    @work(
-        thread=True, name=_WORKER_FETCH_DOCS_PAGE, group=_WORKER_GROUP_DOCS, exit_on_error=False
-    )
+    @work(thread=True, name=_WORKER_FETCH_DOCS_PAGE, group=_WORKER_GROUP_DOCS, exit_on_error=False)
     def _fetch_docs_page_worker(self, offset: int) -> _DocsPage:
         """Read one further page of sources off the UI thread."""
         try:
