@@ -210,7 +210,7 @@ def run_interruptible(coro: Awaitable[T], cancel: SignalFlag) -> T:
     """
     if sys.platform == "win32" or threading.current_thread() is not threading.main_thread():
         return run_without_join(coro)
-    return _run_on_a_worker_thread(coro, cancel)
+    return _run_on_a_worker_thread(coro, cancel)  # pragma: posix only
 
 
 def _run_on_a_worker_thread(  # pragma: posix only - Windows runs on the main thread
