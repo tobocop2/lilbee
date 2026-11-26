@@ -473,6 +473,7 @@ def test_d1_a_bind_builds_lemonade_clients_that_check_the_device(
         model="gemma4e-flash:e2b",
         token_cap=None,
         rerank_mode=None,
+        rerank_pair=None,
         weights_bytes=0,
         slots=1,
         ctx=0,

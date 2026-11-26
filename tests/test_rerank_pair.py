@@ -26,7 +26,9 @@ from lilbee.providers.fleet.rerank_pair import RerankPair, rerank_pair_from_meta
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 _REFERENCE = json.loads(
-    (Path(__file__).parent / "fixtures" / "rerank_pair_hf_reference.json").read_text()
+    (Path(__file__).parent / "fixtures" / "rerank_pair_hf_reference.json").read_text(
+        encoding="utf-8"
+    )
 )
 _MINILM = "cross-encoder/ms-marco-MiniLM-L6-v2"
 _BGE = "BAAI/bge-reranker-v2-m3"
