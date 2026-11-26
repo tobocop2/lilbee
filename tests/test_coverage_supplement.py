@@ -512,6 +512,7 @@ class TestStatusFetchSourcesDistinguishesFailureFromEmpty:
         services = mock.MagicMock()
         services.store.get_sources.return_value = []
         services.store.count_sources.return_value = 0
+        services.store.partly_read_sources.return_value = ({}, 0)
         with mock.patch(
             "lilbee.cli.tui.screens.status.get_services",
             return_value=services,
