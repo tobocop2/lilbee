@@ -31,6 +31,7 @@ from textual.widgets import Static
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.cli.tui.task_queue import TaskQueue
+from tests._async_wait import wait_for_pull_check
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 COMMIT = "a" * 40
@@ -258,6 +259,7 @@ async def _tui_install(
             screen, "notify", lambda message, **_kw: outcome.notices.append(str(message))
         )
         screen._install_model(model)
+        await wait_for_pull_check(screen.app)
         return outcome
 
 

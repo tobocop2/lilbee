@@ -31,6 +31,7 @@ from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.fleet.host_caps import collect
 from lilbee.providers.roles import WorkerRole
+from tests._async_wait import wait_for_pull_check
 from tests.conformance.fake_adapter import BundledFakeAdapter
 
 MLX_REF = "org/repo#mlx"
@@ -372,6 +373,7 @@ async def test_the_catalog_install_of_an_embedding_model_resolves_a_file_with_th
             lambda: SimpleNamespace(engines=EngineBook(_config(WorkerRole.CHAT))),
         )
         screen._install_model(_row(ModelTask.EMBEDDING))
+        await wait_for_pull_check(screen.app)
     assert seen == ["gguf"]
 
 
@@ -777,6 +779,7 @@ async def test_the_catalog_install_of_a_format_nothing_loads_enqueues_it(
         screen._install_model(
             dataclasses.replace(_model(), hf_repo=MLX_REF, format=ModelFormat.MLX)
         )
+        await wait_for_pull_check(screen.app)
     assert enqueued == [MLX_REF]
     assert notices == []
 

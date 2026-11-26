@@ -18,6 +18,7 @@ from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import ModelManager
 from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.server import handlers
+from tests._async_wait import wait_for_pull_check
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 SAFETENSORS_REF = "acme/tiny-model#safetensors"
@@ -190,6 +191,7 @@ async def _install(model: CatalogModel) -> tuple[mock.MagicMock, mock.MagicMock]
             mock.patch("lilbee.cli.tui.screens.catalog.disk_shortfall", return_value=None),
         ):
             screen._install_format(model)
+            await wait_for_pull_check(screen.app)
         return enqueue, notify
 
 

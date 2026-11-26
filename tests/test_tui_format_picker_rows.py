@@ -28,7 +28,7 @@ from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.host_caps import collect
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.hardware import FitLevel
-from tests._async_wait import wait_until
+from tests._async_wait import wait_for_pull_check, wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost
 from tests.conformance.fake_adapter import BundledFakeAdapter
 
@@ -339,6 +339,7 @@ async def test_a_format_whose_engine_is_missing_installs_the_engine_then_downloa
         assert [name for name, _then in installs] == ["mlx"]
         assert started == []
         installs[0][1]()
+        await wait_for_pull_check(pilot.app)
         assert [(m.format, m.pull_ref) for m in started] == [
             (ModelFormat.SAFETENSORS, "acme/two#safetensors")
         ]
