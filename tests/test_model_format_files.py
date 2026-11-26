@@ -454,58 +454,63 @@ def _entry(fmt: ModelFormat, filename: str = "model.safetensors") -> CatalogMode
     )
 
 
+def _recording_transfer(fetched: list[str], root: Path) -> Any:
+    """A transfer that records each file it is asked for and lands it under *root*."""
+
+    def _download(
+        _entry: CatalogModel, config: download.DownloadConfig, *_a: Any, **_kw: Any
+    ) -> Path:
+        fetched.append(config.filename)
+        return root / config.filename
+
+    return _download
+
+
 class TestDownloadRouting:
+    @pytest.fixture(autouse=True)
+    def _sizes_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The Hub reports no size unless a test names one."""
+        monkeypatch.setattr(download, "fetch_remote_file", lambda *_a: download.RemoteFile(0, None))
+
     def test_non_gguf_entry_fetches_the_selected_file_set(self, tmp_path: Path) -> None:
         listing = ["README.md", "config.json", "model.safetensors", "tokenizer.json"]
-        fetched: list[list[str]] = []
-
-        def fake_fetch(
-            _entry, _dir, _token, files, _progress, _probe, _cached, *, on_retry
-        ) -> list[Path]:
-            fetched.append(files)
-            return [tmp_path / name for name in files]
+        fetched: list[str] = []
 
         with (
             mock.patch.object(download, "_repo_sibling_files", return_value=listing),
-            mock.patch.object(download, "_fetch_files", side_effect=fake_fetch),
+            mock.patch.object(
+                download, "_download_with_retry", side_effect=_recording_transfer(fetched, tmp_path)
+            ),
             mock.patch.object(download, "resolve_filename", side_effect=AssertionError("GGUF")),
         ):
             path = download.fetch_model_files(
                 _entry(ModelFormat.MLX), tmp_path, None, engine=mock.Mock()
             )
-        assert fetched == [["model.safetensors", "config.json", "tokenizer.json"]]
+        assert fetched == ["model.safetensors", "config.json", "tokenizer.json"]
         assert path == tmp_path / "model.safetensors"
 
     def test_an_embedding_pull_fetches_the_module_files(self, tmp_path: Path) -> None:
-        fetched: list[list[str]] = []
-
-        def fake_fetch(
-            _entry, _dir, _token, files, _progress, _probe, _cached, *, on_retry
-        ) -> list[Path]:
-            fetched.append(files)
-            return [tmp_path / name for name in files]
+        fetched: list[str] = []
 
         with (
             mock.patch.object(
                 download, "_repo_sibling_files", return_value=_QWEN3_EMBEDDING_LISTING
             ),
-            mock.patch.object(download, "_fetch_files", side_effect=fake_fetch),
+            mock.patch.object(
+                download, "_download_with_retry", side_effect=_recording_transfer(fetched, tmp_path)
+            ),
         ):
-            download.fetch_format_files(_entry(ModelFormat.SAFETENSORS), tmp_path, None)
-        assert set(fetched[0]) >= _MODULE_FILES
+            download.fetch_model_files(_entry(ModelFormat.SAFETENSORS), tmp_path, None, None)
+        assert set(fetched) >= _MODULE_FILES
 
     def test_a_model_pulled_before_the_fix_fetches_only_the_missing_files(
         self, tmp_path: Path
     ) -> None:
         old = ["model.safetensors", "config.json", "merges.txt"]
         old += ["tokenizer.json", "tokenizer_config.json", "vocab.json", "generation_config.json"]
-        seen: list[tuple[list[str], frozenset[str]]] = []
-
-        def fake_fetch(
-            _entry, _dir, _token, files, _progress, _probe, cached, *, on_retry
-        ) -> list[Path]:
-            seen.append((files, cached))
-            return [tmp_path / name for name in files]
+        for name in old:
+            (tmp_path / name).write_bytes(b"x")
+        fetched: list[str] = []
 
         with (
             mock.patch.object(
@@ -516,18 +521,19 @@ class TestDownloadRouting:
                 "cached_file_path",
                 side_effect=lambda _repo, name, _dir: tmp_path / name if name in old else None,
             ),
-            mock.patch.object(download, "_fetch_files", side_effect=fake_fetch),
+            mock.patch.object(
+                download, "_download_with_retry", side_effect=_recording_transfer(fetched, tmp_path)
+            ),
         ):
-            download.fetch_format_files(_entry(ModelFormat.SAFETENSORS), tmp_path, None)
-        assert seen[0][1] == frozenset(old)
-        assert set(seen[0][0]) - seen[0][1] == _MODULE_FILES
+            download.fetch_model_files(_entry(ModelFormat.SAFETENSORS), tmp_path, None, None)
+        assert set(fetched) == _MODULE_FILES
 
     def test_a_repo_without_the_format_is_refused_by_name(self, tmp_path: Path) -> None:
         with (
             mock.patch.object(download, "_repo_sibling_files", return_value=["README.md"]),
             pytest.raises(RuntimeError, match="No openvino model files found in org/repo"),
         ):
-            download.fetch_format_files(_entry(ModelFormat.OPENVINO), tmp_path, None)
+            download.fetch_model_files(_entry(ModelFormat.OPENVINO), tmp_path, None, None)
 
     def test_a_name_that_leaves_the_snapshot_is_refused_before_any_fetch(
         self, tmp_path: Path
@@ -536,20 +542,20 @@ class TestDownloadRouting:
             mock.patch.object(
                 download, "_repo_sibling_files", return_value=["../openvino_model.xml"]
             ),
-            mock.patch.object(download, "_fetch_files") as fetch,
+            mock.patch.object(download, "_download_with_retry") as fetch,
             pytest.raises(ValueError, match="leaves the model folder"),
         ):
-            download.fetch_format_files(_entry(ModelFormat.OPENVINO), tmp_path, None)
+            download.fetch_model_files(_entry(ModelFormat.OPENVINO), tmp_path, None, None)
         fetch.assert_not_called()
 
     def test_a_partial_shard_set_is_refused_before_any_fetch(self, tmp_path: Path) -> None:
         listing = [f"model-0000{i}-of-00005.safetensors" for i in (1, 2, 3, 4)]
         with (
             mock.patch.object(download, "_repo_sibling_files", return_value=listing),
-            mock.patch.object(download, "_fetch_files") as fetch,
+            mock.patch.object(download, "_download_with_retry") as fetch,
             pytest.raises(ValueError, match=r"model-00005-of-00005\.safetensors is missing"),
         ):
-            download.fetch_format_files(_entry(ModelFormat.SAFETENSORS), tmp_path, None)
+            download.fetch_model_files(_entry(ModelFormat.SAFETENSORS), tmp_path, None, None)
         fetch.assert_not_called()
 
     def test_a_fully_cached_set_probes_nothing(self, tmp_path: Path) -> None:
@@ -561,16 +567,19 @@ class TestDownloadRouting:
             mock.patch.object(download, "_repo_sibling_files", return_value=names),
             mock.patch.object(download, "cached_file_path", side_effect=lambda _r, n, d: d / n),
             mock.patch.object(download, "fetch_remote_file") as probe,
+            mock.patch.object(download, "_download_with_retry") as fetch,
         ):
-            path = download.fetch_format_files(
+            path = download.fetch_model_files(
                 _entry(ModelFormat.MLX),
                 tmp_path,
+                None,
                 None,
                 on_progress=lambda a, b: seen.append((a, b)),
             )
         assert path == tmp_path / "model.safetensors"
         assert seen == [(15, 15)]
         probe.assert_not_called()
+        fetch.assert_not_called()
 
     def test_the_space_check_counts_only_the_files_still_to_fetch(self, tmp_path: Path) -> None:
         names = ["model.safetensors", "config.json", "tokenizer.json"]
@@ -589,16 +598,16 @@ class TestDownloadRouting:
                 side_effect=lambda _r, n: download.RemoteFile(sizes[n], n),
             ),
             mock.patch.object(download, "discard_partial_blobs"),
-            mock.patch.object(download, "_free_bytes", return_value=15),
+            mock.patch.object(download, "_free_bytes", return_value=10),
             mock.patch.object(
                 download,
                 "_download_with_retry",
-                side_effect=lambda _e, c, **_retry: tmp_path / c.filename,
+                side_effect=lambda _e, c, *_a, **_retry: tmp_path / c.filename,
             ) as fetch,
             mock.patch.object(Path, "stat", return_value=mock.Mock(st_size=1)),
         ):
-            download.fetch_format_files(_entry(ModelFormat.MLX), tmp_path, None)
-        assert fetch.call_count == 3
+            download.fetch_model_files(_entry(ModelFormat.MLX), tmp_path, None, None)
+        assert [call.args[1].filename for call in fetch.call_args_list] == ["tokenizer.json"]
 
     def test_an_unreadable_cache_stops_a_non_gguf_install_with_a_plain_error(
         self, tmp_path: Path
@@ -623,13 +632,14 @@ class TestDownloadRouting:
             mock.patch.object(Path, "glob", _refuse),
             pytest.raises(RuntimeError, match=r"Cannot read the model cache folder .*models--"),
         ):
-            download.fetch_format_files(_entry(ModelFormat.MLX), tmp_path, None)
+            download.fetch_model_files(_entry(ModelFormat.MLX), tmp_path, None, None)
 
     def test_the_space_check_still_refuses_when_the_missing_files_do_not_fit(
         self, tmp_path: Path
     ) -> None:
         names = ["model.safetensors", "config.json"]
         sizes = {"model.safetensors": 15, "config.json": 5}
+        (tmp_path / "config.json").write_bytes(b"y" * 5)
         with (
             mock.patch.object(download, "_repo_sibling_files", return_value=names),
             mock.patch.object(
@@ -644,9 +654,11 @@ class TestDownloadRouting:
             ),
             mock.patch.object(download, "discard_partial_blobs"),
             mock.patch.object(download, "_free_bytes", return_value=10),
+            mock.patch.object(download, "_download_with_retry") as fetch,
             pytest.raises(RuntimeError, match="Not enough disk space"),
         ):
-            download.fetch_format_files(_entry(ModelFormat.MLX), tmp_path, None)
+            download.fetch_model_files(_entry(ModelFormat.MLX), tmp_path, None, None)
+        fetch.assert_not_called()
 
     def test_progress_reports_the_whole_set(self, tmp_path: Path) -> None:
         (tmp_path / "model.safetensors").write_bytes(b"x" * 10)
@@ -655,13 +667,15 @@ class TestDownloadRouting:
         seen: list[tuple[int, int]] = []
         with (
             mock.patch.object(download, "_repo_sibling_files", return_value=names),
+            mock.patch.object(download, "cached_file_path", return_value=None),
             mock.patch.object(
-                download, "_fetch_files", return_value=[tmp_path / name for name in names]
+                download, "_download_with_retry", side_effect=_recording_transfer([], tmp_path)
             ),
         ):
-            download.fetch_format_files(
+            download.fetch_model_files(
                 _entry(ModelFormat.MLX),
                 tmp_path,
+                None,
                 None,
                 on_progress=lambda a, b: seen.append((a, b)),
             )
@@ -705,14 +719,17 @@ class TestIndexDeclaredShards:
         with (
             mock.patch.object(download, "_repo_sibling_files", return_value=listing),
             mock.patch.object(download, "cached_file_path", return_value=None) as cached,
-            mock.patch.object(download, "_fetch_files", return_value=[index]) as fetch,
+            mock.patch.object(
+                download, "fetch_remote_file", return_value=download.RemoteFile(9, "blob-i")
+            ),
+            mock.patch.object(download, "_download_with_retry", return_value=index) as fetch,
             pytest.raises(ValueError, match=r"part-b\.safetensors is missing"),
         ):
-            download.fetch_format_files(entry, tmp_path, "token", on_probe=probe)
+            download.fetch_model_files(entry, tmp_path, "token", None, on_probe=probe)
         cached.assert_called_once_with("org/repo", _INDEX, tmp_path)
-        fetch.assert_called_once_with(
-            entry, tmp_path, "token", [_INDEX], None, probe, on_retry=None
-        )
+        (call,) = fetch.call_args_list
+        assert (call.args[1].filename, call.args[1].token) == (_INDEX, "token")
+        probe.assert_called_once_with("blob-i")
         index.read_text.assert_called_once_with(encoding="utf-8")
 
     def test_a_cached_index_is_read_without_a_fetch(self, tmp_path: Path) -> None:
@@ -724,9 +741,9 @@ class TestIndexDeclaredShards:
         with (
             mock.patch.object(download, "_repo_sibling_files", return_value=listing),
             mock.patch.object(download, "cached_file_path", side_effect=lambda _r, n, d: d / n),
-            mock.patch.object(download, "_fetch_files") as fetch,
+            mock.patch.object(download, "_download_with_retry") as fetch,
         ):
-            path = download.fetch_format_files(_entry(ModelFormat.SAFETENSORS), tmp_path, None)
+            path = download.fetch_model_files(_entry(ModelFormat.SAFETENSORS), tmp_path, None, None)
         assert path == tmp_path / "part-a.safetensors"
         fetch.assert_not_called()
 
@@ -800,12 +817,7 @@ class _PullingManager:
     def pull(
         self, _ref: str, _source: object, *, on_bytes: object = None, cancel: object = None
     ) -> None:
-        def fake_fetch(
-            _entry, _dir, _token, files, _progress, _probe, _cached, *, on_retry
-        ) -> list[Path]:
-            self.fetched.append(files)
-            return [self.tmp_path / name for name in files]
-
+        fetched: list[str] = []
         with (
             mock.patch.object(download, "_repo_sibling_files", return_value=_DENSE_LISTING),
             mock.patch.object(
@@ -815,10 +827,19 @@ class _PullingManager:
                     self.tmp_path / name if name in self.cached else None
                 ),
             ),
-            mock.patch.object(download, "_fetch_files", side_effect=fake_fetch),
+            mock.patch.object(
+                download, "fetch_remote_file", return_value=download.RemoteFile(0, None)
+            ),
+            mock.patch.object(
+                download,
+                "_download_with_retry",
+                side_effect=_recording_transfer(fetched, self.tmp_path),
+            ),
             mock.patch.object(Path, "stat", return_value=mock.Mock(st_size=1)),
         ):
-            download.fetch_format_files(_entry(ModelFormat.SAFETENSORS), self.tmp_path, None)
+            download.fetch_model_files(_entry(ModelFormat.SAFETENSORS), self.tmp_path, None, None)
+        if fetched:
+            self.fetched.append(fetched)
 
 
 class TestPullOfAnInstalledModel:

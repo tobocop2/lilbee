@@ -29,9 +29,15 @@ from lilbee.catalog import (
     disk_shortfall,
     get_catalog,
     get_families,
-    resolve_filename,
 )
-from lilbee.catalog.download import _BYTES_PER_GB, download_bytes
+from lilbee.catalog.download import (
+    _BYTES_PER_GB,
+    ListingFailedError,
+    ListingOfflineError,
+    plan_pull,
+    preflight,
+)
+from lilbee.catalog.hf_client import hf_token
 from lilbee.catalog.models import CatalogResult, estimate_min_ram_gb
 from lilbee.catalog.refs import canonical_ref, is_gguf_filename
 from lilbee.catalog.runnable import hidden_summary
@@ -91,7 +97,6 @@ from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.top_bars import TopBars
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import RemoteModel, classify_all_remote_models
-from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD
 from lilbee.runtime.hardware import available_memory_for_fit, chip_for_size
 
@@ -2159,28 +2164,28 @@ class CatalogScreen(Screen[None]):
         if self.app.task_bar.pending_download(model) is not None:
             self.notify(msg.CATALOG_ALREADY_DOWNLOADING.format(name=model.display_name))
             return
-        # The row's own size is an approximation off the parameter count; one
-        # file is named here, so the check asks HuggingFace what it really costs.
-        needed = int(model.size_gb * _BYTES_PER_GB)
+        # The check charges the pull plan the download itself runs, and refuses
+        # before the enqueue: a task that fails instantly is terminal, so dedupe
+        # would not stop a second row.
         try:
+            engine = None
             if model.format is ModelFormat.GGUF:
                 engine = get_services().engines.for_ref(model.pull_ref)
-                filename = resolve_filename(model, engine)
-                dest = cfg.models_dir / filename
-                if dest.exists():
-                    self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name))
-                    return
-                needed = download_bytes(model.hf_repo, filename)
-        except NoEngineError as exc:
+            plan = plan_pull(model, cfg.models_dir, engine, hf_token())
+            if plan.files and not plan.missing:
+                self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name))
+                return
+            shortfall = preflight(plan, cfg.models_dir)
+        except (ListingOfflineError, ListingFailedError):
+            # No listing, no file set: the row's own approximation is the only figure.
+            log.debug("Could not list %s", model.hf_repo, exc_info=True)
+            shortfall = disk_shortfall(
+                cfg.models_dir, model.hf_repo, int(model.size_gb * _BYTES_PER_GB)
+            )
+        except Exception as exc:
+            # The download would fail the same way, so say why and enqueue nothing.
             self.notify(str(exc), severity="error")
             return
-        except Exception:
-            log.debug("Could not resolve filename", exc_info=True)
-
-        # After the already-installed check, which needs no space, and before
-        # the enqueue: a task that fails instantly is terminal, so dedupe would
-        # not stop a second row.
-        shortfall = disk_shortfall(cfg.models_dir, model.hf_repo, needed)
         if shortfall is not None:
             self.notify(shortfall, severity="warning")
             return

@@ -1599,16 +1599,14 @@ class TestSplitShardDownload:
             lambda repo, name: catalog.download.RemoteFile(size=100, blob=f"blob-{name}"),
         )
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
-        monkeypatch.setattr(catalog.download, "_ensure_projector", lambda *a, **kw: None)
         probes: list[str | None] = []
 
         catalog.download.fetch_model_files(
             entry, tmp_path, None, on_probe=probes.append, engine=LLAMA
         )
 
-        # The completeness check stops at the first absent shard; sizes cover them all.
-        assert len(probes) == 4
-        assert probes[-1] == "blob-m-00003-of-00003.gguf"
+        # The plan resolves each shard once, before the first transfer.
+        assert probes == [f"blob-m-0000{n}-of-00003.gguf" for n in (1, 2, 3)]
 
 
 @pytest.mark.usefixtures("repo_lists_no_projector")
@@ -4478,9 +4476,11 @@ class TestUnsendableHfToken:
 
         monkeypatch.setenv("HF_TOKEN", "hf_fake\nsecret")
         monkeypatch.setattr(download, "_models_dir", lambda: tmp_path)
-        fetch = MagicMock(return_value=None)
-        monkeypatch.setattr(download, "_fetch_mmproj", fetch)
-        download.download_mmproj(MagicMock())
+        projector = download.PlannedFile("mmproj.gguf", 0, None, None)
+        monkeypatch.setattr(download, "_projector_file", lambda *_a: projector)
+        fetch = MagicMock(return_value=[tmp_path / "mmproj.gguf"])
+        monkeypatch.setattr(download, "_transfer", fetch)
+        download.download_mmproj(MagicMock(hf_repo="org/repo"))
         assert fetch.call_args.args[2] is False
 
     def test_load_check_gets_false(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -806,41 +806,49 @@ class TestFetchRemoteFile:
         assert download_mod._hf_file_metadata("org/repo", "m.gguf") == (4096, "abc123")
 
 
-class TestDownloadBytes:
-    """The exact bytes a pull fetches, every shard of a split GGUF summed."""
+class TestPlanBytes:
+    """The exact bytes the plan of a GGUF pull charges, every shard of a split GGUF summed."""
 
-    def _patch_sizes(self, monkeypatch: pytest.MonkeyPatch, sizes: dict[str, int]) -> None:
-        from lilbee.catalog.download import RemoteFile
+    def _plan(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sizes: dict[str, int]) -> Any:
+        from lilbee.catalog import download
 
         monkeypatch.setattr(
-            "lilbee.catalog.download.fetch_remote_file",
-            lambda _repo, name: RemoteFile(size=sizes[name], blob=f"blob-{name}"),
+            download,
+            "fetch_remote_file",
+            lambda _repo, name: download.RemoteFile(size=sizes[name], blob=f"blob-{name}"),
         )
+        files = download._gguf_files("org/repo", tmp_path, min(sizes), None)
+        return download.PullPlan("org/repo", files)
 
-    def test_single_file_reports_the_hubs_figure(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.catalog.download import download_bytes
+    def test_single_file_charges_the_hubs_figure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        plan = self._plan(monkeypatch, tmp_path, {"m.gguf": 5_027_783_488})
+        assert [file.size for file in plan.missing] == [5_027_783_488]
 
-        self._patch_sizes(monkeypatch, {"m.gguf": 5_027_783_488})
-        assert download_bytes("org/repo", "m.gguf") == 5_027_783_488
-
-    def test_split_gguf_sums_every_shard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_split_gguf_charges_every_shard(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         """llama.cpp needs the whole set on disk, so the check asks about all of it."""
-        from lilbee.catalog.download import download_bytes
-
-        self._patch_sizes(
-            monkeypatch,
-            {"m-00001-of-00002.gguf": 30, "m-00002-of-00002.gguf": 12},
+        plan = self._plan(
+            monkeypatch, tmp_path, {"m-00001-of-00002.gguf": 30, "m-00002-of-00002.gguf": 12}
         )
-        assert download_bytes("org/repo", "m-00001-of-00002.gguf") == 42
+        assert sum(file.size for file in plan.missing) == 42
 
-    def test_one_unresolvable_shard_makes_the_total_unknown(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_one_unresolvable_shard_makes_the_need_unknown(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """A partial sum would read short and pass a disk check that must fail."""
-        from lilbee.catalog.download import _SIZE_UNKNOWN, download_bytes
+        import shutil
 
-        self._patch_sizes(
+        from lilbee.catalog import download
+
+        plan = self._plan(
             monkeypatch,
-            {"m-00001-of-00002.gguf": 30, "m-00002-of-00002.gguf": _SIZE_UNKNOWN},
+            tmp_path,
+            {"m-00001-of-00002.gguf": 30, "m-00002-of-00002.gguf": download._SIZE_UNKNOWN},
         )
-        assert download_bytes("org/repo", "m-00001-of-00002.gguf") == _SIZE_UNKNOWN
+        monkeypatch.setattr(
+            download.shutil, "disk_usage", lambda _p: shutil._ntuple_diskusage(1, 1, 0)
+        )
+        assert download.preflight(plan, tmp_path) is None

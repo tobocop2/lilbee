@@ -228,6 +228,15 @@ async def test_escape_in_the_format_picker_installs_nothing(
         assert started == []
 
 
+def _plan_resolves(monkeypatch: pytest.MonkeyPatch, filename: str) -> None:
+    """The pull plan picks *filename*, one byte on the Hub, and the repo lists no projector."""
+    from lilbee.catalog import download
+
+    monkeypatch.setattr(download, "resolve_filename", lambda *_a, **_kw: filename)
+    monkeypatch.setattr(download, "fetch_remote_file", lambda *_a: download.RemoteFile(1, None))
+    monkeypatch.setattr(download, "_resolve_mmproj_filename", lambda *_a: None)
+
+
 async def test_install_of_a_one_format_row_asks_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     model = _row("acme/one", frozenset({ModelFormat.GGUF}))
     async with _App().run_test(size=(120, 40)) as pilot:
@@ -236,10 +245,7 @@ async def test_install_of_a_one_format_row_asks_nothing(monkeypatch: pytest.Monk
         await pilot.pause()
         started = _record_downloads(pilot.app)
         _quiet(monkeypatch, screen)
-        monkeypatch.setattr(
-            "lilbee.cli.tui.screens.catalog.resolve_filename", lambda *_a, **_kw: "x.gguf"
-        )
-        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.download_bytes", lambda *_a: 1)
+        _plan_resolves(monkeypatch, "x.gguf")
 
         screen._install_model(model)
         assert await wait_until(pilot, lambda: bool(started))
@@ -348,9 +354,7 @@ async def test_install_of_a_file_already_on_disk_says_so_and_pulls_nothing(
 
     (tmp_path / "x.gguf").write_bytes(b"x")
     monkeypatch.setattr(cfg, "models_dir", tmp_path)
-    monkeypatch.setattr(
-        "lilbee.cli.tui.screens.catalog.resolve_filename", lambda *_a, **_kw: "x.gguf"
-    )
+    _plan_resolves(monkeypatch, "x.gguf")
     async with _App().run_test(size=(120, 40)) as pilot:
         screen = CatalogScreen()
         await pilot.app.push_screen(screen)

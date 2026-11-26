@@ -35,6 +35,11 @@ def _entry() -> CatalogModel:
     )
 
 
+def _plan(needed: int) -> dl.PullPlan:
+    """A pull of one file of *needed* bytes that the disk does not hold."""
+    return dl.PullPlan("acme/big-GGUF", (dl.PlannedFile("big.gguf", needed, None, None),))
+
+
 def _usage(free: int) -> Any:
     return shutil._ntuple_diskusage(total=free * 4, used=free * 3, free=free)
 
@@ -45,13 +50,13 @@ def test_refuses_a_download_larger_than_free_space(
     monkeypatch.setattr(dl.shutil, "disk_usage", lambda _p: _usage(5 * _GB))
 
     with pytest.raises(RuntimeError, match="Not enough disk space"):
-        dl._require_disk_space(_entry(), tmp_path, 8 * _GB)
+        dl._require_room(_plan(8 * _GB), tmp_path)
 
 
 def test_allows_a_download_that_fits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dl.shutil, "disk_usage", lambda _p: _usage(20 * _GB))
 
-    dl._require_disk_space(_entry(), tmp_path, 8 * _GB)
+    dl._require_room(_plan(8 * _GB), tmp_path)
 
 
 def test_a_partial_blob_is_not_counted_as_space_the_pull_can_use(
@@ -66,14 +71,14 @@ def test_a_partial_blob_is_not_counted_as_space_the_pull_can_use(
 
     # 8KB wanted and 3KB free; the 6KB partial blob buys the pull nothing.
     with pytest.raises(RuntimeError, match=r"needs 8\.0 GB, 3\.0 GB free"):
-        dl._require_disk_space(_entry(), tmp_path, 8 * 1024)
+        dl._require_room(_plan(8 * 1024), tmp_path)
 
 
 def test_unknown_size_does_not_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Offline or unresolvable sizes have nothing to compare against."""
     monkeypatch.setattr(dl.shutil, "disk_usage", lambda _p: _usage(0))
 
-    dl._require_disk_space(_entry(), tmp_path, dl._SIZE_UNKNOWN)
+    dl._require_room(_plan(dl._SIZE_UNKNOWN), tmp_path)
 
 
 def test_failure_on_a_full_volume_reports_the_disk(

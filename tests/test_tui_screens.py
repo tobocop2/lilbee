@@ -4319,9 +4319,7 @@ async def test_catalog_install_already_installed(tmp_path):
             dest = tmp_path / "resolved.gguf"
             dest.write_text("fake")
             with (
-                patch(
-                    "lilbee.cli.tui.screens.catalog.resolve_filename", return_value="resolved.gguf"
-                ),
+                patch("lilbee.catalog.download.resolve_filename", return_value="resolved.gguf"),
                 patch.object(screen, "notify") as mock_notify,
             ):
                 screen._install_model(m)
@@ -11939,7 +11937,7 @@ async def test_catalog_install_model_already_exists(tmp_path):
             dest = tmp_path / "test.gguf"
             dest.write_text("fake")
             with (
-                patch("lilbee.cli.tui.screens.catalog.resolve_filename", return_value="test.gguf"),
+                patch("lilbee.catalog.download.resolve_filename", return_value="test.gguf"),
                 patch.object(screen, "notify") as mock_notify,
             ):
                 screen._install_model(m)
@@ -13568,8 +13566,8 @@ async def test_catalog_is_installed_by_repo():
             assert screen._is_installed("x", repo="org/other", filename="other.gguf") is False
 
 
-async def test_catalog_install_model_resolve_exception():
-    """_install_model handles resolve_filename exception."""
+async def test_catalog_install_model_shows_a_resolve_failure_and_enqueues_nothing():
+    """A file the pull cannot pick fails the download at once, so the install refuses."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -13584,18 +13582,15 @@ async def test_catalog_install_model_resolve_exception():
             cm = _make_catalog_model(name="fail-resolve")
             with (
                 patch(
-                    "lilbee.cli.tui.screens.catalog.resolve_filename",
+                    "lilbee.catalog.download.resolve_filename",
                     side_effect=RuntimeError("fail"),
                 ),
-                # Otherwise this asserts on the runner's free space.
-                patch(
-                    "lilbee.cli.tui.screens.catalog.disk_shortfall",
-                    return_value=None,
-                ),
+                patch.object(screen, "notify") as mock_notify,
                 patch.object(screen, "_enqueue_download") as mock_dl,
             ):
                 screen._install_model(cm)
-                mock_dl.assert_called_once_with(cm)
+                mock_dl.assert_not_called()
+                mock_notify.assert_called_once_with("fail", severity="error")
 
 
 async def test_catalog_delete_when_input_focused():
