@@ -1,6 +1,6 @@
 name: CI
 
-# Probe branch only: the Windows crawl settings e2e file on Python 3.12, at each
+# Probe branch only: the Windows crawl loop policy and crawl settings e2e files on Python 3.12, at each
 # commit of the union 77 to 80 range, with the failing add's exit, output and
 # exception printed.
 on:
@@ -137,14 +137,15 @@ jobs:
           EOF
           git diff --stat
 
-      - name: Run the crawl settings e2e file twice
+      # The suite order: the loop policy file runs just before the crawl settings file.
+      - name: Run the crawl settings e2e file after the loop policy file, twice
         shell: bash
         run: |
           echo "SUITE-HEAD $(git rev-parse HEAD)"
           rc=0
           for pass in 1 2; do
             echo "PROBE-PASS ${pass}"
-            uv run pytest tests/integration/test_crawl_settings_e2e.py -v -s || rc=1
+            uv run pytest tests/integration/test_crawl_loop_policy.py tests/integration/test_crawl_settings_e2e.py -v -s || rc=1
           done
           exit "${rc}"
         env:
