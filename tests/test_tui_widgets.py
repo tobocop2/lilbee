@@ -1281,7 +1281,7 @@ class TestModelPickerButton:
                     "lilbee.app.settings.persistent_settings.update_values",
                     wraps=persistent_settings.update_values,
                 ),
-                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+                mock.patch("lilbee.app.services.reset_services"),
             ):
                 btn._on_picker_dismissed(new_ref)
                 await pilot.pause()
@@ -1339,7 +1339,7 @@ class TestModelPickerButton:
                     "lilbee.app.settings.persistent_settings.update_values",
                     wraps=persistent_settings.update_values,
                 ),
-                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+                mock.patch("lilbee.app.services.reset_services"),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
@@ -1569,7 +1569,7 @@ class TestModelPickerButton:
             services_mock = mock.MagicMock()
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
-                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services") as mock_reset,
+                mock.patch("lilbee.app.services.reset_services") as mock_reset,
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
@@ -1602,7 +1602,7 @@ class TestModelPickerButton:
             services_mock = mock.MagicMock()
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
-                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+                mock.patch("lilbee.app.services.reset_services"),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,

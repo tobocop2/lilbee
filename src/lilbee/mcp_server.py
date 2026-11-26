@@ -30,6 +30,7 @@ from mcp.types import Tool as MCPTool
 from pydantic import BaseModel, Field
 
 from lilbee.app import engine_service, profiles
+from lilbee.app import services as app_services
 from lilbee.app.analyze import (
     AnalyzeRequest,
     hide_tip,
@@ -69,7 +70,6 @@ from lilbee.app.services import (
     get_services,
     logged_services_build,
     loop_takes_signals,
-    reset_services,
     reset_store,
 )
 from lilbee.app.session_sources import (
@@ -761,7 +761,7 @@ def init(path: str = "") -> dict[str, Any]:
     cfg.data_dir = root / "data"
     cfg.lancedb_dir = root / "data" / "lancedb"
     overlay_persisted_settings(base)
-    reset_services()
+    app_services.reset_services()
 
     return {"command": "init", "path": str(root), "created": created}
 
@@ -2513,7 +2513,9 @@ def _exit_on_parent_death() -> None:
     releases this process's user lock on exit regardless, so a skipped release only
     defers the engine stop to the peers' reap and the idle TTL.
     """
-    cleanup = threading.Thread(target=reset_services, name="parent-death-cleanup", daemon=True)
+    cleanup = threading.Thread(
+        target=app_services.reset_services, name="parent-death-cleanup", daemon=True
+    )
     cleanup.start()
     cleanup.join(timeout=_PARENT_DEATH_CLEANUP_S)
     os._exit(0)
