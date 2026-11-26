@@ -72,6 +72,19 @@ def subtree_mounted(root: Widget) -> bool:
     return all(widget.is_mounted for widget in root.walk_children(with_self=True))
 
 
+async def laid_out(pilot: Pilot, widget: WidgetT) -> WidgetT:
+    """Return *widget* once it owns a hit area.
+
+    A widget mounts before it lays out, and one pause can cover the mount but
+    not the layout. Until a widget has a region, every point derived from it is
+    the screen's origin, so a click aimed at it lands on whatever occupies the
+    top-left corner instead.
+    """
+    await wait_until(pilot, lambda: bool(widget.region.size))
+    assert widget.region.size, "the widget was never laid out, so it has no hit area"
+    return widget
+
+
 def poll_until(predicate: Callable[[], bool], timeout: float = 10.0) -> bool:
     """Poll *predicate* until it holds or *timeout* seconds pass; returns whether it held."""
     deadline = time.monotonic() + timeout

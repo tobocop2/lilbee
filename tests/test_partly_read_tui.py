@@ -28,6 +28,7 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBar
 from lilbee.cli.tui.widgets.task_row import TaskRow, _build_head
 from lilbee.data.store import FailedPage
 from lilbee.data.types import PartialFile, SyncResult
+from tests._async_wait import laid_out
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 _PAGE_3 = FailedPage(page=3, error="[vision] timed out", recovered=False)
@@ -85,6 +86,16 @@ async def _open_task_center(app: LilbeeAppHost, pilot) -> TaskCenter:
     screen = app.screen
     assert isinstance(screen, TaskCenter)
     return screen
+
+
+async def _click_row(pilot, screen: TaskCenter, task_id: str) -> None:
+    """Click the row of *task_id* once it is laid out, and check the click hit it.
+
+    A row that has no region yet sends the click to the screen's origin, where
+    the Chat view tab sits.
+    """
+    row = await laid_out(pilot, screen._rows[task_id])
+    assert await pilot.click(row), "the click landed on another widget than the row"
 
 
 class TestTaskReport:
@@ -371,10 +382,10 @@ class TestTaskDetail:
     async def test_a_click_on_a_partial_row_opens_the_detail(self) -> None:
         app = LilbeeAppHost()
         async with app.run_test(size=(120, 40)) as pilot:
-            await _open_task_center(app, pilot)
+            screen = await _open_task_center(app, pilot)
             task_id = _finish(app.task_bar.queue, TaskStatus.PARTIAL, report=_report())
             await pilot.pause()
-            await pilot.click(f"#task-{task_id}")
+            await _click_row(pilot, screen, task_id)
             await pilot.pause()
             assert isinstance(app.screen, TaskDetailModal)
 
@@ -386,7 +397,7 @@ class TestTaskDetail:
             task_id = _finish(app.task_bar.queue, TaskStatus.DONE)
             await pilot.pause()
             with patch.object(screen, "notify") as notify:
-                await pilot.click(f"#task-{task_id}")
+                await _click_row(pilot, screen, task_id)
                 await pilot.pause()
             notify.assert_not_called()
             assert app.screen is screen

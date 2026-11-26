@@ -17,7 +17,7 @@ from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 from lilbee.cli.tui.widgets.session_list import SessionListPanel, SessionRow, _caught_up
 from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
 from lilbee.sessions import MessageRole, SessionMessage, SessionNotFoundError, TitleSource
-from tests._async_wait import wait_until
+from tests._async_wait import laid_out, wait_until
 from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
 from tests._lilbee_app_test_host import await_chat, pump_until, send_key_burst, shown_footer_keys
 from tests.conftest import make_mock_services
@@ -72,21 +72,6 @@ async def _wait_for_rows(pilot, root, count: int) -> None:
     assert len(root.query(SessionRow)) == count
 
 
-async def _laid_out(pilot, widget):
-    """Return *widget* once it owns a hit area.
-
-    The drawer mounts before it lays out, and one pause covers the mount but
-    not the layout. Until a widget has a region, every point derived from it is
-    the origin, so the event lands on whatever occupies the top-left corner --
-    the drawer itself -- and the test asserts against the wrong widget. That is
-    the whole of this file's windows-runner failure history, so the wait lives
-    here once rather than inline at each hit-test.
-    """
-    await wait_until(pilot, lambda: bool(widget.region.size))
-    assert widget.region.size, "the widget was never laid out, so it has no hit area"
-    return widget
-
-
 async def _start_rename(pilot, drawer, title: str) -> Input:
     """Press ctrl+r once the drawer highlights a row, and return the filter box it took over.
 
@@ -106,7 +91,7 @@ async def _hittable_row(pilot, drawer):
     """Return the drawer's first session row once it owns a hit area."""
     rows = list(drawer.query(".session-row-meta").results())
     assert rows, "the drawer rendered no session rows"
-    return await _laid_out(pilot, rows[0])
+    return await laid_out(pilot, rows[0])
 
 
 # --- drawer ---------------------------------------------------------------
@@ -290,7 +275,7 @@ async def test_clicking_a_row_resumes_it(sessions, count):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         drawer = await _open_drawer(app, pilot)
-        row = await _laid_out(pilot, drawer.query(SessionRow)[0])
+        row = await laid_out(pilot, drawer.query(SessionRow)[0])
         clicked_id = row.meta.id
         landed = await pilot.click(row)
         await pilot.pause()
@@ -1036,7 +1021,7 @@ async def test_sessions_tab_click_resume_switches_to_chat(sessions):
         await await_chat(app, pilot)
         app.switch_view("Sessions")
         await pilot.pause()
-        row = await _laid_out(pilot, app.screen.query(SessionRow)[0])
+        row = await laid_out(pilot, app.screen.query(SessionRow)[0])
         assert await pilot.click(row), "the click never reached the session row"
         assert await wait_until(pilot, lambda: app.active_view == "Chat")
         assert app.chat_screen().session_id == session_id
