@@ -173,26 +173,30 @@ def test_run_main_wakes_for_a_signal_that_another_thread_took() -> None:
     not end for a signal that another thread took. The wakeup descriptor ends it.
     """
 
+    sent: list[float] = []
+    handled: list[float] = []
+
     def handler(signum: int, frame: object) -> None:
+        handled.append(time.monotonic())
         raise _Woken
 
-    def signal_from_a_thread() -> None:
+    def worker() -> None:
+        time.sleep(0.3)  # the loop is asleep in its select by now
+        sent.append(time.monotonic())
         # pthread_kill sends to this thread, as the kernel can for a process signal.
         signal.pthread_kill(threading.get_ident(), signal.SIGUSR1)
+        time.sleep(2)  # the worker outlives the signal, so nothing else wakes the loop
 
-    async def sleeps() -> None:
-        await asyncio.sleep(0.2)  # the loop is asleep in its select when the signal lands
-        threading.Thread(target=signal_from_a_thread).start()
-        await asyncio.sleep(20)
+    async def waits_for_the_worker() -> None:
+        await asyncio.to_thread(worker)
 
     previous = signal.signal(signal.SIGUSR1, handler)
-    started = time.monotonic()
     try:
         with pytest.raises(_Woken):
-            asyncio_loop.run_main(sleeps())
+            asyncio_loop.run_main(waits_for_the_worker())
     finally:
         signal.signal(signal.SIGUSR1, previous)
-    assert time.monotonic() - started < 10
+    assert handled[0] - sent[0] < 1.0
 
 
 def test_run_main_off_the_main_thread_holds_no_exit() -> None:
