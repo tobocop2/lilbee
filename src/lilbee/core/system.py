@@ -286,27 +286,27 @@ def _read_bytes_file(path: Path) -> int | None:
         return None
 
 
-def _tightest_memory_cgroup() -> tuple[int, Path, str] | None:
-    """The lowest memory cap on this process's cgroup path, with where it is kept.
+def _memory_levels() -> list[tuple[int, int]]:
+    """``(cap, usage)`` for each capped level on this process's cgroup path.
 
-    Returns ``(limit, directory, usage file name)``. The path is the process's own
-    cgroup (named in ``/proc/self/cgroup``) and each ancestor up to the mount, so
-    a ``MemoryMax=`` on a systemd unit or scope is seen, and a parent's lower cap
-    binds the process like its own.
+    The path is the process's own cgroup (named in ``/proc/self/cgroup``) and each
+    ancestor up to the mount, so a ``MemoryMax=`` on a systemd unit or scope is
+    seen, and a parent's cap binds the process like its own. A level whose usage
+    file is unreadable counts as empty, so its cap alone bounds the room.
     """
     paths = own_cgroup_paths(_PROC_CGROUP)
     for base, controller, limit_name, usage_name in (
         (_CGROUP_ROOT, "", "memory.max", "memory.current"),
         (_CGROUP_ROOT / "memory", "memory", "memory.limit_in_bytes", "memory.usage_in_bytes"),
     ):
-        found = [
-            (limit, directory, usage_name)
+        levels = [
+            (limit, _read_bytes_file(directory / usage_name) or 0)
             for directory in cgroup_chain(base, paths.get(controller))
             if (limit := _read_bytes_file(directory / limit_name)) is not None
         ]
-        if found:
-            return min(found, key=lambda entry: entry[0])
-    return None
+        if levels:
+            return levels
+    return []
 
 
 def cgroup_memory_limit() -> int | None:
@@ -323,17 +323,20 @@ def cgroup_memory_limit() -> int | None:
     full, so a 4 GiB container on a 512 GiB machine sizes itself for the machine
     and is killed by the OOM reaper on its first load.
     """
-    tightest = _tightest_memory_cgroup()
-    return None if tightest is None else tightest[0]
+    levels = _memory_levels()
+    return min(limit for limit, _ in levels) if levels else None
 
 
-def cgroup_memory_used() -> int | None:
-    """Bytes held by the cgroup that sets the memory cap, or ``None`` when unreadable."""
-    tightest = _tightest_memory_cgroup()
-    if tightest is None:
-        return None
-    _, directory, usage_name = tightest
-    return _read_bytes_file(directory / usage_name)
+def cgroup_memory_room() -> int | None:
+    """Bytes this process can still add before a cgroup refuses it, or ``None`` when uncapped.
+
+    The kernel refuses a charge at the first level whose usage reaches its own
+    cap, so the room is the least ``cap - usage`` over every capped level, not the
+    lowest cap less the usage of that level: a parent at 10 GiB with 9 GiB used
+    stops a process whose own cap of 3 GiB has 2 GiB left.
+    """
+    levels = _memory_levels()
+    return min(max(0, limit - used) for limit, used in levels) if levels else None
 
 
 def capped_total_memory() -> int:

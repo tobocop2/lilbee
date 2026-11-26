@@ -147,19 +147,16 @@ def free_system_memory() -> int:
     The load-time counterpart to :func:`get_available_memory`, which scales total
     capacity for sizing rather than reporting what is free this instant.
 
-    Bounded by what this process's cgroup still has, for the reason in
-    :func:`lilbee.core.system.cgroup_memory_limit`.
+    Bounded by the room the cgroups on this process's path still have, for the
+    reason in :func:`lilbee.core.system.cgroup_memory_limit`.
     """
     import psutil
 
-    from lilbee.core.system import cgroup_memory_limit, cgroup_memory_used
+    from lilbee.core.system import cgroup_memory_room
 
     host_free = int(psutil.virtual_memory().available)
-    limit = cgroup_memory_limit()
-    if limit is None:
-        return host_free
-    used = cgroup_memory_used()
-    return min(host_free, limit if used is None else max(0, limit - used))
+    room = cgroup_memory_room()
+    return host_free if room is None else min(host_free, room)
 
 
 def total_system_memory() -> int:
