@@ -1,16 +1,67 @@
 name: CI
 
-# Probe branch only: one Windows job that runs the Ctrl+C wakeup probe and the failing test.
+# Probe branch only: the Windows unit suite on Python 3.12 and 3.13, at the
+# fix/winctrlc head, with the Windows coverage config and its 100% gate; and the
+# Windows integration crawl files on Python 3.12, as the full-crawl cell runs them.
 on:
+  push:
+    branches: [probe/e774p]
   pull_request:
   workflow_dispatch:
 
+env:
+  PROBE_REF: 8f4cbf7d087d9820ec07c30da3e8a0706a6e242b
+
 jobs:
-  probe-winctrlc:
-    timeout-minutes: 40
+  probe-e774p-suite:
+    timeout-minutes: 120
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.PROBE_REF }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
+
+      - uses: ./.github/actions/checkout-engine-packs
+
+      - name: Install make
+        shell: bash
+        run: bash scripts/ci_retry.sh 3 choco install make -y
+
+      - name: Install dependencies
+        run: uv sync --locked --python ${{ matrix.python }}
+
+      - name: Run unit tests
+        shell: bash
+        run: |
+          echo "SUITE-HEAD $(git rev-parse HEAD)"
+          make test-ci COV_FLAGS="--cov-config=.coveragerc-windows" BRANCH_CHECK=true
+        env:
+          LILBEE_DATA: ${{ runner.temp }}/lilbee
+          LILBEE_TEST_HANG_DUMP_DIR: ${{ runner.temp }}/hang-dumps
+          UV_PYTHON: ${{ matrix.python }}
+
+  probe-crawl:
+    timeout-minutes: 120
+    runs-on: windows-latest
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.PROBE_REF }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -21,21 +72,95 @@ jobs:
       - name: Set up Python 3.12
         run: uv python install 3.12
 
-      - uses: ./.github/actions/checkout-engine-packs
+      - name: Install make (Windows)
+        shell: bash
+        run: bash scripts/ci_retry.sh 3 choco install make -y
+
+      - name: Read the pinned Go toolchain
+        shell: bash
+        run: |
+          source engine-versions.env
+          echo "ENGINE_GO_VERSION=${ENGINE_GO_VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Set up Go (engine helpers)
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.ENGINE_GO_VERSION }}
+          cache-dependency-path: engine-versions.env
+
+      - name: Install llama-swap + gguf-parser (engine helpers)
+        shell: bash
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          set -euxo pipefail
+          source engine-versions.env
+          helperdir="${HOME}/engine-helpers"
+          mkdir -p "${helperdir}"
+          work="$(mktemp -d)"
+          git clone -q --depth 1 --branch "${ENGINE_LLAMA_SWAP_VERSION}" \
+            https://github.com/mostlygeek/llama-swap.git "${work}/llama-swap"
+          ( cd "${work}/llama-swap" && go build -trimpath -o "${helperdir}/llama-swap.exe" . )
+          git clone -q --depth 1 --branch "${ENGINE_GGUF_PARSER_REF}" \
+            "${ENGINE_GGUF_PARSER_REPO}" "${work}/gguf-parser-go"
+          ( cd "${work}/gguf-parser-go/cmd/gguf-parser" && go build -trimpath -o "${helperdir}/gguf-parser.exe" . )
+          cygpath -w "${helperdir}" >> "${GITHUB_PATH}"
 
       - name: Install dependencies
-        run: uv sync --locked
+        run: uv sync --locked --all-extras --python 3.12
 
-      - name: Probe
+      - name: Install the llama.cpp fork engine
+        timeout-minutes: 75
+        uses: ./.github/actions/bundle-llama-server
+        with:
+          backend: cpu
+          cache-env: windows-latest
+
+      - name: Install spacy model
         shell: bash
-        continue-on-error: true
+        env:
+          SPACY_MODEL_URL: https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+        run: bash scripts/ci_retry.sh 5 uv pip install "${SPACY_MODEL_URL}"
+
+      - name: Install the headless Chromium for browser-mode crawls
+        run: uv run lilbee setup crawler
+        env:
+          PYTHONIOENCODING: utf-8
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+
+      - name: Restore GGUF models from release mirror
+        id: ci-models
+        uses: ./.github/actions/restore-ci-models
+
+      - name: Pre-download GGUF models from HuggingFace (fallback)
+        if: steps.ci-models.outputs.restored != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci_retry.sh 3 uv run lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF
+          bash scripts/ci_retry.sh 3 uv run lilbee model pull Qwen/Qwen3-0.6B-GGUF
+
+      - name: Map the crawl fixture hostnames to loopback
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '\r\n%s\r\n' "127.0.0.1 site.test docs.site.test" >> /c/Windows/System32/drivers/etc/hosts
+
+      - name: Make the pytest temp root
+        shell: bash
+        run: mkdir -p "${RUNNER_TEMP}/pytest-tmp"
+
+      - name: Run the integration crawl files
+        shell: bash
+        run: |
+          echo "SUITE-HEAD $(git rev-parse HEAD)"
+          uv run pytest tests/integration/test_crawl_cli_e2e.py tests/integration/test_crawl_integration.py tests/integration/test_crawl_login.py tests/integration/test_crawl_loop_policy.py tests/integration/test_crawl_settings_e2e.py tests/integration/test_crawl_tui_e2e.py tests/integration/test_crawlberg_fetcher.py -v
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
-        run: uv run pytest -s -v -p no:xdist tests/test_probe_winctrlc.py
-
-      - name: The failing test
-        shell: bash
-        continue-on-error: true
-        env:
-          LILBEE_DATA: ${{ runner.temp }}/lilbee
-        run: uv run pytest -s -v -p no:xdist "tests/test_cli.py::TestSyncCancelledExit::test_ctrl_c_at_any_stage_of_an_add_follows_one_rule[planning]"
+          LILBEE_ENGINE_DIR: ${{ runner.temp }}/lilbee-engine
+          LILBEE_LLM_PROVIDER: auto
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+          LILBEE_TEST_FULL_CRAWL: "1"
+          PYTEST_DEBUG_TEMPROOT: ${{ runner.temp }}/pytest-tmp
+          PYTHONIOENCODING: utf-8
+          UV_PYTHON: "3.12"
