@@ -1,7 +1,7 @@
 name: CI
 
 # Probe branch only: the Windows unit suite, as CI runs it on Python 3.12, at the head of
-# fix/fix-e774p, with the Windows coverage config and its 100% gate.
+# fix/fix-e774p-c, with the Windows coverage config and its 100% gate.
 on:
   push:
     branches: [probe/e774p]
@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 047432ffebfb6d94adcbf59cfff0b499c0880cd0
+          ref: 14878eb91c17c7d9770ca2dd15ff1b3feb786274
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
