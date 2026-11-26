@@ -9569,6 +9569,54 @@ class TestReportsReadAfterTheLoad:
         p.chat(list(_HELLO_TURN))
         assert prov_mod._answered_replicas.get() is None
 
+    def test_the_answered_list_does_not_reach_another_thread(self) -> None:
+        seen: list[object] = []
+        token = prov_mod._answered_replicas.set([])
+        try:
+            thread = threading.Thread(target=lambda: seen.append(prov_mod._answered_replicas.get()))
+            thread.start()
+            thread.join()
+        finally:
+            prov_mod._answered_replicas.reset(token)
+        assert seen == [None]
+
+    def test_the_load_is_claimed_before_the_read_thread_starts(self, monkeypatch) -> None:
+        """A downshift that an OOM records after the load, before the read runs, stays."""
+        monkeypatch.setattr(cfg, "num_ctx", None, raising=False)
+        p, swap = self._cold(self._replica("chat-0"))
+
+        def claim(ids: list[str]) -> Callable[[], None]:
+            planning_mod.clear_ctx_downshift(WorkerRole.CHAT)  # what the real claim does
+            return lambda: None
+
+        swap.claim_loaded = claim  # type: ignore[method-assign]
+        held: list[tuple[Callable[..., None], tuple[object, ...]]] = []
+        real_thread = threading.Thread
+
+        class _HeldThread:
+            def __init__(self, *, target, args, name, daemon) -> None:
+                self._run = (target, args)
+
+            def start(self) -> None:
+                held.append(self._run)
+
+        def thread(*args, **kwargs) -> object:
+            if str(kwargs.get("name", "")).startswith("fleet-report-"):
+                return _HeldThread(**kwargs)
+            return real_thread(*args, **kwargs)
+
+        monkeypatch.setattr(threading, "Thread", thread)
+        planning_mod.clear_ctx_downshift()
+        try:
+            planning_mod.record_ctx_downshift(WorkerRole.CHAT)  # the step taken to load
+            p.chat(list(_HELLO_TURN))
+            planning_mod.record_ctx_downshift(WorkerRole.CHAT)  # an OOM after the load
+            [(target, args)] = held
+            target(*args)
+            assert planning_mod._ctx_downshift_store.steps(WorkerRole.CHAT) == 1
+        finally:
+            planning_mod.clear_ctx_downshift()
+
     def test_a_read_that_raises_is_logged_not_left_to_the_thread_hook(
         self, monkeypatch, caplog
     ) -> None:
