@@ -1,5 +1,6 @@
 """Shared test helpers."""
 
+import gc
 import importlib.util
 import io
 import os
@@ -159,6 +160,15 @@ def pytest_configure(config: pytest.Config) -> None:
         "filterwarnings",
         "ignore::pytest.PytestUnraisableExceptionWarning",
     )
+
+
+def pytest_collection_finish() -> None:
+    """Freeze the objects of import and collection, so full collections skip them.
+
+    They live until the session ends, and a worker holds about two million of them.
+    """
+    gc.collect()
+    gc.freeze()
 
 
 @pytest.fixture
