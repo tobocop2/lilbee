@@ -646,22 +646,27 @@ def test_the_prompt_takes_the_kept_text_once():
 
 
 @pytest.mark.parametrize(
-    ("key", "character", "forwarded"),
-    [("a", "a", False), ("enter", None, False), ("a", "a", True)],
+    ("key", "character", "forwarded", "gate_up"),
+    [("a", "a", False, False), ("enter", None, False, True), ("a", "a", True, True)],
     ids=["no-screen-yet", "not-printable", "already-routed"],
 )
-def test_the_app_keeps_no_text_it_should_route(key, character, forwarded):
+def test_the_app_keeps_no_text_it_should_route(key, character, forwarded, gate_up):
     """With no screen up, a key that types nothing, or a key already routed, nothing is kept."""
     from textual import events
 
     from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
 
     app = LilbeeApp()
     app._type_ahead = []
     event = events.Key(key, character)
     if forwarded:
         event._set_forwarded()
-    assert app._keep_for_the_prompt(event) is False
+    stack = [StartupGate()] if gate_up else []
+    with mock.patch.object(
+        LilbeeApp, "screen_stack", new_callable=mock.PropertyMock, return_value=stack
+    ):
+        assert app._keep_for_the_prompt(event) is False
     assert app._type_ahead == []
 
 
