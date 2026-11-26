@@ -7949,9 +7949,11 @@ def test_binding_logs_the_engine_and_the_pid_that_owns_it(
 
     assert len(swap.binds) == 1  # rode the running engine rather than starting one
     adopted = [r.message for r in caplog.records if r.message.startswith("Adopted")]
+    # The build names the binary as a path of this platform; the launch keeps its argv text.
+    built_from = Path("/bin/llama-server")
     assert adopted == [
         "Adopted chat-0 serving m-chat from engine pid 999998 on "
-        "/bin/llama-server (engine llama.cpp, build wheel:0.6.91 /bin/llama-server@digest, "
+        f"/bin/llama-server (engine llama.cpp, build wheel:0.6.91 {built_from}@digest, "
         "backend unknown, devices: none)"
     ]
 

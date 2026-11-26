@@ -5435,13 +5435,15 @@ class TestLogEngineLaunch:
         )
 
     _DEVICES = "backend vulkan, devices: Vulkan0: NVIDIA GeForce RTX 3090)"
+    # The build names the binary as a path of this platform; the launch keeps its argv text.
+    _BUILT_FROM = Path("/opt/lilbee/llama-server")
 
     def test_a_fresh_launch_names_the_engine_it_started(self, caplog) -> None:
         with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
             planning_mod.log_engine_launch(self._launch(), engine=LLAMA)
         assert caplog.records[0].message == (
             "Launched embed-0 serving org/repo/embed.gguf on /opt/lilbee/llama-server "
-            "(engine llama.cpp, build wheel:0.6.91 /opt/lilbee/llama-server@sha256-of-bytes, "
+            f"(engine llama.cpp, build wheel:0.6.91 {self._BUILT_FROM}@sha256-of-bytes, "
             f"{self._DEVICES}"
         )
 
@@ -5453,7 +5455,7 @@ class TestLogEngineLaunch:
             planning_mod.log_engine_launch(self._launch(), engine=OpenvinoAdapter())
         assert caplog.records[0].message == (
             "Launched embed-0 serving org/repo/embed.gguf on /opt/lilbee/llama-server "
-            f"(engine openvino, build openvino {openvino_mod._VERSION} /opt/lilbee/llama-server, "
+            f"(engine openvino, build openvino {openvino_mod._VERSION} {self._BUILT_FROM}, "
             f"{self._DEVICES}"
         )
 
@@ -5465,7 +5467,7 @@ class TestLogEngineLaunch:
         assert caplog.records[0].message == (
             "Launched embed-0 serving org/repo/embed.gguf on /opt/lilbee/llama-server "
             f"(engine ik_llama.cpp, build {VERSION} "
-            "/opt/lilbee/llama-server@sha256-of-bytes, "
+            f"{self._BUILT_FROM}@sha256-of-bytes, "
             f"{self._DEVICES}"
         )
 
@@ -5475,7 +5477,7 @@ class TestLogEngineLaunch:
         assert caplog.records[0].message == (
             "Adopted embed-0 serving org/repo/embed.gguf from engine pid 4242 on "
             "/opt/lilbee/llama-server "
-            "(engine llama.cpp, build wheel:0.6.91 /opt/lilbee/llama-server@sha256-of-bytes, "
+            f"(engine llama.cpp, build wheel:0.6.91 {self._BUILT_FROM}@sha256-of-bytes, "
             f"{self._DEVICES}"
         )
 
