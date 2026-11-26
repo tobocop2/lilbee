@@ -8,8 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lilbee.catalog.download import RemoteFile, _cached_shard, cached_file_path
-from lilbee.catalog.query import build_adhoc_entry
+from lilbee.catalog.download import _held_shard, cached_file_path
 from lilbee.modelhub.registry import ModelRegistry
 
 _WEIGHTS_SIZE = len(b"weights")
@@ -89,10 +88,7 @@ class TestCachedShard:
 
     @staticmethod
     def _shard(cache: Path, name: str, size: int) -> Path | None:
-        entry = build_adhoc_entry(_REPO)
-        remote = RemoteFile(size, None)
-        with patch("lilbee.catalog.download.fetch_remote_file", return_value=remote):
-            return _cached_shard(entry, cache, name, None)
+        return _held_shard(_REPO, cache, name, size)
 
     def test_cache_hit_of_the_reported_size(self, cache: Path) -> None:
         assert self._shard(cache, _ROOT_FILE, _WEIGHTS_SIZE) == _snapshot(cache) / _ROOT_FILE

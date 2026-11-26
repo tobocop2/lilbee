@@ -45,7 +45,7 @@ async def test_cancelling_a_pull_during_the_projector_backoff_ends_it_before_the
     monkeypatch.setattr(dl, "_models_dir", lambda: tmp_path)
     monkeypatch.setattr(dl, "_resolve_mmproj_filename", lambda *a: "mmproj.gguf")
     monkeypatch.setattr(dl, "fetch_remote_file", lambda *a: dl.RemoteFile(size=1, blob="b"))
-    monkeypatch.setattr(dl, "_require_disk_space", lambda *a: None)
+    monkeypatch.setattr(dl, "preflight", lambda *a: None)
     monkeypatch.setattr(dl, "_hf_download_or_translate", failing_transfer)
     monkeypatch.setattr(dl, "_RETRY_BACKOFF_SECONDS", 60)
     monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda ref, **_: model)

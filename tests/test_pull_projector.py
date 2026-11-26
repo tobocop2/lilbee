@@ -54,14 +54,9 @@ class _Hub:
         self.fail_transfer: Exception | None = None
         monkeypatch.setattr(dl, "_repo_sibling_files", self._list)
         monkeypatch.setattr(dl, "resolve_filename", lambda entry, engine: _MODEL)
-        monkeypatch.setattr(
-            dl,
-            "_cached_shard",
-            lambda entry, d, shard, probe: d / shard if (d / shard).exists() else None,
-        )
-        monkeypatch.setattr(dl, "_fetch_files", self._fetch_model)
-        monkeypatch.setattr(dl, "fetch_remote_file", lambda *a: dl.RemoteFile(size=1, blob="b"))
-        monkeypatch.setattr(dl, "_require_disk_space", lambda *a: None)
+        # Files land flat, where the held test of an older install looks.
+        monkeypatch.setattr(dl, "cached_file_path", lambda *a: None)
+        monkeypatch.setattr(dl, "fetch_remote_file", lambda *a: dl.RemoteFile(size=0, blob="b"))
         monkeypatch.setattr(dl, "_download_with_retry", self._transfer)
 
     def _list(self, hf_repo: str, *, timeout: float = 0.0) -> list[str]:
@@ -69,13 +64,6 @@ class _Hub:
         if self.listing is None:
             raise RuntimeError(f"Cannot query files for {hf_repo}: 503")
         return self.listing
-
-    def _fetch_model(self, entry, models_dir, token, shards, on_progress, on_probe, *, on_retry):
-        self.model_fetches += 1
-        paths = [models_dir / shard for shard in shards]
-        for path in paths:
-            path.write_bytes(b"model")
-        return paths
 
     def _transfer(
         self,
@@ -85,10 +73,14 @@ class _Hub:
         *,
         on_retry: object = None,
     ) -> Path:
+        path = Path(config.cache_dir) / config.filename
+        if config.filename == _MODEL:
+            self.model_fetches += 1
+            path.write_bytes(b"model")
+            return path
         if self.fail_transfer is not None:
             raise self.fail_transfer
         self.fetched.append(config.filename)
-        path = Path(config.cache_dir) / config.filename
         path.write_bytes(b"projector")
         return path
 
