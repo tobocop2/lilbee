@@ -168,12 +168,9 @@ def discard_partial_blobs(models_dir: Path, hf_repo: str, blobs: Iterable[str]) 
     """
     from huggingface_hub.file_download import repo_folder_name
 
-    wanted = list(blobs)
-    if not wanted:
-        return  # no blob to scope to, e.g. a format that downloads without the hub cache
     repo_folder = repo_folder_name(repo_id=hf_repo, repo_type="model")
     repo_dir = models_dir / repo_folder
-    for blob in wanted:
+    for blob in blobs:
         lock_path = models_dir / ".locks" / repo_folder / f"{blob}.lock"
         try:
             lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -739,6 +736,18 @@ def fetch_format_files(
         total_size = sum(path.stat().st_size for path in paths)
         on_progress(total_size, total_size)
     return paths[0]
+
+
+def remote_format_files(entry: CatalogModel, models_dir: Path) -> list[RemoteFile]:
+    """The Hub's answer about each file a pull of a non-GGUF *entry* still has to fetch.
+
+    The same selection the format fetch makes, minus the files the cache already holds.
+    """
+    selected = select_files(entry.format, _repo_sibling_files(entry.hf_repo))
+    missing = [
+        name for name in selected if cached_file_path(entry.hf_repo, name, models_dir) is None
+    ]
+    return [fetch_remote_file(entry.hf_repo, name) for name in missing]
 
 
 def cache_blobs(files: Iterable[RemoteFile]) -> list[str]:

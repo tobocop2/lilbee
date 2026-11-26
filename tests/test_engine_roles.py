@@ -777,10 +777,11 @@ async def test_the_catalog_install_of_a_format_nothing_loads_enqueues_it(
         notices: list[str] = []
         monkeypatch.setattr(screen, "_enqueue_download", lambda m: enqueued.append(m.hf_repo))
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(str(message)))
-        screen._install_model(
-            dataclasses.replace(_model(), hf_repo=MLX_REF, format=ModelFormat.MLX)
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.catalog.remote_format_files", lambda _m, _dir: []
         )
-    assert enqueued == [MLX_REF]
+        screen._install_model(dataclasses.replace(_model(), format=ModelFormat.MLX))
+    assert enqueued == [_model().hf_repo]
     assert notices == []
 
 

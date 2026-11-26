@@ -318,13 +318,6 @@ def test_a_cache_plain_error_falls_back_to_the_error_text_without_a_reason(
         dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
 
 
-def test_reclaiming_no_blobs_touches_nothing_and_accepts_any_ref(tmp_path: Path) -> None:
-    """A ref that is no hub repo id, such as an MLX format ref, has no blob to scope to."""
-    dl.discard_partial_blobs(tmp_path, "org/repo#mlx", [])
-
-    assert list(tmp_path.iterdir()) == []
-
-
 class _Stop(Exception):
     """Ends a fetch at the disk check, before any transfer."""
 
@@ -362,3 +355,41 @@ def test_a_projector_fetch_hands_its_blob_to_the_disk_check(
         dl._fetch_mmproj(_entry(), tmp_path, None)
 
     assert seen == [["b1"]]
+
+
+def test_a_format_pull_asks_only_about_the_files_the_cache_lacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cached file costs no space, so its blob is neither probed nor charged."""
+    from lilbee.catalog.types import ModelFormat
+
+    entry = CatalogModel(
+        hf_repo="acme/big-GGUF",
+        gguf_filename="",
+        size_gb=1.0,
+        min_ram_gb=2.0,
+        description="",
+        featured=False,
+        downloads=0,
+        task=ModelTask.CHAT,
+        format=ModelFormat.SAFETENSORS,
+    )
+    monkeypatch.setattr(dl, "_repo_sibling_files", lambda _repo, **_kw: [])
+    monkeypatch.setattr(dl, "select_files", lambda _fmt, _names: ["a.safetensors", "config.json"])
+
+    def _cached(_repo: str, name: str, _dir: Path) -> Path | None:
+        return tmp_path / name if name == "config.json" else None
+
+    monkeypatch.setattr(dl, "cached_file_path", _cached)
+    probed: list[str] = []
+
+    def _probe(_repo: str, name: str) -> dl.RemoteFile:
+        probed.append(name)
+        return dl.RemoteFile(size=7, blob=f"blob-{name}")
+
+    monkeypatch.setattr(dl, "fetch_remote_file", _probe)
+
+    files = dl.remote_format_files(entry, tmp_path)
+
+    assert probed == ["a.safetensors"]
+    assert files == [dl.RemoteFile(size=7, blob="blob-a.safetensors")]
