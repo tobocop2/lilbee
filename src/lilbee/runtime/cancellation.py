@@ -39,6 +39,7 @@ class SignalFlag:
         self._is_set = False
         self._stop_run: Callable[[], object] | None = None
         self._run_ended = False
+        self._interrupted = False
 
     def set(self) -> None:
         self._is_set = True
@@ -56,6 +57,27 @@ class SignalFlag:
         """Note that a run started; *stop* asks it to stop and takes no lock."""
         self._stop_run = stop
         self._run_ended = False
+        self._interrupted = False
+
+    def interrupt(self) -> None:
+        """Interrupt the command: raise KeyboardInterrupt here, or in the wait of the bound run.
+
+        While a run is bound, the main thread can be inside a lock wait of the threading
+        module, such as the start of the run's thread. A raise there leaves that lock
+        released, so the run's wait raises the interrupt instead. In the wind-down,
+        nothing is raised.
+        """
+        if self.winding_down:
+            return
+        if self._stop_run is not None:
+            self._interrupted = True
+            return
+        raise KeyboardInterrupt
+
+    @property
+    def interrupted(self) -> bool:
+        """True once a Ctrl-C interrupted the bound run; the run's wait then raises."""
+        return self._interrupted
 
     def unbind_run(self) -> None:
         """Note that the run ended: what follows is the wind-down of the command."""
@@ -77,10 +99,10 @@ def sigint_cancel() -> Iterator[SignalFlag]:
     Setting a token instead lets it stop at a boundary with what it wrote intact.
     The handler stays installed until the scope exits, where the previous handler
     returns on the main thread. A run bound to the token takes a cancel of its task
-    on the first Ctrl-C. A second Ctrl-C before or during a run raises
-    KeyboardInterrupt, so the command unwinds and its rollback and its message run on
-    the main thread. After a run, in the wind-down, it raises nothing, so the
-    rollback finishes. Either way the scope's exit then ends the process, because a
+    on the first Ctrl-C. A second Ctrl-C before a run raises KeyboardInterrupt, and
+    during a run the run's wait raises it, so the command unwinds and its rollback and
+    its message run on the main thread. After a run, in the wind-down, it raises
+    nothing, so the rollback finishes. Either way the scope's exit then ends the process, because a
     normal exit joins every worker thread, also a stuck one. A further Ctrl-C ends
     the process from the handler.
 
@@ -113,8 +135,7 @@ def sigint_cancel() -> Iterator[SignalFlag]:
             token.stop_run()
         else:
             unwinding = True
-            if not token.winding_down:
-                raise KeyboardInterrupt
+            token.interrupt()
 
     def _on_sigint_after(signum: int, _frame: object) -> None:
         if any(thread.is_alive() for thread in left_behind):

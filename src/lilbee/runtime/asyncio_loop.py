@@ -145,13 +145,14 @@ def _send_wakeup(writer: socket.socket) -> None:
         writer.send(b"\0")
 
 
-def _wait_for(done: concurrent.futures.Future[Any]) -> None:
+def _wait_for(done: concurrent.futures.Future[Any], cancel: SignalFlag) -> None:
     """Wait on this thread until *done* ends, while its signal handlers run at once.
 
     The wait sleeps on a socket that both the end of *done* and Python's signal
     wakeup write to. A lock wait does not wake for a signal that another thread
     took, and macOS can give a process signal to any thread. A handler that raises
-    ends the wait with its exception.
+    ends the wait with its exception. An interrupt of *cancel* ends it with
+    KeyboardInterrupt, also one that came before the wait began.
     """
     reader, writer = socket.socketpair()
     with reader, writer:
@@ -160,9 +161,12 @@ def _wait_for(done: concurrent.futures.Future[Any]) -> None:
         done.add_done_callback(lambda _done: _send_wakeup(writer))
         previous = signal.set_wakeup_fd(writer.fileno())
         try:
-            while not done.done():
+            while not cancel.interrupted:
+                if done.done():
+                    return
                 select.select([reader], [], [])
                 _read_wakeups(reader)
+            raise KeyboardInterrupt
         finally:
             signal.set_wakeup_fd(previous)
 
@@ -215,8 +219,10 @@ def run_interruptible(coro: Awaitable[T], cancel: SignalFlag) -> T:
 
     Python runs a signal handler only on the main thread, so a Ctrl-C never lands
     in the loop's code: a raise there could drop a task's wakeup. A stop of the run
-    through *cancel* hands the cancel of the run's task to the loop. A handler that raises during
-    the run ends only the wait. The run's tasks then get a cancel, and the run is
+    through *cancel* hands the cancel of the run's task to the loop. An interrupt of
+    *cancel* during the run raises in the wait, never in the start of the run's thread,
+    where a raise leaves a lock of the threading module released. A handler that raises
+    during the run ends only the wait. The run's tasks then get a cancel, and the run is
     left to the process exit, so a run stuck in a sync step or a native call does
     not keep the command. Windows takes the same path, and the wait's wakeup socket
     wakes for a Ctrl-C there too. Off the main thread, *coro* runs on this thread as
@@ -237,7 +243,7 @@ def run_interruptible(coro: Awaitable[T], cancel: SignalFlag) -> T:
     )
     try:
         runner.start()
-        _wait_for(done)
+        _wait_for(done, cancel)
         # The run has ended, so the thread only returns: the scope sees no thread of it.
         runner.join()
     except BaseException:
