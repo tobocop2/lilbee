@@ -1,7 +1,7 @@
 name: CI
 
-# Probe branch only: one Windows job that runs the Ctrl-C tests of the run path at the fix
-# head (they must pass) and against the base product code (the new ones must fail).
+# Probe branch only: the Windows unit suite, as CI runs it on Python 3.12, at the head of
+# fix/fix-e774p, with the Windows coverage config and its 100% gate.
 on:
   push:
     branches: [probe/e774p]
@@ -9,20 +9,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  probe-e774p:
-    timeout-minutes: 60
+  probe-e774p-suite:
+    timeout-minutes: 120
     runs-on: windows-latest
-    env:
-      BASE: 16792cec4829d4d430a162719de5bc82768f11fa
     steps:
-      # The runner context is not there at the job level, so the data folder is set here.
-      - name: Set the data folder
-        shell: bash
-        run: echo "LILBEE_DATA=$RUNNER_TEMP/lilbee" >> "$GITHUB_ENV"
-
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          ref: 047432ffebfb6d94adcbf59cfff0b499c0880cd0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -35,39 +28,18 @@ jobs:
 
       - uses: ./.github/actions/checkout-engine-packs
 
+      - name: Install make
+        shell: bash
+        run: bash scripts/ci_retry.sh 3 choco install make -y
+
       - name: Install dependencies
         run: uv sync --locked
 
-      - name: The new tests at the head
+      - name: Run unit tests
         shell: bash
-        run: >-
-          uv run pytest -v -rA -p no:xdist --no-cov --timeout 120
-          tests/test_asyncio_loop.py::test_a_ctrl_c_in_a_catch_all_step_stops_the_run_at_its_next_await
-          tests/test_asyncio_loop.py::test_a_second_ctrl_c_ends_a_run_stuck_in_a_catch_all_step
-          tests/test_services_lifecycle.py::test_a_terminate_inside_a_catch_all_step_of_run_main_still_ends_it
-
-      - name: The touched test files and the Ctrl-C command tests at the head
-        shell: bash
-        if: always()
-        run: >-
-          uv run pytest -q -rf -p no:xdist --no-cov --timeout 120
-          tests/test_asyncio_loop.py tests/test_services_lifecycle.py tests/test_mcp.py
-          tests/test_cli_analyze.py "tests/test_cli.py::TestSyncCancelledExit"
-          "tests/test_cli.py::TestSigintCancel"
-
-      - name: The new tests against the base product code (must fail)
-        shell: bash
-        if: always()
         run: |
-          git checkout "$BASE" -- src/lilbee/runtime/asyncio_loop.py src/lilbee/mcp_server.py
-          git diff --stat HEAD
-          set +e
-          uv run pytest -v -rA -p no:xdist --no-cov --timeout 120 \
-            tests/test_asyncio_loop.py::test_a_ctrl_c_in_a_catch_all_step_stops_the_run_at_its_next_await \
-            tests/test_asyncio_loop.py::test_a_second_ctrl_c_ends_a_run_stuck_in_a_catch_all_step \
-            tests/test_services_lifecycle.py::test_a_terminate_inside_a_catch_all_step_of_run_main_still_ends_it
-          rc=$?
-          git checkout HEAD -- src/lilbee/runtime/asyncio_loop.py src/lilbee/mcp_server.py
-          git diff --quiet HEAD || { echo "ARM-NOT-RESTORED"; exit 9; }
-          echo "ARM-BASE rc=$rc"
-          [ "$rc" != 0 ]
+          echo "SUITE-HEAD $(git rev-parse HEAD)"
+          make test-ci COV_FLAGS="--cov-config=.coveragerc-windows" BRANCH_CHECK=true
+        env:
+          LILBEE_DATA: ${{ runner.temp }}/lilbee
+          LILBEE_TEST_HANG_DUMP_DIR: ${{ runner.temp }}/hang-dumps
