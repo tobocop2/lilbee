@@ -1677,11 +1677,13 @@ def test_a_signal_on_another_thread_ends_an_idle_loop_with_its_status(monkeypatc
         install_engine_lifecycle_hooks()
         stop_on_interrupt()
         interrupt_handler = signal.getsignal(signal.SIGINT)
+        started = time.monotonic()
         with (
             pytest.raises(SystemExit) as raised,
             asyncio.Runner(loop_factory=loop_factory) as runner,
         ):
             runner.run(idle())
+        waited = time.monotonic() - started
         _join_teardown()
         after = signal.getsignal(signal.SIGINT)
     finally:
@@ -1690,6 +1692,7 @@ def test_a_signal_on_another_thread_ends_an_idle_loop_with_its_status(monkeypatc
 
     assert raised.value.code == 128 + signal.SIGINT
     assert loop_signals == [signal.SIGINT]
+    assert waited < 10  # the signal woke the idle loop; it did not sleep out the 30 s
     assert after == interrupt_handler
     provider.shutdown.assert_called_once()
 
