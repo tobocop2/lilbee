@@ -482,9 +482,12 @@ def test_a_ctrl_c_that_stops_the_run_cancels_its_task() -> None:
     assert flag.winding_down
 
 
-@posix_only
 def test_a_raising_handler_ends_the_wait_for_a_run_stuck_in_a_sync_step() -> None:
-    """The main thread never waits on the stuck loop; the run's tasks get the cancel."""
+    """The main thread never waits on the stuck loop; the run's tasks get the cancel.
+
+    The loop stays in the sync step until the main thread has queued the cancel, and
+    the task then waits on a sleep, so the cancel always finds it pending.
+    """
     release = threading.Event()
     cancelled = threading.Event()
     loops: list[asyncio.AbstractEventLoop] = []
@@ -494,7 +497,7 @@ def test_a_raising_handler_ends_the_wait_for_a_run_stuck_in_a_sync_step() -> Non
 
     async def stuck() -> None:
         loops.append(asyncio.get_running_loop())
-        os.kill(os.getpid(), signal.SIGINT)
+        press_ctrl_c_in_a_run()
         release.wait()
         try:
             await asyncio.sleep(30)
