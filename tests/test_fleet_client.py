@@ -4878,7 +4878,7 @@ _CHAT_CALLS = {
 }
 
 
-def _body_sent_by(engine, call: str, seed: int = ChosenSeed(42)) -> dict:
+def _body_sent_by(engine, call: str, seed: int = ChosenSeed(42), **extra) -> dict:
     """The chat body that *call* sends to *engine*'s server for an internal call's options."""
     bodies: list[dict] = []
 
@@ -4898,9 +4898,26 @@ def _body_sent_by(engine, call: str, seed: int = ChosenSeed(42)) -> dict:
         profile=engine.request_profile(WorkerRole.CHAT),
     )
     client._needs_alternation = False
-    options = chat_options_to_kwargs(aux_options(64, seed=seed, cache_prompt=False))
+    options = chat_options_to_kwargs(aux_options(64, seed=seed, cache_prompt=False, **extra))
     _CHAT_CALLS[call](client, options)
     return bodies[-1]
+
+
+@pytest.mark.parametrize("call", list(_CHAT_CALLS))
+def test_the_mlx_server_gets_the_repeat_penalty_under_its_own_name(call) -> None:
+    """mlx-lm reads ``repetition_penalty`` and ignores ``repeat_penalty``."""
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    body = _body_sent_by(MLX, call, repeat_penalty=1.3)
+    assert body["repetition_penalty"] == 1.3
+    assert "repeat_penalty" not in body
+
+
+@pytest.mark.parametrize("call", list(_CHAT_CALLS))
+def test_a_llama_engine_keeps_the_repeat_penalty_name(call) -> None:
+    body = _body_sent_by(LLAMA, call, repeat_penalty=1.3)
+    assert body["repeat_penalty"] == 1.3
+    assert "repetition_penalty" not in body
 
 
 @pytest.mark.parametrize("engine", [MISTRAL, TEI], ids=["mistral.rs", "tei"])
