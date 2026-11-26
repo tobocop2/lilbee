@@ -124,7 +124,8 @@ def test_embedded_ui_notices(windows_newlines: Callable[[], Any], tmp_path: Path
     tool = _load("embedded_ui_notices")
     bundle = tmp_path / "bundle.js"
     page = "/**\n * @license React\n * Licensed under the MIT License\n */\n"
-    bundle.write_text(page, encoding="utf-8")
+    # The tool copies the bundle's bytes; a text write would give the input "\r\n" on Windows.
+    bundle.write_bytes(page.encode("utf-8"))
     output = tmp_path / "NOTICE-UI"
     with windows_newlines():
         tool.main(["embedded_ui_notices", str(bundle), str(output)])

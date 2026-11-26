@@ -365,7 +365,8 @@ class TestInstall:
         monkeypatch.setattr(Path, "unlink", refuse)
         with pytest.raises(PermissionError) as raised:
             router_install.delete_tree(link)
-        assert str(link) in str(raised.value)
+        # The text of the error quotes the path, which doubles each backslash on Windows.
+        assert raised.value.filename == str(link)
         assert (target / "keep.txt").exists()
 
     def test_a_folder_that_goes_after_the_walk_listed_it_is_skipped(

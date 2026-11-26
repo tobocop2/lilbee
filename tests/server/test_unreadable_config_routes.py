@@ -7,6 +7,7 @@ A config that is readable but invalid keeps its 422 (see the invalid-config test
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 
@@ -136,5 +137,12 @@ def test_add_with_a_read_only_config_streams_the_write_refusal_as_an_error_event
     outside.mkdir()
     (outside / "note.txt").write_text("hello", encoding="utf-8")
     res = client.post("/api/add", json={"paths": [str(outside)]})
-    assert "event: error" in res.text, res.text
-    assert str(read_only_config) + " is read-only; make it writable and try again" in res.text
+    errors = [
+        json.loads(line.removeprefix("data: "))["message"]
+        for event in res.text.split("\n\n")
+        if event.startswith("event: error\n")
+        for line in event.splitlines()
+        if line.startswith("data: ")
+    ]
+    # The event carries the message as JSON, so a Windows path holds escaped backslashes.
+    assert errors == [f"{read_only_config} is read-only; make it writable and try again"], res.text
