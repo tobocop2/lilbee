@@ -129,7 +129,7 @@ def _signals_wake(loop: asyncio.AbstractEventLoop) -> Iterator[None]:
                 loop.remove_reader(reader)
 
 
-def _read_wakeups(reader: socket.socket) -> None:  # pragma: posix only - no wakeup reader
+def _read_wakeups(reader: socket.socket) -> None:
     """Read the bytes the wakeups left in *reader*; an empty socket has nothing left to read.
 
     A ready socket can be empty by the time its reader runs, so an empty read is the
@@ -139,13 +139,13 @@ def _read_wakeups(reader: socket.socket) -> None:  # pragma: posix only - no wak
         reader.recv(_WAKEUP_READ_BYTES)
 
 
-def _send_wakeup(writer: socket.socket) -> None:  # pragma: posix only - no worker run
+def _send_wakeup(writer: socket.socket) -> None:
     """Wake a wait on *writer*'s pair; a full or closed socket has a wakeup or no wait."""
     with contextlib.suppress(OSError):
         writer.send(b"\0")
 
 
-def _wait_for(done: concurrent.futures.Future[Any]) -> None:  # pragma: posix only
+def _wait_for(done: concurrent.futures.Future[Any]) -> None:
     """Wait on this thread until *done* ends, while its signal handlers run at once.
 
     The wait sleeps on a socket that both the end of *done* and Python's signal
@@ -167,7 +167,19 @@ def _wait_for(done: concurrent.futures.Future[Any]) -> None:  # pragma: posix on
             signal.set_wakeup_fd(previous)
 
 
-def _run_with_sigint_blocked(  # pragma: posix only - Windows has no pthread_sigmask
+if sys.platform == "win32":  # pragma: windows only - the Windows CI lanes measure it
+
+    def _block_sigint() -> None:
+        """Do nothing: Windows runs the C handler of a Ctrl-C on a console thread of its own."""
+
+else:  # pragma: posix only - Windows takes the branch above
+
+    def _block_sigint() -> None:
+        """Block SIGINT on this thread and on every thread it starts."""
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+
+
+def _run_with_sigint_blocked(
     loop: asyncio.AbstractEventLoop,
     task: asyncio.Future[T],
     done: concurrent.futures.Future[T],
@@ -175,9 +187,10 @@ def _run_with_sigint_blocked(  # pragma: posix only - Windows has no pthread_sig
     """Run *task* on *loop* on this thread, where SIGINT is blocked, and put its end in *done*.
 
     The block holds for every thread this one starts, so no Ctrl-C handler runs on
-    them and no signal lands inside the loop's own code.
+    them and no signal lands inside the loop's own code. Windows has no block and
+    needs none: its Ctrl-C reaches the main thread's wait through the wakeup socket.
     """
-    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+    _block_sigint()
     asyncio.set_event_loop(loop)
     try:
         # Tasks the run leaves are cancelled and awaited before its end, as run_without_join does.
@@ -192,7 +205,7 @@ def _run_with_sigint_blocked(  # pragma: posix only - Windows has no pthread_sig
         asyncio.set_event_loop(None)
 
 
-def _cancel_all_tasks(loop: asyncio.AbstractEventLoop) -> None:  # pragma: posix only
+def _cancel_all_tasks(loop: asyncio.AbstractEventLoop) -> None:
     for task in asyncio.all_tasks(loop):
         task.cancel()
 
@@ -205,18 +218,12 @@ def run_interruptible(coro: Awaitable[T], cancel: SignalFlag) -> T:
     through *cancel* hands the cancel of the run's task to the loop. A handler that raises during
     the run ends only the wait. The run's tasks then get a cancel, and the run is
     left to the process exit, so a run stuck in a sync step or a native call does
-    not keep the command. Off the main thread, and on Windows, *coro* runs on this
-    thread as ``run_without_join`` runs it.
+    not keep the command. Windows takes the same path, and the wait's wakeup socket
+    wakes for a Ctrl-C there too. Off the main thread, *coro* runs on this thread as
+    ``run_without_join`` runs it.
     """
-    if sys.platform == "win32" or threading.current_thread() is not threading.main_thread():
+    if threading.current_thread() is not threading.main_thread():
         return run_without_join(coro)
-    return _run_on_a_worker_thread(coro, cancel)  # pragma: posix only
-
-
-def _run_on_a_worker_thread(  # pragma: posix only - Windows runs on the main thread
-    coro: Awaitable[T], cancel: SignalFlag
-) -> T:
-    """Run *coro* on a worker thread with SIGINT blocked; see :func:`run_interruptible`."""
     loop = asyncio.new_event_loop()
     # The task takes this thread's context, as a run on this thread would.
     task = asyncio.ensure_future(coro, loop=loop)
