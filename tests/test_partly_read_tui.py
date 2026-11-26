@@ -460,3 +460,15 @@ class TestAddReport:
             msg.SYNC_FAILED_FILES.format(files="corpus/bad.pdf")
         ]
         assert reporter.set_report.call_args.args[0].is_partial is True
+
+    def test_an_add_with_a_failed_and_a_partly_read_file_still_toasts_the_partly_read(
+        self,
+    ) -> None:
+        result = SyncResult(
+            added=["corpus/a.pdf"],
+            failed=["corpus/bad.pdf"],
+            partial=[PartialFile("corpus/a.pdf", [_PAGE_3])],
+        )
+        raised, _, toasts = self._sync_added(result)
+        assert len(raised) == 1
+        assert msg.SYNC_PARTLY_READ.format(count=1) in toasts

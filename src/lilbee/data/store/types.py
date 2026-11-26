@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
-from typing import NamedTuple, NotRequired, TypedDict
+from typing import Final, NamedTuple, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -277,6 +277,8 @@ class SourceRecord(TypedDict):
     # The pages whose OCR failed, read through ``failed_pages``; absent or None
     # when every page was read.
     ocr_page_failures: NotRequired[list[FailedPageRow] | None]
+    # Whether ``ocr_page_failures`` holds a page; an index serves the status query.
+    partly_read: NotRequired[bool]
 
 
 class SourceHead(TypedDict):
@@ -296,7 +298,15 @@ class SourceSummary:
     total_chunks: int
     kinds: dict[str, int]
     newest: list[SourceHead]
+    partly_read: int = 0
+    """How many of the sources have a page whose OCR failed."""
 
+
+FAILED_PAGES_COLUMN: Final = "ocr_page_failures"
+"""The ``_sources`` column of the pages whose OCR failed."""
+
+PARTLY_READ_COLUMN: Final = "partly_read"
+"""The ``_sources`` column that says whether a row has a page whose OCR failed."""
 
 DOCUMENTS_PAGE_DEFAULT = 50
 """Rows in one page of the document listing when the caller names no limit."""
@@ -324,7 +334,7 @@ class SourceStat(NamedTuple):
 
 def failed_pages(record: SourceRecord) -> list[FailedPage]:
     """The pages of *record* whose OCR failed; empty when the column is absent or NULL."""
-    return [FailedPage(**row) for row in record.get("ocr_page_failures") or []]
+    return [FailedPage(**row) for row in record.get(FAILED_PAGES_COLUMN) or []]
 
 
 def source_stat(record: SourceRecord) -> SourceStat | None:

@@ -425,9 +425,12 @@ class StatusScreen(MountWhenAttached, Screen[None]):
                 table.add_row(
                     Text(strip_control_characters(name)), Text("\n".join(lines)), height=len(lines)
                 )
-            hidden = docs.partly_read_total - len(docs.partly_read)
-            if hidden > 0:
-                table.add_row(msg.STATUS_PARTLY_READ_MORE.format(count=hidden), "")
+            shown = len(docs.partly_read)
+            if docs.partly_read_total > shown:
+                summary = msg.STATUS_PARTLY_READ_SHOWN.format(
+                    shown=shown, total=docs.partly_read_total
+                )
+                table.add_row(summary, "")
             self.query_one("#partly-read-section", Collapsible).collapsed = False
 
     def _load_arch(self, info: ModelArchInfo) -> None:

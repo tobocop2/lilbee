@@ -833,6 +833,34 @@ class TestSync:
         assert rows == {"docs.zip": 0, "docs.zip/report.pdf": 2, "docs.zip/notes.txt": 1}
         assert not any("reconciliation" in r.getMessage().lower() for r in caplog.records)
 
+    async def test_an_archive_member_keeps_the_pages_its_extraction_lists_as_failed(
+        self, mock_extract_file, isolated_env
+    ):
+        """The failed pages of a member come from the member's own extraction result."""
+        from lilbee.data.ingest import sync
+        from lilbee.data.store import FailedPage, failed_pages
+
+        store = _install_real_store()
+        report = _make_xberg_result(num_chunks=2, has_pages=True)
+        report.ocr_page_failures = [mock.MagicMock(page=3, error="timed out", recovered=False)]
+        notes = _make_xberg_result(num_chunks=1)
+        notes.ocr_page_failures = None
+        mock_extract_file.return_value = _make_archive_result(
+            [
+                _member("report.pdf", "application/pdf", report),
+                _member("notes.txt", "text/plain", notes),
+            ]
+        )
+        (isolated_env / "docs.zip").write_bytes(b"PK\x03\x04")
+
+        result = await sync(quiet=True)
+
+        page = FailedPage(page=3, error="timed out", recovered=False)
+        assert [(p.name, p.pages) for p in result.partial] == [("docs.zip/report.pdf", [page])]
+        rows = {s["filename"]: failed_pages(s) for s in store.get_sources()}
+        assert rows["docs.zip/report.pdf"] == [page]
+        assert rows["docs.zip/notes.txt"] == []
+
     async def test_member_past_the_chunk_cap_holds_the_archive_out_and_names_it(
         self, mock_extract_file, isolated_env, monkeypatch, mock_svc
     ):

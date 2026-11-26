@@ -109,6 +109,7 @@ from lilbee.data.store import (
     SourceStatBackfill,
     SourceType,
     Store,
+    failed_pages,
     source_stat,
 )
 from lilbee.data.title import derive_title
@@ -1099,7 +1100,7 @@ def _sources_to_plan(
     reread = {
         prefix
         for row in existing.values()
-        if row.get("ocr_page_failures")
+        if failed_pages(row)
         for prefix in accumulate(row["filename"].split("/"), "{}/{}".format)
     } & disk_files.keys()
     return {name: _as_changed(row) if name in reread else row for name, row in existing.items()}

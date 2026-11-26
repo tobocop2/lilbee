@@ -120,6 +120,7 @@ from lilbee.data.store import (
     MemorySource,
     SearchScope,
     agent_owner,
+    failed_pages,
     scope_to_chunk_type,
 )
 from lilbee.providers.base import ProviderError
@@ -492,10 +493,10 @@ async def sync(
     ocr: OcrMode | None = None,
     ocr_timeout: float | None = None,
 ) -> dict[str, Any]:
-    """Sync the documents directory into the vector store.
+    """Sync the documents directory into the index.
 
-    ``force_rebuild`` re-ingests all. ``retry_skipped`` retries failed and partly
-    read files. ``prune_ignored`` drops ``.lilbeeignore`` matches.
+    ``force_rebuild`` re-reads all. ``retry_skipped`` retries failed and partly
+    read files. ``prune_ignored`` drops indexed ``.lilbeeignore`` matches.
     """
     from lilbee.app.ingest import SYNC_REFUSALS, temporary_ocr_config
     from lilbee.data.ingest import sync as run_sync
@@ -806,7 +807,7 @@ def list_documents(limit: int = DOCUMENTS_PAGE_DEFAULT, offset: int = 0) -> dict
             {
                 "filename": s["filename"],
                 "chunk_count": s.get("chunk_count", 0),
-                "ocr_page_failures": s.get("ocr_page_failures") or [],
+                "ocr_page_failures": [asdict(page) for page in failed_pages(s)],
             }
             for s in page
         ],
