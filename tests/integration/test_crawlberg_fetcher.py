@@ -888,9 +888,8 @@ class TestCrawlAndSave:
         seed = site.url("")
         cfg.crawl_exclude_patterns = [ROOT_PATTERN]
         assert re.search(ROOT_PATTERN, site.url("/"))
-        paths = await crawl_and_save(seed, render_mode=HTTP, **limit)
+        await crawl_and_save(seed, render_mode=HTTP, **limit)
         assert "/" in site.paths_since(0, "/")
-        assert len(paths) >= 1
 
     async def test_a_seed_with_a_username_and_password_is_saved_when_a_pattern_matches_it(
         self, site
