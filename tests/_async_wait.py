@@ -100,6 +100,18 @@ async def wait_for_group(app: App, group: str) -> None:
         await app.workers.wait_for_complete(workers)
 
 
+async def wait_for_turn_end(pilot: Pilot, screen: Widget) -> None:
+    """Wait until the chat turn's worker ended and *screen* handled the end it posted.
+
+    The worker posts the end of the turn before it ends, so the end is queued
+    once the worker group is done; the pauses after that let the screen handle it.
+    """
+    from lilbee.cli.tui.screens.chat import _TURN_WORKER_GROUP
+
+    await wait_for_group(pilot.app, _TURN_WORKER_GROUP)
+    assert await wait_until(pilot, lambda: not screen.streaming), "the turn never ended"
+
+
 async def laid_out(pilot: Pilot, widget: WidgetT) -> WidgetT:
     """Return *widget* once it owns a hit area.
 

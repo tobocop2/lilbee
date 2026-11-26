@@ -64,7 +64,7 @@ from lilbee.wiki.drafts import StaleDraftError
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
 from lilbee.wiki.stats import BuildStats
 from tests import _tui_screen_fixtures as _fixtures
-from tests._async_wait import wait_for_pull_check, wait_for_widget, wait_until
+from tests._async_wait import wait_for_pull_check, wait_for_turn_end, wait_for_widget, wait_until
 from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
 from tests._crawlberg_stub import StubCrawlberg
 from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
@@ -6248,7 +6248,7 @@ async def test_chat_stream_response_error_worker(mock_svc):
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
-        assert await pump_until(_pilot, lambda: not app.screen.streaming)
+        await wait_for_turn_end(_pilot, app.screen)
 
 
 async def test_chat_stream_embedder_mismatch_adopt_worker(mock_svc):
@@ -6301,7 +6301,7 @@ async def test_chat_stream_response_reasoning_worker(mock_svc):
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
-        assert await pump_until(_pilot, lambda: not app.screen.streaming)
+        await wait_for_turn_end(_pilot, app.screen)
 
 
 async def test_chat_stream_response_inner_exception(mock_svc):
@@ -6324,7 +6324,7 @@ async def test_chat_stream_response_inner_exception(mock_svc):
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
-        assert await pump_until(_pilot, lambda: not app.screen.streaming)
+        await wait_for_turn_end(_pilot, app.screen)
 
 
 async def test_chat_run_sync_worker():
