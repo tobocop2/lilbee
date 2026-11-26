@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 env:
-  PROBE_REF: 3f4aebb3e9ca6ad784989e4e56466dbe6a2854ed
+  PROBE_REF: 90c8601bd41e95ce9067d4f6cc45ebe10ae4467c
 
 jobs:
   probe-unit:
