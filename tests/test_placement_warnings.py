@@ -568,3 +568,110 @@ class TestALateRead(_ProbedManager):
         for _ in range(3):
             assert manager.role_ready(WorkerRole.CHAT)
         assert manager.health_warnings() == []
+
+    def test_an_unload_and_a_polled_reload_during_a_read_keep_the_new_report(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.providers.fleet.readback import MEMORY_FLAG
+
+        engine = self._engine(monkeypatch)
+        engine.memory = _SPILLED
+        manager = self._manager(tmp_path, ["/bin/llama-server", MEMORY_FLAG])
+        real = engine.get
+        reloaded = threading.Event()
+
+        def cycling(url: str, timeout: float | None = None) -> _Answer:
+            if not url.endswith("/memory") or reloaded.is_set():
+                return real(url)
+            reloaded.set()
+            old = real(url)  # the old load spilled
+            engine.running = []
+            assert not manager.role_ready(WorkerRole.CHAT)
+            engine.running = ["chat-0"]
+            engine.memory = _ON_CARD
+            assert manager.role_ready(WorkerRole.CHAT)  # the poll reads the new load
+            return old
+
+        monkeypatch.setattr(engine, "get", cycling)
+        _read_load(manager, ["chat-0"])
+        assert manager.health_warnings() == []
+
+    def test_a_restart_and_a_new_claim_during_an_old_read_keep_the_new_report(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.providers.fleet.readback import MEMORY_FLAG
+
+        engine = self._engine(monkeypatch)
+        engine.memory = _SPILLED
+        manager = self._manager(tmp_path, ["/bin/llama-server", MEMORY_FLAG])
+        real = engine.get
+        restarted = threading.Event()
+
+        def restarting(url: str, timeout: float | None = None) -> _Answer:
+            if not url.endswith("/memory") or restarted.is_set():
+                return real(url)
+            restarted.set()
+            old = real(url)
+            manager._clear_placement_warnings()
+            engine.memory = _ON_CARD
+            _read_load(manager, ["chat-0"])
+            return old
+
+        monkeypatch.setattr(engine, "get", restarting)
+        _read_load(manager, ["chat-0"])
+        assert manager.health_warnings() == []
+
+    def test_an_older_claim_read_after_a_newer_one_records_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.providers.fleet.readback import MEMORY_FLAG
+
+        engine = self._engine(monkeypatch)
+        manager = self._manager(tmp_path, ["/bin/llama-server", MEMORY_FLAG])
+        older = manager.claim_loaded(["chat-0"])
+        newer = manager.claim_loaded(["chat-0"])
+        engine.memory = _ON_CARD
+        newer()
+        engine.memory = _SPILLED
+        older()
+        assert manager.health_warnings() == []
+
+    def test_concurrent_claims_and_reads_keep_the_last_claim(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.providers.fleet.readback import MEMORY_FLAG
+
+        engine = self._engine(monkeypatch)
+        engine.memory = _SPILLED
+        manager = self._manager(tmp_path, ["/bin/llama-server", MEMORY_FLAG])
+        reads = [manager.claim_loaded(["chat-0"]) for _ in range(8)]
+        engine.memory = _ON_CARD
+        threads = [threading.Thread(target=read) for read in reads]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert manager.health_warnings() == []
+
+    def test_a_downshift_recorded_during_a_poll_read_stays(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.providers.fleet import swap_manager as sm
+
+        self._engine(monkeypatch)
+        manager = self._manager(tmp_path, ["/bin/llama-server"])
+        monkeypatch.setattr(cfg, "num_ctx", None, raising=False)
+        real = sm.check_launch
+
+        def oom_during_read(*args, **kwargs):
+            result = real(*args, **kwargs)
+            planning_mod.record_ctx_downshift(WorkerRole.CHAT)
+            return result
+
+        monkeypatch.setattr(sm, "check_launch", oom_during_read)
+        planning_mod.clear_ctx_downshift()
+        try:
+            assert manager.role_ready(WorkerRole.CHAT)
+            assert planning_mod._ctx_downshift_store.steps(WorkerRole.CHAT) == 1
+        finally:
+            planning_mod.clear_ctx_downshift()
