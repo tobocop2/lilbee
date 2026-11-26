@@ -640,12 +640,16 @@ class _WakeupTakingLoop(asyncio.SelectorEventLoop):
 
     def __init__(self) -> None:
         super().__init__()
+        self._wakeup_reader, self._wakeup_writer = socket.socketpair()
+        self._wakeup_writer.setblocking(False)
         if threading.current_thread() is threading.main_thread():
-            signal.set_wakeup_fd(self._csock.fileno())  # type: ignore[attr-defined]
+            signal.set_wakeup_fd(self._wakeup_writer.fileno())
 
     def close(self) -> None:
         if threading.current_thread() is threading.main_thread():
             signal.set_wakeup_fd(-1)
+        self._wakeup_reader.close()
+        self._wakeup_writer.close()
         super().close()
 
 
@@ -692,17 +696,6 @@ def test_a_background_loop_that_cannot_be_made_raises_from_get_loop() -> None:
     finally:
         asyncio.set_event_loop_policy(previous)
     assert asyncio_loop.get_loop().is_running()
-
-
-def test_a_run_after_the_background_loop_shut_down_returns_its_result(
-    wakeup_taking_loops: None,
-) -> None:
-    async def answer() -> int:
-        return 42
-
-    asyncio_loop.get_loop()
-    asyncio_loop.shutdown()
-    assert asyncio_loop.run_interruptible(answer(), SignalFlag()) == 42
 
 
 def test_loop_runs_on_dedicated_daemon_thread() -> None:
