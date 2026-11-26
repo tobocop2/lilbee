@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 from pathlib import Path
 
@@ -74,3 +75,7 @@ def test_a_finished_test_leaves_its_server_app_and_mocks_to_the_collector(
     live = json.loads((pytester.path / "live.json").read_text())
     kept_per_test = (live[str(_TESTS)] - live[str(_WARM_UP)]) / (_TESTS - _WARM_UP)
     assert kept_per_test < _MAX_KEPT_PER_TEST
+
+
+def test_full_collections_skip_the_objects_of_collection() -> None:
+    assert gc.get_freeze_count() > 0
