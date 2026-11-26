@@ -476,7 +476,7 @@ class TestCgroupCappedMemory:
         root = tmp_path / "mount"
         root.mkdir()
         proc = tmp_path / "proc_cgroup"
-        proc.write_text(proc_line)
+        proc.write_text(proc_line, encoding="utf-8")
         monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", root)
         monkeypatch.setattr(sys_mod, "_PROC_CGROUP", proc)
         return root
@@ -488,8 +488,8 @@ class TestCgroupCappedMemory:
         root = self._own_cgroup(monkeypatch, tmp_path, "0::/user.slice/job.scope\n")
         scope = root / "user.slice" / "job.scope"
         scope.mkdir(parents=True)
-        (scope / "memory.max").write_text(f"{16 * 1024**3}\n")
-        (scope / "memory.current").write_text(f"{1024**3}\n")
+        (scope / "memory.max").write_text(f"{16 * 1024**3}\n", encoding="utf-8")
+        (scope / "memory.current").write_text(f"{1024**3}\n", encoding="utf-8")
         assert sys_mod.cgroup_memory_limit() == 16 * 1024**3
         assert sys_mod.cgroup_memory_used() == 1024**3
 
@@ -498,7 +498,7 @@ class TestCgroupCappedMemory:
 
         root = self._own_cgroup(monkeypatch, tmp_path, "0::/job.scope\n")
         (root / "job.scope").mkdir()
-        (root / "job.scope" / "memory.max").write_text(f"{16 * 1024**3}\n")
+        (root / "job.scope" / "memory.max").write_text(f"{16 * 1024**3}\n", encoding="utf-8")
         monkeypatch.setattr(
             "psutil.virtual_memory",
             lambda: SimpleNamespace(total=64 * 1024**3, available=60 * 1024**3),
@@ -510,10 +510,10 @@ class TestCgroupCappedMemory:
 
         root = self._own_cgroup(monkeypatch, tmp_path, "0::/slice/job.scope\n")
         (root / "slice" / "job.scope").mkdir(parents=True)
-        (root / "slice" / "memory.max").write_text(f"{8 * 1024**3}\n")
-        (root / "slice" / "memory.current").write_text(f"{2 * 1024**3}\n")
-        (root / "slice" / "job.scope" / "memory.max").write_text("max\n")
-        (root / "slice" / "job.scope" / "memory.current").write_text("1\n")
+        (root / "slice" / "memory.max").write_text(f"{8 * 1024**3}\n", encoding="utf-8")
+        (root / "slice" / "memory.current").write_text(f"{2 * 1024**3}\n", encoding="utf-8")
+        (root / "slice" / "job.scope" / "memory.max").write_text("max\n", encoding="utf-8")
+        (root / "slice" / "job.scope" / "memory.current").write_text("1\n", encoding="utf-8")
         assert sys_mod.cgroup_memory_limit() == 8 * 1024**3
         assert sys_mod.cgroup_memory_used() == 2 * 1024**3
 
@@ -523,8 +523,8 @@ class TestCgroupCappedMemory:
         root = self._own_cgroup(monkeypatch, tmp_path, "4:memory:/job\n")
         job = root / "memory" / "job"
         job.mkdir(parents=True)
-        (job / "memory.limit_in_bytes").write_text(f"{4 * 1024**3}\n")
-        (job / "memory.usage_in_bytes").write_text(f"{1024**3}\n")
+        (job / "memory.limit_in_bytes").write_text(f"{4 * 1024**3}\n", encoding="utf-8")
+        (job / "memory.usage_in_bytes").write_text(f"{1024**3}\n", encoding="utf-8")
         assert sys_mod.cgroup_memory_limit() == 4 * 1024**3
         assert sys_mod.cgroup_memory_used() == 1024**3
 
