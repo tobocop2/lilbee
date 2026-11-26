@@ -247,7 +247,7 @@ _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _PROC_CGROUP = Path("/proc/self/cgroup")
 
 
-def _own_cgroup_paths(proc_cgroup: Path) -> dict[str, str]:
+def own_cgroup_paths(proc_cgroup: Path) -> dict[str, str]:
     """Map each controller (v2 unified hierarchy: the empty name) to this process's cgroup path."""
     try:
         lines = os.fsdecode(proc_cgroup.read_bytes()).splitlines()
@@ -262,7 +262,7 @@ def _own_cgroup_paths(proc_cgroup: Path) -> dict[str, str]:
     return paths
 
 
-def _cgroup_chain(base: Path, relative: str | None) -> list[Path]:
+def cgroup_chain(base: Path, relative: str | None) -> list[Path]:
     """The process's cgroup directory and each ancestor up to ``base``.
 
     A level that does not exist or cannot be read gives no limit, so a path
@@ -294,14 +294,14 @@ def _tightest_memory_cgroup() -> tuple[int, Path, str] | None:
     a ``MemoryMax=`` on a systemd unit or scope is seen, and a parent's lower cap
     binds the process like its own.
     """
-    paths = _own_cgroup_paths(_PROC_CGROUP)
+    paths = own_cgroup_paths(_PROC_CGROUP)
     for base, controller, limit_name, usage_name in (
         (_CGROUP_ROOT, "", "memory.max", "memory.current"),
         (_CGROUP_ROOT / "memory", "memory", "memory.limit_in_bytes", "memory.usage_in_bytes"),
     ):
         found = [
             (limit, directory, usage_name)
-            for directory in _cgroup_chain(base, paths.get(controller))
+            for directory in cgroup_chain(base, paths.get(controller))
             if (limit := _read_bytes_file(directory / limit_name)) is not None
         ]
         if found:
