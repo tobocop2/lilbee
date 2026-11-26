@@ -36,6 +36,7 @@ from lilbee.app.services import (
     wait_for_hard_exit_teardown,
 )
 from lilbee.cli.helpers import _run_foreground_sync
+from lilbee.runtime.asyncio_loop import run_main
 
 # The exact signals production installs: (SIGTERM, SIGHUP) on POSIX, SIGTERM alone
 # on Windows, which has no SIGHUP. Deriving from the helper keeps this file
@@ -1654,6 +1655,35 @@ def test_a_ctrl_c_inside_a_catch_all_step_still_ends_the_loop(monkeypatch, loop_
     assert raised.value.code == 128 + signal.SIGINT
     assert loop_signals == [signal.SIGINT]
     assert waited < 10  # the stop ended the loop; it did not sleep out the 30 s
+    provider.shutdown.assert_called_once()
+
+
+@pytest.mark.parametrize("loop_factory", _LOOPS)
+def test_a_terminate_inside_a_catch_all_step_of_run_main_still_ends_it(monkeypatch, loop_factory):
+    """A command that runs its loop through run_main, with no scope of its own, still exits."""
+    provider = _install_stub_services()
+    loop_signals = _record_loop_signals(monkeypatch)
+    swallowed: list[BaseException] = []
+
+    async def command() -> None:
+        try:
+            signal.raise_signal(signal.SIGTERM)
+        except BaseException as exc:  # a library's catch-all
+            swallowed.append(exc)
+        await asyncio.sleep(15)
+
+    monkeypatch.setattr(asyncio.events, "new_event_loop", loop_factory)
+    install_engine_lifecycle_hooks()
+    started = time.monotonic()
+    with pytest.raises(SystemExit) as raised:
+        run_main(command())
+    waited = time.monotonic() - started
+    _join_teardown()
+
+    assert swallowed == []
+    assert raised.value.code == 128 + signal.SIGTERM
+    assert loop_signals == [signal.SIGTERM]
+    assert waited < 10  # the stop ended the loop; it did not sleep out the 15 s
     provider.shutdown.assert_called_once()
 
 

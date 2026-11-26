@@ -167,6 +167,18 @@ def _wait_for(done: concurrent.futures.Future[Any]) -> None:
             signal.set_wakeup_fd(previous)
 
 
+if sys.platform == "win32":  # pragma: windows only - the Windows CI lanes measure it
+
+    def _block_sigint() -> None:
+        """Do nothing: Windows runs the C handler of a Ctrl-C on a console thread of its own."""
+
+else:  # pragma: posix only - Windows takes the branch above
+
+    def _block_sigint() -> None:
+        """Block SIGINT on this thread and on every thread it starts."""
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+
+
 def _run_with_sigint_blocked(
     loop: asyncio.AbstractEventLoop,
     task: asyncio.Future[T],
@@ -177,7 +189,7 @@ def _run_with_sigint_blocked(
     The block holds for every thread this one starts, so no Ctrl-C handler runs on
     them and no signal lands inside the loop's own code.
     """
-    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+    _block_sigint()
     asyncio.set_event_loop(loop)
     try:
         # Tasks the run leaves are cancelled and awaited before its end, as run_without_join does.
@@ -205,10 +217,11 @@ def run_interruptible(coro: Awaitable[T], cancel: SignalFlag) -> T:
     through *cancel* hands the cancel of the run's task to the loop. A handler that raises during
     the run ends only the wait. The run's tasks then get a cancel, and the run is
     left to the process exit, so a run stuck in a sync step or a native call does
-    not keep the command. Off the main thread, and on Windows, *coro* runs on this
-    thread as ``run_without_join`` runs it.
+    not keep the command. Windows takes the same path, and the wait's wakeup socket
+    wakes for a Ctrl-C there too. Off the main thread, *coro* runs on this thread as
+    ``run_without_join`` runs it.
     """
-    if sys.platform == "win32" or threading.current_thread() is not threading.main_thread():
+    if threading.current_thread() is not threading.main_thread():
         return run_without_join(coro)
     loop = asyncio.new_event_loop()
     # The task takes this thread's context, as a run on this thread would.
@@ -279,8 +292,11 @@ class _MainRun:
                     raise held
 
     async def _as_main(self, main: Coroutine[Any, Any, T]) -> T:
+        from lilbee.app.services import loop_takes_signals
+
         self.task = asyncio.current_task()
-        return await main
+        with loop_takes_signals(asyncio.get_running_loop()):
+            return await main
 
     def hold(self, stop: SystemExit) -> bool:
         if self.task is None or not self.task.done():
@@ -294,6 +310,9 @@ _main_run = _MainRun()
 
 def run_main(main: Coroutine[Any, Any, T]) -> T:
     """Run *main* as ``asyncio.run`` does; an exit that ``hold_exit`` kept is raised after it.
+
+    On the main thread, the loop takes the routed signals while *main* runs, so their
+    exit never lands inside a step of *main*.
 
     A finished *main* queues the stop of its run. An exit raised by a signal handler
     before that stop runs leaves it queued, the shutdown of the runner ends on it, and
