@@ -1360,10 +1360,10 @@ class TestAddDisconnect:
         with mock.patch.object(ingest, "_ingest_stream", _slow):
             yield
 
-    def test_a_close_at_already_ingesting_still_starts_the_free_sources(
+    def test_a_close_at_already_ingesting_still_registers_the_free_sources(
         self, tmp_path, parked_sync, released, slow_resume
     ):
-        """A close at already_ingesting still registers the free source and starts its sync."""
+        """A close at already_ingesting still registers the free source, then stops its sync."""
         busy = tmp_path / "busy.txt"
         busy.write_text("busy", encoding="utf-8")
         new = tmp_path / "new.txt"
@@ -1379,8 +1379,6 @@ class TestAddDisconnect:
                 with http.stream("POST", "/api/add", json=both, headers=_auth_headers()) as resp:
                     assert _first_event(resp.iter_lines()) == "already_ingesting"
                     resp.close()
-                started_twice = parked_sync.wait_for(lambda starts: len(starts) == 2)
-                assert started_twice, "new.txt never started"
                 assert released.wait_for(lambda names: "new.txt" in names), "the add never unwound"
 
         assert cfg.linked_roots["new.txt"] == str(new.resolve())
@@ -1432,10 +1430,13 @@ class TestAddRegistersOffTheLoop:
         assert events[0] != f"registering on {threading.main_thread().name}"
         assert summary.copied == ["scan.txt"] and synced.await_count == 1
 
-    async def test_a_cancel_during_the_registration_lands_when_the_sync_starts(
+    async def test_a_cancel_during_the_registration_lands_before_the_sync_runs(
         self, tmp_path, held_registration
     ):
-        """What a disconnect does: the stream's flag and a task cancel, both mid-registration."""
+        """What a disconnect does: the stream's flag and a task cancel, both mid-registration.
+
+        The cancel waits for the registration, then stops the sync before its first step.
+        """
         from lilbee.server.handlers import SseStream
         from lilbee.server.handlers.ingest import _run_add
 
@@ -1462,7 +1463,7 @@ class TestAddRegistersOffTheLoop:
             with pytest.raises(asyncio.CancelledError):
                 await task
 
-        assert events[1:] == ["registered", "sync started"]
+        assert events[1:] == ["registered"]
 
     async def test_a_closed_stream_keeps_the_source_locked_until_it_is_registered(
         self, tmp_path, held_registration
