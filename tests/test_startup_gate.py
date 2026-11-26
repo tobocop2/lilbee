@@ -613,9 +613,7 @@ async def test_text_pasted_at_the_gate_is_kept_like_typed_keys(monkeypatch, tmp_
         assert app.take_type_ahead() == "abc d"
 
 
-async def test_keys_typed_over_a_screen_above_the_gate_reach_that_screen(
-    monkeypatch, tmp_path
-):
+async def test_keys_typed_over_a_screen_above_the_gate_reach_that_screen(monkeypatch, tmp_path):
     """Only the gate and the chat it hands to keep keys; a screen above them gets its own."""
     from textual import events
     from textual.screen import Screen
