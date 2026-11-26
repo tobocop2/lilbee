@@ -78,11 +78,16 @@ def test_typer_floor_is_the_first_release_that_installs_and_runs_with_lilbee() -
     # Resolved together with lilbee's other dependencies: huggingface-hub needs
     # click>=8.4.2, and Typer 0.15.4 and older cap click below 8.2, so they do not
     # install. 0.15.3 installs but `lilbee --help` fails (Parameter.make_metavar).
-    # 0.12.x fails to build the options (Path | None). 0.16.0 resolves and runs.
+    # 0.12.x fails to build the options (Path | None). 0.16.0 installs, but
+    # `lilbee preset add` with a missing argument crashes instead of a usage error.
+    # 0.17.5 caps click below 8.3. The CLI tests stand in for a terminal through
+    # typer.testing._NamedTextIOWrapper, which Typer has from 0.26.3; 0.26.2 and
+    # older fail them.
     req = _base_requirement("typer")
-    for version in ("0.12.0", "0.12.5", "0.13.0", "0.15.3", "0.15.4"):
+    refused = ("0.12.0", "0.12.5", "0.13.0", "0.15.3", "0.15.4", "0.16.0", "0.17.5", "0.26.2")
+    for version in refused:
         assert not req.specifier.contains(version), version
-    assert req.specifier.contains("0.16.0")
+    assert req.specifier.contains("0.26.3")
 
 
 def test_qa_matrix_excludes_vulnerable_anyio() -> None:
