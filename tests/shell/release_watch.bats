@@ -18,6 +18,10 @@ setup() {
   echo 1 > "${FIXTURE}/attempts/900"
   echo success > "${FIXTURE}/conclusions/900"
   rc_jobs "build-binaries (ubuntu):success"
+  # The tag still points at the commit the candidate built.
+  mkdir -p "${FIXTURE}/heads" "${FIXTURE}/commits"
+  echo "${TAG} built" > "${FIXTURE}/heads/900"
+  echo built > "${FIXTURE}/commits/${TAG}"
 
   cp "${BATS_TEST_DIRNAME}/stubs/gh" "${FIXTURE}/bin/gh"
   chmod +x "${FIXTURE}/bin/gh"
@@ -155,6 +159,31 @@ summary() { cat "${FIXTURE}/summary.md"; }
   [ ! -s "${FIXTURE}/actions.log" ]
   run summary
   [[ "$output" == *"release-selfheal owns this"* ]]
+}
+
+@test "a candidate whose tag moved is not deferred to, and is named as stale" {
+  rc_jobs "cell-a:failure" "cell-b:failure"
+  echo moved > "${FIXTURE}/commits/${TAG}"
+  run watch
+  [ "$status" -eq 0 ]
+  [ ! -s "${FIXTURE}/actions.log" ]
+  [[ "$output" == *"candidate 900 is stale"* ]]
+  [[ "$output" == *"built built"* ]]
+  [[ "$output" == *"points at moved"* ]]
+  run summary
+  [[ "$output" != *"release-selfheal owns this"* ]]
+  [[ "$output" == *"| publish.yml | green |"* ]]
+}
+
+@test "a candidate whose tag cannot be read is watched, never reported as every channel published" {
+  rc_jobs "cell-a:failure"
+  rm "${FIXTURE}/commits/${TAG}"
+  run watch
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"cannot tell which commit"* ]]
+  run summary
+  [[ "$output" != *"release-selfheal owns this"* ]]
+  [[ "$output" == *"| (candidate) | unknown |"* ]]
 }
 
 @test "a candidate cell cancelled by its own time limit counts as a failed cell" {

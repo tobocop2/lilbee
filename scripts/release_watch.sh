@@ -91,6 +91,24 @@ defer_to_selfheal() {
   if [ "${rc_conclusion}" = "success" ] && [ "${rc_failed:-0}" -eq 0 ]; then
     return 1
   fi
+  # Self-heal refuses a run whose tag moved (scripts/release_selfheal.sh), so
+  # deferring to it would leave the run with no owner. Same test, same inputs.
+  local built built_ref built_sha tag_sha
+  built=$(gh api "repos/${REPO}/actions/runs/${RC_RUN_ID}" -q '.head_branch + " " + .head_sha') || {
+    note "could not read candidate ${RC_RUN_ID} commit; watching the legs"
+    candidate_unread=1
+    return 1
+  }
+  read -r built_ref built_sha <<< "${built}"
+  tag_sha=$(gh api "repos/${REPO}/commits/${built_ref}" -q .sha) || {
+    note "cannot tell which commit ${built_ref} points at; candidate ${RC_RUN_ID} is not handed to release-selfheal"
+    candidate_unread=1
+    return 1
+  }
+  if [ "${tag_sha}" != "${built_sha}" ]; then
+    note "candidate ${RC_RUN_ID} is stale: it built ${built_sha}, but ${built_ref} points at ${tag_sha} now. Skipping it; release-selfheal refuses a superseded run. Nothing is rerun or deleted for it."
+    return 1
+  fi
   if [ "${rc_attempt:-1}" -lt "${MAX_ATTEMPTS}" ]; then
     note "candidate ${RC_RUN_ID} concluded ${rc_conclusion} with ${rc_failed} dropped cell(s) on attempt ${rc_attempt}."
     note "release-selfheal owns this; its rerun starts a fresh watch. Nothing to do."
