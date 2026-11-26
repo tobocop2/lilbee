@@ -329,7 +329,7 @@ class TestDownloadModelProgressChain:
         """download_model passes incremental progress to the user callback."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(
-            "lilbee.catalog.download.resolve_filename", lambda e, engine: e.gguf_filename
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
         )
         monkeypatch.setattr("huggingface_hub.hf_hub_download", self._fake_download_with_chunks)
 
@@ -378,7 +378,7 @@ class TestDownloadModelProgressChain:
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(
-            "lilbee.catalog.download.resolve_filename", lambda e, engine: e.gguf_filename
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
         )
         # HF says the file is 1000 bytes; the cached copy is truncated to 10.
         monkeypatch.setattr(
@@ -417,7 +417,7 @@ class TestDownloadModelProgressChain:
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(
-            "lilbee.catalog.download.resolve_filename", lambda e, engine: e.gguf_filename
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
         )
         monkeypatch.setattr(
             download_mod,
@@ -449,7 +449,7 @@ class TestDownloadModelProgressChain:
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(
-            "lilbee.catalog.download.resolve_filename", lambda e, engine: e.gguf_filename
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
         )
         monkeypatch.setattr(
             download_mod,
@@ -480,7 +480,7 @@ class TestDownloadModelProgressChain:
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(
-            "lilbee.catalog.download.resolve_filename", lambda e, engine: e.gguf_filename
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
         )
 
         def fake_cached_download(**kwargs: Any) -> str:
@@ -516,7 +516,7 @@ class TestDownloadModelErrorPropagation:
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(
-            "lilbee.catalog.download.resolve_filename", lambda e, engine: e.gguf_filename
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
         )
 
         def fake_timeout(**kwargs: Any) -> str:
@@ -535,7 +535,7 @@ class TestDownloadModelErrorPropagation:
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(
-            "lilbee.catalog.download.resolve_filename", lambda e, engine: e.gguf_filename
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
         )
 
         def fake_connect(**kwargs: Any) -> str:
@@ -552,7 +552,7 @@ class TestDownloadModelErrorPropagation:
     ) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(
-            "lilbee.catalog.download.resolve_filename", lambda e, engine: e.gguf_filename
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
         )
 
         def fake_oserror(**kwargs: Any) -> str:
@@ -569,7 +569,7 @@ class TestDownloadModelErrorPropagation:
     ) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(
-            "lilbee.catalog.download.resolve_filename", lambda e, engine: e.gguf_filename
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
         )
 
         def fake_unexpected(**kwargs: Any) -> str:
@@ -588,7 +588,7 @@ class TestDownloadModelErrorPropagation:
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(
-            "lilbee.catalog.download.resolve_filename", lambda e, engine: e.gguf_filename
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
         )
 
         def fake_gated(**kwargs: Any) -> str:
@@ -608,7 +608,7 @@ class TestDownloadModelErrorPropagation:
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(
-            "lilbee.catalog.download.resolve_filename", lambda e, engine: e.gguf_filename
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
         )
         monkeypatch.setattr(
             "lilbee.catalog.download._hf_file_metadata", lambda *_a, **_kw: (None, None)
@@ -630,7 +630,7 @@ class TestDownloadModelErrorPropagation:
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(
-            "lilbee.catalog.download.resolve_filename", lambda e, engine: e.gguf_filename
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
         )
 
         def fake_not_found(**kwargs: Any) -> str:
@@ -699,22 +699,7 @@ class TestMakeDownloadCallback:
 
 
 class TestProgressTracker:
-    """Tests for _ProgressTracker.was_used detection."""
-
-    def test_was_used_false_when_no_updates(self) -> None:
-        tracker = _ProgressTracker(lambda d, t: None)
-        cls = tracker.make_tqdm_class()
-        bar = cls(total=100)
-        bar.close()
-        assert tracker.was_used is False
-
-    def test_was_used_true_after_update(self) -> None:
-        tracker = _ProgressTracker(lambda d, t: None)
-        cls = tracker.make_tqdm_class()
-        bar = cls(total=100)
-        bar.update(50)
-        bar.close()
-        assert tracker.was_used is True
+    """Tests for the totals _ProgressTracker reports."""
 
     def test_single_file_reports_shard_total(self) -> None:
         # grand_total=0 (single file) falls back to the shard's own total.

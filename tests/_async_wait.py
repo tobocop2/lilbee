@@ -76,13 +76,14 @@ async def wait_for_pull_check(app: App) -> None:
     """Wait until the catalog's pull checks have ended and posted their verdicts.
 
     The check posts its verdict with a blocking hop to the UI thread, so a
-    finished worker has already run the enqueue or the notice.
+    finished worker has already run the enqueue or the notice. With no check
+    alive it returns at once: Textual reads an empty list as every worker.
     """
     from lilbee.cli.tui.screens.catalog import _WORKER_CHECK_PULL
 
-    await app.workers.wait_for_complete(
-        [worker for worker in app.workers if worker.name == _WORKER_CHECK_PULL]
-    )
+    checks = [worker for worker in app.workers if worker.name == _WORKER_CHECK_PULL]
+    if checks:
+        await app.workers.wait_for_complete(checks)
 
 
 def poll_until(predicate: Callable[[], bool], timeout: float = 10.0) -> bool:

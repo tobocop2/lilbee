@@ -49,7 +49,9 @@ class _Hub:
         self.fetched: list[str] = []
         monkeypatch.setattr(dl, "fetch_remote_file", self._remote)
         monkeypatch.setattr(dl, "_repo_sibling_files", lambda _repo, **_kw: sorted(sizes))
-        monkeypatch.setattr(dl, "resolve_filename", lambda entry, _engine: entry.gguf_filename)
+        monkeypatch.setattr(
+            dl, "resolve_filename", lambda entry, _engine, **_kw: entry.gguf_filename
+        )
         monkeypatch.setattr(dl, "_download_with_retry", self._download)
 
     def _remote(self, _repo: str, name: str) -> dl.RemoteFile:

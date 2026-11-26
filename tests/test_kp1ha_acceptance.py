@@ -597,6 +597,59 @@ async def test_a_vision_pull_charges_its_projector(
     _assert_refused(outcome, "Not enough disk space")
 
 
+# ---- 9. A wildcard row whose top file the engine cannot load -----------------------
+
+
+TOP_QUANT = "tiny-Q4_K_M.gguf"
+NEXT_QUANT = "tiny-Q8_0.gguf"
+
+
+@pytest.mark.parametrize("loadable", [{NEXT_QUANT}, set()], ids=["next-file", "no-file"])
+async def test_a_wildcard_row_skips_the_files_the_engine_cannot_load(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    hub: FakeHub,
+    volume: Volume,
+    loadable: set[str],
+) -> None:
+    """Both sides ask the engine which file it can load, so both pick the same file.
+
+    The engine's verdict is the one input set here, on the engine itself: the
+    fake hub cannot serve a real GGUF header. The top-ranked file is too big for
+    the disk, so a check that charges it refuses a pull the download completes.
+    When the engine can load no file, the download fails at once, and so must
+    the TUI, with the download's message.
+    """
+    from lilbee.app.services import get_services
+    from lilbee.catalog.compat import UnsupportedQuantError
+    from lilbee.catalog.refs import GGUF_GLOB
+
+    repo = "acme/two-quants-GGUF"
+    files = {TOP_QUANT: b"T" * 9000, NEXT_QUANT: b"N" * 2000}
+    hub.repos[repo] = FakeRepo(files)
+    model = _entry(repo, ModelFormat.GGUF, GGUF_GLOB, HUGE_GB)
+    engine = get_services().engines.for_ref(model.pull_ref)
+
+    def _assert_loadable(_self: object, hf_repo: str, filename: str, _token: object) -> None:
+        if filename not in loadable:
+            raise UnsupportedQuantError(f"{hf_repo}/{filename}", "IQ1_S")
+
+    monkeypatch.setattr(type(engine), "assert_loadable", _assert_loadable)
+    roots = (tmp_path / "tui", tmp_path / "dl")
+    for root in roots:
+        volume.mount(root, free_bytes=len(files[NEXT_QUANT]) + REFS_SLACK)
+
+    outcome = await _tui_install(monkeypatch, roots[0], model)
+    result = _download(monkeypatch, roots[1], model)
+
+    if loadable:
+        assert isinstance(result, Path) and result.name == NEXT_QUANT, result
+        _assert_enqueued(outcome, model)
+    else:
+        assert isinstance(result, UnsupportedQuantError), result
+        _assert_refused(outcome, str(result))
+
+
 def test_the_cases_are_independent_of_the_row_estimate() -> None:
     """Guard on the fixtures: the estimates sit far from every real file size."""
     assert HUGE_GB * 1024**3 > 10**6

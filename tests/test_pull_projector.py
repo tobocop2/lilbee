@@ -53,7 +53,7 @@ class _Hub:
         self.fetched: list[str] = []
         self.fail_transfer: Exception | None = None
         monkeypatch.setattr(dl, "_repo_sibling_files", self._list)
-        monkeypatch.setattr(dl, "resolve_filename", lambda entry, engine: _MODEL)
+        monkeypatch.setattr(dl, "resolve_filename", lambda entry, engine, **_kw: _MODEL)
         # Files land flat, where the held test of an older install looks.
         monkeypatch.setattr(dl, "cached_file_path", lambda *a: None)
         monkeypatch.setattr(dl, "fetch_remote_file", lambda *a: dl.RemoteFile(size=0, blob="b"))
