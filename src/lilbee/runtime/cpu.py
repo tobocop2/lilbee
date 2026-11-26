@@ -22,12 +22,16 @@ import math
 import os
 from pathlib import Path
 
-from lilbee.core.system import _CGROUP_ROOT, _PROC_CGROUP, _cgroup_chain, _own_cgroup_paths
+from lilbee.core.system import cgroup_chain, own_cgroup_paths
 from lilbee.runtime.shard_process import shard_process
 
 log = logging.getLogger(__name__)
 
 _ENV_VAR = "LILBEE_CPU_QUOTA"
+
+_CGROUP_ROOT = Path("/sys/fs/cgroup")
+
+_PROC_CGROUP = Path("/proc/self/cgroup")
 
 _V1_CPU_CONTROLLER = "cpu"
 
@@ -64,14 +68,14 @@ def _cgroup_cpu_quota(root: Path | None = None, proc_cgroup: Path | None = None)
     rounds differs per caller, so it is left to them.
     """
     root = _CGROUP_ROOT if root is None else root
-    paths = _own_cgroup_paths(_PROC_CGROUP if proc_cgroup is None else proc_cgroup)
-    v2 = [q for d in _cgroup_chain(root, paths.get("")) if (q := _v2_dir_quota(d)) is not None]
+    paths = own_cgroup_paths(_PROC_CGROUP if proc_cgroup is None else proc_cgroup)
+    v2 = [q for d in cgroup_chain(root, paths.get("")) if (q := _v2_dir_quota(d)) is not None]
     if v2:
         return min(v2)
     v1_base = root / "cpu"
     v1 = [
         q
-        for d in _cgroup_chain(v1_base, paths.get(_V1_CPU_CONTROLLER))
+        for d in cgroup_chain(v1_base, paths.get(_V1_CPU_CONTROLLER))
         if (q := _v1_dir_quota(d)) is not None
     ]
     return min(v1) if v1 else None
