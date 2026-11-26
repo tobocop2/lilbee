@@ -164,6 +164,44 @@ def test_an_exit_asked_for_after_the_main_task_finished_leaves_when_the_run_retu
     assert in_close == [False]
 
 
+class _Woken(Exception):
+    """Raised by the test's signal handler, to end the run it interrupts."""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no pthread_kill")
+def test_run_main_wakes_for_a_signal_that_another_thread_took() -> None:
+    """The kernel can give a process signal to a worker thread; the loop's sleep must still end.
+
+    Python runs the handler on the main thread only, and a sleep in the selector does
+    not end for a signal that another thread took. The wakeup descriptor ends it.
+    """
+
+    sent: list[float] = []
+    handled: list[float] = []
+
+    def handler(signum: int, frame: object) -> None:
+        handled.append(time.monotonic())
+        raise _Woken
+
+    def worker() -> None:
+        time.sleep(0.3)  # the loop is asleep in its select by now
+        sent.append(time.monotonic())
+        # pthread_kill sends to this thread, as the kernel can for a process signal.
+        signal.pthread_kill(threading.get_ident(), signal.SIGUSR1)
+        time.sleep(2)  # the worker outlives the signal, so nothing else wakes the loop
+
+    async def waits_for_the_worker() -> None:
+        await asyncio.to_thread(worker)
+
+    previous = signal.signal(signal.SIGUSR1, handler)
+    try:
+        with pytest.raises(_Woken):
+            asyncio_loop.run_main(waits_for_the_worker())
+    finally:
+        signal.signal(signal.SIGUSR1, previous)
+    assert handled[0] - sent[0] < 1.0
+
+
 def test_run_main_off_the_main_thread_holds_no_exit() -> None:
     """A signal runs on the main thread only, so a run on another thread is a plain asyncio.run."""
     kept: list[bool] = []
