@@ -163,7 +163,7 @@ class StatusResult(BaseModel):
     """Files a held-out record holds out of the index, capped at ``STATUS_SKIPPED_LIMIT``."""
     skipped_total: int = 0
     partly_read: list[PartialFile] = []
-    """Indexed sources with pages whose OCR failed, capped at ``STATUS_SKIPPED_LIMIT``."""
+    """Indexed sources with pages whose OCR failed, the first ``STATUS_SKIPPED_LIMIT`` by name."""
     partial_total: int = 0
     """How many indexed sources have pages whose OCR failed."""
     ocr_note: str = ""
@@ -215,7 +215,12 @@ def gather_status() -> StatusResult:
     """Collect status data as a typed model (shared by human + JSON output)."""
     summary = get_services().store.source_summary(STATUS_RECENT_LIMIT)
     skipped, skipped_total = held_out_sources()
-    partly_read, partial_total = get_services().store.partly_read_sources(STATUS_SKIPPED_LIMIT)
+    # The summary pass counts the partly read sources; the listing query runs only for one.
+    partly_read, partial_total = (
+        get_services().store.partly_read_sources(STATUS_SKIPPED_LIMIT)
+        if summary.partly_read
+        else ({}, 0)
+    )
     return StatusResult(
         index=_index_status(),
         config=StatusConfig(

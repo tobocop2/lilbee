@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import logging
 import math
@@ -15,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, ExitStack, contextmanager, suppress
 from dataclasses import asdict
 from datetime import UTC, datetime
+from operator import itemgetter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, cast
 
@@ -97,9 +99,11 @@ from .schema import (
     _wiki_mentions_schema,
 )
 from .types import (
+    FAILED_PAGES_COLUMN,
     INGEST_FAILURES,
     KEYED_SCHEMA_VERSION,
     META_SCHEMA_VERSION,
+    PARTLY_READ_COLUMN,
     READ_CONSISTENCY_INTERVAL,
     SOURCE_STAT_UNKNOWN,
     ChunkType,
@@ -331,8 +335,8 @@ _HELD_REASON = "held_reason"
 _HELD_INPUTS = "held_inputs"
 _HELD_COLUMNS = (_HELD_OUT, _HELD_HASH, _HELD_REASON, _HELD_INPUTS)
 _HELD_RECORD_COLUMNS = (_HELD_HASH, _HELD_REASON, _HELD_INPUTS)
-# The ``_sources`` column of the pages whose OCR failed; NULL when every page was read.
-_FAILED_PAGES = _sources_failed_pages_field().name
+_FAILED_PAGES = FAILED_PAGES_COLUMN
+_PARTLY_READ = PARTLY_READ_COLUMN
 
 # Tables that hold a source's rows, deleted with the source. The concept
 # nodes/edges tables carry no source column (corpus-level aggregates).
@@ -458,7 +462,7 @@ _CONCEPTS_COVERED_UNREADABLE = "Cannot read %s (%s): the concept graph reads eve
 _SOURCE_SCAN_BATCH_ROWS = 20_000
 
 _HEAD_COLUMNS = [_OLD_PATH, "file_hash", "chunk_count", "ingested_at"]
-_SUMMARY_COLUMNS = [*_HEAD_COLUMNS, "source_type"]
+_SUMMARY_COLUMNS = [*_HEAD_COLUMNS, "source_type", _PARTLY_READ]
 
 
 def _source_heads(rows: pa.RecordBatch | pa.Table) -> list[SourceHead]:
@@ -921,16 +925,29 @@ def _add_held_columns(db: LanceDBConnection) -> None:
 
 
 def _lacks_failed_pages(db: LanceDBConnection) -> bool:
-    """Whether ``_sources`` lacks the column of the pages whose OCR failed."""
+    """Whether ``_sources`` lacks the failed pages column or the partly read column."""
     sources = open_committed(db, SOURCES_TABLE)
-    return sources is not None and _FAILED_PAGES not in sources.schema.names
+    if sources is None:
+        return False
+    return not {_FAILED_PAGES, _PARTLY_READ} <= set(sources.schema.names)
 
 
 def _add_failed_pages_column(db: LanceDBConnection) -> None:
-    """Give an existing ``_sources`` the column of failed pages, NULL on every row. Lock held."""
+    """Give an existing ``_sources`` the failed pages and partly read columns. Lock held.
+
+    The failed pages are NULL on every row the upgrade adds them to. The
+    partly read column is filled from them and gets its BITMAP index here,
+    once, so the status query reads the partly read rows through the index.
+    """
     sources = open_committed(db, SOURCES_TABLE)
-    if sources is not None and _FAILED_PAGES not in sources.schema.names:
+    if sources is None:
+        return
+    if _FAILED_PAGES not in sources.schema.names:
         sources.add_columns(_sources_failed_pages_field())
+    if _PARTLY_READ not in sources.schema.names:
+        sources.add_columns({_PARTLY_READ: f"{_FAILED_PAGES} IS NOT NULL"})
+        if sources.count_rows() > 0:
+            sources.create_scalar_index(_PARTLY_READ, index_type="BITMAP")
 
 
 def _index_names(table: LanceTable) -> dict[str, list[str]]:
@@ -2299,10 +2316,12 @@ class Store:
 
     # Tables and (column, index_type) pairs the query path filters by.
     # chunk_concepts serves the concept boost (ConceptGraph._chunk_concepts_from);
-    # without its index every boosted query full-scans the table.
+    # without its index every boosted query full-scans the table. The partly
+    # read index serves the status query (partly_read_sources).
     _SCALAR_TARGETS: tuple[tuple[str, tuple[tuple[str, ScalarIndexType], ...]], ...] = (
         (CHUNKS_TABLE, ((_SOURCE_ID, "BTREE"), (_CHUNK_TYPE, "BITMAP"))),
         (CHUNK_CONCEPTS_TABLE, ((_SOURCE_ID, "BTREE"),)),
+        (SOURCES_TABLE, ((_PARTLY_READ, "BITMAP"),)),
     )
 
     def ensure_scalar_indexes(self, *, blocking: bool = True) -> None:
@@ -3262,17 +3281,21 @@ class Store:
     def source_summary(self, newest: int) -> SourceSummary:
         """Totals over every listed source and the *newest* most recently ingested, in one pass.
 
-        Reads five columns in batches and keeps only running totals and the
+        Reads six columns in batches and keeps only running totals and the
         current newest rows, so memory stays flat however many sources exist.
+        The count of partly read sources comes from the same pass, so status
+        lists them only when there is one.
         """
         total_chunks = 0
         documents = 0
+        partly_read = 0
         kinds: Counter[str] = Counter()
         latest: list[SourceHead] = []
         sort_keys = [("ingested_at", "descending"), ("filename", "ascending")]
         for table in self._iter_source_batches(_SUMMARY_COLUMNS):
             documents += table.num_rows
             total_chunks += pc.sum(table.column("chunk_count")).as_py() or 0
+            partly_read += pc.sum(table.column(_PARTLY_READ)).as_py() or 0
             for entry in pc.value_counts(table.column("source_type")).to_pylist():
                 kinds[entry["values"]] += entry["counts"]
             top = table.take(pc.select_k_unstable(table, newest, sort_keys))
@@ -3280,26 +3303,37 @@ class Store:
             latest.sort(key=lambda head: head["filename"])
             latest.sort(key=lambda head: head["ingested_at"], reverse=True)
             del latest[newest:]
-        return SourceSummary(documents, total_chunks, dict(kinds), latest)
+        return SourceSummary(documents, total_chunks, dict(kinds), latest, partly_read)
 
     def partly_read_sources(self, limit: int) -> tuple[dict[str, list[FailedPage]], int]:
-        """Up to *limit* listed sources with pages whose OCR failed, by name, and their count.
+        """The first *limit* listed sources by name with pages whose OCR failed, and their count.
 
-        Reads the name and failed-page columns of those rows alone, so the cost
+        The BITMAP index on the partly read column finds the rows, so the cost
         follows the number of partly read files, not the size of the library.
+        The first query reads the path of each partly read row; the second goes
+        through the same index and reads the failed pages of the *limit* rows listed.
+        Rows written after the last index build or optimize are outside the
+        index and are scanned.
         """
         table = self.open_table(SOURCES_TABLE)
         if table is None:
             return {}, 0
-        where = f"({_LISTED}) AND {_FAILED_PAGES} IS NOT NULL"
+        where = f"{_PARTLY_READ} = true AND ({_LISTED})"
+        found = table.search().where(where).select([_PATH]).limit(None).to_arrow()
+        paths: list[str] = found.column(_PATH).to_pylist()
+        if not paths:
+            return {}, 0
         name = self._locations().name
-        query = table.search().where(where).select([_PATH, _FAILED_PAGES]).limit(limit)
-        found = {
-            name(row[_PATH]): [FailedPage(**page) for page in row[_FAILED_PAGES]]
+        named = ((name(path), path) for path in paths)
+        first = heapq.nsmallest(limit, named, key=itemgetter(0))
+        shown = {path: shown_name for shown_name, path in first}
+        listed = f"{_PARTLY_READ} = true AND {_PATH} IN ({_in_list(shown)})"
+        query = table.search().where(listed).select([_PATH, _FAILED_PAGES]).limit(None)
+        pages = {
+            shown[row[_PATH]]: [FailedPage(**page) for page in row[_FAILED_PAGES]]
             for row in query.to_list()
         }
-        total: int = table.count_rows(filter=where)
-        return dict(sorted(found.items())), total
+        return dict(sorted(pages.items())), len(paths)
 
     def iter_source_heads(self) -> Iterator[SourceHead]:
         """Every listed source, streamed in batches so no more than one batch is held."""
@@ -3516,6 +3550,7 @@ class Store:
             "authors": meta.authors or None,
             "created_at": meta.created_at or None,
             _FAILED_PAGES: [asdict(page) for page in ocr_page_failures or []] or None,
+            _PARTLY_READ: bool(ocr_page_failures),
             **dict.fromkeys(_HELD_COLUMNS),
         }
 

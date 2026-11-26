@@ -1068,7 +1068,8 @@ when the page still has native text or text from an embedded image. With
 `pages` is `{"page", "error", "recovered"}`: the page number from 1, the OCR
 error, and whether the page kept other text. `reasons` gives the reason for
 each failed or skipped file. `lilbee status` lists the partly read files in a
-`Partly read` table of at most 50 files; with `--json`, `partly_read` lists
+`Partly read` table of the first 50 files by name, and says how many of them
+it shows when there are more; with `--json`, `partly_read` lists
 them in the same shape, and `partial_total` counts all of them. The text output
 shows the first five failed pages of a file and counts the rest; `--json`
 carries all of them. A normal sync does not read a partly read file again.
@@ -1308,7 +1309,7 @@ embedded image. The API reports partly read files in these places:
 
 - The `done` event of `POST /api/sync`, and `sync` in the `done` event of `POST /api/add` and `POST /api/add/upload`: `partial` lists each partly read file as `{"name", "pages"}`, where `pages` holds its failed pages, and `reasons` maps each failed or skipped file to its reason.
 - The `file_done` progress event: `status` is `ok`, `partial`, `skipped` or `error`. The `sync_done` event carries a `partial` count, and `batch_progress` uses the `partial` status for the same files.
-- `GET /api/status`: `partly_read` lists the partly read files as `{"name", "pages"}`, at most 50, and `partial_total` counts all of them.
+- `GET /api/status`: `partly_read` lists the partly read files as `{"name", "pages"}`, the first 50 by name, and `partial_total` counts all of them.
 - `GET /api/documents`: each document carries `ocr_page_failures`.
 
 `POST /api/sync` with `{"retry_skipped": true}` reads the partly read files again.

@@ -1048,6 +1048,7 @@ class ChatScreen(Screen[None]):
         )
         self._notify_unreadable_folders(sync_result)
         report_ingest(reporter, sync_result)
+        self._report_partly_read(sync_result)
         if sync_result.failed:
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
         if sync_result.skipped:
@@ -1057,7 +1058,6 @@ class ChatScreen(Screen[None]):
             if registered and not add_indexed_anything(registered, sync_result):
                 raise RuntimeError(skipped_msg)
             call_from_thread(self, self.notify, skipped_msg, severity="warning")
-        self._report_partly_read(sync_result)
         if sync_result.relocated:
             call_from_thread(
                 self,

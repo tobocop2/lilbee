@@ -1088,9 +1088,9 @@ class TestEnsureScalarIndexes:
         assert table is not None
         with mock.patch.object(type(table), "create_scalar_index") as spy:
             store.ensure_scalar_indexes()
-        assert [c.args[0] for c in spy.call_args_list] == ["source_id", "chunk_type"]
+        assert [c.args[0] for c in spy.call_args_list] == ["source_id", "chunk_type", "partly_read"]
         kinds = {c.args[0]: c.kwargs.get("index_type") for c in spy.call_args_list}
-        assert kinds == {"source_id": "BTREE", "chunk_type": "BITMAP"}
+        assert kinds == {"source_id": "BTREE", "chunk_type": "BITMAP", "partly_read": "BITMAP"}
         assert all(c.kwargs.get("replace") is False for c in spy.call_args_list)
 
     def test_idempotent_once_the_indexes_exist(self, store):
@@ -1141,7 +1141,7 @@ class TestEnsureScalarIndexes:
 
         with mock.patch.object(type(table), "create_scalar_index", _record):
             store.ensure_scalar_indexes()
-        assert attempted == ["source_id", "chunk_type"]
+        assert attempted == ["source_id", "chunk_type", "partly_read"]
 
     def test_scalar_index_failure_on_populated_table_warns(self, store, caplog):
         """A create failure on a non-empty table warns (it silently loses the
@@ -5560,6 +5560,7 @@ class TestOpenTimeMigration:
         assert _indexes(SOURCES_TABLE) == {
             ("path_idx", ("path",)),
             ("source_id_idx", ("source_id",)),
+            ("partly_read_idx", ("partly_read",)),
         }
 
     def test_a_key_index_is_added_when_an_fts_index_has_lost_its_files(self, test_config):
@@ -6080,5 +6081,70 @@ class TestPartlyReadSources:
         for name in ("a.pdf", "b.pdf", "c.pdf"):
             self._write(store, name, [self._PAGE])
 
+        self._write(store, "clean.pdf", [])
+
         listed, total = store.partly_read_sources(2)
         assert (len(listed), total) == (2, 3)
+        assert store.source_summary(0).partly_read == 3
+
+    def test_a_library_read_in_full_has_none(self, store):
+        self._write(store, "clean.pdf", [])
+
+        assert store.partly_read_sources(5) == ({}, 0)
+        assert store.source_summary(0).partly_read == 0
+
+    def test_over_the_limit_the_first_names_are_listed(self, store):
+        for name in ("c.pdf", "b.pdf", "a.pdf"):
+            self._write(store, name, [self._PAGE])
+
+        assert store.partly_read_sources(2) == ({"a.pdf": [self._PAGE], "b.pdf": [self._PAGE]}, 3)
+
+    def test_a_removed_source_and_a_wiki_page_are_not_listed(self, store):
+        from lilbee.data.store import ChunkWrite, HeldOut, HeldRecord, SourceType
+
+        self._write(store, "kept.pdf", [self._PAGE])
+        self._write(store, "removed.pdf", [self._PAGE])
+        store.hold_failed({"removed.pdf": HeldRecord(HeldOut.REMOVED, "h1", "removed")})
+        records = [{**record, "source": "page.md"} for record in _make_records(1)]
+        wiki = ChunkWrite(
+            "page.md",
+            "h1",
+            records,
+            needs_cleanup=True,
+            source_type=SourceType.WIKI,
+            ocr_page_failures=[self._PAGE],
+        )
+        store.write_chunks_batch([wiki])
+
+        assert store.partly_read_sources(5) == ({"kept.pdf": [self._PAGE]}, 1)
+        assert store.source_summary(0).partly_read == 1
+
+    def test_the_scalar_index_build_indexes_the_partly_read_column(self, store):
+        self._write(store, "scan.pdf", [self._PAGE])
+
+        store.ensure_scalar_indexes()
+
+        assert _partly_read_index_types(store) == ["Bitmap"]
+
+    def test_the_upgrade_fills_the_partly_read_column_and_indexes_it(self, test_config):
+        self._write(Store(test_config), "scan.pdf", [self._PAGE])
+        self._write(Store(test_config), "clean.pdf", [])
+        _sources_table_at(test_config).drop_columns(["partly_read"])
+
+        store = Store(test_config)
+
+        assert store.partly_read_sources(5) == ({"scan.pdf": [self._PAGE]}, 1)
+        assert _partly_read_index_types(store) == ["Bitmap"]
+
+
+def _sources_table_at(test_config):
+    """The ``_sources`` table of the library at *test_config*, opened without a Store."""
+    from lancedb.db import LanceDBConnection
+
+    return LanceDBConnection(str(test_config.lancedb_dir)).open_table(SOURCES_TABLE)
+
+
+def _partly_read_index_types(store):
+    """The types of the indexes on the partly read column of *store*'s ``_sources``."""
+    table = store.open_table(SOURCES_TABLE)
+    return [idx.index_type for idx in table.list_indices() if "partly_read" in idx.columns]
