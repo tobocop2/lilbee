@@ -964,7 +964,7 @@ class TestSyncMark:
         def _reset() -> None:
             with _no_sync_running(tmp_path):
                 held.set()
-                release.wait(60)
+                release.wait(45)
 
         entered = asyncio.Event()
 
@@ -977,8 +977,8 @@ class TestSyncMark:
         assert held.wait(5)
         sync_task = asyncio.create_task(_sync())
         await asyncio.sleep(0.3)
-        # The reset still holds the mark: a wait that held the loop could only end after
-        # the reset gave up its own 60 s wait.
+        # The reset still holds the mark: a wait that held the loop until the reset gave
+        # up its own 45 s wait would fail here. A stall of a few seconds is not detected.
         assert resetter.is_alive(), "the wait for the reset blocked the event loop"
         assert not entered.is_set()
         release.set()
