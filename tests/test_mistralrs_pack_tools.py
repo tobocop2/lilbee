@@ -74,8 +74,14 @@ def test_repack_places_the_five_cuda_libraries_beside_the_tool(tmp_path: Path) -
     repack.repack(_tar(tmp_path / "a.tar.gz", entries), tmp_path / "bin")
     assert sorted(p.name for p in (tmp_path / "bin" / "lib").iterdir()) == sorted(CUDA_LIBS)
     assert (tmp_path / "bin" / "lib" / "libnccl.so.2").read_bytes() == b"libnccl.so.2"
-    assert not os.access(tmp_path / "bin" / "lib" / "libnccl.so.2", os.X_OK)
     assert (tmp_path / "bin" / "mistralrs").read_bytes() == b"bin"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no execute bit")
+def test_repack_places_the_cuda_libraries_without_the_execute_bit(tmp_path: Path) -> None:
+    entries = {"mistralrs": b"bin", **{f"lib/{name}": name.encode() for name in CUDA_LIBS}}
+    repack.repack(_tar(tmp_path / "a.tar.gz", entries), tmp_path / "bin")
+    assert not os.access(tmp_path / "bin" / "lib" / "libnccl.so.2", os.X_OK)
 
 
 def test_repack_makes_no_lib_folder_for_a_cpu_archive(tmp_path: Path) -> None:
@@ -807,6 +813,7 @@ def test_the_check_fails_a_macos_tool_that_loads_a_library_outside_the_system(
     assert ("loads a library outside the system" in done.stderr) == bool(status)
 
 
+@_POSIX_TOOL
 def test_the_check_fails_a_macos_tool_whose_otool_fails(tmp_path: Path) -> None:
     stubs = tmp_path / "stubs"
     stubs.mkdir()
@@ -1091,6 +1098,7 @@ def test_the_check_fails_a_cuda_wheel_that_lacks_a_library(tmp_path: Path, missi
     assert f"lacks bin/lib/{missing}" in done.stderr
 
 
+@_POSIX_TOOL
 def test_the_whole_check_of_a_cuda_wheel_stops_at_the_libraries_not_at_the_start(
     tmp_path: Path,
 ) -> None:
