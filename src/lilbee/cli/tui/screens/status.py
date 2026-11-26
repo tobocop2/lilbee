@@ -47,6 +47,8 @@ _DOCS_PAGE_SIZE = DOCUMENTS_PAGE_DEFAULT
 _DOCS_SCROLL_PREFETCH_RATIO = 0.85
 _WORKER_FETCH_SOURCES = "status_fetch_sources"
 _WORKER_FETCH_DOCS_PAGE = "status_fetch_docs_page"
+# The first read and every page share a group, so a new first read cancels a page in flight.
+_WORKER_GROUP_DOCS = "status_docs"
 
 
 @dataclass
@@ -198,6 +200,7 @@ class StatusScreen(MountWhenAttached, Screen[None]):
         self._docs_loading: bool = False
         self._docs_page_failed: bool = False
         self._docs_scroll_watched: bool = False
+        self._docs_jump_pending: bool = False
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -238,6 +241,19 @@ class StatusScreen(MountWhenAttached, Screen[None]):
         self.call_after_refresh(self._mount_remaining_sections)
         self._fetch_sources_worker()
         self._fetch_arch_worker()
+        # A sync adds and removes sources, so the table and the count read the store
+        # again at the end of each task.
+        self.app.task_bar.subscribe_work_end(self._refresh_sources)
+
+    def on_unmount(self) -> None:
+        self.app.task_bar.unsubscribe_work_end(self._refresh_sources)
+
+    def _refresh_sources(self) -> None:
+        """Read the first page and the count again; the new read replaces any page in flight."""
+        self._docs_has_more = False
+        self._docs_loading = False
+        self._docs_jump_pending = False
+        self._fetch_sources_worker()
 
     async def _mount_remaining_sections(self) -> None:
         """Mount Documents/Architecture/Storage once the screen is visible."""
@@ -311,7 +327,13 @@ class StatusScreen(MountWhenAttached, Screen[None]):
         with contextlib.suppress(NoMatches):
             self.query_one("#arch-info", Static).update(Content.styled("Loading...", "$text-muted"))
 
-    @work(thread=True, name=_WORKER_FETCH_SOURCES, exit_on_error=False)
+    @work(
+        thread=True,
+        name=_WORKER_FETCH_SOURCES,
+        group=_WORKER_GROUP_DOCS,
+        exclusive=True,
+        exit_on_error=False,
+    )
     def _fetch_sources_worker(self) -> _DocsResult:
         """Read the source count and the first page off the UI thread.
 
@@ -324,7 +346,7 @@ class StatusScreen(MountWhenAttached, Screen[None]):
             held_out, held_out_total = held_out_sources()
             store = get_services().store
             return _DocsResult(
-                sources=store.get_sources(limit=_DOCS_PAGE_SIZE, offset=0),
+                sources=store.get_sources(limit=_DOCS_PAGE_SIZE, offset=0, newest_first=True),
                 load_failed=False,
                 document_count=store.count_sources(),
                 held_out=held_out,
@@ -334,11 +356,15 @@ class StatusScreen(MountWhenAttached, Screen[None]):
             log.debug("Failed to read store for status screen", exc_info=True)
             return _DocsResult(sources=[], load_failed=True)
 
-    @work(thread=True, name=_WORKER_FETCH_DOCS_PAGE, exit_on_error=False)
+    @work(
+        thread=True, name=_WORKER_FETCH_DOCS_PAGE, group=_WORKER_GROUP_DOCS, exit_on_error=False
+    )
     def _fetch_docs_page_worker(self, offset: int) -> _DocsPage:
         """Read one further page of sources off the UI thread."""
         try:
-            page = get_services().store.get_sources(limit=_DOCS_PAGE_SIZE, offset=offset)
+            page = get_services().store.get_sources(
+                limit=_DOCS_PAGE_SIZE, offset=offset, newest_first=True
+            )
             return _DocsPage(sources=page)
         except Exception:
             log.debug("Failed to read a page of sources for status screen", exc_info=True)
@@ -448,9 +474,15 @@ class StatusScreen(MountWhenAttached, Screen[None]):
                 )
             self._docs_loaded += len(page.sources)
             self._docs_page_failed = page.load_failed
-            # An empty page means the library shrank under the count; stop asking.
-            self._docs_has_more = bool(page.sources) and self._docs_loaded < self._docs_total
+            # A failed read leaves "more" set, so the next scroll or cursor move tries
+            # the page again. An empty page that did not fail means the library shrank
+            # under the count; stop asking.
+            if not page.load_failed:
+                self._docs_has_more = bool(page.sources) and self._docs_loaded < self._docs_total
             self._show_docs_hint()
+        if page.load_failed:
+            self._docs_jump_pending = False
+        self._advance_docs_jump()
 
     def _show_docs_hint(self) -> None:
         """Say how many sources are loaded while more remain, and that a read failed."""
@@ -501,4 +533,21 @@ class StatusScreen(MountWhenAttached, Screen[None]):
         self.query_one("#status-scroll", VerticalScroll).scroll_home(animate=False)
 
     def action_jump_bottom(self) -> None:
+        """Scroll to the end of the screen and put the Documents cursor on the last source."""
         self.query_one("#status-scroll", VerticalScroll).scroll_end(animate=False)
+        self._docs_jump_pending = True
+        self._advance_docs_jump()
+
+    def _advance_docs_jump(self) -> None:
+        """Take the next step toward the last source: read a page, or move the cursor."""
+        from textual.css.query import NoMatches
+
+        if not self._docs_jump_pending:
+            return
+        if self._docs_has_more:
+            self._load_more_docs()
+            return
+        self._docs_jump_pending = False
+        with contextlib.suppress(NoMatches):
+            table = self.query_one("#docs-table", DataTable)
+            table.move_cursor(row=table.row_count - 1)
