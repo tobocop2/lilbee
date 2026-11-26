@@ -244,13 +244,14 @@ def run_interruptible(coro: Awaitable[T], cancel: SignalFlag) -> T:
     try:
         runner.start()
         _wait_for(done, cancel)
-        # The run has ended, so the thread only returns: the scope sees no thread of it.
-        runner.join()
     except BaseException:
         loop.call_soon_threadsafe(_cancel_all_tasks, loop)
         raise
     finally:
         cancel.unbind_run()
+    # The run has ended, so the thread only returns: the scope sees no thread of it.
+    # A Ctrl-C from here on is in the wind-down, so no raise lands in the join.
+    runner.join()
     loop.close()
     return done.result()
 
