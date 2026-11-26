@@ -153,9 +153,9 @@ def test_partly_read_files_are_listed_with_one_line_for_each_failed_page() -> No
     assert any("1 partly read" in line and "--retry-skipped" in line for line in strings)
 
 
-def test_the_partly_read_line_counts_the_files_the_table_leaves_out() -> None:
+def test_the_partly_read_line_says_how_many_of_the_files_the_table_shows() -> None:
     _, strings = _texts(_partly_read_status(partial_total=4))
-    assert any("4 partly read (3 more not shown)" in line for line in strings)
+    assert any("4 partly read (1 of 4 shown)" in line for line in strings)
 
 
 def test_no_partly_read_table_when_every_file_was_read_in_full() -> None:
@@ -208,23 +208,32 @@ def test_failed_page_line_marks_only_a_page_that_kept_other_text() -> None:
     assert failed_page_line(kept) == "page 4: timed out (other text kept)"
 
 
-def test_gather_status_lists_the_partly_read_files_and_counts_them_all() -> None:
+def _gather_status_with(services):
+    """gather_status over the mock *services*, with no held-out file."""
     from unittest.mock import patch
 
     from lilbee.app.services import set_services
-    from lilbee.app.status import STATUS_SKIPPED_LIMIT, gather_status
-    from tests.conftest import make_mock_services
+    from lilbee.app.status import gather_status
 
-    page = FailedPage(page=2, error="timed out", recovered=False)
-    services = make_mock_services()
-    services.store.partly_read_sources.return_value = ({"b.pdf": [page]}, 3)
     services.store.get_meta.return_value = None
     set_services(services)
     try:
         with patch("lilbee.app.status.held_out_sources", return_value=([], 0)):
-            status = gather_status()
+            return gather_status()
     finally:
         set_services(None)
+
+
+def test_gather_status_lists_the_partly_read_files_and_counts_them_all() -> None:
+    from lilbee.app.status import STATUS_SKIPPED_LIMIT
+    from lilbee.data.store import SourceSummary
+    from tests.conftest import make_mock_services
+
+    page = FailedPage(page=2, error="timed out", recovered=False)
+    services = make_mock_services()
+    services.store.source_summary.return_value = SourceSummary(0, 0, {}, [], partly_read=3)
+    services.store.partly_read_sources.return_value = ({"b.pdf": [page]}, 3)
+    status = _gather_status_with(services)
 
     services.store.partly_read_sources.assert_called_once_with(STATUS_SKIPPED_LIMIT)
     assert status.partial_total == 3
@@ -232,3 +241,13 @@ def test_gather_status_lists_the_partly_read_files_and_counts_them_all() -> None
     assert status.model_dump()["partly_read"] == [
         {"name": "b.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
     ]
+
+
+def test_gather_status_skips_the_listing_when_no_file_is_partly_read() -> None:
+    from tests.conftest import make_mock_services
+
+    services = make_mock_services()
+    status = _gather_status_with(services)
+
+    services.store.partly_read_sources.assert_not_called()
+    assert (status.partly_read, status.partial_total) == ([], 0)

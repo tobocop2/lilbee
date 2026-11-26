@@ -71,6 +71,7 @@ def _install(library: _Library) -> None:
     store.get_sources.side_effect = library.get_sources
     store.count_sources.side_effect = library.count_sources
     store.source_summary.return_value = SourceSummary(0, 0, {}, [])
+    store.partly_read_sources.return_value = ({}, 0)
     set_services(make_mock_services(store=store))
 
 

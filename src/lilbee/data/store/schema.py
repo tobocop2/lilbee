@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pyarrow as pa
 
+from .types import FAILED_PAGES_COLUMN, PARTLY_READ_COLUMN
+
 CANARY_VECTORS_COLUMN = "canary_vectors"
 # JSON of the settings the library's chunks were cut with.
 CHUNK_SETTINGS_COLUMN = "chunk_settings"
@@ -55,6 +57,7 @@ def _sources_schema() -> pa.Schema:
             pa.field("held_reason", pa.utf8()),
             pa.field("held_inputs", pa.utf8()),
             _sources_failed_pages_field(),
+            _sources_partly_read_field(),
         ]
     )
 
@@ -68,7 +71,12 @@ def _sources_failed_pages_field() -> pa.Field:
             pa.field("recovered", pa.bool_()),
         ]
     )
-    return pa.field("ocr_page_failures", pa.list_(failed_page))
+    return pa.field(FAILED_PAGES_COLUMN, pa.list_(failed_page))
+
+
+def _sources_partly_read_field() -> pa.Field:
+    """The ``_sources`` column that says whether a row has a page whose OCR failed."""
+    return pa.field(PARTLY_READ_COLUMN, pa.bool_())
 
 
 def _page_texts_schema() -> pa.Schema:

@@ -18,6 +18,7 @@ from lilbee.cli.app import app
 from lilbee.core.config import cfg
 from lilbee.data.store import Store
 from lilbee.data.store.schema import _sources_failed_pages_field
+from lilbee.data.store.types import PARTLY_READ_COLUMN
 from tests.conftest import make_mock_services
 
 MILLION = 1_000_000
@@ -73,9 +74,12 @@ def _not_held(count: int) -> dict[str, pa.Array]:
 
 
 def _read_whole(count: int) -> dict[str, pa.Array]:
-    """The failed-pages column of *count* source rows whose OCR failed on no page."""
+    """The failed-pages and partly read columns of *count* rows whose OCR failed on no page."""
     column = _sources_failed_pages_field()
-    return {column.name: pa.array([None] * count, column.type)}
+    return {
+        column.name: pa.array([None] * count, column.type),
+        PARTLY_READ_COLUMN: pa.array([False] * count, pa.bool_()),
+    }
 
 
 def _chunks_total(count: int) -> int:

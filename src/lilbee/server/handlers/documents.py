@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import mimetypes
+from dataclasses import asdict
 from functools import partial
 
 from litestar.exceptions import ClientException
@@ -11,7 +12,7 @@ from litestar.status_codes import HTTP_409_CONFLICT
 
 from lilbee.app.services import get_services
 from lilbee.app.titles import stored_web_titles
-from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT
+from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, failed_pages
 from lilbee.server.models import (
     DocumentInfo,
     DocumentListResponse,
@@ -109,9 +110,7 @@ async def list_documents(
                 filename=s["filename"],
                 chunk_count=s.get("chunk_count", 0),
                 ingested_at=s.get("ingested_at", ""),
-                ocr_page_failures=[
-                    FailedPageInfo(**row) for row in s.get("ocr_page_failures") or []
-                ],
+                ocr_page_failures=[FailedPageInfo(**asdict(page)) for page in failed_pages(s)],
             )
             for s in page
         ],
