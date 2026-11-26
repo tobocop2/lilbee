@@ -48,6 +48,15 @@ case "${method} ${url}" in
     per=30; page=1
     [[ "${url}" =~ [?\&]per_page=([0-9]+) ]] && per="${BASH_REMATCH[1]}"
     [[ "${url}" =~ [?\&]page=([0-9]+) ]] && page="${BASH_REMATCH[1]}"
+    echo "list ${page}" >> "${CALLS}"
+    # FULL_PAGES: every page is full and never holds the asset, up to page
+    # 200, so a loop with no stop still ends and the test fails, not hangs.
+    if [ -n "${FULL_PAGES:-}" ] && [ "${page}" -le 200 ]; then
+      printf '['
+      for i in $(seq 1 "${per}"); do printf '{"id":1,"name":"full-%s.tar.gz"},' "${i}"; done
+      printf '{}]'
+      exit 0
+    fi
     files=()
     for f in "${MIRROR}"/*; do [ -e "${f}" ] && files+=("${f##*/}"); done
     printf '['
@@ -190,6 +199,15 @@ at_day() {  # day-number command...
   [ "$status" -eq 0 ]
   [[ "$output" == *"Mirror already carries k.b2.tar.gz."* ]]
   [ "$(grep -c '^upload' "${CALLS}")" -eq 0 ]
+}
+
+# A listing that never comes back short must not loop for the length of the
+# step's timeout: the check stops after 100 pages and the upload goes ahead.
+@test "the asset check stops after 100 full pages and tries the upload" {
+  FULL_PAGES=1 run at_day 65 publish k "${SRC}"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^list' "${CALLS}")" -eq 100 ]
+  [ "$(grep -c '^upload' "${CALLS}")" -eq 1 ]
 }
 
 # The steps that run a publish: the engine action anywhere, and the Nuitka
