@@ -107,3 +107,27 @@ async def test_keys_typed_as_the_gate_hands_over_reach_the_prompt(monkeypatch) -
         inp = chat.query_one("#chat-input", ChatInput)
         await pilot.press(*KEYS[4:])
         assert await wait_until(pilot, lambda: inp.value == QUESTION, timeout=5.0), inp.value
+
+
+async def test_keys_typed_before_a_catalog_landing_never_reach_the_prompt(monkeypatch) -> None:
+    """With no chat model the gate lands on the Catalog, and the keys typed at the gate go.
+
+    A later visit to Chat opens an empty prompt, not the old keys.
+    """
+    monkeypatch.setattr(StartupGate, "start_boot", lambda self: None)
+    app = LilbeeApp()
+    async with app.run_test(size=(160, 48)) as pilot:
+        assert await wait_until(
+            pilot,
+            lambda: isinstance(app.screen, StartupGate) and app.chat_screen() is not None,
+            timeout=10.0,
+        )
+        gate = app.screen
+        assert isinstance(gate, StartupGate)
+        await pilot.press(*KEYS[:4])
+        app.chat_is_ready = False
+        gate._release()
+        assert await wait_until(pilot, lambda: app.active_view == msg.CATALOG_VIEW, timeout=10.0)
+        app.switch_view(msg.DEFAULT_VIEW)
+        chat = await await_chat(app, pilot)
+        assert chat.query_one("#chat-input", ChatInput).value == ""
