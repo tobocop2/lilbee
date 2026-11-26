@@ -187,7 +187,8 @@ def _run_with_sigint_blocked(
     """Run *task* on *loop* on this thread, where SIGINT is blocked, and put its end in *done*.
 
     The block holds for every thread this one starts, so no Ctrl-C handler runs on
-    them and no signal lands inside the loop's own code.
+    them and no signal lands inside the loop's own code. Windows has no block and
+    needs none: its Ctrl-C reaches the main thread's wait through the wakeup socket.
     """
     _block_sigint()
     asyncio.set_event_loop(loop)
@@ -292,11 +293,8 @@ class _MainRun:
                     raise held
 
     async def _as_main(self, main: Coroutine[Any, Any, T]) -> T:
-        from lilbee.app.services import loop_takes_signals
-
         self.task = asyncio.current_task()
-        with loop_takes_signals(asyncio.get_running_loop()):
-            return await main
+        return await main
 
     def hold(self, stop: SystemExit) -> bool:
         if self.task is None or not self.task.done():
@@ -310,9 +308,6 @@ _main_run = _MainRun()
 
 def run_main(main: Coroutine[Any, Any, T]) -> T:
     """Run *main* as ``asyncio.run`` does; an exit that ``hold_exit`` kept is raised after it.
-
-    On the main thread, the loop takes the routed signals while *main* runs, so their
-    exit never lands inside a step of *main*.
 
     A finished *main* queues the stop of its run. An exit raised by a signal handler
     before that stop runs leaves it queued, the shutdown of the runner ends on it, and

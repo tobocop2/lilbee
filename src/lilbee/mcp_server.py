@@ -68,6 +68,7 @@ from lilbee.app.services import (
     follow_config_long_running,
     get_services,
     logged_services_build,
+    loop_takes_signals,
     reset_services,
     reset_store,
 )
@@ -2519,12 +2520,11 @@ def _exit_on_parent_death() -> None:
 
 
 async def _serve_stdio(server: LilbeeMCP) -> None:
-    """Serve over stdio until stdin closes or a signal ends the process.
-
-    ``run_main`` lets the loop take the signals, so the exit is raised by a loop
-    callback and never inside a task step.
-    """
-    await server.run_stdio_async()
+    """Serve over stdio until stdin closes or a signal ends the process."""
+    # The loop takes the signals, so the exit is raised by a loop callback and never
+    # inside a task step.
+    with loop_takes_signals(asyncio.get_running_loop()):
+        await server.run_stdio_async()
 
 
 def main() -> None:
