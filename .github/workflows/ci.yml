@@ -13,9 +13,13 @@ jobs:
     timeout-minutes: 60
     runs-on: windows-latest
     env:
-      LILBEE_DATA: ${{ runner.temp }}/lilbee
       BASE: 16792cec4829d4d430a162719de5bc82768f11fa
     steps:
+      # The runner context is not there at the job level, so the data folder is set here.
+      - name: Set the data folder
+        shell: bash
+        run: echo "LILBEE_DATA=$RUNNER_TEMP/lilbee" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
