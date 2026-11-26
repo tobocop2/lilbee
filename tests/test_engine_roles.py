@@ -344,6 +344,7 @@ async def test_the_catalog_install_of_an_embedding_model_resolves_a_file_with_th
     from textual.app import ComposeResult
     from textual.widgets import Static
 
+    from lilbee.catalog.download import PullPlan
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.task_queue import TaskQueue
     from tests._lilbee_app_test_host import LilbeeAppHost
@@ -354,13 +355,11 @@ async def test_the_catalog_install_of_an_embedding_model_resolves_a_file_with_th
 
     seen: list[str] = []
 
-    def _resolve(entry: CatalogModel, engine: Any) -> str:
+    def _plan(entry: CatalogModel, _models_dir: Path, engine: Any, _token: object) -> PullPlan:
         seen.append(_tag(engine))
-        return "model.gguf"
+        return PullPlan(entry.hf_repo)
 
-    monkeypatch.setattr("lilbee.cli.tui.screens.catalog.resolve_filename", _resolve)
-    monkeypatch.setattr("lilbee.cli.tui.screens.catalog.download_bytes", lambda repo, filename: 1)
-    monkeypatch.setattr("lilbee.cli.tui.screens.catalog.disk_shortfall", lambda *_a, **_kw: None)
+    monkeypatch.setattr("lilbee.cli.tui.screens.catalog.plan_pull", _plan)
     async with _App().run_test(size=(120, 40)) as pilot:
         screen = CatalogScreen()
         await pilot.app.push_screen(screen)

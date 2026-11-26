@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from textual.app import ComposeResult
 from textual.widgets import Static
 
+from lilbee.catalog.download import ListingFailedError, ListingOfflineError
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui.task_queue import TaskQueue, TaskType
@@ -121,7 +123,7 @@ async def test_a_pull_too_big_for_the_disk_never_becomes_a_task(
         notices: list[str] = []
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(str(message)))
         monkeypatch.setattr(
-            "lilbee.cli.tui.screens.catalog.disk_shortfall",
+            "lilbee.cli.tui.screens.catalog.preflight",
             lambda *_a, **_kw: (
                 "Not enough disk space for acme/already-GGUF: needs 24.2 GB, 0.2 GB free."
             ),
@@ -136,14 +138,15 @@ async def test_a_pull_too_big_for_the_disk_never_becomes_a_task(
         assert all("Not enough disk space" in n for n in notices)
 
 
-async def test_the_disk_check_asks_the_hub_what_the_file_really_costs(
+async def test_the_disk_check_charges_the_pull_plan_not_the_row(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The row's size approximates off the parameter count; one file is named here.
+    """The row's size approximates off the parameter count.
 
     A refusal is a decision, so it runs against the bytes HuggingFace reports
-    for the resolved file rather than against the browse column's figure.
+    for the files the download itself fetches, rather than the browse figure.
     """
+    from lilbee.catalog import download
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     async with _App().run_test(size=(120, 40)) as pilot:
@@ -152,16 +155,14 @@ async def test_the_disk_check_asks_the_hub_what_the_file_really_costs(
         await pilot.pause()
         pilot.app.task_bar.queue = TaskQueue()
 
+        plan = download.PullPlan(
+            "acme/already-GGUF",
+            (download.PlannedFile("acme-Q4_K_M.gguf", 9_000_000_000, None, None),),
+        )
+        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.plan_pull", lambda *_a: plan)
         asked: list[int] = []
         monkeypatch.setattr(
-            "lilbee.cli.tui.screens.catalog.resolve_filename", lambda _m, engine: "acme-Q4_K_M.gguf"
-        )
-        monkeypatch.setattr(
-            "lilbee.cli.tui.screens.catalog.download_bytes", lambda _repo, _name: 9_000_000_000
-        )
-        monkeypatch.setattr(
-            "lilbee.cli.tui.screens.catalog.disk_shortfall",
-            lambda _dir, _repo, needed: asked.append(needed) or None,
+            download, "disk_shortfall", lambda _dir, _repo, needed: asked.append(needed) or None
         )
         monkeypatch.setattr(screen, "_enqueue_download", lambda _m: None)
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: None)
@@ -171,10 +172,11 @@ async def test_the_disk_check_asks_the_hub_what_the_file_really_costs(
         assert asked == [9_000_000_000]
 
 
-async def test_an_unresolvable_file_leaves_the_rows_own_figure(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("error", [ListingOfflineError, ListingFailedError])
+async def test_an_unlistable_repo_leaves_the_rows_own_figure(
+    monkeypatch: pytest.MonkeyPatch, error: type[Exception]
 ) -> None:
-    """Offline, the approximation is the only figure there is, and it still guards."""
+    """Without the listing, the approximation is the only figure there is, and it still guards."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     async with _App().run_test(size=(120, 40)) as pilot:
@@ -183,21 +185,80 @@ async def test_an_unresolvable_file_leaves_the_rows_own_figure(
         await pilot.pause()
         pilot.app.task_bar.queue = TaskQueue()
 
-        def _unreachable(_model_arg: object, engine) -> str:
-            raise RuntimeError("offline")
+        def _unlistable(*_a: object) -> object:
+            raise error("offline")
 
         asked: list[int] = []
-        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.resolve_filename", _unreachable)
+        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.plan_pull", _unlistable)
         monkeypatch.setattr(
             "lilbee.cli.tui.screens.catalog.disk_shortfall",
             lambda _dir, _repo, needed: asked.append(needed) or None,
         )
-        monkeypatch.setattr(screen, "_enqueue_download", lambda _m: None)
+        enqueued: list[str] = []
+        monkeypatch.setattr(screen, "_enqueue_download", lambda m: enqueued.append(m.hf_repo))
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: None)
 
         screen._install_model(dataclasses.replace(_model(), size_gb=4.0))
 
         assert asked == [int(4.0 * 1024**3)]
+        assert enqueued == ["acme/already-GGUF"]
+
+
+async def test_a_plan_the_download_would_refuse_is_shown_and_not_enqueued(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gated repo, an empty selection or a missing shard fails the download at once."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+        pilot.app.task_bar.queue = TaskQueue()
+
+        def _gated(*_a: object) -> object:
+            raise PermissionError("acme/already-GGUF requires HuggingFace authentication.")
+
+        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.plan_pull", _gated)
+        enqueued: list[str] = []
+        notices: list[tuple[str, str]] = []
+        monkeypatch.setattr(screen, "_enqueue_download", lambda m: enqueued.append(m.hf_repo))
+        monkeypatch.setattr(
+            screen,
+            "notify",
+            lambda message, severity="information", **_kw: notices.append((message, severity)),
+        )
+
+        screen._install_model(_model())
+
+        assert enqueued == []
+        assert notices == [("acme/already-GGUF requires HuggingFace authentication.", "error")]
+
+
+async def test_a_plan_the_disk_already_holds_reports_installed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from lilbee.catalog import download
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+        pilot.app.task_bar.queue = TaskQueue()
+
+        held = download.PlannedFile("model.gguf", 1, None, tmp_path / "model.gguf")
+        plan = download.PullPlan("acme/already-GGUF", (held,))
+        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.plan_pull", lambda *_a: plan)
+        enqueued: list[str] = []
+        notices: list[str] = []
+        monkeypatch.setattr(screen, "_enqueue_download", lambda m: enqueued.append(m.hf_repo))
+        monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(message))
+
+        screen._install_model(_model())
+
+        assert enqueued == []
+        assert len(notices) == 1 and "already installed" in notices[0].lower()
 
 
 async def test_enqueue_download_notifies_a_bracketed_name_literally() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -108,6 +109,7 @@ class _Host(LilbeeAppHost):
 async def test_the_catalog_screen_resolves_the_file_with_the_container_engine(
     monkeypatch: pytest.MonkeyPatch, library_book: EngineBook
 ) -> None:
+    from lilbee.catalog.download import PullPlan
     from lilbee.cli.tui.screens import catalog as catalog_screen
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -127,13 +129,11 @@ async def test_the_catalog_screen_resolves_the_file_with_the_container_engine(
         await pilot.pause()
         seen: list[object] = []
 
-        def _resolve(_model: CatalogModel, engine: object) -> str:
+        def _plan(entry: CatalogModel, _models_dir: object, engine: object, _token: object) -> Any:
             seen.append(engine)
-            return "model.gguf"
+            return PullPlan(entry.hf_repo)
 
-        monkeypatch.setattr(catalog_screen, "resolve_filename", _resolve)
-        monkeypatch.setattr(catalog_screen, "download_bytes", lambda *_a, **_kw: 1)
-        monkeypatch.setattr(catalog_screen, "disk_shortfall", lambda *_a, **_kw: None)
+        monkeypatch.setattr(catalog_screen, "plan_pull", _plan)
         monkeypatch.setattr(
             catalog_screen, "get_services", lambda: SimpleNamespace(engines=library_book)
         )
