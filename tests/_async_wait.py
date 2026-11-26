@@ -86,11 +86,11 @@ async def wait_for_pull_check(app: App) -> None:
         await app.workers.wait_for_complete(checks)
 
 
-async def group_done(app: App, group: str) -> None:
+async def wait_for_group(app: App, group: str) -> None:
     """Wait until every worker of *group* has ended.
 
-    A thread worker posts its last message before it ends, so that message is
-    in its node's queue when this returns. No wall clock applies: a host that
+    A message that a thread worker posts before it ends is in its node's queue
+    when this returns. No wall clock applies: a host that
     stalls longer than a fixed budget would end such a wait before the worker
     ends, and pytest's per-test timeout bounds a hang. With no worker of the
     group alive it returns at once: Textual reads an empty list as every worker.
