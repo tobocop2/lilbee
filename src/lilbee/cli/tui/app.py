@@ -354,15 +354,20 @@ class LilbeeApp(App[None]):
         """
         if self._type_ahead is None or event.is_forwarded:
             return False
-        if not (self._gate_is_showing() or self.screen is self.chat_screen()):
-            return False
         if isinstance(event, events.Key) and event.is_printable and event.character:
-            self._type_ahead.append(event.character)
-            return True
-        if isinstance(event, events.Paste):
-            self._type_ahead.append(event.text)
-            return True
-        return False
+            text = event.character
+        elif isinstance(event, events.Paste):
+            text = event.text
+        else:
+            return False
+        from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+        # The stack is empty while the app starts and after it stops.
+        top = self.screen_stack[-1] if self.screen_stack else None
+        if top is None or not (isinstance(top, StartupGate) or top is self.chat_screen()):
+            return False
+        self._type_ahead.append(text)
+        return True
 
     def take_type_ahead(self) -> str:
         """Return the text typed while chat started, and stop keeping more."""
