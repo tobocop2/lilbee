@@ -516,7 +516,9 @@ closure. These rules exist because each one shipped a broken artifact once.
   and re-issues a dispatch that never landed.
   It defers while the candidate still has failed cells: `release-selfheal` reruns a
   dropped build cell, and retrying `verify-release` before the healed asset is
-  attached would spend both its attempts on the same missing file.
+  attached would spend both its attempts on the same missing file. It does not defer
+  to a candidate whose tag now points at another commit: `release-selfheal` refuses
+  that run, so the watch names it as stale and watches the legs instead.
 - **Release shell lives in `scripts/*.sh`, not inline in a workflow.** Inline
   `run:` blocks cannot be run, linted or tested off a runner. `make lint-shell`
   shellchecks the scripts and runs actionlint over every workflow; `make test-shell`
