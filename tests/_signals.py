@@ -17,8 +17,9 @@ def press_ctrl_c_in_a_run(cancel: CancelSignal | None = None) -> None:
     """Press Ctrl+C from inside a cancellable run, as a terminal does.
 
     The run's loop thread blocks SIGINT, so the press goes to the process and the
-    main thread's handler takes it. On Windows ``os.kill`` ends the process, and the
-    run is on the main thread, so the press is a ``raise_signal`` there.
+    main thread's handler takes it. On Windows ``os.kill`` ends the process, so the
+    press is a ``raise_signal`` on the run's thread, and its wakeup reaches the main
+    thread as a console press does.
     With *cancel*, return once the press set it.
     """
     if os.name == "posix":
