@@ -193,6 +193,7 @@ def test_a_second_ctrl_c_in_a_sync_stops_it_where_it_is(monkeypatch) -> None:
         press_ctrl_c_in_a_run()
         # A step that never awaits: only the main thread's wait can end the command.
         release.wait(10)
+        steps.append("the step ended")
         raise asyncio.CancelledError
 
     def _forget(_rollback: ingest_sync.AddRollback) -> None:
@@ -208,8 +209,8 @@ def test_a_second_ctrl_c_in_a_sync_stops_it_where_it_is(monkeypatch) -> None:
         with pytest.raises(SystemExit) as stopped:
             ingest_sync.run_sync_with_signal_cancel()
         assert stopped.value.code == 130
+        # The step is still stuck: a command that waited for it would list its end first.
         assert steps == ["rollback", "Sync cancelled.", "force quit"]
-        assert not release.is_set()
     finally:
         release.set()
         for thread in threading.enumerate():
