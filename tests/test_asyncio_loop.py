@@ -22,9 +22,12 @@ from typing import Any
 
 import pytest
 
+from lilbee.app import services as services_mod
 from lilbee.runtime import asyncio_loop
-from lilbee.runtime.cancellation import SignalFlag
+from lilbee.runtime.cancellation import SignalFlag, sigint_cancel
 from lilbee.runtime.lock import ResetRefusedError, _no_sync_running, sync_running
+from tests._signals import press_ctrl_c_in_a_run
+from tests._windows_loop import windows_proactor_loop
 from tests.conftest import read_takes_hooked, reset_held_on_a_thread
 
 
@@ -338,7 +341,6 @@ def test_run_interruptible_runs_on_a_thread_that_blocks_sigint() -> None:
     assert _wakeup_fd() == before
 
 
-@posix_only
 def test_a_run_takes_the_main_threads_context() -> None:
     marker: contextvars.ContextVar[str] = contextvars.ContextVar("marker")
     marker.set("main")
@@ -349,7 +351,6 @@ def test_a_run_takes_the_main_threads_context() -> None:
     assert asyncio_loop.run_interruptible(read(), SignalFlag()) == "main"
 
 
-@posix_only
 def test_the_thread_of_a_run_has_ended_when_the_run_returns(monkeypatch) -> None:
     """No scope counts the thread of an ended run as a thread the run left behind."""
     real_set_event_loop = asyncio.set_event_loop
@@ -369,7 +370,6 @@ def test_the_thread_of_a_run_has_ended_when_the_run_returns(monkeypatch) -> None
     assert not thread.is_alive()
 
 
-@posix_only
 def test_run_interruptible_cancels_and_awaits_the_tasks_a_run_leaves() -> None:
     cleaned: list[str] = []
     tasks: list[asyncio.Task[None]] = []
@@ -439,6 +439,86 @@ def test_a_raising_handler_ends_the_wait_for_a_run_stuck_in_a_sync_step() -> Non
     assert cancelled.wait(5)
     _join_the_run_thread()
     loops[0].close()
+
+
+# On Windows the production proactor loop and the test-wide selector loop; elsewhere this
+# platform's loop, and the same run while the platform reads as Windows.
+_RUN_PLATFORMS = ["proactor", "selector"] if sys.platform == "win32" else ["native", "win32-name"]
+
+
+@pytest.fixture(params=_RUN_PLATFORMS)
+def run_platform(request, monkeypatch) -> Iterator[None]:
+    """Run the test's command loop as each platform runs it."""
+    if request.param == "proactor":
+        with windows_proactor_loop():
+            yield
+        return
+    if request.param == "win32-name":
+        monkeypatch.setattr(sys, "platform", "win32")
+    yield
+
+
+@pytest.fixture
+def quits(monkeypatch) -> list[str]:
+    """Record the force quits of the Ctrl-C scope instead of ending the test process."""
+    seen: list[str] = []
+    monkeypatch.setattr(services_mod, "force_quit", lambda: seen.append("scope"))
+    monkeypatch.setattr(services_mod, "force_quit_from_handler", lambda: seen.append("handler"))
+    return seen
+
+
+def test_a_ctrl_c_in_a_catch_all_step_stops_the_run_at_its_next_await(run_platform, quits) -> None:
+    """The first press cancels the run's task, so a library that swallows it cannot keep the run."""
+    swallowed: list[BaseException] = []
+
+    async def library_step(cancel: SignalFlag) -> str:
+        try:
+            press_ctrl_c_in_a_run(cancel)
+        except BaseException as exc:  # a library's catch-all
+            swallowed.append(exc)
+        await asyncio.sleep(10)
+        return "slept out"
+
+    started = time.monotonic()
+    with sigint_cancel() as cancel, pytest.raises(asyncio.CancelledError):
+        asyncio_loop.run_interruptible(library_step(cancel), cancel)
+    assert swallowed == []
+    assert time.monotonic() - started < 5
+    assert quits == []
+
+
+def test_a_second_ctrl_c_ends_a_run_stuck_in_a_catch_all_step(run_platform, quits) -> None:
+    """The second press raises on the main thread's wait, never inside the stuck step."""
+    swallowed: list[BaseException] = []
+    release = threading.Event()
+    loops: list[asyncio.AbstractEventLoop] = []
+
+    async def stuck(cancel: SignalFlag) -> str:
+        loops.append(asyncio.get_running_loop())
+        pressed = False
+        deadline = time.monotonic() + 10
+        while not release.is_set() and time.monotonic() < deadline:
+            try:  # a library step that swallows every exception and never awaits
+                if not pressed:
+                    pressed = True
+                    press_ctrl_c_in_a_run(cancel)
+                    press_ctrl_c_in_a_run()
+                time.sleep(0.01)
+            except BaseException as exc:
+                swallowed.append(exc)
+        return "stuck to the end"
+
+    try:
+        with pytest.raises(KeyboardInterrupt), sigint_cancel() as cancel:
+            asyncio_loop.run_interruptible(stuck(cancel), cancel)
+        assert swallowed == []
+        assert quits == ["scope"]
+    finally:
+        release.set()
+        _join_the_run_thread()
+        # The run is left to the process exit, so its loop is still open here.
+        if not loops[0].is_closed():
+            loops[0].close()
 
 
 def test_run_interruptible_off_the_main_thread_runs_on_that_thread() -> None:
