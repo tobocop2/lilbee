@@ -101,11 +101,15 @@ async def _start_held_turn(app, pilot, held: _HeldStream, question: str = "Q1") 
     return screen
 
 
-async def _finish(pilot, screen: ChatScreen, held: _HeldStream) -> None:
-    """Release the answer and wait until the turn's worker ended and its end was handled."""
-    held.release.set()
+async def _turn_ended(pilot, screen: ChatScreen) -> None:
+    """Wait until the turn's worker ended and the screen handled the end it posted."""
     await group_done(pilot.app, _TURN_WORKER_GROUP)
     assert await wait_until(pilot, lambda: not screen.streaming)
+
+
+async def _finish(pilot, screen: ChatScreen, held: _HeldStream) -> None:
+    held.release.set()
+    await _turn_ended(pilot, screen)
 
 
 async def test_a_cancelled_turn_keeps_the_chat_busy_until_its_body_ends(held):
@@ -142,7 +146,7 @@ async def test_ctrl_c_before_the_body_starts_still_runs_its_finish_step(held):
                 # One synchronous step: the stop lands before the worker first runs.
                 screen._send_message("Q1")
                 screen.action_cancel_stream()
-                assert await pump_until(pilot, lambda: body.called and not screen.streaming)
+                await _turn_ended(pilot, screen)
             assert held.questions == []
             assert body.call_count == 1
 
@@ -159,7 +163,8 @@ async def test_slash_cancel_before_the_body_starts_still_runs_its_finish_step(he
             ) as body:
                 screen._send_message("Q1")
                 screen.run_command("/cancel")
-                assert await pump_until(pilot, lambda: body.called and not screen.streaming)
+                await _turn_ended(pilot, screen)
+            assert body.called
             assert held.questions == []
 
 
@@ -323,7 +328,7 @@ async def test_a_turn_stopped_before_its_body_starts_does_not_fold(held):
                 # One synchronous step: the stop lands before the worker first runs.
                 screen._send_message("Q1")
                 screen.action_cancel_stream()
-                assert await pump_until(pilot, lambda: not screen.streaming)
+                await _turn_ended(pilot, screen)
             assert calls == []
             assert screen._summary == ""
             assert held.questions == []
@@ -381,7 +386,7 @@ async def test_a_send_during_a_fold_after_cancel_loses_no_turn():
                 await _submit(pilot, "Q2")
             finally:
                 release.set()
-            assert await pump_until(pilot, lambda: not screen.streaming)
+            await _turn_ended(pilot, screen)
             # A refused Q2 is still the draft; Enter sends it once the chat is idle.
             await pilot.press("enter")
             assert await pump_until(pilot, lambda: "Q2" in asked and not screen.streaming)
