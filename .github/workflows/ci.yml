@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 env:
-  PROBE_REF: c3d93c16a0b727475200a83dfc4fdd656591adde
+  PROBE_REF: e02d38b5df5fe44a2b398480e52f4d77bae06bfd
 
 jobs:
   probe-e774p-suite:
