@@ -12,6 +12,7 @@ from lilbee.app.services import get_services, set_services
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens import status as status_screen
 from lilbee.cli.tui.screens.status import StatusScreen
+from lilbee.cli.tui.task_queue import TaskType
 from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, SourceSummary
 from tests._async_wait import wait_for_widget, wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost
@@ -39,9 +40,11 @@ class _Library:
         self.reads: list[dict] = []
         self.gate: threading.Event | None = None
         self.gate_offset: int | None = None
+        self.newest_first: list[bool] = []
 
-    def get_sources(self, *, search=None, limit=None, offset=0):
+    def get_sources(self, *, search=None, limit=None, offset=0, newest_first=False):
         self.reads.append({"limit": limit, "offset": offset})
+        self.newest_first.append(newest_first)
         if self.gate is not None and offset == self.gate_offset:
             self.gate.wait(timeout=10)
         end = len(self.records) if limit is None else offset + limit
@@ -269,3 +272,92 @@ async def test_a_one_row_last_page_shows_and_ends_the_paging():
         assert await wait_until(pilot, lambda: _hint(app).display is False)
         assert _names(table) == [r["filename"] for r in library.records]
         assert [r["offset"] for r in library.reads] == [0, PAGE, 2 * PAGE]
+
+
+async def test_every_read_asks_the_store_for_newest_first():
+    library = _Library(TOTAL)
+    _install(library)
+    app = _StatusApp()
+    async with app.run_test(size=SIZE) as pilot:
+        table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
+        await _loaded(pilot, table, PAGE)
+        table.scroll_end(animate=False)
+        await _loaded(pilot, table, 2 * PAGE)
+    assert library.newest_first == [True, True]
+
+
+async def test_a_finished_sync_refreshes_the_table_and_the_count():
+    library = _Library(7)
+    _install(library)
+    app = _StatusApp()
+    async with app.run_test(size=SIZE) as pilot:
+        table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
+        await _loaded(pilot, table, 7)
+
+        library.records.extend(_record(i) for i in range(7, 12))
+        app.task_bar.start_task("Sync", TaskType.SYNC, lambda reporter: None)
+
+        await _loaded(pilot, table, 12)
+        storage = app.screen.query_one("#storage-info", Static)
+        assert await wait_until(pilot, lambda: "12" in str(storage.render()))
+
+
+async def test_a_failed_page_is_read_again_on_the_next_cursor_move():
+    library = _Library(TOTAL)
+    _install(library)
+    app = _StatusApp()
+    async with app.run_test(size=SIZE) as pilot:
+        table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
+        await _loaded(pilot, table, PAGE)
+
+        def refuse(*, search=None, limit=None, offset=0, newest_first=False):
+            raise OSError("disk")
+
+        store = get_services().store
+        store.get_sources.side_effect = refuse
+        _highlight_row(table, PAGE - 1)
+        assert await wait_until(
+            pilot, lambda: str(_hint(app).render()) == msg.STATUS_DOCS_LOAD_FAILED
+        )
+
+        store.get_sources.side_effect = library.get_sources
+        _highlight_row(table, PAGE - 1)
+        await _loaded(pilot, table, 2 * PAGE)
+        assert _names(table) == [r["filename"] for r in library.records[: 2 * PAGE]]
+
+
+async def test_g_loads_every_page_and_puts_the_cursor_on_the_last_source():
+    library = _Library(TOTAL)
+    _install(library)
+    app = _StatusApp()
+    async with app.run_test(size=SIZE) as pilot:
+        table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
+        await _loaded(pilot, table, PAGE)
+
+        await pilot.press("G")
+
+        await _loaded(pilot, table, TOTAL)
+        assert await wait_until(pilot, lambda: table.cursor_row == TOTAL - 1)
+        assert str(table.get_row_at(table.cursor_row)[0]) == library.records[-1]["filename"]
+
+
+async def test_g_stops_at_a_failed_page_and_leaves_the_cursor():
+    library = _Library(TOTAL)
+    _install(library)
+    app = _StatusApp()
+    async with app.run_test(size=SIZE) as pilot:
+        table = await wait_for_widget(pilot, app, "#docs-table", DataTable)
+        await _loaded(pilot, table, PAGE)
+
+        def refuse(*, search=None, limit=None, offset=0, newest_first=False):
+            raise OSError("disk")
+
+        get_services().store.get_sources.side_effect = refuse
+        await pilot.press("G")
+        assert await wait_until(
+            pilot, lambda: str(_hint(app).render()) == msg.STATUS_DOCS_LOAD_FAILED
+        )
+        await pilot.pause()
+        assert table.row_count == PAGE
+        assert table.cursor_row == 0
+        assert [r["offset"] for r in library.reads] == [0]
