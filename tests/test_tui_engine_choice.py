@@ -1015,7 +1015,9 @@ async def test_key_e_in_model_info_saves_the_pick_for_that_model() -> None:
         assert await wait_until(
             pilot, lambda: _text(modal, "#info-engine").splitlines()[1].startswith("■ openvino")
         )
-        assert any(t == f"Model {GGUF_REF} uses engine openvino." for t in _toasts())
+        assert await wait_until(
+            pilot, lambda: f"Model {GGUF_REF} uses engine openvino." in _toasts()
+        )
 
 
 async def test_model_info_saves_the_pick_under_the_canonical_ref_of_a_gguf_suffixed_name() -> None:
