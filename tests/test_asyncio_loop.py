@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 import warnings
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -168,14 +168,32 @@ class _Woken(Exception):
     """Raised by the test's signal handler, to end the run it interrupts."""
 
 
+async def _awaits_the_worker(worker: Callable[[], None]) -> None:
+    """The main task waits for the worker, so the loop sleeps in its select."""
+    await asyncio.to_thread(worker)
+
+
+async def _leaves_the_worker_to_the_close(worker: Callable[[], None]) -> None:
+    """The main task ends at once, so the runner's close joins the running worker."""
+    asyncio.get_running_loop().run_in_executor(None, worker)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no pthread_kill")
-def test_run_main_wakes_for_a_signal_that_another_thread_took() -> None:
-    """The kernel can give a process signal to a worker thread; the loop's sleep must still end.
+@pytest.mark.parametrize(
+    "main_task",
+    [
+        pytest.param(_awaits_the_worker, id="while_the_loop_sleeps"),
+        pytest.param(_leaves_the_worker_to_the_close, id="during_the_close_of_the_runner"),
+    ],
+)
+def test_run_main_wakes_for_a_signal_that_another_thread_took(main_task) -> None:
+    """The kernel can give a process signal to a worker thread; the wait must still end.
 
     Python runs the handler on the main thread only, and a sleep in the selector does
-    not end for a signal that another thread took. The wakeup descriptor ends it.
+    not end for a signal that another thread took. The wakeup descriptor ends it, and
+    it outlives the runner's close, which joins a worker that still runs: without it a
+    second Ctrl-C or SIGTERM waits for the worker's end.
     """
-
     sent: list[float] = []
     handled: list[float] = []
 
@@ -184,52 +202,16 @@ def test_run_main_wakes_for_a_signal_that_another_thread_took() -> None:
         raise _Woken
 
     def worker() -> None:
-        time.sleep(0.3)  # the loop is asleep in its select by now
+        time.sleep(0.3)  # the loop sleeps, or the close joins this thread, by now
         sent.append(time.monotonic())
         # pthread_kill sends to this thread, as the kernel can for a process signal.
         signal.pthread_kill(threading.get_ident(), signal.SIGUSR1)
         time.sleep(2)  # the worker outlives the signal, so nothing else wakes the loop
 
-    async def waits_for_the_worker() -> None:
-        await asyncio.to_thread(worker)
-
     previous = signal.signal(signal.SIGUSR1, handler)
     try:
         with pytest.raises(_Woken):
-            asyncio_loop.run_main(waits_for_the_worker())
-    finally:
-        signal.signal(signal.SIGUSR1, previous)
-    assert handled[0] - sent[0] < 1.0
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no pthread_kill")
-def test_run_main_wakes_for_a_signal_during_the_close_of_the_runner() -> None:
-    """The wakeup outlives the runner's close, which joins a worker that still runs.
-
-    The main task ends at once and leaves the worker to the close. A signal that the
-    worker takes during that join must run its handler, or a second Ctrl-C or SIGTERM
-    waits for the worker's end.
-    """
-    sent: list[float] = []
-    handled: list[float] = []
-
-    def handler(signum: int, frame: object) -> None:
-        handled.append(time.monotonic())
-        raise _Woken
-
-    def worker() -> None:
-        time.sleep(0.3)  # the main task ended, so the runner's close joins this thread
-        sent.append(time.monotonic())
-        signal.pthread_kill(threading.get_ident(), signal.SIGUSR1)
-        time.sleep(2)  # the worker outlives the signal, so the join wakes for nothing else
-
-    async def leaves_the_worker_to_the_close() -> None:
-        asyncio.get_running_loop().run_in_executor(None, worker)
-
-    previous = signal.signal(signal.SIGUSR1, handler)
-    try:
-        with pytest.raises(_Woken):
-            asyncio_loop.run_main(leaves_the_worker_to_the_close())
+            asyncio_loop.run_main(main_task(worker))
     finally:
         signal.signal(signal.SIGUSR1, previous)
     assert handled[0] - sent[0] < 1.0
