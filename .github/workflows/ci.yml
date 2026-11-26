@@ -1,21 +1,21 @@
 name: CI
 
-# Probe branch only: the Windows unit suite, as CI runs it on Python 3.12, at the head of
-# fix/fix-e774p-c, with the Windows coverage config and its 100% gate.
+# Probe branch only: the Windows unit suite, as CI runs it on Python 3.13, at the head of
+# fix/winci-timer, with the Windows coverage config and its 100% gate.
 on:
   push:
-    branches: [probe/e774p]
+    branches: [probe/wintimer]
   pull_request:
   workflow_dispatch:
 
 jobs:
-  probe-e774p-suite:
+  probe-wintimer-suite:
     timeout-minutes: 120
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 14878eb91c17c7d9770ca2dd15ff1b3feb786274
+          ref: e30d5810c24a56820b82b423f40aaae9cabd6b02
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -23,8 +23,8 @@ jobs:
           version: "latest"
           enable-cache: true
 
-      - name: Set up Python 3.12
-        run: uv python install 3.12
+      - name: Set up Python 3.13
+        run: uv python install 3.13
 
       - uses: ./.github/actions/checkout-engine-packs
 
@@ -33,7 +33,7 @@ jobs:
         run: bash scripts/ci_retry.sh 3 choco install make -y
 
       - name: Install dependencies
-        run: uv sync --locked
+        run: uv sync --locked --python 3.13
 
       - name: Run unit tests
         shell: bash
