@@ -189,8 +189,10 @@ class TestTheStreamHoldsTheId:
         held = await locks.try_acquire("a.md")
         assert held is not None
         run = mock.AsyncMock()
+        # The test keeps the stream, so its collection cannot be what frees the id.
+        stream = _ingest_stream([("a.md", "a")], run, "Test stream", "s-6")
         try:
-            frames = [f async for f in _ingest_stream([("a.md", "a")], run, "Test stream", "s-6")]
+            frames = [f async for f in stream]
         finally:
             locks.release([("a.md", held)])
 
