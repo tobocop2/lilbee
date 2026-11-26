@@ -269,8 +269,22 @@ def test_a_slow_steady_stream_is_not_cut() -> None:
 
 
 def test_a_shorter_client_timeout_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The idle bound only lowers a longer read timeout."""
+    """The idle bound only lowers a longer read timeout.
+
+    The kept value is read from the request's timeout extension. A lower bound on the measured
+    wait would depend on the clock: on Windows the monotonic clock ticks every 15.6 ms, so a wait
+    of 0.5 s can read as less.
+    """
     monkeypatch.setattr(fleet_client, "_STREAM_IDLE_TIMEOUT_S", 4.0, raising=False)
+    kept: list[float | None] = []
+    bound_body_reads = fleet_client._bound_body_reads
+
+    def record(resp: httpx.Response) -> httpx.Request:
+        request = bound_body_reads(resp)
+        kept.append(request.extensions["timeout"]["read"])
+        return request
+
+    monkeypatch.setattr(fleet_client, "_bound_body_reads", record)
     with _serve(_Script(), timeout=0.5) as (_server, client):
         stream = client.chat_stream_items(_MESSAGES)
         assert next(stream) == "w0"
@@ -278,7 +292,8 @@ def test_a_shorter_client_timeout_is_kept(monkeypatch: pytest.MonkeyPatch) -> No
         with pytest.raises(StreamInterruptedError):
             list(stream)
         waited = time.monotonic() - start
-    assert 0.5 <= waited < 2.5
+    assert kept == [0.5]
+    assert waited < 2.5
 
 
 def test_a_read_timeout_of_none_is_bounded_too() -> None:
