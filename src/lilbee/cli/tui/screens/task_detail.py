@@ -7,14 +7,14 @@ from typing import ClassVar
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
-from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.task_queue import TaskReport
+from lilbee.cli.tui.widgets.dialog import Dialog
 
 
-class TaskDetailModal(ModalScreen[None]):
+class TaskDetailModal(Dialog[None]):
     """Read-only modal of a task's partly read, failed and skipped files."""
 
     CSS_PATH: ClassVar[str] = "task_detail.tcss"

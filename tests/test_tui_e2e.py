@@ -2177,6 +2177,7 @@ class TestStatusInteractions:
         services = mock.MagicMock()
         services.store.get_sources.return_value = mock_sources
         services.store.count_sources.return_value = 2
+        services.store.partly_read_sources.return_value = ({}, 0)
         with (
             _mock_status_deps(),
             mock.patch(

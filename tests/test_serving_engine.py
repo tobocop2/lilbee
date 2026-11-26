@@ -86,7 +86,9 @@ def test_a_role_with_no_model_is_left_out(monkeypatch: pytest.MonkeyPatch) -> No
 def _status_store() -> MagicMock:
     store = MagicMock()
     store.get_meta.return_value = None
-    store.source_summary.return_value = MagicMock(newest=[], kinds={}, document_count=0)
+    store.source_summary.return_value = MagicMock(
+        newest=[], kinds={}, document_count=0, partly_read=0
+    )
     store.total_chunks = 0
     store.held_records.return_value = {}
     store.health_warnings.return_value = []
