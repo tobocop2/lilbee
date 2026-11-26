@@ -59,6 +59,20 @@ class _FakeProc:
         self.killed = True
 
 
+def _no_such_process(_pid: int) -> int:
+    raise ProcessLookupError(_pid)
+
+
+def _pin_macos(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the start as on macOS, on any host; the pid of the fake swap names no process.
+
+    The pin holds for the whole process, so on Windows the start asks for the process
+    group of the swap, which Windows has no call for.
+    """
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(sm.os, "getpgid", _no_such_process, raising=False)
+
+
 def _fake_response(*, status: int = 200, payload: object = None) -> object:
     # A live llama-swap answers /running with a {"running": [...]} body; default to
     # the empty-but-valid shape so "engine answers" fakes pass the identity check
@@ -442,12 +456,14 @@ class TestStart:
             )
 
         launched = [r.message for r in caplog.records if r.message.startswith("Launched")]
+        # The build names the binary as a path of this platform; the launch keeps its argv text.
+        built_from = Path("/bin/llama-server")
         assert launched == [
             "Launched chat-0 serving chat-model on /bin/llama-server "
-            "(engine llama.cpp, build wheel:0.6.91 /bin/llama-server@digest, "
+            f"(engine llama.cpp, build wheel:0.6.91 {built_from}@digest, "
             "backend vulkan, devices: Vulkan0: NVIDIA GeForce RTX 3090)",
             "Launched embed-0 serving embed-model on /bin/llama-server "
-            "(engine llama.cpp, build wheel:0.6.91 /bin/llama-server@digest, "
+            f"(engine llama.cpp, build wheel:0.6.91 {built_from}@digest, "
             "backend vulkan, devices: Vulkan0: NVIDIA GeForce RTX 3090)",
         ]
 
@@ -961,7 +977,7 @@ class TestEngineReadiness:
         monkeypatch.setattr(sm.time, "monotonic", lambda: clock["mono"])
         # A macOS host: the boot is named by the kernel's boot session UUID, while the boot time
         # that psutil reports follows the wall clock (XNU adjusts it on a clock step).
-        monkeypatch.setattr(sys, "platform", "darwin")
+        _pin_macos(monkeypatch)
         monkeypatch.setattr(ctypes, "CDLL", lambda _name: _FakeLibc(clock))
         monkeypatch.setattr(psutil, "boot_time", lambda: clock["boot_time"])
         monkeypatch.setattr(sm, "linux_start_stamp", lambda _pid: None)
@@ -1687,7 +1703,7 @@ class TestCrossRunReaping:
         mach_start: int | None,
         written: dict | None,
     ) -> None:
-        monkeypatch.setattr(parent_monitor.sys, "platform", "darwin")
+        _pin_macos(monkeypatch)
         monkeypatch.setattr(parent_monitor, "_macos_boot_session", lambda: boot)
         monkeypatch.setattr(parent_monitor, "_macos_start_abstime", lambda _pid: mach_start)
         _patch_psutil_process(
@@ -3038,7 +3054,9 @@ class TestKillRecordedEngine:
         assert killed == []
 
 
-_SLEEP = [sys.executable, "-c", "import time; time.sleep(60)"]
+# The interpreter itself, not a venv launcher: on Windows the launcher starts the interpreter
+# as its own child, which inherits the held files and outlives a kill of the launcher.
+_SLEEP = [getattr(sys, "_base_executable", sys.executable), "-c", "import time; time.sleep(60)"]
 # Folder modes bind only a POSIX user who is not root.
 _PERMISSIONS_APPLY = pytest.mark.skipif(
     sys.platform == "win32" or os.geteuid() == 0, reason="folder modes do not bind this user"

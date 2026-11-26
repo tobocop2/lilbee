@@ -13,6 +13,8 @@ import urllib.request
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from lilbee.providers.fleet.engines.base import LaunchRequest
 from lilbee.providers.fleet.engines.ovms import OVMS
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -67,6 +69,7 @@ def _ready(url: str) -> bool:
     return False
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in server is a shebang script")
 def test_the_launch_argv_starts_a_fake_ovms_that_serves_ready(tmp_path: Path) -> None:
     binary = tmp_path / "ovms"
     binary.write_text(_FAKE_OVMS.format(python=sys.executable), encoding="utf-8")
