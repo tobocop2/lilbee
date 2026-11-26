@@ -628,6 +628,80 @@ def test_get_loop_reuses_loop_across_calls() -> None:
     assert loop_a.is_running()
 
 
+class _WakeupTakingLoop(asyncio.SelectorEventLoop):
+    """A loop that, made on the main thread, takes the signal wakeup, as the proactor loop does.
+
+    The Windows proactor loop sets its self-pipe as the wakeup descriptor when it is
+    made on the main thread, and clears it only when it is closed on the main thread.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        if threading.current_thread() is threading.main_thread():
+            signal.set_wakeup_fd(self._csock.fileno())  # type: ignore[attr-defined]
+
+    def close(self) -> None:
+        if threading.current_thread() is threading.main_thread():
+            signal.set_wakeup_fd(-1)
+        super().close()
+
+
+class _WakeupTakingPolicy(asyncio.DefaultEventLoopPolicy):
+    def new_event_loop(self) -> asyncio.AbstractEventLoop:
+        return _WakeupTakingLoop()
+
+
+@pytest.fixture
+def wakeup_taking_loops() -> Iterator[None]:
+    """Make every new loop take the signal wakeup on the main thread; start with no wakeup set."""
+    previous_policy = asyncio.get_event_loop_policy()
+    previous_fd = signal.set_wakeup_fd(-1)
+    asyncio.set_event_loop_policy(_WakeupTakingPolicy())
+    try:
+        yield
+    finally:
+        asyncio_loop.shutdown()
+        asyncio.set_event_loop_policy(previous_policy)
+        signal.set_wakeup_fd(previous_fd)
+
+
+def test_the_background_loop_leaves_the_main_threads_signal_wakeup_alone(
+    wakeup_taking_loops: None,
+) -> None:
+    # A loop closed off the main thread would leave its closed self-pipe as the wakeup.
+    asyncio_loop.get_loop()
+    assert signal.set_wakeup_fd(-1) == -1
+    asyncio_loop.shutdown()
+    assert signal.set_wakeup_fd(-1) == -1
+
+
+class _NoLoopPolicy(asyncio.DefaultEventLoopPolicy):
+    def new_event_loop(self) -> asyncio.AbstractEventLoop:
+        raise OSError("no loop")
+
+
+def test_a_background_loop_that_cannot_be_made_raises_from_get_loop() -> None:
+    previous = asyncio.get_event_loop_policy()
+    asyncio.set_event_loop_policy(_NoLoopPolicy())
+    try:
+        with pytest.raises(OSError, match="no loop"):
+            asyncio_loop.get_loop()
+    finally:
+        asyncio.set_event_loop_policy(previous)
+    assert asyncio_loop.get_loop().is_running()
+
+
+def test_a_run_after_the_background_loop_shut_down_returns_its_result(
+    wakeup_taking_loops: None,
+) -> None:
+    async def answer() -> int:
+        return 42
+
+    asyncio_loop.get_loop()
+    asyncio_loop.shutdown()
+    assert asyncio_loop.run_interruptible(answer(), SignalFlag()) == 42
+
+
 def test_loop_runs_on_dedicated_daemon_thread() -> None:
     asyncio_loop.get_loop()
     thread = next(t for t in threading.enumerate() if t.name == "lilbee-bg-loop")

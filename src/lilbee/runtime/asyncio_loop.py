@@ -48,14 +48,24 @@ _lock = threading.Lock()
 _atexit_registered = False
 
 
-def _serve(loop: asyncio.AbstractEventLoop) -> None:
-    """Run *loop* on this thread; close it once it stops, even when the stop comes late.
+def _serve(made: concurrent.futures.Future[asyncio.AbstractEventLoop]) -> None:
+    """Make a loop on this thread, put it in *made*, and run it; close it once it stops.
+
+    The loop is made on the thread that runs and closes it. Made on the main thread,
+    the Windows proactor loop takes the signal wakeup descriptor, and a close on this
+    thread would leave the closed descriptor in place.
 
     A stop that comes late can leave tasks that never ran a step, such as the drain
     that the shutdown queued. They are cancelled and get one pass of the loop, which
     runs a step each, so none is dropped unscheduled. A task still pending after that
     pass, such as one that swallows its cancel, is dropped with the closed loop.
     """
+    try:
+        loop = asyncio.new_event_loop()
+    except BaseException as exc:
+        made.set_exception(exc)
+        return
+    made.set_result(loop)
     try:
         loop.run_forever()
     finally:
@@ -71,14 +81,15 @@ def get_loop() -> asyncio.AbstractEventLoop:
     with _lock:
         if _loop is not None and not _loop.is_closed():
             return _loop
-        loop = asyncio.new_event_loop()
+        made: concurrent.futures.Future[asyncio.AbstractEventLoop] = concurrent.futures.Future()
         thread = threading.Thread(
             target=_serve,
-            args=(loop,),
+            args=(made,),
             name="lilbee-bg-loop",
             daemon=True,
         )
         thread.start()
+        loop = made.result()
         _loop = loop
         _thread = thread
         if not _atexit_registered:
