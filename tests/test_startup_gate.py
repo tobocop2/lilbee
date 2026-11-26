@@ -636,7 +636,7 @@ async def test_keys_typed_over_a_screen_above_the_gate_reach_that_screen(
         assert app.take_type_ahead() == ""
 
 
-async def test_the_prompt_takes_the_kept_text_once():
+def test_the_prompt_takes_the_kept_text_once():
     """Taking the text ends the keeping, so a later key goes to its widget."""
     from lilbee.cli.tui.app import LilbeeApp
 
@@ -645,6 +645,26 @@ async def test_the_prompt_takes_the_kept_text_once():
     assert app.take_type_ahead() == "ab"
     assert app.take_type_ahead() == ""
     assert app._type_ahead is None
+
+
+@pytest.mark.parametrize(
+    ("key", "character", "forwarded"),
+    [("a", "a", False), ("enter", None, False), ("a", "a", True)],
+    ids=["no-screen-yet", "not-printable", "already-routed"],
+)
+def test_the_app_keeps_no_text_it_should_route(key, character, forwarded):
+    """With no screen up, a key that types nothing, or a key already routed, nothing is kept."""
+    from textual import events
+
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    app._type_ahead = []
+    event = events.Key(key, character)
+    if forwarded:
+        event._set_forwarded()
+    assert app._keep_for_the_prompt(event) is False
+    assert app._type_ahead == []
 
 
 async def test_pressing_the_sync_key_at_the_gate_starts_no_sync(monkeypatch, tmp_path):
