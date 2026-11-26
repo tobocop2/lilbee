@@ -112,8 +112,13 @@ async def test_a_form_taller_than_the_terminal_scrolls_above_its_buttons(
         scroll = screen.query_one(f"#{scroll_id}")
         button = screen.query_one(f"#{button_id}")
         assert scroll.region.bottom <= button.region.y
-        scroll.scroll_end(animate=False)
-        await pilot.pause()
         last = screen.query_one(f"#{last_id}")
+
+        def at_the_end() -> bool:
+            return scroll.region.y <= last.region.y and last.region.bottom <= scroll.region.bottom
+
+        # The scroll lands after a refresh, so wait for the layout to show it.
+        scroll.scroll_end(animate=False)
+        assert await wait_until(pilot, at_the_end)
         assert scroll.region.y <= last.region.y
         assert last.region.bottom <= scroll.region.bottom
