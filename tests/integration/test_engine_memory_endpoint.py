@@ -76,9 +76,11 @@ def tiny_model(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture
-def served(engine: Path, tiny_model: Path) -> Iterator[str]:
+def served(engine: Path, tiny_model: Path, tmp_path: Path) -> Iterator[str]:
     """The base URL of the real engine, started with the readback flag and ready."""
     (port,) = _pick_free_ports(1)
+    log_path = tmp_path / "engine.log"
+    log = log_path.open("wb")
     proc = subprocess.Popen(
         [
             str(engine),
@@ -95,26 +97,35 @@ def served(engine: Path, tiny_model: Path) -> Iterator[str]:
             MEMORY_FLAG,
         ],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=log,
     )
     base = f"http://127.0.0.1:{port}"
+
+    def engine_log() -> str:
+        log.flush()
+        return log_path.read_text(encoding="utf-8", errors="replace")[-2000:]
+
     try:
         deadline = time.monotonic() + _READY_SECONDS
         while time.monotonic() < deadline:
             assert proc.poll() is None, (
-                f"{engine} exited with {proc.returncode} before it was ready"
+                f"{engine} exited with {proc.returncode} before it was ready:\n{engine_log()}"
             )
             try:
                 if httpx.get(f"{base}/health", timeout=2.0).status_code == httpx.codes.OK:
                     break
             except httpx.HTTPError:
-                time.sleep(0.2)
+                pass
+            time.sleep(0.2)
         else:
-            raise AssertionError(f"{engine} was not ready after {_READY_SECONDS:.0f} seconds")
+            raise AssertionError(
+                f"{engine} was not ready after {_READY_SECONDS:.0f} seconds:\n{engine_log()}"
+            )
         yield base
     finally:
         proc.terminate()
         proc.wait(timeout=30.0)
+        log.close()
 
 
 def test_the_engine_advertises_the_memory_flag(engine: Path) -> None:
