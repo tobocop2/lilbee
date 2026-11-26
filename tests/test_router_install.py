@@ -11,6 +11,7 @@ import stat
 import sys
 import tarfile
 import threading
+import traceback
 import zipfile
 from contextlib import closing
 from pathlib import Path
@@ -767,6 +768,22 @@ class TestFirstUse:
             router_on_first_use()
         assert second.value is first.value
         assert len(release) == 1
+
+    def test_each_lookup_of_a_remembered_refusal_keeps_only_its_own_frames(
+        self, release: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def refuse(*_a: object, **_k: object) -> Path:
+            raise RuntimeError("offline")
+
+        monkeypatch.setattr(router_install, "download_url", refuse)
+        with pytest.raises(RouterDownloadError):
+            router_on_first_use()
+        depths = []
+        for _ in range(3):
+            with pytest.raises(RouterDownloadError) as later:
+                router_on_first_use()
+            depths.append(len(traceback.extract_tb(later.value.__traceback__)))
+        assert depths == [depths[0]] * 3
 
     def test_an_explicit_install_after_a_refusal_works_and_clears_it(
         self, release: list[str], monkeypatch: pytest.MonkeyPatch
