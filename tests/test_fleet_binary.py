@@ -552,30 +552,31 @@ def test_engine_pin_survives_an_engine_wheel_without_metadata(monkeypatch, tmp_p
     assert binary_mod.engine_pin()  # total: a pin is still produced
 
 
-def test_install_hint_indexes_are_documented() -> None:
-    """Every index the error message names must also appear in the install docs.
+def test_install_hint_commands_are_documented(monkeypatch) -> None:
+    """Every lilbee command the error message names must also appear in the install docs.
 
     The bug this guards was the two disagreeing: the docs shipped install commands
     that produced no engine while the message that fired blamed the model. A reader
     who follows the error and then checks the install guide has to find the same
-    set. The README links to the install guide and no longer lists the indexes.
+    commands. The README links to the install guide.
     """
     import re
 
-    from lilbee.providers.fleet.engine_install import InstallMethod, engine_install_hint
+    from lilbee.providers.fleet import first_use
+    from lilbee.providers.fleet.engine_install import engine_install_hint
 
-    hint_indexes = set(
-        re.findall(r"https://lilbee\.sh/(\w+)/", engine_install_hint(InstallMethod.UNKNOWN))
-    )
-    assert hint_indexes, "the hint must name at least one index"
+    # A published pack, so the hint carries the download command on every host.
+    monkeypatch.setattr(first_use, "pack_lock", lambda: (None, "cell"))
+    hint_commands = set(re.findall(r"'(lilbee [a-z ]+)'", engine_install_hint(bundled=False)))
+    assert hint_commands, "the hint must name at least one lilbee command"
 
     root = Path(__file__).resolve().parents[1]
     for doc in ("docs/install.md", "docs/usage.md"):
         # Explicit utf-8: both files carry non-cp1252 characters, so the locale
         # default would decode-error on Windows.
         text = (root / doc).read_text(encoding="utf-8")
-        documented = set(re.findall(r"https://lilbee\.sh/(\w+)/", text))
-        assert hint_indexes <= documented, f"{doc} is missing {hint_indexes - documented}"
+        missing = {command for command in hint_commands if command not in text}
+        assert not missing, f"{doc} is missing {missing}"
 
 
 class TestEngineHelp:
