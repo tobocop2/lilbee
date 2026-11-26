@@ -111,11 +111,13 @@ def ensure_table(db: LanceDBConnection, name: str, schema: pa.Schema) -> LanceTa
     table = open_committed(db, name)
     if table is not None:
         return table
+    # Declared: under Python 3.12 lancedb's @override is untyped, so both calls read as Any.
+    created: LanceTable
     try:
-        table = db.create_table(name, schema=schema)
+        created = db.create_table(name, schema=schema)
     except ValueError:
-        table = db.open_table(name)
-    return table
+        created = db.open_table(name)
+    return created
 
 
 def _safe_delete_unlocked(table: LanceTable, predicate: str) -> bool:
