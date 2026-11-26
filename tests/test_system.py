@@ -447,7 +447,7 @@ class TestCgroupCappedMemory:
         (v1 / "memory.usage_in_bytes").write_text(f"{1024**3}\n")
         monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path)
         assert sys_mod.cgroup_memory_limit() == 4 * 1024**3
-        assert sys_mod.cgroup_memory_used() == 1024**3
+        assert sys_mod.cgroup_memory_room() == 3 * 1024**3
 
     def test_unlimited_is_reported_as_no_limit(self, monkeypatch, tmp_path):
         from lilbee.core import system as sys_mod
@@ -468,7 +468,7 @@ class TestCgroupCappedMemory:
 
         monkeypatch.setattr(sys_mod, "_CGROUP_ROOT", tmp_path / "absent")
         assert sys_mod.cgroup_memory_limit() is None
-        assert sys_mod.cgroup_memory_used() is None
+        assert sys_mod.cgroup_memory_room() is None
 
     def _own_cgroup(self, monkeypatch, tmp_path, proc_line: str) -> Path:
         from lilbee.core import system as sys_mod
@@ -491,7 +491,7 @@ class TestCgroupCappedMemory:
         (scope / "memory.max").write_text(f"{16 * 1024**3}\n", encoding="utf-8")
         (scope / "memory.current").write_text(f"{1024**3}\n", encoding="utf-8")
         assert sys_mod.cgroup_memory_limit() == 16 * 1024**3
-        assert sys_mod.cgroup_memory_used() == 1024**3
+        assert sys_mod.cgroup_memory_room() == 15 * 1024**3
 
     def test_the_scope_cap_bounds_the_total_below_the_host(self, monkeypatch, tmp_path):
         from lilbee.core import system as sys_mod
@@ -515,7 +515,7 @@ class TestCgroupCappedMemory:
         (root / "slice" / "job.scope" / "memory.max").write_text("max\n", encoding="utf-8")
         (root / "slice" / "job.scope" / "memory.current").write_text("1\n", encoding="utf-8")
         assert sys_mod.cgroup_memory_limit() == 8 * 1024**3
-        assert sys_mod.cgroup_memory_used() == 2 * 1024**3
+        assert sys_mod.cgroup_memory_room() == 6 * 1024**3
 
     def test_a_v1_memory_cap_is_read_at_the_own_cgroup(self, monkeypatch, tmp_path):
         from lilbee.core import system as sys_mod
@@ -526,7 +526,47 @@ class TestCgroupCappedMemory:
         (job / "memory.limit_in_bytes").write_text(f"{4 * 1024**3}\n", encoding="utf-8")
         (job / "memory.usage_in_bytes").write_text(f"{1024**3}\n", encoding="utf-8")
         assert sys_mod.cgroup_memory_limit() == 4 * 1024**3
-        assert sys_mod.cgroup_memory_used() == 1024**3
+        assert sys_mod.cgroup_memory_room() == 3 * 1024**3
+
+    def test_a_cap_at_the_mount_root_is_read_for_the_root_path(self, monkeypatch, tmp_path):
+        from lilbee.core import system as sys_mod
+
+        root = self._own_cgroup(monkeypatch, tmp_path, "0::/\n")
+        (root / "memory.max").write_text(f"{4 * 1024**3}\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "psutil.virtual_memory",
+            lambda: SimpleNamespace(total=64 * 1024**3, available=60 * 1024**3),
+        )
+        assert sys_mod.capped_total_memory() == 4 * 1024**3
+
+    def test_the_room_is_the_least_headroom_over_every_capped_level(self, monkeypatch, tmp_path):
+        # A parent at 10 GiB with 9 GiB used stops the process after 1 GiB more,
+        # although the own cap of 3 GiB has 2 GiB left.
+        from lilbee.core import system as sys_mod
+        from lilbee.providers import model_cache
+
+        root = self._own_cgroup(monkeypatch, tmp_path, "0::/slice/job.scope\n")
+        (root / "slice" / "job.scope").mkdir(parents=True)
+        (root / "slice" / "memory.max").write_text(f"{10 * 1024**3}\n", encoding="utf-8")
+        (root / "slice" / "memory.current").write_text(f"{9 * 1024**3}\n", encoding="utf-8")
+        scope = root / "slice" / "job.scope"
+        (scope / "memory.max").write_text(f"{3 * 1024**3}\n", encoding="utf-8")
+        (scope / "memory.current").write_text(f"{1024**3}\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "psutil.virtual_memory",
+            lambda: SimpleNamespace(total=64 * 1024**3, available=60 * 1024**3),
+        )
+        assert sys_mod.cgroup_memory_limit() == 3 * 1024**3
+        assert sys_mod.cgroup_memory_room() == 1024**3
+        assert model_cache.free_system_memory() == 1024**3
+
+    def test_a_level_with_no_usage_file_counts_as_empty(self, monkeypatch, tmp_path):
+        from lilbee.core import system as sys_mod
+
+        root = self._own_cgroup(monkeypatch, tmp_path, "0::/job.scope\n")
+        (root / "job.scope").mkdir()
+        (root / "job.scope" / "memory.max").write_text(f"{3 * 1024**3}\n", encoding="utf-8")
+        assert sys_mod.cgroup_memory_room() == 3 * 1024**3
 
     def test_a_v1_sentinel_limit_does_not_shrink_the_ctx_target(self, monkeypatch, tmp_path):
         # cgroup v1 spells unlimited as a near-int64 sentinel rather than a word.
