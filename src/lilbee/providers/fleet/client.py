@@ -1401,7 +1401,7 @@ class LlamaServerClient:
         asks for nothing and goes through. Any other format is refused, because the server
         ignores it.
         """
-        wire = dict(options or {})
+        wire = {self._profile.option_names.get(k, k): v for k, v in (options or {}).items()}
         if not self._profile.takes_cache_prompt:
             wire.pop("cache_prompt", None)
         if not self._profile.takes_seed and isinstance(wire.get("seed"), ChosenSeed):
