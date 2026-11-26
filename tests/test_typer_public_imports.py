@@ -1,6 +1,6 @@
-"""The ``typer>=0.16`` floor holds only if lilbee imports Typer's public API.
+"""The declared ``typer`` floor holds only if lilbee imports Typer's public API.
 
-Typer 0.16 depends on the click package. Later Typer releases vendor click as
+Older Typer releases depend on the click package. Later Typer releases vendor click as
 the private ``typer._click`` module, which older releases do not have. A private
 import therefore makes the declared floor false.
 """
