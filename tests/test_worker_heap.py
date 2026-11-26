@@ -36,7 +36,7 @@ def pytest_runtest_logfinish(nodeid, location):
 
 
 def pytest_sessionfinish(session):
-    Path("live.json").write_text(json.dumps(_live))
+    Path("live.json").write_text(json.dumps(_live), encoding="utf-8")
 """
 
 _APP_TESTS = f"""
@@ -71,7 +71,7 @@ def test_a_finished_test_leaves_its_server_app_to_the_collector(
     result = pytester.runpytest_subprocess(*(arg for name in plugins for arg in ("-p", name)))
 
     result.assert_outcomes(passed=_TESTS)
-    live = json.loads((pytester.path / "live.json").read_text())
+    live = json.loads((pytester.path / "live.json").read_text(encoding="utf-8"))
     kept_per_test = (live[str(_TESTS)] - live[str(_WARM_UP)]) / (_TESTS - _WARM_UP)
     assert kept_per_test < _MAX_KEPT_PER_TEST
 
