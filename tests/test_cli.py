@@ -6452,14 +6452,28 @@ class TestSigintCancel:
             signal.raise_signal(signal.SIGINT)
         assert stops == ["stop"]
 
-    def test_a_second_sigint_during_a_run_interrupts(self, quits) -> None:
+    def test_a_second_sigint_during_a_run_interrupts_it_from_its_wait(self, quits) -> None:
+        """The handler raises nothing in a run, so no raise lands in a lock wait of the start."""
         from lilbee.runtime.cancellation import sigint_cancel
 
-        with pytest.raises(KeyboardInterrupt), sigint_cancel() as token:
+        with sigint_cancel() as token:
             token.bind_run(lambda: None)
             signal.raise_signal(signal.SIGINT)
+            assert not token.interrupted
             signal.raise_signal(signal.SIGINT)
+            assert token.interrupted
+            assert quits == []
         assert quits == ["scope"]
+
+    def test_a_new_run_starts_with_no_interrupt(self) -> None:
+        from lilbee.runtime.cancellation import SignalFlag
+
+        token = SignalFlag()
+        token.bind_run(lambda: None)
+        token.interrupt()
+        token.unbind_run()
+        token.bind_run(lambda: None)
+        assert not token.interrupted
 
     def test_a_second_sigint_after_the_run_lets_the_wind_down_finish(self, quits) -> None:
         from lilbee.runtime.cancellation import sigint_cancel

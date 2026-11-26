@@ -598,6 +598,77 @@ def test_a_second_ctrl_c_ends_a_run_stuck_in_a_catch_all_step(run_platform, quit
             loops[0].close()
 
 
+@contextmanager
+def _two_presses_as_the_start_wakes() -> Iterator[list[str]]:
+    """Press Ctrl-C twice where Windows runs the presses of a run's start: in its lock wait.
+
+    The start of a thread waits on a condition until the new thread says it started.
+    Here the new thread says so only once the main thread waits, and the presses run
+    as the woken wait enters its reacquire of the condition's lock. On Windows a press
+    that a thread of the run makes runs there when the main thread wakes into it.
+    """
+    main = threading.get_ident()
+    before = {thread.ident for thread in threading.enumerate()}
+    waiting = threading.Event()
+    pressed: list[str] = []
+    real_set = threading.Event.set
+    real_release_save = threading.Condition._release_save
+    real_acquire_restore = threading.Condition._acquire_restore
+
+    def set_once_the_main_thread_waits(self: threading.Event) -> None:
+        if threading.get_ident() not in before and not pressed:
+            waiting.wait(5)
+        real_set(self)
+
+    def release_save(self: threading.Condition) -> None:
+        real_release_save(self)
+        if threading.get_ident() == main:
+            real_set(waiting)
+
+    def acquire_restore(self: threading.Condition, state: object) -> None:
+        if threading.get_ident() == main and waiting.is_set() and not pressed:
+            pressed.append("twice")
+            signal.raise_signal(signal.SIGINT)
+            signal.raise_signal(signal.SIGINT)
+        real_acquire_restore(self, state)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(threading.Event, "set", set_once_the_main_thread_waits)
+        patch.setattr(threading.Condition, "_release_save", release_save)
+        patch.setattr(threading.Condition, "_acquire_restore", acquire_restore)
+        yield pressed
+
+
+def test_two_ctrl_cs_in_the_start_of_a_run_interrupt_it_from_its_wait(
+    run_platform, quits, monkeypatch
+) -> None:
+    """A raise in the start's lock wait would leave its lock released: the wait raises instead."""
+    loops: list[asyncio.AbstractEventLoop] = []
+    real_new_event_loop = asyncio.new_event_loop
+
+    def new_event_loop() -> asyncio.AbstractEventLoop:
+        loops.append(real_new_event_loop())
+        return loops[-1]
+
+    async def waits_forever() -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(asyncio, "new_event_loop", new_event_loop)
+    try:
+        with pytest.raises(KeyboardInterrupt), sigint_cancel() as cancel:
+            with _two_presses_as_the_start_wakes() as pressed:
+                asyncio_loop.run_interruptible(waits_forever(), cancel)
+        assert pressed == ["twice"]
+        assert cancel.is_set()
+        assert cancel.interrupted
+        assert quits == ["scope"]
+    finally:
+        _join_the_run_thread()
+        for loop in loops:
+            if not loop.is_closed():
+                loop.close()
+
+
 def test_run_interruptible_off_the_main_thread_runs_on_that_thread() -> None:
     async def where() -> threading.Thread:
         return threading.current_thread()
