@@ -274,12 +274,14 @@ class _MainRun:
     def run(self, main: Coroutine[Any, Any, T]) -> T:
         if threading.current_thread() is not threading.main_thread():
             return asyncio.run(main)
-        runner = asyncio.Runner()
-        with contextlib.ExitStack() as stack:
-            # Entered first, so it ends last: a signal during the runner's close of the
-            # worker threads still wakes the loop that waits for them.
-            stack.enter_context(_signals_wake(runner.get_loop()))
-            stack.enter_context(runner)
+        # The wakeup ends after the runner's close, so a signal during the close's join of
+        # the worker threads still wakes the loop that waits for them. The outer closing
+        # closes the runner too when the wakeup cannot start.
+        with (
+            contextlib.closing(asyncio.Runner()) as runner,
+            _signals_wake(runner.get_loop()),
+            runner,
+        ):
             try:
                 return runner.run(self._as_main(main))
             finally:

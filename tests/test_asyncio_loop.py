@@ -199,6 +199,60 @@ def test_run_main_wakes_for_a_signal_that_another_thread_took() -> None:
     assert handled[0] - sent[0] < 1.0
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no pthread_kill")
+def test_run_main_wakes_for_a_signal_during_the_close_of_the_runner() -> None:
+    """The wakeup outlives the runner's close, which joins a worker that still runs.
+
+    The main task ends at once and leaves the worker to the close. A signal that the
+    worker takes during that join must run its handler, or a second Ctrl-C or SIGTERM
+    waits for the worker's end.
+    """
+    sent: list[float] = []
+    handled: list[float] = []
+
+    def handler(signum: int, frame: object) -> None:
+        handled.append(time.monotonic())
+        raise _Woken
+
+    def worker() -> None:
+        time.sleep(0.3)  # the main task ended, so the runner's close joins this thread
+        sent.append(time.monotonic())
+        signal.pthread_kill(threading.get_ident(), signal.SIGUSR1)
+        time.sleep(2)  # the worker outlives the signal, so the join wakes for nothing else
+
+    async def leaves_the_worker_to_the_close() -> None:
+        asyncio.get_running_loop().run_in_executor(None, worker)
+
+    previous = signal.signal(signal.SIGUSR1, handler)
+    try:
+        with pytest.raises(_Woken):
+            asyncio_loop.run_main(leaves_the_worker_to_the_close())
+    finally:
+        signal.signal(signal.SIGUSR1, previous)
+    assert handled[0] - sent[0] < 1.0
+
+
+def test_run_main_closes_its_loop_when_the_wakeup_cannot_start(monkeypatch) -> None:
+    """A failed wakeup setup leaves no open loop behind."""
+    loops: list[asyncio.AbstractEventLoop] = []
+
+    def no_wakeup(loop: asyncio.AbstractEventLoop):
+        loops.append(loop)
+        raise OSError("too many open files")
+
+    async def never_runs() -> None:
+        raise AssertionError("the main task must not start")
+
+    monkeypatch.setattr(asyncio_loop, "_signals_wake", no_wakeup)
+    main = never_runs()
+    with pytest.raises(OSError, match="too many open files"):
+        asyncio_loop.run_main(main)
+    main.close()
+
+    assert len(loops) == 1
+    assert loops[0].is_closed()
+
+
 def test_run_main_off_the_main_thread_holds_no_exit() -> None:
     """A signal runs on the main thread only, so a run on another thread is a plain asyncio.run."""
     kept: list[bool] = []
