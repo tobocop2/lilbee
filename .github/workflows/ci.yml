@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 6b4b96ee091e65ce75537ff973665fa7cef438cc
+          ref: d09d6c1189b4edf2d70220635cddceaed4f62b00
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
