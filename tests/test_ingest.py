@@ -7784,9 +7784,41 @@ class TestVisionOcrStopsOnCancel:
         cancel = threading.Event()
         cancel.set()
         calls: list[bytes] = []
-        with pytest.raises(RuntimeError, match="TaskCancelledError"):
+        with pytest.raises(asyncio.CancelledError) as raised:
             await self._extract(tmp_path, cancel, calls)
         assert calls == []
+        # xberg's error for the refused pages stays as the cause, for the DEBUG trace.
+        assert "TaskCancelledError" in str(raised.value.__cause__)
+
+    @pytest.mark.parametrize("when", ["file_start", "first_page"])
+    async def test_a_user_cancel_during_vision_ocr_logs_no_failure(
+        self, isolated_env, mock_svc, caplog, when
+    ):
+        """A cancel is not a file failure, whether no page or one page reached the model."""
+        from lilbee.data.ingest import sync
+        from lilbee.runtime.progress import EventType
+
+        mock_svc.provider.vision_slot_capacity.return_value = 1
+        (isolated_env / "scan.pdf").write_bytes(make_pdf(pages=self._PAGES))
+        cancel = threading.Event()
+
+        def _on_progress(event_type, _data) -> None:
+            if when == "file_start" and event_type is EventType.FILE_START:
+                cancel.set()
+
+        calls: list[bytes] = []
+        with (
+            self._vision_backend(calls, cancel if when == "first_page" else None),
+            mock.patch(
+                "lilbee.data.extract.backends.vision_ocr.resolve_ocr_prompt",
+                return_value="OCR",
+            ),
+            caplog.at_level("WARNING"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await sync(quiet=True, force_rebuild=True, on_progress=_on_progress, cancel=cancel)
+        assert bool(calls) is (when == "first_page")
+        assert [r.getMessage() for r in caplog.records if "scan.pdf" in r.getMessage()] == []
 
     @pytest.mark.parametrize("archived", [False, True])
     async def test_a_cancelled_sync_sends_no_page_to_the_model(

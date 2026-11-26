@@ -6,7 +6,7 @@ import json
 import threading
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -31,10 +31,17 @@ _REQUEST_TOKEN_KEY = "req"  # noqa: S105  # JSON key name, not a secret
 
 @dataclass(frozen=True)
 class OcrRequestContext:
-    """Per-extraction state the backend needs but xberg won't carry for it."""
+    """Per-extraction state the backend needs but xberg won't carry for it.
+
+    ``cancel_refused`` is set when the backend refuses a page because *cancel*
+    is set. xberg wraps that refusal in its own error, so the extraction's
+    caller reads this flag to tell a cancel from a file error.
+    """
 
     timeout: float = 0.0
     cancel: CancelSignal | None = None
+    token: str = field(default_factory=lambda: uuid.uuid4().hex)
+    cancel_refused: threading.Event = field(default_factory=threading.Event)
 
 
 class _OcrRequestRegistry:
@@ -44,11 +51,9 @@ class _OcrRequestRegistry:
         self._lock = threading.Lock()
         self._by_token: dict[str, OcrRequestContext] = {}
 
-    def register(self, ctx: OcrRequestContext) -> str:
-        token = uuid.uuid4().hex
+    def register(self, ctx: OcrRequestContext) -> None:
         with self._lock:
-            self._by_token[token] = ctx
-        return token
+            self._by_token[ctx.token] = ctx
 
     def get(self, token: str | None) -> OcrRequestContext | None:
         if token is None:
@@ -67,13 +72,14 @@ ocr_requests = _OcrRequestRegistry()
 @contextmanager
 def ocr_request(
     *, timeout: float = 0.0, cancel: CancelSignal | None = None
-) -> Generator[str, None, None]:
-    """Register a per-extraction context and yield its token for OcrConfig.backend_options."""
-    token = ocr_requests.register(OcrRequestContext(timeout=timeout, cancel=cancel))
+) -> Generator[OcrRequestContext, None, None]:
+    """Register a per-extraction context and yield it; its token goes in backend_options."""
+    ctx = OcrRequestContext(timeout=timeout, cancel=cancel)
+    ocr_requests.register(ctx)
     try:
-        yield token
+        yield ctx
     finally:
-        ocr_requests.unregister(token)
+        ocr_requests.unregister(ctx.token)
 
 
 def backend_options_for(token: str) -> str:
@@ -173,12 +179,16 @@ class VisionOcrBackend:
         view = _OcrConfigView(config)
         model = self._model_ref_fn()
         prompt = view.vlm_prompt or resolve_ocr_prompt(model)
-        ctx = ocr_requests.get(view.request_token)
-        cancel = ctx.cancel if ctx is not None else None
-        if cancel is not None and cancel.is_set():
-            raise TaskCancelledError
-        timeout = ctx.timeout if ctx is not None else 0.0
-        text = self._ocr_fn(image_bytes, model, prompt, timeout=timeout, cancel=cancel)
+        ctx = ocr_requests.get(view.request_token) or OcrRequestContext()
+        cancel = ctx.cancel
+        try:
+            if cancel is not None and cancel.is_set():
+                raise TaskCancelledError
+            text = self._ocr_fn(image_bytes, model, prompt, timeout=ctx.timeout, cancel=cancel)
+        except TaskCancelledError:
+            if cancel is not None and cancel.is_set():
+                ctx.cancel_refused.set()
+            raise
         return ExtractedDocument(content=text, mime_type=MARKDOWN_MIME)
 
     def process_image_file(self, path: str, config: OcrConfig) -> ExtractedDocument:

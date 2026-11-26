@@ -2077,20 +2077,16 @@ def _failed_result(
 ) -> _IngestResult:
     """A file's failure as a result, or cancellation when the run is stopping.
 
-    During shutdown, worker pools raise RuntimeError from submit(). Those are
-    cancellation, not ingest failures: the cancel flag is the source of truth,
-    and the executor's shutdown message covers the race where cancel was set
-    after the submit. A file error that lands after the cancel is a real failure:
-    it is logged here, because the collector replaces this cancel with its own
-    and no result carries the error to :func:`_classify_result`.
+    During shutdown, worker pools raise RuntimeError from submit(). That error
+    is cancellation, not an ingest failure, and stays silent. Any other error
+    that lands after the cancel is a real failure: it is logged here, because
+    the collector replaces this cancel with its own and no result carries the
+    error to :func:`_classify_result`.
     """
     if is_executor_shutdown(exc):
         raise asyncio.CancelledError from exc
     if cancel and cancel.is_set():
-        log.warning(
-            "Failed to ingest %s after the sync was cancelled: %s", entry.name, log_reason(exc)
-        )
-        log.debug("Traceback for failed ingest of %s", entry.name, exc_info=exc)
+        _log_failure(entry.name, exc)
         raise asyncio.CancelledError from exc
     # Suppress TaskCancelledError on the FILE_DONE notice: the user already
     # cancelled, and re-raising here would strand sibling tasks awaiting in
@@ -2711,6 +2707,13 @@ def _zero_chunk_reason(result: _IngestResult) -> str:
     return "; ".join([reason, *failed_page_lines(result.failed_pages)])
 
 
+def _log_failure(name: str, error: BaseException) -> None:
+    """Log a file's ingest failure, with its traceback at DEBUG only."""
+    # A traceback here would bleed into the TUI chat pane; the full trace stays at DEBUG.
+    log.warning("Failed to ingest %s: %s", name, log_reason(error))
+    log.debug("Traceback for failed ingest of %s", name, exc_info=error)
+
+
 def _classify_result(
     result: _IngestResult,
     added: dict[str, None],
@@ -2737,9 +2740,7 @@ def _classify_result(
             reasons[result.name] = result.skip_reason
         return BatchStatus.SKIPPED
     if result.error is not None:
-        # A traceback here would bleed into the TUI chat pane; the full trace stays at DEBUG.
-        log.warning("Failed to ingest %s: %s", result.name, log_reason(result.error))
-        log.debug("Traceback for failed ingest of %s", result.name, exc_info=result.error)
+        _log_failure(result.name, result.error)
         added.pop(result.name, None)
         updated.pop(result.name, None)
         failed[result.name] = None
