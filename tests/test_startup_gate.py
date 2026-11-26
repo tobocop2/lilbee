@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
 from unittest import mock
 
 import pytest
@@ -565,77 +564,94 @@ async def test_gate_mount_retires_the_splash_then_repaints(monkeypatch):
     assert order == ["dismiss", "refresh"]
 
 
-async def test_keys_typed_at_the_gate_reach_the_prompt_not_a_view_binding(monkeypatch):
+def _app_held_at_the_gate(monkeypatch, tmp_path):
+    """A LilbeeApp whose gate never hands over, with no services to build."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data"))
+    monkeypatch.setattr(StartupGate, "start_boot", lambda self: None)
+    monkeypatch.setattr("lilbee.cli.tui.app.chat_ready", lambda: False)
+    monkeypatch.setattr("lilbee.cli.tui.app.embedding_ready", lambda: False)
+    monkeypatch.setattr(LilbeeApp, "adopt_services", lambda self: None)
+    return LilbeeApp()
+
+
+async def test_keys_typed_at_the_gate_reach_the_prompt_not_a_view_binding(monkeypatch, tmp_path):
     """Regression: a key typed while the gate shows fell to the app's view bindings.
 
     "t" opened Tasks, and the gate then gave up its handover because it no longer
-    owned the screen. The gate now keeps printable keys and passes them to the app.
+    owned the screen. The app now keeps printable keys for the prompt.
     """
-    from textual.app import App, ComposeResult
-    from textual.binding import Binding, BindingType
-    from textual.widgets import Static
-
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
-    monkeypatch.setattr(StartupGate, "start_boot", lambda self: None)
-    hits: list[str] = []
-
-    class _Host(App[None]):
-        BINDINGS: ClassVar[list[BindingType]] = [Binding("t", "hit", "hit")]
-
-        def compose(self) -> ComposeResult:
-            yield Static("host")
-
-        def on_mount(self) -> None:
-            self.push_screen(StartupGate())
-
-        def action_hit(self) -> None:
-            hits.append("t")
-
-    app = _Host()
+    app = _app_held_at_the_gate(monkeypatch, tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        await pilot.press("t", "h", "i", "enter", "ctrl+a")
+        assert isinstance(app.screen, StartupGate)
+        await pilot.press("t", "h", "i", "enter")
         await pilot.pause()
-        gate = app.screen
-        assert isinstance(gate, StartupGate)
-        assert hits == []
-        assert gate._typed == ["t", "h", "i"]
+        assert isinstance(app.screen, StartupGate)
+        assert app.active_view != "Tasks"
+        assert app.take_type_ahead() == "thi"
 
 
-async def test_text_pasted_at_the_gate_is_kept_like_typed_keys(monkeypatch):
-    """A paste is one Paste event, not Key events; the gate keeps its text too."""
+async def test_text_pasted_at_the_gate_is_kept_like_typed_keys(monkeypatch, tmp_path):
+    """A paste is one Paste event, not Key events; the app keeps its text too."""
     from textual import events
-    from textual.app import App, ComposeResult
-    from textual.widgets import Static
 
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
-    monkeypatch.setattr(StartupGate, "start_boot", lambda self: None)
-
-    class _Host(App[None]):
-        def compose(self) -> ComposeResult:
-            yield Static("host")
-
-        def on_mount(self) -> None:
-            self.push_screen(StartupGate())
-
-    app = _Host()
+    app = _app_held_at_the_gate(monkeypatch, tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         await pilot.press("a")
         app.post_message(events.Paste("bc d"))
         await pilot.pause()
-        gate = app.screen
-        assert isinstance(gate, StartupGate)
-        assert "".join(gate._typed) == "abc d"
+        assert isinstance(app.screen, StartupGate)
+        assert app.take_type_ahead() == "abc d"
+
+
+async def test_keys_typed_over_a_screen_above_the_gate_reach_that_screen(
+    monkeypatch, tmp_path
+):
+    """Only the gate and the chat it hands to keep keys; a screen above them gets its own."""
+    from textual import events
+    from textual.screen import Screen
+
+    keys: list[str] = []
+
+    class _Above(Screen[None]):
+        def on_key(self, event: events.Key) -> None:
+            keys.append(event.key)
+
+    app = _app_held_at_the_gate(monkeypatch, tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await app.push_screen(_Above())
+        await pilot.press("x")
+        await pilot.pause()
+        assert keys == ["x"]
+        assert app.take_type_ahead() == ""
+
+
+async def test_the_prompt_takes_the_kept_text_once():
+    """Taking the text ends the keeping, so a later key goes to its widget."""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    app._type_ahead = ["a", "b"]
+    assert app.take_type_ahead() == "ab"
+    assert app.take_type_ahead() == ""
+    assert app._type_ahead is None
 
 
 async def test_pressing_the_sync_key_at_the_gate_starts_no_sync(monkeypatch, tmp_path):
     """S is a priority binding: left live, it swaps chat in under the gate.
 
-    The gate then finds another screen on top and skips its handover. With the
-    binding off, the key reaches the gate's key handler and is kept as typed text.
+    The gate then finds another screen on top and skips its handover. At the
+    gate the app keeps the key as typed text.
     """
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.startup_gate import StartupGate
@@ -658,17 +674,17 @@ async def test_pressing_the_sync_key_at_the_gate_starts_no_sync(monkeypatch, tmp
         gate = app.screen
         assert isinstance(gate, StartupGate)
         assert syncs == []
-        assert gate._typed == ["a", "S", "b"]
+        assert app.take_type_ahead() == "aSb"
 
 
 @pytest.mark.parametrize(
     ("key", "typed"),
-    [("left_square_bracket", ["]", "["]), ("c", ["]", "c"]), ("escape", ["]"])],
+    [("left_square_bracket", "]["), ("c", "]c"), ("escape", "]")],
 )
 async def test_no_view_opens_before_chat_is_installed(monkeypatch, tmp_path, key, typed):
     """The view keys reach no view while chat loads: the way back from one is chat.
 
-    The gate keeps them as typed text, as it keeps the sync key.
+    The app keeps them as typed text, as it keeps the sync key.
     """
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.startup_gate import StartupGate
@@ -685,7 +701,7 @@ async def test_no_view_opens_before_chat_is_installed(monkeypatch, tmp_path, key
             await pilot.press(pressed)
             await pilot.pause()
         assert isinstance(app.screen, StartupGate)
-        assert app.screen._typed == typed
+        assert app._type_ahead == list(typed)
         app.switch_view("Chat")
         await pilot.pause()
         assert isinstance(app.screen, StartupGate)
@@ -851,18 +867,15 @@ async def test_a_view_opens_once_chat_is_installed(monkeypatch, tmp_path):
         assert not isinstance(app.screen, StartupGate)
 
 
-async def test_gate_release_hands_the_typed_keys_to_the_app():
+async def test_gate_release_reveals_the_landing():
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
     gate = StartupGate()
     app = mock.MagicMock()
     app.screen = gate
     gate._ui_app = app
-    for char in "hi":
-        gate._typed.append(char)
     with mock.patch.object(StartupGate, "query_one"):
         gate._release()
-    assert app.type_ahead == "hi"
     app.reveal_landing.assert_called_once_with()
 
 
@@ -872,7 +885,7 @@ def test_landing_on_the_catalog_drops_the_typed_keys():
 
     app = mock.MagicMock()
     app.chat_is_ready = False
-    app.type_ahead = "hi"
+    app._type_ahead = ["h", "i"]
     LilbeeApp.reveal_landing(app)
-    assert app.type_ahead == ""
+    assert app._type_ahead is None
     app.switch_view.assert_called_once_with(msg.CATALOG_VIEW)

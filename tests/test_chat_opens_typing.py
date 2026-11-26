@@ -15,10 +15,11 @@ from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
+from lilbee.cli.tui.screens.startup_gate import StartupGate
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
 from tests._async_wait import wait_until
-from tests._lilbee_app_test_host import await_chat
+from tests._lilbee_app_test_host import await_chat, send_key_burst
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
 QUESTION = "what table is in the paper"
@@ -78,4 +79,31 @@ async def test_a_question_typed_while_chat_starts_reaches_the_prompt() -> None:
         await pilot.press(*KEYS)
         chat = await await_chat(app, pilot)
         inp = chat.query_one("#chat-input", ChatInput)
+        assert await wait_until(pilot, lambda: inp.value == QUESTION, timeout=5.0), inp.value
+
+
+async def test_keys_typed_as_the_gate_hands_over_reach_the_prompt(monkeypatch) -> None:
+    """Keys that arrive between the gate's handover and Chat showing still type.
+
+    The handover switches Chat in at once, but Chat composes and focuses its
+    prompt a few steps later. The rest of the first word lands in that gap, as
+    typing does when the handover falls in the middle of a word.
+    """
+    monkeypatch.setattr(StartupGate, "start_boot", lambda self: None)
+    app = LilbeeApp()
+    async with app.run_test(size=(160, 48)) as pilot:
+        assert await wait_until(
+            pilot,
+            lambda: isinstance(app.screen, StartupGate) and app.chat_screen() is not None,
+            timeout=10.0,
+        )
+        gate = app.screen
+        assert isinstance(gate, StartupGate)
+        await pilot.press(*KEYS[:1])
+        app.chat_is_ready = True
+        gate._release()
+        send_key_burst(app, *KEYS[1:4])
+        chat = await await_chat(app, pilot)
+        inp = chat.query_one("#chat-input", ChatInput)
+        await pilot.press(*KEYS[4:])
         assert await wait_until(pilot, lambda: inp.value == QUESTION, timeout=5.0), inp.value

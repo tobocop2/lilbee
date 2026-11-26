@@ -1743,7 +1743,7 @@ def _app_without_type_ahead():
         ChatScreen,
         "app",
         new_callable=mock.PropertyMock,
-        return_value=mock.MagicMock(type_ahead=""),
+        return_value=mock.MagicMock(**{"take_type_ahead.return_value": ""}),
     )
 
 

@@ -278,13 +278,13 @@ class TestModeIndicator:
 
     async def test_keys_typed_during_startup_land_in_the_prompt(self, _mock_resolve):
         class _TypedAheadApp(ChatTestApp):
-            type_ahead = "hel"
+            _type_ahead = ["hel"]
 
         app = _TypedAheadApp()
         async with app.run_test(size=(120, 40)) as pilot:
             chat = await await_chat(app, pilot)
             assert chat.query_one("#chat-input", ChatInput).value == "hel"
-            assert app.type_ahead == ""
+            assert app._type_ahead is None
 
     async def test_normal_mode_on_escape(self, _mock_resolve):
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
