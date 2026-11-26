@@ -18,7 +18,7 @@ from lilbee.core.config import cfg
 from lilbee.retrieval.query.compaction import CompactionResult
 from lilbee.retrieval.reasoning import StreamToken
 from lilbee.sessions import MessageRole, SessionMessage
-from tests._async_wait import group_done, wait_until
+from tests._async_wait import wait_for_group, wait_until
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
 
@@ -103,7 +103,7 @@ async def _start_held_turn(app, pilot, held: _HeldStream, question: str = "Q1") 
 
 async def _turn_ended(pilot, screen: ChatScreen) -> None:
     """Wait until the turn's worker ended and the screen handled the end it posted."""
-    await group_done(pilot.app, _TURN_WORKER_GROUP)
+    await wait_for_group(pilot.app, _TURN_WORKER_GROUP)
     assert await wait_until(pilot, lambda: not screen.streaming)
 
 
