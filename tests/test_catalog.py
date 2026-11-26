@@ -1566,7 +1566,7 @@ class TestSplitShardDownload:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
         monkeypatch.setattr(
-            catalog.download, "resolve_filename", lambda e, engine: "m-00001-of-00002.gguf"
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: "m-00001-of-00002.gguf"
         )
         requested: list[str] = []
 
@@ -1591,7 +1591,7 @@ class TestSplitShardDownload:
         """
         entry = PICKS_EMBEDDING[0]
         monkeypatch.setattr(
-            catalog.download, "resolve_filename", lambda e, engine: "m-00001-of-00003.gguf"
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: "m-00001-of-00003.gguf"
         )
         monkeypatch.setattr(
             catalog.download,
@@ -1699,7 +1699,9 @@ class TestDownloadModel:
         """tqdm_class-based callback is invoked during download."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
 
         def fake_download(**kwargs: Any) -> str:
             result = _fake_download(**kwargs)
@@ -1725,7 +1727,9 @@ class TestDownloadModel:
         models_dir = tmp_path / "models"
         monkeypatch.setattr(cfg, "models_dir", models_dir)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
         result = download_model(entry, engine=LLAMA)
@@ -1734,7 +1738,9 @@ class TestDownloadModel:
     def test_calls_progress_callback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
 
         progress_calls: list[tuple[int, int | None]] = []
 
@@ -1762,7 +1768,9 @@ class TestDownloadModel:
     ) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
 
         from huggingface_hub.utils import GatedRepoError
 
@@ -1787,7 +1795,9 @@ class TestDownloadModel:
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
 
         def fake_download(**kwargs: Any) -> str:
             raise TaskCancelledError
@@ -1801,7 +1811,9 @@ class TestDownloadModel:
     ) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
 
         from huggingface_hub.utils import RepositoryNotFoundError
 
@@ -1819,7 +1831,9 @@ class TestDownloadModel:
         RuntimeError that names the original exception type, not leaked raw."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
 
         def fake_download(**kwargs: Any) -> str:
             raise KeyError("missing sibling")
@@ -3010,7 +3024,7 @@ class TestVisionMmprojFiles:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_VISION[0]
         monkeypatch.setattr(
-            catalog.download, "resolve_filename", lambda e, engine: "model-Q4_K_M.gguf"
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: "model-Q4_K_M.gguf"
         )
 
         download_calls: list[dict] = []
@@ -3039,7 +3053,9 @@ class TestVisionMmprojFiles:
         """download_model does NOT download mmproj when the repo ships none."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
         monkeypatch.setattr(catalog.download, "_resolve_mmproj_filename", lambda repo, pat: None)
 
         download_calls: list[dict] = []
@@ -3060,7 +3076,9 @@ class TestVisionMmprojFiles:
         gets its projector, so a later vision_model assignment can run OCR."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
         monkeypatch.setattr(
             catalog.download,
             "_resolve_mmproj_filename",
@@ -3086,7 +3104,7 @@ class TestVisionMmprojFiles:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_VISION[0]
         monkeypatch.setattr(
-            catalog.download, "resolve_filename", lambda e, engine: "model-Q4_K_M.gguf"
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: "model-Q4_K_M.gguf"
         )
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
@@ -3102,7 +3120,7 @@ class TestVisionMmprojFiles:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_VISION[0]
         monkeypatch.setattr(
-            catalog.download, "resolve_filename", lambda e, engine: "model-Q4_K_M.gguf"
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: "model-Q4_K_M.gguf"
         )
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
 
@@ -3126,7 +3144,7 @@ class TestVisionMmprojFiles:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_VISION[0]
         monkeypatch.setattr(
-            catalog.download, "resolve_filename", lambda e, engine: "model-Q4_K_M.gguf"
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: "model-Q4_K_M.gguf"
         )
 
         download_calls: list[dict] = []
@@ -3168,7 +3186,7 @@ class TestVisionMmprojFallback:
             task="vision",
         )
         monkeypatch.setattr(
-            catalog.download, "resolve_filename", lambda e, engine: "custom-Q4_K_M.gguf"
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: "custom-Q4_K_M.gguf"
         )
 
         download_calls: list[dict] = []
@@ -3195,14 +3213,14 @@ class TestVisionMmprojFallback:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """When HF returns a cached mmproj (no tqdm invocation) the callback still fires.
-        Regression guard for the ``not tracker.was_used`` cache-hit branch in
-        ``download_mmproj``: without it, callers see 0% progress for the
-        mmproj leg even though the file is fully present on disk.
+        Regression guard for the final 100% report every transfer makes: without
+        it, callers see 0% progress for the mmproj leg even though the file is
+        fully present on disk.
         """
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_VISION[0]
         monkeypatch.setattr(
-            catalog.download, "resolve_filename", lambda e, engine: "model-Q4_K_M.gguf"
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: "model-Q4_K_M.gguf"
         )
         monkeypatch.setattr(
             catalog.download,
@@ -3469,7 +3487,9 @@ class TestGatedRepoShowsLoginMessage:
     ) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_VISION[0]
-        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e, engine: e.gguf_filename)
+        monkeypatch.setattr(
+            catalog.download, "resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
 
         from huggingface_hub.utils import GatedRepoError
 
@@ -3848,7 +3868,6 @@ class TestDownloadProgressCallback:
         bar.close()
 
         assert calls == [(100, 200), (200, 200)]
-        assert tracker.was_used is True
 
 
 class TestTransferProgressStream:
@@ -3873,7 +3892,6 @@ class TestTransferProgressStream:
         bar.update_transfer(50)
 
         assert calls == [(50, 200), (100, 200)]
-        assert tracker.was_used is True
 
     def test_streams_are_not_summed(self) -> None:
         """HTTP reports the same chunk on both streams; summing would double-count."""

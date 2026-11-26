@@ -11,7 +11,7 @@ from textual.containers import Vertical
 from textual.widget import Widget
 from textual.widgets import Static
 
-from tests._async_wait import subtree_mounted, wait_until
+from tests._async_wait import subtree_mounted, wait_for_pull_check, wait_until
 
 
 class _Pilot:
@@ -68,3 +68,21 @@ async def test_subtree_mounted_is_false_until_the_inner_widgets_mount() -> None:
         row.gate.set()
         assert await wait_until(pilot, lambda: subtree_mounted(root))
         assert row.query("#inner")
+
+
+@pytest.mark.asyncio
+async def test_the_pull_check_wait_ignores_other_workers() -> None:
+    """With no check alive the wait returns at once, not when an unrelated worker ends."""
+    release = asyncio.Event()
+
+    async def _other() -> None:
+        await release.wait()
+
+    app = App[None]()
+    async with app.run_test():
+        other = app.run_worker(_other, name="unrelated")
+        try:
+            await asyncio.wait_for(wait_for_pull_check(app), timeout=1.0)
+            assert not other.is_finished
+        finally:
+            release.set()

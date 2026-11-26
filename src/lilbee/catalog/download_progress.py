@@ -135,7 +135,7 @@ class _CallbackProgressBar(_base_tqdm):
 
 
 class _ProgressTracker:
-    """Wraps a tqdm_class to detect updates and aggregate across split shards.
+    """Wraps a tqdm_class to report updates and aggregate across split shards.
 
     For a multi-shard GGUF, each shard gets its own tqdm. Reporting each shard's
     own ``(done, total)`` would show N separate 0->100% cycles against the wrong
@@ -146,7 +146,6 @@ class _ProgressTracker:
     """
 
     def __init__(self, callback: Any, grand_total: int = 0) -> None:
-        self.was_used = False
         self._callback = callback
         self.grand_total = grand_total
         self._completed_base = 0
@@ -160,7 +159,6 @@ class _ProgressTracker:
 
         class _Cls(_CallbackProgressBar):
             def _report(self) -> None:
-                tracker.was_used = True
                 done = tracker._completed_base + self._cumulative
                 shard_total = self.total if self.total is not None else 0
                 total = tracker.grand_total or (tracker._completed_base + shard_total)

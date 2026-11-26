@@ -6,6 +6,7 @@ import contextlib
 import logging
 import time
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import ClassVar, NamedTuple
 
 from textual import getters, on, work
@@ -2189,8 +2190,12 @@ class CatalogScreen(Screen[None]):
         self.app.push_screen(FormatPicker(model.display_name, rows), _after_pick)
 
     def _install_format(self, model: CatalogModel) -> None:
-        if not self._is_pending(model):
-            self._check_pull(model)
+        if self._is_pending(model):
+            return
+        # The pull is the app's task, so the check is an app worker: closing the
+        # catalog during the check must not cancel it or drop its verdict.
+        app = self.app
+        app.run_worker(partial(self._check_pull, app, model), thread=True, name=_WORKER_CHECK_PULL)
 
     def _is_pending(self, model: CatalogModel) -> bool:
         """Say so and return True when a pull of *model* is queued or running."""
@@ -2208,20 +2213,20 @@ class CatalogScreen(Screen[None]):
         if not self._is_pending(model):
             self._enqueue_download(model)
 
-    @work(thread=True, name=_WORKER_CHECK_PULL)
-    def _check_pull(self, model: CatalogModel) -> None:
+    def _check_pull(self, app: LilbeeApp, model: CatalogModel) -> None:
         """Run the pull plan off the UI thread, then enqueue *model* or say why not.
 
         The plan asks the Hub, so the UI thread must not wait on it. The check
         refuses before the enqueue: a task that fails instantly is terminal, so
-        dedupe would not stop a second row.
+        dedupe would not stop a second row. The verdict goes through *app*,
+        which a closed catalog cannot detach.
         """
         refusal = _pull_refusal(model)
         if refusal is None:
-            call_from_thread(self, self._enqueue_unless_pending, model)
+            call_from_thread(app, self._enqueue_unless_pending, model)
             return
         text, severity = refusal
-        call_from_thread(self, self.notify, text, severity=severity)
+        call_from_thread(app, self.notify, text, severity=severity)
 
     def _on_chat_ready_changed(self, ready: bool) -> None:
         """Show the first-run welcome only while no chat model resolves."""

@@ -405,3 +405,51 @@ async def test_a_second_press_during_the_check_does_not_queue_the_pull_twice(
 
     assert started == ["acme/already-GGUF"]
     assert any("already downloading" in n for n in notices)
+
+
+@pytest.mark.parametrize("refused", [False, True], ids=["fits", "refused"])
+async def test_closing_the_catalog_during_the_check_keeps_the_verdict(
+    monkeypatch: pytest.MonkeyPatch, refused: bool
+) -> None:
+    """The pull is the app's task: a press must queue it, or say why not, after the screen goes."""
+    from lilbee.catalog import download
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _slow_plan(model: CatalogModel, *_a: object) -> download.PullPlan:
+        entered.set()
+        release.wait(timeout=5)
+        if refused:
+            raise PermissionError("acme/already-GGUF requires HuggingFace authentication.")
+        return download.PullPlan(model.hf_repo)
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+        pilot.app.task_bar.queue = TaskQueue()
+        started: list[str] = []
+        notices: list[str] = []
+        monkeypatch.setattr(
+            pilot.app.task_bar, "start_download", lambda m, **_kw: started.append(m.hf_repo)
+        )
+        monkeypatch.setattr(
+            pilot.app, "notify", lambda message, **_kw: notices.append(str(message))
+        )
+        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.plan_pull", _slow_plan)
+
+        screen._install_model(_model())
+        assert await wait_until(pilot, entered.is_set)
+        await pilot.app.pop_screen()
+        await pilot.pause()
+        release.set()
+        await wait_for_pull_check(pilot.app)
+
+        if refused:
+            assert started == []
+            assert notices == ["acme/already-GGUF requires HuggingFace authentication."]
+        else:
+            assert started == ["acme/already-GGUF"]
+            assert any("Queued download" in n for n in notices), notices

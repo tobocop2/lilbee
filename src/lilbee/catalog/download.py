@@ -593,6 +593,7 @@ def plan_pull(
         PermissionError: the repo is gated and needs authentication.
         ListingOfflineError: the Hub cannot be reached to list the repo.
         ListingFailedError: the Hub did not give the repo listing.
+        UnsupportedQuantError: the engine can load no GGUF file of the repo.
         RuntimeError: the repo holds no files of the format, a named file is
             missing, or the index does not fit on the disk.
         ValueError: the index declares a shard the repo lacks.
@@ -604,7 +605,8 @@ def plan_pull(
         return PullPlan(entry.hf_repo, files)
     if engine is None:
         raise RuntimeError(f"A GGUF download needs an engine to pick the file: {entry.hf_repo}")
-    files = _gguf_files(entry.hf_repo, models_dir, resolve_filename(entry, engine), on_probe)
+    filename = resolve_filename(entry, engine, can_load=engine_load_check(engine, token))
+    files = _gguf_files(entry.hf_repo, models_dir, filename, on_probe)
     return PullPlan(
         entry.hf_repo, files, _vision_projector(entry, models_dir, files[0].held, on_probe)
     )
@@ -656,8 +658,9 @@ def fetch_model_files(
 
     Takes the models dir and token as arguments so a download child process
     can run it without reading cfg. Writes no registry state. The whole plan,
-    projector included, is checked against the free space before any byte
-    moves. *on_probe* fires once per file resolved with the Hub, which is the
+    projector included, is checked against the free space before the transfer;
+    only a safetensors index, which the plan fetches after its own check, moves
+    before that. *on_probe* fires once per file resolved with the Hub, which is the
     only sign of life a caller gets before the first bytes, and it names the
     cache blob so the caller can clear that file's leftovers. *on_retry* hears
     each failed transfer that another attempt follows.
@@ -946,6 +949,15 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
         ) from exc
     matches = [name for name in names if fnmatch.fnmatch(name, pattern)]
     return min(matches, key=_mmproj_rank) if matches else None
+
+
+def engine_load_check(engine: "EngineAdapter", token: HfToken) -> LoadCheck:
+    """*engine*'s verdict on one repo file, in the form ``resolve_filename`` asks it."""
+
+    def _can_load(hf_repo: str, filename: str) -> None:
+        engine.assert_loadable(hf_repo, filename, token)
+
+    return _can_load
 
 
 def resolve_filename(

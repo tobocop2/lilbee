@@ -372,16 +372,12 @@ class ModelManager:
         if entry.format is not ModelFormat.GGUF or engine is None:
             return entry
         # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
-        from lilbee.catalog.download import resolve_filename
+        from lilbee.catalog.download import engine_load_check, resolve_filename
         from lilbee.catalog.hf_client import hf_token
 
-        token = hf_token()
-
-        def _can_load(hf_repo: str, filename: str) -> None:
-            engine.assert_loadable(hf_repo, filename, token)
-
+        can_load = engine_load_check(engine, hf_token()) if verify else None
         try:
-            filename = resolve_filename(entry, engine, can_load=_can_load if verify else None)
+            filename = resolve_filename(entry, engine, can_load=can_load)
         except (PermissionError, RuntimeError) as exc:
             if isinstance(exc, UnsupportedQuantError):
                 raise
