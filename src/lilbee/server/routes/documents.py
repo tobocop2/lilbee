@@ -7,6 +7,7 @@ files and ``/api/export`` serializes the whole corpus.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator, Callable
 from typing import Annotated
 
 from litestar import Request, Response, get, post
@@ -41,10 +42,13 @@ class AddIdConflictException(ClientException):
     status_code = HTTP_409_CONFLICT
 
 
-def _refuse_a_running_add_id(add_id: str | None) -> None:
-    """Answer 409 when an add with *add_id* already runs."""
-    if add_id is not None and handlers.add_is_running(add_id):
-        raise AddIdConflictException(detail=str(AddIdRunningError(add_id)))
+def _add_response(open_stream: Callable[[], AsyncGenerator[str, None]]) -> Stream:
+    """The SSE answer of an add; opening the stream reserves its id, or answers 409."""
+    try:
+        stream = open_stream()
+    except AddIdRunningError as exc:
+        raise AddIdConflictException(detail=str(exc)) from exc
+    return Stream(stream, media_type=SSE_MEDIA_TYPE, status_code=201)
 
 
 class RemoveRequest(BaseModel):
@@ -96,13 +100,10 @@ async def add_route(data: AddRequest) -> Stream:
         paths, force, ocr, ocr_timeout = handlers.validate_add_paths(data.model_dump())
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
-    _refuse_a_running_add_id(data.add_id)
-    return Stream(
-        handlers.add_files_stream(
+    return _add_response(
+        lambda: handlers.add_files_stream(
             paths, force=force, ocr=ocr, ocr_timeout=ocr_timeout, add_id=data.add_id
-        ),
-        media_type=SSE_MEDIA_TYPE,
-        status_code=201,
+        )
     )
 
 
@@ -133,12 +134,11 @@ async def add_upload_route(
         validate_ocr_timeout(ocr_timeout)
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
-    _refuse_a_running_add_id(add_id)
     cleaned = [(name, await upload.read()) for name, upload in zip(names, data, strict=True)]
-    return Stream(
-        handlers.add_uploads_stream(cleaned, ocr=ocr_mode, ocr_timeout=ocr_timeout, add_id=add_id),
-        media_type=SSE_MEDIA_TYPE,
-        status_code=201,
+    return _add_response(
+        lambda: handlers.add_uploads_stream(
+            cleaned, ocr=ocr_mode, ocr_timeout=ocr_timeout, add_id=add_id
+        )
     )
 
 

@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import threading
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Callable
-from typing import Any, NamedTuple
+from collections.abc import AsyncGenerator, Callable, Coroutine
+from typing import Any, NamedTuple, TypeVar
 
 from pydantic import BaseModel
 
@@ -27,6 +26,8 @@ from lilbee.server.chat_completions_api.errors import CompletionsErrorCode
 from lilbee.server.route_names import name_routes
 
 log = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 # Litestar documents a response's content type from the route decorator, so a
 # streaming route passes this to both the decorator and the Stream it returns.
@@ -255,26 +256,35 @@ class SseStream:
         self.cancel = threading.Event()
         self.stopped_by_user = False
         """Whether the user stopped the run through another request, not by a disconnect."""
+        self._work: asyncio.Future[Any] | None = None
+        """The work that :meth:`stoppable` awaits now, which a stop by the user cancels."""
         self.loop = asyncio.get_running_loop()
         self.callback: DetailedProgressCallback = self._build_callback()
 
-    def stop_by_user(self, task: asyncio.Task[Any]) -> None:
-        """Stop *task* as the user's cancel; the stream still ends with its terminal frame.
+    def stop_by_user(self) -> None:
+        """Stop the run as the user's cancel; the stream still ends with its terminal frame.
 
-        This sets the cancel and cancels *task*, as a disconnect does, so an embed in
-        flight does not hold the stop. The flag is set first, so the run never sees
-        the cancel unmarked. A task that has not started yet is not cancelled: it
-        sees the set cancel at its first step and still sends its terminal frame.
-        A run that already stops is left alone, so a second cancel cannot cut its
-        rollback short.
+        This sets the flag, then the cancel, and cancels the work that
+        :meth:`stoppable` awaits, so an embed in flight does not hold the stop. The
+        run's own task is not cancelled: the run catches the cancel of its work,
+        undoes what it did not finish and returns its summary. A run that has not
+        started sees the set cancel at its first step. A run that already stops is
+        left alone, so a second cancel cannot cut its rollback short.
         """
         if self.cancel.is_set():
             return
         self.stopped_by_user = True
         self.cancel.set()
-        coro = task.get_coro()
-        if not inspect.iscoroutine(coro) or inspect.getcoroutinestate(coro) != inspect.CORO_CREATED:
-            task.cancel()
+        if self._work is not None:
+            self._work.cancel()
+
+    async def stoppable(self, work: Coroutine[Any, Any, _T]) -> _T:
+        """Await *work*; a stop by the user cancels it, and this raises ``CancelledError``."""
+        self._work = asyncio.ensure_future(work)
+        try:
+            return await self._work
+        finally:
+            self._work = None
 
     def put_threadsafe(self, item: str | None) -> None:
         """Enqueue an always-delivered event from a worker thread.
