@@ -12,6 +12,7 @@ import pytest
 from lilbee.cli.commands import ingest_sync
 from lilbee.runtime.cancellation import SignalFlag, TaskCancelledError
 from lilbee.runtime.progress import EventType, FileStartEvent
+from tests._signals import press_ctrl_c_in_a_run
 
 
 def test_cancellable_progress_raises_when_event_set() -> None:
@@ -181,14 +182,17 @@ def test_ctrl_c_handler_records_without_an_event_or_a_lock(monkeypatch) -> None:
 
 
 def test_a_second_ctrl_c_in_a_sync_stops_it_where_it_is(monkeypatch) -> None:
+    """The command stops on the second press while the sync is still stuck in its step."""
     steps: list[str] = []
+    release = threading.Event()
+    loops: list[asyncio.AbstractEventLoop] = []
 
     async def _fake_sync(**kwargs):
-        handler = signal.getsignal(signal.SIGINT)
-        handler(signal.SIGINT, None)
-        assert kwargs["cancel"].is_set()
-        handler(signal.SIGINT, None)
-        steps.append("past the second Ctrl+C")
+        loops.append(asyncio.get_running_loop())
+        press_ctrl_c_in_a_run(kwargs["cancel"])
+        press_ctrl_c_in_a_run()
+        # A step that never awaits: only the main thread's wait can end the command.
+        release.wait(10)
         raise asyncio.CancelledError
 
     def _forget(_rollback: ingest_sync.AddRollback) -> None:
@@ -200,7 +204,17 @@ def test_a_second_ctrl_c_in_a_sync_stops_it_where_it_is(monkeypatch) -> None:
     monkeypatch.setattr("lilbee.app.services.force_quit", lambda: steps.append("force quit"))
     monkeypatch.setattr("lilbee.data.ingest.sync", _fake_sync)
 
-    with pytest.raises(SystemExit) as stopped:
-        ingest_sync.run_sync_with_signal_cancel()
-    assert stopped.value.code == 130
-    assert steps == ["rollback", "Sync cancelled.", "force quit"]
+    try:
+        with pytest.raises(SystemExit) as stopped:
+            ingest_sync.run_sync_with_signal_cancel()
+        assert stopped.value.code == 130
+        assert steps == ["rollback", "Sync cancelled.", "force quit"]
+        assert not release.is_set()
+    finally:
+        release.set()
+        for thread in threading.enumerate():
+            if thread.name == "lilbee-run":
+                thread.join(timeout=5)
+        # The run is left to the process exit, so its loop is still open here.
+        if loops and not loops[0].is_closed():
+            loops[0].close()
