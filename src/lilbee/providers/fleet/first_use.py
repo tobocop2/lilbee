@@ -89,8 +89,9 @@ class RefusedInstalls:
         self._by_pack.pop(key, None)
 
     def raise_if_refused(self, key: tuple[str, str, str]) -> None:
+        # A raise keeps the old traceback behind the new frames, so each lookup starts clean.
         if key in self._by_pack:
-            raise self._by_pack[key]
+            raise self._by_pack[key].with_traceback(None)
 
 
 _refusals = RefusedInstalls()
