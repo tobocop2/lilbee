@@ -280,9 +280,10 @@ class SseStream:
 
     async def stoppable(self, work: Coroutine[Any, Any, _T]) -> _T:
         """Await *work*; a stop by the user cancels it, and this raises ``CancelledError``."""
-        self._work = asyncio.ensure_future(work)
+        future = asyncio.ensure_future(work)
+        self._work = future
         try:
-            return await self._work
+            return await future
         finally:
             self._work = None
 
