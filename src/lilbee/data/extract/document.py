@@ -837,7 +837,8 @@ async def _extract_document(
 
     A set *cancel* stops vision OCR before its next page, and a pass that
     ends under a set *cancel* raises ``CancelledError`` instead of returning a
-    partial document.
+    partial document. A pass that fails because the backend refused a page for
+    the cancel also raises ``CancelledError``, not the wrapped extraction error.
     """
     from .xberg import aextract_document
 
@@ -853,16 +854,21 @@ async def _extract_document(
 
     trace_log.debug("extract-start source=%r type=%s", source_name, content_type)
     started = time.perf_counter()
-    with ocr_request(timeout=_effective_ocr_timeout(), cancel=cancel) as token:
-        batcher = active_extract_batcher()
-        if batcher is not None:
-            doc = await batcher.submit(mode, data, path.name, token, on_page)
-        else:
-            config = extraction_config(mode, ocr_token=token)
-            # xberg's extract is async; awaiting it keeps the OCR page loop off this thread.
-            doc = await aextract_document(
-                data, filename=path.name, config=config, on_progress=on_page
-            )
+    with ocr_request(timeout=_effective_ocr_timeout(), cancel=cancel) as request:
+        try:
+            batcher = active_extract_batcher()
+            if batcher is not None:
+                doc = await batcher.submit(mode, data, path.name, request.token, on_page)
+            else:
+                config = extraction_config(mode, ocr_token=request.token)
+                # xberg's extract is async; awaiting it keeps the OCR page loop off this thread.
+                doc = await aextract_document(
+                    data, filename=path.name, config=config, on_progress=on_page
+                )
+        except Exception as exc:
+            if request.cancel_refused.is_set():
+                raise asyncio.CancelledError from exc
+            raise
     if cancel is not None and cancel.is_set():
         raise asyncio.CancelledError
     elapsed = time.perf_counter() - started
