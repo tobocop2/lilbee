@@ -15,11 +15,12 @@ from textual.message import Message
 log = logging.getLogger(__name__)
 
 
-def call_from_thread(node: DOMNode, fn: Any, *args: Any, **kwargs: Any) -> None:
-    """Post *fn* to the main thread via the app.
+def call_from_thread(node: DOMNode, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Run *fn* on the main thread via the app and return its result.
 
-    Drops the call (does not crash the worker) when the target node's app
-    is no longer reachable, e.g. during shutdown or after a screen was
+    Returns None when the call is dropped. Drops the call (does not crash the
+    worker) when the target node's app is no longer reachable, e.g. during
+    shutdown or after a screen was
     replaced. Logs at debug so the drop is discoverable without leaking
     warning text into the TUI render (textual's log handler routes
     stderr into the rendered frame). Long-running workers that must
@@ -39,14 +40,14 @@ def call_from_thread(node: DOMNode, fn: Any, *args: Any, **kwargs: Any) -> None:
         app = node.app
     except (AttributeError, RuntimeError) as exc:
         log.debug("call_from_thread found no app for %s: %s", getattr(fn, "__name__", fn), exc)
-        return
+        return None
     # A stopped app keeps its event loop object, and Textual then queues the call
     # on a loop nobody runs and waits on it with no limit. Drop it here instead.
     if not app.is_running:
         log.debug("call_from_thread dropped %s: app has stopped", getattr(fn, "__name__", fn))
-        return
+        return None
     try:
-        app.call_from_thread(fn, *args, **kwargs)
+        return app.call_from_thread(fn, *args, **kwargs)
     except (OSError, RuntimeError) as exc:
         # Only the shutdown signals: OSError when the message queue is closed,
         # RuntimeError (incl. NoActiveAppError) when the app is no longer running.
@@ -57,6 +58,7 @@ def call_from_thread(node: DOMNode, fn: Any, *args: Any, **kwargs: Any) -> None:
             getattr(fn, "__name__", fn),
             exc,
         )
+        return None
 
 
 def post_from_thread(node: DOMNode, message: Message) -> None:

@@ -2006,10 +2006,7 @@ class ChatScreen(Screen[None]):
         # scrolled up during the previous response and released the anchor.
         log.anchor()
 
-        with self._history_lock:
-            self._history.append({"role": "user", "content": text})
-        self._persist_user_turn(text)
-        turn = _Turn(text, assistant_msg, self._conversation_generation, self._session_id)
+        turn = _Turn(text, assistant_msg, self._conversation_generation, None)
         self._turn = turn
         self.streaming = True
         self._stream_response(turn, self._current_chunk_type())
@@ -2181,6 +2178,8 @@ class ChatScreen(Screen[None]):
         try:
             if not self._await_chat_engine(turn) or self._turn_stopped(turn):
                 return
+            if not self._admit_turn_from_thread(turn):
+                return
             self._compact_history(turn.session_id, turn.generation)
             if self._turn_stopped(turn):
                 return
@@ -2207,6 +2206,20 @@ class ChatScreen(Screen[None]):
             close_stream(stream)
             turn.answer = "".join(response_parts)
             self._save_turn(turn)
+
+    def _admit_turn_from_thread(self, turn: _Turn) -> bool:
+        """Ask the UI thread to admit *turn*; False when it refuses or the app is gone."""
+        return bool(call_from_thread(self, self._admit_turn, turn))
+
+    def _admit_turn(self, turn: _Turn) -> bool:
+        """Add *turn*'s question to the history and its session. UI thread."""
+        if turn.stop.is_set() or turn.generation != self._conversation_generation:
+            return False
+        with self._history_lock:
+            self._history.append({"role": "user", "content": turn.question})
+        self._persist_user_turn(turn.question)
+        turn.session_id = self._session_id
+        return True
 
     @staticmethod
     def _turn_stopped(turn: _Turn) -> bool:

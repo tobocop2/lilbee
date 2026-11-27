@@ -74,6 +74,8 @@ class TestStreamResponseDispatch:
         # The engine wait is its own unit (test_chat_startup_gating); here the
         # engine is ready so the dispatch under test runs unconditionally.
         screen._await_chat_engine = MagicMock(return_value=True)  # type: ignore[method-assign]
+        # Admission is its own unit (test_chat_turn_admission); here the turn is admitted.
+        screen._admit_turn_from_thread = MagicMock(return_value=True)  # type: ignore[method-assign]
         return screen
 
     def test_mismatch_routes_to_adopt_prompt(self):
