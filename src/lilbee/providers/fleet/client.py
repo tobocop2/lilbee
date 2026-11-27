@@ -42,6 +42,7 @@ from lilbee.providers.base import (
     is_prompt_length_overflow,
 )
 from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
+from lilbee.providers.fleet.engine_install import engine_install_hint
 from lilbee.providers.fleet.engines.base import RequestProfile, UpstreamCheck
 from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
 from lilbee.providers.fleet.rerank_pair import RerankPair
@@ -253,6 +254,18 @@ _UPSTREAM_DEATH_MESSAGES: dict[ProviderErrorKind, str] = {
     ),
 }
 _UPSTREAM_DEATH_DEFAULT = "The engine for {model} stopped before it could answer"
+_MISSING_ENGINE_MESSAGE = "The engine program for {model} is missing. {hint}"
+# What a launch prints when the engine program is not on disk. Go's exec errors come
+# from llama-swap, which cannot start the command (a JSON body escapes the quotes);
+# "file does not exist" is the Windows form. The shell lines come from a launch that
+# runs through a shell. A missing model file is not here: the engine ran to open it.
+_MISSING_ENGINE_PATTERN = re.compile(
+    r"fork/exec \S+: no such file or directory"
+    r'|exec: \\?".+?\\?": (?:executable file not found|file does not exist)'
+    r"|^(?:\S*/)?(?:ba|da|z)?sh: (?:line \d+: |\d+: )?\S+: "
+    r"(?:command not found|not found|no such file or directory)",
+    re.IGNORECASE | re.MULTILINE,
+)
 _BROKEN_MODEL_FILE_MESSAGE = (
     "The model file for {model} is incomplete or damaged. "
     "Run 'lilbee model rm {model}', then 'lilbee model pull {model}'."
@@ -290,6 +303,32 @@ _WINDOWS_RUNTIME_MISSING_MESSAGE = (
 )
 
 
+def missing_engine(text: str) -> bool:
+    """Whether *text*, an engine's output or a llama-swap body, says the engine is absent."""
+    return _MISSING_ENGINE_PATTERN.search(text) is not None
+
+
+def _model_subject(model: str | None) -> str:
+    """The name a message gives the model: its reference, or "the model" without one."""
+    return model if model is not None else "the model"
+
+
+def _missing_engine_message(model: str | None) -> str:
+    """The plain line for an engine program that is not on disk, with how to install one."""
+    return _MISSING_ENGINE_MESSAGE.format(model=_model_subject(model), hint=engine_install_hint())
+
+
+def _fixed_death_message(kind: ProviderErrorKind, model: str | None) -> str | None:
+    """The line for a death no HTTP status or log path adds to, or ``None``."""
+    if kind is ProviderErrorKind.ENGINE_MISSING:
+        return _missing_engine_message(model)
+    if kind is not ProviderErrorKind.MODEL_FILE_BROKEN:
+        return None
+    if model is None:
+        return _BROKEN_UNNAMED_MODEL_FILE_MESSAGE
+    return _BROKEN_MODEL_FILE_MESSAGE.format(model=model)
+
+
 def _missing_library_message(library: str) -> str:
     """The plain line that names a missing library and, when known, the package."""
     message = f"The engine needs the library {library}."
@@ -312,12 +351,12 @@ def _upstream_death_message(
         return _missing_library_message(library)
     if kind is ProviderErrorKind.MISSING_LIBRARY and dll_not_found_status(tail):
         return _WINDOWS_RUNTIME_MISSING_MESSAGE
-    subject = model if model is not None else "the model"
-    if kind is ProviderErrorKind.MODEL_FILE_BROKEN:
-        if model is None:
-            return _BROKEN_UNNAMED_MODEL_FILE_MESSAGE
-        return _BROKEN_MODEL_FILE_MESSAGE.format(model=model)
-    cause = _UPSTREAM_DEATH_MESSAGES.get(kind, _UPSTREAM_DEATH_DEFAULT).format(model=subject)
+    fixed = _fixed_death_message(kind, model)
+    if fixed is not None:
+        return fixed
+    cause = _UPSTREAM_DEATH_MESSAGES.get(kind, _UPSTREAM_DEATH_DEFAULT).format(
+        model=_model_subject(model)
+    )
     message = f"{cause} (HTTP {status_code})."
     if engine_log is None:
         return message
@@ -362,6 +401,22 @@ _ILLEGAL_INSTRUCTION_MARKER = "illegal instruction"
 def classify_upstream_death(tail: str) -> ProviderErrorKind | None:
     """The kind of failure an engine's dying output describes, or ``None``.
 
+    Return what the engine's own output says first. Return ``ENGINE_MISSING``
+    only when that names no cause and the output says the engine program is
+    not on disk.
+    """
+    # A tail can span an earlier failed attempt and a later engine that ran, so
+    # a cause the engine printed wins over an exec error.
+    kind = _classify_engine_output(tail)
+    if kind is None and missing_engine(tail):
+        return ProviderErrorKind.ENGINE_MISSING
+    return kind
+
+
+def _classify_engine_output(tail: str) -> ProviderErrorKind | None:
+    """The kind of failure the output of an engine that ran describes, or ``None``.
+
+    Return ``MODEL_FILE_BROKEN`` for a weights file the engine cannot read.
     Return ``CAPACITY`` for a load that ran out of device memory.
     Return ``PORT_CONFLICT`` for a lost port-bind race.
     Return ``CPU_UNSUPPORTED`` for an engine the CPU cannot run.
@@ -373,7 +428,7 @@ def classify_upstream_death(tail: str) -> ProviderErrorKind | None:
         for line in tail.lower().splitlines()
         if not any(marker in line for marker in _SURVIVABLE_LINE_MARKERS)
     ]
-    # A damaged file is checked first: no memory or port change makes it load.
+    # A damaged file is checked next: no memory or port change makes it load.
     if any(marker in line for line in fatal for marker in _BROKEN_FILE_MARKERS):
         return ProviderErrorKind.MODEL_FILE_BROKEN
     if any(marker in line for line in fatal for marker in _OOM_MARKERS):
@@ -858,6 +913,11 @@ class LlamaServerClient:
         kind = _classify_error(resp.status_code, body, self._profile)
         if kind is ProviderErrorKind.WARM_TIMEOUT:
             raise self._warm_timeout_error(_health_wait_s(body))
+        # llama-swap could not start the command, and its body carries the exec error.
+        if missing_engine(body):
+            raise ProviderError(
+                _missing_engine_message(self.model_ref), kind=ProviderErrorKind.ENGINE_MISSING
+            )
         # llama-swap masks a dead server as "exited prematurely". The server's own
         # captured output goes to the log (in _upstream_failure_tail) and decides the
         # kind; the message the user sees stays one plain line.
@@ -880,9 +940,8 @@ class LlamaServerClient:
 
     def _warm_timeout_error(self, wait_s: float | None) -> WarmTimeoutError:
         """The error for a launch that did not finish starting within *wait_s* seconds."""
-        subject = self.model_ref if self.model_ref is not None else "the model"
         return WarmTimeoutError(
-            _WARM_TIMEOUT_MESSAGE.format(model=subject),
+            _WARM_TIMEOUT_MESSAGE.format(model=_model_subject(self.model_ref)),
             wait_s=wait_s,
         )
 

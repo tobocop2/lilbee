@@ -85,6 +85,7 @@ def _fake_launch(
     slots: int = 1,
     ctx: int = 0,
     weights_bytes: int = 0,
+    read_bytes_per_s: int = 0,
     replica: int = 0,
     built_ctx_target: int = 0,
 ) -> MagicMock:
@@ -95,6 +96,7 @@ def _fake_launch(
     launch.slots = slots
     launch.ctx = ctx
     launch.weights_bytes = weights_bytes
+    launch.read_bytes_per_s = read_bytes_per_s
     launch.replica = replica
     launch.built_ctx_target = built_ctx_target
     launch.token_cap = None
@@ -3939,6 +3941,25 @@ def test_giant_model_client_timeout_covers_its_cold_load(monkeypatch) -> None:
     assert health_timeout > prov_mod._REQUEST_TIMEOUT_FLOOR_S
     assert kwargs["timeout"] >= health_timeout
     assert kwargs["timeout"] == health_timeout + prov_mod._REQUEST_TIMEOUT_GENERATION_MARGIN_S
+
+
+def test_a_slow_volume_client_timeout_covers_the_stretched_cold_load(monkeypatch) -> None:
+    # 20 GB on a 25 MiB/s volume: llama-swap waits past its 600 s floor, so the
+    # client must wait as long, or it gives up on a load llama-swap still allows.
+    from lilbee.providers.fleet import swap_config as swap_config_mod
+
+    launch = _fake_launch(WorkerRole.CHAT, weights_bytes=20 * _GB, read_bytes_per_s=25 * 1024**2)
+    kwargs = _captured_client_kwargs(monkeypatch, launch)
+    health_timeout = swap_config_mod.health_check_timeout_s([launch])
+    assert health_timeout > 600
+    assert kwargs["timeout"] == health_timeout + prov_mod._REQUEST_TIMEOUT_GENERATION_MARGIN_S
+
+
+def test_a_stalled_reading_caps_the_client_timeout(monkeypatch) -> None:
+    # A rate of 1 B/s would set a wait of centuries; the client waits the cap plus margin.
+    launch = _fake_launch(WorkerRole.CHAT, weights_bytes=60 * _GB, read_bytes_per_s=1)
+    kwargs = _captured_client_kwargs(monkeypatch, launch)
+    assert kwargs["timeout"] == 3600 + prov_mod._REQUEST_TIMEOUT_GENERATION_MARGIN_S
 
 
 def test_chat_starts_swap_on_first_use(monkeypatch) -> None:

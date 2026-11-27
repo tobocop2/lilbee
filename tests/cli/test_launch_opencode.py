@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1052,8 +1053,71 @@ def test_chat_warm_budget_scales_with_split_giant_weights(tmp_path):
 
     budget = launch_mod.chat_warm_budget_s()
     assert budget == max(
-        launch_mod._WARM_TIMEOUT_S, float(cold_load_timeout_s(total, WorkerRole.CHAT))
+        launch_mod._WARM_TIMEOUT_S, float(cold_load_timeout_s(total, WorkerRole.CHAT, 0))
     )
+
+
+class _SizedShard:
+    """A model file that reports *size* bytes without holding them on disk."""
+
+    def __init__(self, size: int) -> None:
+        self._size = size
+
+    def stat(self) -> SimpleNamespace:
+        return SimpleNamespace(st_size=self._size)
+
+
+def _registry_of(first: object, shards: list) -> type:
+    """A model registry that resolves any ref to *first* and lists *shards*."""
+
+    class _Registry:
+        def __init__(self, _models_dir) -> None:
+            pass
+
+        def resolve(self, _ref: str):
+            return first
+
+        def shard_paths(self, _ref: str) -> list:
+            return shards
+
+    return _Registry
+
+
+def test_chat_warm_budget_follows_the_measured_read_rate(monkeypatch):
+    """On a slow volume the launcher waits as long as the engine's own cold-load wait."""
+    from lilbee.cli.launchers import server as launch_mod
+
+    shards = [_SizedShard(10 * 1024**3), _SizedShard(10 * 1024**3)]
+    measured: list = []
+
+    def _rate(path) -> int:
+        measured.append(path)
+        return 25 * 1024**2  # scaled at half: the 20 GiB take 1638 s
+
+    monkeypatch.setattr(launch_mod, "ModelRegistry", _registry_of(shards[0], shards))
+    monkeypatch.setattr(launch_mod, "measured_read_rate", _rate)
+    assert launch_mod.chat_warm_budget_s() == 1638.0
+    assert measured == [shards[0]]
+
+
+def test_chat_warm_budget_stops_at_the_cap_on_a_stalled_reading(monkeypatch):
+    """A rate of 1 B/s is floored and capped: the launcher waits one hour, not centuries."""
+    from lilbee.cli.launchers import server as launch_mod
+
+    blob = _SizedShard(60 * 1024**3)
+    monkeypatch.setattr(launch_mod, "ModelRegistry", _registry_of(blob, [blob]))
+    monkeypatch.setattr(launch_mod, "measured_read_rate", lambda _path: 1)
+    assert launch_mod.chat_warm_budget_s() == 3600.0
+
+
+def test_chat_warm_budget_sizes_a_single_file_model_by_its_blob(monkeypatch):
+    """A single file has no shard beside its blob; its own size still scales the wait."""
+    from lilbee.cli.launchers import server as launch_mod
+
+    blob = _SizedShard(20 * 1024**3)
+    monkeypatch.setattr(launch_mod, "ModelRegistry", _registry_of(blob, []))
+    monkeypatch.setattr(launch_mod, "measured_read_rate", lambda _path: 25 * 1024**2)
+    assert launch_mod.chat_warm_budget_s() == 1638.0
 
 
 class TestOpencodeConfigDir:

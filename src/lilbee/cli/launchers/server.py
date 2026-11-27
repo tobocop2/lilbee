@@ -25,6 +25,7 @@ from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.parent_monitor import PARENT_PID_ENV
 from lilbee.providers.fleet.child_guard import spawn_bound_child
+from lilbee.providers.fleet.read_rate import measured_read_rate
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.roles import WorkerRole
 from lilbee.server.auth import server_json_path
@@ -227,13 +228,21 @@ def client_chat_ctx(port: int) -> int | None:
 
 
 def chat_warm_budget_s() -> float:
-    """Warm wait scaled to the chat model's on-disk weights at the engine's cold-load rate."""
+    """Warm wait scaled to the chat model's on-disk weights at the engine's cold-load rate.
+
+    A split model sums its shards; a single file, which resolves to its blob with no
+    shard beside it, is its own size. The volume's read rate is measured on the file
+    the engine opens first.
+    """
+    registry = ModelRegistry(cfg.models_dir)
     try:
-        shards = ModelRegistry(cfg.models_dir).shard_paths(str(cfg.chat_model))
+        first = registry.resolve(str(cfg.chat_model))
+        shards = registry.shard_paths(str(cfg.chat_model)) or [first]
     except (KeyError, ValueError):
         return _WARM_TIMEOUT_S
     total_bytes = sum(shard.stat().st_size for shard in shards)
-    return max(_WARM_TIMEOUT_S, float(cold_load_timeout_s(total_bytes, WorkerRole.CHAT)))
+    rate = measured_read_rate(first)
+    return max(_WARM_TIMEOUT_S, float(cold_load_timeout_s(total_bytes, WorkerRole.CHAT, rate)))
 
 
 def wait_for_chat_warm(port: int, timeout_s: float | None = None) -> bool:

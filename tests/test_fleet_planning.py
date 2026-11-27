@@ -1282,6 +1282,29 @@ class TestBuildFleetWiring:
         assert "--port" not in launch.argv  # claimed at spawn, not here
         assert launch.weights_bytes == 2048  # model file size scales the ready timeout
 
+    def test_launch_for_carries_the_measured_read_rate_of_the_model(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda ref: model)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
+        measured: list[Path] = []
+
+        def _rate(path: Path) -> int:
+            measured.append(path)
+            return 25 * 1024**2
+
+        monkeypatch.setattr(planning_mod, "measured_read_rate", _rate)
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
+        launch = planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)
+        assert measured == [model]
+        assert launch.read_bytes_per_s == 25 * 1024**2
+
     def test_launch_for_carries_the_telemetry_opt_outs_into_the_instance_launch(
         self, tmp_path, monkeypatch
     ) -> None:

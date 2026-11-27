@@ -457,10 +457,14 @@ kept or must be corrected.
   restarting server are retried with backoff. Each
   server runs in its own process group and claims
   its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
-  the model loads); the cold-load health timeout scales with the heaviest member's
+  the model loads); the cold-load health timeout scales with the slowest member's
   weights at a conservative disk rate (a ten-minute floor, two minutes for the embedder,
   whose small weights load in seconds), so a multi-hundred-GB model
-  on a slow volume isn't killed mid-load. Each owner lilbee writes one state file per swap group
+  on a slow volume isn't killed mid-load. The plan times a short read of each model file
+  (at most 64 MiB or one second). When half the measured rate is below the conservative
+  rate (a sample under 300 MiB/s), the wait scales at that half, floored at 10 MiB/s and
+  capped at one hour; the conservative wait stays the floor. The rate is recorded on the launch in the state file,
+  so the client timeouts and the bind deadline of every lilbee follow the same wait. Each owner lilbee writes one state file per swap group
   (named with the group and its pid, written atomically so a concurrent scan never reads a torn
   file) recording that group's llama-swap pid, process group, and create time, the
   member servers' ports, plus the owner's pid and create time, and `ready_at` once the builder sees a load succeed. A

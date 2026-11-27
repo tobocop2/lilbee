@@ -475,6 +475,7 @@ def test_d1_a_bind_builds_lemonade_clients_that_check_the_device(
         rerank_mode=None,
         rerank_pair=None,
         weights_bytes=0,
+        read_bytes_per_s=0,
         slots=1,
         ctx=0,
         replica=0,

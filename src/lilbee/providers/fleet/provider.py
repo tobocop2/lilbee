@@ -76,7 +76,7 @@ from lilbee.providers.fleet.gpu_env import (
 )
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
-from lilbee.providers.fleet.launch import InstanceLaunch
+from lilbee.providers.fleet.launch import MEASURED_STATE_KEYS, InstanceLaunch
 from lilbee.providers.fleet.readback import engine_log_of
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import (
@@ -236,7 +236,7 @@ def _prewarm_key(shard: Path) -> tuple[str, int, int]:
 def _request_timeout_s(launch: InstanceLaunch) -> float:
     """Per-client request budget: the role's cold load plus margin, floored when it generates."""
     budget = (
-        cold_load_timeout_s(launch.weights_bytes, launch.role)
+        cold_load_timeout_s(launch.weights_bytes, launch.role, launch.read_bytes_per_s)
         + _REQUEST_TIMEOUT_GENERATION_MARGIN_S
     )
     if launch.role is WorkerRole.EMBED:
@@ -340,7 +340,10 @@ def _reserve_other_than(
 
 
 def _launch_moves(old: tuple[InstanceLaunch, ...], new: tuple[InstanceLaunch, ...]) -> list[str]:
-    """The ``to_state`` launch-plan fields that differ, as ``field before -> after``."""
+    """The ``to_state`` launch-plan fields that differ, as ``field before -> after``.
+
+    A measured field is recorded, not planned, so a new reading moves no launch.
+    """
     if len(old) != len(new):
         return [f"replicas {len(old)} -> {len(new)}"]
     moves: list[str] = []
@@ -349,7 +352,7 @@ def _launch_moves(old: tuple[InstanceLaunch, ...], new: tuple[InstanceLaunch, ..
         moves.extend(
             f"{name} {value!r} -> {after_plan[name]!r}"
             for name, value in before.to_state().items()
-            if value != after_plan[name]
+            if name not in MEASURED_STATE_KEYS and value != after_plan[name]
         )
     return moves
 

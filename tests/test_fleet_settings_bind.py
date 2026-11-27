@@ -372,6 +372,20 @@ def test_the_restart_log_skips_a_field_outside_the_launch_plan() -> None:
     assert prov_mod._launch_changes((before,), (same_plan,)) == "no launch field moved"
 
 
+def test_a_new_read_rate_reading_moves_no_launch() -> None:
+    # The rate is measured, and two readings of one volume differ. A reload that
+    # restarted on each new reading would drop a loaded model for nothing.
+    before = InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m", read_bytes_per_s=25 * 1024**2)
+    after = InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m", read_bytes_per_s=31 * 1024**2)
+    assert prov_mod._launch_moves((before,), (after,)) == []
+
+
+def test_the_read_rate_reaches_a_process_that_binds_to_the_engine() -> None:
+    # A guest's client timeout and the bind deadline read the launch from the state file.
+    launch = InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m", read_bytes_per_s=25 * 1024**2)
+    assert InstanceLaunch.from_state(launch.to_state()).read_bytes_per_s == 25 * 1024**2
+
+
 def test_a_reload_keeps_a_group_whose_launches_differ_only_outside_the_plan(
     real_planner, monkeypatch, tmp_path: Path
 ) -> None:

@@ -932,6 +932,46 @@ class TestEngineReadiness:
         assert sm.engine_readiness(state, now=slow - 1) is sm.EngineReadiness.IDLE
         assert sm.engine_readiness(state, now=slow) is sm.EngineReadiness.FAILED
 
+    def test_the_deadline_follows_the_recorded_read_rate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A record from a slow volume is not called failed while llama-swap still waits.
+        self._listing(monkeypatch)
+        slow_volume = InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=["/bin/llama-server"],
+            env_overrides={},
+            model="big",
+            weights_bytes=20 * (1 << 30),
+            read_bytes_per_s=25 * (1 << 20),
+        )
+        state = sm.SwapState(
+            pid=1, pgid=None, created_at=0.0, proxy_port=4100, launches=(slow_volume.to_state(),)
+        )
+        deadline = 1638 + sm._BOOT_TIMEOUT_S
+        assert sm.engine_readiness(state, now=deadline - 1) is sm.EngineReadiness.IDLE
+        assert sm.engine_readiness(state, now=deadline) is sm.EngineReadiness.FAILED
+
+    def test_a_stalled_recorded_reading_caps_the_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A record that says 1 B/s is called failed after the cap, not after centuries.
+        self._listing(monkeypatch)
+        stalled = InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=["/bin/llama-server"],
+            env_overrides={},
+            model="big",
+            weights_bytes=60 * (1 << 30),
+            read_bytes_per_s=1,
+        )
+        state = sm.SwapState(
+            pid=1, pgid=None, created_at=0.0, proxy_port=4100, launches=(stalled.to_state(),)
+        )
+        deadline = 3600 + sm._BOOT_TIMEOUT_S
+        assert sm.engine_readiness(state, now=deadline - 1) is sm.EngineReadiness.IDLE
+        assert sm.engine_readiness(state, now=deadline) is sm.EngineReadiness.FAILED
+
     def test_an_undecodable_contract_uses_the_default_ceiling(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
