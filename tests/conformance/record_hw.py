@@ -7,14 +7,16 @@ The run installs the pinned pack, stops if the pack is not the build of --cell, 
 one server for each role of the engine with the adapter's own command line on the GPU. It
 checks that every server reports a device of --backend, then runs
 tests.conformance.record_presets with --strict against them and stops the servers. Without
-a device of --backend, no recording is written. Arguments that this tool does not know go
-to the recorder.
+a device of --backend, no recording is written. A recording with every step passed gets its
+row in the results page and the name of the card in its log. Arguments that this tool does
+not know go to the recorder.
 """
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import os
 import subprocess
 import sys
@@ -52,6 +54,7 @@ _POLL_SECONDS = 2
 _STOP_SECONDS = 60
 _MISTRAL_SERVED_ID = "default"
 _VULKAN_BACKEND = "vulkan"
+_TABLE_HEAD = "| Recording | Roles |"
 
 # The cross-encoder of the TEI record in the CPU comparison.
 _RERANK_MODEL = Model(
@@ -76,6 +79,13 @@ _MODELS: Mapping[EngineName, Mapping[WorkerRole, Model]] = {
         role: _ORACLE_MODELS[role] for role in (WorkerRole.CHAT, WorkerRole.EMBED)
     },
 }
+# The vector size of each embed model, by its Hugging Face repo; the embed step checks it.
+_EMBED_DIMS = {
+    "Qwen/Qwen3-Embedding-0.6B": 1024,
+    "Qwen/Qwen3-Embedding-0.6B-GGUF": 1024,
+}
+# The rerank wire of an engine that does not answer /v1/rerank. TEI answers /rerank.
+_WIRES = {EngineName.TEI: "tei"}
 _URL_FLAGS = {
     WorkerRole.EMBED: "--embed-url",
     WorkerRole.VISION: "--vision-url",
@@ -121,6 +131,17 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("tests/conformance/fixtures/engines"),
         help="Folder that receives <name>.json and <name>.log.",
+    )
+    parser.add_argument(
+        "--results-doc",
+        type=Path,
+        default=Path("docs/engine-results.md"),
+        help="The results page that receives the row of a good recording.",
+    )
+    parser.add_argument(
+        "--gpu",
+        default="",
+        help="Name of the card for the row; the default is the first NVIDIA card of the host.",
     )
     parser.add_argument("--base-port", type=int, default=8501)
     parser.add_argument(
@@ -290,14 +311,71 @@ def recorder_command(
         "--out",
         str(args.out_dir / f"{args.name}.json"),
     ]
+    for server in servers:
+        if server.part.role is WorkerRole.EMBED:
+            command += ["--embed-dim", str(_EMBED_DIMS[server.part.model.repo])]
+    if wire := _WIRES.get(EngineName(args.engine)):
+        command += ["--wire", wire]
     for server in servers[1:]:
         command += [_URL_FLAGS[server.part.role], server.url]
     return [*command, *extra]
 
 
+def card_name(args: argparse.Namespace) -> str:
+    """The card of the row: --gpu, else the first NVIDIA card of the live host."""
+    if args.gpu:
+        return str(args.gpu)
+    gpus = runnable.session_host().gpus
+    if not gpus:
+        raise SystemExit("this host lists no NVIDIA card: name the card with --gpu")
+    return gpus[0].name
+
+
+def record_row(args: argparse.Namespace, card: str) -> None:
+    """Name the card in the log of the recording and put its row in the results page.
+
+    A row of the same name, such as a "not recorded" row, is replaced; any other row is new
+    and goes at the end of the table. The row says what the recording holds, as the tests of
+    the page check.
+    """
+    out = args.out_dir / f"{args.name}.json"
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    steps = len(doc["results"])
+    row = (
+        f"| {args.name} | {', '.join(doc['roles'])} | {card} | pass, {steps} of {steps} steps "
+        f"| {doc['version']} | `{out.name}` |"
+    )
+    log = out.with_suffix(".log")
+    log_lines = log.read_text(encoding="utf-8").split("\n")
+    first_step = next(n for n, line in enumerate(log_lines) if line.startswith("STEP "))
+    log_lines.insert(first_step, f"gpu: {card}")
+    log.write_text("\n".join(log_lines), encoding="utf-8")
+    lines = args.results_doc.read_text(encoding="utf-8").split("\n")
+    start = next(n for n, line in enumerate(lines) if line.startswith(_TABLE_HEAD)) + 2
+    end = start
+    while lines[end].startswith("|"):
+        end += 1
+    mine = f"| {args.name} |"
+    held = [n for n in range(start, end) if lines[n].startswith(mine)]
+    if held:
+        lines[held[0]] = row
+    else:
+        lines.insert(end, row)
+    args.results_doc.write_text("\n".join(lines), encoding="utf-8")
+
+
 def run(args: argparse.Namespace, extra: list[str]) -> int:
-    """Install, start, check the devices, record and stop; the return code is the recorder's."""
+    """Install, start, check the devices, record and stop; the return code is the recorder's.
+
+    A recording with every step passed gets its row in the results page; any other keeps no row.
+    """
     adapter = ADAPTERS[EngineName(args.engine)]
+    if not args.results_doc.is_file():
+        raise SystemExit(
+            f"the results page {args.results_doc} is missing: "
+            "run from the repo root or pass --results-doc"
+        )
+    card = card_name(args)
     args.logs.mkdir(parents=True, exist_ok=True)
     host = vulkan_host() if args.as_vulkan_host else None
     with presented_as(host):
@@ -315,7 +393,10 @@ def run(args: argparse.Namespace, extra: list[str]) -> int:
                 print(f"{server.part.role}: {','.join(require_device(server, args.backend))}")
             label = f"{adapter.name} {version} {args.cell}"
             command = recorder_command(args, label, servers, extra)
-            return subprocess.call(command)
+            code = subprocess.call(command)
+            if code == 0:
+                record_row(args, card)
+            return code
         finally:
             _stop(servers)
 

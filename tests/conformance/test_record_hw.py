@@ -7,6 +7,7 @@ device check reads the reply and the log.
 
 from __future__ import annotations
 
+import json
 import socket
 import stat
 import sys
@@ -72,6 +73,16 @@ class Handler(BaseHTTPRequestHandler):
 
 ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 """
+_RESULTS_PAGE = """# Engine results
+
+| Recording | Roles | Machine | Result | Version | Fixture |
+|---|---|---|---|---|---|
+| llama.cpp-cpu | chat, embed | CPU host | pass, 2 of 2 steps | 1.0 | `llama.cpp-cpu.json` |
+| tei-hw | embed, rerank | NVIDIA GPU | not recorded |  |  |
+| lemonade | chat | AMD NPU | not recorded, no machine |  |  |
+
+**Experimental.** Text after the table.
+"""
 _CELL = "linux-x86_64-cuda-sm89"
 _BACKEND = "cuda-sm89"
 _L4 = {
@@ -121,6 +132,8 @@ class _Run:
         self.commands: list[list[str]] = []
         self.recorder_code = 0
         self.installed_backend = _BACKEND
+        self.results = tmp_path / "engine-results.md"
+        self.results.write_text(_RESULTS_PAGE, encoding="utf-8")
         binary = tmp_path / "engine"
         binary.write_text(_ENGINE.format(python=sys.executable), encoding="utf-8")
         binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
@@ -142,7 +155,22 @@ class _Run:
         return path
 
     def _record(self, command: list[str]) -> int:
+        """Stand in for the recorder: it writes the recording and its log, as the real one does."""
         self.commands.append(command)
+        out = Path(_flag(command, "--out"))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        name = _flag(command, "--server")
+        steps = ["embed", "rerank", "named"]
+        doc = {
+            "server": name,
+            "version": _flag(command, "--version"),
+            "roles": _flag(command, "--roles").split(","),
+            "results": {step: {"ok": True, "detail": ""} for step in steps},
+        }
+        out.write_text(json.dumps(doc), encoding="utf-8")
+        lines = [f"engine: {name}", "backend: cuda", "models: x"]
+        lines += [f"STEP {name} {step} ok=True" for step in steps]
+        out.with_suffix(".log").write_text("\n".join(lines) + "\n", encoding="utf-8")
         return self.recorder_code
 
     def main(self, engine: str, *extra: str, backend: str = "cuda") -> int:
@@ -162,6 +190,8 @@ class _Run:
                 str(self.tmp / "logs"),
                 "--out-dir",
                 str(self.tmp / "out"),
+                "--results-doc",
+                str(self.results),
                 "--base-port",
                 str(_free_base_port()),
                 *extra,
@@ -334,6 +364,98 @@ class TestRun:
             run.main("tei", "--as-vulkan-host")
         with pytest.raises(SystemExit, match="vulkan backend"):
             run.main("llama.cpp", "--as-vulkan-host")
+
+
+class TestRecorderArguments:
+    @pytest.mark.parametrize("engine", ["mistral.rs", "tei", "llama.cpp", "ik_llama.cpp"])
+    def test_the_embed_size_is_the_size_of_the_embed_model(self, run: _Run, engine: str) -> None:
+        assert run.main(engine) == 0
+        assert _flag(run.commands[0], "--embed-dim") == "1024"
+
+    def test_every_embed_model_has_a_size(self) -> None:
+        for models in record_hw._MODELS.values():
+            assert models[WorkerRole.EMBED].repo in record_hw._EMBED_DIMS
+
+    def test_tei_asks_for_the_tei_rerank_wire(self, run: _Run) -> None:
+        assert run.main("tei") == 0
+        assert _flag(run.commands[0], "--wire") == "tei"
+
+    @pytest.mark.parametrize("engine", ["mistral.rs", "llama.cpp", "ik_llama.cpp"])
+    def test_the_other_engines_keep_the_default_wire(self, run: _Run, engine: str) -> None:
+        assert run.main(engine) == 0
+        assert "--wire" not in run.commands[0]
+
+
+class TestResultsRow:
+    def test_a_good_run_writes_its_row_and_names_the_card_in_the_log(self, run: _Run) -> None:
+        assert run.main("mistral.rs") == 0
+        row = (
+            "| mistral.rs-hw | chat, embed, vision | NVIDIA L4 | pass, 3 of 3 steps "
+            f"| mistral.rs 9.9 {_CELL} | `mistral.rs-hw.json` |"
+        )
+        lines = run.results.read_text(encoding="utf-8").split("\n")
+        assert lines.count(row) == 1
+        assert lines[lines.index(row) - 1].startswith("| lemonade |")
+        log = (run.tmp / "out" / "mistral.rs-hw.log").read_text(encoding="utf-8").split("\n")
+        assert log.index("gpu: NVIDIA L4") < log.index("STEP mistral.rs-hw embed ok=True")
+
+    def test_the_row_of_a_name_in_the_table_is_replaced(self, run: _Run) -> None:
+        assert run.main("tei") == 0
+        text = run.results.read_text(encoding="utf-8")
+        assert text.count("| tei-hw |") == 1
+        assert "| tei-hw | embed, rerank | NVIDIA L4 | pass, 3 of 3 steps |" in text
+        assert "| `tei-hw.json` |\n| lemonade" in text
+
+    def test_the_table_ends_where_it_did_and_the_text_after_it_stays(self, run: _Run) -> None:
+        assert run.main("mistral.rs") == 0
+        assert run.results.read_text(encoding="utf-8").endswith(
+            f"| mistral.rs 9.9 {_CELL} | `mistral.rs-hw.json` |\n\n"
+            "**Experimental.** Text after the table.\n"
+        )
+
+    def test_a_run_that_fails_a_step_writes_no_row(self, run: _Run) -> None:
+        run.recorder_code = 1
+        before = run.results.read_text(encoding="utf-8")
+        assert run.main("mistral.rs") == 1
+        assert run.results.read_text(encoding="utf-8") == before
+        assert "gpu:" not in (run.tmp / "out" / "mistral.rs-hw.log").read_text(encoding="utf-8")
+
+    def test_a_host_with_no_cuda_card_needs_the_card_named(
+        self, run: _Run, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(runnable, "session_host", lambda: _host(None))
+        with pytest.raises(SystemExit, match="--gpu"):
+            run.main("tei")
+        assert not (run.tmp / "logs").exists()
+        monkeypatch.setattr(runnable, "session_host", lambda: _host(_L4))
+        assert run.main("tei", "--gpu", "AMD Instinct MI300X") == 0
+        assert "| tei-hw | embed, rerank | AMD Instinct MI300X |" in run.results.read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_card_of_a_vulkan_run_is_the_card_of_the_live_host(
+        self, run: _Run, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_HW_DEVICE", "vulkan")
+        run.installed_backend = "vulkan"
+        code = run.main(
+            "llama.cpp", "--as-vulkan-host", "--cell", "linux-x86_64-vulkan", backend="vulkan"
+        )
+        assert code == 0
+        assert "| llama.cpp-hw | chat, embed, rerank, vision | NVIDIA L4 |" in (
+            run.results.read_text(encoding="utf-8")
+        )
+
+    def test_a_missing_results_page_stops_the_run_before_the_install(self, run: _Run) -> None:
+        with pytest.raises(SystemExit, match="results page"):
+            run.main("tei", "--results-doc", str(run.tmp / "none.md"))
+        assert not (run.tmp / "logs").exists()
+        assert run.commands == []
+
+
+def test_the_documented_setup_installs_the_providers_extra() -> None:
+    page = Path(record_hw.__file__).parents[2] / "docs" / "engine-integration.md"
+    assert "uv sync --python 3.13 --extra providers" in page.read_text(encoding="utf-8")
 
 
 class TestVulkanHost:
