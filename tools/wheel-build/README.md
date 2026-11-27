@@ -45,11 +45,15 @@ the same behavior, so a developer can reproduce a CI build off-runner.
 - `check_llama_wheel.sh` — installs a built llama.cpp pack, checks its files, licences and
   libraries for the backend and the host, and starts the server. `pack_llama.sh` runs it
   before the pack leaves the build.
+- `pack_mlx.sh` — builds and checks the mlx engine pack of its one macOS cell, in the same
+  way. `mlx_wheel.sh` builds the wheel from the pins of `engines/mlx.env`. The script checks
+  the tag and the licence expression of the wheel, and starts its chat server.
 - `pack_common.sh` — the functions that the pack scripts share.
 - `build-tools.constraints` — the pinned Python build tools of the packs.
   `tei-tools-linux.constraints` and `tei-tools-macos.constraints` add the ones that only one
   build of the text-embeddings-inference pack needs.
   `ik-tools.constraints` pins the ones that build the ik_llama.cpp server.
+  `mlx-tools-macos.constraints` pins uv and delocate for the mlx pack.
   `llama-tools-linux.constraints`, `llama-tools-macos.constraints` and
   `llama-tools-windows.constraints` do the same for the llama.cpp pack.
   `windows-bundle-tools.constraints` pins pefile, which the Windows packs of mistral.rs and
