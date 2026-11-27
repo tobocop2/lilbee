@@ -154,3 +154,36 @@ def test_a_file_nested_too_deep_is_replaced_by_the_new_values(tmp_path: Path) ->
 def test_the_written_file_is_owner_only(root: Path) -> None:
     settings.set_value(root, "alpha", "y")
     assert stat.S_IMODE((root / "config.toml").stat().st_mode) == 0o600
+
+
+class TestAWriteChangesAValueOfAnotherTypeThatComparesEqual:
+    """Python reads True as 1 and 1.0 as 1, so equality alone skips a typed write."""
+
+    @pytest.mark.parametrize(
+        ("held", "wanted"),
+        [
+            ("1", True),
+            ("0", False),
+            ("1", 1.0),
+            ("true", 1),
+            ("[1, 2]", [1.0, 2]),
+            ("[1, 2]", [1, 2, 3]),
+        ],
+    )
+    def test_the_file_takes_the_new_type(self, tmp_path: Path, held, wanted) -> None:
+        settings._config_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+        settings._config_path(tmp_path).write_text(f"key = {held}  # note\n", encoding="utf-8")
+        settings.save(tmp_path, {"key": wanted})
+        text = settings._config_path(tmp_path).read_text(encoding="utf-8")
+        read = tomllib.loads(text)["key"]
+        assert read == wanted
+        assert repr(read) == repr(wanted)
+        assert "# note" in text
+
+    def test_an_equal_value_of_the_same_type_leaves_the_text_alone(self, tmp_path: Path) -> None:
+        path = settings._config_path(tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        before = "key = [1, 2]  # note\nother   =   'x'\n"
+        path.write_text(before, encoding="utf-8")
+        settings.save(tmp_path, {"key": [1, 2], "other": "x"})
+        assert path.read_text(encoding="utf-8") == before

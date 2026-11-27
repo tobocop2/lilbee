@@ -166,8 +166,17 @@ def _apply(table: Any, wanted: Mapping[str, Any]) -> None:
             table[key] = value
         elif isinstance(value, dict) and isinstance(held[key], dict):
             _apply(table[key], value)
-        elif held[key] != value:
+        elif not _same(held[key], value):
             table[key] = value
+
+
+def _same(held: Any, value: Any) -> bool:
+    """Equal in type and value, so True over 1 and 1.0 over 1 still write."""
+    if isinstance(held, list) and isinstance(value, list):
+        return len(held) == len(value) and all(
+            _same(a, b) for a, b in zip(held, value, strict=True)
+        )
+    return type(held) is type(value) and held == value
 
 
 def get(data_root: Path, key: str) -> str | None:
