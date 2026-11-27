@@ -24,8 +24,6 @@ log = logging.getLogger(__name__)
 CUDA_VISIBLE_VAR = "CUDA_VISIBLE_DEVICES"
 ROCR_VISIBLE_VAR = "ROCR_VISIBLE_DEVICES"
 HIP_VISIBLE_VAR = "HIP_VISIBLE_DEVICES"
-# ROCm's third numeric visibility variable, filtering exactly as the other two do.
-GPU_DEVICE_ORDINAL_VAR = "GPU_DEVICE_ORDINAL"
 VK_VISIBLE_VAR = "GGML_VK_VISIBLE_DEVICES"
 ONEAPI_SELECTOR_VAR = "ONEAPI_DEVICE_SELECTOR"
 # Backend env vars set from ``cfg.gpu_devices``. Vulkan, CUDA, and ROCm each read

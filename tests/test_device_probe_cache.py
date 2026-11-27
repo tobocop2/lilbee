@@ -10,11 +10,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from lilbee.core.config import cfg
 from lilbee.data import offload
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.devices import EngineDllMissingError, EngineIllegalInstructionError
-from lilbee.providers.fleet.replicas import gpu_device_count
+from lilbee.providers.fleet.replicas import gpu_device_count, sizing_device_count
 from tests.test_engine_call_sites import SPY_DEVICE, SpyEngine
 
 PROBE_TIMEOUT_S = 60.0
@@ -272,3 +273,68 @@ async def test_the_ingest_pool_is_sized_off_the_event_loop(
     assert await run() == 3
     assert len(sized_on) == 1
     assert sized_on[0] is not loop_thread
+
+
+FAILURES = [
+    *(ProviderError("probe failed", kind=kind) for kind in ProviderErrorKind),
+    EngineDllMissingError("DLL missing"),
+    EngineIllegalInstructionError("illegal instruction"),
+]
+FAILURE_IDS = [*(str(kind) for kind in ProviderErrorKind), "dll_missing", "illegal_instruction"]
+
+
+def test_every_failure_kind_is_covered() -> None:
+    assert len(FAILURES) == len(ProviderErrorKind) + 2
+
+
+@pytest.mark.parametrize("failure", FAILURES, ids=FAILURE_IDS)
+def test_the_sizing_count_degrades_a_failed_probe_to_one(
+    failure: ProviderError, healthy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def failing(_binary: Path, _engine: object) -> None:
+        raise failure
+
+    monkeypatch.setattr(planning, "resolve_devices", failing)
+    assert sizing_device_count(healthy) == 1
+
+
+def test_the_sizing_count_counts_the_cards_of_a_healthy_probe(healthy) -> None:
+    assert sizing_device_count(healthy) == 2
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("boom"), OSError("gone")], ids=["runtime", "os"])
+def test_the_sizing_count_lets_a_non_provider_error_through(
+    failure: Exception, healthy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def failing(_binary: Path, _engine: object) -> None:
+        raise failure
+
+    monkeypatch.setattr(planning, "resolve_devices", failing)
+    with pytest.raises(type(failure), match=str(failure)):
+        sizing_device_count(healthy)
+
+
+def test_the_strict_count_still_raises_a_failed_probe(wedged: WedgedEngine) -> None:
+    with pytest.raises(ProviderError, match="device probe did not respond"):
+        gpu_device_count(wedged)
+
+
+def test_pool_size_after_a_failed_probe_is_not_kept(
+    wedged: WedgedEngine, healthy, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The strict count raises into the pool sizer, so a failed probe never pins the CPU default."""
+    current = [wedged]
+    services = SimpleNamespace(
+        engines=SimpleNamespace(for_role=lambda _role: SimpleNamespace(adapter=current[0]))
+    )
+    monkeypatch.setattr("lilbee.app.services._state.singleton", services)
+    monkeypatch.setattr(offload, "_default_workers", lambda: 12)
+    monkeypatch.delenv("LILBEE_INGEST_MAX_WORKERS", raising=False)
+    monkeypatch.setattr(cfg, "ingest_max_inflight", 0)
+    monkeypatch.setattr(cfg, "embed_replicas", 0)
+    offload.reset_max_workers()
+    assert offload.max_workers() == 12
+    current[0] = healthy
+    clock.now += PROBE_TIMEOUT_S
+    assert offload.max_workers() == 16
+    offload.reset_max_workers()

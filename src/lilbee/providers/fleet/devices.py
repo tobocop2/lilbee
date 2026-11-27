@@ -728,22 +728,19 @@ def amd_visible_var(env: Mapping[str, str]) -> str:
     ``ROCR_VISIBLE_DEVICES`` and ``HIP_VISIBLE_DEVICES`` are applied sequentially:
     ROCr filters first, then HIP re-indexes within the survivors. Writing the same
     indices to both double-filters and selects the wrong cards, or none at all.
-    ``GPU_DEVICE_ORDINAL`` is the third and filters the same way, so writing HIP
-    over an ordinal mask both overrides it and re-exposes cards it had hidden.
 
     So exactly one is ever written: whichever the environment already restricts,
-    in the runtime's precedence (HIP, then the ordinal, then ROCr), or HIP when
+    in the runtime's precedence (HIP, then ROCr), or HIP when
     nothing restricts. An empty value means "no devices" rather than "this is the
     variable in use", so it does not claim precedence. Every caller writing an AMD
     pin asks here; two callers each picking their own would put the pair back.
     """
     from lilbee.providers.fleet.gpu_env import (
-        GPU_DEVICE_ORDINAL_VAR,
         HIP_VISIBLE_VAR,
         ROCR_VISIBLE_VAR,
     )
 
-    for name in (HIP_VISIBLE_VAR, GPU_DEVICE_ORDINAL_VAR, ROCR_VISIBLE_VAR):
+    for name in (HIP_VISIBLE_VAR, ROCR_VISIBLE_VAR):
         if env.get(name, "").strip():
             return name
     return HIP_VISIBLE_VAR
