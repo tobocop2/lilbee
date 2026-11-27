@@ -88,7 +88,7 @@ def refused_wheels(folder: Path) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description="Refuse an engine pack that the install refuses.")
     sub = parser.add_subparsers(dest="check", required=True)
     sub.add_parser("terms", help="screen the licence of each planned cell").add_argument(
         "plan", type=Path
