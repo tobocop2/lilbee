@@ -912,3 +912,74 @@ def test_landing_on_the_catalog_drops_the_typed_keys():
     LilbeeApp.reveal_landing(app)
     assert app._type_ahead is None
     app.switch_view.assert_called_once_with(msg.CATALOG_VIEW)
+
+
+def _record_landings(monkeypatch) -> list[str]:
+    """Stand in for the landing so a test counts the hand-overs the gate asks for."""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    landings: list[str] = []
+    monkeypatch.setattr(LilbeeApp, "reveal_landing", lambda self: landings.append("landed"))
+    return landings
+
+
+async def test_gate_hands_over_when_the_screen_above_it_closes(monkeypatch, tmp_path):
+    """A release that found the palette on top runs once the palette closes."""
+    from tests._async_wait import wait_until
+
+    app = _app_held_at_the_gate(monkeypatch, tmp_path)
+    landings = _record_landings(monkeypatch)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        gate = app.screen
+        await pilot.press("ctrl+p")
+        assert await wait_until(pilot, lambda: app.screen is not gate)
+        gate._release()
+        assert landings == []
+        await pilot.press("escape")
+        assert await wait_until(pilot, lambda: landings == ["landed"])
+
+
+async def test_release_with_nothing_above_the_gate_hands_over_at_once(monkeypatch, tmp_path):
+    app = _app_held_at_the_gate(monkeypatch, tmp_path)
+    landings = _record_landings(monkeypatch)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.screen._release()
+        assert landings == ["landed"]
+
+
+async def test_release_waits_while_the_screen_above_the_gate_stays_open(monkeypatch, tmp_path):
+    from tests._async_wait import wait_until
+
+    app = _app_held_at_the_gate(monkeypatch, tmp_path)
+    landings = _record_landings(monkeypatch)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        gate = app.screen
+        await pilot.press("ctrl+p")
+        assert await wait_until(pilot, lambda: app.screen is not gate)
+        over = app.screen
+        gate._release()
+        await pilot.pause()
+        assert app.screen is over
+        assert landings == []
+
+
+async def test_failed_boot_under_a_screen_hands_over_once(monkeypatch, tmp_path):
+    """A failed boot and a second release under one palette make one hand-over."""
+    from tests._async_wait import wait_until
+
+    app = _app_held_at_the_gate(monkeypatch, tmp_path)
+    landings = _record_landings(monkeypatch)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        gate = app.screen
+        await pilot.press("ctrl+p")
+        assert await wait_until(pilot, lambda: app.screen is not gate)
+        gate._fail("boom")
+        gate._release()
+        await pilot.press("escape")
+        assert await wait_until(pilot, lambda: landings == ["landed"])
+        await pilot.pause()
+        assert landings == ["landed"]
