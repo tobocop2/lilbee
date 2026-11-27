@@ -73,6 +73,31 @@ def _run_cli(app: Callable[[], object]) -> None:
         raise SystemExit(1) from None
 
 
+def _run_interactive() -> None:
+    """Start the splash, import the CLI and run the TUI; Ctrl+C anywhere in it reaches ``main``."""
+    from lilbee.app.services import mark_interactive_session
+    from lilbee.runtime.splash import start, stop
+
+    # A person is at the TUI for its whole lifetime, so hold a bound engine
+    # resident (no idle-unload) until they close lilbee. Recorded here, on the sole
+    # interactive entry point and before anything builds the services container,
+    # so a one-shot CLI or the MCP server never trips it.
+    mark_interactive_session()
+
+    handle = start()
+
+    try:
+        from lilbee.cli import app
+    except BaseException:
+        stop(handle)
+        raise
+
+    # The splash keeps animating through the CLI dispatch and the TUI stack's
+    # own imports (Textual and every screen), which on a cold disk take seconds;
+    # run_tui dismisses it right before Textual takes over the terminal.
+    _run_cli(app)
+
+
 def main() -> None:
     """Entry point for the ``lilbee`` console script."""
     _force_utf8_stdio()
@@ -97,28 +122,8 @@ def main() -> None:
             end_command(SystemExit(INTERRUPTED_EXIT_STATUS))
         return
 
-    from lilbee.app.services import mark_interactive_session
-    from lilbee.runtime.splash import start, stop
-
-    # A person is at the TUI for its whole lifetime, so hold a bound engine
-    # resident (no idle-unload) until they close lilbee. Recorded here, on the sole
-    # interactive entry point and before anything builds the services container,
-    # so a one-shot CLI or the MCP server never trips it.
-    mark_interactive_session()
-
-    handle = start()
-
     try:
-        from lilbee.cli import app
-    except BaseException:
-        stop(handle)
-        raise
-
-    # The splash keeps animating through the CLI dispatch and the TUI stack's
-    # own imports (Textual and every screen), which on a cold disk take seconds;
-    # run_tui dismisses it right before Textual takes over the terminal.
-    try:
-        _run_cli(app)
+        _run_interactive()
     except KeyboardInterrupt:
         sys.stderr.write("\033[?25h")
         sys.stderr.flush()

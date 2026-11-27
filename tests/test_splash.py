@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -405,3 +406,16 @@ class TestAtexitCleanup:
                 mock_stop.assert_not_called()
         finally:
             splash_mod._active_handle = original
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are a POSIX notion here")
+def test_splash_child_leaves_the_terminal_process_group() -> None:
+    """The splash child sits in its own session, so the terminal's Ctrl+C never reaches it."""
+    with patch("lilbee.runtime.splash._should_skip", return_value=False):
+        handle = start()
+    assert handle is not None
+    try:
+        assert os.getsid(handle.process.pid) == handle.process.pid
+        assert os.getpgid(handle.process.pid) != os.getpgrp()
+    finally:
+        stop(handle)
