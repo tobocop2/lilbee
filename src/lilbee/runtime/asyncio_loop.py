@@ -11,6 +11,7 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextlib
+import inspect
 import select
 import signal
 import socket
@@ -273,30 +274,51 @@ def run_without_join(coro: Awaitable[T]) -> T:
     ``asyncio.run`` joins the threads of ``asyncio.to_thread`` as it closes, so a
     Ctrl-C would wait there for a stuck one. A signal wakes the loop, so its handler
     runs at once. Tasks the run leaves are cancelled and awaited, as ``asyncio.run``
-    does, so their own cleanup runs (the TUI's driver gives the terminal back).
+    does, so their own cleanup runs (the TUI's driver gives the terminal back). On the
+    main thread, an exit that ``hold_exit`` kept leaves after that drain, as in ``run_main``.
     """
+    _refuse_nested_run(coro)
+    holds_exit = threading.current_thread() is threading.main_thread()
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
         with _signals_wake(loop):
             try:
-                return loop.run_until_complete(coro)
+                return loop.run_until_complete(_main_run.as_main(coro) if holds_exit else coro)
             finally:
+                held = _main_run.release() if holds_exit else None
                 loop.run_until_complete(_drain(loop))
+                if held is not None:
+                    raise held
     finally:
         loop.close()
         # A closed loop left current poisons a later get_event_loop on this thread.
         asyncio.set_event_loop(None)
 
 
+def _refuse_nested_run(coro: Awaitable[Any]) -> None:
+    """Refuse a run started inside a running loop on this thread, before it builds a loop.
+
+    The coroutine is closed, so the refusal leaves none that never ran.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    if inspect.iscoroutine(coro):
+        coro.close()
+    raise RuntimeError("A run cannot start inside a running event loop; await it there instead.")
+
+
 class _MainRun:
-    """The ``run_main`` on the main thread: its main task, and the exit held for the run's end."""
+    """The run of a main task on the main thread: the task, and the exit held for the run's end."""
 
     def __init__(self) -> None:
         self.task: asyncio.Task[Any] | None = None
         self.held: SystemExit | None = None
 
     def run(self, main: Coroutine[Any, Any, T]) -> T:
+        _refuse_nested_run(main)
         if threading.current_thread() is not threading.main_thread():
             return asyncio.run(main)
         # The wakeup ends after the runner's close, so a signal during the close's join of
@@ -308,16 +330,22 @@ class _MainRun:
             runner,
         ):
             try:
-                return runner.run(self._as_main(main))
+                return runner.run(self.as_main(main))
             finally:
                 # Cleared first: from here on a signal raises its exit at once, so
                 # one during the runner's close still cuts its join of the workers.
-                self.task = None
-                held, self.held = self.held, None
+                held = self.release()
                 if held is not None:
                     raise held
 
-    async def _as_main(self, main: Coroutine[Any, Any, T]) -> T:
+    def release(self) -> SystemExit | None:
+        """End the record of the run and return the exit held for its end."""
+        self.task = None
+        held, self.held = self.held, None
+        return held
+
+    async def as_main(self, main: Awaitable[T]) -> T:
+        """Await *main* as the main task of the run, recorded for ``hold``."""
         self.task = asyncio.current_task()
         return await main
 
