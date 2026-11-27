@@ -665,7 +665,7 @@ class TestLiveDisplays:
     def test_the_finding_names_the_file_line_and_the_helpers(self, tmp_path: Path) -> None:
         (finding,) = self._findings(tmp_path, "x = 1\nfrom rich.progress import Progress as P")
         assert finding.startswith(f"{tmp_path / 'sample.py'}:2: ")
-        assert "live_progress or stdout_progress" in finding
+        assert "lilbee.runtime.console.live_progress" in finding
 
     def test_an_unparsable_file_yields_nothing(self, tmp_path: Path) -> None:
         assert not self._findings(tmp_path, "def broken(:")

@@ -245,7 +245,7 @@ def pull_with_progress(
     from lilbee.catalog.types import ModelSource
 
     if console is None:
-        console = PlainConsole(file=sys.__stderr__ or sys.stderr)
+        console = PlainConsole(stderr=True, file=sys.__stderr__ or sys.stderr)
     manager = get_services().model_manager
     notices: list[str] = []
     with live_progress(

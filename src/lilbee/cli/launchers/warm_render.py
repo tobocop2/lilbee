@@ -24,7 +24,7 @@ from rich.progress import (
 from lilbee.catalog.formatting import display_label_for_ref
 from lilbee.cli.app import console
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
-from lilbee.runtime.console import ProgressDisplay, stdout_progress
+from lilbee.runtime.console import ProgressDisplay, live_progress
 from lilbee.runtime.progress.columns import literal_text_column
 
 _WARM_STREAM_PATH = "/api/warm/stream"
@@ -108,7 +108,7 @@ def render_warm(base_url: str, timeout_s: float) -> bool | None:
     )
     saw_event = False
     try:
-        with stdout_progress(*columns, console=console, transient=True) as progress:
+        with live_progress(*columns, console=console, transient=True) as progress:
             task_id = progress.add_task("Preparing chat model", total=None, detail="")
             reached_ready = False
             for snap in _iter_warm_events(base_url, timeout_s):

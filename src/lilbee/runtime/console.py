@@ -2,44 +2,71 @@
 
 from __future__ import annotations
 
-from typing import IO, TYPE_CHECKING, Any, TextIO, TypeAlias
+from typing import IO, Any, TextIO, TypeAlias
 
 from rich.console import Console, RenderableType
 from rich.highlighter import ReprHighlighter
+from rich.live import Live
 from rich.progress import Progress, ProgressColumn
+from rich.status import Status
 from rich.style import StyleType
 from rich.text import Text, TextType
 
-if TYPE_CHECKING:
-    from rich.status import Status
-
-
 ProgressDisplay: TypeAlias = Progress
-"""The type of a progress display; build one with ``live_progress`` or ``stdout_progress``."""
+"""The type of a progress display; build one with ``live_progress``."""
+
+
+def _redirects_stdout(console: Console) -> bool:
+    """Whether a live display on *console* moves a stdout print above itself."""
+    return not console.stderr
 
 
 def live_progress(
     *columns: str | ProgressColumn, console: Console, **options: Any
 ) -> ProgressDisplay:
-    """A progress display that leaves ``sys.stdout`` and ``sys.stderr`` alone.
+    """A progress display that moves a stdout print above the bar only on a stdout console.
 
-    Rich redirects both streams into the display's console by default. A stderr display would
-    then take the text of a stdout print and show it on stderr. *options* go to ``Progress``.
+    A stderr display leaves ``sys.stdout`` alone and no display touches ``sys.stderr``, so text
+    stays on the stream its writer chose. *options* go to ``Progress``.
     """
     return Progress(
-        *columns, console=console, redirect_stdout=False, redirect_stderr=False, **options
+        *columns,
+        console=console,
+        redirect_stdout=_redirects_stdout(console),
+        redirect_stderr=False,
+        **options,
     )
 
 
-def stdout_progress(
-    *columns: str | ProgressColumn, console: Console, **options: Any
-) -> ProgressDisplay:
-    """A progress display on a stdout console, with Rich's default stream redirects.
+class _LiteralStatus(Status):
+    """A spinner whose live display follows the stream rule of ``live_progress``."""
 
-    The display shows text another part of the program writes to ``sys.stderr`` above the bar.
-    *options* go to ``Progress``.
-    """
-    return Progress(*columns, console=console, **options)
+    def __init__(
+        self,
+        status: RenderableType,
+        *,
+        console: Console,
+        spinner: str,
+        spinner_style: StyleType,
+        speed: float,
+        refresh_per_second: float,
+    ) -> None:
+        super().__init__(
+            status,
+            console=console,
+            spinner=spinner,
+            spinner_style=spinner_style,
+            speed=speed,
+            refresh_per_second=refresh_per_second,
+        )
+        self._live = Live(
+            self.renderable,
+            console=console,
+            refresh_per_second=refresh_per_second,
+            transient=True,
+            redirect_stdout=_redirects_stdout(console),
+            redirect_stderr=False,
+        )
 
 
 class PlainConsole(Console):
@@ -61,6 +88,7 @@ class PlainConsole(Console):
             width=width,
             quiet=quiet,
             markup=False,
+            emoji=False,
         )
 
     def input(
@@ -68,7 +96,7 @@ class PlainConsole(Console):
         prompt: TextType = "",
         *,
         markup: bool = False,
-        emoji: bool = True,
+        emoji: bool = False,
         password: bool = False,
         stream: TextIO | None = None,
     ) -> str:
@@ -85,8 +113,9 @@ class PlainConsole(Console):
         refresh_per_second: float = 12.5,
     ) -> Status:
         """A spinner whose *status* string shows as literal text."""
-        return super().status(
+        return _LiteralStatus(
             Text(status) if isinstance(status, str) else status,
+            console=self,
             spinner=spinner,
             spinner_style=spinner_style,
             speed=speed,

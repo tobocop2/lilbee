@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import ast
 import io
 from collections.abc import Callable
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
 from rich.table import Table
 from rich.text import Span, Text
 
+import lilbee.cli
 from lilbee.app.models import ShowModelResult
+from lilbee.cli import helpers
 from lilbee.cli.app import console as shared_console
+from lilbee.cli.commands import search_chat
 from lilbee.cli.model import _render_show
 from lilbee.runtime.console import PlainConsole, styled
 
@@ -64,6 +70,67 @@ def test_a_status_line_shows_a_bracketed_value_literally(value: str) -> None:
 
 def test_the_shared_console_is_a_plain_console() -> None:
     assert isinstance(shared_console, PlainConsole)
+
+
+_EMOJI_TEXT = "x[a:b:c] :smile: :thumbs_up:"
+
+
+def test_print_shows_emoji_codes_as_typed() -> None:
+    out = _captured(PlainConsole(width=200), lambda c: c.print(_EMOJI_TEXT))
+    assert _EMOJI_TEXT in out
+
+
+def test_table_shows_emoji_codes_as_typed() -> None:
+    table = Table(title=_EMOJI_TEXT)
+    table.add_column("File")
+    table.add_row(_EMOJI_TEXT)
+    out = _captured(PlainConsole(width=200), lambda c: c.print(table))
+    assert out.count(_EMOJI_TEXT) == 2
+
+
+def test_input_prompt_shows_emoji_codes_as_typed() -> None:
+    out = _captured(
+        PlainConsole(width=200),
+        lambda c: c.input(_EMOJI_TEXT, stream=io.StringIO("y\n")),
+    )
+    assert _EMOJI_TEXT in out
+
+
+def test_answer_stream_shows_emoji_codes_as_typed(monkeypatch: pytest.MonkeyPatch) -> None:
+    sink = io.StringIO()
+    monkeypatch.setattr(search_chat, "console", PlainConsole(file=sink, width=200))
+    stream = [SimpleNamespace(content=_EMOJI_TEXT, is_reasoning=False)]
+    search_chat._print_answer_stream(stream, on_first_token=lambda: None)
+    assert _EMOJI_TEXT in sink.getvalue()
+
+
+def test_retrieval_query_line_shows_emoji_codes_as_typed(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    helpers.announce_retrieval_query(_EMOJI_TEXT)
+    assert _EMOJI_TEXT in capsys.readouterr().err
+
+
+def test_every_cli_console_is_a_plain_console() -> None:
+    cli_dir = Path(lilbee.cli.__file__).parent
+    names = []
+    for path in cli_dir.rglob("*.py"):
+        if "tui" in path.relative_to(cli_dir).parts:
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Name):
+                name = func.id
+            elif isinstance(func, ast.Attribute):
+                name = func.attr
+            else:
+                continue
+            if name.endswith("Console"):
+                names.append(name)
+    assert names
+    assert set(names) == {"PlainConsole"}
 
 
 def test_styled_keeps_the_style_and_the_value_literal() -> None:
