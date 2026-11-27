@@ -266,12 +266,15 @@ jobs:
           path.write_text(text)
           PY
 
+      # The pin is written here and not by the engine build, because a mirror or
+      # cache hit skips that build and the wheel must carry its backend either way.
       - name: Build the lilbee-engine-llama-cpp wheel
         shell: bash
         working-directory: ${{ env.PKG_DIR }}
         run: |
           # The build and the retag stamp every entry with the commit time of this checkout.
           export "$(bash "${GITHUB_WORKSPACE}/tools/wheel-build/source_date_epoch.sh" "${GITHUB_WORKSPACE}")"
+          bash "${GITHUB_WORKSPACE}/tools/wheel-build/write_engine_pin.sh"
           python -m build --wheel
           python -m wheel tags --remove --platform-tag "${{ matrix.wheel-plat }}" dist/*.whl
 

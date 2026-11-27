@@ -142,4 +142,11 @@ runs:
       # backend libs, plus the static Go helpers); Nuitka bundles them via
       # --include-package-data and the runtime resolver finds each via
       # lilbee_engine_llama_cpp.get_llama_server_path() / get_llama_swap_path() / get_gguf_parser_path().
-      run: uv pip install --no-deps ./packaging/engine-wheel
+      # The pin is written here and not by the engine build, because a mirror or
+      # cache hit skips that build and the wheel must carry its backend either way.
+      env:
+        BACKEND: ${{ inputs.backend }}
+        LLAMA_CPP_REF: ${{ inputs.llama-cpp-ref }}
+      run: |
+        bash tools/wheel-build/write_engine_pin.sh
+        uv pip install --no-deps ./packaging/engine-wheel
