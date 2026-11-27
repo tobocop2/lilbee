@@ -818,7 +818,8 @@ class Searcher:
         The variant steps and HyDE start before the direct search ends, and each variant
         search starts when its step ends. Every task runs in a copy of this thread's
         context. Hits merge, and failed steps are recorded in ``degraded``, in the order
-        of a serial run.
+        of a serial run. An error, a Ctrl+C included, leaves at once: queued tasks are
+        cancelled and a running call ends in the background.
         """
         hyde_degraded: list[HealthWarning] = []
         pool = ThreadPoolExecutor()
@@ -846,7 +847,7 @@ class Searcher:
                 degraded.extend(hyde_degraded)
             return results
         finally:
-            pool.shutdown(cancel_futures=True)
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def search(
         self,
