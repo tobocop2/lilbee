@@ -12,7 +12,7 @@ from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import CrawlLoginBody, CrawlRequest
 
 
-@post("/api/crawl", media_type=SSE_MEDIA_TYPE)
+@post("/api/crawl", status_code=200, media_type=SSE_MEDIA_TYPE)
 async def crawl_route(data: CrawlRequest) -> Stream:
     """Crawl a URL with streaming SSE progress events."""
     from lilbee.crawler import CrawlLogin, require_valid_crawl_url

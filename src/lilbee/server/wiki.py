@@ -135,7 +135,7 @@ async def wiki_draft_diff_route(slug: SlugPath) -> WikiDraftDiffResponse:
     return WikiDraftDiffResponse(slug=slug, diff=diff)
 
 
-@post("/api/wiki/drafts/accept/{slug:path}")
+@post("/api/wiki/drafts/accept/{slug:path}", status_code=200)
 async def wiki_draft_accept_route(slug: SlugPath) -> WikiDraftAcceptResponse:
     """Accept a draft: overwrite the published page and re-index its chunks.
 
@@ -217,7 +217,7 @@ async def _citations_for_slug(slug: str) -> WikiCitationsResult:
     return WikiCitationsResult(slug=slug, citations=[WikiCitationRecord(**r) for r in records])
 
 
-@post("/api/wiki/lint")
+@post("/api/wiki/lint", status_code=200)
 async def wiki_lint_route(
     wiki_source: FromQuery[str] = "",
 ) -> WikiLintResult:
@@ -246,7 +246,7 @@ def _lint_report(wiki_source: str, store: Store) -> lint_mod.LintReport:
     return lint_mod.lint_all(store)
 
 
-@post("/api/wiki/prune")
+@post("/api/wiki/prune", status_code=200)
 async def wiki_prune_route() -> WikiPruneResult:
     """Trigger pruning of stale/orphaned wiki pages."""
     _require_wiki()
@@ -261,7 +261,7 @@ async def wiki_prune_route() -> WikiPruneResult:
     )
 
 
-@post("/api/wiki/index")
+@post("/api/wiki/index", status_code=200)
 async def wiki_index_route() -> WikiIndexResult:
     """Rebuild the browse index of pages the corpus could have.
 
@@ -306,7 +306,7 @@ def _ungenerated_candidates() -> list[WikiEntityCandidateResponse]:
     ]
 
 
-@post("/api/wiki/generate/{slug:path}", media_type=SSE_MEDIA_TYPE)
+@post("/api/wiki/generate/{slug:path}", status_code=200, media_type=SSE_MEDIA_TYPE)
 async def wiki_generate_route(slug: SlugPath) -> Stream:
     """Generate one indexed page, streaming progress. Costs a single LLM call.
 
@@ -400,7 +400,7 @@ async def wiki_update_route() -> Stream:
     return Stream(handlers.wiki_build_stream(), media_type=SSE_MEDIA_TYPE)
 
 
-@post("/api/wiki/synthesize", media_type=SSE_MEDIA_TYPE)
+@post("/api/wiki/synthesize", status_code=200, media_type=SSE_MEDIA_TYPE)
 async def wiki_synthesize_route() -> Stream:
     """Generate synthesis pages for concept clusters spanning 3+ sources.
 

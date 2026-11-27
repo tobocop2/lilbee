@@ -176,7 +176,7 @@ def _cancel(http: httpx.Client, add_id: str) -> None:
 
 def _sync(http: httpx.Client) -> None:
     resp = http.post("/api/sync", json={}, headers=_auth_headers(), timeout=_WAIT * 2)
-    assert resp.status_code in (200, 201), resp.text
+    assert resp.status_code == 200, resp.text
 
 
 def test_a_cancel_removes_a_file_the_add_did_not_finish(tmp_path, library, gate):

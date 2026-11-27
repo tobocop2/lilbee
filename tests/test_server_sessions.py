@@ -378,7 +378,7 @@ class TestOwnership:
 
     def test_claim_brings_an_agent_session_back_to_human_space(self, client, store):
         session_id = _seed(store, origin=SessionOrigin.MCP)
-        assert client.post(f"/api/sessions/{session_id}/claim").status_code == 201
+        assert client.post(f"/api/sessions/{session_id}/claim").status_code == 200
         resp = client.post(
             f"/api/sessions/{session_id}/messages",
             json={"role": "user", "content": "mine now", "sources": []},

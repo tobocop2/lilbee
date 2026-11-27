@@ -48,7 +48,7 @@ def _add_response(open_stream: Callable[[], AsyncGenerator[str, None]]) -> Strea
         stream = open_stream()
     except AddIdRunningError as exc:
         raise AddIdConflictException(detail=str(exc)) from exc
-    return Stream(stream, media_type=SSE_MEDIA_TYPE, status_code=201)
+    return Stream(stream, media_type=SSE_MEDIA_TYPE)
 
 
 class RemoveRequest(BaseModel):
@@ -57,7 +57,7 @@ class RemoveRequest(BaseModel):
     names: list[str] = Field(max_length=100)
 
 
-@post("/api/sync", media_type=SSE_MEDIA_TYPE)
+@post("/api/sync", status_code=200, media_type=SSE_MEDIA_TYPE)
 async def sync_route(data: SyncRequest | None = None) -> Stream:
     """Re-index changed documents with streaming SSE progress events.
 
@@ -91,7 +91,7 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
     )
 
 
-@post("/api/add", media_type=SSE_MEDIA_TYPE, raises=[AddIdConflictException])
+@post("/api/add", status_code=200, media_type=SSE_MEDIA_TYPE, raises=[AddIdConflictException])
 async def add_route(data: AddRequest) -> Stream:
     """Add files to the knowledge base with streaming SSE progress.
 
@@ -108,7 +108,9 @@ async def add_route(data: AddRequest) -> Stream:
     )
 
 
-@post("/api/add/upload", media_type=SSE_MEDIA_TYPE, raises=[AddIdConflictException])
+@post(
+    "/api/add/upload", status_code=200, media_type=SSE_MEDIA_TYPE, raises=[AddIdConflictException]
+)
 async def add_upload_route(
     data: MultipartBody[list[UploadFile]],
     ocr: FromQuery[str | None] = None,
@@ -168,7 +170,7 @@ async def documents_list_route(
     return await handlers.list_documents(search=search, limit=limit, offset=offset)
 
 
-@post("/api/documents/remove")
+@post("/api/documents/remove", status_code=200)
 async def documents_remove_route(data: RemoveRequest) -> DocumentRemoveResponse:
     """Remove documents from the knowledge base by source name."""
     return await handlers.delete_documents(data.names)
@@ -202,7 +204,7 @@ async def export_route(
     )
 
 
-@post("/api/import", media_type=SSE_MEDIA_TYPE)
+@post("/api/import", status_code=200, media_type=SSE_MEDIA_TYPE)
 async def import_route(
     request: Request,
     fmt: Annotated[str, QueryParameter(name="format")] = "",
@@ -222,5 +224,4 @@ async def import_route(
     return Stream(
         handlers.import_stream(await request.body(), fmt),
         media_type=SSE_MEDIA_TYPE,
-        status_code=201,
     )

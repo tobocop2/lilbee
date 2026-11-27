@@ -96,7 +96,7 @@ async def session_fork_route(
     return await fork_session(session_id, data)
 
 
-@post("/api/sessions/{session_id:str}/claim")
+@post("/api/sessions/{session_id:str}/claim", status_code=200)
 async def session_claim_route(session_id: FromPath[str]) -> SessionDetailResponse:
     """Claim a conversation for this surface so it can append."""
     return await claim_session(session_id)

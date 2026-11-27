@@ -65,7 +65,7 @@ async def _bootstrap_crawler_stream() -> AsyncGenerator[str, None]:
         yield frame
 
 
-@post("/setup/crawler", media_type=SSE_MEDIA_TYPE)
+@post("/setup/crawler", status_code=200, media_type=SSE_MEDIA_TYPE)
 async def setup_crawler_route() -> Stream:
     """Stream the Chromium bootstrap subprocess as SSE events."""
     return Stream(_bootstrap_crawler_stream(), media_type=SSE_MEDIA_TYPE)

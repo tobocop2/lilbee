@@ -121,7 +121,7 @@ def _rest(surface):
         return json.loads(res.headers.get("x-lilbee-warnings", "[]"))
     if surface == "rest_ask":
         res = client.post("/api/ask", json={"question": QUESTION})
-        assert res.status_code == 201, res.text
+        assert res.status_code == 200, res.text
         return res.json()["warnings"]
     res = client.post("/api/ask/stream", json={"question": QUESTION})
     found = [d for name, d in parse_sse_events(res.content) if name == "search_degraded"]

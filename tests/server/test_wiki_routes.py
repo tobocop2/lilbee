@@ -396,7 +396,7 @@ class TestWikiEnabled:
         )
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/lint", headers=_h())
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         body = resp.json()
         assert body["errors"] == 0
         assert body["warnings"] == 0
@@ -432,7 +432,7 @@ class TestWikiEnabled:
                 params={"wiki_source": "wiki/summaries/doc.md"},
                 headers=_h(),
             )
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert linted == ["wiki/summaries/doc.md"]
         body = resp.json()
         assert body["total"] == 1
@@ -458,7 +458,7 @@ class TestWikiEnabled:
         monkeypatch.setattr(lint_mod, "lint_all", fake_lint)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/lint", headers=_h())
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert on_loop == [False]
 
     async def test_lint_status_route_removed(self):
@@ -469,7 +469,7 @@ class TestWikiEnabled:
     async def test_prune_returns_report(self):
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/prune", headers=_h())
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         body = resp.json()
         assert "records" in body
         assert body["archived"] == 0
@@ -491,7 +491,7 @@ class TestWikiEnabled:
         monkeypatch.setattr("lilbee.server.wiki.prune_mod.prune_wiki", lambda store: report)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/prune", headers=_h())
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         body = resp.json()
         assert body["reconciled"] == 1
         assert body["archived"] == 0
@@ -526,7 +526,7 @@ class TestWikiEnabled:
         monkeypatch.setattr(stubs_mod, "refresh_stub_index", lambda store: {"a": 1, "b": 2})
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/index", headers=_h())
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert resp.json()["entries"] == 2
 
     async def test_index_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
@@ -628,7 +628,7 @@ class TestWikiEnabled:
         monkeypatch.setattr(lazy_mod, "generate_stub_page", fake_generate)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/generate/ford", headers=_h())
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("text/event-stream")
         events = _sse_events(resp.text)
         assert ("wiki_phase", {"phase": "generate", "total": 1}) in events
@@ -724,7 +724,7 @@ class TestWikiEnabled:
         monkeypatch.setattr(prune_mod, "prune_wiki", fake_prune)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/prune", headers=_h())
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert on_loop == [False]
 
     async def test_status_runs_lint_off_the_event_loop(
@@ -794,13 +794,15 @@ class TestWikiEnabled:
         assert payload["stats"]["citation_verify_rate"] == 2 / 3
 
     @pytest.mark.parametrize(
-        ("route", "target"),
+        ("route", "target", "status"),
         [
-            ("/api/wiki/build", "lilbee.server.handlers.wiki.run_full_build"),
-            ("/api/wiki/synthesize", "lilbee.server.handlers.wiki.run_full_synthesize"),
+            ("/api/wiki/build", "lilbee.server.handlers.wiki.run_full_build", 201),
+            ("/api/wiki/synthesize", "lilbee.server.handlers.wiki.run_full_synthesize", 200),
         ],
     )
-    async def test_done_frame_carries_the_count_of_lost_pages(self, monkeypatch, route, target):
+    async def test_done_frame_carries_the_count_of_lost_pages(
+        self, monkeypatch, route, target, status
+    ):
         """A run that lost work to failed model calls ends in a done frame with the counts."""
         from lilbee.wiki.stats import BuildStats
 
@@ -819,7 +821,7 @@ class TestWikiEnabled:
         )
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post(route, headers=_h())
-        assert resp.status_code == 201
+        assert resp.status_code == status
         name, payload = _sse_events(resp.text)[-1]
         assert name == "done"
         assert payload["stats"]["pages_failed"] == 2
@@ -915,7 +917,7 @@ class TestWikiEnabled:
         monkeypatch.setattr("lilbee.server.handlers.wiki.run_full_synthesize", fake_synthesize)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/synthesize", headers=_h())
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         events = _sse_events(resp.text)
         assert [name for name, _payload in events] == ["wiki_page", "done"]
         assert events[1][1] == {"paths": ["wiki/synthesis/typing.md"], "count": 1}
@@ -927,7 +929,7 @@ class TestWikiEnabled:
         )
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/synthesize", headers=_h())
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert _sse_events(resp.text) == [("done", {"paths": [], "count": 0})]
 
     async def test_status_empty_wiki(self, monkeypatch, tmp_path):
@@ -1127,7 +1129,7 @@ class TestWikiDraftsEndpoints:
         monkeypatch.setattr(server_wiki_mod, "accept_draft", _fake_accept)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/drafts/accept/cv-manual", headers=_h())
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         body = resp.json()
         assert body["slug"] == "cv-manual"
         assert body["requested_slug"] == "cv-manual"
@@ -1159,7 +1161,7 @@ class TestWikiDraftsEndpoints:
         monkeypatch.setattr(server_wiki_mod, "accept_draft", _fake_accept)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/drafts/accept/cv-manual", headers=_h())
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert on_loop == [False]
 
     async def test_accept_stale_draft_returns_409(self, monkeypatch: pytest.MonkeyPatch):
