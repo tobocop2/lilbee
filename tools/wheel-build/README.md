@@ -15,6 +15,9 @@ the same behavior, so a developer can reproduce a CI build off-runner.
 - `build_llama_server.sh` — builds the self-contained `llama-server` (binary +
   ggml/llama/mtmd libs with a baked rpath) into the `lilbee-engine-llama-cpp` wheel
   package's `bin/` for the requested backend.
+- `write_engine_pin.sh` — writes the wheel's engine pin: the source versions and
+  the backend. The step that builds or installs the wheel runs it, because a
+  mirror or cache hit skips `build_llama_server.sh`.
 - `bundle_rocm_runtime.sh` — packs the ROCm userspace `llama-server` links
   (discovered by walking `DT_NEEDED`, plus the rocBLAS Tensile kernels) beside
   the binary, so an AMD user needs only a kernel driver and six host libraries
