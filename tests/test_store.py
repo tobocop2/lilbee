@@ -3176,34 +3176,41 @@ class TestSourceIngestedAtMap:
         assert store.source_ingested_at_map() == {}
 
 
-class TestIngestedAtOf:
+class TestDatesOf:
     """The temporal filter reads the dates of the hits, never a map of every source."""
 
     def test_returns_only_the_named_sources(self, store):
         store.upsert_source("a.md", "h1", 1)
         store.upsert_source("b.md", "h2", 1)
-        result = store.ingested_at_of(["a.md", "missing.md"])
+        result = store.dates_of(["a.md", "missing.md"])
         assert set(result) == {"a.md"}
-        assert result["a.md"] == store.source_ingested_at_map()["a.md"]
+        assert result["a.md"][1] == store.source_ingested_at_map()["a.md"]
+
+    def test_returns_the_stored_creation_date(self, store):
+        store.upsert_source("a.md", "h1", 1, meta=SourceMeta(created_at="2020-05-06"))
+        store.upsert_source("b.md", "h2", 1)
+        result = store.dates_of(["a.md", "b.md"])
+        assert result["a.md"][0] == "2020-05-06"
+        assert result["b.md"][0] == ""
 
     def test_empty_store_and_no_names(self, store):
-        assert store.ingested_at_of(["a.md"]) == {}
+        assert store.dates_of(["a.md"]) == {}
         store.upsert_source("a.md", "h1", 1)
-        assert store.ingested_at_of([]) == {}
+        assert store.dates_of([]) == {}
 
     def test_wiki_pages_have_no_date(self, store):
         store.upsert_source("wiki/a.md", "h1", 1, SourceType.WIKI)
-        assert store.ingested_at_of(["wiki/a.md"]) == {}
+        assert store.dates_of(["wiki/a.md"]) == {}
 
     def test_name_with_quote_is_escaped(self, store):
         store.upsert_source("it's.md", "h1", 1)
-        assert set(store.ingested_at_of(["it's.md"])) == {"it's.md"}
+        assert set(store.dates_of(["it's.md"])) == {"it's.md"}
 
     def test_batches_over_many_names(self, store):
         store.upsert_source("a.md", "h1", 1)
         names = [f"n{i}.md" for i in range(700)] + ["a.md"]
         with mock.patch("lilbee.data.store.core._SOURCE_STAT_BATCH_ROWS", 100):
-            assert set(store.ingested_at_of(names)) == {"a.md"}
+            assert set(store.dates_of(names)) == {"a.md"}
 
     def test_chat_turn_with_time_word_reads_no_full_source_record(self, store, test_config):
         """A temporal question reads zero full source records and still filters by date."""

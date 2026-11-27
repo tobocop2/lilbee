@@ -1440,7 +1440,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
-        help_text="Detect temporal queries and bias retrieval toward recent chunks",
+        help_text="Detect date words in a query and keep results from that date range",
     ),
     "hyde": SettingDef(
         bool,

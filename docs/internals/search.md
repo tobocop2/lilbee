@@ -217,7 +217,8 @@ way it replaces its chunks.
 **On by default, activates only when temporal keywords are detected in the query.**
 
 - **Keywords detected**: "recent", "latest", "today", "yesterday", "this week", "last week", "this month", "last month"
-- **Date source**: frontmatter `date` field (preferred) or document ingestion timestamp (fallback)
+- **Date source**: the creation date the extractor reports (preferred) or the ingestion time (fallback); a date with no zone is local time
+- **Ranges**: day, week and month boundaries follow the time zone of the lilbee process (the `TZ` variable, else the OS zone); `recent` is the last 30 days
 - **Behavior**: when active, retrieves 3x candidates (compensating for filtering loss) and sorts by recency
 - **When it helps**: queries like "what changed recently?" or "latest notes about X"
 

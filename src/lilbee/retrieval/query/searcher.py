@@ -8,7 +8,6 @@ import re
 from collections.abc import Callable, Generator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import copy_context
-from datetime import datetime
 from enum import StrEnum
 from functools import partial
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
@@ -462,24 +461,17 @@ class Searcher:
     ) -> list[SearchChunk]:
         if not self._config.temporal_filtering:
             return results
-        from lilbee.runtime.temporal import detect_temporal, resolve_date_range
+        from lilbee.runtime.temporal import detect_temporal, document_instant, resolve_date_range
 
         keyword = detect_temporal(question)
         if keyword is None:
             return results
         date_range = resolve_date_range(keyword)
-        source_dates = self._store.ingested_at_of({r.source for r in results})
+        source_dates = self._store.dates_of({r.source for r in results})
         filtered: list[SearchChunk] = []
         for r in results:
-            ingested_at = source_dates.get(r.source, "")
-            if not ingested_at:
-                filtered.append(r)
-                continue
-            try:
-                doc_date = datetime.fromisoformat(ingested_at)
-                if date_range.start <= doc_date <= date_range.end:
-                    filtered.append(r)
-            except (ValueError, TypeError):
+            instant = document_instant(*source_dates.get(r.source, ("", "")))
+            if instant is None or date_range.start <= instant <= date_range.end:
                 filtered.append(r)
         return filtered if filtered else results
 

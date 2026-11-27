@@ -2516,9 +2516,9 @@ class TestTemporalFilter:
         from datetime import UTC, datetime, timedelta
 
         recent = (datetime.now(UTC) - timedelta(days=5)).isoformat()
-        mock_svc.store.ingested_at_of.return_value = {
-            "old.md": "2020-01-01T00:00:00+00:00",
-            "new.md": recent,
+        mock_svc.store.dates_of.return_value = {
+            "old.md": ("", "2020-01-01T00:00:00+00:00"),
+            "new.md": ("", recent),
         }
         results = [
             _make_result(source="old.md"),
@@ -2530,7 +2530,7 @@ class TestTemporalFilter:
 
     def test_result_without_ingested_at_passes_through(self, mock_svc):
         """Sources absent from the ingested_at map are kept (no date info = don't filter)."""
-        mock_svc.store.ingested_at_of.return_value = {}
+        mock_svc.store.dates_of.return_value = {}
         results = [_make_result(source="mystery.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "recent changes")
         assert [r.source for r in filtered] == ["mystery.md"]
@@ -2583,19 +2583,75 @@ class TestTemporalFilter:
             cfg.temporal_filtering = old
 
     def test_keeps_results_without_dates(self, mock_svc):
-        mock_svc.store.ingested_at_of.return_value = {"a.md": ""}
+        mock_svc.store.dates_of.return_value = {"a.md": ("", "")}
         results = [_make_result(source="a.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "today's notes")
         assert len(filtered) == 1
 
     def test_falls_back_when_nothing_matches(self, mock_svc):
-        mock_svc.store.ingested_at_of.return_value = {"old.md": "2020-01-01T00:00:00+00:00"}
+        mock_svc.store.dates_of.return_value = {"old.md": ("", "2020-01-01T00:00:00+00:00")}
         results = [_make_result(source="old.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "today's notes")
         assert len(filtered) == 1
 
+    def test_created_at_beats_ingest_time(self, mock_svc):
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime.now(UTC)
+        mock_svc.store.dates_of.return_value = {
+            "fresh.md": (
+                (now - timedelta(days=3)).isoformat(),
+                (now - timedelta(days=400)).isoformat(),
+            ),
+            "stale.md": (
+                (now - timedelta(days=400)).isoformat(),
+                (now - timedelta(days=1)).isoformat(),
+            ),
+        }
+        results = [_make_result(source="fresh.md"), _make_result(source="stale.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "what changed recently")
+        assert [r.source for r in filtered] == ["fresh.md"]
+
+    def test_old_created_at_new_ingest_is_dropped(self, mock_svc):
+        from datetime import UTC, datetime, timedelta
+
+        today = datetime.now().date()
+        mock_svc.store.dates_of.return_value = {
+            "old.md": ((today - timedelta(days=400)).isoformat(), datetime.now(UTC).isoformat()),
+            "new.md": (today.isoformat(), "2001-01-01T00:00:00+00:00"),
+        }
+        results = [_make_result(source="old.md"), _make_result(source="new.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "recent notes")
+        assert [r.source for r in filtered] == ["new.md"]
+
+    def test_naive_created_at_is_compared_as_local(self, mock_svc):
+        from datetime import datetime, timedelta
+
+        now = datetime.now()
+        mock_svc.store.dates_of.return_value = {
+            "new.md": ((now - timedelta(days=2)).isoformat(), "2001-01-01T00:00:00+00:00"),
+            "old.md": ((now - timedelta(days=200)).isoformat(), now.astimezone().isoformat()),
+        }
+        results = [_make_result(source="new.md"), _make_result(source="old.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "recent notes")
+        assert [r.source for r in filtered] == ["new.md"]
+
+    def test_extreme_created_at_falls_back_to_ingest(self, mock_svc):
+        from datetime import UTC, datetime, timedelta
+
+        fresh = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+        stale = (datetime.now(UTC) - timedelta(days=400)).isoformat()
+        mock_svc.store.dates_of.return_value = {
+            "low.md": ("0001-01-01T00:00:00", fresh),
+            "high.md": ("9999-12-31T23:59:59", stale),
+            "aware.md": ("9999-12-31T23:59:59-05:00", fresh),
+        }
+        results = [_make_result(source=s) for s in ("low.md", "high.md", "aware.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "recent notes")
+        assert [r.source for r in filtered] == ["low.md"]
+
     def test_handles_invalid_date(self, mock_svc):
-        mock_svc.store.ingested_at_of.return_value = {"a.md": "not-a-date"}
+        mock_svc.store.dates_of.return_value = {"a.md": ("", "not-a-date")}
         results = [_make_result(source="a.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "recent")
         assert len(filtered) == 1

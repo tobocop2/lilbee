@@ -1294,7 +1294,7 @@ class Store:
 
         Best-effort: a reader racing a concurrent invalidation can store a
         pre-mutation snapshot. The consumer (wiki prune) reads it off the
-        query path; a query reads ``ingested_at_of`` instead.
+        query path; a query reads ``dates_of`` instead.
         """
         if self._source_ingested_cache is not None:
             return self._source_ingested_cache
@@ -1302,10 +1302,10 @@ class Store:
         self._source_ingested_cache = mapping
         return mapping
 
-    def ingested_at_of(self, names: Iterable[str]) -> dict[str, str]:
-        """``{name: ingested_at}`` for the listed sources among *names*, read by key.
+    def dates_of(self, names: Iterable[str]) -> dict[str, tuple[str, str]]:
+        """``{name: (created_at, ingested_at)}`` for the listed sources among *names*, read by key.
 
-        Reads two columns of the rows *names* key to, never the whole table.
+        Reads three columns of the rows *names* key to, never the whole table.
         """
         table = self.open_table(SOURCES_TABLE)
         if table is None:
@@ -1317,13 +1317,13 @@ class Store:
             for kind in _READ_ORDER
             if kind != SourceType.WIKI
         }
-        found: dict[str, str] = {}
+        found: dict[str, tuple[str, str]] = {}
         paths = sorted(wanted)
         for start in range(0, len(paths), _SOURCE_STAT_BATCH_ROWS):
             batch = _in_list(paths[start : start + _SOURCE_STAT_BATCH_ROWS])
             query = table.search().where(f"{_LISTED} AND {_PATH} IN ({batch})")
-            for row in query.select([_PATH, "ingested_at"]).limit(None).to_list():
-                found[wanted[row[_PATH]]] = row["ingested_at"] or ""
+            for row in query.select([_PATH, "created_at", "ingested_at"]).limit(None).to_list():
+                found[wanted[row[_PATH]]] = (row["created_at"] or "", row["ingested_at"] or "")
         return found
 
     def _chunks_schema(self) -> pa.Schema:
