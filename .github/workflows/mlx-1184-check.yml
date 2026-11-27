@@ -1,0 +1,43 @@
+name: mlx-1184 output check (harness)
+
+# Harness only: builds the mlx pack with tools/wheel-build/pack_mlx.sh on a macOS 15 runner and records the
+# strict output check of its servers. A push of ci-mlx-1184/register registers the workflow; dispatch runs it.
+on:
+  push:
+    branches: [ci/mlx-1184]
+    paths: [ci-mlx-1184/register]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - name: Build the pack
+        run: |
+          sw_vers
+          sysctl -n machdep.cpu.brand_string
+          command -v zstd || brew install zstd
+          OUT="${RUNNER_TEMP}/pack" BACKEND=metal PLATFORM=macosx_14_0_arm64 BUILD_NUMBER=1 LICENSE_TERMS=MIT \
+            bash tools/wheel-build/pack_mlx.sh
+          echo "EXPRESSION $(cat "${RUNNER_TEMP}/pack/license-expression.txt")"
+          cat "${RUNNER_TEMP}"/pack/*.sha256
+      - name: Record the output check
+        run: bash ci-mlx-1184/record.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlx-1184-record
+          path: |
+            ${{ runner.temp }}/out
+            ${{ runner.temp }}/logs
+            ${{ runner.temp }}/pack/license-expression.txt
