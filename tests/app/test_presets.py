@@ -76,7 +76,6 @@ class TestValidatePresetUrl:
             "http://127.1/",
             "http://2130706433/",
             "http://0x7f.1/",
-            "http://0177.0.0.1/",
             "http://8.8.8.8./",
             "http://10.0.0.1/",
             "http://192.168.1.1/",
@@ -169,6 +168,25 @@ class TestValidatePresetUrl:
         with pytest.raises(ValueError, match=message):
             blocked_networks.validate_preset_url(url)
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://xn--/v1",
+            "http://xn--a/v1",
+            "HTTP://xn--/v1",
+            "http://xn--a-/v1",
+            "http://0177.0.0.1/",
+        ],
+    )
+    def test_a_url_that_httpx_cannot_build_is_refused(self, url):
+        with pytest.raises(ValueError, match="not one lilbee can connect to") as refused:
+            blocked_networks.validate_preset_url(url)
+        assert "xn--" not in str(refused.value)
+
+    def test_the_policy_message_wins_over_the_connect_check(self):
+        with pytest.raises(ValueError, match="not a valid IPv4 address"):
+            blocked_networks.validate_preset_url("http://08.1.1.1/")
+
     def test_a_refusal_repeats_no_part_of_the_url(self):
         with pytest.raises(ValueError) as refused:
             blocked_networks.validate_preset_url(f"http://user:{KEY}@8.8.8.8/")
@@ -251,6 +269,11 @@ class TestValidatePresetUrl:
 
 
 class TestAdd:
+    def test_a_url_that_httpx_cannot_build_is_refused_and_nothing_is_stored(self):
+        with pytest.raises(ValueError, match="not one lilbee can connect to"):
+            presets.add_preset("alpha", "http://xn--/v1", roles=["chat"])
+        assert _stored() == []
+
     def test_it_stores_one_json_scalar_with_the_key(self):
         view = presets.add_preset("alpha", URL, roles=["chat", "embed"], api_key=KEY)
         assert view == presets.ServerPreset(
@@ -358,6 +381,12 @@ class TestEdit:
     @pytest.fixture(autouse=True)
     def _alpha(self):
         presets.add_preset("alpha", URL, roles=["chat"], api_key=KEY)
+
+    def test_a_url_that_httpx_cannot_build_is_refused_and_the_entry_stays(self):
+        before = _stored()
+        with pytest.raises(ValueError, match="not one lilbee can connect to"):
+            presets.edit_preset("alpha", url="http://xn--/v1", api_key=KEY + "-2")
+        assert _stored() == before
 
     def test_a_url_edit_with_a_new_key_changes_both_and_keeps_the_rest(self):
         view = presets.edit_preset("alpha", url=OTHER_URL, api_key=KEY + "-2")

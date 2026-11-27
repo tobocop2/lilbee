@@ -404,9 +404,6 @@ def _validate(updates: dict[str, Any]) -> None:
     hf_token = updates.get("hf_token")
     if isinstance(hf_token, str) and not is_hf_token_sendable(hf_token):
         raise ValueError("hf_token holds a character that cannot be sent. Copy it again.")
-    new_ttl = _as_int_setting(updates.get("engine_idle_ttl_minutes"))
-    if new_ttl is not None and new_ttl < 0:
-        raise ValueError("engine_idle_ttl_minutes must be >= 0 (0 keeps weights loaded)")
     new_chunk_size = _as_int_setting(updates.get("chunk_size"))
     if new_chunk_size is not None and new_chunk_size < _MIN_CHUNK_SIZE:
         raise ValueError(f"chunk_size must be >= {_MIN_CHUNK_SIZE}")

@@ -4,15 +4,15 @@ import logging
 import os
 import threading
 import time
-import tomllib
 import weakref
 from collections.abc import Callable, Generator, Iterable, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePath
 from typing import Any, TypeVar
 
-import tomli_w
+import tomlkit
+from tomlkit.exceptions import TOMLKitError
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
@@ -37,6 +37,7 @@ from lilbee.core.security import (
     harden_private_file,
     write_private_text,
 )
+from lilbee.core.toml_read import load_toml
 
 log = logging.getLogger(__name__)
 
@@ -103,7 +104,7 @@ def load(data_root: Path) -> dict[str, Any]:
         harden_private_file(path)
         before = _stamp_of(path)
         with path.open("rb") as f:
-            values = dict(tomllib.load(f))
+            values = dict(load_toml(f))
         after = _stamp_of(path)
     except OSError as exc:
         # Name the read: a read-modify-write caller reports this as a failed write otherwise.
@@ -126,20 +127,11 @@ class ReadOnlyConfigError(PermissionError):
 
 
 def save(data_root: Path, settings: dict[str, Any]) -> None:
-    """Write *settings* to config.toml.
+    """Write *settings* to config.toml, keeping the comments and the order of the keys it holds.
 
-    ``tomli_w`` is the write half of the stdlib ``tomllib`` used by ``load``.
-    The emitter this replaced escaped strings by hand and stringified anything
-    that was not a bool or a number, so a list value was persisted as its
-    quoted repr and read back as text. A control character it escaped wrongly
-    was worse still: the reader discards the whole file on a parse error, so
-    one bad value silently wiped every other setting.
-
-    A ``None`` is dropped rather than written. TOML has no null, and the old
-    emitter wrote the literal string "None", which then read back as a set
-    value instead of an absent one. A path is written as its string: tomli_w
-    refuses ``Path`` objects, and the config's path fields hold them after
-    validation.
+    Only the keys whose value differs are touched; a key that is not in *settings* is removed.
+    A ``None`` is dropped rather than written, since TOML has no null. A path is written as
+    its string.
     """
     path = _config_path(data_root)
     if path.exists() and not os.access(path, os.W_OK):
@@ -147,13 +139,44 @@ def save(data_root: Path, settings: dict[str, Any]) -> None:
         # does not stop: refuse here, the one writer every surface goes through.
         raise ReadOnlyConfigError(f"{path} is read-only; make it writable and try again")
     present = {
-        k: str(v) if isinstance(v, PurePath) else v
-        for k, v in sorted(settings.items())
-        if v is not None
+        k: str(v) if isinstance(v, PurePath) else v for k, v in settings.items() if v is not None
     }
     # config.toml can hold provider API keys, so it gets the same owner-only
     # treatment as the session token rather than a post-hoc chmod.
-    write_private_text(path, tomli_w.dumps(present))
+    write_private_text(path, _merged_text(path, present))
+
+
+def _merged_text(path: Path, present: dict[str, Any]) -> str:
+    """The text of *path* with *present* applied; a missing or broken file starts new."""
+    document = tomlkit.document()
+    if path.exists():
+        with suppress(TOMLKitError, RecursionError):
+            document = tomlkit.parse(path.read_text(encoding="utf-8"))
+    _apply(document, present)
+    return tomlkit.dumps(document)
+
+
+def _apply(table: Any, wanted: Mapping[str, Any]) -> None:
+    """Make *table* hold *wanted*, touching only the keys that differ, so comments stay."""
+    held = table.unwrap()
+    for key in [key for key in held if key not in wanted]:
+        del table[key]
+    for key, value in wanted.items():
+        if key not in held:
+            table[key] = value
+        elif isinstance(value, dict) and isinstance(held[key], dict):
+            _apply(table[key], value)
+        elif not _same(held[key], value):
+            table[key] = value
+
+
+def _same(held: Any, value: Any) -> bool:
+    """Equal in type and value, so True over 1 and 1.0 over 1 still write."""
+    if isinstance(held, list) and isinstance(value, list):
+        return len(held) == len(value) and all(
+            _same(a, b) for a, b in zip(held, value, strict=True)
+        )
+    return type(held) is type(value) and held == value
 
 
 def get(data_root: Path, key: str) -> str | None:

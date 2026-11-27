@@ -14,13 +14,14 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextvars import ContextVar
 from enum import Enum
 from pathlib import Path
-from typing import Any, ClassVar, TypeVar, cast
+from typing import Any, ClassVar, TypeVar, cast, get_args
 
 from pydantic import Field, ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_core import ErrorDetails
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lilbee.core.system import scaled_chat_ctx_target_default
+from lilbee.core.toml_read import load_toml
 
 from .defaults import (
     CONFIG_FILE_NAME,
@@ -966,7 +967,7 @@ class Config(BaseSettings):
     # with keep_engine_warm the time after the last lilbee exit. 0 keeps weights
     # loaded until the engine stops.
     engine_idle_ttl_minutes: int = ConfigField(
-        default=ENGINE_IDLE_TTL_MINUTES_DEFAULT, writable=True
+        default=ENGINE_IDLE_TTL_MINUTES_DEFAULT, ge=0, writable=True
     )
 
     # Working n_ctx the dynamic picker aims for. Default scales with
@@ -1403,6 +1404,18 @@ class Config(BaseSettings):
             return None
         return v
 
+    @field_validator("*", mode="before")
+    @classmethod
+    def _no_bool_for_number(cls, v: Any, info: ValidationInfo) -> Any:
+        """A field that takes a number refuses true and false."""
+        if not isinstance(v, bool) or info.field_name is None:
+            return v
+        annotation = cls.model_fields[info.field_name].annotation
+        parts = [a for a in (get_args(annotation) or (annotation,)) if a is not type(None)]
+        if parts and all(a in (int, float) for a in parts):
+            raise ValueError("use a number, not true or false")
+        return v
+
     @field_validator("chat_mode", mode="before")
     @classmethod
     def _normalize_chat_mode(cls, v: Any) -> ChatMode:
@@ -1470,7 +1483,7 @@ class Config(BaseSettings):
                 return parse_tristate_bool(v)
             except ValueError:
                 raise ValueError("use true, false or auto") from None
-        return bool(v)
+        raise ValueError("use true, false or auto")
 
     @field_validator("n_gpu_layers", mode="before")
     @classmethod
@@ -1483,10 +1496,11 @@ class Config(BaseSettings):
                 return parse_optional_int(v, aliases={"cpu": 0})
             except ValueError:
                 raise ValueError("use a whole number, cpu or auto") from None
-        try:
+        if isinstance(v, int) and not isinstance(v, bool):
+            return v
+        if isinstance(v, float) and v.is_integer():
             return int(v)
-        except (TypeError, ValueError):
-            raise ValueError("use a whole number, cpu or auto") from None
+        raise ValueError("use a whole number, cpu or auto")
 
     @field_validator("gpu_devices", mode="before")
     @classmethod
@@ -1499,7 +1513,9 @@ class Config(BaseSettings):
                 return parse_gpu_device_list(v)
             except ValueError:
                 raise ValueError("use GPU indexes separated by commas, or auto") from None
-        return str(v)
+        if isinstance(v, int) and not isinstance(v, bool):
+            return str(v)
+        raise ValueError("use GPU indexes separated by commas, or auto")
 
     @field_validator("server_presets", mode="before")
     @classmethod
@@ -1543,7 +1559,9 @@ class Config(BaseSettings):
                 return parse_bool(v)
             except ValueError:
                 raise ValueError("use true or false") from None
-        return bool(v)
+        if v is None:
+            return False
+        raise ValueError("use true or false")
 
     @field_validator(
         "chat_model", "embedding_model", "vision_model", "reranker_model", mode="after"
@@ -1641,7 +1659,7 @@ class Config(BaseSettings):
             if not all(isinstance(name, str) for name in v):
                 raise ValueError("ignore_dirs: every entry must be a directory name")
             return DEFAULT_IGNORE_DIRS | frozenset(v)
-        return DEFAULT_IGNORE_DIRS
+        raise ValueError("ignore_dirs: use a list of directory names")
 
     @field_validator("concept_allowed_ent_types", mode="before")
     @classmethod
@@ -1657,9 +1675,11 @@ class Config(BaseSettings):
             parts = frozenset(name.strip().upper() for name in v.split(",") if name.strip())
             return parts or DEFAULT_ALLOWED_NER_LABELS
         if isinstance(v, (set, frozenset, list)):
-            parts = frozenset(str(x).upper() for x in v)
+            if not all(isinstance(x, str) for x in v):
+                raise ValueError("use a list of entity type names")
+            parts = frozenset(x.upper() for x in v)
             return parts or DEFAULT_ALLOWED_NER_LABELS
-        return DEFAULT_ALLOWED_NER_LABELS
+        raise ValueError("use entity type names, separated by commas")
 
     @model_validator(mode="before")
     @classmethod
@@ -1927,11 +1947,9 @@ class _TomlSource:
             self._warn(unreadable)
 
     def __call__(self) -> dict[str, Any]:
-        import tomllib
-
         try:
             with self._path.open("rb") as f:
-                data = tomllib.load(f)
+                data = load_toml(f)
         except (ValueError, OSError):
             self.report_unreadable()
             return {}

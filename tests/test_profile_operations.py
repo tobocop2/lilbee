@@ -17,6 +17,7 @@ from lilbee.core.config.enums import OcrMode, SettingSource
 from lilbee.core.config.resolve import PROFILE_FIELDS, read_layers, resolve
 from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileStore
 from lilbee.core.system import default_data_dir
+from lilbee.core.toml_read import load_toml
 from tests._private_mode import file_mode, posix_only
 from tests.conftest import make_mock_services
 
@@ -796,14 +797,14 @@ def test_your_changes_under_default_compare_with_the_built_in_value():
 
 def test_active_reads_config_toml_once(store, monkeypatch):
     reads: list[Path] = []
-    real = tomllib.load
+    real = load_toml
 
     def counting(handle):
         reads.append(Path(handle.name))
         return real(handle)
 
     _write_config("chunk_size = 900\n")
-    monkeypatch.setattr("lilbee.core.config.resolve.tomllib.load", counting)
+    monkeypatch.setattr("lilbee.core.config.resolve.load_toml", counting)
     profiles.active(store)
     assert [path.name for path in reads].count("config.toml") == 1
 

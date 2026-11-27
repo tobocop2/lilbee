@@ -6,9 +6,10 @@ from unittest import mock
 
 import pytest
 
-from lilbee.app.settings import apply_settings_update
+from lilbee.app.settings import adopt_external_changes, apply_settings_update, read_config_state
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
+from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.providers.base import LLMProvider
@@ -145,6 +146,7 @@ _ROLE_AGNOSTIC_LOAD_WRITES: dict[str, object] = {
     "flash_attention": True,
     "reranker_type": "llm",
     "chunk_size": 1024,
+    "gpu_memory_fraction": 0.5,
 }
 
 
@@ -164,6 +166,20 @@ def test_each_role_agnostic_load_key_replans_the_fleet(key):
         apply_settings_update({key: _ROLE_AGNOSTIC_LOAD_WRITES[key]})
         assert provider.replanned == 1
         assert provider.reloaded_roles == []
+    finally:
+        _restore_services()
+
+
+def test_gpu_memory_fraction_taken_from_the_file_replans_the_fleet():
+    """A change another process wrote re-plans the fleet when this process adopts it."""
+    provider = _install_recording_provider()
+    try:
+        reading = read_config_state()
+        persistent_settings.set_value(cfg.data_root, "gpu_memory_fraction", 0.5)
+        _after, result = adopt_external_changes(reading)
+        assert result is not None
+        assert result.updated == ["gpu_memory_fraction"]
+        assert provider.replanned == 1
     finally:
         _restore_services()
 
