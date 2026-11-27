@@ -143,9 +143,11 @@ async def test_view_switch_guard_held_until_transition_completes():
 
         # Guard releases only after the transition finishes; then the waiting
         # switch runs.
-        await pump_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        assert await pump_until(
+            pilot,
+            lambda: isinstance(app.screen, SettingsScreen) and not app._switching,
+        )
         assert app.active_view == "Settings"
-        assert app._switching is False
 
 
 async def test_view_command_during_a_switch_runs_after_it():
@@ -156,7 +158,7 @@ async def test_view_command_during_a_switch_runs_after_it():
         app.switch_view("Catalog")
         app.switch_view("Tasks")
         assert app.active_view == "Catalog"
-        await pump_until(pilot, lambda: isinstance(app.screen, TaskCenter))
+        assert await pump_until(pilot, lambda: isinstance(app.screen, TaskCenter))
         assert app.active_view == "Tasks"
 
 
@@ -168,9 +170,11 @@ async def test_last_view_command_wins():
         app.switch_view("Catalog")
         app.switch_view("Tasks")
         app.switch_view("Settings")
-        await pump_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        assert await pump_until(
+            pilot,
+            lambda: isinstance(app.screen, SettingsScreen) and not app._switching,
+        )
         assert app.active_view == "Settings"
-        await pilot.pause()
         assert isinstance(app.screen, SettingsScreen)
 
 

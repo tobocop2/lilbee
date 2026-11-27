@@ -926,9 +926,10 @@ class LilbeeApp(App[None]):
         Guards against concurrent switches via ``self._switching`` so rapid
         keypresses can't corrupt the screen stack. A command that arrives during
         a switch or while chat loads waits in one slot, and the last one runs
-        when the switch ends. ``active_view`` is updated after the switch completes. A screen pushed over the current view (the
-        catalog a model field opens, a dialog) is popped first, so the switch
-        replaces the view itself and no view stays on the stack under another.
+        when the switch ends. ``active_view`` is updated after the switch
+        completes. A screen pushed over the current view (the catalog a model
+        field opens, a dialog) is popped first, so the switch replaces the view
+        itself and no view stays on the stack under another.
         """
         if self._switching or self._chat_is_loading():
             self._pending_view = view_name
