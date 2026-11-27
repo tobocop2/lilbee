@@ -19,6 +19,7 @@ from lilbee.core.config import cfg
 from lilbee.data.extract.chunk import EmbedWarmError, EmbedWindowError
 from lilbee.data.ingest import fanout
 from lilbee.data.types import OcrReport, ShardId, SkippedSource, SyncResult
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.runtime.lock import LibraryUnlockableError
 from lilbee.runtime.progress import (
     BatchProgressEvent,
@@ -225,6 +226,23 @@ class TestPlanFanout:
         specs = fanout.plan_fanout()
         assert seen == {"mask": "2,3", "process": None}
         assert [spec.visible_devices["CUDA_VISIBLE_DEVICES"] for spec in specs] == ["2", "3"]
+
+    @pytest.mark.parametrize("kind", list(ProviderErrorKind), ids=str)
+    def test_plan_fanout_with_a_failed_probe_stays_in_process(self, monkeypatch, kind):
+        def failing(_engine):
+            raise ProviderError("probe failed", kind=kind)
+
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", failing)
+        monkeypatch.setattr("lilbee.data.ingest.discovery.corpus_has_at_least", lambda _n: True)
+        assert fanout.plan_fanout() == []
+
+    def test_a_probe_that_fails_for_another_reason_stops_the_plan(self, monkeypatch):
+        def failing(_engine):
+            raise OSError("device gone")
+
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", failing)
+        with pytest.raises(OSError, match="device gone"):
+            fanout.plan_fanout()
 
     def test_a_big_corpus_on_several_cards_fans_out(self, monkeypatch):
         monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda _engine: 4)

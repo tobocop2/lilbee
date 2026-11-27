@@ -37,6 +37,17 @@ def resolve_replica_count(role: WorkerRole, device_count: int) -> int:
     return getattr(cfg, knob) or max(_MIN_REPLICAS, device_count)
 
 
+def sizing_device_count(engine: EngineAdapter) -> int:
+    """GPU count for sizing, floored at one, and one when the probe fails."""
+    from lilbee.providers.base import ProviderError
+
+    try:
+        return gpu_device_count(engine)
+    except ProviderError as exc:
+        log.debug("device probe failed (%s); sizing for a GPU-less host", exc)
+        return _MIN_REPLICAS
+
+
 def gpu_device_count(engine: EngineAdapter) -> int:
     """Effective GPU count *engine* will use, floored at one.
 

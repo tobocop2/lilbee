@@ -46,13 +46,19 @@ class TestAnUntranslatableMaskYieldsNoIndex:
         assert _physical_index("CUDA", 1) == 1
 
 
-class TestTheOrdinalMaskIsUndoneToo:
-    """GPU_DEVICE_ORDINAL reindexes exactly as the other two do and was invisible."""
+class TestTheRocmMasksAreUndoneInOrder:
+    """HIP re-indexes within what ROCR leaves; the ordinal does not filter at all."""
 
-    def test_an_ordinal_mask_is_translated(self, monkeypatch) -> None:
+    def test_stats_physical_index_ignores_the_ordinal(self, monkeypatch) -> None:
         monkeypatch.setenv("GPU_DEVICE_ORDINAL", "4,5")
-        assert _physical_index("ROCm", 1) == 5
+        assert _physical_index("ROCm", 1) == 1
 
-    def test_an_ordinal_mask_by_identity_gives_up(self, monkeypatch) -> None:
+    def test_an_ordinal_by_identity_does_not_make_the_index_give_up(self, monkeypatch) -> None:
         monkeypatch.setenv("GPU_DEVICE_ORDINAL", "GPU-abcdef12")
-        assert _physical_index("ROCm", 0) is None
+        assert _physical_index("ROCm", 0) == 0
+
+    def test_hip_then_rocr_are_undone_beside_an_ordinal(self, monkeypatch) -> None:
+        monkeypatch.setenv("GPU_DEVICE_ORDINAL", "9,9")
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1,2")
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "4,5,6")
+        assert _physical_index("ROCm", 0) == 5

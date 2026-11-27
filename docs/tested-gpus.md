@@ -116,8 +116,6 @@ Measured on ROCm 7.2:
 | `ROCR_VISIBLE_DEVICES` | yes, same |
 | `GPU_DEVICE_ORDINAL` | **no effect at all** |
 
-lilbee treats `GPU_DEVICE_ORDINAL` as second of three in precedence, so a host setting only that variable gets a pin the runtime ignores. Tracked as a defect.
-
 ## Reproducing any of these
 
 `tools/wf/capture_engine_log.sh` on the `tools/gpu-verification-harness` branch takes one environment variable:
