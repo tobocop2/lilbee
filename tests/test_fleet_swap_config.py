@@ -304,17 +304,80 @@ class TestHealthCheckTimeoutScaling:
         # The shared per-member helper; the provider's client timeout derives from it.
         from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 
-        assert cold_load_timeout_s(0, WorkerRole.CHAT) == 600
-        assert cold_load_timeout_s(4 * 1024**3, WorkerRole.CHAT) == 600
-        assert cold_load_timeout_s(0, WorkerRole.EMBED) == 120
-        assert cold_load_timeout_s(4 * 1024**3, WorkerRole.EMBED) == 120
+        assert cold_load_timeout_s(0, WorkerRole.CHAT, 0) == 600
+        assert cold_load_timeout_s(4 * 1024**3, WorkerRole.CHAT, 0) == 600
+        assert cold_load_timeout_s(0, WorkerRole.EMBED, 0) == 120
+        assert cold_load_timeout_s(4 * 1024**3, WorkerRole.EMBED, 0) == 120
 
     def test_cold_load_timeout_scales_giant_weights(self) -> None:
         from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 
         weights = 300 * 1024**3
-        assert cold_load_timeout_s(weights, WorkerRole.CHAT) == 2048
-        assert cold_load_timeout_s(weights, WorkerRole.EMBED) == 2048
+        assert cold_load_timeout_s(weights, WorkerRole.CHAT, 0) == 2048
+        assert cold_load_timeout_s(weights, WorkerRole.EMBED, 0) == 2048
+
+    @pytest.mark.parametrize(("weights_gib", "expected"), [(20, 1638), (60, 3600)])
+    def test_a_slow_measured_volume_stretches_the_cold_load(
+        self, weights_gib: int, expected: int
+    ) -> None:
+        # A 25 MiB/s volume, scaled at half its measured rate: a 20 GiB load that
+        # needs about 819 s at that rate is not given up on at the 600 s floor.
+        from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+
+        rate = 25 * 1024**2
+        assert cold_load_timeout_s(weights_gib * 1024**3, WorkerRole.CHAT, rate) == expected
+
+    def test_a_fast_measured_volume_keeps_the_conservative_rate(self) -> None:
+        # A sample that hit the page cache reads far above any disk; it must not
+        # shorten the wait below the conservative rate.
+        from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+
+        weights = 300 * 1024**3
+        assert cold_load_timeout_s(weights, WorkerRole.CHAT, 8 * 1024**3) == 2048
+
+    @pytest.mark.parametrize(
+        ("rate", "expected"),
+        [
+            pytest.param(8738, 2048, id="stalled-sample"),
+            pytest.param(1, 2048, id="rate-of-one"),
+            pytest.param(0, 600, id="unmeasured"),
+        ],
+    )
+    def test_a_slow_reading_is_floored_at_the_slowest_believable_rate(
+        self, rate: int, expected: int
+    ) -> None:
+        # One 1 MiB chunk that stalls 120 s inside the sample reads as 8738 B/s.
+        # The wait uses 10 MiB/s at the slowest: 20 GiB gives 2048 s, not 57 days.
+        from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+
+        assert cold_load_timeout_s(20 * 1024**3, WorkerRole.CHAT, rate) == expected
+
+    @pytest.mark.parametrize("rate", [1, 8738, 25 * 1024**2])
+    def test_a_stretched_wait_stops_at_the_cap(self, rate: int) -> None:
+        from lilbee.providers.fleet.swap_config import _MEASURED_WAIT_CAP_S, cold_load_timeout_s
+
+        assert cold_load_timeout_s(60 * 1024**3, WorkerRole.CHAT, rate) == _MEASURED_WAIT_CAP_S
+        assert cold_load_timeout_s(60 * 1024**3, WorkerRole.EMBED, rate) == _MEASURED_WAIT_CAP_S
+
+    def test_a_model_whose_base_wait_passes_the_cap_keeps_its_base_wait(self) -> None:
+        # The cap bounds what a measurement adds; it never cuts the base wait.
+        from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+
+        weights = 1024 * 1024**3
+        assert cold_load_timeout_s(weights, WorkerRole.CHAT, 0) == 6990
+        assert cold_load_timeout_s(weights, WorkerRole.CHAT, 1) == 6990
+
+    def test_the_slowest_measured_member_sets_the_proxy_global_timeout(self) -> None:
+        member = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
+        member.weights_bytes = 20 * 1024**3
+        member.read_bytes_per_s = 25 * 1024**2
+        assert _config([member])["healthCheckTimeout"] == 1638
+
+    def test_a_stalled_member_sets_the_proxy_global_timeout_at_the_cap(self) -> None:
+        member = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
+        member.weights_bytes = 60 * 1024**3
+        member.read_bytes_per_s = 1
+        assert _config([member])["healthCheckTimeout"] == 3600
 
 
 class TestWarmTtlSeconds:

@@ -2189,6 +2189,46 @@ def test_raise_for_status_out_of_memory_death_says_so_in_one_line(monkeypatch) -
     assert str(excinfo.value) == "The engine ran out of memory while loading the model (HTTP 500)."
 
 
+def test_a_death_from_a_missing_engine_program_says_how_to_install_it(monkeypatch) -> None:
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.engine_install import engine_install_hint
+
+    monkeypatch.setattr(
+        client_mod,
+        "_upstream_failure_tail",
+        lambda resp: "sh: 1: /opt/engine/llama-server: not found",
+    )
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.ENGINE_MISSING
+    assert str(excinfo.value) == (
+        f"The engine program for the model is missing. {engine_install_hint()}"
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "fork/exec /opt/engine/llama-server: no such file or directory",
+        'exec: "llama-server": executable file not found in $PATH',
+    ],
+)
+def test_a_launch_that_finds_no_engine_program_is_a_missing_engine(reason: str) -> None:
+    # llama-swap cannot start the command and returns Go's exec error in its body;
+    # no engine ran, so there is no "exited prematurely" and no log to read.
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.engine_install import engine_install_hint
+
+    body = json.dumps({"error": f"unable to start process: start() failed for command: {reason}"})
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(httpx.Response(502, text=body))
+    assert excinfo.value.kind is ProviderErrorKind.ENGINE_MISSING
+    assert str(excinfo.value) == (
+        f"The engine program for the model is missing. {engine_install_hint()}"
+    )
+
+
 def test_raise_for_status_premature_exit_survives_log_fetch_failure(monkeypatch) -> None:
     # A dead log stream must not mask the original ProviderError.
     import lilbee.providers.fleet.client as client_mod

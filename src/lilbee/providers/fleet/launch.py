@@ -13,6 +13,9 @@ from lilbee.providers.roles import RerankMode, WorkerRole
 _REPLICA_SEP = "-"
 # Stand-in for the binary of a record whose argv arrived empty (a foreign state file).
 _UNKNOWN_BINARY = "an unrecorded binary"
+# State keys that record a measurement, not a plan choice. Two readings of one
+# volume differ, so a reload compares launches without them.
+MEASURED_STATE_KEYS: frozenset[str] = frozenset({"read_bytes_per_s"})
 
 
 def role_model_prefix(role: WorkerRole) -> str:
@@ -97,6 +100,13 @@ class InstanceLaunch:
 
     Adoption reads the engine from here, so it never asks the engine book again.
     """
+    read_bytes_per_s: int = field(default=0, repr=False)
+    """The measured read rate of the volume that holds the weights; 0 when not measured.
+
+    A volume slower than the conservative disk rate stretches the cold-load timeout.
+    The value is a reading of this host's disk, not a plan decision, so the repr
+    that pins a plan leaves it out.
+    """
 
     def to_state(self) -> dict:
         """JSON-safe form written into every engine state file so a guest lilbee
@@ -125,6 +135,7 @@ class InstanceLaunch:
             "server_binary": self.server_binary,
             "swap_class": self.swap_class,
             "engine": self.engine,
+            "read_bytes_per_s": self.read_bytes_per_s,
         }
 
     @classmethod
@@ -158,6 +169,7 @@ class InstanceLaunch:
             server_binary=str(payload.get("server_binary") or ""),
             swap_class=str(payload.get("swap_class") or ""),
             engine=str(payload.get("engine") or ""),
+            read_bytes_per_s=int(payload.get("read_bytes_per_s") or 0),
         )
 
     @property

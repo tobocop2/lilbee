@@ -38,6 +38,16 @@ _COLD_LOAD_FLOOR_S: dict[WorkerRole, int] = {
 }
 # Conservative cold-load disk rate; a slow network volume streams well under this.
 _COLD_LOAD_BYTES_PER_S = 150 * 1024 * 1024
+# The wait scales at this fraction of the measured rate when that fraction is below
+# the conservative rate: the sample is one short sequential read, and the load maps
+# tensors out of order.
+_MEASURED_RATE_DIVISOR = 2
+# The slowest rate a measured wait uses. A sample that stalls reads as a few KiB/s,
+# and the wait it set would never call a hung load failed.
+_MIN_MEASURED_BYTES_PER_S = 10 * 1024 * 1024
+# The longest wait a measured rate can set. The base wait at the conservative rate
+# stays the floor, so a very large model keeps its own longer wait.
+_MEASURED_WAIT_CAP_S = 3600
 _LOG_LEVEL = "info"
 # The streams llama-swap copies to its stdout, which lilbee writes to the group
 # log. The upstream stream is the engines' own output, and it is one setting for
@@ -193,21 +203,36 @@ def _evicting_groups(launches: list[InstanceLaunch]) -> dict[str, object]:
     }
 
 
-def cold_load_timeout_s(weights_bytes: int, role: WorkerRole) -> int:
-    """Cold-load ceiling for one member's weights at a conservative disk rate, floored per role.
+def cold_load_timeout_s(weights_bytes: int, role: WorkerRole, read_bytes_per_s: int) -> int:
+    """Cold-load ceiling for one member's weights at its volume's read rate, floored per role.
 
-    The single source of the scaling formula: llama-swap's health-check timeout
-    and the provider's per-client request timeout both derive from it, so a model
-    whose load llama-swap would wait out can never time out the client first.
+    *read_bytes_per_s* is the measured read rate of the volume that holds the
+    weights, or 0 when it was not measured. The base wait uses the conservative
+    disk rate. When half the measured rate is slower (a sample under 300 MiB/s),
+    the wait uses that half instead, floored at 10 MiB/s, and stops at one hour.
+    The base wait stays the floor, so a measurement never shortens the wait.
+
+    The single source of the scaling formula: llama-swap's health-check timeout,
+    the provider's per-client request timeout, the bind deadline and the
+    launcher's warm wait all derive from it, so a model whose load llama-swap
+    would wait out can never time out the client first.
     """
-    return max(_COLD_LOAD_FLOOR_S[role], weights_bytes // _COLD_LOAD_BYTES_PER_S)
+    base = max(_COLD_LOAD_FLOOR_S[role], weights_bytes // _COLD_LOAD_BYTES_PER_S)
+    if read_bytes_per_s <= 0:
+        return base
+    rate = max(_MIN_MEASURED_BYTES_PER_S, read_bytes_per_s // _MEASURED_RATE_DIVISOR)
+    stretched = min(_MEASURED_WAIT_CAP_S, weights_bytes // rate)
+    return max(base, stretched)
 
 
 def health_check_timeout_s(launches: list[InstanceLaunch]) -> int:
     """Slowest member's cold-load ceiling; the timeout is proxy-global in
     llama-swap, so the slowest possible load sets it."""
     return max(
-        (cold_load_timeout_s(launch.weights_bytes, launch.role) for launch in launches),
+        (
+            cold_load_timeout_s(launch.weights_bytes, launch.role, launch.read_bytes_per_s)
+            for launch in launches
+        ),
         default=max(_COLD_LOAD_FLOOR_S.values()),
     )
 

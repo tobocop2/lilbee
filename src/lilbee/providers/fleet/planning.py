@@ -88,6 +88,7 @@ from lilbee.providers.fleet.placement_spec import (
     PlacementSpec,
     TargetRefusedError,
 )
+from lilbee.providers.fleet.read_rate import measured_read_rate
 from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.rerank_pair import RerankPair, rerank_pair_from_meta
 from lilbee.providers.fleet.vram import usable_vram_fraction
@@ -2595,6 +2596,7 @@ def _draft_launch(
         settings=launch_settings(plan.role, rerank_mode, meta, model_path, engine=engine),
         server_binary=str(binary),
         engine=str(engine.name),
+        read_bytes_per_s=measured_read_rate(model_path),
     )
     launch = replace(launch, swap_extras=engine.swap_extras(launch))
     one_pool = unified_budget is not None or plan.target is RoleTarget.CPU
