@@ -140,7 +140,7 @@ async def models_installed_route(task: FromQuery[str | None] = None) -> ModelsIn
     return await handlers.models_installed(task=parsed_task)
 
 
-@post("/api/models/pull", media_type=SSE_MEDIA_TYPE)
+@post("/api/models/pull", status_code=200, media_type=SSE_MEDIA_TYPE)
 async def models_pull_route(data: PullRequest) -> Stream:
     """Pull a model with streaming SSE progress events."""
     # Validate before opening the stream so an unsupported arch is a real 409, not
@@ -160,7 +160,7 @@ async def models_pull_route(data: PullRequest) -> Stream:
     )
 
 
-@post("/api/models/show")
+@post("/api/models/show", status_code=200)
 async def models_show_route(data: SetModelRequest) -> ModelsShowResponse:
     """Get model metadata and parameter defaults."""
     return await handlers.models_show(model=data.model)

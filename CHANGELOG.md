@@ -22,6 +22,8 @@ On a computer with an AMD or Intel GPU, lilbee installs the CPU pack and logs a 
 
 When every file fails to ingest because the model engine failed, `lilbee ask` now says that nothing is indexed and names the engine error, not "Your library is empty". The library records each such file with a new held state, `retry`, and the next sync tries the file again. An older lilbee cannot read a library that holds a `retry` record. To go back to an older lilbee, run `lilbee sync` with a working engine first, or run `lilbee reset`.
 
+A POST route now answers 201 only when it adds one item and returns its id. The routes that add a memory, a session, a forked session or a preset keep 201. Twenty other POST routes answered 201 by default and now answer 200: the streams (`/api/add`, `/api/add/upload`, `/api/ask/stream`, `/api/chat/stream`, `/api/crawl`, `/api/import`, `/api/models/pull`, `/api/sync`, `/setup/crawler`, `/api/wiki/generate/{slug}` and `/api/wiki/synthesize`), the queries and actions (`/api/ask`, `/api/chat`, `/api/models/show`, `/api/documents/remove`, `/api/sessions/{id}/claim`), and the wiki routes `accept`, `index`, `lint` and `prune`. A client that tests for success with `res.ok` needs no change. The response bodies are the same.
+
 ## 0.6.66b481
 
 You can now keep the HTTP server running in the background under your OS launcher: `brew services start lilbee` on macOS, `systemctl --user enable --now lilbee` on Arch, or import `nixosModules.lilbee` on NixOS. All three pin the server to `127.0.0.1:42697`. The daemon helps clients that hit the HTTP REST API (the Obsidian plugin, custom GUIs, scripts). The TUI, `lilbee chat`, the MCP server, and the rest of the CLI cold-start by design and are unaffected.

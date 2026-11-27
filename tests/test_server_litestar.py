@@ -241,7 +241,7 @@ class TestAskRoute:
     )
     def test_returns_answer(self, mock_ask, client):
         resp = client.post("/api/ask", json={"question": "meaning?"})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert resp.json()["answer"] == "42"
         mock_ask.assert_awaited_once_with(
             question="meaning?", top_k=0, options=None, chunk_type=None
@@ -254,7 +254,7 @@ class TestAskRoute:
     )
     def test_forwards_top_k(self, mock_ask, client):
         resp = client.post("/api/ask", json={"question": "q", "top_k": 10})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         mock_ask.assert_awaited_once_with(question="q", top_k=10, options=None, chunk_type=None)
 
     @mock.patch(
@@ -279,7 +279,7 @@ class TestAskRoute:
     )
     def test_returns_sources_as_typed_models(self, mock_patched, client):
         resp = client.post("/api/ask", json={"question": "q"})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         sources = resp.json()["sources"]
         assert len(sources) == 1
         assert sources[0]["source"] == "doc.pdf"
@@ -292,7 +292,7 @@ class TestAskRoute:
     )
     def test_forwards_chunk_type_raw(self, mock_ask, client):
         resp = client.post("/api/ask", json={"question": "q", "chunk_type": "raw"})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert mock_ask.call_args.kwargs.get("chunk_type") == "raw"
 
     @mock.patch(
@@ -302,7 +302,7 @@ class TestAskRoute:
     )
     def test_chunk_type_both_normalizes_to_none(self, mock_ask, client):
         resp = client.post("/api/ask", json={"question": "q", "chunk_type": "both"})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert mock_ask.call_args.kwargs.get("chunk_type") is None
 
     def test_invalid_chunk_type_rejected_with_400(self, client):
@@ -358,7 +358,7 @@ class TestAskStreamRoute:
     def test_returns_sse(self, mock_stream, client):
         mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
         resp = client.post("/api/ask/stream", json={"question": "hi"})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert "text/event-stream" in resp.headers["content-type"]
         assert b"event: token" in resp.content
 
@@ -366,7 +366,7 @@ class TestAskStreamRoute:
     def test_forwards_chunk_type(self, mock_stream, client):
         mock_stream.return_value = mock_async_gen("")
         resp = client.post("/api/ask/stream", json={"question": "hi", "chunk_type": "wiki"})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert mock_stream.call_args.kwargs.get("chunk_type") == "wiki"
 
 
@@ -379,7 +379,7 @@ class TestChatRoute:
     def test_forwards_history(self, mock_chat, client):
         history = [{"role": "user", "content": "hi"}]
         resp = client.post("/api/chat", json={"question": "q", "history": history})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         mock_chat.assert_awaited_once_with(
             question="q",
             history=history,
@@ -508,7 +508,7 @@ class TestChatStreamRoute:
             "/api/chat/stream",
             json={"question": "hi", "history": []},
         )
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert b"event: done" in resp.content
 
     @mock.patch("lilbee.server.handlers.chat_stream")
@@ -518,7 +518,7 @@ class TestChatStreamRoute:
             "/api/chat/stream",
             json={"question": "hi", "history": [], "chunk_type": "raw"},
         )
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert mock_stream.call_args.kwargs.get("chunk_type") == "raw"
 
 
@@ -531,7 +531,7 @@ class TestStreamErrorEvents:
             exc=ValueError("Embedding dimension mismatch: expected 768, got 384")
         )
         resp = client.post("/api/chat/stream", json={"question": "hi", "history": []})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert b"event: error" in resp.content
         assert b"Embedding dimension mismatch" in resp.content
 
@@ -549,7 +549,7 @@ class TestStreamErrorEvents:
     def test_ask_stream_failure_yields_sse_error(self, mock_stream, client):
         mock_stream.return_value = mock_failing_gen(exc=RuntimeError("boom"))
         resp = client.post("/api/ask/stream", json={"question": "hi"})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert b"event: error" in resp.content
         assert b"boom" in resp.content
 
@@ -559,7 +559,7 @@ class TestStreamErrorEvents:
         client.post("/api/chat/stream", json={"question": "hi", "history": []})
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
         resp = client.post("/api/chat/stream", json={"question": "hi", "history": []})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert b"event: done" in resp.content
 
 
@@ -655,13 +655,13 @@ class TestStreamSingleFlightGate:
 
         mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
         resp1 = client.post("/api/ask/stream", json={"question": "first"})
-        assert resp1.status_code == 201
+        assert resp1.status_code == 200
         assert b"event: token" in resp1.content
         # The slot must have been released by the gated_stream's finally.
         assert chat_gate().in_flight == 0
         mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
         resp2 = client.post("/api/ask/stream", json={"question": "second"})
-        assert resp2.status_code == 201
+        assert resp2.status_code == 200
 
     @mock.patch("lilbee.server.handlers.ask_stream")
     def test_slot_released_on_provider_error(self, mock_stream, client):
@@ -899,7 +899,7 @@ class TestSyncRoute:
     def test_returns_sse(self, mock_stream, client):
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
         resp = client.post("/api/sync")
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert b"event: done" in resp.content
         mock_stream.assert_called_once_with(
             ocr=None,
@@ -926,7 +926,7 @@ class TestSyncRoute:
         """REST callers can override the per-page OCR timeout via {"ocr_timeout": ...}."""
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
         resp = client.post("/api/sync", json={"ocr_timeout": 45})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         mock_stream.assert_called_once_with(
             ocr=None,
             ocr_timeout=45,
@@ -947,7 +947,7 @@ class TestSyncRoute:
         """REST callers can request a full rebuild via {"force_rebuild": true}."""
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
         resp = client.post("/api/sync", json={"force_rebuild": True})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         mock_stream.assert_called_once_with(
             ocr=None,
             ocr_timeout=None,
@@ -961,7 +961,7 @@ class TestSyncRoute:
         """REST callers can retry previously-skipped files via {"retry_skipped": true}."""
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
         resp = client.post("/api/sync", json={"retry_skipped": True})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         mock_stream.assert_called_once_with(
             ocr=None,
             ocr_timeout=None,
@@ -975,7 +975,7 @@ class TestSyncRoute:
         """REST callers can drop newly-excluded sources via {"prune_ignored": true}."""
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
         resp = client.post("/api/sync", json={"prune_ignored": True})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         mock_stream.assert_called_once_with(
             ocr=None,
             ocr_timeout=None,
@@ -1257,7 +1257,7 @@ class TestModelsPullRoute:
     def test_returns_sse(self, mock_pull, client):
         mock_pull.return_value = mock_async_gen("event: progress\ndata: {}\n\n")
         resp = client.post("/api/models/pull", json={"model": "test", "source": "native"})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
 
 
 class TestModelsPullByFormat:
@@ -1295,7 +1295,7 @@ class TestModelsPullByFormat:
                 "/api/models/pull", json={"model": "acme/two#mlx", "source": "native"}
             )
         events = parse_sse_events(resp.content)
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert [e for e in events if e[0] == "error"] == []
         assert fetched == [("acme/two", ModelFormat.MLX)]
 
@@ -1308,7 +1308,7 @@ class TestModelsShowRoute:
     )
     def test_returns_json(self, mock_show, client):
         resp = client.post("/api/models/show", json={"model": "test"})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert resp.json()["parameters"] == "temp 0.7"
 
 
@@ -1898,7 +1898,7 @@ class TestDocumentsRemoveRoute:
     )
     def test_returns_json(self, mock_remove, client):
         resp = client.post("/api/documents/remove", json={"names": ["a.md"]})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert resp.json()["removed"] == ["a.md"]
 
     def test_a_library_that_cannot_lock_files_is_a_conflict(self, client):
@@ -2263,7 +2263,7 @@ class TestRequestBodyLimit:
         body = self._ask_body(self._LIMIT)
         assert len(body) == self._LIMIT
         resp = client.post("/api/ask", content=body, headers={"Content-Type": "application/json"})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         mock_ask.assert_awaited_once()
 
     @mock.patch(
@@ -2382,7 +2382,7 @@ class TestCrawlRoute:
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
         login = {"username": "alice", "password": "pw-4Rv", "cookie": "sid=3"}
         resp = client.post("/api/crawl", json={"url": "https://example.com", "login": login})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert mock_stream.call_args.kwargs["login"] == CrawlLogin(**login)
         assert b"pw-4Rv" not in resp.content
 
@@ -2420,7 +2420,7 @@ class TestCrawlRoute:
             "event: done\ndata: {}\n\n",
         )
         resp = client.post("/api/crawl", json={"url": "https://example.com", "depth": 1})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert "text/event-stream" in resp.headers["content-type"]
         assert b"crawl_start" in resp.content
 
@@ -2451,7 +2451,7 @@ class TestCrawlRoute:
             "/api/crawl",
             json={"url": "https://example.com", "depth": None, "max_pages": None},
         )
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         kwargs = mock_stream.call_args.kwargs
         assert kwargs["depth"] is None
         assert kwargs["max_pages"] is None
@@ -2461,7 +2461,7 @@ class TestCrawlRoute:
         """When depth/max_pages are omitted, the handler receives None (unbounded)."""
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
         resp = client.post("/api/crawl", json={"url": "https://example.com"})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         kwargs = mock_stream.call_args.kwargs
         assert kwargs["depth"] is None
         assert kwargs["max_pages"] is None
@@ -2477,7 +2477,7 @@ class TestCrawlRoute:
         resp = client.post(
             "/api/crawl", json={"url": "https://example.com", "render_mode": "browser"}
         )
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert mock_stream.call_args.kwargs["render_mode"] is CrawlRenderMode.BROWSER
 
     @mock.patch("lilbee.server.handlers.crawl_stream")
@@ -2487,7 +2487,7 @@ class TestCrawlRoute:
         resp = client.post(
             "/api/crawl", json={"url": "https://example.com", "include_subdomains": True}
         )
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert mock_stream.call_args.kwargs["include_subdomains"] is True
 
     @mock.patch("lilbee.server.handlers.crawl_stream")
@@ -2495,7 +2495,7 @@ class TestCrawlRoute:
         """Omitted include_subdomains defaults to False (host-only scope)."""
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
         resp = client.post("/api/crawl", json={"url": "https://example.com"})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert mock_stream.call_args.kwargs["include_subdomains"] is False
 
     @mock.patch("lilbee.server.handlers.crawl_stream")
@@ -2503,7 +2503,7 @@ class TestCrawlRoute:
         """max_pages=0 is the explicit unlimited sentinel honored by TUI/crawler."""
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
         resp = client.post("/api/crawl", json={"url": "https://example.com", "max_pages": 0})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert mock_stream.call_args.kwargs["max_pages"] == 0
 
     def test_post_crawl_rejects_negative_max_pages(self, client):
@@ -2521,7 +2521,7 @@ class TestCrawlRoute:
     def test_post_crawl_accepts_zero_depth(self, mock_stream, client):
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
         body = {"url": "https://example.com", "depth": 0, "max_pages": 0}
-        assert client.post("/api/crawl", json=body).status_code == 201
+        assert client.post("/api/crawl", json=body).status_code == 200
 
     @pytest.mark.parametrize(
         "body",
@@ -2536,7 +2536,7 @@ class TestCrawlRoute:
     def test_post_crawl_accepts_the_largest_depth_and_page_count(self, mock_stream, client):
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
         body = {"url": "https://example.com", "depth": 100, "max_pages": 10_000_000}
-        assert client.post("/api/crawl", json=body).status_code == 201
+        assert client.post("/api/crawl", json=body).status_code == 200
 
 
 class TestSetupCrawlerRoutes:
@@ -2587,7 +2587,7 @@ class TestSetupCrawlerRoutes:
 
         with mock.patch("lilbee.server.routes.setup.bootstrap_chromium", new=_fake_bootstrap):
             resp = client.post("/setup/crawler")
-            assert resp.status_code == 201
+            assert resp.status_code == 200
             assert "text/event-stream" in resp.headers["content-type"]
             assert b"event: setup_start" in resp.content
             assert b"event: setup_done" in resp.content
@@ -2601,7 +2601,7 @@ class TestSetupCrawlerRoutes:
 
         with mock.patch("lilbee.server.routes.setup.bootstrap_chromium", new=_fake_bootstrap):
             resp = client.post("/setup/crawler")
-            assert resp.status_code == 201
+            assert resp.status_code == 200
             assert b"event: error" in resp.content
             assert b"network unreachable" in resp.content
 
@@ -3383,7 +3383,7 @@ class TestImportRoute:
         dataset_store.delete_by_source("doc.pdf", SourceType.DOCUMENT)
 
         resp = client.post("/api/import", params={"format": "jsonl"}, content=data)
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert "text/event-stream" in resp.headers["content-type"]
         events = parse_sse_events(resp.content)
         assert any(name == "embed" for name, _ in events), events
@@ -3404,7 +3404,7 @@ class TestImportRoute:
 
     def test_empty_body_streams_error(self, dataset_store, client):
         resp = client.post("/api/import", params={"format": "jsonl"}, content=b"")
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         error = next(p for name, p in parse_sse_events(resp.content) if name == "error")
         assert "no pages" in error["message"]
 
@@ -3512,7 +3512,7 @@ class TestPaginationAndTopKLowerBounds:
             return_value={"answer": "a", "sources": []},
         ):
             resp = client.post("/api/ask", json={"question": "q", "top_k": 0})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
 
     def test_chat_rejects_negative_top_k(self, client):
         resp = client.post("/api/chat", json={"question": "q", "history": [], "top_k": -1})

@@ -1807,7 +1807,7 @@ class TestSeedPasswordInTheServerLog:
             )
         finally:
             auth_mod.session_manager.cleanup()
-        assert response.status_code == HTTPStatus.CREATED
+        assert response.status_code == HTTPStatus.OK
         assert b"files_written" in response.content
         self._assert_sitemap_logged_without_password(site, server_log)
 
