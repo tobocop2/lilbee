@@ -2313,7 +2313,7 @@ async def test_prompt_overwrite_declined_notifies_a_bracketed_name_literally(tmp
             patch.object(app.screen, "notify") as mock_notify,
             patch.object(app.screen.app, "push_screen") as mock_push,
         ):
-            app.screen._prompt_overwrite([dup], [dup])
+            app.screen._prompt_overwrite([dup], [dup], None, None)
             await pilot.pause()
             on_confirm = mock_push.call_args[0][1]
             on_confirm(False)
@@ -3836,6 +3836,22 @@ async def test_command_provider_slash_command_navigates_to_catalog():
         provider._run_slash_command(get_command("/models"))
         await pilot.pause()
         assert app.active_view == "Catalog"
+
+
+async def test_command_provider_add_prefills_the_prompt_for_a_path():
+    """A palette /add needs a path, so it fills the prompt, though its hint starts with options."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.command_registry import get_command
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        provider = LilbeeCommandProvider(app.screen, match_style=None)
+        provider._run_slash_command(get_command("/add"))
+        await pilot.pause()
+        assert chat._chat_input.text == "/add "
 
 
 async def test_command_provider_delete_document_no_chat_screen():
@@ -8103,15 +8119,15 @@ async def test_a_tab_listing_that_ends_after_the_input_changed_is_dropped():
 
 
 async def test_an_unknown_command_keeps_the_draft_and_says_so():
-    """``/sync`` is not a chat command: Enter keeps the draft and names the typo."""
+    """``/syncc`` is not a chat command: Enter keeps the draft and names the typo."""
     from lilbee.cli.tui import messages as msg
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.press(*"/sync", "enter")
-        unknown = msg.CMD_UNKNOWN.format(cmd="/sync")
+        await pilot.press(*"/syncc", "enter")
+        unknown = msg.CMD_UNKNOWN.format(cmd="/syncc")
         assert await wait_until(pilot, lambda: any(n.message == unknown for n in posted_toasts()))
-        assert app.screen._chat_input.value == "/sync"
+        assert app.screen._chat_input.value == "/syncc"
 
 
 async def test_do_add_raises_on_sync_failed(tmp_path):
@@ -8673,7 +8689,7 @@ async def test_chat_sync_gating_rejects_add(tmp_path):
 
 
 async def test_chat_sync_gating_rejects_sync():
-    """B3: /sync (/add synonym via run_sync) is rejected while a sync is queued."""
+    """B3: a sync from the palette or key is rejected while a sync is queued."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.task_bar.add_task("Sync", TaskType.SYNC)

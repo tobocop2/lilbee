@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
+from lilbee.core.config.enums import OcrMode
 from lilbee.core.config.model import ConfigPin, active_pin, cfg, published_config
 
 if TYPE_CHECKING:
@@ -50,6 +51,15 @@ def validate_ocr_timeout(ocr_timeout: float | None) -> None:
         scratch.ocr_timeout = ocr_timeout
     except ValidationError as exc:
         raise ValueError(f"ocr_timeout: {exc.errors()[0]['msg']}") from exc
+
+
+def validate_ocr_options(ocr: OcrMode | str | None, ocr_timeout: float | None) -> OcrMode | None:
+    """Return *ocr* as an ``OcrMode`` after checking both per-call OCR options.
+
+    Raises ``ValueError`` that names the bad value. ``None`` means "keep the setting".
+    """
+    validate_ocr_timeout(ocr_timeout)
+    return None if ocr is None else OcrMode(ocr)
 
 
 @contextmanager
