@@ -1,0 +1,12 @@
+# The Python build tools that only the mlx pack needs: uv, delocate and what delocate needs. pack_mlx.sh installs them
+# with build-tools.constraints. uv and delocate are at MLX_UV_VERSION and MLX_DELOCATE_VERSION of engines/mlx.env.
+altgraph==0.17.5 \
+    --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+delocate==0.13.0 \
+    --hash=sha256:11f7596f88984c33f76b27fe2eea7637d1ce369a9e0b6737bbc706b6426e862c
+macholib==1.16.4 \
+    --hash=sha256:da1a3fa8266e30f0ce7e97c6a54eefaae8edd1e5f86f3eb8b95457cae90265ea
+typing_extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+uv==0.13.7 \
+    --hash=sha256:f91a229093163eefca89ea1b220a221d64c3beade05d03519a6584d1797a5a5f
