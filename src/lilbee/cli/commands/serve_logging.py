@@ -88,12 +88,16 @@ class _FaultLog:
         return fault_path
 
     def dump_on_alarm(self) -> None:
-        """Dump every thread to the fault log on SIGALRM; the process then dies of it."""
+        """Dump every thread to the fault log on SIGALRM; the process then dies of it.
+
+        The first call opens the alarm handle and registers the signal; a later call finds both.
+        """
+        if self._alarm_handle is not None and not self._alarm_handle.closed:
+            return
         with contextlib.suppress(OSError):  # pragma: no cover - POSIX only, no SIGALRM on Windows
-            self._alarm_handle = _fault_log_path().open("a", encoding="utf-8")
-            faulthandler.register(
-                signal.SIGALRM, file=self._alarm_handle, all_threads=True, chain=True
-            )
+            handle = _fault_log_path().open("a", encoding="utf-8")
+            faulthandler.register(signal.SIGALRM, file=handle, all_threads=True, chain=True)
+            self._alarm_handle = handle
 
 
 _fault_log = _FaultLog()
