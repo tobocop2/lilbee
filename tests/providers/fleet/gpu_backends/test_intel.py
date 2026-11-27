@@ -430,6 +430,52 @@ def test_sample_fallback_asks_only_for_devices_missing_util(
     assert len(fdinfo_calls) == 1
 
 
+def _count_calls(monkeypatch: pytest.MonkeyPatch, *, fdinfo: int | None, igt: str) -> list[str]:
+    """Stand in for both fallback tools and record which of them ran."""
+    ran: list[str] = []
+
+    def _read(*_a: object, **_k: object) -> int | None:
+        ran.append("fdinfo")
+        return fdinfo
+
+    def _capture() -> str:
+        ran.append("intel_gpu_top")
+        return igt
+
+    monkeypatch.setattr(intel_mod.fdinfo, "read_drm_util", _read)
+    monkeypatch.setattr(intel_mod, "_intel_gpu_top_output", _capture)
+    return ran
+
+
+def test_sample_one_fallback_reading_fills_one_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    """fdinfo and intel_gpu_top read the same GPU, so one reading never lands on two devices."""
+    monkeypatch.setattr(intel_mod, "run_smi", lambda *_a, **_k: "")
+    ran = _count_calls(monkeypatch, fdinfo=42, igt=_IGT_STREAM)
+    result = IntelBackend().sample(frozenset({0, 1}))
+    assert {i: s.utilization_pct for i, s in result.items()} == {0: 42}
+    assert ran == ["fdinfo"]
+
+
+def test_sample_fallback_reading_goes_to_the_lowest_util_less_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(intel_mod, "run_smi", lambda *_a, **_k: _XPU_NO_UTIL)
+    ran = _count_calls(monkeypatch, fdinfo=None, igt=_IGT_STREAM)
+    result = IntelBackend().sample(frozenset({0, 1}))
+    assert {i: s.utilization_pct for i, s in result.items()} == {0: 85, 1: None}
+    assert ran == ["fdinfo", "intel_gpu_top"]
+
+
+def test_sample_fallback_does_not_add_a_device_xpu_smi_never_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(intel_mod, "run_smi", _xpu_by_device({"0": _XPU_JSON}))
+    ran = _count_calls(monkeypatch, fdinfo=42, igt=_IGT_STREAM)
+    result = IntelBackend().sample(frozenset({0, 1}))
+    assert {i: s.utilization_pct for i, s in result.items()} == {0: 88}
+    assert ran == []
+
+
 # ---------------------------------------------------------------------------
 # intel_gpu_top stream cut at any byte
 # ---------------------------------------------------------------------------
@@ -506,3 +552,21 @@ def test_util_hint_grant_when_tool_localizes_the_denial(
         intel_mod.intel_util_hint.cache_clear()
     assert hint is not None
     assert hint.kind is IntelHintKind.GRANT
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fake tool is a POSIX shell script")
+def test_util_hint_leaves_the_parent_locale_alone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The C locale applies to the tool call only, never to this process."""
+    tool = tmp_path / "intel_gpu_top"
+    tool.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    tool.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+    intel_mod.intel_util_hint.cache_clear()
+    try:
+        intel_mod.intel_util_hint()
+    finally:
+        intel_mod.intel_util_hint.cache_clear()
+    assert os.environ["LC_ALL"] == "de_DE.UTF-8"

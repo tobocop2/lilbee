@@ -78,20 +78,29 @@ class IntelBackend:
 
     def sample(self, indices: frozenset[int]) -> dict[int, UtilSample]:
         samples = _xpu_smi_samples(indices)
+        target = _fallback_target(indices, samples)
+        if target is None:
+            return samples
+        # fdinfo and intel_gpu_top read the whole GPU, so one reading fills one device.
         for source in (_fdinfo_samples, _intel_gpu_top_samples):
-            missing = frozenset(
-                i for i in indices if i not in samples or samples[i].utilization_pct is None
-            )
-            if not missing:
-                break
-            for index, reading in source(missing).items():
-                known = samples.get(index)
-                samples[index] = (
+            readings = source(frozenset({target}))
+            if readings:
+                known = samples.get(target)
+                reading = readings[target]
+                samples[target] = (
                     reading
                     if known is None
                     else dataclasses.replace(known, utilization_pct=reading.utilization_pct)
                 )
+                break
         return samples
+
+
+def _fallback_target(indices: frozenset[int], samples: dict[int, UtilSample]) -> int | None:
+    """The one device a device-level reading fills: the lowest without util, or None."""
+    if not samples:
+        return min(indices, default=None)
+    return min((i for i, s in samples.items() if s.utilization_pct is None), default=None)
 
 
 def _xpu_smi_output(index: int) -> str:

@@ -2190,6 +2190,10 @@ class TestXdgDirs:
         out = list(vulkan_icd_discovery._xdg_dirs("X_ALL_REL_TEST", "/d1:/d2", "sub"))
         assert out == [Path("/d1") / "sub", Path("/d2") / "sub"]
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="the XDG list grammar is POSIX: a drive colon in a Windows path splits the value",
+    )
     def test_relative_xdg_dir_is_not_scanned_by_discovery(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -2269,7 +2273,7 @@ class TestKhronosDriverKeyHive:
     """The loader reads the Khronos driver keys from HKLM only."""
 
     def test_hkcu_khronos_driver_key_is_not_read(self) -> None:
-        """The loader skips the HKCU hive for driver manifests (loader_windows.c, line 767)."""
+        """The loader skips the HKCU hive for driver manifests (loader_windows.c)."""
         from lilbee.providers.fleet import vulkan_icd_discovery
 
         winreg = mock.MagicMock(name="winreg")
