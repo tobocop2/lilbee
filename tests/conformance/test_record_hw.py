@@ -7,7 +7,9 @@ device check reads the reply and the log.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import socket
 import stat
 import sys
@@ -25,7 +27,7 @@ from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS
 from lilbee.providers.fleet.engines.llama import pack_backend
 from lilbee.providers.roles import WorkerRole
-from tests.conformance import record_hw
+from tests.conformance import record_cpu_compare, record_hw
 from tests.conformance.record_cpu_compare import Model
 
 _ENGINE = """#!{python}
@@ -41,10 +43,13 @@ if "--help" in argv:
     for flag in flags:
         print(f"  {{flag}} VALUE  an option line")
     sys.exit(0)
+if "--version" in argv:
+    print(os.environ.get("FAKE_HW_VERSION", "OpenVINO Model Server 2026.4.1.abc"))
+    sys.exit(0)
 mode = os.environ["FAKE_HW_DEVICE"]
 if mode == "die":
     sys.exit(3)
-port = int(argv[argv.index("--port") + 1])
+port = int(argv[argv.index("--rest_port" if "--rest_port" in argv else "--port") + 1])
 if mode in ("cuda", "log-only"):
     print("Starting FlashBert model on Cuda(CudaDevice(DeviceId(0)))", flush=True)
 print("env", os.environ.get("HW_RUNTIME"), os.environ.get("HW_TARGET"), flush=True)
@@ -56,7 +61,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         rows = {{"cuda": "CUDA0", "cpu": "CPU", "vulkan": "Vulkan0"}}
-        if self.path == "/health":
+        ready = "/v2/health/ready" if "--rest_port" in argv else "/health"
+        if self.path == ready:
             body = b"ok"
         elif self.path == "/memory" and mode in rows:
             body = json.dumps({{"data": [{{"name": rows[mode], "model": 1}}]}}).encode()
@@ -142,6 +148,7 @@ class _Run:
         monkeypatch.setattr(engine_service, "install", self._install)
         for adapter in ADAPTERS.values():
             monkeypatch.setattr(adapter, "binary", lambda: binary, raising=False)
+        monkeypatch.setattr(ADAPTERS[EngineName.OVMS], "user_binary", lambda: binary)
         monkeypatch.setattr(record_hw, "fetch_model", self._fetch)
         monkeypatch.setattr(record_hw.subprocess, "call", self._record)
 
@@ -470,6 +477,177 @@ class TestResultsRow:
             run.main("tei", "--results-doc", str(run.tmp / "none.md"))
         assert not (run.tmp / "logs").exists()
         assert run.commands == []
+
+
+_OVMS_CELL = "linux-x86_64-openvino"
+_XEON = "Intel(R) Xeon(R) CPU @ 2.80GHz"
+
+
+class TestOvmsOnTheCpu:
+    """OVMS has no pack: the run uses the ovms on PATH and starts it on the CPU."""
+
+    @pytest.fixture(autouse=True)
+    def _no_device(self, run: _Run, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("FAKE_HW_DEVICE", "none")
+        cpuinfo = tmp_path / "cpuinfo"
+        cpuinfo.write_text(f"processor\t: 0\nmodel name\t: {_XEON}\n", encoding="utf-8")
+        monkeypatch.setattr(record_hw, "_CPUINFO", cpuinfo)
+
+    def _main(self, run: _Run) -> int:
+        return run.main("ovms", "--cell", _OVMS_CELL, "--name", "ovms-cpu", backend="cpu")
+
+    def test_ovms_runs_on_the_cpu_with_the_adapter_command(self, run: _Run) -> None:
+        assert self._main(run) == 0
+        (command,) = run.commands
+        by_role = dict(part.split(": ", 1) for part in _flag(command, "--server-flags").split("; "))
+        assert list(by_role) == ["chat", "embed", "rerank", "vision"]
+        tasks = {"chat": "text_generation", "embed": "embeddings", "rerank": "rerank"}
+        tasks["vision"] = "text_generation"
+        for role, line in by_role.items():
+            argv = line.split()
+            assert argv[0] == str(run.binary)
+            assert _flag(argv, "--target_device") == "CPU"
+            assert _flag(argv, "--task") == tasks[role]
+            assert _flag(argv, "--model_name") == "default_model"
+            assert _flag(argv, "--model_path").endswith(f"/models/ovms-{role}")
+        ports = [_flag(line.split(), "--rest_port") for line in by_role.values()]
+        assert len(set(ports)) == 4
+        assert _flag(command, "--url") == f"http://127.0.0.1:{ports[0]}/v3"
+        assert _flag(command, "--backend") == "cpu"
+        assert _flag(command, "--engine") == "ovms"
+
+    def test_the_servers_of_a_cpu_run_get_the_cpu_target_in_their_environment(
+        self, run: _Run, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tei = ADAPTERS[EngineName.TEI]
+        monkeypatch.setattr(tei, "runtime_env", lambda: {"HW_RUNTIME": "libs"})
+        monkeypatch.setattr(tei, "target_env", lambda target, cards: {"HW_TARGET": target.value})
+        monkeypatch.setenv("FAKE_HW_DEVICE", "cpu")
+        assert run.main("tei", backend="cpu") == 0
+        (log,) = (run.tmp / "logs").glob("tei-embed-*.log")
+        assert "env libs cpu" in log.read_text(encoding="utf-8")
+
+    def test_an_engine_with_no_pack_uses_the_binary_on_path_and_skips_the_install(
+        self, run: _Run, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def refuse(name: str) -> engine_service.InstalledBuild:
+            raise AssertionError(f"installed {name}")
+
+        monkeypatch.setattr(engine_service, "install", refuse)
+        assert self._main(run) == 0
+        assert _flag(run.commands[0], "--version") == f"ovms 2026.4.1 {_OVMS_CELL}"
+
+    def test_an_engine_with_no_pack_and_no_binary_stops_with_the_install_hint(
+        self, run: _Run, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ADAPTERS[EngineName.OVMS], "user_binary", lambda: None)
+        with pytest.raises(SystemExit) as refused:
+            self._main(run)
+        assert str(refused.value) == ADAPTERS[EngineName.OVMS].install_hint
+        assert run.commands == []
+        assert list((run.tmp / "logs").glob("*.log")) == []
+
+    def test_a_user_binary_of_another_version_stops_the_run(
+        self, run: _Run, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_HW_VERSION", "OpenVINO Model Server 2025.4.0")
+        with pytest.raises(SystemExit, match=re.escape("does not report version 2026.4.1")):
+            self._main(run)
+        assert run.commands == []
+        assert list((run.tmp / "logs").glob("*.log")) == []
+
+    def test_the_cell_of_an_engine_with_no_pack_must_still_match(self, run: _Run) -> None:
+        with pytest.raises(SystemExit, match=f"linux-x86_64-openvino, not {_CELL}"):
+            run.main("ovms", backend="cpu")
+        assert run.commands == []
+
+    def test_ovms_urls_carry_the_v3_prefix_and_the_served_name(self, run: _Run) -> None:
+        assert self._main(run) == 0
+        (command,) = run.commands
+        for flag in ("--url", "--embed-url", "--rerank-url", "--vision-url"):
+            assert re.fullmatch(r"http://127\.0\.0\.1:\d+/v3", _flag(command, flag))
+        assert _flag(command, "--models") == (
+            "chat=default_model,embed=default_model,rerank=default_model,vision=default_model"
+        )
+        assert _flag(command, "--embed-dim") == "1024"
+        assert "--wire" not in command
+
+    def test_the_urls_of_the_other_engines_keep_no_prefix(
+        self, run: _Run, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_HW_DEVICE", "cuda")
+        assert run.main("tei") == 0
+        for flag in ("--url", "--rerank-url"):
+            assert re.fullmatch(r"http://127\.0\.0\.1:\d+", _flag(run.commands[0], flag))
+
+    def test_a_cpu_run_names_the_cpu_host_in_the_row_and_the_cpu_in_the_log(
+        self, run: _Run
+    ) -> None:
+        assert self._main(run) == 0
+        row = (
+            "| ovms-cpu | chat, embed, rerank, vision | CPU host | pass, 3 of 3 steps "
+            f"| ovms 2026.4.1 {_OVMS_CELL} | `ovms-cpu.json` |"
+        )
+        assert run.results.read_text(encoding="utf-8").split("\n").count(row) == 1
+        log = (run.tmp / "out" / "ovms-cpu.log").read_text(encoding="utf-8").split("\n")
+        assert log.index(f"cpu: {_XEON}") < log.index("STEP ovms-cpu embed ok=True")
+        assert not [line for line in log if line.startswith("gpu:")]
+
+    def test_a_cpuinfo_with_no_model_name_stops_the_run(
+        self, run: _Run, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        bare = tmp_path / "bare-cpuinfo"
+        bare.write_text("processor\t: 0\n", encoding="utf-8")
+        monkeypatch.setattr(record_hw, "_CPUINFO", bare)
+        with pytest.raises(SystemExit, match="names no CPU model"):
+            self._main(run)
+
+    def test_the_served_name_is_the_one_the_adapter_serves(self) -> None:
+        profile = ADAPTERS[EngineName.OVMS].request_profile(WorkerRole.RERANK)
+        assert profile.rerank_model == record_hw._OVMS_SERVED_ID
+
+
+class TestIrFetch:
+    @pytest.mark.parametrize(
+        ("name", "is_ir"),
+        [
+            ("openvino_model.bin", True),
+            ("openvino_language_model.bin", True),
+            ("openvino_model.xml", False),
+            ("model.bin", False),
+            ("Qwen3-1.7B-Q8_0.gguf", False),
+        ],
+    )
+    def test_the_weights_of_an_ir_folder_are_told_by_name(self, name: str, is_ir: bool) -> None:
+        assert record_cpu_compare._is_ir_weights(name) is is_ir
+
+    def test_an_ir_model_fetches_the_top_files_of_its_repo_and_checks_the_weights(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        listed = [
+            "config.json",
+            "openvino_model.bin",
+            "openvino_tokenizer.xml",
+            "1_Pooling/config.json",
+            "other/deep.bin",
+        ]
+        fetched: list[str] = []
+
+        def download(url: str, dest: Path) -> None:
+            fetched.append(url.split("/resolve/main/")[1])
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"weights")
+
+        monkeypatch.setattr(record_cpu_compare, "_repo_files", lambda repo: listed)
+        monkeypatch.setattr(record_cpu_compare, "_download", download)
+        digest = hashlib.sha256(b"weights").hexdigest()
+        model = Model("ir", "OpenVINO/x-ov", "openvino_model.bin", digest, "INT4", 1)
+        path = record_cpu_compare._fetch(model, tmp_path)
+        assert path == tmp_path / "ir" / "openvino_model.bin"
+        assert sorted(fetched) == sorted(listed[:4])
+        wrong = Model("ir", "OpenVINO/x-ov", "openvino_model.bin", "0" * 64, "INT4", 1)
+        with pytest.raises(SystemExit, match="the record states"):
+            record_cpu_compare._fetch(wrong, tmp_path)
 
 
 def test_the_documented_setup_installs_the_providers_extra() -> None:
