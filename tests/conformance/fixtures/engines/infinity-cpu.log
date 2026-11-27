@@ -1,0 +1,12 @@
+engine: infinity-cpu
+version: 0.0.80 BAAI/bge-small-en-v1.5,BAAI/bge-reranker-base torch-cpu
+host: Linux-7.0.0-1018-gcp-x86_64-with-glibc2.39
+backend: cpu
+reported-backend: none
+devices: none
+devices-from: none
+models: embed=BAAI/bge-small-en-v1.5,rerank=BAAI/bge-reranker-base
+server-flags: --engine torch --device cpu --url-prefix /v1
+STEP infinity-cpu embed ok=True dims=[384]
+STEP infinity-cpu rerank ok=True best=1
+STEP infinity-cpu named ok=True log=['served by engine=infinity-cpu version=preset build=none role=embed model=infinity-cpu/BAAI/bge-small-en-v1.5'] status={<WorkerRole.EMBED: 'embed'>: 'infinity-cpu', <WorkerRole.RERANK: 'rerank'>: 'infinity-cpu'}

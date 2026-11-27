@@ -33,6 +33,7 @@ The Machine column names the machine that the recording names. The Version colum
 | mistralrs-cuda | chat, embed, vision | NVIDIA GPU | not recorded |  |  |
 | tei-cpu | embed, rerank | CPU host | pass, 3 of 3 steps | 1.9.4 BAAI/bge-small-en-v1.5,BAAI/bge-reranker-base cpu-1.9 | `tei-cpu.json` |
 | tei-cuda | embed, rerank | NVIDIA GeForce RTX 3090 | pass, 3 of 3 steps | 1.9.4 BAAI/bge-small-en-v1.5,BAAI/bge-reranker-base cuda-source-1.9.4 | `tei-cuda.json` |
+| infinity-cpu | embed, rerank | CPU host | pass, 3 of 3 steps | 0.0.80 BAAI/bge-small-en-v1.5,BAAI/bge-reranker-base torch-cpu | `infinity-cpu.json` |
 | openvino-cpu | chat | Intel i7-10750H | manual run: 1 chat request, HTTP 200, no strict steps | llama-server 0.8.0-dev (build 12020, commit 0ec4027a2) openvino 2026.4.1 | `openvino-cpu.json` |
 | openvino-gpu | chat | Intel i7-10750H | manual run: 1 chat request, HTTP 200, no strict steps | llama-server 0.8.0-dev (build 12020, commit 0ec4027a2) openvino 2026.4.1 | `openvino-gpu.json` |
 | openvino-gpu-no-runtime | none | Intel i7-10750H | fail: the server aborts and does not fall back to the CPU | llama.cpp b12020 ubuntu-openvino-2026.4.1-x64 | `openvino-gpu-no-runtime.log` |
