@@ -411,6 +411,11 @@ def _require_pinned(lock: PinLock, digest: str, source: Path | None) -> None:
     )
 
 
+def check_wheel(lock: PinLock, wheel: Path) -> None:
+    """Refuse *wheel* as the install does; the pack release runs it before it ships a wheel."""
+    _check_wheel(lock, wheel)
+
+
 def _check_wheel(lock: PinLock, wheel: Path) -> None:
     with zipfile.ZipFile(wheel) as archive:
         _refuse_escaping_entries(lock, archive)

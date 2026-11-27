@@ -880,10 +880,10 @@ def test_a_cell_builds_no_number_below_a_published_wheel_of_its_name() -> None:
     assert below == []
 
 
-def test_the_ik_job_runs_for_its_own_engine_only_and_its_wheels_are_published() -> None:
+def test_the_ik_job_runs_when_the_plan_gives_it_cells_and_its_wheels_are_published() -> None:
     workflow = yaml.safe_load(pack_workflow().read_text(encoding="utf-8"))
     assert "ik" in workflow[True]["workflow_dispatch"]["inputs"]["engine"]["options"]
-    assert _workflow_job("ik")["if"] == "needs.plan.outputs.engine == 'ik'"
+    assert _workflow_job("ik")["if"] == "needs.plan.outputs.ik != '[]'"
     assert "ik" in _workflow_job("publish")["needs"]
     (download,) = (
         s for s in steps(pack_workflow(), "publish") if s.get("uses", "").startswith("actions/down")
