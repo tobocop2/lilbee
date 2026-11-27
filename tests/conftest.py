@@ -854,7 +854,9 @@ def pytest_sessionstart(session: pytest.Session) -> Iterator[None]:
     Stops when a profile folder escapes the redirected global root.
 
     Runs after xdist starts its workers, so each worker reads the real root at import.
+    Before that, it makes the run's shared cache folder.
     """
+    make_run_cache(session.config)
     yield
     scratch = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
     session.config.stash[_SESSION_SCRATCH] = scratch
@@ -1019,6 +1021,29 @@ def slow_worker_final_call() -> Iterator[list[str]]:
     assert delayed, "no task-bar worker reached its final call, so the delay proved nothing"
 
 
+RUN_CACHE_DIRNAME = "run-cache"
+
+
+def make_run_cache(config: pytest.Config) -> None:
+    """Make the run's shared cache folder before any test of the run starts.
+
+    The folder sits beside the workers' temp folders. A test that watches the
+    names there sees this folder from its start, so a cache that another worker
+    fills while the test runs adds no name at that level. Under xdist the
+    controller makes the folder before it starts the workers.
+    """
+    if hasattr(config, "workerinput"):
+        return
+    basetemp = config._tmp_path_factory.getbasetemp()  # type: ignore[attr-defined]
+    shared = basetemp if config.pluginmanager.has_plugin("dsession") else basetemp.parent
+    (shared / RUN_CACHE_DIRNAME).mkdir(exist_ok=True)
+
+
+def run_cache(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The run's shared cache folder, which every worker of the run sees."""
+    return tmp_path_factory.getbasetemp().parent / RUN_CACHE_DIRNAME
+
+
 @pytest.fixture(scope="session")
 def tessdata_ready(tmp_path_factory) -> Iterator[None]:
     """Fetch Tesseract's language data once per run, and point every OCR call at it.
@@ -1026,21 +1051,21 @@ def tessdata_ready(tmp_path_factory) -> Iterator[None]:
     xberg downloads a missing language file on first use through one fixed temp
     name and no lock, so OCR calls that run at once on a cold cache can each fail
     the download, and a page comes back without its OCR text. Each test has its
-    own HOME, so xberg's default cache is cold in every test. The run's folder
-    sits beside the workers' temp folders, is filled under a lock every worker
-    shares, and is named by TESSDATA_PREFIX, which xberg searches before its cache.
+    own HOME, so xberg's default cache is cold in every test. The cache sits in
+    the run's shared cache folder, is filled under a lock every worker shares,
+    and is named by TESSDATA_PREFIX, which xberg searches before its cache.
     """
     from xberg import ExtractionConfig, OcrConfig
 
-    run_root = tmp_path_factory.getbasetemp().parent
-    cache = run_root / "xberg-cache"
+    shared = run_cache(tmp_path_factory)
+    cache = shared / "xberg-cache"
     tessdata = cache / "tessdata"
     image = Image.new("RGB", (400, 100), "white")
     ImageDraw.Draw(image).text((10, 40), "tessdata ready", fill="black")
     png = io.BytesIO()
     image.save(png, format="PNG")
     config = ExtractionConfig(ocr=OcrConfig(backend="tesseract", language=["eng"]), force_ocr=True)
-    with FileLock(run_root / "tessdata.lock"), pytest.MonkeyPatch.context() as env:
+    with FileLock(shared / "tessdata.lock"), pytest.MonkeyPatch.context() as env:
         # xberg writes a download under XBERG_CACHE_DIR/tessdata.
         env.setenv("XBERG_CACHE_DIR", str(cache))
         _PRISTINE_EXTRACT_DOCUMENT(png.getvalue(), "image/png", filename="ready.png", config=config)
@@ -1060,18 +1085,18 @@ def code_parsers_ready(tmp_path_factory) -> Iterator[None]:
     own HOME, so that cache is cold in every test, and each test that parses code
     downloads its parser from the network inside the test timeout. On a gate run
     a stalled download timed out three sync tests, and on a loaded host it took
-    the worker down. The run's folder sits beside the workers' temp folders, is
-    filled under a lock every worker shares, and is the cache the pack reads.
+    the worker down. The cache sits in the run's shared cache folder, is filled
+    under a lock every worker shares, and is the cache the pack reads.
     """
     from importlib.metadata import version
 
     from tree_sitter_language_pack import PackConfig, ProcessConfig, configure, process
 
-    run_root = tmp_path_factory.getbasetemp().parent
+    shared = run_cache(tmp_path_factory)
     # The pack version is in the name: a run without xdist keeps this folder across runs.
-    cache = run_root / f"parser-cache-{version('tree-sitter-language-pack')}"
+    cache = shared / f"parser-cache-{version('tree-sitter-language-pack')}"
     configure(PackConfig(cache_dir=str(cache)))
-    with FileLock(run_root / "parser-cache.lock"):
+    with FileLock(shared / "parser-cache.lock"):
         for language in CODE_PARSER_LANGUAGES:
             # The pack fetches a parser on its first parse, not in has_language or init.
             try:
