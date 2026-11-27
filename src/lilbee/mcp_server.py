@@ -91,7 +91,7 @@ from lilbee.app.settings import (
 )
 from lilbee.catalog.runnable import hidden_summary
 from lilbee.catalog.types import ModelSource
-from lilbee.core.config import cfg, validate_ocr_timeout
+from lilbee.core.config import cfg, validate_ocr_options
 from lilbee.core.config.context import request_config_scope
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
 from lilbee.core.config.keys import PROVIDER_SWITCHING_KEYS
@@ -502,7 +502,7 @@ async def sync(
     from lilbee.data.ingest import sync as run_sync
 
     try:
-        validate_ocr_timeout(ocr_timeout)
+        validate_ocr_options(ocr, ocr_timeout)
     except ValueError as exc:
         return _error(str(exc))
     with temporary_ocr_config(ocr, ocr_timeout), _cancel_token() as cancel:
@@ -602,7 +602,7 @@ async def add(
     from lilbee.app.ingest import SYNC_REFUSALS, register_sources
 
     try:
-        validate_ocr_timeout(ocr_timeout)
+        validate_ocr_options(ocr, ocr_timeout)
     except ValueError as exc:
         return _error(str(exc))
 

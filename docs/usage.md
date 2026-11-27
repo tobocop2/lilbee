@@ -197,7 +197,8 @@ tab-complete; `/help` opens the same catalog live.
 |---------|---------|-------------|
 | `/model [name]` | | Switch chat model. No args opens the catalog picker; with a name, switches directly or prompts to download |
 | `/models` | `/m`, `/catalog` | Browse the full model catalog |
-| `/add <path>` | | Add a file or directory to the index (tab-completes paths) |
+| `/add [--ocr MODE] [--ocr-timeout SECONDS] <path>` | | Add a file or directory to the index (tab-completes paths). The options set the OCR mode and the per-page OCR timeout for this add |
+| `/sync [--ocr MODE] [--ocr-timeout SECONDS]` | | Sync the documents directory into the index. The options set the OCR mode and the per-page OCR timeout for this sync |
 | `/crawl [url]` | | Crawl a URL. No args opens a dialog |
 | `/engine [subcommand]` | | Show the engine of each role (`roles`), list the installed builds (`list`), remove one (`remove NAME VERSION BACKEND`), or choose it (`use ROLE MODEL ENGINE`, `prefer ENGINE`); add `--yes` to confirm a change that can make the index vectors unusable |
 | `/preset <subcommand>` | | List, add, edit or remove server presets (edit opens a dialog) |
@@ -1968,7 +1969,11 @@ To change it for one run, pass `--ocr auto|all|off` to `lilbee add`,
 `lilbee sync` or `lilbee rebuild`. The `ocr` field on `POST /api/add` and
 `POST /api/sync`, the `ocr` query parameter on `POST /api/add/upload`, and the
 `ocr` argument of the MCP `add` and `sync` tools do the same for one request.
-`LILBEE_OCR` sets it for a process.
+In the chat, `/add` and `/sync` take `--ocr MODE` and `--ocr-timeout SECONDS`
+in front of the path. In Python, `Lilbee.add`, `Lilbee.sync` and
+`Lilbee.rebuild` take the `ocr` and `ocr_timeout` arguments. Each of these
+changes one run and leaves the setting as it was. `LILBEE_OCR` sets it for a
+process.
 
 When `vision_model` is set, the vision model reads the pages. When it is
 empty, Tesseract reads them. There is no Tesseract fallback when the vision

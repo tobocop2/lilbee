@@ -1715,7 +1715,14 @@ class TestSyncHint:
         gate = _threading.Event()
 
         def _do_sync_target(
-            self_screen, reporter, *, force_rebuild=False, prune_ignored=False, retry_skipped=False
+            self_screen,
+            reporter,
+            *,
+            force_rebuild=False,
+            prune_ignored=False,
+            retry_skipped=False,
+            ocr=None,
+            ocr_timeout=None,
         ):
             observed.append(self_screen.app.task_bar.pending_sync_count)
             gate.set()

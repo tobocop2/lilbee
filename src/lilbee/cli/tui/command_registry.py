@@ -41,8 +41,15 @@ COMMANDS: tuple[SlashCommand, ...] = (
         "/add",
         "_cmd_add",
         aliases=(),
-        args_hint="<path>",
+        args_hint="[--ocr MODE] [--ocr-timeout SECONDS] <path>",
         help_text="Add file or folder to the knowledge base",
+    ),
+    SlashCommand(
+        "/sync",
+        "_cmd_sync",
+        aliases=(),
+        args_hint="[--ocr MODE] [--ocr-timeout SECONDS]",
+        help_text="Sync the documents directory into the index",
     ),
     SlashCommand(
         "/crawl",

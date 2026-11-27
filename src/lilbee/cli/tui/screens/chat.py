@@ -50,6 +50,7 @@ from lilbee.app.ingest import (
     removable_among,
     removable_names,
     remove_documents_durably,
+    temporary_ocr_config,
 )
 from lilbee.app.services import get_services, reset_store
 from lilbee.app.session_export import write_session_markdown
@@ -84,6 +85,7 @@ from lilbee.cli.tui.secret_lines import carries_secret
 from lilbee.cli.tui.thread_safe import call_from_thread, post_from_thread
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import (
+    OCR_OPTION_COMMANDS,
     PATH_ARG_COMMANDS,
     CompletionOverlay,
     get_completions,
@@ -93,6 +95,7 @@ from lilbee.cli.tui.widgets.autocomplete import (
     path_completion_prefix,
     reads_a_folder,
     reads_models,
+    split_ocr_options,
 )
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.context_chip import ContextChip
@@ -107,8 +110,8 @@ from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
-from lilbee.core.config import cfg
-from lilbee.core.config.enums import ChatMode, CrawlRenderMode
+from lilbee.core.config import cfg, validate_ocr_options
+from lilbee.core.config.enums import ChatMode, CrawlRenderMode, OcrMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
 from lilbee.core.text import strip_control_characters
 from lilbee.crawler import (
@@ -314,6 +317,30 @@ def _closest_source(name: str) -> str | None:
 def _whole_path(args: str) -> Path:
     """The whole argument as one path, with surrounding quotes removed and ``~`` expanded."""
     return Path(args.strip().strip('"').strip("'")).expanduser()
+
+
+def _split_ocr_flags(args: str) -> tuple[OcrMode | None, float | None, str]:
+    """Take the leading OCR options off *args*; raise ValueError naming a bad one."""
+    ocr: OcrMode | None = None
+    timeout: float | None = None
+    rest = args.strip()
+    while rest.startswith("--"):
+        flag, _, tail = rest.partition(" ")
+        if flag not in ("--ocr", "--ocr-timeout"):
+            raise ValueError(msg.CMD_OCR_UNKNOWN_OPTION.format(flag=flag))
+        value, _, rest = tail.strip().partition(" ")
+        if not value:
+            raise ValueError(msg.CMD_OCR_NEEDS_VALUE.format(flag=flag))
+        try:
+            if flag == "--ocr":
+                ocr = validate_ocr_options(value, None)
+            else:
+                timeout = float(value)
+                validate_ocr_options(None, timeout)
+        except ValueError as exc:
+            raise ValueError(f"{flag} {value}: {exc}") from exc
+        rest = rest.strip()
+    return ocr, timeout, rest
 
 
 def _parse_add_paths(args: str) -> list[Path]:
@@ -922,12 +949,31 @@ class ChatScreen(Screen[None]):
             self._model_switch_queued = False
             self.apply_model_change()
 
+    def _read_add_args(self, args: str) -> tuple[OcrMode | None, float | None, str] | None:
+        """Split the OCR options off ``/add`` arguments; notify and return None when unusable."""
+        try:
+            ocr, ocr_timeout, rest = _split_ocr_flags(args)
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return None
+        if not rest:
+            self.notify(msg.CMD_ADD_USAGE, severity="error")
+            return None
+        if is_url(rest) and (ocr is not None or ocr_timeout is not None):
+            self.notify(msg.CMD_OCR_ON_URL, severity="error")
+            return None
+        return ocr, ocr_timeout, rest
+
     def _cmd_add(self, args: str) -> None:
         from lilbee.app.ingest import source_label_taken
         from lilbee.core.system import disk_path
 
         if not args:
             return
+        parsed = self._read_add_args(args)
+        if parsed is None:
+            return
+        ocr, ocr_timeout, args = parsed
         if self._sync_work_live():
             self._notify_sync_refused()
             return
@@ -949,11 +995,17 @@ class ChatScreen(Screen[None]):
         # own skipped notices rather than a duplicate-file prompt.
         duplicates = [p for p in paths if p.is_file() and source_label_taken(disk_path(p).name, p)]
         if duplicates:
-            self._prompt_overwrite(paths, duplicates)
+            self._prompt_overwrite(paths, duplicates, ocr, ocr_timeout)
             return
-        self._submit_add(paths, force=False)
+        self._submit_add(paths, force=False, ocr=ocr, ocr_timeout=ocr_timeout)
 
-    def _prompt_overwrite(self, paths: list[Path], duplicates: list[Path]) -> None:
+    def _prompt_overwrite(
+        self,
+        paths: list[Path],
+        duplicates: list[Path],
+        ocr: OcrMode | None,
+        ocr_timeout: float | None,
+    ) -> None:
         """Ask to overwrite existing copies before re-syncing."""
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
@@ -963,7 +1015,7 @@ class ChatScreen(Screen[None]):
             if not confirmed:
                 self.notify(msg.CMD_ADD_SKIPPED_DUPLICATE.format(name=names))
                 return
-            self._submit_add(paths, force=True)
+            self._submit_add(paths, force=True, ocr=ocr, ocr_timeout=ocr_timeout)
 
         self.app.push_screen(
             ConfirmDialog(
@@ -973,19 +1025,32 @@ class ChatScreen(Screen[None]):
             _on_confirm,
         )
 
-    def _submit_add(self, paths: list[Path], *, force: bool) -> None:
+    def _submit_add(
+        self,
+        paths: list[Path],
+        *,
+        force: bool,
+        ocr: OcrMode | None = None,
+        ocr_timeout: float | None = None,
+    ) -> None:
         """Spawn the add worker. Separated so overwrite confirm can reuse it."""
         from lilbee.cli.tui.task_queue import TaskType
 
         label = paths[0].name if len(paths) == 1 else f"{len(paths)} files"
 
         def _target(reporter: ProgressReporter) -> None:
-            self._do_add(paths, reporter, force=force)
+            self._do_add(paths, reporter, force=force, ocr=ocr, ocr_timeout=ocr_timeout)
 
         self._task_bar.start_task(f"Add {label}", TaskType.ADD, _target, indeterminate=True)
 
     def _do_add(
-        self, paths: list[Path], reporter: ProgressReporter, *, force: bool = False
+        self,
+        paths: list[Path],
+        reporter: ProgressReporter,
+        *,
+        force: bool = False,
+        ocr: OcrMode | None = None,
+        ocr_timeout: float | None = None,
     ) -> None:
         """Register source roots and run sync. Called on worker thread with a reporter."""
         from lilbee.app.ingest import register_sources
@@ -1005,7 +1070,7 @@ class ChatScreen(Screen[None]):
             with forget_unfinished_on_cancel(
                 paths, reg_result, reporter, reporter.cancelled_by_user
             ) as rollback:
-                self._sync_added(reg_result.registered, reporter)
+                self._sync_added(reg_result.registered, reporter, ocr, ocr_timeout)
         except asyncio.CancelledError as exc:
             raise TaskCancelledError(rollback.message(msg.SYNC_CANCELLED_RESUME)) from exc
         except BaseException:
@@ -1043,19 +1108,26 @@ class ChatScreen(Screen[None]):
                 severity="warning",
             )
 
-    def _sync_added(self, registered: list[str], reporter: ProgressReporter) -> None:
+    def _sync_added(
+        self,
+        registered: list[str],
+        reporter: ProgressReporter,
+        ocr: OcrMode | None = None,
+        ocr_timeout: float | None = None,
+    ) -> None:
         """Sync after /add and report the result; raises when the add's own roots failed."""
         from lilbee.data.ingest import sync
 
         reporter.update(0, f"Added {len(registered)} source(s), syncing...", indeterminate=True)
-        sync_result = asyncio_loop.run(
-            sync(
-                quiet=True,
-                on_progress=build_add_progress_callback(reporter),
-                cancel=reporter,
-                started_by="the lilbee TUI",
+        with temporary_ocr_config(ocr, ocr_timeout):
+            sync_result = asyncio_loop.run(
+                sync(
+                    quiet=True,
+                    on_progress=build_add_progress_callback(reporter),
+                    cancel=reporter,
+                    started_by="the lilbee TUI",
+                )
             )
-        )
         self._notify_unreadable_folders(sync_result)
         report_ingest(reporter, sync_result)
         self._report_partly_read(sync_result)
@@ -1344,6 +1416,18 @@ class ChatScreen(Screen[None]):
         # switch_view already installs and navigates to the managed Catalog view;
         # a push_screen on top would stack a second, orphaned CatalogScreen.
         self.app.switch_view(msg.CATALOG_VIEW)
+
+    def _cmd_sync(self, args: str) -> None:
+        """Sync the documents, with an optional OCR mode and timeout for this run."""
+        try:
+            ocr, ocr_timeout, rest = _split_ocr_flags(args)
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        if rest:
+            self.notify(msg.CMD_SYNC_UNKNOWN_ARGUMENT.format(rest=rest), severity="error")
+            return
+        self.run_sync(ocr=ocr, ocr_timeout=ocr_timeout)
 
     def _cmd_prune_ignored(self, args: str) -> None:
         """Sync with pruning on, dropping indexed documents the patterns now exclude."""
@@ -2815,6 +2899,8 @@ class ChatScreen(Screen[None]):
         force_rebuild: bool = False,
         prune_ignored: bool = False,
         retry_skipped: bool = False,
+        ocr: OcrMode | None = None,
+        ocr_timeout: float | None = None,
     ) -> None:
         """Enqueue a document sync (or full rebuild) in the task bar.
 
@@ -2842,6 +2928,8 @@ class ChatScreen(Screen[None]):
                     force_rebuild=force_rebuild,
                     prune_ignored=prune_ignored,
                     retry_skipped=retry_skipped,
+                    ocr=ocr,
+                    ocr_timeout=ocr_timeout,
                 )
             finally:
                 # Re-detect after every sync attempt: success drives the
@@ -2866,6 +2954,8 @@ class ChatScreen(Screen[None]):
         force_rebuild: bool = False,
         prune_ignored: bool = False,
         retry_skipped: bool = False,
+        ocr: OcrMode | None = None,
+        ocr_timeout: float | None = None,
     ) -> None:
         """Sync body. Runs on worker thread."""
         from lilbee.data.ingest import sync
@@ -2873,17 +2963,18 @@ class ChatScreen(Screen[None]):
         reporter.update(0, msg.SYNC_STATUS_SYNCING, indeterminate=True)
         on_progress = build_sync_progress_callback(reporter)
         try:
-            result = asyncio_loop.run(
-                sync(
-                    quiet=True,
-                    on_progress=on_progress,
-                    cancel=reporter,
-                    force_rebuild=force_rebuild,
-                    prune_ignored=prune_ignored,
-                    retry_skipped=retry_skipped,
-                    started_by="the lilbee TUI",
+            with temporary_ocr_config(ocr, ocr_timeout):
+                result = asyncio_loop.run(
+                    sync(
+                        quiet=True,
+                        on_progress=on_progress,
+                        cancel=reporter,
+                        force_rebuild=force_rebuild,
+                        prune_ignored=prune_ignored,
+                        retry_skipped=retry_skipped,
+                        started_by="the lilbee TUI",
+                    )
                 )
-            )
         except asyncio.CancelledError as exc:
             raise TaskCancelledError(msg.SYNC_CANCELLED_RESUME) from exc
         if prune_ignored:
@@ -3127,8 +3218,10 @@ class ChatScreen(Screen[None]):
             return display
         cmd, _, partial = text.partition(" ")
         if cmd.lower() in PATH_ARG_COMMANDS:
-            head = path_completion_prefix(partial)
-            return f"{cmd} {head}{display}"
+            lead, path = (
+                split_ocr_options(partial) if cmd.lower() in OCR_OPTION_COMMANDS else ("", partial)
+            )
+            return f"{cmd} {lead}{path_completion_prefix(path)}{display}"
         return f"{cmd} {display}"
 
     def _set_input(self, value: str) -> None:

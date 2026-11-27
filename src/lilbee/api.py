@@ -31,10 +31,20 @@ from typing import TYPE_CHECKING
 # config.toml read-modify-write over the config singleton (no copy, no symlink),
 # cheap to import. data.ingest is deferred at each callsite below because it
 # transitively imports spaCy via the wiki package and adds ~3s on first touch.
-from lilbee.app.ingest import register_sources, remove_documents_durably
+from lilbee.app.ingest import (
+    register_sources,
+    remove_documents_durably,
+    temporary_ocr_config,
+)
 from lilbee.app.services import build_services, services_scope
 from lilbee.app.status import STATUS_RECENT_LIMIT
-from lilbee.core.config import Config, cfg, config_scope, refuse_environment
+from lilbee.core.config import (
+    Config,
+    cfg,
+    config_scope,
+    refuse_environment,
+    validate_ocr_options,
+)
 from lilbee.core.system import canonical_data_root
 from lilbee.data.store import (
     DOCUMENTS_PAGE_DEFAULT,
@@ -49,6 +59,7 @@ from lilbee.runtime.asyncio_loop import run_main
 
 if TYPE_CHECKING:
     from lilbee.app.services import Services
+    from lilbee.core.config.enums import OcrMode
     from lilbee.data.ingest import SyncResult
     from lilbee.data.store import SearchChunk, SourceRecord, Store
     from lilbee.providers.base import LLMProvider
@@ -140,13 +151,21 @@ class Lilbee:
         """The Searcher component."""
         return self._services.searcher
 
-    def sync(self, *, quiet: bool = True) -> SyncResult:
+    def sync(
+        self,
+        *,
+        quiet: bool = True,
+        ocr: OcrMode | str | None = None,
+        ocr_timeout: float | None = None,
+    ) -> SyncResult:
         """Sync documents to the vector store. Returns what changed."""
         # heavy: data.ingest transitively imports spaCy via wiki
         from lilbee.data.ingest import sync as _sync
 
         with config_scope(self._config), services_scope(self._services):
-            return run_main(_sync(quiet=quiet, started_by=_SYNC_STARTER))
+            mode = validate_ocr_options(ocr, ocr_timeout)
+            with temporary_ocr_config(mode, ocr_timeout):
+                return run_main(_sync(quiet=quiet, started_by=_SYNC_STARTER))
 
     def search(
         self, query: str, *, top_k: int = 0, scope: SearchScope = SearchScope.BOTH
@@ -173,7 +192,13 @@ class Lilbee:
                 query, top_k=top_k, chunk_type=scope_to_chunk_type(scope)
             )
 
-    def add(self, paths: list[str | Path]) -> SyncResult:
+    def add(
+        self,
+        paths: list[str | Path],
+        *,
+        ocr: OcrMode | str | None = None,
+        ocr_timeout: float | None = None,
+    ) -> SyncResult:
         """Add files to the knowledge base and sync.
         Registers each path as a source root (indexed in place), then syncs. A
         folder that contains registered sources takes them in. The result is
@@ -185,9 +210,11 @@ class Lilbee:
 
         resolved = [Path(p).resolve() for p in paths]
         with config_scope(self._config), services_scope(self._services):
+            mode = validate_ocr_options(ocr, ocr_timeout)
             if not register_sources(resolved, force=True).reached_corpus:
                 return SyncResult()
-            return run_main(_sync(quiet=True, started_by=_SYNC_STARTER))
+            with temporary_ocr_config(mode, ocr_timeout):
+                return run_main(_sync(quiet=True, started_by=_SYNC_STARTER))
 
     def remove(self, name: str) -> None:
         """Remove a document from the index by source name (source bytes are kept).
@@ -231,13 +258,17 @@ class Lilbee:
         with config_scope(self._config), services_scope(self._services):
             return self._services.store.get_sources(search=search, limit=limit, offset=offset)
 
-    def rebuild(self) -> SyncResult:
+    def rebuild(
+        self, *, ocr: OcrMode | str | None = None, ocr_timeout: float | None = None
+    ) -> SyncResult:
         """Rebuild the entire index from scratch."""
         # heavy: data.ingest transitively imports spaCy via wiki
         from lilbee.data.ingest import sync as _sync
 
         with config_scope(self._config), services_scope(self._services):
-            return run_main(_sync(force_rebuild=True, quiet=True, started_by=_SYNC_STARTER))
+            mode = validate_ocr_options(ocr, ocr_timeout)
+            with temporary_ocr_config(mode, ocr_timeout):
+                return run_main(_sync(force_rebuild=True, quiet=True, started_by=_SYNC_STARTER))
 
     def remember(
         self,

@@ -147,7 +147,7 @@ class LilbeeCommandProvider(Provider):
         if chat is None:
             app.notify(f"Open Chat to run {cmd.name}")
             return
-        if cmd.args_hint.startswith("<"):
+        if "<" in cmd.args_hint:
             # Needs an argument: land in the chat prompt for Tab completion.
             app.switch_view(msg.DEFAULT_VIEW)
             chat.insert_slash_command(cmd.name)

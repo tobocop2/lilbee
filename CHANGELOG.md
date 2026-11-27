@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+You can now set the OCR mode and the OCR timeout for one run from the Python API and from the chat. `Lilbee.add`, `Lilbee.sync` and `Lilbee.rebuild` take `ocr` and `ocr_timeout`. The chat has a new `/sync` command, and `/add` and `/sync` take `--ocr MODE` and `--ocr-timeout SECONDS`. A mode or timeout that is not valid is refused with an error that names it. The run does not change the setting. `/add` refuses the options for a URL, because OCR does not apply to a crawled page.
+
 A REST client can now cancel an add. Give `POST /api/add` or `POST /api/add/upload` an `add_id`, then send `POST /api/add/cancel` with that id. As with Ctrl+C on `lilbee add`, the cancel removes what the add did not finish: a source with no file indexed is no longer added, and an uploaded file that the server did not index is deleted. The stream of the add ends with a `done` event that carries `cancelled` and `not_added`. A stream that only closes still keeps every source.
 
 `DELETE /api/models/{model}` now removes a model whose ref holds slashes, such as `org/repo/model.gguf`. Before, the route matched one path segment, so the server answered with an error for these refs and a REST client could not remove the model.
