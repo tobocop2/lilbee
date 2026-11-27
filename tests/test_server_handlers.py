@@ -128,7 +128,7 @@ class TestHealth:
         mock_svc.provider.role_ready.return_value = False
         result = await handlers.health()
         assert result.chat_ready is False
-        mock_svc.provider.role_ready.assert_called_with(WorkerRole.CHAT)
+        mock_svc.provider.role_ready.assert_any_call(WorkerRole.CHAT)
 
         mock_svc.provider.role_ready.return_value = True
         assert (await handlers.health()).chat_ready is True
@@ -183,6 +183,70 @@ class TestHealth:
     async def test_health_reports_no_warnings_on_a_clean_store(self, mock_svc):
         mock_svc.store.health_warnings.return_value = []
         assert (await handlers.health()).warnings == []
+
+    async def test_health_reports_embed_engine_and_ready_for_the_embed_role(
+        self, mock_svc, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        from lilbee.providers.roles import WorkerRole
+        from lilbee.server.models import HealthResponse
+
+        monkeypatch.setattr(
+            "lilbee.app.status.role_serving",
+            lambda role, model: SimpleNamespace(engine=f"engine-{role.value}", version="1"),
+        )
+        monkeypatch.setattr(cfg, "chat_model", "owner/chat-GGUF/chat.Q4_K_M.gguf")
+        monkeypatch.setattr(cfg, "embedding_model", "owner/embed-GGUF/embed.Q8_0.gguf")
+        mock_svc.provider.role_ready.side_effect = lambda role: role is WorkerRole.EMBED
+        warm = await handlers.health()
+        assert (warm.embed_engine, warm.embed_ready, warm.chat_ready) == (
+            "engine-embed",
+            True,
+            False,
+        )
+        mock_svc.provider.role_ready.side_effect = lambda role: role is WorkerRole.CHAT
+        cold = await handlers.health()
+        assert (cold.embed_ready, cold.chat_ready) == (False, True)
+        monkeypatch.setattr(cfg, "embedding_model", "")
+        assert (await handlers.health()).embed_engine is None
+        assert {"embed_engine", "embed_ready"} <= set(
+            HealthResponse.model_json_schema()["properties"]
+        )
+
+    async def test_health_warns_when_outside_edit_needs_rebuild(self, mock_svc):
+        from lilbee.core.health_warnings import WarningCode
+
+        mock_svc.store.is_open = True
+        mock_svc.store.health_warnings.return_value = []
+        with patch("lilbee.app.services.chunk_drift_in_store", return_value=["chunk_size"]):
+            warnings = (await handlers.health()).warnings
+        assert [w.code for w in warnings] == [WarningCode.INDEX_SETTINGS_DRIFT]
+        assert "chunk_size" in warnings[0].message
+        assert "`lilbee rebuild`" in (warnings[0].remedy or "")
+
+    async def test_health_has_no_rebuild_warning_when_nothing_drifted(self, mock_svc):
+        mock_svc.store.is_open = True
+        mock_svc.store.health_warnings.return_value = []
+        with patch("lilbee.app.services.chunk_drift_in_store", return_value=[]):
+            assert (await handlers.health()).warnings == []
+
+    async def test_health_has_no_rebuild_warning_for_an_inert_setting(self, mock_svc):
+        from lilbee.app.settings import inert_reindex_keys
+
+        inert = sorted(inert_reindex_keys())
+        assert inert, "the default config has an inert reindex key"
+        mock_svc.store.is_open = True
+        mock_svc.store.health_warnings.return_value = []
+        with patch("lilbee.app.services.chunk_drift_in_store", return_value=[inert[0]]):
+            assert (await handlers.health()).warnings == []
+
+    async def test_health_does_not_ask_a_closed_library_for_drift(self, mock_svc):
+        mock_svc.store.is_open = False
+        mock_svc.store.health_warnings.return_value = []
+        with patch("lilbee.app.services.chunk_drift_in_store") as drift:
+            assert (await handlers.health()).warnings == []
+        drift.assert_not_called()
 
     async def test_health_carries_the_embed_cap_and_the_engine_warnings(self, mock_svc):
         """Health reports the cap the chunker bounds to and the engine's warnings
@@ -7157,6 +7221,29 @@ class TestSourceLabelsOnTheWire:
         assert _refs(result.dropped_sources) == [
             {"source": "shed.md", "label": "shed.md", "citation_number": None}
         ]
+
+    async def test_ask_and_chat_sources_carry_title(self, mock_svc, monkeypatch):
+        from lilbee.retrieval.query import AskResult
+        from lilbee.server.models import CleanedChunk
+
+        titled = _SAMPLE_CHUNK.model_copy(update={"title": "Field Guide"})
+        untitled = _SAMPLE_CHUNK.model_copy(update={"source": "b.pdf", "title": None})
+        mock_svc.searcher.ask_raw.return_value = AskResult(
+            answer="See [1].", sources=[titled, untitled], cited_sources=[titled]
+        )
+        result = await handlers.ask("what?")
+        assert [s.title for s in result.sources] == ["Field Guide", None]
+        assert [s.title for s in result.cited_sources] == ["Field Guide"]
+        assert "title" in CleanedChunk.model_json_schema()["properties"]
+        chat_chunks = _rag_h._cleaned_chunks([titled, untitled], [])
+        assert [c.title for c in chat_chunks] == ["Field Guide", None]
+
+    def test_http_source_row_leaves_off_only_the_ruled_fields(self):
+        from lilbee.server.models import CleanedChunk
+
+        stored = set(SearchChunk.model_fields) - {"vector"}
+        assert stored
+        assert stored - set(CleanedChunk.model_fields) == {"bm25_score", "chunk_type"}
 
     async def test_chat_response(self, mock_svc, monkeypatch):
         from lilbee.server.chat_dispatch.canonical import (

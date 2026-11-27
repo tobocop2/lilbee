@@ -210,6 +210,8 @@ class CleanedChunk(BaseModel):
     # the source isn't resolvable as a vault file. Clients use this to open
     # the source in a native editor instead of fetching ``/api/source``.
     vault_path: str | None = None
+    title: str | None = None
+    """The document title stored with the chunk; null when none was stored."""
     # Set only on recalled-memory sources (``source`` is ``memory:<id>``), so
     # clients can mark them as memory and link them to ``GET /api/memories``.
     memory_id: str | None = None
@@ -371,6 +373,10 @@ class HealthResponse(BaseModel):
     chat_prefill_total: int | None = None
     """Prompt tokens the in-flight chat prefill will process in total. None when
     no prefill is running."""
+    embed_engine: str | None = None
+    """The engine that serves the embedding model; null when no embedding model is set."""
+    embed_ready: bool = False
+    """True once the embedding engine is loaded; independent of ``chat_ready``."""
     embed_token_cap: int | None = None
     """Tokens the embedding engine truncates one input to. The chunker bounds its
     budget to this, so it is the largest chunk that reaches the index whole. None
