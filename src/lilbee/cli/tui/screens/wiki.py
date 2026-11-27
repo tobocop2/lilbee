@@ -52,6 +52,12 @@ _OPEN_GROUP = "wiki-open"
 _WIPE_OFFER_GROUP = "wiki-wipe-offer"
 
 
+def _report_read_failure(app: LilbeeApp, exc: Exception) -> None:
+    """Tell the user a worker's read failed; the workers swallow exceptions otherwise."""
+    log.warning("Wiki read failed", exc_info=exc)
+    app.notify(msg.WIKI_READ_FAILED.format(error=exc), severity="error")
+
+
 def _wiki_root() -> Path:
     """Resolve the wiki root directory from config."""
     return cfg.data_root / cfg.wiki_dir
@@ -395,7 +401,11 @@ class WikiScreen(Screen[None]):
     @work(exclusive=True, group=_OPEN_GROUP, exit_on_error=False)
     async def _open_stub(self, stub: WikiStub) -> None:
         """Name the stub's documents off the loop, explain the blank page, then ask."""
-        sources = await asyncio.to_thread(_describe_sources, stub)
+        try:
+            sources = await asyncio.to_thread(_describe_sources, stub)
+        except Exception as exc:
+            _report_read_failure(self.app, exc)
+            return
         shown_label = strip_control_characters(stub.label)
         # Opening a stub asks rather than generating. The detail pane
         # explains the page either way, so dismissing the dialog leaves
@@ -410,7 +420,11 @@ class WikiScreen(Screen[None]):
         """Read a wiki page off the loop, then render it."""
         from lilbee.wiki.browse import read_page
 
-        page = await asyncio.to_thread(read_page, _wiki_root(), slug)
+        try:
+            page = await asyncio.to_thread(read_page, _wiki_root(), slug)
+        except Exception as exc:
+            _report_read_failure(self.app, exc)
+            return
         self._render_page(slug, page)
 
     def _render_page(self, slug: str, page: WikiPageContent | None) -> None:
@@ -679,7 +693,11 @@ async def _offer_wipe(app: LilbeeApp, title: str, message: str, notify_when_empt
     """Look for something to delete off the loop, then ask."""
     from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
-    has_content = await asyncio.to_thread(lambda: wiki_has_content(get_services().store))
+    try:
+        has_content = await asyncio.to_thread(lambda: wiki_has_content(get_services().store))
+    except Exception as exc:
+        _report_read_failure(app, exc)
+        return
     if not has_content:
         if notify_when_empty:
             app.notify(msg.WIKI_WIPE_NOTHING)

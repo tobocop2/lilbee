@@ -359,3 +359,228 @@ async def test_drafts_screen_reads_run_off_the_loop(tmp_path: Path) -> None:
             assert await wait_until(pilot, lambda: "+a line" in str(diff.render()), timeout=WAIT)
     assert set(reads.threads) == {"list_drafts", "diff_draft"}
     assert reads.on_loop() == []
+
+
+def _header_shows(screen: WikiScreen, text: str) -> bool:
+    return text in str(screen.query_one("#wiki-page-header", Static).render())
+
+
+def _draft(tmp_path: Path, slug: str) -> DraftInfo:
+    return DraftInfo(
+        slug=slug,
+        path=tmp_path / f"{slug.replace('/', '-')}.md",
+        drift_ratio=0.2,
+        faithfulness_score=0.9,
+        bad_title=False,
+        published_path=None,
+        mtime=0.0,
+    )
+
+
+def _row_keys(screen: WikiDraftsScreen) -> list[str]:
+    table = screen.query_one("#wiki-drafts-table", DataTable)
+    return [str(key.value) for key in table.rows]
+
+
+class _Gate:
+    """A read that blocks the first caller until the test lets it go."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.done = threading.Event()
+
+    def hold(self) -> None:
+        self.entered.set()
+        self.release.wait(timeout=5)
+        self.done.set()
+
+
+async def test_a_slow_older_page_open_never_overwrites_a_newer_one(tmp_path: Path) -> None:
+    _wiki(tmp_path)
+    gate = _Gate()
+    real = browse.read_page
+
+    def read(root: Path, slug: str) -> Any:
+        if slug == "summaries/test-doc":
+            gate.hold()
+        return real(root, slug)
+
+    app = _Host()
+    with patch.object(browse, "read_page", read):
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open_wiki(app)
+            assert await wait_until(pilot, lambda: _shows(screen, "Test Document"), timeout=WAIT)
+            screen._display_page("summaries/test-doc")
+            assert await wait_until(pilot, gate.entered.is_set, timeout=WAIT)
+            screen._display_page("synthesis/some-synthesis")
+            assert await wait_until(
+                pilot, lambda: _header_shows(screen, "Some Synthesis"), timeout=WAIT
+            )
+            gate.release.set()
+            assert await wait_until(pilot, gate.done.is_set, timeout=WAIT)
+            assert not await comes(pilot, lambda: _header_shows(screen, "Test Document"))
+            assert _header_shows(screen, "Some Synthesis")
+
+
+async def test_a_slow_older_stub_open_never_asks_after_a_newer_open(tmp_path: Path) -> None:
+    _wiki(tmp_path)
+    gate = _Gate()
+    old = _stub()
+    new = dataclasses.replace(old, slug="gears", label="Gears")
+
+    def describe(stub: WikiStub) -> str:
+        if stub is old:
+            gate.hold()
+        return f"sources of {stub.label}"
+
+    def asked() -> list[str]:
+        return [s._message for s in app.screen_stack if isinstance(s, ConfirmDialog)]
+
+    app = _Host()
+    with patch.object(wiki_mod, "_describe_sources", describe):
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open_wiki(app)
+            screen._open_stub(old)
+            assert await wait_until(pilot, gate.entered.is_set, timeout=WAIT)
+            screen._open_stub(new)
+            assert await wait_until(
+                pilot, lambda: any("Gears" in text for text in asked()), timeout=WAIT
+            )
+            gate.release.set()
+            assert await wait_until(pilot, gate.done.is_set, timeout=WAIT)
+            assert not await comes(pilot, lambda: any("Torque" in text for text in asked()))
+            assert "Torque" not in screen.query_one("#wiki-content", Markdown).source
+
+
+async def test_a_slow_older_wipe_offer_never_asks_after_a_newer_one(tmp_path: Path) -> None:
+    _wiki(tmp_path, pages=False)
+    gate = _Gate()
+    calls: list[int] = []
+
+    def chunk_sources() -> list[str]:
+        calls.append(len(calls))
+        if len(calls) == 1:
+            gate.hold()
+        return ["row"]
+
+    store = SimpleNamespace(wiki_chunk_sources=chunk_sources, wiki_citation_sources=lambda: [])
+    services = SimpleNamespace(store=store)
+    app = _Host()
+
+    def titles() -> list[str]:
+        return [s._title for s in app.screen_stack if isinstance(s, ConfirmDialog)]
+
+    with patch.object(wiki_mod, "get_services", lambda: services):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _open_wiki(app)
+            wiki_mod.confirm_wiki_wipe(app, title="Stale", message="m1")
+            assert await wait_until(pilot, gate.entered.is_set, timeout=WAIT)
+            wiki_mod.confirm_wiki_wipe(app, title="Fresh", message="m2")
+            assert await wait_until(pilot, lambda: titles() == ["Fresh"], timeout=WAIT)
+            gate.release.set()
+            assert await wait_until(pilot, gate.done.is_set, timeout=WAIT)
+            assert not await comes(pilot, lambda: "Stale" in titles())
+            assert titles() == ["Fresh"]
+
+
+async def test_a_slow_older_diff_never_overwrites_a_newer_one(tmp_path: Path) -> None:
+    _wiki(tmp_path)
+    gate = _Gate()
+    old, new = _draft(tmp_path, "summaries/old"), _draft(tmp_path, "summaries/new")
+
+    def diff(slug: str, *_: Any) -> str:
+        if slug == old.slug:
+            gate.hold()
+            return "+old diff"
+        return "+new diff"
+
+    services = SimpleNamespace(store=object())
+    app = _Host()
+    with (
+        patch.object(drafts_mod, "list_drafts", lambda _root: [old, new]),
+        patch.object(drafts_mod, "diff_draft", diff),
+        patch.object(drafts_mod, "get_services", lambda: services),
+    ):
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = WikiDraftsScreen()
+            await app.push_screen(screen)
+            table = screen.query_one("#wiki-drafts-table", DataTable)
+            assert await wait_until(pilot, lambda: table.row_count == 2, timeout=WAIT)
+            shown = screen.query_one("#wiki-drafts-diff", Static)
+            screen._display_diff(old.slug)
+            assert await wait_until(pilot, gate.entered.is_set, timeout=WAIT)
+            screen._display_diff(new.slug)
+            assert await wait_until(pilot, lambda: "+new diff" in str(shown.render()), timeout=WAIT)
+            gate.release.set()
+            assert await wait_until(pilot, gate.done.is_set, timeout=WAIT)
+            assert not await comes(pilot, lambda: "+old diff" in str(shown.render()))
+            assert "+new diff" in str(shown.render())
+
+
+async def test_a_slow_older_drafts_reload_never_overwrites_a_newer_one(tmp_path: Path) -> None:
+    _wiki(tmp_path)
+    gate = _Gate()
+    old, new = _draft(tmp_path, "summaries/old"), _draft(tmp_path, "summaries/new")
+    calls: list[int] = []
+
+    def scan(_root: Path) -> list[DraftInfo]:
+        calls.append(len(calls))
+        if len(calls) > 1:
+            return [new]
+        gate.hold()
+        return [old]
+
+    app = _Host()
+    with patch.object(drafts_mod, "list_drafts", scan):
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = WikiDraftsScreen()
+            await app.push_screen(screen)
+            assert await wait_until(pilot, gate.entered.is_set, timeout=WAIT)
+            screen.reload()
+            assert await wait_until(pilot, lambda: _row_keys(screen) == [new.slug], timeout=WAIT)
+            gate.release.set()
+            assert await wait_until(pilot, gate.done.is_set, timeout=WAIT)
+            assert not await comes(pilot, lambda: old.slug in _row_keys(screen))
+            assert _row_keys(screen) == [new.slug]
+
+
+@pytest.mark.parametrize("read", ["page", "stub", "wipe"])
+async def test_a_read_that_raises_in_a_worker_reaches_the_user(
+    tmp_path: Path, read: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Pages on disk make the wipe offer answer without reading the store.
+    _wiki(tmp_path, pages=read != "wipe")
+    notes: list[tuple[str, str | None]] = []
+
+    def broken(*_: Any, **__: Any) -> Any:
+        raise PermissionError("denied")
+
+    store = SimpleNamespace(wiki_chunk_sources=broken, wiki_citation_sources=broken)
+    services = SimpleNamespace(store=store)
+    app = _Host()
+    app.notify = lambda message, **kw: notes.append((str(message), kw.get("severity")))  # type: ignore[method-assign,assignment]
+    with (
+        patch.object(browse, "read_page", broken if read == "page" else browse.read_page),
+        patch.object(
+            wiki_mod, "_describe_sources", broken if read == "stub" else wiki_mod._describe_sources
+        ),
+        patch.object(wiki_mod, "get_services", lambda: services),
+        caplog.at_level("WARNING"),
+    ):
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open_wiki(app)
+            tree = screen.query_one("#wiki-page-list", Tree)
+            assert await wait_until(pilot, lambda: bool(_labels(tree)), timeout=WAIT)
+            if read == "page":
+                screen._display_page("summaries/test-doc")
+            elif read == "stub":
+                screen._open_stub(_stub())
+            else:
+                wiki_mod.confirm_wiki_wipe(app)
+            assert await wait_until(
+                pilot, lambda: any(sev == "error" for _, sev in notes), timeout=WAIT
+            )
+            assert not isinstance(app.screen, ConfirmDialog)
+    assert any("denied" in text for text, _ in notes)
+    assert any("Wiki read failed" in record.getMessage() for record in caplog.records)

@@ -700,6 +700,7 @@ WIKI_STUB_CONFIRM_MESSAGE = (
 WIKI_STUB_TASK = "Write {label}"
 WIKI_STUB_DONE = "Wrote {label}"
 WIKI_STUB_FAILED = "Could not write {label}: {error}"
+WIKI_READ_FAILED = "Could not read the wiki: {error}"
 WIKI_STUB_STALE = "Nothing left to write {label} from; its sources are gone"
 WIKI_WIPE_CONFIRM_TITLE = "Delete the wiki?"
 WIKI_WIPE_CONFIRM_MESSAGE = (
