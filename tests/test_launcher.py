@@ -166,6 +166,17 @@ def test_keyboard_interrupt_restores_cursor_and_exits_130(
     assert INTERRUPTED_EXIT_STATUS == 130
 
 
+def _status_of_main() -> int | str | None:
+    """Run the launcher and return its exit status; an interrupt that leaves it fails by name."""
+    try:
+        launcher.main()
+    except KeyboardInterrupt:
+        pytest.fail("the interrupt left the launcher")
+    except SystemExit as ended:
+        return ended.code
+    pytest.fail("the launcher returned instead of ending the process")
+
+
 def test_a_one_shot_command_ends_quietly_with_130_on_ctrl_c(
     monkeypatch: pytest.MonkeyPatch, _no_completion_env: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -174,10 +185,7 @@ def test_a_one_shot_command_ends_quietly_with_130_on_ctrl_c(
     fake_app.side_effect = KeyboardInterrupt
     monkeypatch.setattr(sys, "argv", ["lilbee", "status"])
 
-    with pytest.raises(SystemExit) as exc:
-        launcher.main()
-
-    assert exc.value.code == INTERRUPTED_EXIT_STATUS
+    assert _status_of_main() == INTERRUPTED_EXIT_STATUS
     assert capsys.readouterr().err == ""
 
 
@@ -190,9 +198,7 @@ def test_a_one_shot_interrupt_ends_through_the_bounded_end(
     monkeypatch.setattr("lilbee.app.services.end_command", ended)
     monkeypatch.setattr(sys, "argv", ["lilbee", "sync"])
 
-    with pytest.raises(SystemExit):
-        launcher.main()
-
+    assert _status_of_main() == INTERRUPTED_EXIT_STATUS
     ended.assert_called_once()
     assert ended.call_args.args[0].code == INTERRUPTED_EXIT_STATUS
 

@@ -11,21 +11,18 @@ from lilbee.runtime.cancellation import INTERRUPTED_EXIT_STATUS
 
 _SOURCE_ROOT = Path(lilbee.__file__).parent
 _SIGINT_SUM = ("128 + signal.SIGINT", "128 + int(signal.SIGINT)")
+_ENDING_CALLS = ("SystemExit", "typer.Exit", "sys.exit", "os._exit")
 
 
 def _defines_the_status(tree: ast.AST) -> bool:
     """True when the tree assigns 130 or 128 + SIGINT, or ends a command with the literal 130."""
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
+        if isinstance(node, ast.Assign | ast.AnnAssign):
             if isinstance(node.value, ast.Constant) and node.value.value == 130:
                 return True
             if isinstance(node.value, ast.BinOp) and ast.unparse(node.value) in _SIGINT_SUM:
                 return True
-        elif isinstance(node, ast.Call) and ast.unparse(node.func) in (
-            "SystemExit",
-            "typer.Exit",
-            "sys.exit",
-        ):
+        elif isinstance(node, ast.Call) and ast.unparse(node.func) in _ENDING_CALLS:
             if any(isinstance(arg, ast.Constant) and arg.value == 130 for arg in node.args):
                 return True
     return False
@@ -52,7 +49,16 @@ def test_the_census_sees_each_way_to_define_the_status() -> None:
         "import signal\nX = 128 + signal.SIGINT",
         "raise SystemExit(130)",
         "raise typer.Exit(130)",
+        "os._exit(130)",
+        "X: int = 130",
+        "import signal\nX: int = 128 + signal.SIGINT",
     ):
         assert _defines_the_status(ast.parse(text)), text
-    for text in ("X = 7", "raise SystemExit(1)", "X = 128 + signal.SIGTERM"):
+    for text in (
+        "X = 7",
+        "raise SystemExit(1)",
+        "X = 128 + signal.SIGTERM",
+        "X: int",
+        "os._exit(1)",
+    ):
         assert not _defines_the_status(ast.parse(text)), text
