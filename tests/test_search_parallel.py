@@ -9,6 +9,7 @@ from contextvars import ContextVar
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 import pytest
 
 from lilbee.core.config import cfg
@@ -261,3 +262,29 @@ def test_a_chunk_found_by_several_searches_is_kept_once(monkeypatch: pytest.Monk
     rows = rig.searcher._candidates(QUESTION, TOP_K, None, [])
 
     assert [row.source for row in rows] == ["same.md"]
+
+
+def test_each_variant_search_gets_its_own_vector(monkeypatch: pytest.MonkeyPatch) -> None:
+    variant_vecs = {"variant a": [0.1] * 8, "variant b": [0.2] * 8}
+    rig = _build(monkeypatch, concept_graph=True)
+    rig.concepts.expand_query.return_value = list(variant_vecs)
+    question_vec = np.full(8, 0.9, dtype=np.float32)
+    rig.searcher._embedder.embed_query.return_value = question_vec
+    rig.searcher._embedder.embed_query_batch.side_effect = lambda texts, **kw: [
+        np.array(variant_vecs[t], dtype=np.float32) for t in texts
+    ]
+    seen: dict[str | None, Any] = {}
+
+    def search(vec: Any, top_k: int, query_text: str | None, chunk_type: Any) -> list[Any]:
+        seen[query_text] = vec
+        return _hit(query_text)
+
+    rig.store.search.side_effect = search
+
+    rig.searcher.search_report(QUESTION, top_k=TOP_K)
+
+    assert seen[QUESTION] is not None
+    assert np.allclose(seen[QUESTION], question_vec)
+    for text, expected in variant_vecs.items():
+        assert seen[text] is not None
+        assert np.allclose(seen[text], expected), text

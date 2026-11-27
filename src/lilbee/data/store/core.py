@@ -40,6 +40,7 @@ from lilbee.core.config import (
 )
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.security import write_private_text
+from lilbee.core.structural import is_structural_chunk
 from lilbee.core.vectors import Vector
 from lilbee.core.web_names import is_web_source
 from lilbee.providers.base import ProviderError
@@ -488,6 +489,24 @@ _TERM_SCAN_BATCH_ROWS = 20_000
 _TITLE_FETCH_FACTOR = 20
 _TITLE_MIN_FETCH = 200
 _TITLE_FETCH_CEILING = 4096
+
+
+def _title_representatives(
+    rows: Iterable[SearchChunk], *, skip_structural: bool
+) -> dict[str, SearchChunk]:
+    """The first chunk of each source, or its first non-structural chunk when asked."""
+    first: dict[str, SearchChunk] = {}
+    prose: dict[str, SearchChunk] = {}
+    for row in rows:
+        seen = first.get(row.source)
+        if seen is None or row.chunk_index < seen.chunk_index:
+            first[row.source] = row
+        if skip_structural and not is_structural_chunk(row.chunk):
+            seen = prose.get(row.source)
+            if seen is None or row.chunk_index < seen.chunk_index:
+                prose[row.source] = row
+    return {source: prose.get(source, row) for source, row in first.items()}
+
 
 # Bounds the fetch that settles a tie across a search limit, so a term in every
 # chunk of a huge corpus cannot make one query read all of them.
@@ -2739,6 +2758,9 @@ class Store:
         source to one deterministic representative (its first chunk), and returns
         the top *limit* documents ordered by title score -- so "a query naming a
         document by title surfaces its chunks" holds as one stable row per doc.
+        With ``filter_structural_chunks`` on, the representative is the first
+        chunk that is not a table of contents or cover page; a document with no
+        such chunk keeps its first chunk.
 
         Empty when the store predates the title column or its FTS index (old
         indexes keep working), when the index registry is unusable, and on
@@ -2759,12 +2781,9 @@ class Store:
             except Exception:
                 log.debug("Title arm search failed; contributing no title rows", exc_info=True)
                 return []
-            rows = _id_chunks(hits)
-            best: dict[str, SearchChunk] = {}
-            for row in rows:
-                seen = best.get(row.source)
-                if seen is None or row.chunk_index < seen.chunk_index:
-                    best[row.source] = row
+            best = _title_representatives(
+                _id_chunks(hits), skip_structural=self._config.filter_structural_chunks
+            )
             if len(best) >= limit or len(hits) < fetch or fetch >= _TITLE_FETCH_CEILING:
                 break
             fetch = min(fetch * 4, _TITLE_FETCH_CEILING)

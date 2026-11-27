@@ -19,6 +19,7 @@ from lilbee.core.config import Config
 from lilbee.core.config.enums import ChatMode
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.llm_json import json_reply_format
+from lilbee.core.structural import is_structural_chunk
 from lilbee.core.vectors import Vector
 from lilbee.data.store import (
     INGEST_FAILURES,
@@ -97,7 +98,6 @@ from lilbee.retrieval.query.intent import (
 )
 from lilbee.retrieval.query.memory import format_memory_block, memory_to_chunk
 from lilbee.retrieval.query.neighbors import NeighborCache, expand_neighbors
-from lilbee.retrieval.query.structural import is_structural_chunk
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
 from lilbee.retrieval.reasoning import (
     RetrievalNotice,
