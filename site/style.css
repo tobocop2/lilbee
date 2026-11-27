@@ -850,6 +850,36 @@ footer .meta { text-align: right; font-size: 12px; }
   color: var(--accent);
   text-shadow: 0 0 9px rgba(235, 188, 186, 0.08);
 }
+/* The bee is two layers on one character grid: the body (legs included) and
+   the wings, so the wings can flutter alone. Each part takes a Rose Pine hue. */
+.bee { position: relative; }
+.bee pre { margin: 0; }
+.bee-wings { position: absolute; inset: 0; }
+.bee .bz { color: var(--gold); }
+.bee .bs { color: var(--iris); }
+.bee .bw { color: var(--trust); }
+.bee .be { color: var(--accent); }
+@keyframes bee-hover {
+  0%, 100% { transform: translate(0, 0) rotate(0deg); }
+  50%      { transform: translate(-3px, -6px) rotate(-2deg); }
+}
+@keyframes bee-flutter {
+  0%{ transform: scaleY(1); opacity: 1; } 5%{ transform: scaleY(.72); opacity: .7; }
+  10%{ transform: scaleY(1); opacity: 1; } 15%{ transform: scaleY(.72); opacity: .7; }
+  20%{ transform: scaleY(1); opacity: 1; } 25%{ transform: scaleY(.72); opacity: .7; }
+  30%{ transform: scaleY(1); opacity: 1; } 35%{ transform: scaleY(.72); opacity: .7; }
+  40%{ transform: scaleY(1); opacity: 1; } 45%{ transform: scaleY(.72); opacity: .7; }
+  50%{ transform: scaleY(1); opacity: 1; } 55%{ transform: scaleY(.72); opacity: .7; }
+  60%{ transform: scaleY(1); opacity: 1; } 65%{ transform: scaleY(.72); opacity: .7; }
+  70%{ transform: scaleY(1); opacity: 1; } 75%{ transform: scaleY(.72); opacity: .7; }
+  80%{ transform: scaleY(1); opacity: 1; } 85%{ transform: scaleY(.72); opacity: .7; }
+  90%{ transform: scaleY(1); opacity: 1; } 95%{ transform: scaleY(.72); opacity: .7; }
+  100% { transform: scaleY(1); opacity: 1; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .bee       { transform-origin: 50% 60%; animation: bee-hover 2.6s ease-in-out infinite; }
+  .bee-wings { transform-origin: 50% 50%; animation: bee-flutter 1.6s ease-in-out infinite; }
+}
 
 /* tutorial reel ---------------------------------------------------------- */
 .tutorial { margin: 0.3rem 0 1.8rem; }
