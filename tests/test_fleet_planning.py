@@ -2826,6 +2826,26 @@ class TestResolveDevicesProbeFailureWarning:
         with pytest.raises(ProviderError, match="no CUDA-capable device"):
             planning_mod.resolve_devices(Path("/bin/llama-server"), engine=LLAMA)
 
+    def test_resolve_devices_raises_when_runtime_cuda_module_enumerates_no_device(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.fleet import cuda_runtime
+
+        (tmp_path / "libggml-cuda.so").write_bytes(b"")
+        binary = tmp_path / "llama-server"
+        binary.write_bytes(b"")
+        monkeypatch.setattr(cuda_runtime.sys, "platform", "linux")
+        monkeypatch.setattr(
+            llama_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([], "Available devices:\n", spoke_protocol=True),
+        )
+        monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
+        monkeypatch.setattr(cuda_runtime, "ldd_output", lambda *_a: "")
+        with pytest.raises(ProviderError, match="no CUDA-capable device"):
+            planning_mod.resolve_devices(binary, engine=LLAMA)
+
     def test_an_engine_that_never_answered_is_not_accused_of_a_broken_driver(
         self, monkeypatch
     ) -> None:

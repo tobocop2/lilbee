@@ -192,3 +192,160 @@ def test_cuda_wheel_lib_dirs_collects_only_installed(monkeypatch: pytest.MonkeyP
     }
     monkeypatch.setattr(cuda_runtime, "_wheel_lib_dir", lambda name: found[name])
     assert cuda_runtime._cuda_wheel_lib_dirs() == [Path("/r/lib"), Path("/n/lib")]
+
+
+def _engine_dir(tmp_path: Path, *names: str) -> Path:
+    """An engine binary in *tmp_path* with the named files beside it."""
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"")
+    return binary
+
+
+def _no_ldd(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(engine_diagnostics.shutil, "which", lambda _name: None)
+
+
+def test_runtime_cuda_module_beside_engine_marks_a_cuda_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ldd_returns(monkeypatch, _NO_CUDA)
+    binary = _engine_dir(tmp_path, "libggml-cuda.so")
+    assert cuda_runtime._is_cuda_build(binary, {}) is True
+
+
+def test_versioned_runtime_cuda_module_marks_a_cuda_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ldd_returns(monkeypatch, _NO_CUDA)
+    binary = _engine_dir(tmp_path, "libggml-cuda.so.0.15.1")
+    assert cuda_runtime._is_cuda_build(binary, {}) is True
+
+
+def test_names_that_only_resemble_the_cuda_module_do_not_mark_a_cuda_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ldd_returns(monkeypatch, _NO_CUDA)
+    binary = _engine_dir(
+        tmp_path, "libggml-cuda.txt", "libggml-cuda.so.bak", "libggml-vulkan.so", "libggml-cpu.so"
+    )
+    assert cuda_runtime._is_cuda_build(binary, {}) is False
+
+
+def test_cuda_module_in_parent_directory_is_not_searched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ldd_returns(monkeypatch, _NO_CUDA)
+    (tmp_path / "libggml-cuda.so").write_bytes(b"")
+    (tmp_path / "bin").mkdir()
+    binary = _engine_dir(tmp_path / "bin")
+    assert cuda_runtime._is_cuda_build(binary, {}) is False
+
+
+def test_cuda_module_marks_a_cuda_build_without_ldd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_ldd(monkeypatch)
+    binary = _engine_dir(tmp_path, "libggml-cuda.so")
+    assert cuda_runtime._is_cuda_build(binary, {}) is True
+
+
+def test_unreadable_engine_directory_falls_back_to_ldd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ldd_returns(monkeypatch, _LINKS_CUDA)
+    binary = tmp_path / "missing" / "llama-server"
+    assert cuda_runtime._is_cuda_build(binary, {}) is True
+
+
+def test_assert_raises_for_runtime_cuda_module_with_no_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_linux(monkeypatch)
+    _ldd_returns(monkeypatch, _NO_CUDA)
+    monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [])
+    binary = _engine_dir(tmp_path, "libggml-cuda.so")
+    cuda_err = "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected"
+    with pytest.raises(ProviderError, match="failed to initialize CUDA"):
+        assert_cuda_devices_usable(binary, [], cuda_err + "\n")
+
+
+def test_cuda_runtime_env_adds_wheel_dirs_for_runtime_cuda_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_linux(monkeypatch)
+    _ldd_returns(monkeypatch, _NO_CUDA)
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    wheel = Path("/wheel/lib")
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [wheel])
+    binary = _engine_dir(tmp_path, "libggml-cuda.so")
+    assert cuda_runtime_env(binary) == {
+        "LD_LIBRARY_PATH": os.pathsep.join([str(tmp_path), str(wheel)])
+    }
+
+
+def test_cuda_runtime_env_skips_wheel_dirs_when_runtime_ships_beside_a_cuda_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_linux(monkeypatch)
+    _ldd_returns(monkeypatch, _NO_CUDA)
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [Path("/wheel/lib")])
+    binary = _engine_dir(tmp_path, "libggml-cuda.so", "libcudart.so.12")
+    assert cuda_runtime_env(binary) == {"LD_LIBRARY_PATH": str(tmp_path)}
+
+
+def _record_ldd(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Path, dict[str, str]]]:
+    """Replace ``ldd_output`` with a recorder that reports a non-CUDA link list."""
+    calls: list[tuple[Path, dict[str, str]]] = []
+
+    def fake(binary: Path, env: dict[str, str]) -> str:
+        calls.append((binary, env))
+        return _NO_CUDA
+
+    monkeypatch.setattr(cuda_runtime, "ldd_output", fake)
+    return calls
+
+
+def test_is_cuda_build_asks_ldd_about_the_binary_under_the_given_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _record_ldd(monkeypatch)
+    binary = _engine_dir(tmp_path)
+    env = {"LD_LIBRARY_PATH": "/engine/lib"}
+    assert cuda_runtime._is_cuda_build(binary, env) is False
+    assert calls == [(binary, env)]
+
+
+def test_cuda_runtime_env_asks_ldd_under_the_process_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_linux(monkeypatch)
+    calls = _record_ldd(monkeypatch)
+    monkeypatch.setenv("LILBEE_TEST_MARKER", "present")
+    binary = _engine_dir(tmp_path)
+    cuda_runtime_env(binary)
+    assert len(calls) == 1
+    asked_binary, asked_env = calls[0]
+    assert asked_binary == binary
+    assert asked_env == dict(os.environ)
+    assert asked_env["LILBEE_TEST_MARKER"] == "present"
+
+
+def test_assert_asks_ldd_under_the_environment_with_the_engine_library_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_linux(monkeypatch)
+    calls = _record_ldd(monkeypatch)
+    monkeypatch.setenv("LILBEE_TEST_MARKER", "present")
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [])
+    binary = _engine_dir(tmp_path)
+    assert_cuda_devices_usable(binary, [], "")
+    # The first question comes from cuda_runtime_env; the last one is the check itself.
+    asked_binary, asked_env = calls[-1]
+    assert asked_binary == binary
+    assert asked_env["LD_LIBRARY_PATH"] == str(tmp_path)
+    assert asked_env["LILBEE_TEST_MARKER"] == "present"
