@@ -15,6 +15,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+import pytest
 from packaging.requirements import Requirement
 
 from lilbee.providers.factory import sdk_library
@@ -88,6 +89,27 @@ def test_typer_floor_is_the_first_release_that_installs_and_runs_with_lilbee() -
     for version in refused:
         assert not req.specifier.contains(version), version
     assert req.specifier.contains("0.26.3")
+
+
+@pytest.mark.parametrize(
+    ("name", "below", "floor"),
+    [
+        # A finished server app stays alive on 2.24.0 (litestar-org/litestar#4876).
+        ("litestar", "2.24.0", "2.25.0"),
+        # 0.49.0 returns from a failed lifespan startup instead of exiting.
+        ("uvicorn", "0.49.0", "0.50.0"),
+        # 2.11.3 imports markupsafe.soft_unicode, which current markupsafe lacks.
+        ("jinja2", "2.11.3", "3.0.0"),
+        # 5.9.8 has no Process.net_connections().
+        ("psutil", "5.9.8", "6.0.0"),
+    ],
+)
+def test_the_floor_is_the_first_release_the_minimum_versions_job_passes_on(
+    name: str, below: str, floor: str
+) -> None:
+    req = _base_requirement(name)
+    assert not req.specifier.contains(below)
+    assert req.specifier.contains(floor)
 
 
 def test_qa_matrix_excludes_vulnerable_anyio() -> None:
