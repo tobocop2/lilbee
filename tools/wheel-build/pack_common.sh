@@ -59,12 +59,13 @@ assert_libraries_resolve() {  # binary [host-library-pattern]
   [ -z "${missing}" ] || { echo "${1##*/} has an unresolved library" >&2; echo "${missing}"; return 1; }
 }
 
-# Print one file of the dist-info folder of a wheel with LF line ends: a Windows build writes CRLF.
+# Print one file of the dist-info folder of a wheel with LF line ends: a Windows build writes CRLF. The folder of the
+# wheel is at the top of the archive; a bundled interpreter holds more dist-info folders below it.
 dist_info() {  # wheel file
   python -c 'import pathlib, sys, zipfile
 z = zipfile.ZipFile(sys.argv[1])
 paths = [pathlib.PurePosixPath(n) for n in z.namelist()]
-(path,) = [p for p in paths if p.name == sys.argv[2] and p.parent.suffix == ".dist-info"]
+(path,) = [p for p in paths if p.name == sys.argv[2] and p.parent.suffix == ".dist-info" and len(p.parts) == 2]
 sys.stdout.buffer.write(b"\n".join(z.read(str(path)).splitlines()) + b"\n")' "$1" "$2"
 }
 
