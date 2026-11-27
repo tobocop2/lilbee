@@ -100,3 +100,22 @@ class TestMcpUsesTheSharedCheck:
             result = await add([str(src)])
         assert result == {"error": _REFUSAL}
         run_sync.assert_not_called()
+
+
+class TestBadModeThroughEachEntryPoint:
+    def test_add_handler_refuses_a_bad_mode_by_option(self):
+        """The add route's body model rejects a bad mode first; the handler still checks."""
+        from lilbee.server import handlers
+
+        with pytest.raises(ValueError, match=r"ocr must be one of auto, all, off; got 'bogus'"):
+            handlers.validate_add_paths({"paths": ["notes.txt"], "ocr": "bogus"})
+
+    async def test_mcp_sync_refuses_a_bad_mode_by_option(self):
+        result = await sync(ocr="bogus")
+        assert result == {"error": "ocr must be one of auto, all, off; got 'bogus'"}
+
+    async def test_mcp_add_refuses_a_bad_mode_by_option(self, tmp_path):
+        src = tmp_path / "file.txt"
+        src.write_text("content", encoding="utf-8")
+        result = await add([str(src)], ocr="bogus")
+        assert result == {"error": "ocr must be one of auto, all, off; got 'bogus'"}
