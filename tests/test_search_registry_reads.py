@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shutil
-import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -52,24 +51,26 @@ def store(tmp_path: Path) -> Store:
 
 
 @contextmanager
-def _registry_reads(*, unusable: bool = False) -> Iterator[list[Any]]:
-    """The value of each registry read a search arm makes; index upkeep reads are not counted."""
+def _registry_reads(store: Store, *, unusable: bool = False) -> Iterator[list[Any]]:
+    """The value of each registry read a search makes; index upkeep is switched off."""
     seen: list[Any] = []
     real = core._index_registry
 
     def counted(table: Any, lancedb_dir: Path) -> Any:
         value = None if unusable else real(table, lancedb_dir)
-        if "ensure_scalar_indexes" not in {f.name for f in traceback.extract_stack()}:
-            seen.append(value)
+        seen.append(value)
         return value
 
-    with mock.patch.object(core, "_index_registry", counted):
+    with (
+        mock.patch.object(store, "ensure_scalar_indexes"),
+        mock.patch.object(core, "_index_registry", counted),
+    ):
         yield seen
 
 
 @pytest.mark.parametrize("scope", [None, ChunkType.RAW])
 def test_hybrid_query_reads_the_index_registry_once(store: Store, scope: ChunkType | None) -> None:
-    with _registry_reads() as reads:
+    with _registry_reads(store) as reads:
         rows = store.search(_QUERY, top_k=3, query_text="zebra", chunk_type=scope)
 
     assert len(reads) == 1
@@ -78,7 +79,7 @@ def test_hybrid_query_reads_the_index_registry_once(store: Store, scope: ChunkTy
 
 def test_both_arms_see_the_one_registry_read(store: Store) -> None:
     with (
-        _registry_reads() as reads,
+        _registry_reads(store) as reads,
         mock.patch.object(store, "_title_arm", wraps=store._title_arm) as title_arm,
         mock.patch.object(store, "_vector_arm", wraps=store._vector_arm) as vector_arm,
     ):
@@ -90,7 +91,7 @@ def test_both_arms_see_the_one_registry_read(store: Store) -> None:
 
 def test_an_unusable_registry_is_read_once_and_the_query_is_served(store: Store) -> None:
     with (
-        _registry_reads(unusable=True) as reads,
+        _registry_reads(store, unusable=True) as reads,
         mock.patch.object(core, "_ann_nprobes", wraps=core._ann_nprobes) as nprobes,
     ):
         rows = store.search(_QUERY, top_k=3, query_text="zebra")
@@ -101,7 +102,7 @@ def test_an_unusable_registry_is_read_once_and_the_query_is_served(store: Store)
 
 
 def test_a_vector_only_query_reads_the_index_registry_once(store: Store) -> None:
-    with _registry_reads() as reads:
+    with _registry_reads(store) as reads:
         store.search(_QUERY, top_k=3)
 
     assert len(reads) == 1
@@ -109,7 +110,7 @@ def test_a_vector_only_query_reads_the_index_registry_once(store: Store) -> None
 
 def test_index_loss_between_queries_is_noticed(store: Store) -> None:
     table = store.open_table(CHUNKS_TABLE)
-    with _registry_reads() as reads:
+    with _registry_reads(store) as reads:
         store.search(_QUERY, top_k=3, query_text="zebra")
         shutil.rmtree(_indices_dir(table, store._config.lancedb_dir))
         rows = store.search(_QUERY, top_k=3, query_text="zebra")
