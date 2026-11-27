@@ -18,17 +18,18 @@ from collections.abc import (
     Iterable,
     Iterator,
     Mapping,
+    Sequence,
 )
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from itertools import count
+from itertools import accumulate, count
 from pathlib import Path
 from typing import Any, ParamSpec, TypeVar, cast
 
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
-    Progress,
     SpinnerColumn,
     TimeElapsedColumn,
 )
@@ -36,8 +37,14 @@ from rich.progress import (
 from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import Config, active_config
+from lilbee.core.vectors import Vector
 from lilbee.core.web_names import is_web_source
-from lilbee.data.extract.chunk import ChunkLimitError
+from lilbee.data.extract.chunk import (
+    ChunkLimitError,
+    EmbedWarmError,
+    check_embed_window,
+    count_embed_tokens,
+)
 from lilbee.data.extract.document import (
     extract_batching,
     ingest_archive,
@@ -57,6 +64,7 @@ from lilbee.data.ingest.adaptive import (
 )
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import (
+    CorpusScan,
     ExclusionReason,
     archive_content_types,
     classify_file,
@@ -66,7 +74,7 @@ from lilbee.data.ingest.discovery import (
     resolve_source_path,
     resolve_source_root,
 )
-from lilbee.data.ingest.errors import error_reason
+from lilbee.data.ingest.errors import OVERFLOW_REASON, error_reason, log_reason
 from lilbee.data.ingest.fanout import (
     WORKER_LOG_NAME,
     ShardDone,
@@ -89,6 +97,7 @@ from lilbee.data.store import (
     SOURCE_STAT_UNKNOWN,
     ChunkWrite,
     ConceptRecords,
+    FailedPage,
     HeldOut,
     HeldRecord,
     IndexMismatch,
@@ -100,6 +109,7 @@ from lilbee.data.store import (
     SourceStatBackfill,
     SourceType,
     Store,
+    failed_pages,
     source_stat,
 )
 from lilbee.data.title import derive_title
@@ -111,15 +121,20 @@ from lilbee.data.types import (
     FileToProcess,
     MemberRecords,
     OcrReport,
+    PartialFile,
     ShardId,
     SkippedSource,
     SyncResult,
     _IngestResult,
+    failed_page_lines,
 )
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind, WarmTimeoutError
+from lilbee.providers.fleet.gpu_stats import DeviceLike
+from lilbee.providers.roles import WorkerRole
+from lilbee.providers.truncation import cut_inputs_in_scope, one_truncation_warning
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
-from lilbee.runtime.console import PlainConsole
+from lilbee.runtime.console import PlainConsole, ProgressDisplay, stdout_progress
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
 from lilbee.runtime.lock import (
     LockTimeoutError,
@@ -137,6 +152,7 @@ from lilbee.runtime.progress import (
     ExtractEvent,
     FileDoneEvent,
     FileStartEvent,
+    FileStatus,
     OcrBackendUsed,
     OcrStartEvent,
     ProgressEvent,
@@ -162,14 +178,16 @@ def _max_concurrent() -> int:
     ticking, and still keeps every slot fed.
     """
     from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
-    from lilbee.providers.roles import WorkerRole
 
     config = active_config()
     if ocr_backend() is OcrBackendUsed.VISION:
         fitted = get_services().provider.vision_slot_capacity()
         if fitted is not None:
             return fitted
-        replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
+        replicas = resolve_replica_count(
+            WorkerRole.VISION,
+            gpu_device_count(get_services().engines.for_role(WorkerRole.VISION).adapter),
+        )
         return max(1, replicas * config.vision_ocr_concurrency)
     if config.ingest_max_inflight > 0:
         return config.ingest_max_inflight  # explicit override
@@ -179,35 +197,52 @@ def _max_concurrent() -> int:
     return max(cpu_quota(), embed_inflight_target())
 
 
-async def _rebuild_concept_clusters(
+async def _update_concept_graph(
     added: Collection[str] = (),
     updated: Collection[str] = (),
     removed: Collection[str] = (),
     *,
     full: bool = False,
+    cancel: CancelSignal | None = None,
 ) -> None:
-    """Re-run Leiden clustering after sync. No-op if disabled.
+    """Backfill the sources ingest did not cover, then re-run Leiden. No-op if disabled.
 
-    Removals force a full pass: their rows are already gone, so the touched
-    communities are unrecoverable, and so does a rebuild, which re-ingests every
-    source. Adds and updates recluster incrementally.
+    The backfill gives concept rows to each source indexed while the setting
+    was off (see :mod:`lilbee.retrieval.concepts.backfill`), and says when the
+    stored rows owe a full pass: rows it wrote, or rows an earlier sync wrote
+    and never reclustered. Removals force one too: their rows are already
+    gone, so the touched communities are unrecoverable, and so does a rebuild,
+    which re-ingests every source. Adds and updates recluster incrementally.
+    The backfill's checkpoint is the last step, recorded only after the
+    recluster succeeds, so a sync that stops before it leaves the rows owing a
+    recluster and the next sync runs it. A sync that changed nothing, at the
+    checkpoint, returns before the graph dependencies are imported.
     """
     if not active_config().concept_graph:
         return
     from lilbee.retrieval.concepts import concepts_available
+    from lilbee.retrieval.concepts.backfill import backfill_concepts, concepts_current
 
-    if not concepts_available():
-        return
     try:
-        cg = get_services().concepts
-        if not cg.get_graph():
+        services = get_services()
+        if not (added or updated or removed or full) and concepts_current(services.store):
             return
-        if removed or full:
-            await to_ingest_thread(cg.rebuild_clusters)
-        else:
-            await to_ingest_thread(cg.rebuild_clusters, set(added), set(updated))
+        if not concepts_available():
+            return
+        cg = services.concepts
+        backfill = await to_ingest_thread(
+            backfill_concepts, services.store, cg, [*added, *updated], cancel
+        )
+        owed = backfill is not None and backfill.recluster
+        if (owed or added or updated or removed) and cg.get_graph():
+            if removed or full or owed:
+                await to_ingest_thread(cg.rebuild_clusters)
+            else:
+                await to_ingest_thread(cg.rebuild_clusters, set(added), set(updated))
+        if backfill is not None and backfill.checkpoint is not None:
+            services.store.record_concepts_covered(backfill.checkpoint)
     except Exception:
-        log.warning("Concept cluster rebuild failed", exc_info=True)
+        log.warning("Concept graph update failed", exc_info=True)
 
 
 async def build_entity_records(records: list[ChunkRecord], source_name: str) -> list[dict] | None:
@@ -295,10 +330,12 @@ async def produce_records(
     dataset rows land in ``page_texts_out`` and are written by the same flush.
     The returned metadata (extraction-provided when available, stem-derived title
     otherwise) stamps every record's ``title`` and updates the source row. The OCR
-    report is ``None`` for code and markdown, which never reach OCR.
+    report is ``None`` for code and markdown, which never reach OCR. The failed
+    pages are the ones whose OCR failed.
     """
     records: list[ChunkRecord]
     ocr: OcrReport | None = None
+    failed_pages: tuple[FailedPage, ...] = ()
     page_texts: list[PageTextRecord] = page_texts_out if page_texts_out is not None else []
     if content_type == CODE_CONTENT_TYPE:
         records = await to_ingest_thread(ingest_code_sync, path, source_name, on_progress)
@@ -308,7 +345,7 @@ async def produce_records(
             path, source_name, on_progress, page_texts_out=page_texts
         )
     else:
-        records, meta, ocr = await ingest_document(
+        records, meta, ocr, failed_pages = await ingest_document(
             path,
             source_name,
             content_type,
@@ -318,11 +355,21 @@ async def produce_records(
             cancel=cancel,
         )
 
+    _stamp_title(records, meta)
+    return DocumentRecords(records, meta, ocr, failed_pages)
+
+
+def _stamp_title(records: Iterable[ChunkRecord], meta: SourceMeta) -> None:
+    """Give every record of one source the title of that source's *meta*.
+
+    NULL (not "") for an absent title, so chunk rows match the migration and
+    the _sources table, which both persist absence as NULL. Every record
+    carries the key: the chunk table takes its columns from the first record
+    of a flush batch, so a record without it would drop the title column of
+    its neighbours.
+    """
     for record in records:
-        # NULL (not "") for an absent title, so chunk rows match the migration
-        # and the _sources table, which both persist absence as NULL.
         record["title"] = meta.title or None
-    return DocumentRecords(records, meta, ocr)
 
 
 def _disk_stat(path: Path) -> SourceStat | None:
@@ -855,6 +902,8 @@ class _StreamedPlan:
     unchanged: int = 0
     # Files a held-out record held out of this run, in plan order (ordered set).
     held_out: dict[str, None] = field(default_factory=dict)
+    # Planned file → the sources it wrote with pages whose OCR failed.
+    partial: dict[str, list[PartialFile]] = field(default_factory=dict)
     planned: int = 0
     # Files this pass's slice holds, from the discovery walk. Fixed before the
     # first batch is planned, so it is what progress is measured against: the
@@ -1003,8 +1052,20 @@ def detect_pending() -> int:
 _EXCLUDED_LOG_SAMPLE = 5
 # The reason held out with a failed file whose failure named none.
 _NO_REASON = "ingestion produced nothing"
+# The cause a retried file keeps when its write to the index failed.
+_NOT_WRITTEN = "the write to the index failed"
+# The cause a retried file keeps when the engine's error had no message.
+_ENGINE_SILENT = "the model engine failed without a message"
+# The longest cause a retried file keeps.
+_RETRY_REASON_LIMIT = 200
 # The text a rebuild embeds once to prove the embedder answers before it drops an index.
 _REBUILD_PROBE = "lilbee"
+# The chunk settings in force when the running sync started. Each sync sets it before
+# it chunks, and the ingest threads copy it, so the index records the settings the
+# sync cut with, not the ones a settings change made current before the write.
+_SYNC_CHUNK_SETTINGS: ContextVar[Mapping[str, Any] | None] = ContextVar(
+    "lilbee_sync_chunk_settings", default=None
+)
 
 
 def _log_excluded(excluded: dict[str, ExclusionReason]) -> None:
@@ -1028,9 +1089,66 @@ def _describe_failures(store: Store, names: Iterable[str]) -> list[SkippedSource
     ]
 
 
+def _overflow_inputs() -> str:
+    """The settings that decide whether a piece of a file fits the embedding window."""
+    c = active_config()
+    # An embedder with a token cap cuts to it and never reads max_embed_chars.
+    capped = get_services().provider.embed_token_cap(known_only=True) is not None
+    chars = "" if capped else f"max_embed_chars={c.max_embed_chars};"
+    return (
+        f"chunk_size={c.chunk_size};{chars}embedding_model={c.embedding_model};num_ctx={c.num_ctx}"
+    )
+
+
 def _held_hashes(store: Store) -> dict[str, str]:
-    """The content hash each held-out path is held out at, by path."""
-    return {path: record.file_hash for path, record in store.held_records().items()}
+    """The content hash each held-out path is still held out at, by path.
+
+    A retry holds nothing out. A hold written under the overflow settings is dropped
+    once any of them changes, so the next sync plans that file again.
+    """
+    inputs = _overflow_inputs()
+    return {
+        path: record.file_hash
+        for path, record in store.held_records().items()
+        if record.kind is not HeldOut.RETRY and (not record.inputs or record.inputs == inputs)
+    }
+
+
+def _sources_to_plan(
+    existing: dict[str, SourceRecord], disk_files: Mapping[str, Path], *, reread_partial: bool
+) -> dict[str, SourceRecord]:
+    """The source rows to plan against; *reread_partial* makes partly read files plan as changed.
+
+    An archive member's row names its archive as a path prefix, so the archive
+    is read again when any member was partly read.
+    """
+    if not reread_partial:
+        return existing
+    reread = {
+        prefix
+        for row in existing.values()
+        if failed_pages(row)
+        for prefix in accumulate(row["filename"].split("/"), "{}/{}".format)
+    } & disk_files.keys()
+    return {name: _as_changed(row) if name in reread else row for name, row in existing.items()}
+
+
+def _as_changed(row: SourceRecord) -> SourceRecord:
+    """*row* with no stored hash or stat, so the plan processes its file as an update."""
+    changed: SourceRecord = {**row, "file_hash": "", "size_bytes": SOURCE_STAT_UNKNOWN}
+    return changed
+
+
+def _written_partial(
+    partial: dict[str, list[PartialFile]], added: Collection[str], updated: Collection[str]
+) -> list[PartialFile]:
+    """The partly read sources whose planned file reached the index."""
+    return [
+        source
+        for name, sources in partial.items()
+        if name in added or name in updated
+        for source in sources
+    ]
 
 
 async def _corpus_root(store: Store, shard: ShardId | None, *, retry_skipped: bool) -> Path:
@@ -1045,23 +1163,56 @@ async def _corpus_root(store: Store, shard: ShardId | None, *, retry_skipped: bo
     return active_config().data_root
 
 
-def _persist_failures(
-    store: Store, pending_hashes: dict[str, str], reasons: dict[str, str], failed: Iterable[str]
-) -> None:
-    """Hold each of *failed* out of later syncs at the hash this sync planned it at.
+def _retry_reason(reason: str) -> str:
+    """The cause a retried file keeps: its first line of text, no exception type, bounded."""
+    kind, separator, message = reason.partition(": ")
+    if separator and kind.isidentifier():
+        reason = message
+    line = next((text.strip() for text in reason.splitlines() if text.strip(" .")), "")
+    return line.rstrip(".")[:_RETRY_REASON_LIMIT] or _ENGINE_SILENT
 
-    A file that ingests cleanly needs no step: its new source row holds nothing out.
-    A write that cannot take the lock is logged, and those files are tried again next sync.
+
+def _failure_record(digest: str, reason: str, inputs: str) -> HeldRecord:
+    """The hold of a failed file; an embedding overflow keeps the settings it overflowed under."""
+    return HeldRecord(HeldOut.FAILED, digest, reason, inputs if reason == OVERFLOW_REASON else "")
+
+
+def _persist_failures(
+    store: Store,
+    pending_hashes: dict[str, str],
+    reasons: dict[str, str],
+    failed: Iterable[str],
+    retry: Mapping[str, str],
+    shard: ShardId | None,
+) -> None:
+    """Hold each of *failed* out of later syncs, and mark each of *retry* to try again.
+
+    Each record is at the hash this sync planned the file at. A file that ingests
+    cleanly needs no step: its new source row records nothing. Every other retry
+    record of the *shard*'s paths (all paths with no shard) is released, so no
+    record outlives a moved or deleted file. A write that cannot take the lock is
+    logged, and those files are tried again next sync.
     """
+    owns = shard.owns if shard is not None else None
+    inputs = _overflow_inputs()
     held = {
-        name: HeldRecord(HeldOut.FAILED, fhash, reasons.get(name, _NO_REASON))
+        name: _failure_record(fhash, reasons.get(name, _NO_REASON), inputs)
         for name in failed
+        if (fhash := pending_hashes.get(name))
+    }
+    held |= {
+        name: HeldRecord(HeldOut.RETRY, fhash, _retry_reason(cause))
+        for name, cause in retry.items()
         if (fhash := pending_hashes.get(name))
     }
     try:
         _retry_after_lock_timeout(lambda: store.hold_failed(held))
     except LockTimeoutError as error:
         log.error("Could not hold %d failed file(s) out of the next sync: %s", len(held), error)
+    try:
+        _retry_after_lock_timeout(lambda: store.release_retries(retry.keys(), owns))
+    except LockTimeoutError as error:
+        log.error("Could not release the retry records this sync did not renew: %s", error)
 
 
 def _report_index_mismatch(store: Store) -> IndexMismatch | None:
@@ -1071,7 +1222,7 @@ def _report_index_mismatch(store: Store) -> IndexMismatch | None:
     so without this a sync finishes green over an index search refuses. Wiping
     it is the caller's decision, never the sync's.
     """
-    mismatch = store.index_mismatch()
+    mismatch = store.embedding_mismatch()
     if mismatch is None:
         return None
     log.warning("Sync left the index as it is: %s", mismatch)
@@ -1081,31 +1232,59 @@ def _report_index_mismatch(store: Store) -> IndexMismatch | None:
 def _prepare_forced_rebuild(store: Any) -> bool:
     """Ready the index for a forced rebuild; True when the rebuild runs in place (blocking).
 
-    A store with chunks and no embedder mismatch, with or without a stamp, is rebuilt in
-    place and a file that fails keeps its chunks. An empty store, or one built by another
-    embedder, is dropped after one probe request. Memories are re-embedded either way.
-    Run off the event loop.
+    A store with chunks and no embedder mismatch (name or engine), with or without a stamp,
+    is rebuilt in place and a file that fails keeps its chunks. An empty store, or one built
+    by another embedder or engine, is dropped after its memories are re-embedded. Nothing is
+    dropped when the embedder cannot embed the memories. One embed call first measures the
+    width the embedder serves and sets ``embedding_dim`` to it, so a rebuild after a width
+    change is judged and written at that width, and a silent embedder stops the rebuild
+    before it changes the index. Run off the event loop.
     """
-    in_place = store.index_mismatch() is None and (
+    config = active_config()
+    width_before = config.embedding_dim
+    try:
+        return _forced_rebuild_at_served_width(store)
+    except Exception:
+        config.embedding_dim = width_before
+        raise
+
+
+def _forced_rebuild_at_served_width(store: Any) -> bool:
+    """Adopt the width the embedder serves, then drop or keep the index (see the caller)."""
+    embedder = get_services().embedder
+    if embedder.embedding_available():
+        try:
+            embedder.adopt_served_width(_REBUILD_PROBE)
+        except Exception as error:
+            raise _rebuild_stopped(error) from error
+    in_place = store.embedding_mismatch() is None and (
         store.get_meta() is not None or store.count_chunks() > 0
     )
     if not in_place:
         _require_embedding_model()
-    embedder = get_services().embedder
+
+    def embed(texts: list[str]) -> list[Vector]:
+        if not embedder.embedding_available():
+            raise ProviderError(
+                "The embedding model is not available, so the memories cannot be re-embedded.",
+                kind=ProviderErrorKind.NOT_FOUND,
+            )
+        return embedder.embed_batch(texts)
+
     try:
-        refreshed = 0
-        if embedder.embedding_available():
-            refreshed = store.rebuild_memory_embeddings(lambda texts: embedder.embed_batch(texts))
-        if not (in_place or refreshed):
-            embedder.embed_batch([_REBUILD_PROBE])
+        if not in_place or embedder.embedding_available():
+            store.rebuild_memory_embeddings(embed)
     except Exception as error:
-        raise RuntimeError(
-            "Rebuild stopped and the index is unchanged: "
-            f"the embedding model did not answer ({error})."
-        ) from error
+        raise _rebuild_stopped(error) from error
     if not in_place:
         store.drop_all()
     return in_place
+
+
+def _rebuild_stopped(error: Exception) -> RuntimeError:
+    return RuntimeError(
+        f"Rebuild stopped and the index is unchanged: the embedding model did not answer ({error})."
+    )
 
 
 def _reconcile_missing(
@@ -1204,7 +1383,7 @@ def _forget_refused(
 def _finish_in_place_rebuild(store: Store, rules: IgnoreRules, any_failed: bool) -> list[str]:
     """Drop the sources of vanished files; stamp the store when every file was rebuilt."""
     if not any_failed:
-        store.restamp_meta()
+        store.restamp_meta(_SYNC_CHUNK_SETTINGS.get())
     return _forget_vanished(rules)
 
 
@@ -1253,8 +1432,55 @@ def _sources_in_scope(store: Store, shard: ShardId | None) -> list[SourceRecord]
     return store.get_sources_where(shard.owns)
 
 
+@dataclass(frozen=True)
+class _ScannedCorpus:
+    """What a sync reads off the disk and the index before it plans: blocking work."""
+
+    scan: CorpusScan
+    existing_sources: dict[str, SourceRecord]
+    ignored: list[str]
+    refused: list[str]
+    moves: _MovePool
+
+
+def _scan_corpus(
+    store: Store,
+    shard: ShardId | None,
+    rules: IgnoreRules,
+    *,
+    force_rebuild: bool,
+    prune_ignored: bool,
+) -> _ScannedCorpus:
+    """Walk the corpus, read the sources and drop the ones the corpus now refuses.
+
+    Blocking: a sync calls it on the ingest pool so the loop keeps answering requests.
+    """
+    scan = discover_corpus(shard, rules)
+    sources = _sources_in_scope(store, shard)
+    # A rebuild plans every file as new: nothing is unchanged, held out or moved, so each
+    # file is chunked and embedded again and replaces its own chunks when its write lands.
+    existing_sources = {} if force_rebuild else {s["filename"]: s for s in sources}
+    # Opt-in, and corpus-wide: a worker reads one slice of the sources, so it
+    # leaves this pass to the parent.
+    ignored = _forget_ignored(sources, rules) if prune_ignored and shard is None else []
+    # A worker removes only keys from its own slice; the parent reconciles the wiki index.
+    refused = _forget_refused(scan.excluded, existing_sources, forget_in_wiki=shard is None)
+    # Sources whose backing file is not on disk this pass. A vanished file is NOT
+    # removed: it stays indexed and searchable, a dead path-link the user
+    # discovers only when they try to open it, and the set pairs a reappeared
+    # identical file to its old key below. What was just removed leaves the set,
+    # where it could otherwise capture a real move.
+    gone = set(ignored) | set(refused)
+    moves = (
+        _MovePool([], {})
+        if force_rebuild
+        else _move_pool(store, shard, sources, scan.files, gone, rules)
+    )
+    return _ScannedCorpus(scan, existing_sources, ignored, refused, moves)
+
+
 def _require_embedding_model() -> None:
-    """Refuse ingest without an embedding model.
+    """Refuse ingest without an embedding model, or with a window smaller than one chunk.
 
     Ingest has no degraded mode: without one, every chunk fails to embed after
     the run has already paid the parse and OCR cost. Search and chat fall back
@@ -1263,11 +1489,27 @@ def _require_embedding_model() -> None:
     if not get_services().embedder.validate_model():
         ref = active_config().embedding_model
         detail = (
-            f"{ref!r} is not available: pull it, or set a different embedding_model."
+            f"'{ref}' is not available: pull it, or set a different embedding_model."
             if ref
             else "None is configured: pull one and set embedding_model."
         )
         raise RuntimeError(f"Ingest needs an embedding model. {detail}")
+    # A count through the embedder starts its engine, as the first chunk would, so the
+    # window read next is the one the engine serves (TEI's /info), not the launch plan.
+    # When the count fails, the engine is not up: each file then fails on its own count
+    # and the next sync adds it, so the failure here does not stop the sync. An engine
+    # that cannot finish starting at chunk_size stops the sync: every file would fail
+    # the same way. A known window smaller than one chunk is still the first refusal; that
+    # read sends no request, since any request starts the same slow launch again.
+    try:
+        count_embed_tokens("\n")
+    except WarmTimeoutError as exc:
+        check_embed_window(known_only=True)
+        config = active_config()
+        raise EmbedWarmError(config.embedding_model, config.chunk_size, exc.wait_s) from exc
+    except ProviderError:
+        pass
+    check_embed_window()
 
 
 async def _run_post_ingest_passes(
@@ -1284,23 +1526,25 @@ async def _run_post_ingest_passes(
     """Index maintenance, concept clusters, the wiki hook, and the entity lifecycle.
 
     The index pass only runs when this sync indexed something. The concept
-    clusters are recomputed only when a source was added, updated or removed: a
-    relocation changes no co-occurrence. Every sync renders again each wiki
-    page that shows a path its cited source no longer has, so the next sync
-    repairs a page a stopped one left. The wiki hook and the entity lifecycle
-    run every sync (a cheap no-op when off or already current): the wiki index
-    takes what any sync wrote and no refresh read, and turning the entity
-    setting on takes effect without a separate operation.
+    clusters are recomputed only when a source was added, updated or removed,
+    or the stored concept rows owe a recluster: a relocation changes no
+    co-occurrence. The concept backfill runs every sync and costs nothing once
+    it is current, so turning the concept setting on needs no separate
+    operation. Every sync renders again each wiki page that shows a path its
+    cited source no longer has, so the next sync repairs a page a stopped one
+    left. The wiki hook and the entity lifecycle run every sync (a cheap no-op
+    when off or already current): the wiki index takes what any sync wrote and
+    no refresh read, and turning the entity setting on takes effect without a
+    separate operation.
     """
     if indexed_anything:
         store.ensure_fts_index()
         store.ensure_scalar_indexes()
         store.ensure_vector_index()
         store.optimize_sources()
-    if cluster_added or cluster_updated or cluster_removed:
-        await _rebuild_concept_clusters(
-            cluster_added, cluster_updated, cluster_removed, full=recluster_all
-        )
+    await _update_concept_graph(
+        cluster_added, cluster_updated, cluster_removed, full=recluster_all, cancel=cancel
+    )
     await to_ingest_thread(_show_current_paths_in_wiki)
     await _update_wiki(touched, active_config())
 
@@ -1417,6 +1661,7 @@ async def _sync_across_workers(
             failed=len(result.failed),
             skipped=len(result.skipped),
             relocated=len(result.relocated),
+            partial=len(result.partial),
         ),
     )
     return result
@@ -1489,6 +1734,7 @@ def _sync_turn_for(
 
 @_marks_sync_running
 @owns_ingest_pool
+@one_truncation_warning
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
@@ -1506,7 +1752,8 @@ async def sync(
     When *cancel* is set, planning and processing stop between files without
     data loss (completed work is flushed) and CancelledError is raised.
     When *retry_skipped* is set, the records of failed files are released so this
-    sync attempts those files again; *force_rebuild* clears removals too.
+    sync attempts those files again, and partly read files are read again;
+    *force_rebuild* clears removals too.
     When *prune_ignored* is set, sources a ``.lilbeeignore`` now excludes are
     dropped from the index. Off by default: the patterns govern what sync takes
     in, and removing what a past sync already indexed is the caller's decision.
@@ -1515,6 +1762,38 @@ async def sync(
     *started_by* names what started this sync, for the message a sync that waits for
     it shows; ``_marks_sync_running`` reads it.
     """
+    from lilbee.app.settings import reindex_values
+
+    token = _SYNC_CHUNK_SETTINGS.set(reindex_values(active_config()))
+    try:
+        return await _sync(
+            force_rebuild,
+            quiet,
+            on_progress=on_progress,
+            cancel=cancel,
+            retry_skipped=retry_skipped,
+            prune_ignored=prune_ignored,
+            shard=shard,
+            started_by=started_by,
+        )
+    finally:
+        _SYNC_CHUNK_SETTINGS.reset(token)
+
+
+async def _sync(
+    force_rebuild: bool,
+    quiet: bool,
+    *,
+    on_progress: DetailedProgressCallback,
+    cancel: CancelSignal | None,
+    retry_skipped: bool,
+    prune_ignored: bool,
+    shard: ShardId | None,
+    started_by: str,
+) -> SyncResult:
+    """The body of ``sync``, run while the sync's chunk settings snapshot is set."""
+    from lilbee.app.settings import chunk_drift
+
     config = active_config()
     _store = get_services().store
 
@@ -1522,29 +1801,40 @@ async def sync(
         shard is not None or await to_ingest_thread(_prepare_forced_rebuild, _store)
     )
 
-    config.documents_dir.mkdir(parents=True, exist_ok=True)
-    index_mismatch = _report_index_mismatch(_store)
+    await to_ingest_thread(config.documents_dir.mkdir, parents=True, exist_ok=True)
+    index_mismatch = await to_ingest_thread(_report_index_mismatch, _store)
     corpus_root = await _corpus_root(_store, shard, retry_skipped=retry_skipped)
-    if shard is None and (specs := plan_fanout()):
+    # The plan probes the devices and walks the corpus for its size.
+    if shard is None and (specs := await to_ingest_thread(plan_fanout)):
         merged = await _sync_across_workers(
             specs,
             _store,
             prune_ignored=prune_ignored,
-            options=ShardOptions(parent_pid=os.getpid(), rebuild=force_rebuild),
+            options=ShardOptions(
+                parent_pid=os.getpid(), rebuild=force_rebuild, retry_skipped=retry_skipped
+            ),
             rebuild=in_place,
             quiet=quiet,
             on_progress=on_progress,
             cancel=cancel,
         )
-        return merged.model_copy(update={"index_mismatch": index_mismatch})
+        drift = await to_ingest_thread(chunk_drift, config)
+        return merged.model_copy(update={"index_mismatch": index_mismatch, "chunk_drift": drift})
 
-    rules = IgnoreRules.for_corpus(corpus_root)
-    scan = discover_corpus(shard, rules)
-    disk_files = scan.files
-    sources = _sources_in_scope(_store, shard)
-    # A rebuild plans every file as new: nothing is unchanged, held out or moved, so each
-    # file is chunked and embedded again and replaces its own chunks when its write lands.
-    existing_sources = {} if force_rebuild else {s["filename"]: s for s in sources}
+    rules = await to_ingest_thread(IgnoreRules.for_corpus, corpus_root)
+    # The disk walk and the index reads and drops before planning block, so they run
+    # on the ingest pool, not on the loop.
+    corpus = await to_ingest_thread(
+        _scan_corpus, _store, shard, rules, force_rebuild=force_rebuild, prune_ignored=prune_ignored
+    )
+    scan, disk_files, ignored, refused, moves = (
+        corpus.scan,
+        corpus.scan.files,
+        corpus.ignored,
+        corpus.refused,
+        corpus.moves,
+    )
+    existing_sources = corpus.existing_sources
     held_hashes = {} if force_rebuild else await to_ingest_thread(_held_hashes, _store)
 
     failed: dict[str, None] = {}
@@ -1552,26 +1842,9 @@ async def sync(
     skipped: dict[str, OcrReport | None] = dict.fromkeys(scan.excluded)
     # filename → why it was skipped/failed (for reporting)
     reasons: dict[str, str] = {name: why.value for name, why in scan.excluded.items()}
-    retry_next: set[str] = set()
+    # filename → the cause of the engine or write failure the next sync retries
+    retry_next: dict[str, str] = {}
     _log_excluded(scan.excluded)
-
-    # Opt-in, and corpus-wide: a worker reads one slice of the sources, so it
-    # leaves this pass to the parent.
-    ignored = _forget_ignored(sources, rules) if prune_ignored and shard is None else []
-    # A worker removes only keys from its own slice; the parent reconciles the wiki index.
-    refused = _forget_refused(scan.excluded, existing_sources, forget_in_wiki=shard is None)
-
-    # Sources whose backing file is not on disk this pass. A vanished file is NOT
-    # removed: it stays indexed and searchable, a dead path-link the user
-    # discovers only when they try to open it, and the set pairs a reappeared
-    # identical file to its old key below. What was just removed leaves the set,
-    # where it could otherwise capture a real move.
-    gone = set(ignored) | set(refused)
-    moves = (
-        _MovePool([], {})
-        if force_rebuild
-        else _move_pool(_store, shard, sources, disk_files, gone, rules)
-    )
 
     # The planning pass stats (and where needed hashes) every file on disk, batch by
     # batch off the event loop and overlapped with ingest. A brand-new file whose
@@ -1579,11 +1852,14 @@ async def sync(
     # add: repointed in place so its chunks and embeddings are reused, not rebuilt.
     state = _StreamedPlan(corpus_total=len(disk_files))
     added, updated, pending_hashes = state.added, state.updated, state.pending_hashes
-    plan_batches = _plan_batches(disk_files, existing_sources, held_hashes, moves, state, cancel)
-
-    # Snapshot the cumulative truncation counter so the delta over this sync can
-    # surface "N chunks truncated" instead of being lost in per-chunk debug logs.
-    truncated_before = get_services().embedder.truncated_total
+    plan_batches = _plan_batches(
+        disk_files,
+        _sources_to_plan(existing_sources, disk_files, reread_partial=retry_skipped),
+        held_hashes,
+        moves,
+        state,
+        cancel,
+    )
 
     # Ingest files (with optional progress bar). Only non-empty batches are yielded,
     # so the first one arriving is what proves there is work to do.
@@ -1597,7 +1873,7 @@ async def sync(
             from lilbee.providers.fleet.ingest_warmth import keep_fleet_warm
 
             with keep_fleet_warm():
-                _require_embedding_model()
+                await to_ingest_thread(_require_embedding_model)
                 await ingest_stream(
                     _chain_plan_batches(first, plan_batches),
                     added,
@@ -1610,6 +1886,7 @@ async def sync(
                     cancel=cancel,
                     retry_next=retry_next,
                     reasons=reasons,
+                    partial=state.partial,
                 )
         if cancel is not None and cancel.is_set():
             # The stream stops feeding on cancel, so ingest can drain its
@@ -1623,7 +1900,9 @@ async def sync(
 
     # A flush or engine failure is not a verdict on the file: it is planned again next sync.
     held = [name for name in (*failed, *skipped) if name not in retry_next]
-    await to_ingest_thread(_persist_failures, _store, pending_hashes, reasons, held)
+    await to_ingest_thread(
+        _persist_failures, _store, pending_hashes, reasons, held, retry_next, shard
+    )
 
     vanished = (
         await to_ingest_thread(_finish_in_place_rebuild, _store, rules, bool(failed))
@@ -1646,7 +1925,10 @@ async def sync(
     # Reconciliation guard against silent data loss: any on-disk document file that
     # ended up in neither the index nor an accounting set was dropped without a
     # signal. Surface it loudly instead of letting a whole dataset vanish quietly.
-    if missing := _missing_from_index(_store, shard, disk_files, failed, skipped, state.held_out):
+    missing = await to_ingest_thread(
+        _missing_from_index, _store, shard, disk_files, failed, skipped, state.held_out
+    )
+    if missing:
         log.warning(
             "Sync reconciliation: %d document file(s) on disk are absent from the index "
             "with no failure reported (possible silent drop): %s",
@@ -1654,6 +1936,7 @@ async def sync(
             ", ".join(missing[:20]),
         )
 
+    held_out = await to_ingest_thread(_describe_failures, _store, state.held_out)
     result = SyncResult(
         added=list(added),
         updated=list(updated),
@@ -1662,11 +1945,14 @@ async def sync(
         relocated=relocated,
         failed=list(failed),
         skipped=list(skipped),
+        partial=_written_partial(state.partial, added, updated),
+        reasons={name: reasons[name] for name in (*failed, *skipped) if name in reasons},
         skipped_ocr={name: ocr for name, ocr in skipped.items() if ocr is not None},
-        held_out=_describe_failures(_store, state.held_out),
-        truncated=get_services().embedder.truncated_total - truncated_before,
+        held_out=held_out,
+        truncated=cut_inputs_in_scope(),
         unreadable_folders=list(scan.unreadable),
         index_mismatch=index_mismatch,
+        chunk_drift=await to_ingest_thread(chunk_drift, config),
     )
     on_progress(
         EventType.SYNC_DONE,
@@ -1677,13 +1963,14 @@ async def sync(
             failed=len(result.failed),
             skipped=len(result.skipped),
             relocated=len(result.relocated),
+            partial=len(result.partial),
         ),
     )
     return result
 
 
 def _phase_progress_callback(
-    progress: Progress, ptask: Any, chain: DetailedProgressCallback
+    progress: ProgressDisplay, ptask: Any, chain: DetailedProgressCallback
 ) -> DetailedProgressCallback:
     """Wrap *chain*, updating the bar's description on per-page / per-chunk events.
 
@@ -1710,9 +1997,9 @@ def _phase_progress_callback(
     return _callback
 
 
-def _ingest_progress_bar(quiet: bool) -> Progress:
+def _ingest_progress_bar(quiet: bool) -> ProgressDisplay:
     """The transient bar an in-process ingest reports on, disabled when *quiet*."""
-    return Progress(
+    return stdout_progress(
         SpinnerColumn(),
         literal_text_column("{task.description}"),
         BarColumn(),
@@ -1729,8 +2016,23 @@ def _ingest_progress_bar(quiet: bool) -> Progress:
 _TASK_WINDOW_MULTIPLIER = 2
 
 
+def _admission_sizing() -> tuple[int, Sequence[DeviceLike], int]:
+    """The admission baseline, the adaptive devices and the pool's worker count.
+
+    It probes, so run it off the loop. The worker count comes back with the rest so
+    the admission never has to read it on the loop.
+    """
+    profile = profile_for(resolve_mode())
+    devices = (
+        enumerate_fleet_devices(get_services().engines.for_role(WorkerRole.EMBED).adapter)
+        if profile is not None
+        else []
+    )
+    return _max_concurrent(), devices, max_workers()
+
+
 def _build_admission(
-    baseline: int, pages_done: list[int]
+    baseline: int, pages_done: list[int], devices: Sequence[DeviceLike], permit_max: int
 ) -> tuple[asyncio.Semaphore | ResizableGate, int, asyncio.Task[None] | None]:
     """The batch's admission control, plus its task-window size and controller task.
 
@@ -1740,10 +2042,8 @@ def _build_admission(
     no fleet it falls back to the static path so a GPU-less host is never affected.
     """
     profile = profile_for(resolve_mode())
-    devices = enumerate_fleet_devices() if profile is not None else []
     if profile is None or not devices:
         return asyncio.Semaphore(baseline), baseline * _TASK_WINDOW_MULTIPLIER, None
-    permit_max = max_workers()
     gate = ResizableGate(min(baseline, permit_max))
     controller = AdaptiveController(
         gate,
@@ -1762,6 +2062,11 @@ def _build_admission(
     return gate, permit_max * _TASK_WINDOW_MULTIPLIER, task
 
 
+def _done_status(has_failed_pages: bool) -> FileStatus:
+    """The FILE_DONE status of an indexed file: partial when OCR failed on some pages."""
+    return FileStatus.PARTIAL if has_failed_pages else FileStatus.OK
+
+
 def _failed_result(
     exc: Exception,
     entry: FileToProcess,
@@ -1772,18 +2077,24 @@ def _failed_result(
 ) -> _IngestResult:
     """A file's failure as a result, or cancellation when the run is stopping.
 
-    During shutdown, worker pools raise RuntimeError from submit(). Those are
-    cancellation, not ingest failures: the cancel flag is the source of truth,
-    and the executor's shutdown message covers the race where cancel was set
-    after the submit.
+    During shutdown, worker pools raise RuntimeError from submit(). That error
+    is cancellation, not an ingest failure, and stays silent. Any other error
+    that lands after the cancel is a real failure: it is logged here, because
+    the collector replaces this cancel with its own and no result carries the
+    error to :func:`_classify_result`.
     """
-    if (cancel and cancel.is_set()) or is_executor_shutdown(exc):
+    if is_executor_shutdown(exc):
+        raise asyncio.CancelledError from exc
+    if cancel and cancel.is_set():
+        _log_failure(entry.name, exc)
         raise asyncio.CancelledError from exc
     # Suppress TaskCancelledError on the FILE_DONE notice: the user already
     # cancelled, and re-raising here would strand sibling tasks awaiting in
     # _collect_results.
     with contextlib.suppress(TaskCancelledError):
-        on_progress(EventType.FILE_DONE, FileDoneEvent(file=entry.name, status="error", chunks=0))
+        on_progress(
+            EventType.FILE_DONE, FileDoneEvent(file=entry.name, status=FileStatus.ERROR, chunks=0)
+        )
     pages_done[0] += 1  # cleared the gate (as a failure); still a throughput tick
     return _IngestResult(entry.name, entry.path, 0, error=exc)
 
@@ -1803,8 +2114,9 @@ async def _archive_result(
         row for m in members for row in (await build_entity_records(m.records, m.name) or [])
     ]
     chunk_total = sum(len(m.records) for m in members)
+    status = _done_status(any(m.failed_pages and m.records for m in members))
     on_progress(
-        EventType.FILE_DONE, FileDoneEvent(file=entry.name, status="ok", chunks=chunk_total)
+        EventType.FILE_DONE, FileDoneEvent(file=entry.name, status=status, chunks=chunk_total)
     )
     pages_done[0] += max(1, sum(len(m.page_texts) for m in members))
     found = [batch for batch in concept_batches if batch is not None]
@@ -1835,7 +2147,10 @@ def _over_limit_result(
     """A file over the per-file chunk limit, recorded as skipped and held out at its hash."""
     log.warning("Skipped %s: %s", entry.name, exc)
     with contextlib.suppress(TaskCancelledError):
-        on_progress(EventType.FILE_DONE, FileDoneEvent(file=entry.name, status="skipped", chunks=0))
+        on_progress(
+            EventType.FILE_DONE,
+            FileDoneEvent(file=entry.name, status=FileStatus.SKIPPED, chunks=0),
+        )
     pages_done[0] += 1
     return _IngestResult(
         entry.name,
@@ -1878,8 +2193,9 @@ async def ingest_stream(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     cancel: CancelSignal | None = None,
-    retry_next: set[str] | None = None,
+    retry_next: dict[str, str] | None = None,
     reasons: dict[str, str] | None = None,
+    partial: dict[str, list[PartialFile]] | None = None,
 ) -> None:
     """Ingest a stream of planned file batches, optionally showing a Rich progress bar.
 
@@ -1891,6 +2207,9 @@ async def ingest_stream(
     *plan* is the bookkeeping the batches were planned into; it carries the corpus
     the run is measured against. Without it progress is reported with no total,
     since a bare stream of batches does not say what corpus it came from.
+
+    When *partial* is given, each planned file with pages whose OCR failed is
+    recorded there with the sources it wrote and their failed pages.
     """
     # Honor LILBEE_INGEST_TRACE once per batch: it raises the trace loggers above
     # the default WARNING so per-file extraction lines actually surface.
@@ -1907,7 +2226,8 @@ async def ingest_stream(
     # ingest or a rebuild and near zero for an incremental sync, so a small sync
     # over a large corpus stays in-process. Undercounting only keeps a run
     # in-process, which is the safe direction.
-    admission, window, controller_task = _build_admission(_max_concurrent(), pages_done)
+    baseline, devices, permit_max = await to_ingest_thread(_admission_sizing)
+    admission, window, controller_task = _build_admission(baseline, pages_done, devices, permit_max)
     progress = _ingest_progress_bar(quiet)
     # The corpus the discovery walk found, known before the first batch is planned.
     corpus_total = plan.corpus_total if plan is not None else 0
@@ -1938,7 +2258,7 @@ async def ingest_stream(
                 if entry.content_type in archive_content_types():
                     return await _archive_result(entry, on_progress, pages_done, cancel)
                 page_texts: list[PageTextRecord] = []
-                records, meta, ocr = await produce_records(
+                records, meta, ocr, failed_pages = await produce_records(
                     entry.path,
                     name,
                     entry.content_type,
@@ -1951,7 +2271,11 @@ async def ingest_stream(
                 entity_rows = await build_entity_records(records, name)
                 on_progress(
                     EventType.FILE_DONE,
-                    FileDoneEvent(file=name, status="ok", chunks=len(records)),
+                    FileDoneEvent(
+                        file=name,
+                        status=_done_status(bool(failed_pages and records)),
+                        chunks=len(records),
+                    ),
                 )
                 pages_done[0] += max(1, len(page_texts))  # OCR pages cleared: the throughput signal
                 return _IngestResult(
@@ -1968,6 +2292,7 @@ async def ingest_stream(
                     entity_rows=entity_rows,
                     meta=meta,
                     ocr=ocr,
+                    failed_pages=list(failed_pages),
                 )
             except ChunkLimitError as exc:
                 return _over_limit_result(
@@ -2003,6 +2328,7 @@ async def ingest_stream(
                     retry_next=retry_next,
                     reasons=reasons,
                     cancel=cancel,
+                    partial=partial,
                 )
     finally:
         # Stop the adaptive controller (if any) before returning: its background
@@ -2141,11 +2467,12 @@ async def _collect_results(
     *,
     window: int,
     on_progress: DetailedProgressCallback = noop_callback,
-    progress: Progress | None = None,
+    progress: ProgressDisplay | None = None,
     ptask: Any = None,
-    retry_next: set[str] | None = None,
+    retry_next: dict[str, str] | None = None,
     reasons: dict[str, str] | None = None,
     cancel: CancelSignal | None = None,
+    partial: dict[str, list[PartialFile]] | None = None,
 ) -> None:
     """Run *feed* through a bounded task window, batching writes and progress.
 
@@ -2185,11 +2512,15 @@ async def _collect_results(
                     saw_cancel = True
                     continue
                 completed_count += 1
-                status = _classify_result(result, added, updated, failed, skipped, reasons)
-                if retry_next is not None and isinstance(result.error, ProviderError):
+                status = _classify_result(result, added, updated, failed, skipped, reasons, partial)
+                if (
+                    retry_next is not None
+                    and isinstance(result.error, ProviderError)
+                    and not result.error.repeats_on_retry
+                ):
                     # The model engine failed, not the file: a later sync tries it again.
-                    retry_next.add(result.name)
-                if status is BatchStatus.INGESTED:
+                    retry_next[result.name] = error_reason(result.error)
+                if status in _WRITTEN_STATUSES:
                     buffered_chunks = await _buffer_and_maybe_flush(
                         result,
                         buffer,
@@ -2255,7 +2586,7 @@ async def _buffer_and_maybe_flush(
     updated: dict[str, None],
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
-    retry_next: set[str] | None,
+    retry_next: dict[str, str] | None,
     cancel: CancelSignal | None = None,
 ) -> int:
     """Buffer one ingested file, flushing at the chunk threshold; returns the new count."""
@@ -2274,7 +2605,7 @@ async def _flush_to_end(
     updated: dict[str, None],
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
-    retry_next: set[str] | None,
+    retry_next: dict[str, str] | None,
     cancel: CancelSignal | None = None,
 ) -> None:
     """Run :func:`_flush_writes` on the ingest pool; a cancel waits for it, then propagates.
@@ -2308,7 +2639,7 @@ def _report_file_progress(
     completed_count: int,
     total: int,
     on_progress: DetailedProgressCallback,
-    progress: Progress | None,
+    progress: ProgressDisplay | None,
     ptask: Any,
 ) -> None:
     """Advance the Rich bar (when present) and emit one BATCH_PROGRESS event.
@@ -2334,6 +2665,55 @@ def _report_file_progress(
         )
 
 
+# Statuses whose result is buffered for the batched store write.
+_WRITTEN_STATUSES = frozenset({BatchStatus.INGESTED, BatchStatus.PARTIAL})
+
+
+def _partial_files(result: _IngestResult) -> list[PartialFile]:
+    """The sources an indexed *result* wrote with chunks and with failed pages.
+
+    The file itself, or the archive members that have records. A member with
+    failed pages and no records is not partly read: nothing of it is searchable.
+    """
+    own = [PartialFile(result.name, result.failed_pages)] if result.failed_pages else []
+    members = [
+        PartialFile(m.name, list(m.failed_pages))
+        for m in result.members or []
+        if m.failed_pages and m.records
+    ]
+    return own + members
+
+
+def _classify_indexed(
+    result: _IngestResult, partial: dict[str, list[PartialFile]] | None
+) -> BatchStatus:
+    """``PARTIAL`` when OCR failed on pages of an indexed file, else ``INGESTED``."""
+    partial_files = _partial_files(result)
+    if not partial_files:
+        return BatchStatus.INGESTED
+    if partial is not None:
+        partial[result.name] = partial_files
+    return BatchStatus.PARTIAL
+
+
+def _zero_chunk_reason(result: _IngestResult) -> str:
+    """Why a file with no chunks is skipped, followed by its failed pages when it has any."""
+    if result.page_texts:
+        reason = "stored page text only (0 searchable chunks)"
+    elif result.ocr is not None and result.ocr.backend is OcrBackendUsed.NONE:
+        reason = "no text extracted, OCR is off (0 chunks)"
+    else:
+        reason = "no text extracted (0 chunks)"
+    return "; ".join([reason, *failed_page_lines(result.failed_pages)])
+
+
+def _log_failure(name: str, error: BaseException) -> None:
+    """Log a file's ingest failure, with its traceback at DEBUG only."""
+    # A traceback here would bleed into the TUI chat pane; the full trace stays at DEBUG.
+    log.warning("Failed to ingest %s: %s", name, log_reason(error))
+    log.debug("Traceback for failed ingest of %s", name, exc_info=error)
+
+
 def _classify_result(
     result: _IngestResult,
     added: dict[str, None],
@@ -2341,13 +2721,16 @@ def _classify_result(
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
     reasons: dict[str, str] | None = None,
+    partial: dict[str, list[PartialFile]] | None = None,
 ) -> BatchStatus:
     """Record a completed file's outcome and return its batch status.
 
     Failures, refusals and zero-chunk files are tracked here; a successful file is
-    reported as ``INGESTED`` and its chunks are persisted by the batched flush, so
-    it stays in ``added`` / ``updated`` until then. When *reasons* is given, the
-    human-readable cause is recorded there (filename → reason) for reporting.
+    reported as ``INGESTED``, or ``PARTIAL`` when OCR failed on some of its pages,
+    and its chunks are persisted by the batched flush, so it stays in ``added`` /
+    ``updated`` until then. When *reasons* is given, the human-readable cause is
+    recorded there (filename → reason) for reporting. When *partial* is given, a
+    partly read file's sources and failed pages are recorded there under its name.
     """
     if result.skip_reason is not None:
         added.pop(result.name, None)
@@ -2357,9 +2740,7 @@ def _classify_result(
             reasons[result.name] = result.skip_reason
         return BatchStatus.SKIPPED
     if result.error is not None:
-        # A traceback here would bleed into the TUI chat pane; the full trace stays at DEBUG.
-        log.warning("Failed to ingest %s: %s", result.name, result.error)
-        log.debug("Traceback for failed ingest of %s", result.name, exc_info=result.error)
+        _log_failure(result.name, result.error)
         added.pop(result.name, None)
         updated.pop(result.name, None)
         failed[result.name] = None
@@ -2375,14 +2756,9 @@ def _classify_result(
         updated.pop(result.name, None)
         skipped[result.name] = result.ocr
         if reasons is not None:
-            if result.page_texts:
-                reasons[result.name] = "stored page text only (0 searchable chunks)"
-            elif result.ocr is not None and result.ocr.backend is OcrBackendUsed.NONE:
-                reasons[result.name] = "no text extracted, OCR is off (0 chunks)"
-            else:
-                reasons[result.name] = "no text extracted (0 chunks)"
+            reasons[result.name] = _zero_chunk_reason(result)
         return BatchStatus.SKIPPED if not result.page_texts else BatchStatus.INGESTED
-    return BatchStatus.INGESTED
+    return _classify_indexed(result, partial)
 
 
 # Back off briefly before the single flush retry: the usual contender is a
@@ -2452,6 +2828,7 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
                 stat=r.stat,
                 page_texts=cast(list[dict], r.page_texts or []),
                 meta=r.meta,
+                ocr_page_failures=r.failed_pages if r.records else [],
             )
         )
         if r.members is None:
@@ -2471,7 +2848,10 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
         gone.add(name)
         return False
 
-    _retry_after_lock_timeout(lambda: store.write_chunks_batch(items, present))
+    write = functools.partial(
+        store.write_chunks_batch, items, present, chunk_settings=_SYNC_CHUNK_SETTINGS.get()
+    )
+    _retry_after_lock_timeout(write)
     if gone:
         log.info("Not indexed, the file is gone: %s", ", ".join(sorted(gone)))
     kept = [r for r in buffer if r.name not in gone]
@@ -2481,6 +2861,7 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
 
 def _member_write(member: MemberRecords, digest: str, stat: SourceStat | None) -> ChunkWrite:
     """A member's write item: its own source row, keyed to the archive's hash and stat."""
+    _stamp_title(member.records, member.meta)
     return ChunkWrite(
         source=member.name,
         file_hash=digest,
@@ -2489,6 +2870,7 @@ def _member_write(member: MemberRecords, digest: str, stat: SourceStat | None) -
         stat=stat,
         page_texts=cast(list[dict], member.page_texts),
         meta=member.meta,
+        ocr_page_failures=list(member.failed_pages) if member.records else [],
     )
 
 
@@ -2545,16 +2927,16 @@ def _flush_writes(
     updated: dict[str, None],
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
-    retry_next: set[str] | None = None,
+    retry_next: dict[str, str] | None = None,
 ) -> Exception | None:
     """Flush the buffered documents to the store; track and return a write failure.
 
     Each buffered file's page texts, chunks, cleanup delete, and source upsert
     are written by :func:`_flush_batch`. If that fails, every file in the batch
     is moved to ``failed`` since its source row did not land, and recorded in
-    *retry_next* so the caller replans them next sync instead of holding out
-    them; the exception never escapes, so the caller's sibling-cancel and
-    held-out path always runs. The buffer is cleared either way.
+    *retry_next* with the write as its cause, so the caller replans them next
+    sync instead of holding them out; the exception never escapes, so the
+    caller's sibling-cancel and held-out path always runs. The buffer is cleared either way.
     """
     if not buffer:
         return None
@@ -2570,7 +2952,7 @@ def _flush_writes(
             skipped.pop(r.name, None)
             failed[r.name] = None
             if retry_next is not None:
-                retry_next.add(r.name)
+                retry_next[r.name] = _NOT_WRITTEN
         return exc
     finally:
         buffer.clear()

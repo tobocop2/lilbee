@@ -96,8 +96,8 @@ def _present(table: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in table.items() if value_is_set(key, value)}
 
 
-def _read_toml(path: Path) -> dict[str, Any]:
-    """The parsed config.toml; empty when skipped, missing or unreadable.
+def read_config_table(path: Path) -> dict[str, Any] | None:
+    """The parsed config.toml; empty when skipped or missing, None when unreadable.
 
     The load and the overlay report an unreadable file; this read runs on every settings read.
     """
@@ -107,7 +107,7 @@ def _read_toml(path: Path) -> dict[str, Any]:
         with path.open("rb") as f:
             return tomllib.load(f)
     except (ValueError, OSError):
-        return {}
+        return None
 
 
 def toml_is_readable(path: Path) -> bool:
@@ -140,18 +140,21 @@ def _profile_table(data: Mapping[str, Any], path: Path) -> ProfileTable:
 def read_profile_table(root: Path) -> ProfileTable:
     """The ``[profile]`` table of ``root/config.toml``."""
     path = root / CONFIG_FILE_NAME
-    return _profile_table(_read_toml(path), path)
+    return _profile_table(read_config_table(path) or {}, path)
 
 
-def read_layers(root: Path) -> SettingLayers:
-    """Read the env vars and ``root/config.toml`` once."""
-    return read_table_and_layers(root)[1]
+def read_layers(root: Path, data: Mapping[str, Any] | None = None) -> SettingLayers:
+    """Read the env vars and ``root/config.toml`` once, or take *data*, the file already read."""
+    return read_table_and_layers(root, data)[1]
 
 
-def read_table_and_layers(root: Path) -> tuple[ProfileTable, SettingLayers]:
+def read_table_and_layers(
+    root: Path, data: Mapping[str, Any] | None = None
+) -> tuple[ProfileTable, SettingLayers]:
     """The ``[profile]`` table and the setting layers, from one read of ``root/config.toml``."""
     path = root / CONFIG_FILE_NAME
-    data = _read_toml(path)
+    if data is None:
+        data = read_config_table(path) or {}
     table = _profile_table(data, path)
     user = _present({key: value for key, value in data.items() if key != PROFILE_TABLE})
     profile = _present(table.values)

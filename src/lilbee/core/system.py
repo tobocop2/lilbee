@@ -244,6 +244,70 @@ def chat_ctx_target_for_total_bytes(total_bytes: int) -> int:
 
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 
+_PROC_CGROUP = Path("/proc/self/cgroup")
+
+
+def own_cgroup_paths(proc_cgroup: Path) -> dict[str, str]:
+    """Map each controller (v2 unified hierarchy: the empty name) to this process's cgroup path."""
+    try:
+        lines = os.fsdecode(proc_cgroup.read_bytes()).splitlines()
+    except OSError:
+        return {}
+    paths: dict[str, str] = {}
+    for line in lines:
+        _, _, rest = line.partition(":")
+        controllers, _, path = rest.partition(":")
+        for name in controllers.split(",") if controllers else [""]:
+            paths[name] = path
+    return paths
+
+
+def cgroup_chain(base: Path, relative: str | None) -> list[Path]:
+    """The process's cgroup directory and each ancestor up to ``base``.
+
+    A level that does not exist or cannot be read gives no limit, so a path
+    absent under ``base`` (a container with its own cgroup namespace, or a
+    runtime that mounts the container's cgroup at the controller root) leaves
+    the mount's own limit.
+    """
+    if relative is None or ".." in Path(relative).parts:
+        return [base]
+    chain = [base / relative.lstrip("/")]
+    while chain[-1] != base:
+        chain.append(chain[-1].parent)
+    return chain
+
+
+def _read_bytes_file(path: Path) -> int | None:
+    """The integer in one cgroup file, or ``None`` when it is absent, ``max`` or garbled."""
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _memory_levels() -> list[tuple[int, int]]:
+    """``(cap, usage)`` for each capped level on this process's cgroup path.
+
+    The path is the process's own cgroup (named in ``/proc/self/cgroup``) and each
+    ancestor up to the mount, so a ``MemoryMax=`` on a systemd unit or scope is
+    seen, and a parent's cap binds the process like its own. A level whose usage
+    file is unreadable counts as empty, so its cap alone bounds the room.
+    """
+    paths = own_cgroup_paths(_PROC_CGROUP)
+    for base, controller, limit_name, usage_name in (
+        (_CGROUP_ROOT, "", "memory.max", "memory.current"),
+        (_CGROUP_ROOT / "memory", "memory", "memory.limit_in_bytes", "memory.usage_in_bytes"),
+    ):
+        levels = [
+            (limit, _read_bytes_file(directory / usage_name) or 0)
+            for directory in cgroup_chain(base, paths.get(controller))
+            if (limit := _read_bytes_file(directory / limit_name)) is not None
+        ]
+        if levels:
+            return levels
+    return []
+
 
 def cgroup_memory_limit() -> int | None:
     """Bytes this process's cgroup allows, or ``None`` when unlimited or unreadable.
@@ -251,38 +315,28 @@ def cgroup_memory_limit() -> int | None:
     cgroup v2 keeps the cap in ``memory.max`` (``max`` for unlimited); v1 uses
     ``memory/memory.limit_in_bytes``, which spells unlimited as a near-int64
     sentinel rather than a word, and so reads as a limit above installed RAM.
-    Both are read, matching the CPU quota reader in :mod:`lilbee.runtime.cpu`.
+    Both are read at the process's own cgroup and its ancestors, matching the
+    CPU quota reader in :mod:`lilbee.runtime.cpu`.
 
     Every reader of host memory needs this: psutil reports the machine's
-    ``/proc/meminfo``, which a memory-capped container sees in full, so a 4 GiB
-    container on a 512 GiB machine sizes itself for the machine and is killed by
-    the OOM reaper on its first load.
+    ``/proc/meminfo``, which a memory-capped container or systemd scope sees in
+    full, so a 4 GiB container on a 512 GiB machine sizes itself for the machine
+    and is killed by the OOM reaper on its first load.
     """
-    for path in (_CGROUP_ROOT / "memory.max", _CGROUP_ROOT / "memory" / "memory.limit_in_bytes"):
-        try:
-            raw = path.read_text(encoding="utf-8").strip()
-        except OSError:
-            continue
-        if raw == "max":
-            return None
-        try:
-            return int(raw)
-        except ValueError:
-            return None
-    return None
+    levels = _memory_levels()
+    return min(limit for limit, _ in levels) if levels else None
 
 
-def cgroup_memory_used() -> int | None:
-    """Bytes this process's cgroup currently holds, or ``None`` when unreadable."""
-    for path in (
-        _CGROUP_ROOT / "memory.current",
-        _CGROUP_ROOT / "memory" / "memory.usage_in_bytes",
-    ):
-        try:
-            return int(path.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            continue
-    return None
+def cgroup_memory_room() -> int | None:
+    """Bytes this process can still add before a cgroup refuses it, or ``None`` when uncapped.
+
+    The kernel refuses a charge at the first level whose usage reaches its own
+    cap, so the room is the least ``cap - usage`` over every capped level, not the
+    lowest cap less the usage of that level: a parent at 10 GiB with 9 GiB used
+    stops a process whose own cap of 3 GiB has 2 GiB left.
+    """
+    levels = _memory_levels()
+    return min(max(0, limit - used) for limit, used in levels) if levels else None
 
 
 def capped_total_memory() -> int:

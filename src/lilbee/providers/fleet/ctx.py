@@ -14,9 +14,12 @@ from pathlib import Path
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.engine_params import chat_ctx_ceiling
+from lilbee.providers.fleet.engines import EngineAdapter
+from lilbee.providers.fleet.memory_types import MemoryRequest
 from lilbee.providers.fleet.placement import _vram_proportional_split
-from lilbee.providers.fleet.vram import estimate_instance_footprint, usable_vram_fraction
+from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTUM
+from lilbee.providers.roles import WorkerRole
 
 
 def _largest_fitting_ctx(upper: int, fits: Callable[[int], bool]) -> int:
@@ -43,6 +46,7 @@ def _largest_fitting_ctx(upper: int, fits: Callable[[int], bool]) -> int:
 def fit_single_ctx(
     model_path: Path,
     *,
+    engine: EngineAdapter,
     meta: dict[str, str] | None,
     slots: int,
     available_bytes: int,
@@ -50,6 +54,7 @@ def fit_single_ctx(
     flash_attn: bool,
     kv_cache_type: KvCacheType,
     unified: bool,
+    on_cpu: bool,
     ctx_ceiling: int,
     expert_offload: tuple[str, ...],
 ) -> int:
@@ -71,16 +76,20 @@ def fit_single_ctx(
     upper = min(chat_ctx_ceiling(meta, model_path), ctx_ceiling)
 
     def _fits(per_slot: int) -> bool:
-        est = estimate_instance_footprint(
-            model_path,
-            ctx=per_slot,
-            slots=slots,
-            gpu_layers=gpu_layers,
-            flash_attn=flash_attn,
-            kv_cache_type=kv_cache_type,
-            expert_offload=expert_offload,
+        est = engine.estimate_memory(
+            MemoryRequest(
+                model_path=model_path,
+                ctx=per_slot,
+                slots=slots,
+                gpu_layers=gpu_layers,
+                flash_attn=flash_attn,
+                kv_cache_type=kv_cache_type,
+                expert_offload=expert_offload,
+                on_cpu=on_cpu,
+                role=WorkerRole.CHAT,
+            )
         )
-        return est.footprint(unified=unified) <= available_bytes
+        return est.resident_footprint(unified=unified) <= available_bytes
 
     return _largest_fitting_ctx(upper, _fits)
 
@@ -88,6 +97,7 @@ def fit_single_ctx(
 def fit_split_ctx(
     model_path: Path,
     *,
+    engine: EngineAdapter,
     meta: dict[str, str] | None,
     slots: int,
     ratio: tuple[int, ...],
@@ -133,17 +143,20 @@ def fit_split_ctx(
     upper = min(chat_ctx_ceiling(meta, model_path), ctx_ceiling)
 
     def _peak_fits(per_slot: int) -> bool:
-        est = estimate_instance_footprint(
-            model_path,
-            ctx=per_slot,
-            slots=slots,
-            gpu_layers=gpu_layers,
-            flash_attn=flash_attn,
-            kv_cache_type=kv_cache_type,
-            tensor_split=ratio,
-            expert_offload=expert_offload,
+        est = engine.estimate_memory(
+            MemoryRequest(
+                model_path=model_path,
+                ctx=per_slot,
+                slots=slots,
+                gpu_layers=gpu_layers,
+                flash_attn=flash_attn,
+                kv_cache_type=kv_cache_type,
+                tensor_split=ratio,
+                expert_offload=expert_offload,
+                role=WorkerRole.CHAT,
+            )
         )
-        shares = est.per_device_vram
+        shares = est.per_device
         if len(shares) != len(headrooms):
             # No usable per-device breakdown: fall back to peak vs the tightest card.
             return est.peak_footprint(unified=False) <= min(headrooms)

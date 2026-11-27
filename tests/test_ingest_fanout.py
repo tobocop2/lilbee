@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import multiprocessing
 import os
 import queue as queue_mod
 import subprocess
@@ -13,9 +14,12 @@ import time
 import pytest
 import rich.progress
 
+from lilbee.app.services import get_services
 from lilbee.core.config import cfg
+from lilbee.data.extract.chunk import EmbedWarmError, EmbedWindowError
 from lilbee.data.ingest import fanout
 from lilbee.data.types import OcrReport, ShardId, SkippedSource, SyncResult
+from lilbee.runtime.lock import LibraryUnlockableError
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -192,12 +196,12 @@ class TestPlanFanout:
 
     def test_a_single_card_stays_in_this_process(self, monkeypatch):
         monkeypatch.setattr(fanout, "resolve_process_count", lambda devices: 1)
-        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda: 1)
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda _engine: 1)
         assert fanout.plan_fanout() == []
 
     def test_a_small_corpus_stays_in_this_process(self, monkeypatch):
         """Workers cost an interpreter, an engine and a store each; a small sync pays more."""
-        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda: 4)
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda _engine: 4)
         monkeypatch.setattr("lilbee.data.ingest.discovery.corpus_has_at_least", lambda _n: False)
         assert fanout.plan_fanout() == []
 
@@ -208,7 +212,7 @@ class TestPlanFanout:
         monkeypatch.setattr("lilbee.data.ingest.discovery.corpus_has_at_least", lambda _n: True)
         seen = {}
 
-        def counted():
+        def counted(_engine):
             import os
 
             from lilbee.providers.fleet.gpu_env import gpu_environ
@@ -223,7 +227,7 @@ class TestPlanFanout:
         assert [spec.visible_devices["CUDA_VISIBLE_DEVICES"] for spec in specs] == ["2", "3"]
 
     def test_a_big_corpus_on_several_cards_fans_out(self, monkeypatch):
-        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda: 4)
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda _engine: 4)
         monkeypatch.setattr("lilbee.data.ingest.discovery.corpus_has_at_least", lambda _n: True)
         specs = fanout.plan_fanout()
         assert [spec.device for spec in specs] == [0, 1, 2, 3]
@@ -240,6 +244,45 @@ class TestShardSpecs:
         assert {spec.config.documents_dir for spec in specs} == {cfg.documents_dir}
         # So are its skip records.
         assert {spec.shard.corpus_root for spec in specs} == {cfg.data_root}
+
+    def test_a_cpu_embed_role_gets_no_card_mask(self):
+        """The workers embed on the CPU, so no card is dealt to them."""
+        on_cpu = cfg.model_copy(update={"placement": '{"embed": {"target": "cpu"}}'})
+        specs = fanout.shard_specs(on_cpu, processes=2, devices=2)
+        assert [spec.visible_devices for spec in specs] == [{}, {}]
+
+    def test_an_embed_role_on_a_card_keeps_its_mask(self):
+        on_card = cfg.model_copy(update={"placement": '{"embed": {"devices": [0]}}'})
+        specs = fanout.shard_specs(on_card, processes=2, devices=2)
+        assert all(spec.visible_devices for spec in specs)
+
+    def test_a_cpu_embed_beside_a_named_card_role_keeps_that_card_visible(self):
+        """A one-card mask would hide the card vision names, so no mask is dealt."""
+        spec = '{"embed": {"target": "cpu"}, "vision": {"devices": [1]}}'
+        specs = fanout.shard_specs(cfg.model_copy(update={"placement": spec}), 2, devices=2)
+        assert [s.visible_devices for s in specs] == [{}, {}]
+
+    def test_a_cpu_embed_beside_an_auto_role_keeps_each_worker_on_one_card(self):
+        spec = '{"embed": {"target": "cpu"}, "vision": {"target": "auto"}}'
+        specs = fanout.shard_specs(cfg.model_copy(update={"placement": spec}), 2, devices=2)
+        assert all(s.visible_devices for s in specs)
+
+    def test_a_named_card_role_beside_an_auto_role_gets_no_mask(self):
+        spec = (
+            '{"embed": {"target": "cpu"}, "vision": {"devices": [1]}, "chat": {"target": "auto"}}'
+        )
+        specs = fanout.shard_specs(cfg.model_copy(update={"placement": spec}), 2, devices=2)
+        assert [s.visible_devices for s in specs] == [{}, {}]
+
+    @pytest.mark.parametrize("bad", ["{not json", '{"embed": {"target": "moon"}}'])
+    def test_a_malformed_placement_is_refused_when_it_is_set(self, bad):
+        """The config refuses it on assignment, so the fan-out planner never parses it."""
+        from pydantic import ValidationError
+
+        copy = cfg.model_copy()
+        with pytest.raises(ValidationError, match="placement"):
+            copy.placement = bad
+        assert copy.placement == cfg.placement
 
     def test_the_engine_slot_is_keyed_by_card_not_by_worker(self):
         """Workers on one card share its fleet; a private slot each would double-book VRAM."""
@@ -460,6 +503,91 @@ class TestRunShard:
         verdict = messages.get_nowait()
         assert verdict.result is None
         assert verdict.error == "RuntimeError: no embedding model"
+        assert verdict.refusal is None
+
+    @pytest.mark.parametrize(
+        "refusal",
+        [
+            EmbedWarmError("nomic-ai/nomic-embed-text-v1.5#safetensors", 8064, 120.0),
+            EmbedWindowError("m: The embedding model accepts 400 tokens per input."),
+            LibraryUnlockableError("Cannot change the library: it is locked."),
+        ],
+        ids=["warm", "window", "library"],
+    )
+    def test_a_worker_that_refuses_reports_the_refusal_itself(self, monkeypatch, refusal):
+        """The parent raises the same class, so the refusal must cross a worker's queue."""
+
+        async def fake_sync(**_kwargs):
+            raise refusal
+
+        monkeypatch.setattr("lilbee.data.ingest.pipeline.sync", fake_sync)
+        monkeypatch.setattr(fanout, "_pin_shard", lambda spec: None)
+        # The queue a real fan-out uses: it pickles each message on put and unpickles it on get.
+        messages = multiprocessing.get_context("spawn").Queue()
+        fanout.run_shard(
+            _spec(0), fanout.ShardOptions(parent_pid=os.getppid()), messages, threading.Event()
+        )
+        verdict = messages.get(timeout=_CANCEL_BOUND_S)
+        assert verdict.result is None
+        assert verdict.error == str(refusal)
+        assert type(verdict.refusal) is type(refusal)
+        assert str(verdict.refusal) == str(refusal)
+
+
+_WARM_REFUSAL = EmbedWarmError("nomic-ai/nomic-embed-text-v1.5#safetensors", 8064, 120.0)
+
+
+class TestRunWorkersRefusal:
+    async def test_a_refusal_stops_the_other_workers_and_is_raised_once(
+        self, fake_context, monkeypatch
+    ):
+        """The other workers would each refuse the same way; they are stopped instead."""
+
+        def fake_shard(spec, options, messages, stop):
+            if spec.shard.index == 0:
+                messages.put(
+                    fanout.ShardDone(
+                        kind="done",
+                        index=0,
+                        result=None,
+                        error=str(_WARM_REFUSAL),
+                        refusal=_WARM_REFUSAL,
+                    )
+                )
+            else:
+                # A worker busy in its sync leaves on the TERM, not on the stop event.
+                fake_context.processes[spec.shard.index].wait_terminated()
+
+        monkeypatch.setattr(fanout, "run_shard", fake_shard)
+        with pytest.raises(EmbedWarmError) as raised:
+            await fanout.run_workers(
+                [_spec(0), _spec(1)],
+                options=fanout.ShardOptions(parent_pid=os.getpid()),
+                quiet=True,
+                on_progress=lambda kind, data: None,
+                cancel=None,
+            )
+        assert raised.value is _WARM_REFUSAL
+        assert fake_context.processes[1].terminated
+        assert not any(worker.is_alive() for worker in fake_context.processes)
+
+    def test_a_refusal_still_in_flight_after_every_worker_exited_is_raised(self, monkeypatch):
+        monkeypatch.setattr(fanout, "_FINAL_DRAIN_S", 0.0)
+        messages = queue_mod.Queue()
+        messages.put(
+            fanout.ShardDone(kind="done", index=0, result=None, error="x", refusal=_WARM_REFUSAL)
+        )
+        with pytest.raises(EmbedWarmError) as raised:
+            fanout._final_verdicts([FakeProcess(lambda: None, (), "w0")], messages, {})
+        assert raised.value is _WARM_REFUSAL
+
+    def test_a_verdict_without_a_refusal_still_in_flight_is_returned(self, monkeypatch):
+        monkeypatch.setattr(fanout, "_FINAL_DRAIN_S", 0.0)
+        messages = queue_mod.Queue()
+        verdict = fanout.ShardDone(kind="done", index=0, result=None, error=None, refusal=None)
+        messages.put(verdict)
+        late = fanout._final_verdicts([FakeProcess(lambda: None, (), "w0")], messages, {})
+        assert late == {0: verdict}
 
 
 class TestRunWorkers:
@@ -582,7 +710,8 @@ class TestRunWorkers:
             messages.put(
                 fanout.ShardDone(kind="done", index=spec.shard.index, result=None, error="x")
             )
-            stop.wait(5)
+            # Hung after its verdict: it leaves on the TERM, not on the stop event.
+            fake_context.processes[spec.shard.index].wait_terminated()
 
         monkeypatch.setattr(fanout, "run_shard", fake_shard)
         await fanout.run_workers(
@@ -776,3 +905,261 @@ class TestDrain:
             messages.put(fanout.ShardDone(kind="done", index=index, result=None, error="x"))
         assert len(fanout._drain(messages)) == 3
         assert fanout._drain(messages) == []
+
+
+class _RecordingBar:
+    """Stands in for the one bar of a fan-out and records how the supervisor drives it."""
+
+    def __init__(self, **kwargs) -> None:
+        self.bar_kwargs = kwargs
+        self.tasks: list[tuple[tuple, dict]] = []
+        self.updates: list[tuple[tuple, dict]] = []
+
+    def __enter__(self) -> _RecordingBar:
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        return None
+
+    def add_task(self, *args, **kwargs) -> int:
+        self.tasks.append((args, kwargs))
+        return 7
+
+    def update(self, *args, **kwargs) -> None:
+        self.updates.append((args, kwargs))
+
+
+class _EndedWorker:
+    """A worker that has already exited."""
+
+    exitcode = 0
+
+    def is_alive(self) -> bool:
+        return False
+
+
+def _report(index: int, done: int, planned: int) -> fanout.ShardProgress:
+    return fanout.ShardProgress(
+        kind="progress",
+        index=index,
+        done=done,
+        planned=planned,
+        file="a",
+        status=BatchStatus.INGESTED,
+    )
+
+
+def _verdict(index: int) -> fanout.ShardDone:
+    return fanout.ShardDone(kind="done", index=index, result=SyncResult(), error=None)
+
+
+class TestSuperviseBar:
+    async def _supervise(self, monkeypatch, messages, *, quiet: bool) -> _RecordingBar:
+        bars: list[_RecordingBar] = []
+
+        def make_bar(*_columns, **kwargs) -> _RecordingBar:
+            bars.append(_RecordingBar(**kwargs))
+            return bars[-1]
+
+        monkeypatch.setattr(fanout, "stdout_progress", make_bar)
+        queued = queue_mod.Queue()
+        for message in messages:
+            queued.put(message)
+        await fanout._supervise(
+            [_EndedWorker(), _EndedWorker()],
+            queued,
+            quiet=quiet,
+            on_progress=lambda kind, data: None,
+            cancel=None,
+        )
+        (bar,) = bars
+        return bar
+
+    @pytest.mark.parametrize("quiet", [True, False])
+    async def test_the_bar_is_disabled_exactly_when_the_caller_wants_no_output(
+        self, monkeypatch, quiet
+    ):
+        bar = await self._supervise(monkeypatch, [_verdict(0), _verdict(1)], quiet=quiet)
+        assert bar.bar_kwargs["disable"] is quiet
+
+    async def test_the_bar_names_the_run_and_starts_without_a_total(self, monkeypatch):
+        bar = await self._supervise(monkeypatch, [_verdict(0), _verdict(1)], quiet=True)
+        assert bar.tasks == [(("Ingesting on 2 workers",), {"total": None})]
+
+    async def test_every_report_sets_the_done_count_and_the_planned_total(self, monkeypatch):
+        messages = [_report(0, 2, 5), _report(1, 1, 4), _verdict(0), _verdict(1)]
+        bar = await self._supervise(monkeypatch, messages, quiet=True)
+        assert bar.updates == [
+            ((7,), {"completed": 2, "total": 5}),
+            ((7,), {"completed": 3, "total": 9}),
+        ]
+
+    async def test_a_report_with_nothing_planned_leaves_the_total_open(self, monkeypatch):
+        bar = await self._supervise(
+            monkeypatch, [_report(0, 0, 0), _verdict(0), _verdict(1)], quiet=True
+        )
+        assert bar.updates == [((7,), {"completed": 0, "total": None})]
+
+
+class TestSilentDeath:
+    async def test_a_worker_that_dies_without_a_verdict_gets_a_done_verdict_of_its_own(
+        self, fake_context, monkeypatch
+    ):
+        def fake_shard(spec, options, messages, stop):
+            if spec.shard.index == 0:
+                messages.put(_verdict(0))
+
+        monkeypatch.setattr(fanout, "run_shard", fake_shard)
+        verdicts = await fanout.run_workers(
+            [_spec(0), _spec(1)],
+            options=fanout.ShardOptions(parent_pid=os.getpid()),
+            quiet=True,
+            on_progress=lambda kind, data: None,
+            cancel=None,
+        )
+        dead = verdicts[1]
+        assert (dead.kind, dead.index, dead.result) == ("done", 1, None)
+        assert dead.error == "worker exited with code 0 before reporting"
+
+
+class TestRunShardPins:
+    """What a worker hands to its pin, its services, its sync and its parent."""
+
+    @staticmethod
+    def _run(monkeypatch, fake_sync, *, stop=None, build=None, pins=None, retry_skipped=False):
+        monkeypatch.setattr("lilbee.data.ingest.pipeline.sync", fake_sync)
+        monkeypatch.setattr(fanout, "_pin_shard", (pins if pins is not None else []).append)
+        if build is not None:
+            monkeypatch.setattr("lilbee.app.services.build_services", build)
+        messages = queue_mod.Queue()
+        spec = _spec(1)
+        fanout.run_shard(
+            spec,
+            fanout.ShardOptions(parent_pid=os.getppid(), retry_skipped=retry_skipped),
+            messages,
+            stop if stop is not None else threading.Event(),
+        )
+        return spec, [messages.get_nowait() for _ in range(messages.qsize())]
+
+    def test_a_worker_pins_itself_to_its_own_spec(self, monkeypatch):
+        async def fake_sync(**_kwargs):
+            return SyncResult()
+
+        pins: list[fanout.ShardSpec] = []
+        spec, _ = self._run(monkeypatch, fake_sync, pins=pins)
+        assert pins == [spec]
+
+    def test_a_worker_runs_its_sync_on_services_built_from_its_own_config(self, monkeypatch):
+        container = object()
+        built = []
+        seen = []
+
+        def build(config):
+            built.append(config)
+            return container
+
+        async def fake_sync(**_kwargs):
+            seen.append(get_services())
+            return SyncResult()
+
+        spec, _ = self._run(monkeypatch, fake_sync, build=build)
+        assert built == [spec.config]
+        assert seen == [container]
+
+    def test_a_worker_stops_its_sync_with_the_stop_event_of_the_parent(self, monkeypatch):
+        seen = {}
+
+        async def fake_sync(**kwargs):
+            seen.update(kwargs)
+            return SyncResult()
+
+        stop = threading.Event()
+        self._run(monkeypatch, fake_sync, stop=stop)
+        assert seen["cancel"] is stop
+
+    def test_a_worker_is_told_to_retry_when_the_run_retries_skipped(self, monkeypatch):
+        seen = {}
+
+        async def fake_sync(**kwargs):
+            seen.update(kwargs)
+            return SyncResult()
+
+        self._run(monkeypatch, fake_sync, retry_skipped=True)
+        assert seen["retry_skipped"] is True
+
+    def test_a_worker_reports_its_counters_under_its_own_index(self, monkeypatch):
+        monkeypatch.setattr(fanout, "_REPORT_INTERVAL_S", 0.0)
+
+        async def fake_sync(**kwargs):
+            kwargs["on_progress"](EventType.BATCH_PROGRESS, _progress(3, 8, file="doc.txt"))
+            return SyncResult()
+
+        _, sent = self._run(monkeypatch, fake_sync)
+        progress = [m for m in sent if m.kind == "progress"]
+        assert [(m.index, m.done, m.planned, m.file) for m in progress] == [
+            (1, 3, 8, "doc.txt"),
+            (1, 3, 8, ""),
+        ]
+
+    @pytest.mark.parametrize("outcome", ["finished", "refused", "failed"])
+    def test_every_verdict_of_a_worker_is_a_done_message_under_its_own_index(
+        self, monkeypatch, outcome
+    ):
+        async def fake_sync(**_kwargs):
+            if outcome == "refused":
+                raise LibraryUnlockableError("Cannot change the library: it is locked.")
+            if outcome == "failed":
+                raise RuntimeError("boom")
+            return SyncResult()
+
+        _, sent = self._run(monkeypatch, fake_sync)
+        verdict = sent[-1]
+        assert isinstance(verdict, fanout.ShardDone)
+        assert (verdict.kind, verdict.index) == ("done", 1)
+
+
+class TestPartlyReadFanOut:
+    def test_partly_read_files_and_reasons_from_every_worker_reach_the_one_result(self):
+        from lilbee.data.store import FailedPage
+        from lilbee.data.types import PartialFile
+
+        verdicts = [
+            fanout.ShardDone(
+                kind="done",
+                index=0,
+                result=SyncResult(
+                    added=["a.pdf"],
+                    partial=[
+                        PartialFile(
+                            "a.pdf", [FailedPage(page=3, error="timed out", recovered=False)]
+                        )
+                    ],
+                    failed=["x.pdf"],
+                    reasons={"x.pdf": "the file is encrypted"},
+                ),
+                error=None,
+            ),
+            fanout.ShardDone(
+                kind="done",
+                index=1,
+                result=SyncResult(
+                    updated=["b.pdf"],
+                    partial=[
+                        PartialFile(
+                            "b.pdf", [FailedPage(page=1, error="timed out", recovered=False)]
+                        )
+                    ],
+                    skipped=["y.pdf"],
+                    reasons={"y.pdf": "no text extracted (0 chunks)"},
+                ),
+                error=None,
+            ),
+        ]
+
+        result = fanout.aggregate_results(verdicts)
+
+        assert [partial.name for partial in result.partial] == ["a.pdf", "b.pdf"]
+        assert result.reasons == {
+            "x.pdf": "the file is encrypted",
+            "y.pdf": "no text extracted (0 chunks)",
+        }

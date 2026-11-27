@@ -11,6 +11,7 @@ from unittest.mock import patch
 from lilbee.app.settings import SettingsUpdateResult
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
+from tests._async_wait import wait_until
 
 
 class LilbeeAppHost(LilbeeApp):
@@ -20,11 +21,16 @@ class LilbeeAppHost(LilbeeApp):
 
 
 def patch_model_write():
-    """Stand in for the model write of a picker pick: it succeeds and needs no rebuild."""
-    return patch(
-        "lilbee.cli.tui.widgets.model_pick.apply_active_model",
-        return_value=SettingsUpdateResult(updated=[], reindex_required=False),
-    )
+    """Stand in for the model write of a picker pick: it succeeds and needs no rebuild.
+
+    It writes nothing, and tells the app of the change as the real write does.
+    """
+
+    def written(host_app: LilbeeApp, key: str, _value: str) -> SettingsUpdateResult:
+        host_app.publish_settings([key])
+        return SettingsUpdateResult(updated=[], reindex_required=False)
+
+    return patch("lilbee.cli.tui.widgets.model_pick.apply_active_model", side_effect=written)
 
 
 # Chat screens whose show handler has returned. The handler moves focus to the chat
@@ -48,6 +54,19 @@ ChatScreen.on_show = _record_show(ChatScreen.on_show)  # type: ignore[method-ass
 _GATE_HANDOVER_TIMEOUT_S = 45.0
 _GATE_POLL_S = 0.02
 _PUMP_TIMEOUT_S = 5.0
+
+
+async def settle_workers(pilot) -> None:
+    """Wait until the app's workers end and every message they posted is handled.
+
+    The first pause lets the pending edit reach its handler, which starts the
+    worker. ``wait_for_complete`` then awaits that worker itself, however long a
+    loaded host takes to run it. The last pause handles what the worker posted.
+    No wall-clock limit applies: pytest's per-test timeout bounds a hang.
+    """
+    await pilot.pause()
+    await pilot.app.workers.wait_for_complete()
+    await pilot.pause()
 
 
 async def pump_until(pilot, predicate, *, timeout_s: float = _PUMP_TIMEOUT_S) -> bool:
@@ -138,11 +157,18 @@ def ready_services():
     from lilbee.app.services import set_services
     from lilbee.data.store import Store
     from lilbee.data.store.types import SourceSummary
+    from lilbee.providers.base import ProviderError
 
     services = MagicMock()
+    # An engine's binary is a path or an error; a bare mock is neither, and the device count
+    # reads the file. No installed engine sizes the host as GPU-less, as on a bare machine.
+    services.engines.for_role.return_value.adapter.binary.side_effect = ProviderError(
+        "no engine installed"
+    )
     services.provider.role_ready.return_value = True
     services.store = create_autospec(Store, instance=True)
     services.store.source_summary.return_value = SourceSummary(0, 0, {}, [])
+    services.store.partly_read_sources.return_value = ({}, 0)
     services.store.get_sources.return_value = []
     services.store.count_sources.return_value = 0
     set_services(services)
@@ -167,6 +193,17 @@ def send_key_burst(app, *keys: str) -> None:
 
     for key in keys:
         app.post_message(events.Key(key, key if len(key) == 1 else None))
+
+
+async def app_reads_queue(app, pilot) -> bool:
+    """Wait until *app* has read every message posted to it before this call.
+
+    A key that no widget takes goes back up to the app, so a test that ends with
+    one still on its way closes the screens under it.
+    """
+    read: list[bool] = []
+    app.call_later(read.append, True)
+    return await wait_until(pilot, lambda: bool(read), timeout=10)
 
 
 def shown_footer_keys(app) -> set[str]:

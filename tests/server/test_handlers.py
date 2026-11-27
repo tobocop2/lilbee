@@ -5,7 +5,7 @@ import contextlib
 import hashlib
 import socket
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from unittest import mock
 from unittest.mock import Mock
@@ -530,6 +530,36 @@ class TestIngestStreamTerminalEvent:
         assert names[-1] == "done", names
         assert events[-1][1]["added"] == ["indexed.txt"]
 
+    async def test_sync_stream_ends_on_the_plain_warm_refusal(
+        self, mock_extract_file, isolated_env, tmp_path
+    ):
+        """An embed engine that cannot finish starting at chunk_size ends the stream on
+        one error that names the model, the chunk size and the fix."""
+        from lilbee.app.services import get_services
+        from lilbee.providers.base import WarmTimeoutError
+        from lilbee.server.app import create_app
+
+        cfg.chunk_size = 8064
+        provider = get_services().provider
+        provider.count_tokens.side_effect = WarmTimeoutError("slow", wait_s=120.0)
+        provider.embed_token_cap.return_value = None
+        (isolated_env / "indexed.txt").write_text(
+            "Content the sync pass indexes.", encoding="utf-8"
+        )
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post("/api/sync", headers=_auth_headers())
+
+        name, payload = _parse_sse_events(resp.content)[-1]
+        assert name == "error"
+        assert payload == {
+            "message": f"{cfg.embedding_model} cannot embed chunks of 8064 tokens on this "
+            "machine: its engine did not finish starting within 120 s at that size. Set "
+            "chunk_size to a smaller value, or run the embedding model on a GPU."
+        }
+        assert provider.count_tokens.call_count == 1
+        mock_extract_file.assert_not_called()
+
     async def test_add_stream_closes_with_one_done(self, mock_extract_file, isolated_env, tmp_path):
         """POST /api/add ends on a single done carrying the add summary."""
         from lilbee.server.app import create_app
@@ -898,6 +928,32 @@ class TestAddIngestMutex:
         registry.release(held)
         assert registry._locks == {}
 
+    async def test_release_of_a_lock_that_is_already_free_still_evicts_its_entry(
+        self, isolated_env
+    ):
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+
+        registry = IngestLockRegistry()
+        acquired, _ = await registry.acquire(["doc.txt"])
+        acquired[0][1].release()  # freed by the caller before the registry release
+        registry.release(acquired)
+        assert registry._locks == {}
+
+    async def test_release_leaves_a_newer_lock_registered_under_the_same_name(self, isolated_env):
+        """A stale handle from before a reset must not evict the lock that replaced it."""
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+
+        registry = IngestLockRegistry()
+        stale, _ = await registry.acquire(["doc.txt"])
+        registry.reset()
+        fresh, busy = await registry.acquire(["doc.txt"])
+        assert busy == []
+        registry.release(stale)
+        assert registry._locks.get("doc.txt") is fresh[0][1]
+        assert fresh[0][1].locked()
+        registry.release(fresh)
+        assert registry._locks == {}
+
     async def test_acquire_dedups_repeated_names(self, isolated_env):
         """The registry locks each distinct name once."""
         from lilbee.app.services import get_services
@@ -974,6 +1030,107 @@ class TestAddIngestMutex:
         assert summary["already_ingesting"] == ["held.txt"]
         assert "held.txt" not in summary["name_taken"]
         assert "held.txt" not in summary["overlapping"]
+
+    async def test_a_close_at_already_ingesting_keeps_the_free_source(self, isolated_env, tmp_path):
+        """A client that stops at the first already_ingesting event still gets the free path."""
+        from lilbee.app.services import get_services
+        from lilbee.core.config import cfg
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+        from lilbee.server.handlers import add_files_stream
+
+        held = tmp_path / "held.txt"
+        held.write_text("held payload", encoding="utf-8")
+        free = tmp_path / "free.txt"
+        free.write_text("free payload", encoding="utf-8")
+        unwound = asyncio.Event()
+        real_release = IngestLockRegistry.release
+
+        def _release(registry, acquired):
+            real_release(registry, acquired)
+            unwound.set()
+
+        async def _hang(*_args, **_kwargs):
+            await asyncio.sleep(30)
+
+        lock = await get_services().ingest_lock_registry.try_acquire("held.txt")
+        assert lock is not None
+        gen = add_files_stream([str(held), str(free)])
+        try:
+            with (
+                mock.patch("lilbee.data.ingest.sync", new=_hang),
+                mock.patch.object(IngestLockRegistry, "release", _release),
+            ):
+                first = await gen.__anext__()
+                await gen.aclose()
+                # The add releases its locks after its run unwinds, and so after the registration.
+                await asyncio.wait_for(unwound.wait(), 30)
+        finally:
+            lock.release()
+
+        assert first.startswith("event: already_ingesting\n")
+        assert cfg.linked_roots == {"free.txt": str(free.resolve())}
+
+    async def test_a_close_at_already_ingesting_keeps_the_free_upload(self, isolated_env):
+        """A close at the first event must not lose an upload, which exists only in the request."""
+        from lilbee.app.services import get_services
+        from lilbee.core.config import cfg
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+        from lilbee.server.handlers import add_uploads_stream
+
+        unwound = asyncio.Event()
+        real_release = IngestLockRegistry.release
+
+        def _release(registry, acquired):
+            real_release(registry, acquired)
+            unwound.set()
+
+        async def _hang(*_args, **_kwargs):
+            await asyncio.sleep(30)
+
+        lock = await get_services().ingest_lock_registry.try_acquire("held.txt")
+        assert lock is not None
+        gen = add_uploads_stream([("held.txt", b"held bytes"), ("free.txt", b"free bytes")])
+        try:
+            with (
+                mock.patch("lilbee.data.ingest.sync", new=_hang),
+                mock.patch.object(IngestLockRegistry, "release", _release),
+            ):
+                first = await gen.__anext__()
+                await gen.aclose()
+                await asyncio.wait_for(unwound.wait(), 30)
+        finally:
+            lock.release()
+
+        assert first.startswith("event: already_ingesting\n")
+        free = cfg.documents_dir / "free.txt"
+        assert free.is_file(), "the free upload was never written"
+        assert free.read_bytes() == b"free bytes"
+        assert not (cfg.documents_dir / "held.txt").exists()
+
+    async def test_the_run_has_taken_its_first_step_before_the_first_event(self, isolated_env):
+        """Closing the ingest stream at its first event cannot cancel a run that has not begun."""
+        from lilbee.app.services import get_services
+        from lilbee.server.handlers.ingest import _ingest_stream
+        from lilbee.server.models import AddSummary
+
+        began: list[str] = []
+
+        async def _run(locked, sse):
+            began.append("first step")
+            sse.queue.put_nowait(None)
+            return AddSummary(copied=[], errors=[])
+
+        lock = await get_services().ingest_lock_registry.try_acquire("held.txt")
+        assert lock is not None
+        gen = _ingest_stream([("held.txt", "held"), ("free.txt", "free")], _run, "Test stream")
+        try:
+            first = await gen.__anext__()
+            await gen.aclose()
+        finally:
+            lock.release()
+
+        assert first.startswith("event: already_ingesting\n")
+        assert began == ["first step"]
 
     async def test_distinct_relative_paths_get_distinct_locks(self, isolated_env):
         """Two uploads that land at different paths must not share one lock.
@@ -1116,6 +1273,29 @@ def _first_event(lines: Iterator[str]) -> str:
     return next(line.split(":", 1)[1].strip() for line in lines if line.startswith("event:"))
 
 
+class _Seen:
+    """Records what the served app reports, and wakes the test thread the moment it does."""
+
+    # Half the per-test timeout in pyproject.toml. A test waits once at a time and stops
+    # at the first wait that fails, so the guard ends a hang before pytest-timeout does and
+    # the failure carries this test's own message.
+    _HANG_GUARD = 30.0
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self.items: list[str] = []
+
+    def add(self, *items: str) -> None:
+        with self._cond:
+            self.items.extend(items)
+            self._cond.notify_all()
+
+    def wait_for(self, predicate: Callable[[list[str]], bool]) -> bool:
+        """Block until *predicate* holds over the records; False after the hang guard."""
+        with self._cond:
+            return self._cond.wait_for(lambda: predicate(self.items), self._HANG_GUARD)
+
+
 class TestAddDisconnect:
     """A client that closes the /api/add stream over real HTTP, as the Obsidian plugin does."""
 
@@ -1124,10 +1304,10 @@ class TestAddDisconnect:
         """A sync that reports its first file, then waits to be cancelled; counts its starts."""
         from lilbee.runtime.progress import EventType, FileStartEvent
 
-        started: list[None] = []
+        started = _Seen()
 
         async def _parked(*_args, on_progress, **_kwargs):
-            started.append(None)
+            started.add("sync")
             on_progress(
                 EventType.FILE_START, FileStartEvent(file="x", current_file=1, total_files=1)
             )
@@ -1141,13 +1321,13 @@ class TestAddDisconnect:
         """The source names whose ingest lock was released, which happens after the run unwinds."""
         from lilbee.runtime.ingest_lock import IngestLockRegistry
 
-        names: list[str] = []
+        names = _Seen()
         release = IngestLockRegistry.release
 
         def _recording(registry, acquired):
             held = [name for name, _lock in acquired]
             release(registry, acquired)
-            names.extend(held)
+            names.add(*held)
 
         with mock.patch.object(IngestLockRegistry, "release", _recording):
             yield names
@@ -1161,14 +1341,29 @@ class TestAddDisconnect:
         with _ServedApp() as url, httpx.Client(base_url=url, timeout=30) as http:
             with http.stream("POST", "/api/add", json=body, headers=_auth_headers()) as resp:
                 assert _first_event(resp.iter_lines()) == "file_start"
-            assert poll_until(lambda: "scan.txt" in released), "the add never unwound"
+            assert released.wait_for(lambda names: "scan.txt" in names), "the add never unwound"
 
         assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
 
-    def test_a_return_on_already_ingesting_keeps_the_sources_it_started(
-        self, tmp_path, parked_sync, released
+    @pytest.fixture()
+    def slow_resume(self):
+        """The server waits after it sends each event, as a loaded host does."""
+        from lilbee.server.handlers import ingest
+
+        original = ingest._ingest_stream
+
+        async def _slow(items, run, label, add_id=None):
+            async for event in original(items, run, label, add_id):
+                yield event
+                await asyncio.sleep(0.5)
+
+        with mock.patch.object(ingest, "_ingest_stream", _slow):
+            yield
+
+    def test_a_close_at_already_ingesting_still_registers_the_free_sources(
+        self, tmp_path, parked_sync, released, slow_resume
     ):
-        """The plugin stops reading at already_ingesting; the sources that did start stay."""
+        """A close at already_ingesting still registers the free source, then stops its sync."""
         busy = tmp_path / "busy.txt"
         busy.write_text("busy", encoding="utf-8")
         new = tmp_path / "new.txt"
@@ -1183,8 +1378,8 @@ class TestAddDisconnect:
                 assert _first_event(held_lines) == "file_start"
                 with http.stream("POST", "/api/add", json=both, headers=_auth_headers()) as resp:
                     assert _first_event(resp.iter_lines()) == "already_ingesting"
-                    assert poll_until(lambda: len(parked_sync) == 2), "new.txt never started"
-                assert poll_until(lambda: "new.txt" in released), "the add never unwound"
+                    resp.close()
+                assert released.wait_for(lambda names: "new.txt" in names), "the add never unwound"
 
         assert cfg.linked_roots["new.txt"] == str(new.resolve())
 
@@ -1235,10 +1430,13 @@ class TestAddRegistersOffTheLoop:
         assert events[0] != f"registering on {threading.main_thread().name}"
         assert summary.copied == ["scan.txt"] and synced.await_count == 1
 
-    async def test_a_cancel_during_the_registration_lands_when_the_sync_starts(
+    async def test_a_cancel_during_the_registration_lands_before_the_sync_runs(
         self, tmp_path, held_registration
     ):
-        """What a disconnect does: the stream's flag and a task cancel, both mid-registration."""
+        """What a disconnect does: the stream's flag and a task cancel, both mid-registration.
+
+        The cancel waits for the registration, then stops the sync before its first step.
+        """
         from lilbee.server.handlers import SseStream
         from lilbee.server.handlers.ingest import _run_add
 
@@ -1265,7 +1463,7 @@ class TestAddRegistersOffTheLoop:
             with pytest.raises(asyncio.CancelledError):
                 await task
 
-        assert events[1:] == ["registered", "sync started"]
+        assert events[1:] == ["registered"]
 
     async def test_a_closed_stream_keeps_the_source_locked_until_it_is_registered(
         self, tmp_path, held_registration

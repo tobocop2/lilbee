@@ -4,11 +4,13 @@ import asyncio
 import contextlib
 import errno
 import json
+import logging
 import os
 import signal
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
@@ -25,9 +27,18 @@ from lilbee.core.config.resolve import builtin_value, read_layers, resolve
 from lilbee.crawler.models import CrawlLogin
 from lilbee.crawler.task import clear_tasks, get_task
 from lilbee.crawler.url_filter import UNPARSED_ADDRESS
+from lilbee.data.extract.backends.tokenizer import TokenCountError
 from lilbee.data.ingest import SyncResult
 from lilbee.data.ingest.discovery import ExclusionReason
-from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, DOCUMENTS_PAGE_MAX, SearchChunk, Store
+from lilbee.data.store import (
+    DOCUMENTS_PAGE_DEFAULT,
+    DOCUMENTS_PAGE_MAX,
+    FailedPage,
+    SearchChunk,
+    SourceSummary,
+    Store,
+)
+from lilbee.data.types import PartialFile
 from lilbee.mcp_server import (
     add,
     catalog_browse,
@@ -63,6 +74,8 @@ from lilbee.mcp_server import (
     wiki_update,
     wiki_wipe,
 )
+from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.retrieval.query.searcher import SearchReport
 from lilbee.runtime.progress import (
     CrawlPageFailedEvent,
     EmbedEvent,
@@ -75,6 +88,7 @@ from tests._crawlberg_stub import StubCrawlberg, complete
 from tests._crawlberg_stub import error as crawlberg_error
 from tests._held import held_kinds, hold_failed
 from tests._mcp_client import mcp_client
+from tests._signals import child_preexec
 from tests.conftest import summary_of
 
 
@@ -102,7 +116,7 @@ def mock_svc():
     from tests.conftest import make_mock_services
 
     searcher = MagicMock()
-    searcher.search.return_value = []
+    searcher.search_report.return_value = SearchReport([])
     services = make_mock_services(searcher=searcher)
     svc_mod.set_services(services)
     yield services
@@ -123,62 +137,71 @@ _SYNC_NOOP = SyncResult()
 _CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 
 
+def _rows(result):
+    """The rows (or error) in a search result's structured content."""
+    return result.structured_content["result"]
+
+
 class TestSearch:
     def test_returns_cleaned_results(self, mock_svc):
-        mock_svc.searcher.search.return_value = [
-            SearchChunk(
-                source="doc.pdf",
-                content_type="pdf",
-                page_start=0,
-                page_end=0,
-                line_start=0,
-                line_end=0,
-                chunk="content",
-                chunk_index=0,
-                vector=[0.1] * 768,
-                distance=0.3,
-            ),
-        ]
-        results = search("test query", top_k=3)
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [
+                SearchChunk(
+                    source="doc.pdf",
+                    content_type="pdf",
+                    page_start=0,
+                    page_end=0,
+                    line_start=0,
+                    line_end=0,
+                    chunk="content",
+                    chunk_index=0,
+                    vector=[0.1] * 768,
+                    distance=0.3,
+                ),
+            ]
+        )
+        results = _rows(search("test query", top_k=3))
         assert len(results) == 1
         assert "vector" not in results[0]
         assert results[0]["distance"] == 0.3
-        mock_svc.searcher.search.assert_called_once_with("test query", top_k=3, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with(
+            "test query", top_k=3, chunk_type=None
+        )
 
     def test_empty_results(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
-        assert search("nothing") == []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
+        assert _rows(search("nothing")) == []
 
     def test_empty_query_returns_error(self, mock_svc):
-        result = search("", top_k=3)
+        result = _rows(search("", top_k=3))
         assert result == {"error": "query must not be empty"}
-        mock_svc.searcher.search.assert_not_called()
+        mock_svc.searcher.search_report.assert_not_called()
 
     def test_whitespace_query_returns_error(self, mock_svc):
-        result = search("   ", top_k=3)
+        result = _rows(search("   ", top_k=3))
         assert result == {"error": "query must not be empty"}
-        mock_svc.searcher.search.assert_not_called()
+        mock_svc.searcher.search_report.assert_not_called()
 
     def test_embedding_failure_returns_error(self, mock_svc):
-        mock_svc.searcher.search.side_effect = RuntimeError("embed failed")
-        result = search("test", top_k=3)
+        mock_svc.searcher.search_report.side_effect = RuntimeError("embed failed")
+        result = _rows(search("test", top_k=3))
         assert "error" in result
         assert "embed failed" in result["error"]
 
     def test_scope_wiki_filters_to_wiki_chunks(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         search("q", top_k=3, scope="wiki")
-        mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type="wiki")
+        mock_svc.searcher.search_report.assert_called_once_with("q", top_k=3, chunk_type="wiki")
 
     def test_scope_raw_filters_to_raw_chunks(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         search("q", top_k=3, scope="raw")
-        mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type="raw")
+        mock_svc.searcher.search_report.assert_called_once_with("q", top_k=3, chunk_type="raw")
 
     def test_scope_both_means_no_filter(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         search("q", top_k=3, scope="both")
-        mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with("q", top_k=3, chunk_type=None)
 
     def test_invalid_scope_falls_back_to_both(self, mock_svc, caplog):
         """Smaller models echo prose like 'indexed docs' back as scope; we
@@ -187,13 +210,13 @@ class TestSearch:
         """
         import logging
 
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         with caplog.at_level(logging.WARNING, logger="lilbee.mcp_server"):
-            result = search("q", top_k=3, scope="bogus")
+            result = _rows(search("q", top_k=3, scope="bogus"))
         assert result == []
-        mock_svc.searcher.search.assert_called_once()
+        mock_svc.searcher.search_report.assert_called_once()
         # chunk_type=None means "both" -> no filter at the data layer.
-        call_kwargs = mock_svc.searcher.search.call_args.kwargs
+        call_kwargs = mock_svc.searcher.search_report.call_args.kwargs
         assert call_kwargs["chunk_type"] is None
         assert any("unknown scope" in record.message for record in caplog.records)
 
@@ -203,33 +226,35 @@ class TestSearch:
         of a negative limit reaching the store."""
         import logging
 
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         with caplog.at_level(logging.WARNING, logger="lilbee.mcp_server"):
-            result = search("q", top_k=-3)
+            result = _rows(search("q", top_k=-3))
         assert result == []
-        assert mock_svc.searcher.search.call_args.kwargs["top_k"] == cfg.top_k
+        assert mock_svc.searcher.search_report.call_args.kwargs["top_k"] == cfg.top_k
         assert any("not positive" in record.message for record in caplog.records)
 
     def test_returns_searcher_results_unfiltered(self, mock_svc):
         """The relevance cutoff lives in Searcher.search (with the
         lexical-support exemption); MCP must not re-filter on bare distance,
         which dropped both-arm rows the fusion layer deliberately keeps."""
-        mock_svc.searcher.search.return_value = [
-            SearchChunk(
-                source="far-but-lexical.md",
-                content_type="text",
-                page_start=0,
-                page_end=0,
-                line_start=0,
-                line_end=0,
-                chunk="PX4471 spotted",
-                chunk_index=0,
-                vector=[0.1],
-                distance=1.4,
-                bm25_score=12.0,
-            ),
-        ]
-        results = search("PX4471")
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [
+                SearchChunk(
+                    source="far-but-lexical.md",
+                    content_type="text",
+                    page_start=0,
+                    page_end=0,
+                    line_start=0,
+                    line_end=0,
+                    chunk="PX4471 spotted",
+                    chunk_index=0,
+                    vector=[0.1],
+                    distance=1.4,
+                    bm25_score=12.0,
+                ),
+            ]
+        )
+        results = _rows(search("PX4471"))
         assert [r["source"] for r in results] == ["far-but-lexical.md"]
 
     def test_results_carry_a_label_and_no_number(self, mock_svc):
@@ -246,8 +271,8 @@ class TestSearch:
             chunk_index=0,
             vector=[0.1],
         )
-        mock_svc.searcher.search.return_value = [chunk]
-        [result] = search("guide")
+        mock_svc.searcher.search_report.return_value = SearchReport([chunk])
+        [result] = _rows(search("guide"))
         assert result["label"] == "example.com · The Guide"
         assert "citation_number" not in result
 
@@ -256,43 +281,56 @@ class TestSearch:
         carries, not just prose it would have to parse."""
         from lilbee.data.store import EmbeddingModelMismatchError
 
-        mock_svc.searcher.search.side_effect = EmbeddingModelMismatchError(
+        mock_svc.searcher.search_report.side_effect = EmbeddingModelMismatchError(
             persisted_model="orgA/repoA/modelA.gguf",
             persisted_dim=768,
             current_model="orgB/repoB/modelB.gguf",
             current_dim=768,
         )
-        result = search("q")
+        result = _rows(search("q"))
         assert result["code"] == "INDEX_EMBEDDER_MISMATCH"
         assert result["persisted_model"] == "orgA/repoA/modelA.gguf"
         assert result["persisted_dim"] == 768
         assert result["adoptable"] is True
         assert "modelA" in result["error"]
 
+    def test_engine_change_carries_the_shared_code(self, mock_svc):
+        from lilbee.data.store import EmbeddingEngineChangedError
+
+        mock_svc.searcher.search_report.side_effect = EmbeddingEngineChangedError(
+            model="m", dim=8, distance=0.2, verified=True
+        )
+        result = _rows(search("q"))
+        assert result["code"] == "embedding_mismatch"
+        assert "lilbee rebuild" in result["error"]
+        assert "adoptable" not in result
+
     def test_omitted_top_k_falls_back_to_cfg(self, mock_svc):
         """settings_set top_k must govern search calls that omit the arg."""
         cfg.top_k = 15
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         search("test")
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=15, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with("test", top_k=15, chunk_type=None)
 
     def test_keeps_hybrid_results_without_distance(self, mock_svc):
         """Hybrid/RRF results with distance=None are not filtered."""
-        mock_svc.searcher.search.return_value = [
-            SearchChunk(
-                source="hybrid.md",
-                content_type="text",
-                page_start=0,
-                page_end=0,
-                line_start=0,
-                line_end=0,
-                chunk="hybrid result",
-                chunk_index=0,
-                vector=[0.1],
-                distance=None,
-            ),
-        ]
-        results = search("test")
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [
+                SearchChunk(
+                    source="hybrid.md",
+                    content_type="text",
+                    page_start=0,
+                    page_end=0,
+                    line_start=0,
+                    line_end=0,
+                    chunk="hybrid result",
+                    chunk_index=0,
+                    vector=[0.1],
+                    distance=None,
+                ),
+            ]
+        )
+        results = _rows(search("test"))
         assert len(results) == 1
         assert results[0]["source"] == "hybrid.md"
 
@@ -332,6 +370,16 @@ class TestStatus:
         cfg.ocr = OcrMode.OFF
         assert status()["ocr_note"] == "skipped (ocr = off)"
 
+    def test_status_lists_the_partly_read_files_and_counts_them_all(self, mock_svc):
+        page = FailedPage(page=2, error="timed out", recovered=False)
+        mock_svc.store.source_summary.return_value = SourceSummary(0, 0, {}, [], partly_read=2)
+        mock_svc.store.partly_read_sources.return_value = ({"scan.pdf": [page]}, 2)
+        result = status()
+        assert result["partial_total"] == 2
+        assert result["partly_read"] == [
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        ]
+
     def test_status_includes_entities_when_enabled(self, mock_svc):
         cfg.entity_extraction = True
         mock_svc.store.open_table.return_value = None
@@ -355,6 +403,8 @@ class TestStatus:
         assert result["index"] == {
             "embedding_model": "org/embed-GGUF/embed.Q4_K_M.gguf",
             "embedding_dim": 768,
+            "engine_mismatch": None,
+            "chunk_drift": [],
         }
 
     def test_status_index_is_none_before_any_sync(self, mock_svc):
@@ -398,6 +448,28 @@ class TestALibraryRefusal:
             result = await sync(retry_skipped=True)
 
         assert result == {"error": "The library cannot be locked"}
+
+    async def test_a_rebuild_the_embedder_cannot_serve_returns_the_plain_message(self):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        refused = ProviderError(
+            "The embedding model is not available. Nothing was rebuilt.",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refused):
+            result = await sync(force_rebuild=True)
+
+        assert result == {"error": str(refused)}
+
+    async def test_a_refused_rebuild_reaches_a_client_as_the_plain_message(self):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        refused = ProviderError("Nothing was rebuilt.", kind=ProviderErrorKind.NOT_FOUND)
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refused):
+            async with mcp_client() as (session, _init, _drop):
+                result = await session.call_tool("sync", {"force_rebuild": True})
+
+        assert json.loads(result.content[0].text) == {"error": "Nothing was rebuilt."}
 
     async def test_sync_that_cannot_open_its_sync_lock_returns_an_error(self):
         cfg.data_root.mkdir(parents=True, exist_ok=True)
@@ -554,11 +626,14 @@ class TestRemove:
     async def test_folder_name_expands_to_members(self, mock_svc):
         from lilbee.data.store import RemoveResult
 
-        mock_svc.store.get_sources.return_value = [
-            {"filename": "docs/a.md"},
-            {"filename": "docs/b.md"},
-            {"filename": "other.md"},
-        ]
+        mock_svc.store.iter_source_heads.side_effect = lambda: iter(
+            [
+                {"filename": "docs/a.md"},
+                {"filename": "docs/b.md"},
+                {"filename": "other.md"},
+            ]
+        )
+        mock_svc.store.missing_sources.return_value = set()
         captured: dict = {}
 
         def _remove(names, held=None):
@@ -573,11 +648,14 @@ class TestRemove:
     async def test_glob_pattern_expands_to_matches(self, mock_svc):
         from lilbee.data.store import RemoveResult
 
-        mock_svc.store.get_sources.return_value = [
-            {"filename": "a.log"},
-            {"filename": "b.log"},
-            {"filename": "c.md"},
-        ]
+        mock_svc.store.iter_source_heads.side_effect = lambda: iter(
+            [
+                {"filename": "a.log"},
+                {"filename": "b.log"},
+                {"filename": "c.md"},
+            ]
+        )
+        mock_svc.store.missing_sources.return_value = set()
         captured: dict = {}
 
         def _remove(names, held=None):
@@ -612,7 +690,9 @@ class TestListDocuments:
 
         mock_svc.store.get_sources.assert_called_once_with(limit=2, offset=1)
         mock_svc.store.count_sources.assert_called_once_with()
-        assert result["documents"] == [{"filename": "b.md", "chunk_count": 0}]
+        assert result["documents"] == [
+            {"filename": "b.md", "chunk_count": 0, "ocr_page_failures": []}
+        ]
         assert result["total"] == 5
         assert result["has_more"] is True
 
@@ -645,6 +725,21 @@ class TestListDocuments:
         assert result == {"error": "offset must be 0 or more"}
         mock_svc.store.get_sources.assert_not_called()
 
+    def test_each_document_lists_its_failed_ocr_pages(self, mock_svc):
+        mock_svc.store.get_sources.return_value = [
+            {
+                "filename": "scan.pdf",
+                "chunk_count": 3,
+                "ocr_page_failures": [{"page": 2, "error": "timed out", "recovered": False}],
+            },
+            {"filename": "a.md", "chunk_count": 1, "ocr_page_failures": None},
+        ]
+        documents = list_documents()["documents"]
+        assert [doc["ocr_page_failures"] for doc in documents] == [
+            [{"page": 2, "error": "timed out", "recovered": False}],
+            [],
+        ]
+
 
 class TestReset:
     def test_reset_requires_confirm(self):
@@ -667,6 +762,40 @@ class TestReset:
         assert result["deleted_data"] == 1
         assert list(cfg.documents_dir.iterdir()) == []
         assert list(cfg.data_dir.iterdir()) == []
+
+    def test_reset_with_a_held_config_lock_returns_an_error_and_deletes_nothing(self, monkeypatch):
+        from filelock import FileLock
+
+        from lilbee.core import settings
+
+        monkeypatch.setattr(settings, "_CONFIG_LOCK_TIMEOUT_S", 0.01)
+        (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
+        held = FileLock(str(cfg.data_root / "config.toml") + ".lock")
+        held.acquire()
+        try:
+            result = reset(confirm=True)
+        finally:
+            held.release()
+
+        assert result["error"].startswith("Could not write config.toml: another lilbee process")
+        assert "Nothing was changed." in result["error"]
+        assert (cfg.documents_dir / "doc.txt").read_text(encoding="utf-8") == "content"
+
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes a read-only file"
+    )
+    def test_reset_with_a_read_only_config_returns_the_write_refusal_and_deletes_nothing(self):
+        (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
+        path = cfg.data_root / "config.toml"
+        path.write_text("top_k = 7\n", encoding="utf-8")
+        path.chmod(0o444)
+        try:
+            result = reset(confirm=True)
+        finally:
+            path.chmod(0o644)
+
+        assert result == {"error": f"{path} is read-only; make it writable and try again."}
+        assert (cfg.documents_dir / "doc.txt").read_text(encoding="utf-8") == "content"
 
     async def test_reset_refused_while_a_sync_runs(self):
         from lilbee.runtime.lock import sync_running
@@ -960,6 +1089,25 @@ class TestAdd:
         assert "real.txt" in result["copied"]
         assert result["warning"] == "some files could not be processed"
 
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            ProviderError("The embedder is not available.", kind=ProviderErrorKind.NOT_FOUND),
+            TokenCountError(),
+        ],
+        ids=["provider-error", "token-count-error"],
+    )
+    async def test_a_failed_sync_after_the_add_returns_the_failure_as_a_tool_error(
+        self, tmp_path, failure
+    ):
+        good = tmp_path / "real.txt"
+        good.write_text("hello", encoding="utf-8")
+
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=failure):
+            result = await add([str(good)])
+
+        assert result == {"error": str(failure)}
+
     @staticmethod
     async def _stop_add_mid_sync(src, *, agent_cancels: bool) -> None:
         """Call add through a real client; stop it mid-sync by an agent cancel or a drop.
@@ -1035,6 +1183,30 @@ class TestAdd:
 
         assert result.is_error
         assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
+
+    @pytest.mark.parametrize("tool", ["sync", "add"])
+    @pytest.mark.parametrize("window_only", [False, True])
+    async def test_an_embed_engine_that_cannot_warm_ends_on_the_plain_refusal(
+        self, tmp_path, tool, window_only
+    ):
+        """The sync and add tools return the one message that names the model, the
+        chunk size and the fix, for a warm that fails and for a window below one chunk."""
+        from lilbee.data.extract.chunk import EmbedWarmError, EmbedWindowError
+
+        refusal = (
+            EmbedWindowError("m: The embedding model accepts 2040 tokens. Set chunk_size to 1912.")
+            if window_only
+            else EmbedWarmError("nomic-ai/nomic-embed-text-v1.5#safetensors", 8064, 120.0)
+        )
+        src = tmp_path / "scan.txt"
+        src.write_text("hello world", encoding="utf-8")
+        arguments = {"paths": [str(src)]} if tool == "add" else {}
+
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refusal):
+            async with mcp_client() as (session, _init, _drop):
+                result = await session.call_tool(tool, arguments)
+
+        assert json.loads(result.content[0].text) == {"error": str(refusal)}
 
     @pytest.mark.parametrize(
         ("tool", "arguments", "detail"),
@@ -1235,6 +1407,44 @@ class TestAdd:
         result = await add([str(src)])
         assert "warning" in result
 
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(
+            added=["scan.pdf"],
+            partial=[
+                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
+            ],
+        ),
+    )
+    async def test_add_reports_partly_read_files_with_a_warning(self, mock_sync, tmp_path):
+        src = tmp_path / "scan.pdf"
+        src.write_bytes(b"%PDF-1.4")
+        result = await add([str(src)])
+        assert result["warning"] == "some files were partly read"
+        assert result["sync"]["partial"] == [
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        ]
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(
+            added=["scan.pdf"],
+            partial=[
+                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
+            ],
+            failed=["bad.pdf"],
+            reasons={"bad.pdf": "the file is encrypted"},
+        ),
+    )
+    async def test_sync_output_carries_partial_files_and_reasons(self, mock_sync):
+        result = await sync()
+        assert result["partial"] == [
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        ]
+        assert result["reasons"] == {"bad.pdf": "the file is encrypted"}
+
 
 class TestMain:
     @mock.patch("lilbee.mcp_server.build_mcp_server")
@@ -1245,27 +1455,89 @@ class TestMain:
 
     @mock.patch("lilbee.mcp_server.build_mcp_server")
     @mock.patch("lilbee.mcp_server.get_services", side_effect=RuntimeError("boom"))
-    def test_main_preload_failure_does_not_block_server(self, mock_get_services, mock_build):
-        """A crash in the pre-warm path falls through to serving instead of aborting."""
-        mock_build.return_value.run_stdio_async = AsyncMock()
-        main()
-        mock_build.return_value.run_stdio_async.assert_awaited_once()
+    def test_main_stops_on_a_failed_services_build(self, mock_get_services, mock_build, caplog):
+        """A failed startup build ends the start with the HTTP server's error; nothing serves."""
+        with (
+            caplog.at_level(logging.ERROR, logger="lilbee.mcp_server"),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            main()
+        assert "The services build failed" in caplog.text
+        mock_build.assert_not_called()
 
     @mock.patch("lilbee.mcp_server.build_mcp_server")
-    @mock.patch("lilbee.mcp_server.exit_on_signals_in_loop")
-    def test_main_routes_signals_through_the_running_loop(self, mock_route, mock_build):
-        """The signal hook is given the loop that serves stdio, not a loop made later."""
-        seen: list[asyncio.AbstractEventLoop] = []
-        mock_route.side_effect = seen.append
-        loops: list[asyncio.AbstractEventLoop] = []
+    @mock.patch("lilbee.mcp_server.fill_empty_chat_model", side_effect=OSError("registry"))
+    def test_main_stops_on_a_failed_chat_model_fill(self, mock_fill, mock_build, caplog):
+        """The chat-model fill is part of the build, as in the HTTP server."""
+        with (
+            caplog.at_level(logging.ERROR, logger="lilbee.mcp_server"),
+            pytest.raises(OSError, match="registry"),
+        ):
+            main()
+        assert "The services build failed" in caplog.text
+        mock_build.assert_not_called()
+
+    @mock.patch("lilbee.mcp_server.build_mcp_server")
+    @mock.patch("lilbee.mcp_server.get_services", side_effect=svc_mod.ServicesStoppingError)
+    def test_main_stops_on_a_stop_during_the_build(self, mock_get_services, mock_build, caplog):
+        """A stop during the build ends the start without a build error."""
+        with (
+            caplog.at_level(logging.INFO, logger="lilbee.mcp_server"),
+            pytest.raises(svc_mod.ServicesStoppingError),
+        ):
+            main()
+        assert "A stop arrived during the services build" in caplog.text
+        assert "The services build failed" not in caplog.text
+        mock_build.assert_not_called()
+
+    @mock.patch("lilbee.mcp_server.build_mcp_server")
+    def test_main_gives_the_terminate_handler_back_when_the_loop_ends(self, mock_build):
+        """The loop takes SIGTERM while it serves, and its close returns the handler it found."""
+        previous = signal.getsignal(signal.SIGTERM)
+        seen: list[object] = []
 
         async def serve() -> None:
-            loops.append(asyncio.get_running_loop())
+            seen.append(signal.getsignal(signal.SIGTERM))
 
-        mock_build.return_value.run_stdio_async = serve
-        main()
-        assert len(seen) == 1
-        assert seen == loops
+        try:
+            # The loop takes only the signals the process routed, as mcp_cmd does before main.
+            routed = svc_mod._lifecycle._on_hard_exit
+            signal.signal(signal.SIGTERM, routed)
+            mock_build.return_value.run_stdio_async = serve
+            main()
+            after = signal.getsignal(signal.SIGTERM)
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+        assert seen != [routed]
+        assert after is routed
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="The proactor loop sets its own wakeup fd")
+    @mock.patch("lilbee.mcp_server.build_mcp_server")
+    def test_the_stdio_loop_holds_the_signal_wakeup_fd_while_it_serves(self, mock_build):
+        """The idle loop holds the signal wakeup fd while it serves and gives it back after."""
+        before = signal.set_wakeup_fd(-1)
+        signal.set_wakeup_fd(before)
+        seen: list[int] = []
+
+        async def serve() -> None:
+            held = signal.set_wakeup_fd(-1)
+            signal.set_wakeup_fd(held)
+            seen.append(held)
+
+        saved = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP)}
+        try:
+            # The loop takes only the signals the process routed, as mcp_cmd does before main.
+            for sig in saved:
+                signal.signal(sig, svc_mod._lifecycle._on_hard_exit)
+            mock_build.return_value.run_stdio_async = serve
+            main()
+        finally:
+            for sig, handler in saved.items():
+                signal.signal(sig, handler)
+
+        assert seen[0] not in (-1, before)
+        after = signal.set_wakeup_fd(before)
+        assert after == before
 
 
 _STOP_TIMEOUT_S = 60.0
@@ -1304,6 +1576,7 @@ class TestMcpProcessSignals:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            preexec_fn=child_preexec(),
         )
         try:
             assert server.stdin is not None
@@ -1323,6 +1596,91 @@ class TestMcpProcessSignals:
         assert status == 128 + sig
 
 
+class TestLoggedServicesBuildSignal:
+    """A stop signal ends the build with a system exit; only a requested stop gets the line."""
+
+    @pytest.mark.parametrize(("requested", "logged"), [(True, True), (False, False)])
+    def test_a_system_exit_logs_the_stop_line_only_for_a_requested_stop(
+        self, monkeypatch, caplog, requested, logged
+    ):
+        monkeypatch.setattr(svc_mod, "_lifecycle", SimpleNamespace(stop_requested=requested))
+        logger = logging.getLogger("test.logged_services_build")
+        with (
+            caplog.at_level(logging.INFO, logger=logger.name),
+            pytest.raises(SystemExit),
+            svc_mod.logged_services_build(logger),
+        ):
+            raise SystemExit(143)
+        assert ("A stop arrived during the services build" in caplog.text) is logged
+
+
+_BUILD_DRIVER = """
+import sys, time
+MODE = sys.argv[1]
+from lilbee import mcp_server
+def build():
+    sys.stderr.write("BUILD-STARTED\\n")
+    sys.stderr.flush()
+    if MODE == "fail":
+        raise RuntimeError("no model installed")
+    time.sleep(120)
+mcp_server.get_services = build
+mcp_server.fill_empty_chat_model = lambda: []
+sys.argv = ["lilbee", "mcp"]
+from lilbee.runtime.launcher import main
+main()
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
+class TestMcpProcessBuild:
+    """A real ``lilbee mcp`` whose services build fails or is stopped mid-build."""
+
+    def _start(self, tmp_path, mode):
+        env = {
+            **clean_env(tmp_path),
+            "LILBEE_CONFIG_DIR": str(tmp_path / "config"),
+            "LILBEE_ENGINE_DIR": str(tmp_path / "engine"),
+            "LILBEE_NO_SPLASH": "1",
+            "LILBEE_LOG_LEVEL": "INFO",
+            "PYTHONIOENCODING": "utf-8",
+        }
+        return subprocess.Popen(
+            [sys.executable, "-c", _BUILD_DRIVER, mode],
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            preexec_fn=child_preexec(),
+        )
+
+    def test_a_failed_build_exits_one_with_one_plain_line(self, tmp_path):
+        server = self._start(tmp_path, "fail")
+        out, err = server.communicate(timeout=_STOP_TIMEOUT_S)
+        assert server.returncode == 1
+        assert out == b""
+        text = err.decode()
+        assert "lilbee: the MCP server failed: no model installed" in text
+        assert "╭" not in text
+
+    @pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM], ids=["sigint", "sigterm"])
+    def test_a_stop_during_the_build_logs_one_stop_line(self, tmp_path, sig):
+        server = self._start(tmp_path, "sleep")
+        try:
+            assert server.stderr is not None
+            for line in server.stderr:
+                if b"BUILD-STARTED" in line:
+                    break
+            server.send_signal(sig)
+            _, err = server.communicate(timeout=_STOP_TIMEOUT_S)
+        finally:
+            if server.poll() is None:
+                server.kill()
+                server.wait()
+        assert server.returncode == 128 + sig
+        assert err.decode().count("A stop arrived during the services build") == 1
+
+
 class TestAddWithUrls:
     async def test_add_url_without_crawler(self, isolated_env):
         """Adding URLs when the crawler extra is not installed returns error."""
@@ -1330,6 +1688,11 @@ class TestAddWithUrls:
             result = await add(paths=["https://example.com"])
             assert "error" in result
             assert "pip install" in result["error"].lower()
+
+    async def test_add_url_with_a_crawler_that_cannot_load(self, isolated_env, broken_crawlberg):
+        result = await add(paths=["https://example.com"])
+        assert broken_crawlberg in result["error"]
+        assert "pip install --force-reinstall 'lilbee[crawler]'" in result["error"]
 
     @mock.patch("lilbee.mcp_server.crawler_available", return_value=True)
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
@@ -1694,6 +2057,11 @@ class TestCrawl:
             assert "error" in result
             assert "pip install" in result["error"].lower()
 
+    async def test_crawler_that_cannot_load(self, broken_crawlberg):
+        result = await crawl(url="https://example.com")
+        assert broken_crawlberg in result["error"]
+        assert "pip install --force-reinstall 'lilbee[crawler]'" in result["error"]
+
     def test_crawl_is_async_so_it_runs_on_the_loop(self):
         """crawl must be a coroutine function: _offload_sync passes async handlers
         straight through to the loop instead of a worker thread, so start_crawl's
@@ -1957,6 +2325,33 @@ class TestWikiBuildTool:
         assert result["stats"]["pages_published"] == 1
         assert result["stats"]["verified_by_page"] == {"wiki/concepts/p.md": 2}
 
+    @pytest.mark.parametrize(
+        ("tool", "target"),
+        [
+            (wiki_build, "lilbee.wiki.run_full_build"),
+            (wiki_synthesize, "lilbee.wiki.run_full_synthesize"),
+        ],
+    )
+    def test_a_run_that_lost_some_pages_returns_the_count(
+        self, mock_svc, tmp_path, monkeypatch, tool, target
+    ):
+        from lilbee.wiki.stats import BuildStats
+
+        cfg.wiki = True
+        stats = BuildStats()
+        stats.record_published("wiki/concepts/p.md", 2)
+        stats.record_model_call("engine down")
+        stats.record_failed_pages(2)
+        stats.record_concept_call(failed=True)
+        summary = {"paths": [str(tmp_path / "p.md")], "count": 1, "stats": stats.as_dict()}
+        monkeypatch.setattr(target, lambda *a, **kw: summary)
+        result = tool()
+        assert "error" not in result
+        assert result["count"] == 1
+        assert result["stats"]["pages_failed"] == 2
+        assert result["stats"]["concept_sources_failed"] == 1
+        assert result["stats"]["last_model_failure"] == "engine down"
+
     def test_dry_run_returns_candidates_without_building(self, mock_svc, monkeypatch):
         cfg.wiki = True
 
@@ -1973,6 +2368,59 @@ class TestWikiBuildTool:
         assert result["count"] == 1
         assert result["entities"][0]["slug"] == "ford"
         assert result["note"]
+
+
+class TestWikiProviderFailure:
+    def test_a_provider_failure_in_a_build_returns_a_tool_error(self, mock_svc, monkeypatch):
+        cfg.wiki = True
+        failure = ProviderError("The chat model is not running.", kind=ProviderErrorKind.CONNECTION)
+
+        def _fail(*a, **kw):
+            raise failure
+
+        monkeypatch.setattr("lilbee.wiki.run_full_build", _fail)
+
+        assert wiki_build() == {"error": str(failure)}
+
+
+class TestWikiBuildWithNoPages:
+    @pytest.mark.parametrize("tool", [wiki_build, wiki_update])
+    def test_a_build_with_no_pages_returns_a_tool_error(self, mock_svc, monkeypatch, tool):
+        from lilbee.wiki.stats import WikiBuildError
+
+        cfg.wiki = True
+        message = "No wiki pages were written: all 2 model calls failed."
+
+        def _fail(*a, **kw):
+            raise WikiBuildError(message)
+
+        monkeypatch.setattr("lilbee.wiki.run_full_build", _fail)
+
+        assert tool() == {"error": message}
+
+    def test_synthesize_with_no_pages_returns_a_tool_error(self, mock_svc, monkeypatch):
+        from lilbee.wiki.stats import WikiBuildError
+
+        cfg.wiki = True
+
+        def _fail(*a, **kw):
+            raise WikiBuildError("every model call failed")
+
+        monkeypatch.setattr("lilbee.wiki.run_full_synthesize", _fail)
+
+        assert wiki_synthesize() == {"error": "every model call failed"}
+
+    def test_generate_with_no_page_returns_a_tool_error(self, mock_svc, monkeypatch):
+        from lilbee.wiki.stats import WikiBuildError
+
+        cfg.wiki = True
+
+        def _fail(*a, **kw):
+            raise WikiBuildError("every model call failed")
+
+        monkeypatch.setattr("lilbee.wiki.lazy.generate_stub_page", _fail)
+
+        assert wiki_generate("ford") == {"error": "every model call failed"}
 
 
 class TestWikiUpdateTool:
@@ -2443,6 +2891,13 @@ class TestSettingsMcp:
         assert "top_k" in persisted
         assert "chunk_size" in persisted
 
+    @pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
+    def test_settings_set_refuses_a_server_address_without_its_credentials(self, isolated_env, key):
+        cfg.data_root = isolated_env
+        result = settings_set({key: "http://user:s3cret@ollama:abc"})
+        assert "s3cret" not in result["error"]
+        assert result["error"].count(key) == 1
+
     def test_settings_set_stores_browser_launch_flags(self, isolated_env):
         cfg.data_root = isolated_env
         result = settings_set({"crawl_browser_extra_args": ["--lang=fr", "--mute-audio"]})
@@ -2540,11 +2995,12 @@ class TestSettingsMcp:
         assert (isolated_env / "config.toml").read_text(encoding="utf-8") == stored
 
     def test_settings_set_a_list_for_a_named_exception_is_an_error(self, isolated_env):
-        """Only text falls back; a list reaches the validator, which has no branch for it."""
+        """Only text falls back; a list reaches the validator, which refuses it in words."""
         cfg.data_root = isolated_env
         settings_set({"n_gpu_layers": 12})
         result = settings_set({"n_gpu_layers": [1]})
-        assert "int()" in result["error"]
+        assert "n_gpu_layers" in result["error"]
+        assert "use a whole number, cpu or auto" in result["error"]
         assert cfg.n_gpu_layers == 12
 
     def test_settings_set_refused_value_of_another_setting_is_an_error(self, isolated_env):
@@ -2690,12 +3146,6 @@ class TestSettingsMcp:
         persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
         assert "max_tokens" not in persisted
 
-    def test_settings_set_invalidates_model_arch_cache(self, isolated_env):
-        cfg.data_root = isolated_env
-        with mock.patch("lilbee.modelhub.model_info.invalidate_cache") as mock_invalidate:
-            settings_set({"chat_model": _CHAT_REF})
-        mock_invalidate.assert_called_once()
-
     def test_settings_reset_restores_default(self, isolated_env):
         cfg.data_root = isolated_env
         cfg.top_k = 99
@@ -2754,7 +3204,7 @@ class TestSettingsMcp:
         listed = {row["key"]: row for row in settings_list()["settings"]}
         assert listed["top_k"]["default"] == 7
         assert listed["seed"]["default"] is None
-        assert listed["temperature"]["default"] == 0.1
+        assert listed["temperature"]["default"] is None
         settings_reset(["top_k"])
         assert cfg.top_k == 7
 
@@ -3242,6 +3692,59 @@ class TestInlineEnumDefs:
         assert _strip_schema(schema) == schema
 
 
+class TestStripSchemaOddShapes:
+    """The tools wire trims what it understands and passes the rest through untouched."""
+
+    def test_a_union_of_two_real_types_keeps_its_anyof(self):
+        from lilbee.mcp_server import _strip_schema
+
+        union = [{"type": "string"}, {"type": "integer"}]
+        stripped = _strip_schema({"properties": {"v": {"anyOf": union, "title": "V"}}})
+        assert stripped == {"properties": {"v": {"anyOf": union}}}
+
+    def test_a_single_arm_anyof_without_null_keeps_its_anyof(self):
+        from lilbee.mcp_server import _strip_schema
+
+        only = [{"type": "string"}]
+        stripped = _strip_schema({"properties": {"v": {"anyOf": only}}})
+        assert stripped == {"properties": {"v": {"anyOf": only}}}
+
+    def test_a_properties_value_that_is_not_a_mapping_is_left_alone(self):
+        from lilbee.mcp_server import _strip_schema
+
+        stripped = _strip_schema({"title": "T", "properties": ["a", "b"]})
+        assert stripped == {"properties": ["a", "b"]}
+
+    def test_a_property_that_is_not_a_mapping_is_skipped_and_its_siblings_stripped(self):
+        from lilbee.mcp_server import _strip_schema
+
+        stripped = _strip_schema(
+            {"properties": {"odd": "free-form", "n": {"title": "N", "type": "integer"}}}
+        )
+        assert stripped == {"properties": {"odd": "free-form", "n": {"type": "integer"}}}
+
+
+class TestListToolsWithoutDescription:
+    """A tool the framework lists with no description stays without one."""
+
+    async def test_a_tool_without_a_description_keeps_none_and_still_gets_a_trimmed_schema(self):
+        from mcp.server.mcpserver import MCPServer
+        from mcp.types import Tool
+
+        from lilbee.mcp_server import build_mcp_server
+
+        bare = Tool(
+            name="bare",
+            input_schema={"type": "object", "title": "BareArgs", "properties": {}},
+        )
+        assert bare.description is None
+        with mock.patch.object(MCPServer, "list_tools", AsyncMock(return_value=[bare])):
+            tools = await build_mcp_server().list_tools()
+        assert [t.name for t in tools] == ["bare"]
+        assert tools[0].description is None
+        assert "title" not in tools[0].input_schema
+
+
 class TestToolsSchemaSize:
     """Schema budget: keep the per-request OpenAI tools schema under a ceiling
     so any model with ``n_ctx >= ~16K`` has room for system + history + content
@@ -3430,8 +3933,6 @@ class TestToolsSchemaSize:
 
 
 class _StubEmbedder:
-    truncated_total = 0
-
     def embed_batch(self, texts, **_kwargs):
         return [[0.1] * cfg.embedding_dim for _ in texts]
 
@@ -3478,8 +3979,6 @@ class TestExportDataset:
 class _ProgressStubEmbedder:
     """Stub embedder that forwards one non-embed and one embed progress event."""
 
-    truncated_total = 0
-
     def embed_batch(self, texts, source="", on_progress=noop_callback, **_kwargs):
         on_progress(
             EventType.FILE_START, FileStartEvent(file=source, total_files=1, current_file=1)
@@ -3488,6 +3987,16 @@ class _ProgressStubEmbedder:
             EventType.EMBED, EmbedEvent(file=source, chunk=len(texts), total_chunks=len(texts))
         )
         return [[0.1] * cfg.embedding_dim for _ in texts]
+
+
+class _RaisingEmbedder:
+    """Embedder whose every batch fails with the given error."""
+
+    def __init__(self, failure: Exception) -> None:
+        self._failure = failure
+
+    def embed_batch(self, texts, **_kwargs):
+        raise self._failure
 
 
 class TestImportDataset:
@@ -3557,6 +4066,29 @@ class TestImportDataset:
         result = await import_dataset(str(out))
         assert "error" not in result
 
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            ProviderError("The embedder is not available.", kind=ProviderErrorKind.NOT_FOUND),
+            TokenCountError(),
+        ],
+        ids=["provider-error", "token-count-error"],
+    )
+    async def test_a_failed_re_embed_returns_the_failure_as_a_tool_error(
+        self, dataset_store, tmp_path, failure
+    ):
+        from tests.conftest import make_mock_services
+
+        out = tmp_path / "pages.jsonl"
+        assert "error" not in export_dataset(str(out))
+        svc_mod.set_services(
+            make_mock_services(store=dataset_store, embedder=_RaisingEmbedder(failure))
+        )
+
+        result = await import_dataset(str(out))
+
+        assert result == {"error": str(failure)}
+
 
 class TestMcpCommandExit:
     """A signal ends the server through SystemExit; the command finishes the exit."""
@@ -3574,6 +4106,45 @@ class TestMcpCommandExit:
         mock_exit.assert_called_once_with(143)
         assert result.exit_code == 143
 
+    def test_a_failed_start_prints_one_plain_line_and_exits_one(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        with mock.patch("lilbee.mcp_server.main", side_effect=RuntimeError("no model")):
+            result = CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "lilbee: the MCP server failed: no model" in result.output
+        assert "Traceback" not in result.output
+
+    def test_a_failure_with_an_empty_message_prints_the_exception_type(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        with mock.patch("lilbee.mcp_server.main", side_effect=ValueError("")):
+            result = CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "lilbee: the MCP server failed: ValueError" in result.output
+
+    def test_ctrl_c_reaches_the_stop_before_the_loop_starts(self, tmp_path):
+        """The Ctrl-C handler is the stop path's before the loop starts, so asyncio leaves it."""
+        from typer.testing import CliRunner
+
+        from lilbee.app import services as services_mod
+        from lilbee.cli import app
+
+        # A worker started as a background job ignores SIGINT, and the command keeps an
+        # inherited ignore. This test is about a terminal launch.
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        seen: list[object] = []
+        with mock.patch(
+            "lilbee.mcp_server.main",
+            side_effect=lambda: seen.append(signal.getsignal(signal.SIGINT)),
+        ):
+            CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        assert seen == [services_mod._lifecycle._on_hard_exit]
+
     def test_a_non_numeric_exit_code_reports_failure(self, tmp_path):
         from typer.testing import CliRunner
 
@@ -3585,3 +4156,67 @@ class TestMcpCommandExit:
         ):
             CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
         mock_exit.assert_called_once_with(1)
+
+    def test_an_exit_without_a_code_reports_success(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        with (
+            mock.patch("lilbee.mcp_server.main", side_effect=SystemExit(None)),
+            mock.patch("lilbee.cli.commands.servers.exit_after_signal") as mock_exit,
+        ):
+            CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        mock_exit.assert_called_once_with(0)
+
+    def test_a_clean_exit_stops_the_engine_before_it_returns(self, tmp_path):
+        """stdin closing runs the teardown in the command, where a signal can set the status."""
+        from typer.testing import CliRunner
+
+        from lilbee.app import services as services_mod
+        from lilbee.cli import app
+
+        container = MagicMock()
+        with mock.patch(
+            "lilbee.mcp_server.main", side_effect=lambda: services_mod.set_services(container)
+        ):
+            result = CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+
+        assert result.exit_code == 0
+        container.provider.shutdown.assert_called_once_with()
+        assert services_mod.peek_services() is None
+
+    def test_a_signal_during_the_clean_exit_stop_sets_the_status(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        with (
+            mock.patch("lilbee.mcp_server.main"),
+            mock.patch("lilbee.cli.commands.servers.exit_status_after_stop", return_value=143),
+        ):
+            result = CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        assert result.exit_code == 143
+
+
+class TestPlacementGuardConfigLock:
+    def test_a_placement_write_without_its_config_lock_returns_a_plain_error(self):
+        from lilbee.core.security import FileLockUnavailableError
+        from lilbee.mcp_server import _placement_result
+
+        def locked():
+            raise FileLockUnavailableError("another lilbee process held the lock")
+
+        result = _placement_result(locked)
+
+        assert result["error"].startswith("Could not write config.toml: another lilbee process")
+        assert "Nothing was changed." in result["error"]
+
+    def test_another_os_error_still_surfaces_from_a_placement_write(self):
+        from lilbee.mcp_server import _placement_result
+
+        def denied():
+            raise PermissionError("denied")
+
+        with pytest.raises(PermissionError, match="denied"):
+            _placement_result(denied)

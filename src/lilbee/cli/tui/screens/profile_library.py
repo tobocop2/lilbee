@@ -15,7 +15,6 @@ from textual.app import ComposeResult, CSSPathType
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
-from textual.screen import ModalScreen
 from textual.style import Style
 from textual.widgets import DataTable, OptionList, Static
 from textual.widgets.option_list import Option
@@ -39,6 +38,7 @@ from lilbee.cli.tui.screens.profile_dialogs import (
     start_profile_switch,
 )
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+from lilbee.cli.tui.widgets.dialog import Dialog
 from lilbee.core.profile_files import ProfileCatalog, ProfileEntry, ProfileFolder, ProfileStore
 
 if TYPE_CHECKING:
@@ -153,7 +153,7 @@ def _without(catalog: ProfileCatalog, path: Path) -> ProfileCatalog:
     return replace(catalog, entries=tuple(e for e in catalog.entries if e.path != path))
 
 
-class ProfileLibrary(ModalScreen[None]):
+class ProfileLibrary(Dialog[None]):
     """Lists every profile and applies, duplicates, renames, deletes, exports or imports one."""
 
     CSS_PATH: ClassVar[CSSPathType] = ["dialog.tcss", "profile_library.tcss"]
@@ -223,8 +223,11 @@ class ProfileLibrary(ModalScreen[None]):
         """Rescan the profile folders off the loop, then show the list.
 
         Only the scan runs on a thread, so a newer rescan cancels this task at the await.
+        A quit during the scan leaves the library detached, so nothing is shown then.
         """
-        self.show(await asyncio.to_thread(load_library))
+        state = await asyncio.to_thread(load_library)
+        if self.is_attached:
+            self.show(state)
 
     def show(self, state: LibraryState) -> None:
         """Fill the list from *state*, keeping the highlighted file when it is still there."""
@@ -308,7 +311,8 @@ class ProfileLibrary(ModalScreen[None]):
             diff = await asyncio.to_thread(profiles.diff, ProfileStore(), entry.name)
         except (ValueError, OSError):
             return
-        self._show_diff(entry.path, diff)
+        if self.is_attached:
+            self._show_diff(entry.path, diff)
 
     def _show_diff(self, path: Path, diff: ProfileDiff | None) -> None:
         """Show *diff* for the file at *path*; None, or a file no longer highlighted, hides it."""
@@ -425,7 +429,6 @@ class ProfileLibrary(ModalScreen[None]):
                 msg.PROFILE_DELETE_MESSAGE.format(
                     path=shorten_middle(str(owned.path), _DELETE_PATH_WIDTH)
                 ),
-                focus_no=True,
             )
             self.app.push_screen(dialog, _on_answer)
 
@@ -479,7 +482,7 @@ class ProfileLibrary(ModalScreen[None]):
 
     def _ask(
         self,
-        dialog: ModalScreen[R | None],
+        dialog: Dialog[R | None],
         write: Callable[[R], profiles.ProfileLocation],
         done: Callable[[profiles.ProfileLocation], None],
     ) -> None:

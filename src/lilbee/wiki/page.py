@@ -40,10 +40,11 @@ from lilbee.wiki.citations import (
     wiki_sourced_count,
 )
 from lilbee.wiki.persistence import (
+    IdsHeld,
     delete_drift_draft_if_present,
     divert_concept_collision,
     divert_to_drafts,
-    draft_source_names,
+    draft_held_by_other_sources,
     origin_marker,
     persist_and_finalize,
     subdir_from_wiki_source,
@@ -56,7 +57,7 @@ from lilbee.wiki.shared import (
     WikiSubdir,
     atomic_write_text,
 )
-from lilbee.wiki.stats import BuildStats
+from lilbee.wiki.stats import EMPTY_RESPONSE, BuildStats
 
 log = logging.getLogger(__name__)
 
@@ -222,6 +223,7 @@ def write_page(
     page_type: str,
     *,
     source_ids: Mapping[str, str],
+    live_ids: IdsHeld | None,
 ) -> Path:
     """Write page to disk with drift detection. Returns path written to.
 
@@ -232,13 +234,15 @@ def write_page(
     same slug is kept. A ``drafts/`` target skips drift entirely and routes
     through :func:`_write_draft_page`; ``page_type`` is the subdir the page
     would have published to, which a diverted page carries in its marker. A
-    draft records ``source_ids``, the id of each of *source_names*.
+    draft records ``source_ids``, the id of each of *source_names*. *live_ids*
+    asks the store which ids it still holds: a draft whose ids are all gone
+    (a rebuild) matches by source names.
     """
     page_path = wiki_root / subdir / f"{slug}.md"
     drafts_dir = wiki_root / WikiSubdir.DRAFTS
     if subdir == WikiSubdir.DRAFTS:
         return _write_draft_page(
-            page_path, drafts_dir, slug, full_content, source_names, page_type, source_ids
+            page_path, drafts_dir, slug, full_content, source_names, page_type, source_ids, live_ids
         )
 
     if page_path.exists():
@@ -257,10 +261,13 @@ def write_page(
                 subdir,
                 source_names,
                 source_ids=source_ids,
+                live_ids=live_ids,
             )
 
     atomic_write_text(page_path, full_content)
-    delete_drift_draft_if_present(drafts_dir, slug, source_names)
+    delete_drift_draft_if_present(
+        drafts_dir, slug, source_names, source_ids=source_ids, live_ids=live_ids
+    )
     return page_path
 
 
@@ -272,6 +279,7 @@ def _write_draft_page(
     source_names: list[str],
     page_type: str,
     source_ids: Mapping[str, str],
+    live_ids: IdsHeld | None,
 ) -> Path:
     """Land a below-threshold page in ``drafts/``, keeping another source's draft.
 
@@ -280,11 +288,11 @@ def _write_draft_page(
     page awaiting review. No drift ratio is computed: a drafts target is a
     proposal, not a published body it could be drifting from.
     """
-    owner = draft_source_names(draft_path)
-    if owner is not None and owner != sorted(source_names):
+    if draft_held_by_other_sources(draft_path, source_names, source_ids, live_ids):
         return divert_concept_collision(
             slug=slug,
             source=", ".join(sorted(source_names)),
+            source_names=source_names,
             first_source=f"{WikiSubdir.DRAFTS}/{slug}.md",
             content=full_content,
             drafts_dir=drafts_dir,
@@ -379,6 +387,35 @@ def index_wiki_page(
     return store.replace_chunks(wiki_source, ChunkType.WIKI, records)
 
 
+def request_wiki_text(
+    label: str,
+    prompt: str,
+    provider: LLMProvider,
+    config: Config,
+    stats: BuildStats,
+) -> str | None:
+    """Issue one wiki model call; None when it raised or came back empty.
+
+    The single place a wiki run calls the model. Each outcome is counted in
+    *stats*, so a run can tell a build that wrote nothing because every call
+    failed from one that had nothing to write.
+    """
+    messages = build_wiki_messages(prompt, provider, config)
+    try:
+        response = provider.chat(messages, stream=False, options=wiki_generation_options(config))
+    except Exception as exc:
+        log.warning("Model call failed for %s: %s", label, exc)
+        stats.record_model_call(str(exc), error_type=type(exc).__name__)
+        return None
+    text = strip_reasoning(response.text).strip()
+    if not text:
+        log.warning("Model call returned an empty response for %s", label)
+        stats.record_model_call(EMPTY_RESPONSE)
+        return None
+    stats.record_model_call(None)
+    return text
+
+
 def generate_page(
     label: str,
     prompt: str,
@@ -408,20 +445,11 @@ def generate_page(
 
     _emit("preparing", chunks=len(chunks), source=label)
 
-    messages = build_wiki_messages(prompt, provider, config)
     _emit("generating", source=label)
-    options = wiki_generation_options(config)
-    try:
-        response = provider.chat(messages, stream=False, options=options)
-        wiki_text = strip_reasoning(response.text).strip()
-    except Exception as exc:
-        log.warning("LLM failed to generate wiki page for %s: %s", label, exc)
-        _emit("failed", error=str(exc))
-        return None
-
-    if not wiki_text:
-        log.warning("LLM returned empty response for wiki page %s", label)
-        _emit("failed", error="Model returned empty response")
+    wiki_text = request_wiki_text(label, prompt, provider, config, stats)
+    if wiki_text is None:
+        stats.record_failed_pages(1)
+        _emit("failed", error=stats.last_model_failure)
         return None
 
     parsed_citations = parse_wiki_citations(wiki_text)

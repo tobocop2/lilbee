@@ -1312,40 +1312,31 @@ class TestExcludedLinks:
             _left_out(tags[1], TAG_PATTERN),
         ]
 
-    async def test_a_seed_a_pattern_matches_is_named_with_its_pattern(self, caplog):
-        with StubCrawlberg([complete(0)]).installed():
-            fetched = await _recursive(_http(), filters=EXCLUDES, seed=f"{FEED}?utm_source=x")
-        assert fetched == []
-        assert _named(caplog, "WARNING") == [_left_out(FEED, FEED_PATTERN)]
+    @pytest.mark.parametrize(
+        "seed",
+        [
+            FEED,
+            f"{FEED}?utm_source=x",
+            "https://user:pw@example.com/feed/",
+            "HTTPS://Example.COM:443",
+        ],
+        ids=["plain", "tracking-parameter", "userinfo", "no-path"],
+    )
+    async def test_a_seed_a_pattern_matches_is_crawled_and_never_named(self, caplog, seed: str):
+        filters = FilterSpec([FEED_PATTERN, r"\.com/$"])
+        stub = StubCrawlberg([page(SEED, depth=0), complete(1)])
+        with stub.installed():
+            fetched = await _recursive(_http(), filters=filters, seed=seed)
+        assert stub.seeds == [seed]
+        assert len(fetched) == 1
+        assert _named(caplog, "WARNING") == []
+        assert _named(caplog) == []
 
-    async def test_a_seed_a_pattern_matches_is_named_once_when_a_page_links_to_it(self, caplog):
+    async def test_a_seed_a_pattern_matches_is_not_named_when_a_page_links_to_it(self, caplog):
         script = [page("https://example.com/a", depth=1, links=[FEED])]
         with StubCrawlberg(script).installed():
             await _recursive(_http(), filters=EXCLUDES, seed=FEED)
-        assert _named(caplog, "WARNING") == [_left_out(FEED, FEED_PATTERN)]
-
-    @pytest.mark.parametrize(
-        ("seed", "pattern", "named"),
-        [
-            ("HTTPS://Example.COM:443", r"\.com/$", "https://example.com/"),
-            ("https://example.com/a^b", r"/a\^b$", "https://example.com/a^b"),
-        ],
-        ids=["no-path", "raw-caret"],
-    )
-    async def test_a_seed_is_matched_as_crawlberg_parses_it(
-        self, caplog, seed: str, pattern: str, named: str
-    ):
-        with StubCrawlberg([complete(0)]).installed():
-            await _recursive(_http(), filters=FilterSpec([pattern]), seed=seed)
-        assert _named(caplog, "WARNING") == [_left_out(named, pattern)]
-
-    @pytest.mark.parametrize("userinfo", ["user:pw@", "user@", ":pw@"])
-    async def test_a_seed_is_matched_without_its_username_and_password(self, caplog, userinfo: str):
-        pattern = r"^https://example\.com/feed/$"
-        with StubCrawlberg([complete(0)]).installed():
-            seed = f"https://{userinfo}example.com/feed/"
-            await _recursive(_http(), filters=FilterSpec([pattern]), seed=seed)
-        assert _named(caplog, "WARNING") == [_left_out(FEED, pattern)]
+        assert _named(caplog) == []
 
     async def test_a_link_is_matched_without_its_username_and_password(self, caplog):
         pattern = r"^https://example\.com/feed/$"
@@ -1354,12 +1345,12 @@ class TestExcludedLinks:
             await _recursive(_http(), filters=FilterSpec([pattern]))
         assert _named(caplog) == [_left_out(FEED, pattern)]
 
-    async def test_a_seed_the_url_parser_refuses_is_matched_by_no_pattern(self, caplog):
-        every_address = FilterSpec([r"."])
-        for seed in ("http://exa mple.com/", "http://example.com/parsed"):
-            with StubCrawlberg([complete(0)]).installed():
-                await _recursive(_http(), filters=every_address, seed=seed)
-        assert _named(caplog, "WARNING") == [_left_out("http://example.com/parsed", r".")]
+    async def test_a_seed_the_url_parser_refuses_does_not_stop_the_crawl(self, caplog):
+        stub = StubCrawlberg([complete(0)])
+        with stub.installed():
+            await _recursive(_http(), filters=FilterSpec([r"."]), seed="http://exa mple.com/")
+        assert stub.seeds == ["http://exa mple.com/"]
+        assert _named(caplog) == []
 
     async def test_a_link_is_named_at_debug_and_never_as_a_warning(self, caplog):
         script = [page(SEED, depth=0, links=[FEED, "https://example.com/a"]), complete(1)]
@@ -1460,21 +1451,22 @@ class TestCrawlerAvailable:
             seen.append(name)
             return None
 
-        crawler_available.cache_clear()
+        availability.crawler_unavailable_reason.cache_clear()
         monkeypatch.setattr(availability.importlib.util, "find_spec", find_spec)
         try:
             assert crawler_available() is False
         finally:
-            crawler_available.cache_clear()
+            availability.crawler_unavailable_reason.cache_clear()
         assert seen == ["crawlberg"]
 
     def test_crawlberg_without_ada_url_is_not_a_crawler(self, monkeypatch):
         def find_spec(name: str) -> object | None:
             return None if name == "ada_url" else object()
 
-        crawler_available.cache_clear()
+        availability.crawler_unavailable_reason.cache_clear()
         monkeypatch.setattr(availability.importlib.util, "find_spec", find_spec)
+        monkeypatch.setattr(availability.importlib, "import_module", lambda name: object())
         try:
             assert crawler_available() is False
         finally:
-            crawler_available.cache_clear()
+            availability.crawler_unavailable_reason.cache_clear()

@@ -378,6 +378,10 @@ class TestPrestartMpResourceTracker:
         from lilbee.cli.tui.app import LilbeeApp
 
         events: list[str] = []
+
+        async def _run_async(_self: LilbeeApp) -> None:
+            events.append("run")
+
         with (
             mock.patch.object(
                 tui, "_prestart_mp_resource_tracker", lambda: events.append("prestart")
@@ -385,9 +389,10 @@ class TestPrestartMpResourceTracker:
             mock.patch.object(
                 tui, "_redirect_native_stderr_to", lambda _p: events.append("redirect")
             ),
-            mock.patch.object(LilbeeApp, "run", lambda _self: events.append("run")),
+            mock.patch.object(LilbeeApp, "run_async", _run_async),
             mock.patch.object(LilbeeApp, "__init__", lambda _self, **_kw: None),
             mock.patch.object(LilbeeApp, "task_bar", create=True),
+            mock.patch.object(LilbeeApp, "return_code", None),
             mock.patch.object(tui, "_restore_native_stderr"),
             mock.patch("lilbee.cli.sync.shutdown_executor"),
             mock.patch.object(tui, "reset_services_on_exit"),
@@ -395,6 +400,154 @@ class TestPrestartMpResourceTracker:
         ):
             tui.run_tui()
         assert events == ["prestart", "redirect", "run"]
+
+    def _run_tui_with_return_code(
+        self, return_code: int | None, straggler_exit: mock.Mock | None = None
+    ) -> tuple[mock.Mock, str | int | None]:
+        """Run the real run_tui with an app that ends with *return_code*.
+
+        Returns the straggler-exit mock and the SystemExit status (None if none raised).
+        """
+        from lilbee.cli import tui
+        from lilbee.cli.tui.app import LilbeeApp
+
+        async def _run_async(_self: LilbeeApp) -> None:
+            return None
+
+        straggler_exit = straggler_exit or mock.Mock()
+        raised: str | int | None = None
+        with (
+            mock.patch.object(tui, "_prestart_mp_resource_tracker"),
+            mock.patch.object(tui, "_redirect_native_stderr_to"),
+            mock.patch.object(LilbeeApp, "run_async", _run_async),
+            mock.patch.object(LilbeeApp, "__init__", lambda _self, **_kw: None),
+            mock.patch.object(LilbeeApp, "task_bar", create=True),
+            mock.patch.object(LilbeeApp, "return_code", return_code),
+            mock.patch.object(tui, "_restore_native_stderr"),
+            mock.patch("lilbee.cli.sync.shutdown_executor"),
+            mock.patch.object(tui, "reset_services_on_exit"),
+            mock.patch.object(tui, "exit_when_stragglers_would_hang", straggler_exit),
+        ):
+            try:
+                tui.run_tui()
+            except SystemExit as exc:
+                raised = exc.code
+        return straggler_exit, raised
+
+    @pytest.mark.parametrize("return_code", [3, 130])
+    def test_run_tui_raises_the_nonzero_app_status_and_hands_it_to_the_straggler_exit(
+        self, return_code: int
+    ) -> None:
+        straggler_exit, raised = self._run_tui_with_return_code(return_code)
+        assert raised == return_code
+        straggler_exit.assert_called_once_with(return_code)
+
+    @pytest.mark.parametrize("return_code", [0, 1])
+    def test_run_tui_leaves_no_log_handler_on_the_tui_log_when_it_ends(
+        self, return_code: int
+    ) -> None:
+        import logging
+
+        root = logging.getLogger()
+        before = list(root.handlers)
+        try:
+            self._run_tui_with_return_code(return_code)
+            leaked = [h for h in root.handlers if h not in before]
+        finally:
+            for handler in [h for h in root.handlers if h not in before]:
+                root.removeHandler(handler)
+                handler.close()
+        assert leaked == []
+
+    def test_run_tui_keeps_the_tui_log_for_records_of_the_straggler_wait(self) -> None:
+        import logging
+
+        from lilbee.cli.tui.log_routing import tui_log_path
+
+        root = logging.getLogger()
+        before = list(root.handlers)
+
+        def _straggler_logs(_status: int) -> None:
+            logging.getLogger("lilbee").error("straggler-record")
+
+        try:
+            self._run_tui_with_return_code(0, mock.Mock(side_effect=_straggler_logs))
+            leaked = [h for h in root.handlers if h not in before]
+            text = tui_log_path().read_text(encoding="utf-8")
+        finally:
+            for handler in [h for h in root.handlers if h not in before]:
+                root.removeHandler(handler)
+                handler.close()
+        assert "straggler-record" in text
+        assert leaked == []
+
+    def test_run_tui_leaves_no_handler_to_fail_once_the_data_root_is_gone(self) -> None:
+        import logging
+        import shutil
+        from logging.handlers import RotatingFileHandler
+
+        from lilbee.core.config import cfg
+
+        root = logging.getLogger()
+        before = list(root.handlers)
+        try:
+            self._run_tui_with_return_code(0)
+            shutil.rmtree(cfg.data_root)
+            # Closing a handler that survived makes its next record reopen the missing file.
+            for handler in root.handlers:
+                if isinstance(handler, RotatingFileHandler):
+                    handler.close()
+            with mock.patch.object(logging.Handler, "handleError") as handle_error:
+                logging.getLogger("lilbee").error("after-the-data-root-is-gone")
+        finally:
+            for handler in [h for h in root.handlers if h not in before]:
+                root.removeHandler(handler)
+                handler.close()
+        handle_error.assert_not_called()
+
+    @pytest.mark.parametrize("return_code", [0, None])
+    def test_run_tui_returns_and_passes_zero_when_the_app_ends_cleanly(
+        self, return_code: int | None
+    ) -> None:
+        straggler_exit, raised = self._run_tui_with_return_code(return_code)
+        assert raised is None
+        straggler_exit.assert_called_once_with(0)
+
+    def test_run_tui_swallows_ctrl_c_runs_every_cleanup_and_exits_with_status_zero(self) -> None:
+        from lilbee.cli import tui
+        from lilbee.cli.tui.app import LilbeeApp
+
+        # The Ctrl-C comes from inside the run, so it crosses the loop helper as a real one does.
+        async def _run_async(_self: LilbeeApp) -> None:
+            raise KeyboardInterrupt
+
+        calls = mock.Mock()
+        escaped: BaseException | None = None
+        with (
+            mock.patch.object(tui, "_prestart_mp_resource_tracker"),
+            mock.patch.object(tui, "_redirect_native_stderr_to"),
+            mock.patch.object(LilbeeApp, "run_async", _run_async),
+            mock.patch.object(LilbeeApp, "__init__", lambda _self, **_kw: None),
+            mock.patch.object(LilbeeApp, "task_bar", calls.task_bar, create=True),
+            mock.patch.object(LilbeeApp, "return_code", None),
+            mock.patch.object(tui, "_restore_native_stderr", calls.restore_stderr),
+            mock.patch("lilbee.cli.sync.shutdown_executor", calls.shutdown_executor),
+            mock.patch.object(tui, "reset_services_on_exit", calls.reset_services),
+            mock.patch.object(tui, "exit_when_stragglers_would_hang", calls.straggler_exit),
+        ):
+            try:
+                tui.run_tui()
+            except BaseException as exc:  # a leaked Ctrl-C must fail here, not abort pytest
+                escaped = exc
+        assert escaped is None
+        assert [c[0] for c in calls.mock_calls] == [
+            "task_bar.stop_all",
+            "restore_stderr",
+            "shutdown_executor",
+            "reset_services",
+            "straggler_exit",
+        ]
+        calls.straggler_exit.assert_called_once_with(0)
 
     @_POSIX_ONLY
     def test_spawn_primitive_survives_a_stderr_without_a_descriptor(self, tmp_path: Path) -> None:

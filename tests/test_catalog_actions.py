@@ -545,6 +545,43 @@ async def test_discover_rail_fills_when_the_probe_failed() -> None:
         assert [r.name for r in grid.rows] == ["Llama 8B"]
 
 
+async def test_switching_to_discover_after_activation_settles_fills_the_rails() -> None:
+    """A tab switch that lands after activation settled paints the Discover rails.
+
+    The tab-activated handler drops every switch that arrives before the
+    initial-tab step has flipped the settled flag, so the switch below waits
+    on that flag itself. Without the wait, whether the handler reaches the
+    Discover branch depends on how fast the host runs the mount callbacks.
+    """
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+    from tests._async_wait import wait_until
+
+    variant = ModelVariant(
+        hf_repo="a/Llama-GGUF",
+        filename="llama.gguf",
+        param_count="8B",
+        quant="Q4_K_M",
+        size_mb=4600,
+        compat=ModelCompat.SUPPORTED,
+    )
+    family = ModelFamily(
+        slug="llama", name="Llama", task=ModelTask.CHAT, description="x", variants=(variant,)
+    )
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        screen = pilot.app.query_one(CatalogScreen)
+        settled = await wait_until(pilot, lambda: screen._activation_settled, timeout=30.0)
+        assert settled, "activation never settled"
+        screen._available_memory_bytes = None
+        screen._families = [family]
+        screen._family_rows_cache = None
+        grid = screen.query_one("#discover-grid-for-you", ModelGrid)
+        assert grid.rows == []
+        tabs = screen.query_one("#catalog-tabs", TabbedContent)
+        tabs.active = "discover"
+        assert await wait_until(pilot, lambda: bool(grid.rows)), "the rails stayed empty"
+        assert [r.name for r in grid.rows] == ["Llama 8B"]
+
+
 async def test_discover_fresh_rail_drops_cards_for_you_already_took() -> None:
     """A For You backfill pick leaves Fresh, which backfills the slot."""
     from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -1011,6 +1048,18 @@ async def test_update_drawer_for_grid_swallows_missing_drawer() -> None:
         with _query_misses(screen, "#catalog-detail-drawer") as query:
             screen._update_drawer_for_grid(grid, 0)
         query.assert_called_once_with("#catalog-detail-drawer", CatalogDetailDrawer)
+
+
+async def test_the_drawer_gets_the_installed_file_name_of_an_installed_row() -> None:
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._installed_names = {"acme/foo", "acme/foo/foo-q4_k_m.gguf"}
+        installed = _row("acme/foo", installed=True)
+        assert screen._installed_ref_of(installed) == "acme/foo/foo-q4_k_m.gguf"
+        assert screen._installed_ref_of(_row("acme/foo")) is None
+        assert screen._installed_ref_of(_row("acme/other", installed=True)) is None
+        assert screen._installed_ref_of(None) is None
 
 
 async def test_maybe_prefetch_on_grid_nav_skips_with_only_empty_grids() -> None:
@@ -1781,16 +1830,11 @@ async def test_spinner_tick_updates_the_loading_more_hint() -> None:
         assert "loading more models" in str(hint.render()).lower()
 
 
-async def test_deferred_grid_mount_does_not_steal_the_filter_focus() -> None:
-    """A refresh that lands after `/` must leave the cursor in the filter.
-
-    `_mount_remaining_grid_sections` runs from call_after_refresh and used to
-    gate only on "is a grid focused", which is False while the Input owns the
-    cursor, so a mount arriving after the user pressed `/` pulled focus onto
-    the first grid. Driven directly rather than through a key race: the steal
-    is a property of the callback, so it should be reachable by construction.
-    """
+async def test_grid_remount_does_not_steal_the_filter_focus() -> None:
+    """A remount that lands after `/` leaves the cursor in the filter."""
     from textual.widgets import Input
+
+    from lilbee.cli.tui.screens.catalog import GridSection
 
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -1800,12 +1844,11 @@ async def test_deferred_grid_mount_does_not_steal_the_filter_focus() -> None:
         await pilot.pause()
         assert isinstance(screen.focused, Input), "setup: filter should hold focus"
 
-        screen._mount_remaining_grid_sections(
-            screen._grid_container, [], hf_count=0, focus_anchor=None
-        )
+        rows = [_row("filter-focus-row")]
+        screen._remount_grid_sections([GridSection(heading="Chat", rows=rows)], hf_count=0)
         await pilot.pause()
         assert isinstance(screen.focused, Input), (
-            f"a deferred grid mount stole the filter focus; now on {screen.focused}"
+            f"a grid remount stole the filter focus; now on {screen.focused}"
         )
 
 

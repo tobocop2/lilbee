@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections.abc import Callable, Generator
 from datetime import datetime
@@ -14,10 +15,13 @@ from typing_extensions import TypedDict
 
 from lilbee.core.config import Config
 from lilbee.core.config.enums import ChatMode
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.llm_json import json_reply_format
 from lilbee.core.vectors import Vector
 from lilbee.data.store import (
+    INGEST_FAILURES,
     ChunkType,
+    HeldOut,
     MemoryKind,
     MemoryRow,
     SearchChunk,
@@ -27,6 +31,7 @@ from lilbee.data.store import (
 )
 from lilbee.data.store.fusion import fuse_ranked_lists
 from lilbee.providers.base import (
+    BUDGET_CHARS_PER_TOKEN,
     CHAT_MESSAGE_OVERHEAD_TOKENS,
     LLMProvider,
     ProviderError,
@@ -35,6 +40,8 @@ from lilbee.providers.base import (
     estimate_budget_tokens,
     prompt_token_budget,
 )
+from lilbee.providers.fleet import first_use
+from lilbee.providers.truncation import truncation_scope
 from lilbee.retrieval.embedder import Embedder
 from lilbee.retrieval.language import noun_variants, query_language
 from lilbee.retrieval.query.compaction import (
@@ -87,7 +94,7 @@ from lilbee.retrieval.query.intent import (
     title_candidates,
 )
 from lilbee.retrieval.query.memory import format_memory_block, memory_to_chunk
-from lilbee.retrieval.query.neighbors import expand_neighbors
+from lilbee.retrieval.query.neighbors import NeighborCache, expand_neighbors
 from lilbee.retrieval.query.structural import is_structural_chunk
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
 from lilbee.retrieval.reasoning import (
@@ -99,6 +106,7 @@ from lilbee.retrieval.reasoning import (
     stream_chat_with_cap,
     strip_reasoning,
 )
+from lilbee.retrieval.rerank_failure import rerank_failure
 
 if TYPE_CHECKING:
     from lilbee.retrieval.concepts import ConceptGraph
@@ -187,6 +195,18 @@ EMPTY_LIBRARY = (
     "Add documents to your library first, then ask again."
 )
 
+
+def ingest_failed_message(held: int, cause: str | None = None, retried: int = 0) -> str:
+    """The answer when *held* documents failed and *retried* hit the engine error *cause*."""
+    count = held + retried
+    noun = "document" if count == 1 else "documents"
+    head = f"Nothing is indexed: {count} {noun} failed to ingest."
+    if cause is None:
+        return f"{head} Run `lilbee status` to see why, then ask again."
+    retry = f"{head} The error was: {cause}. Run `lilbee sync` to try again."
+    return f"{retry} Run `lilbee status` to see why the others failed." if held else retry
+
+
 # Ask/search needs an embedder to ground an answer. When none is loaded, refuse
 # with an actionable message rather than hard-failing or silently answering
 # ungrounded; chat mode stays available for an off-corpus reply.
@@ -200,11 +220,75 @@ _ASSOCIATION_LINES = 15
 # One retry after a provider context-overflow, refitting to this fraction of
 # the budget. The estimator is a heuristic; overflow must degrade, not fail.
 _OVERFLOW_RETRY_SCALE = 0.6
+# Measurements of the assembled prompt with a scaled estimate before the fit
+# falls back to a binary search over the kept count.
+_MAX_SCALED_MEASUREMENTS = 3
+# Share of the source budget a refit after an overflow leaves free. A fit packs
+# to the brim, and the ratio is an average over the whole prompt, so a refit
+# by the ratio alone can overflow again on a mixed list.
+_REFIT_MARGIN = 0.05
 # Approximate token cost of the Context/Question template wrapper.
 _CONTEXT_TEMPLATE_TOKENS = 16
 # Approximate per-source overhead: the "[i] " marker, the provenance header
 # (source path plus page/line span), and the blank-line separator.
 _PER_SOURCE_TOKENS = 24
+
+_HYDE_REMEDY = (
+    "Search again, or turn off the hyde setting. Check the chat model with lilbee status."
+)
+_EXPANSION_REMEDY = (
+    "Search again, or set query_expansion_count to 0. Check the chat model with lilbee status."
+)
+_BOOST_REMEDY = (
+    "Search again, or turn off the concept_graph setting. Run lilbee status to check it."
+)
+_CONCEPT_EXPANSION_REMEDY = (
+    "Search again, or turn off the concept_graph setting. Check the embedding model with "
+    "lilbee status."
+)
+
+
+class _DegradedStep(NamedTuple):
+    """How a failed search step is logged and what the user is told."""
+
+    label: str
+    warning: HealthWarning
+
+
+_DEGRADED_STEPS: dict[WarningCode, _DegradedStep] = {
+    WarningCode.HYDE_BLEND_FAILED: _DegradedStep(
+        "HyDE widening",
+        HealthWarning(
+            code=WarningCode.HYDE_BLEND_FAILED,
+            message="HyDE search failed: results do not include its hypothetical-answer matches.",
+            remedy=_HYDE_REMEDY,
+        ),
+    ),
+    WarningCode.QUERY_EXPANSION_FAILED: _DegradedStep(
+        "Query expansion",
+        HealthWarning(
+            code=WarningCode.QUERY_EXPANSION_FAILED,
+            message="Query expansion failed: results do not include reworded queries.",
+            remedy=_EXPANSION_REMEDY,
+        ),
+    ),
+    WarningCode.CONCEPT_BOOST_FAILED: _DegradedStep(
+        "Concept boost",
+        HealthWarning(
+            code=WarningCode.CONCEPT_BOOST_FAILED,
+            message="Concept boost failed: results are not re-ranked by concept.",
+            remedy=_BOOST_REMEDY,
+        ),
+    ),
+    WarningCode.CONCEPT_EXPANSION_FAILED: _DegradedStep(
+        "Concept query expansion",
+        HealthWarning(
+            code=WarningCode.CONCEPT_EXPANSION_FAILED,
+            message="Concept expansion failed: results do not include related-concept queries.",
+            remedy=_CONCEPT_EXPANSION_REMEDY,
+        ),
+    ),
+}
 
 
 class ChatMessage(TypedDict):
@@ -224,6 +308,8 @@ class AskResult(BaseModel):
     when the question as typed was searched.
     ``dropped_sources`` names the chunks the budget fit shed, so a caller can say
     what went in and what was trimmed.
+    ``degraded`` names the search steps that failed (a widening step or the
+    rerank), so a caller can say the search ran without them.
     """
 
     answer: str
@@ -231,6 +317,7 @@ class AskResult(BaseModel):
     cited_sources: list[SearchChunk] = Field(default_factory=list)
     retrieval_query: str | None = None
     dropped_sources: list[SearchChunk] = Field(default_factory=list)
+    degraded: list[HealthWarning] = Field(default_factory=list)
 
 
 class StructuredQuery(NamedTuple):
@@ -252,6 +339,9 @@ class RagContext(NamedTuple):
 
     ``dropped`` names the chunks the budget fit shed, so a caller can say what
     went in and what was trimmed. ``None`` when no fit ran.
+
+    ``degraded`` names the search steps (widening or rerank) that failed during retrieval.
+    ``refused`` is set when retrieval found nothing to ground an answer on.
     """
 
     results: list[SearchChunk]
@@ -259,6 +349,82 @@ class RagContext(NamedTuple):
     base_results: list[SearchChunk] | None = None
     retrieval_query: str | None = None
     dropped: list[SearchChunk] | None = None
+    degraded: tuple[HealthWarning, ...] = ()
+    refused: bool = False
+
+
+class _Assembly(NamedTuple):
+    """One assembled prompt: the sources it sends, its messages and what it shed.
+
+    ``fitted`` is the kept set before neighbor widening, so a search over the
+    kept count can drop sources without carrying their neighbor text.
+    """
+
+    results: list[SearchChunk]
+    messages: list[ChatMessage]
+    dropped: list[SearchChunk]
+    fitted: list[SearchChunk]
+
+
+class _Measurement(NamedTuple):
+    """The engine's token count of a prompt and its ratio to the character rule."""
+
+    tokens: int
+    ratio: float
+
+
+def _scaled_cost(ratio: float) -> Callable[[str], int]:
+    """The character rule scaled by *ratio*.
+
+    The ratio never drops below 1, so a text never costs less than the
+    provider's own window check charges for it.
+    """
+    return lambda text: max(1, math.ceil(len(text) * ratio / BUDGET_CHARS_PER_TOKEN))
+
+
+def _rag_messages(
+    system: str, question: str, history: list[ChatMessage] | None, results: list[SearchChunk]
+) -> list[ChatMessage]:
+    """The chat messages that send *results* as the context for *question*."""
+    prompt = CONTEXT_TEMPLATE.format(context=build_context(results), question=question)
+    messages: list[ChatMessage] = [{"role": "system", "content": system}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": prompt})
+    return messages
+
+
+class SearchReport(NamedTuple):
+    """The rows of one search and the search steps that failed while finding them."""
+
+    rows: list[SearchChunk]
+    degraded: tuple[HealthWarning, ...] = ()
+
+
+def _record_degraded(
+    degraded: list[HealthWarning], label: str, warning: HealthWarning, exc: Exception
+) -> None:
+    """Log a failed search step with its cause and record its warning once for the user."""
+    log.warning("%s disabled for this call: %s", label, exc)
+    log.debug("%s exception", label, exc_info=True)
+    if warning not in degraded:
+        degraded.append(warning)
+
+
+def _degrade(degraded: list[HealthWarning], code: WarningCode, exc: Exception) -> None:
+    """Record a failed widening step: the step names its own warning."""
+    step = _DEGRADED_STEPS[code]
+    _record_degraded(degraded, step.label, step.warning, exc)
+
+
+def _degrade_rerank(degraded: list[HealthWarning], exc: Exception) -> None:
+    """Record a failed rerank: the warning names the kind of failure, never the error text."""
+    _record_degraded(degraded, "Reranking", rerank_failure(exc), exc)
+
+
+def _note_install_warnings(degraded: list[HealthWarning]) -> None:
+    """Add the warnings an engine install raised during this call, once each."""
+    degraded.extend(w for w in first_use.take_install_warnings() if w not in degraded)
 
 
 class Searcher:
@@ -283,6 +449,11 @@ class Searcher:
         self._reranker = reranker
         self._concepts = concepts
 
+    def _embed_query(self, text: str) -> Vector:
+        """Embed *text* for a search, once the index is known to answer cfg's embedder."""
+        self._store.ensure_servable()
+        return self._embedder.embed_query(text)
+
     def _apply_temporal_filter(
         self, results: list[SearchChunk], question: str
     ) -> list[SearchChunk]:
@@ -294,7 +465,7 @@ class Searcher:
         if keyword is None:
             return results
         date_range = resolve_date_range(keyword)
-        source_dates = self._store.source_ingested_at_map()
+        source_dates = self._store.ingested_at_of({r.source for r in results})
         filtered: list[SearchChunk] = []
         for r in results:
             ingested_at = source_dates.get(r.source, "")
@@ -330,15 +501,21 @@ class Searcher:
         threshold = self._config.expansion_similarity_threshold
         return [(text, vec) for text, vec in variants if cosine_sim(question_vec, vec) >= threshold]
 
-    def _concept_query_expansion(self, question: str) -> list[str]:
+    def _concept_query_expansion(
+        self, question: str, degraded: list[HealthWarning]
+    ) -> list[tuple[str, Vector]]:
+        """Concept-graph ``(variant, vector)`` pairs; a failed graph skips them and is recorded."""
         if not self._config.concept_graph:
             return []
         try:
             if not self._concepts.get_graph():
                 return []
-            return self._concepts.expand_query(question)
-        except Exception:
-            log.debug("Concept query expansion failed", exc_info=True)
+            texts = list(self._concepts.expand_query(question))
+            if not texts:
+                return []
+            return list(zip(texts, self._embedder.embed_query_batch(texts), strict=True))
+        except Exception as exc:
+            _degrade(degraded, WarningCode.CONCEPT_EXPANSION_FAILED, exc)
             return []
 
     def _repeatable_options(self, num_predict: int, **extra: Any) -> dict[str, Any]:
@@ -373,40 +550,39 @@ class Searcher:
         log.info("Query expansion produced %d variants", len(kept))
         return kept
 
-    def _expand_query(self, question: str, question_vec: Vector) -> list[tuple[str, Vector]]:
+    def _llm_query_variants(
+        self, question: str, question_vec: Vector, degraded: list[HealthWarning]
+    ) -> list[tuple[str, Vector]]:
+        """Guardrailed ``(variant, vector)`` pairs from the chat model; a failure is recorded."""
+        count = self._config.query_expansion_count
+        # Short queries skip LLM expansion: BM25/vector signal is already strong
+        # and the LLM round-trip dominates latency on small local models.
+        short_threshold = self._config.expansion_short_query_tokens
+        if count <= 0 or (short_threshold > 0 and len(_tokenize(question)) <= short_threshold):
+            return []
+        try:
+            texts = list(self._llm_expand(question, count))
+            if not texts:
+                return []
+            pairs = list(zip(texts, self._embedder.embed_query_batch(texts), strict=True))
+            return self._apply_guardrails(pairs, question_vec)
+        except Exception as exc:
+            _degrade(degraded, WarningCode.QUERY_EXPANSION_FAILED, exc)
+            return []
+
+    def _expand_query(
+        self, question: str, question_vec: Vector, degraded: list[HealthWarning]
+    ) -> list[tuple[str, Vector]]:
         """Return ``(variant, variant_vec)`` pairs for downstream search.
 
         LLM variants run through ``_apply_guardrails``; concept-graph
         variants bypass it since they come from deterministic traversal.
-        Embeddings batch per source: one provider round-trip per source.
+        Each step fails on its own, so a failed LLM step keeps the concept variants.
         """
-        count = self._config.query_expansion_count
-        if count <= 0 and not self._config.concept_graph:
-            return []
-        # Short queries skip LLM expansion: BM25/vector signal is already strong
-        # and the LLM round-trip dominates latency on small local models.
-        # Concept-graph expansion still runs.
-        short_threshold = self._config.expansion_short_query_tokens
-        skip_llm = short_threshold > 0 and len(_tokenize(question)) <= short_threshold
-        try:
-            llm_variants: list[tuple[str, Vector]] = []
-            if count > 0 and not skip_llm:
-                llm_texts = list(self._llm_expand(question, count))
-                if llm_texts:
-                    llm_vectors = self._embedder.embed_query_batch(llm_texts)
-                    llm_variants = list(zip(llm_texts, llm_vectors, strict=True))
-            llm_variants = self._apply_guardrails(llm_variants, question_vec)
-
-            concept_texts = list(self._concept_query_expansion(question))
-            if concept_texts:
-                concept_vectors = self._embedder.embed_query_batch(concept_texts)
-                llm_variants.extend(zip(concept_texts, concept_vectors, strict=True))
-
-            return llm_variants
-        except Exception as exc:
-            log.warning("Query expansion disabled for this call: %s", exc)
-            log.debug("Query expansion exception", exc_info=True)
-            return []
+        return [
+            *self._llm_query_variants(question, question_vec, degraded),
+            *self._concept_query_expansion(question, degraded),
+        ]
 
     def _should_skip_expansion(self, question: str, chunk_type: ChunkType | None = None) -> bool:
         if self._config.expansion_skip_threshold <= 0:
@@ -437,7 +613,10 @@ class Searcher:
             )
         return skip
 
-    def _apply_concept_boost(self, results: list[SearchChunk], question: str) -> list[SearchChunk]:
+    def _apply_concept_boost(
+        self, results: list[SearchChunk], question: str, degraded: list[HealthWarning]
+    ) -> list[SearchChunk]:
+        """Re-rank by concept overlap; a failed graph keeps the rows and is recorded."""
         if not self._config.concept_graph or not results:
             return results
         try:
@@ -451,8 +630,8 @@ class Searcher:
             # input order; re-sort so the boost actually re-ranks for callers
             # that consume search() order directly (CLI search, MCP search).
             return order_by_fusion(boosted)
-        except Exception:
-            log.debug("Concept boost failed", exc_info=True)
+        except Exception as exc:
+            _degrade(degraded, WarningCode.CONCEPT_BOOST_FAILED, exc)
             return results
 
     def _hyde_search(
@@ -469,22 +648,21 @@ class Searcher:
         space as every other query this searcher issues. Changing that is a
         retrieval-quality experiment for the embedding bench, not a refactor.
         """
-        try:
-            response = self._provider.chat(
-                [{"role": "user", "content": self._config.hyde_prompt.format(question=question)}],
-                stream=False,
-                options=self._repeatable_options(HYDE_MAX_TOKENS),
+        response = self._provider.chat(
+            [{"role": "user", "content": self._config.hyde_prompt.format(question=question)}],
+            stream=False,
+            options=self._repeatable_options(HYDE_MAX_TOKENS),
+        )
+        # Reasoning models front-load deliberation; embedding it instead
+        # of the passage would search for the model's thought process.
+        text = strip_reasoning(response.text).strip()
+        if not text:
+            raise ProviderError(
+                f"The chat model {self._config.chat_model} returned no passage for the "
+                "hyde search. Pick another chat model or search without 'hyde:'."
             )
-            # Reasoning models front-load deliberation; embedding it instead
-            # of the passage would search for the model's thought process.
-            text = strip_reasoning(response.text).strip()
-            if not text:
-                return []
-            hyde_vec = self._embedder.embed_query(text)
-            return self._store.search(hyde_vec, top_k=top_k, query_text=None, chunk_type=chunk_type)
-        except Exception:
-            log.debug("HyDE search failed", exc_info=True)
-            return []
+        hyde_vec = self._embedder.embed_query(text)
+        return self._store.search(hyde_vec, top_k=top_k, query_text=None, chunk_type=chunk_type)
 
     def _refuse_wiki_scope(self, chunk_type: ChunkType | None) -> bool:
         """Whether a wiki-scoped search must serve nothing because wiki is off.
@@ -537,11 +715,12 @@ class Searcher:
         if mode is QueryMode.TERM:
             return self._store.bm25_probe(query, top_k=top_k, chunk_type=scope)
         if mode is QueryMode.VEC:
-            query_vec = self._embedder.embed_query(query)
+            query_vec = self._embed_query(query)
             return self._store.search(query_vec, top_k=top_k, query_text=None, chunk_type=scope)
         if mode is QueryMode.HYDE:
+            self._store.ensure_servable()
             return self._hyde_search(query, top_k, chunk_type=scope)
-        query_vec = self._embedder.embed_query(query)
+        query_vec = self._embed_query(query)
         return self._store.search(query_vec, top_k=top_k, query_text=query, chunk_type=scope)
 
     def select_context(
@@ -581,9 +760,10 @@ class Searcher:
         seen: set[tuple[str, int]],
         top_k: int,
         chunk_type: ChunkType | None,
+        degraded: list[HealthWarning],
     ) -> None:
         """Append unseen variant-search hits to ``results`` (in place)."""
-        for variant, variant_vec in self._expand_query(question, query_vec):
+        for variant, variant_vec in self._expand_query(question, query_vec, degraded):
             variant_results = self._store.search(
                 variant_vec,
                 top_k=top_k,
@@ -602,12 +782,21 @@ class Searcher:
         results: list[SearchChunk],
         seen: set[tuple[str, int]],
         top_k: int,
-        chunk_type: ChunkType | None = None,
+        chunk_type: ChunkType | None,
+        degraded: list[HealthWarning],
     ) -> None:
         """Append unseen HyDE hits to ``results`` (in place), down-weighted by
         ``hyde_weight`` in canonical score space (a weight of 1.0 trusts HyDE
-        hits as much as direct hits; lower discounts them proportionally)."""
-        for r in self._hyde_search(question, top_k, chunk_type=chunk_type):
+        hits as much as direct hits; lower discounts them proportionally).
+
+        HyDE here only widens a search that already ran, so a failure skips the
+        widening and records it, as a failed query expansion does."""
+        try:
+            hyde_results = self._hyde_search(question, top_k, chunk_type=chunk_type)
+        except Exception as exc:
+            _degrade(degraded, WarningCode.HYDE_BLEND_FAILED, exc)
+            return
+        for r in hyde_results:
             key = (r.source, r.chunk_index)
             if key in seen:
                 continue
@@ -623,7 +812,17 @@ class Searcher:
         *,
         chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
-        """The search result every surface shows: at most ``top_k`` rows.
+        """The rows of ``search_report``."""
+        return self.search_report(question, top_k, chunk_type=chunk_type).rows
+
+    def search_report(
+        self,
+        question: str,
+        top_k: int = 0,
+        *,
+        chunk_type: ChunkType | None = None,
+    ) -> SearchReport:
+        """The search result every surface shows: at most ``top_k`` rows, and the failed steps.
 
         The relevance floor, the per-source cap and ``top_k`` apply last, after
         every step that adds rows. A query that names one document returns that
@@ -632,19 +831,26 @@ class Searcher:
         """
         if top_k == 0:
             top_k = self._config.top_k
-        if self._config.intent_routing and self._parse_structured_query(question).mode is None:
-            known_item = self._known_item_results(question, self._retrieval_scope(chunk_type))
-            if known_item:
-                return known_item[:top_k]
-        kept = filter_results(
-            self._candidates(question, top_k, chunk_type),
-            self._config.max_distance,
-            self._config.min_relevance_score,
-        )
-        return diversify_sources(kept, self._config.diversity_max_per_source)[:top_k]
+        with truncation_scope():
+            if self._config.intent_routing and self._parse_structured_query(question).mode is None:
+                known_item = self._known_item_results(question, self._retrieval_scope(chunk_type))
+                if known_item:
+                    return SearchReport(known_item[:top_k])
+            degraded: list[HealthWarning] = []
+            candidates = self._candidates(question, top_k, chunk_type, degraded)
+            _note_install_warnings(degraded)
+            kept = filter_results(
+                candidates, self._config.max_distance, self._config.min_relevance_score
+            )
+            rows = diversify_sources(kept, self._config.diversity_max_per_source)[:top_k]
+            return SearchReport(rows, tuple(degraded))
 
     def _candidates(
-        self, question: str, top_k: int, chunk_type: ChunkType | None
+        self,
+        question: str,
+        top_k: int,
+        chunk_type: ChunkType | None,
+        degraded: list[HealthWarning],
     ) -> list[SearchChunk]:
         """Embed question and search with expansion, HyDE, and concept boost.
         Returns up to top_k*2 candidates for the caller to filter and cut.
@@ -672,7 +878,7 @@ class Searcher:
         if self._refuse_wiki_scope(chunk_type):
             return []
         chunk_type = self._retrieval_scope(chunk_type)
-        query_vec = self._embedder.embed_query(question)
+        query_vec = self._embed_query(question)
         # Retrieve the reranker's candidate depth when one is loaded, else top_k.
         retrieve_k = (
             max(top_k, self._config.rerank_candidates) if self._config.reranker_model else top_k
@@ -688,9 +894,11 @@ class Searcher:
         # apply -- the early return used to drop it on the skip path.
         if not self._should_skip_expansion(question, chunk_type):
             seen = {(r.source, r.chunk_index) for r in results}
-            self._merge_variant_results(question, query_vec, results, seen, top_k, chunk_type)
+            self._merge_variant_results(
+                question, query_vec, results, seen, top_k, chunk_type, degraded
+            )
             if self._config.hyde:
-                self._merge_hyde_results(question, results, seen, top_k, chunk_type)
+                self._merge_hyde_results(question, results, seen, top_k, chunk_type, degraded)
         # Merged variant/HyDE hits arrive appended, not ranked; every consumer
         # of this method (bare search surfaces included) gets one global order
         # over the canonical score rather than insertion order.
@@ -706,13 +914,16 @@ class Searcher:
         # Runs before the concept boost so a boost cannot promote a
         # structural chunk into the rank-0 exemption.
         results = self._drop_structural(results)
-        results = self._apply_concept_boost(results, question)
+        results = self._apply_concept_boost(results, question, degraded)
         results = order_by_fusion(results)
         # Rerank when a cross-encoder is loaded so every search surface (HTTP,
         # MCP, CLI, ask) gets reranked order, not just the ask/chat path. A
         # mode: prefix returned earlier and stays unreranked by design.
         if self._config.reranker_model:
-            results = self._reranker.rerank(question, results)
+            try:
+                results = self._reranker.rerank(question, results)
+            except Exception as exc:
+                _degrade_rerank(degraded, exc)
         return results[: top_k * 2]
 
     def _condense_question(self, question: str, history: list[ChatMessage]) -> str:
@@ -972,7 +1183,7 @@ class Searcher:
         if self._refuse_wiki_scope(chunk_type):
             return []
         typed = self._store.search(
-            self._embedder.embed_query(question),
+            self._embed_query(question),
             top_k=top_k,
             query_text=question,
             chunk_type=self._retrieval_scope(chunk_type),
@@ -986,8 +1197,8 @@ class Searcher:
         history: list[ChatMessage] | None = None,
         *,
         chunk_type: ChunkType | None = None,
-    ) -> RagContext | None:
-        """Build RAG context from search results.
+    ) -> RagContext:
+        """Build RAG context from search results; a context with no messages is a refusal.
 
         ``chunk_type`` restricts the pool to ``"raw"`` (which covers table
         chunks too) or ``"wiki"`` rows; ``None`` (default) searches the
@@ -1010,6 +1221,7 @@ class Searcher:
         known_item = (
             self._known_item_results(clean_query, scope) if self._config.intent_routing else []
         )
+        degraded: list[HealthWarning] = []
         if known_item:
             # The named document IS the context; ranking and reranking would
             # only reorder or drop parts of it. The budget fit below still
@@ -1023,7 +1235,8 @@ class Searcher:
             retrieve_k = top_k or self._config.top_k
             if self._config.reranker_model:
                 retrieve_k = max(retrieve_k, self._config.rerank_candidates)
-            results = self._candidates(retrieval_query, retrieve_k, chunk_type)
+            results = self._candidates(retrieval_query, retrieve_k, chunk_type, degraded)
+            _note_install_warnings(degraded)
             if rewrite is not None:
                 typed_results = self._search_typed_arm(question, retrieve_k, chunk_type)
                 results = fuse_ranked_lists([results, typed_results])
@@ -1042,12 +1255,14 @@ class Searcher:
                         memory_chunks,
                         self.direct_messages(question, history),
                         retrieval_query=rewrite,
+                        degraded=tuple(degraded),
                     )
-                return None
+                return RagContext([], [], degraded=tuple(degraded), refused=True)
             results = prepare_results(results, self._config.diversity_max_per_source)
             # Temporal filtering already ran inside search(); no need to repeat it here.
             results = self.select_context(results, retrieval_query)
-        return self._finalize_context(results, question, history, retrieval_query=rewrite)
+        context = self._finalize_context(results, question, history, retrieval_query=rewrite)
+        return context._replace(degraded=tuple(degraded))
 
     def _finalize_context(
         self,
@@ -1066,23 +1281,132 @@ class Searcher:
         are visible without consuming the document budget or the prompt context.
         """
         system = self._system_with_memory(self._config.rag_system_prompt, question)
-        base_results = list(results)
-        budget = self._context_budget(system, question, history, scale)
-        results, used, dropped = self._fit_to_budget(results, budget)
-        results = self._widen_with_neighbors(results, max(0, budget - used))
-        context = build_context(results)
-        prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
-        messages: list[ChatMessage] = [{"role": "system", "content": system}]
-        if history:
-            messages.extend(history)
-        messages.append({"role": "user", "content": prompt})
+        fitted = self._fit_measured(results, system, question, history, scale)
         return RagContext(
-            [*results, *self._memory_sources(question)],
-            messages,
-            base_results,
+            [*fitted.results, *self._memory_sources(question)],
+            fitted.messages,
+            list(results),
             retrieval_query,
-            dropped,
+            fitted.dropped,
         )
+
+    def _fit_measured(
+        self,
+        results: list[SearchChunk],
+        system: str,
+        question: str,
+        history: list[ChatMessage] | None,
+        scale: float,
+    ) -> _Assembly:
+        """Fit *results* by estimate, then measure the assembled prompt until it fits.
+
+        Each measurement is one tokenize request for the prompt as it is sent, so
+        its cost is bounded by the window, not by the candidate count. An
+        overflow scales the estimate by the measured ratio, keeps
+        _REFIT_MARGIN of the source budget free, and fits again. After
+        _MAX_SCALED_MEASUREMENTS overflows, or when a refit repeats the prompt
+        that overflowed, a binary search over the kept count finds the most
+        sources that a measurement says fit. No prompt is measured twice. A
+        failed measurement sends the best fit already measured in the search,
+        or else the latest assembly, which the character rule bounds.
+        """
+        target = prompt_token_budget(self._chat_window())
+        ratio, fill = 1.0, scale
+        overflowed: _Assembly | None = None
+        # Each refit widens the same passages again; the rows and seams stay the same.
+        neighbors = NeighborCache()
+        for _ in range(_MAX_SCALED_MEASUREMENTS):
+            assembly = self._assemble_by_estimate(
+                results, system, question, history, fill, ratio, neighbors=neighbors
+            )
+            if overflowed is not None and assembly.messages == overflowed.messages:
+                break
+            overflowed = assembly
+            measured = self._measure(assembly.messages)
+            if measured is None or measured.tokens <= target:
+                return assembly
+            ratio, fill = max(ratio, measured.ratio), scale * (1 - _REFIT_MARGIN)
+        return self._search_kept_count(assembly, system, question, history, target)
+
+    def _assemble_by_estimate(
+        self,
+        results: list[SearchChunk],
+        system: str,
+        question: str,
+        history: list[ChatMessage] | None,
+        scale: float,
+        ratio: float,
+        *,
+        neighbors: NeighborCache,
+    ) -> _Assembly:
+        """Fit and widen *results* with the character rule scaled by *ratio*."""
+        cost = _scaled_cost(ratio)
+        budget = self._context_budget(system, question, history, scale, cost)
+        kept, used, dropped = self._fit_to_budget(results, budget, cost)
+        widened = self._widen_with_neighbors(kept, max(0, budget - used), cost, neighbors)
+        messages = _rag_messages(system, question, history, widened)
+        return _Assembly(widened, messages, dropped, kept)
+
+    def _search_kept_count(
+        self,
+        overflowed: _Assembly,
+        system: str,
+        question: str,
+        history: list[ChatMessage] | None,
+        target: int,
+    ) -> _Assembly:
+        """The longest rank-order prefix of the fitted sources that a measurement fits.
+
+        A prefix carries no neighbor text, so the search sheds expansion before
+        it drops a source. The top source always stays, as in the estimate fit.
+        """
+
+        def prefix(count: int) -> _Assembly:
+            kept = overflowed.fitted[:count]
+            dropped = [*overflowed.dropped, *overflowed.fitted[count:]]
+            return _Assembly(kept, _rag_messages(system, question, history, kept), dropped, kept)
+
+        best: _Assembly | None = None
+        # Without neighbor text, the whole fitted set is the assembly that overflowed.
+        widened = overflowed.results != overflowed.fitted
+        low, high = 1, len(overflowed.fitted) - (not widened)
+        while low <= high:
+            middle = (low + high) // 2
+            probe = prefix(middle)
+            measured = self._measure(probe.messages)
+            if measured is None:
+                return best or probe
+            if measured.tokens <= target:
+                best, low = probe, middle + 1
+            else:
+                high = middle - 1
+        if best is None:
+            log.warning("The top source alone overflows the context window; it is sent anyway.")
+            return prefix(1)
+        return best
+
+    def _measure(self, messages: list[ChatMessage]) -> _Measurement | None:
+        """The chat engine's token count of *messages*, or None to keep the estimate.
+
+        One request for the joined contents, plus the per-message overhead that
+        the budget charges.
+        """
+        joined = "\n".join(m["content"] for m in messages)
+        try:
+            tokens = self._provider.count_chat_text_tokens(joined)
+        except ProviderError:
+            log.debug("Chat engine tokenize failed; budgeting with the character rule.")
+            return None
+        if not tokens:
+            return None
+        overhead = CHAT_MESSAGE_OVERHEAD_TOKENS * len(messages)
+        return _Measurement(tokens + overhead, tokens / estimate_budget_tokens(joined))
+
+    def _chat_window(self) -> int:
+        """The chat window the prompt must fit: the served one when it is smaller."""
+        configured = self._config.num_ctx or self._config.chat_n_ctx_target
+        served = self._provider.served_chat_ctx()
+        return min(configured, served) if served else configured
 
     def _context_budget(
         self,
@@ -1090,6 +1414,7 @@ class Searcher:
         question: str,
         history: list[ChatMessage] | None,
         scale: float = 1.0,
+        cost: Callable[[str], int] = estimate_budget_tokens,
     ) -> int:
         """Token budget left for source passages after the fixed prompt parts.
 
@@ -1099,24 +1424,24 @@ class Searcher:
         Budgeting against the target let a routed whole document overflow
         the real window and hard-fail the request with an HTTP 400.
         """
-        configured = self._config.num_ctx or self._config.chat_n_ctx_target
-        served = self._provider.served_chat_ctx()
-        ctx = min(configured, served) if served else configured
         # Fit inside what the provider will actually accept: prompt_token_budget
         # already removes the generation reserve and the engine's margin, so the
         # sources get what is left after the rest of the prompt. The per-message
         # overhead is what the provider's windowing charges per message.
         non_source = (
-            estimate_budget_tokens(system)
-            + estimate_budget_tokens(question)
-            + sum(estimate_budget_tokens(m["content"]) for m in history or [])
+            cost(system)
+            + cost(question)
+            + sum(cost(m["content"]) for m in history or [])
             + _CONTEXT_TEMPLATE_TOKENS
             + CHAT_MESSAGE_OVERHEAD_TOKENS * (len(history or []) + 2)
         )
-        return int((prompt_token_budget(ctx) - non_source) * scale)
+        return int((prompt_token_budget(self._chat_window()) - non_source) * scale)
 
     def _fit_to_budget(
-        self, results: list[SearchChunk], budget: int
+        self,
+        results: list[SearchChunk],
+        budget: int,
+        cost: Callable[[str], int] = estimate_budget_tokens,
     ) -> tuple[list[SearchChunk], int, list[SearchChunk]]:
         """Fit *results* into *budget*: kept sources, tokens spent, dropped sources.
 
@@ -1134,12 +1459,12 @@ class Searcher:
         dropped: list[SearchChunk] = []
         used = 0
         for r in results:
-            cost = estimate_budget_tokens(r.chunk) + _PER_SOURCE_TOKENS
-            if kept and used + cost > budget:
+            spend = cost(r.chunk) + _PER_SOURCE_TOKENS
+            if kept and used + spend > budget:
                 dropped.append(r)
                 continue
             kept.append(r)
-            used += cost
+            used += spend
         if dropped:
             log.info(
                 "Kept %d of %d sources to fit the model context window.",
@@ -1148,7 +1473,13 @@ class Searcher:
             )
         return kept, used, dropped
 
-    def _widen_with_neighbors(self, results: list[SearchChunk], leftover: int) -> list[SearchChunk]:
+    def _widen_with_neighbors(
+        self,
+        results: list[SearchChunk],
+        leftover: int,
+        cost: Callable[[str], int] = estimate_budget_tokens,
+        neighbors: NeighborCache | None = None,
+    ) -> list[SearchChunk]:
         """Widen each fitted passage with adjacent same-source chunks.
 
         Spends only *leftover*, the budget the fit did not use, so a tight
@@ -1164,7 +1495,7 @@ class Searcher:
         # and cover text the filter dropped from the results.
         exclude = is_structural_chunk if self._config.filter_structural_chunks else None
         return expand_neighbors(
-            results, self._store, radius, leftover, estimate_budget_tokens, exclude=exclude
+            results, self._store, radius, leftover, cost, exclude=exclude, cache=neighbors
         )
 
     def _system_with_memory(self, base_prompt: str, question: str) -> str:
@@ -1200,7 +1531,7 @@ class Searcher:
             return []
         if self._config.memory_top_k <= 0 or not self._embedder.embedding_available():
             return []
-        vector = self._embedder.embed_query(question)
+        vector = self._embed_query(question)
         return self._store.search_memories(
             vector,
             owner_predicate=human_recall_predicate(),
@@ -1430,8 +1761,18 @@ class Searcher:
         instead of this method telling the user to add documents.
         """
         if self.library_empty() and not self._memory_facts(question):
-            return EMPTY_LIBRARY
+            return self._empty_library_answer()
         return self.route_direct_answer(question)
+
+    def _empty_library_answer(self) -> str:
+        """The empty-library guidance, or the count of failed ingests and an engine cause."""
+        held = self._store.held_records()
+        failed = sorted(name for name, record in held.items() if record.kind in INGEST_FAILURES)
+        if not failed:
+            return EMPTY_LIBRARY
+        causes = [held[name].reason for name in failed if held[name].kind is HeldOut.RETRY]
+        first_cause = next(iter(causes), None)
+        return ingest_failed_message(len(failed) - len(causes), first_cause, len(causes))
 
     def ask_raw(
         self,
@@ -1452,8 +1793,8 @@ class Searcher:
         if pre_answer is not None:
             return AskResult(answer=pre_answer, sources=[])
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
-        if rag is None:
-            return AskResult(answer=GROUNDED_REFUSAL, sources=[])
+        if rag.refused:
+            return AskResult(answer=GROUNDED_REFUSAL, sources=[], degraded=list(rag.degraded))
         results, messages = rag.results, rag.messages
         dropped = rag.dropped or []
         opts = options if options is not None else self._config.generation_options()
@@ -1490,6 +1831,7 @@ class Searcher:
             cited_sources=cited_subset(strip_llm_citations(clean), results),
             retrieval_query=rag.retrieval_query,
             dropped_sources=dropped,
+            degraded=list(rag.degraded),
         )
 
     def _stream_direct(
@@ -1526,8 +1868,8 @@ class Searcher:
     ) -> Generator[StreamToken | RetrievalNotice | AnswerSources, None, None]:
         """Stream answer tokens, then the sources they cite as one ``AnswerSources``.
 
-        When retrieval ran on a rewrite of the question, a ``RetrievalNotice``
-        carrying that rewrite precedes the first token.
+        When retrieval ran on a rewrite of the question or a widening step
+        failed, a ``RetrievalNotice`` carrying both precedes the first token.
         """
         if self.search_unavailable():
             yield StreamToken(content=SEARCH_NEEDS_EMBEDDER, is_reasoning=False)
@@ -1541,11 +1883,11 @@ class Searcher:
             return
 
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
-        if rag is None:
+        if rag.retrieval_query or rag.degraded:
+            yield RetrievalNotice(query=rag.retrieval_query, degraded=rag.degraded)
+        if rag.refused:
             yield StreamToken(content=GROUNDED_REFUSAL, is_reasoning=False)
             return
-        if rag.retrieval_query:
-            yield RetrievalNotice(query=rag.retrieval_query)
         results, messages = rag.results, rag.messages
         # No overflow retry here: a stream cannot be rebuilt once tokens have
         # been yielded, so the conservative budget the context fit already

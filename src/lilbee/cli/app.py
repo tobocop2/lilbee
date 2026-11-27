@@ -8,10 +8,13 @@ from typing import Any
 
 import typer
 from pydantic import ValidationError
-from typer._click import Context
 from typer.core import TyperCommand
 
-from lilbee.app.services import install_engine_lifecycle_hooks, report_library_upgrade
+from lilbee.app.services import (
+    follow_config_one_off,
+    install_engine_lifecycle_hooks,
+    report_library_upgrade,
+)
 from lilbee.app.version import get_version
 from lilbee.cli.helpers import json_output as json_out
 from lilbee.cli.upgrade_line import UpgradeLine
@@ -178,6 +181,8 @@ def apply_overrides(
     # Re-applied every call: a later call's data-root overlay resets the fields.
     for attr, value in _override_state.values.items():
         setattr(cfg, attr, value)
+    # The flags win over a later write of the same key to config.toml.
+    follow_config_one_off(frozenset(_override_state.values))
 
 
 def _refuse_environment(json_output: bool) -> None:
@@ -195,9 +200,9 @@ def _refuse_environment(json_output: bool) -> None:
 class RefusingCommand(TyperCommand):
     """A command that refuses the environment when it runs, after its --help is parsed."""
 
-    def invoke(self, ctx: Context) -> Any:
+    def invoke(self, *args: Any, **kwargs: Any) -> Any:
         _refuse_environment(cfg.json_mode)
-        return super().invoke(ctx)
+        return super().invoke(*args, **kwargs)
 
 
 def refuse_environment_in(typer_app: typer.Typer) -> None:
@@ -269,6 +274,10 @@ def _default(
     # with their own (post-subcommand) flags, and re-applying None is a no-op,
     # so ``--data-dir`` / ``--model`` / ``--global`` work in either position.
     apply_overrides(data_dir=data_dir, model=model, use_global=use_global)
+    from lilbee.providers.fleet.engine_store import prune_engines, sweep_engines
+
+    sweep_engines(cfg.models_dir)
+    prune_engines(cfg.models_dir)
     # Backend-level logging toggles are applied lazily by SdkLLMProvider
     # on first use, so nothing else is needed here.
     if ctx.invoked_subcommand is None:

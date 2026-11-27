@@ -31,12 +31,13 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from lilbee.app.settings import _setting_help  # noqa: E402
+from lilbee.app.settings import _setting_help, role_command  # noqa: E402
 from lilbee.app.settings_map import SETTINGS_MAP, SettingGroup  # noqa: E402
 from lilbee.config_meta import (  # noqa: E402
     ENV_UNSETTABLE_FIELDS,
     PUBLIC_CONFIG_FIELDS,
     REINDEX_FIELDS,
+    SERVICE_ONLY_FIELDS,
     WRITABLE_CONFIG_FIELDS,
 )
 from lilbee.core.config import Config  # noqa: E402
@@ -44,7 +45,7 @@ from lilbee.core.config.keys import PROVIDER_SWITCHING_KEYS  # noqa: E402
 from lilbee.core.config.resolve import builtin_value  # noqa: E402
 from lilbee.core.config.schema import field_type_name  # noqa: E402
 from lilbee.mcp_server import TOOL_GATE_SETTINGS  # noqa: E402
-from lilbee.providers.roles import MODEL_ROLE_FIELDS  # noqa: E402
+from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, MODEL_ROLE_FIELDS  # noqa: E402
 
 OUTPUT = REPO_ROOT / "docs" / "settings.md"
 
@@ -65,13 +66,17 @@ GROUP_ORDER: tuple[SettingGroup, ...] = (
     SettingGroup.SYSTEM,
 )
 
-# The only CLI commands that write a setting to config.toml. Everything else
-# reaches the CLI through the environment or the config file, so the column
-# stays honest rather than implying a `lilbee set` that does not exist.
+# Commands that write a setting beyond `lilbee settings set`. A model role cannot go
+# through `settings set` (the CLI refuses it), so each role has its own command, read
+# from `role_command`. `placement` takes `settings set` too, and has a command that edits it as
+# a whole.
+# `linked_roots` is a table, so `settings set` refuses it; `add` and `remove` maintain it.
 CLI_COMMANDS: dict[str, str] = {
-    "embedding_model": "`lilbee use-embedder REF`",
     "placement": "`lilbee placement set`",
+    "linked_roots": "`lilbee add`, `lilbee remove`",
 }
+CLI_SET = "`lilbee settings set`"
+TABLE_TYPE = "dict"  # the type name of a field that holds a table
 
 MAX_DEFAULT_CHARS = 48
 
@@ -83,7 +88,11 @@ MAX_DEFAULT_CHARS = 48
 ENV_ONLY: dict[str, tuple[str, bool]] = {
     "LILBEE_DATA": (
         "Data directory for this library, the same value as `data_root`. The "
-        "older and more common spelling; `--data-dir` overrides it",
+        "older and more common spelling; `--data-dir` overrides it. It moves the "
+        "documents, index, config file and logs. The models folder, the engines "
+        "folder, the machine engine slot and the gguf metadata cache stay outside "
+        "it; set `LILBEE_MODELS_DIR` and `LILBEE_ENGINE_DIR` to move the first "
+        "three",
         False,
     ),
     "LILBEE_LOG_LEVEL": (
@@ -116,7 +125,12 @@ ENV_ONLY: dict[str, tuple[str, bool]] = {
         "`adaptive-conservative`, or `adaptive-aggressive`",
         False,
     ),
-    "LILBEE_INGEST_MAX_WORKERS": ("Files per embed replica kept in flight during ingest", False),
+    "LILBEE_INGEST_MAX_WORKERS": (
+        "Worker threads in the ingest pool, which is the most documents that extract at "
+        "once. Defaults to `min(32, cpu_count + 4)`, raised to feed the embed fleet; a "
+        "non-positive or unparseable value falls back to that default with a warning",
+        False,
+    ),
     "LILBEE_INGEST_TRACE": ("Set to any value to trace each document through ingest", False),
     "LILBEE_INGEST_TRACE_FILE": ("File the ingest trace is written to", False),
     "LILBEE_EXCLUSIVE_SCOPE": (
@@ -203,6 +217,8 @@ def _render_default(key: str) -> str:
 
 def _tui_cell(key: str) -> str:
     definition = SETTINGS_MAP.get(key)
+    if definition is not None and definition.tab is not None:
+        return f"{definition.tab} tab"
     if definition is None or definition.hidden:
         return "no"
     if key in MODEL_ROLE_FIELDS:
@@ -215,7 +231,7 @@ def _tui_cell(key: str) -> str:
 def _mcp_cell(key: str) -> str:
     if key in MODEL_ROLE_FIELDS:
         return "yes"
-    if key not in WRITABLE_CONFIG_FIELDS:
+    if key not in WRITABLE_CONFIG_FIELDS or key in SERVICE_ONLY_FIELDS:
         return "no"
     return "yes" if key in PUBLIC_CONFIG_FIELDS else "write-only"
 
@@ -223,7 +239,7 @@ def _mcp_cell(key: str) -> str:
 def _http_cell(key: str) -> str:
     if key in MODEL_ROLE_FIELDS:
         return "role API"
-    if key not in WRITABLE_CONFIG_FIELDS:
+    if key not in WRITABLE_CONFIG_FIELDS or key in SERVICE_ONLY_FIELDS:
         return "no"
     if key in PROVIDER_SWITCHING_KEYS:
         return "refused"
@@ -231,7 +247,25 @@ def _http_cell(key: str) -> str:
 
 
 def _cli_cell(key: str) -> str:
-    return CLI_COMMANDS.get(key, "no")
+    """The commands that write *key*.
+
+    `lilbee settings set` hands the value over as text, and `apply_settings_update` accepts it for
+    a writable key whose type a text value can fill. A table (a `dict` field) cannot be filled
+    from text, so the CLI refuses every value for it. A model
+    role has its own command.
+    """
+    if key in MODEL_FIELD_TO_ROLE:
+        return f"`{role_command(MODEL_FIELD_TO_ROLE[key]).replace('<ref>', 'REF')}`"
+    commands = []
+    if (
+        key in WRITABLE_CONFIG_FIELDS
+        and key not in SERVICE_ONLY_FIELDS
+        and field_type_name(key) != TABLE_TYPE
+    ):
+        commands.append(CLI_SET)
+    if key in CLI_COMMANDS:
+        commands.append(CLI_COMMANDS[key])
+    return " or ".join(commands) if commands else "no"
 
 
 def _advanced_cell(key: str) -> str:

@@ -13,7 +13,7 @@ from rich.text import Text
 from lilbee.cli import theme
 from lilbee.cli.helpers import print_prefixed
 from lilbee.data.ingest import sync
-from lilbee.runtime.asyncio_loop import is_executor_shutdown
+from lilbee.runtime.asyncio_loop import is_executor_shutdown, run_main
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.progress import (
     EventType,
@@ -30,7 +30,13 @@ if TYPE_CHECKING:
 
 
 def _format_sync_summary(
-    added: int, updated: int, removed: int, failed: int, skipped: int = 0, relocated: int = 0
+    added: int,
+    updated: int,
+    removed: int,
+    failed: int,
+    skipped: int = 0,
+    relocated: int = 0,
+    partial: int = 0,
 ) -> str | None:
     """Format sync counts into a human-readable summary, or None if nothing changed."""
     counts = {
@@ -38,6 +44,7 @@ def _format_sync_summary(
         "updated": updated,
         "removed": removed,
         "relocated": relocated,
+        "partly read": partial,
         "skipped": skipped,
         "failed": failed,
     }
@@ -61,7 +68,13 @@ def _print_done(con: PlainConsole, data: ProgressEvent) -> None:
     if not isinstance(data, SyncDoneEvent):
         raise TypeError(f"Expected SyncDoneEvent, got {type(data).__name__}")
     summary = _format_sync_summary(
-        data.added, data.updated, data.removed, data.failed, data.skipped, data.relocated
+        data.added,
+        data.updated,
+        data.removed,
+        data.failed,
+        data.skipped,
+        data.relocated,
+        data.partial,
     )
     if summary:
         con.print(f"Synced: {summary}", style=theme.MUTED)
@@ -202,7 +215,13 @@ def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
             if not isinstance(data, SyncDoneEvent):
                 raise TypeError(f"Expected SyncDoneEvent, got {type(data).__name__}")
             summary = _format_sync_summary(
-                data.added, data.updated, data.removed, data.failed, data.skipped, data.relocated
+                data.added,
+                data.updated,
+                data.removed,
+                data.failed,
+                data.skipped,
+                data.relocated,
+                data.partial,
             )
             if summary:
                 print(f"✓ Synced: {summary}")
@@ -224,7 +243,7 @@ def run_sync_background(
     def _run() -> object:
         if chat_mode:
             status.adjust_pending(-1)
-        return asyncio.run(sync(quiet=True, on_progress=callback, started_by="lilbee chat"))
+        return run_main(sync(quiet=True, on_progress=callback, started_by="lilbee chat"))
 
     if chat_mode:
         status.adjust_pending(1)

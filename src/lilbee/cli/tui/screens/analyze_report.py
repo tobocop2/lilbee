@@ -40,6 +40,7 @@ from lilbee.cli.tui.task_queue import PERCENT, TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmPill
+from lilbee.cli.tui.widgets.dialog import pop_screens_above
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.top_bars import TopBars
@@ -379,7 +380,12 @@ class AnalyzeReportScreen(Screen[None]):
         self.notify(msg.PROFILE_SAVED.format(name=location.name, path=location.path))
 
     def _applied(self) -> None:
-        self.dismiss()
+        """Close the report once the apply ends, with the screens the user opened above it.
+
+        A bare dismiss pops whichever screen is on top.
+        """
+        if pop_screens_above(self, self._applied):
+            self.dismiss()
 
     def action_go_back(self) -> None:
         self.dismiss()

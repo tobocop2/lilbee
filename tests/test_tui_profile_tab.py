@@ -14,6 +14,7 @@ import pytest
 from textual import events
 from textual.app import ComposeResult
 from textual.css.query import NoMatches
+from textual.errors import NoWidget
 from textual.geometry import Region
 from textual.pilot import Pilot
 from textual.screen import Screen
@@ -58,8 +59,13 @@ from lilbee.core.config.enums import OcrMode
 from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileStore
 from lilbee.core.system import default_data_dir
 from lilbee.data.store.types import HeldOut, HeldRecord
-from tests._async_wait import press_widget, wait_until
-from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
+from tests._async_wait import comes, press_widget, wait_until
+from tests._lilbee_app_test_host import (
+    LilbeeAppHost,
+    app_reads_queue,
+    await_chat,
+    send_key_burst,
+)
 from tests._profile_fixtures import (
     gate_releases_at_once,  # noqa: F401 -- autouse fixture, applied by import
     isolated_cfg,  # noqa: F401 -- autouse fixture, applied by import
@@ -185,7 +191,8 @@ async def _loaded(app: LilbeeAppHost, pilot: Pilot, name: str) -> SettingsScreen
 
     def _ready() -> bool:
         screens = [s for s in app.screen_stack if isinstance(s, SettingsScreen)]
-        if not screens or not screens[0].query(ProfileTab):
+        # The tab joins the tree before it composes the dropdown.
+        if not screens or not any(tab.is_mounted for tab in screens[0].query(ProfileTab)):
             return False
         select = screens[0].query_one("#profile-select", Select)
         line = screens[0].query_one("#profile-line-name", Static)
@@ -609,6 +616,51 @@ async def test_apply_dialog_scrolls_to_fit_a_big_profile_at_80x24(sources) -> No
             assert _inside(pill.region, screen_region), pill.id
 
 
+def _shown(screen: Screen, widget: Widget) -> bool:
+    """True when the screen draws *widget* at both ends of its row, so no parent clips it.
+
+    A dialog takes focus on mount, before its first layout: until then the screen draws
+    nothing, and a point where the screen draws nothing does not show *widget*.
+    """
+    region = widget.region
+    ends = ((region.x, region.y), (region.right - 1, region.bottom - 1))
+    try:
+        return all(screen.get_widget_at(x, y)[0] is widget for x, y in ends)
+    except NoWidget:
+        return False
+
+
+@pytest.mark.parametrize("size", [(80, 24), (80, 40), (120, 30)])
+@pytest.mark.parametrize(
+    ("pill_id", "loaded", "rebuilds"),
+    [
+        ("apply-reindex", "big-profile", True),
+        ("apply-apply", "big-profile", False),
+        ("apply-cancel", "Default", False),
+    ],
+)
+async def test_the_apply_pills_of_a_big_profile_are_on_screen(
+    sources, size: tuple[int, int], pill_id: str, loaded: str, rebuilds: bool
+) -> None:
+    _write_global("big-profile", _BIG)
+    _set_yours("min_relevance_score = 0.1\n")
+    app = _SettingsApp()
+    with mock.patch.object(LilbeeAppHost, "start_rebuild") as rebuild:
+        async with app.run_test(size=size) as pilot:
+            screen = await _loaded(app, pilot, "Default")
+            _pick(screen, "big-profile")
+            dialog = await _dialog(app, pilot, ApplyProfileDialog)
+            pills = list(dialog.query("#apply-actions ConfirmPill"))
+            assert [p.id for p in pills] == ["apply-reindex", "apply-apply", "apply-cancel"]
+            assert await _until(pilot, lambda: all(_shown(dialog, p) for p in pills)), [
+                (p.id, p.region, dialog.get_widget_at(p.region.x, p.region.y)[0]) for p in pills
+            ]
+            await _press(pilot, dialog.query_one(f"#{pill_id}", ConfirmPill))
+            assert await _until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+            await _loaded(app, pilot, loaded)
+    assert rebuild.called is rebuilds
+
+
 async def test_a_change_that_needs_no_reindex_shows_no_summary(sources) -> None:
     _write_global("fewer", "[values]\nmax_chunks_per_file = 10\n")
     app = _SettingsApp()
@@ -624,6 +676,40 @@ async def test_a_change_that_needs_no_reindex_shows_no_summary(sources) -> None:
         assert not dialog.query("#apply-kept")
         await _press(pilot, dialog.query_one("#apply-cancel", ConfirmPill))
         assert await _until(pilot, lambda: app.screen is screen)
+    assert cfg.max_chunks_per_file == 3000
+
+
+async def test_a_bare_enter_on_the_apply_dialog_cancels_and_changes_nothing(sources) -> None:
+    _write_global("fewer", "[values]\nmax_chunks_per_file = 10\n")
+    app = _SettingsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        _pick(screen, "fewer")
+        dialog = await _dialog(app, pilot, ApplyProfileDialog)
+        cancel = dialog.query_one("#apply-cancel", ConfirmPill)
+        # The screen first gives the focus to its scroll area.
+        await _until(pilot, lambda: app.focused is cancel)
+        assert app.focused is cancel
+        await pilot.press("enter")
+        assert await _until(pilot, lambda: app.screen is screen)
+    assert cfg.max_chunks_per_file == 3000
+
+
+async def test_two_enters_on_the_apply_dialog_leave_settings_open(sources) -> None:
+    _write_global("fewer", "[values]\nmax_chunks_per_file = 10\n")
+    app = _SettingsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        _pick(screen, "fewer")
+        dialog = await _dialog(app, pilot, ApplyProfileDialog)
+        cancel = dialog.query_one("#apply-cancel", ConfirmPill)
+        assert await _until(pilot, lambda: app.focused is cancel)
+        send_key_burst(app, "enter", "enter")
+        assert await app_reads_queue(app, pilot)
+        # The dialog stops after it has read every message posted before the close.
+        assert await _until(pilot, lambda: not dialog.is_running)
+        assert await app_reads_queue(app, pilot)
+        assert app.screen is screen
     assert cfg.max_chunks_per_file == 3000
 
 
@@ -841,9 +927,7 @@ async def test_discarding_a_reindex_setting_asks_nothing_until_the_user_leaves(
             screen = await _loaded(app, pilot, "legal-discovery")
             await _press(pilot, screen.query_one("#profile-discard", ConfirmPill))
             assert await _until(pilot, lambda: not screen.query_one("#profile-changes").display)
-            assert not await wait_until(
-                pilot, lambda: isinstance(app.screen, ConfirmDialog), max_pauses=30
-            )
+            assert not await comes(pilot, lambda: isinstance(app.screen, ConfirmDialog))
             assert screen.leave() == msg.SETTINGS_REINDEX_MESSAGE
     rebuild.assert_not_called()
     assert cfg.chunk_size == 512
@@ -877,9 +961,7 @@ async def test_discarding_a_limit_with_a_held_out_file_offers_the_retry_on_leavi
             screen = await _loaded(app, pilot, "legal-discovery")
             await _press(pilot, screen.query_one("#profile-discard", ConfirmPill))
             assert await _until(pilot, lambda: not screen.query_one("#profile-changes").display)
-            assert not await wait_until(
-                pilot, lambda: isinstance(app.screen, ConfirmDialog), max_pauses=30
-            )
+            assert not await comes(pilot, lambda: isinstance(app.screen, ConfirmDialog))
             assert screen.leave() == msg.PROFILE_APPLY_HELD_OUT
     rebuild.assert_not_called()
 
@@ -899,6 +981,35 @@ async def test_discard_toasts_the_warning_it_leaves_behind() -> None:
     assert len(warnings) == 1
     assert "ocr" in warnings[0].args[0]
     assert cfg.ocr is OcrMode.OFF
+
+
+async def test_update_with_nothing_of_yours_left_says_so_and_writes_nothing() -> None:
+    _on_legal_with_three_changes()
+    profile_file = _global_dir() / "legal-discovery.toml"
+    before = profile_file.read_text(encoding="utf-8")
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await _loaded(app, pilot, "legal-discovery")
+        # Your values leave config.toml after the tab loaded, so its Update pill is stale.
+        _config_path().write_text("", encoding="utf-8")
+        with mock.patch.object(app, "notify") as notify:
+            await _press(pilot, screen.query_one("#profile-update", ConfirmPill))
+            assert await _until(pilot, lambda: notify.called)
+    messages = [c.args[0] for c in notify.call_args_list]
+    assert not any(m.startswith("Updated") for m in messages), messages
+    assert profile_file.read_text(encoding="utf-8") == before
+
+
+async def test_update_with_values_equal_to_the_profile_changes_nothing() -> None:
+    _write_global("legal-discovery", _LEGAL)
+    profiles.apply(ProfileStore(), "legal-discovery")
+    _set_yours("chunk_size = 512\nlayout_detection = true\nmax_chunks_per_file = 3000\n")
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await _loaded(app, pilot, "legal-discovery")
+        assert not screen.query_one("#profile-update", ConfirmPill).display
+        assert not screen.query_one("#profile-discard", ConfirmPill).display
+        assert not screen.query_one("#profile-changes").display
 
 
 async def test_update_toasts_the_warning_it_leaves_behind() -> None:

@@ -8,10 +8,13 @@ effective replica count.
 
 from __future__ import annotations
 
-import functools
 import logging
+from typing import TYPE_CHECKING
 
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
+
+if TYPE_CHECKING:
+    from lilbee.providers.fleet.engines.base import EngineAdapter
 
 log = logging.getLogger(__name__)
 
@@ -34,23 +37,25 @@ def resolve_replica_count(role: WorkerRole, device_count: int) -> int:
     return getattr(cfg, knob) or max(_MIN_REPLICAS, device_count)
 
 
-@functools.cache
-def gpu_device_count() -> int:
-    """Effective GPU count lilbee will use; fixed for the process lifetime (cached).
+def gpu_device_count(engine: EngineAdapter) -> int:
+    """Effective GPU count *engine* will use, floored at one.
 
-    Resolved the same way planning does (binary ``--list-devices`` view), and
-    floored at one so auto means "one replica" on a GPU-less host. Returns one
-    when the engine binary is absent so callers that size concurrency (e.g.
-    ingest) degrade gracefully instead of raising.
+    Counts the devices auto placement packs, so a shared-memory GPU beside a dedicated
+    card adds no replica. An engine with no binary, or a binary that cannot load, sizes
+    as GPU-less: the paths that start the engine raise on their own. The probe reads the
+    device read cache, so a failed probe is remembered for its failure window.
     """
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.fleet.binary import resolve_llama_server
-    from lilbee.providers.fleet.planning import resolve_devices
+    from lilbee.providers.fleet.devices import EngineDllMissingError, EngineIllegalInstructionError
+    from lilbee.providers.fleet.planning import packable_devices, resolve_devices
 
     try:
-        binary = resolve_llama_server()
+        binary = engine.binary()
     except ProviderError:
-        log.debug("llama-server not found; treating host as GPU-less for replica sizing")
+        log.debug("engine binary not found; treating host as GPU-less for replica sizing")
         return _MIN_REPLICAS
-    devices = resolve_devices(binary)
-    return max(_MIN_REPLICAS, len(devices))
+    try:
+        return max(_MIN_REPLICAS, len(packable_devices(resolve_devices(binary, engine))))
+    except (EngineDllMissingError, EngineIllegalInstructionError):
+        log.debug("engine cannot load; sizing for a GPU-less host")
+        return _MIN_REPLICAS

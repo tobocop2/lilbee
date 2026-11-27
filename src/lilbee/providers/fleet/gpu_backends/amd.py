@@ -16,6 +16,7 @@ from lilbee.providers.fleet.gpu_backends.base import (
     parse_device_index,
     run_smi,
 )
+from lilbee.providers.fleet.gpu_select import PCIVendorID
 
 _TOOL_AMD_SMI = "amd-smi"
 _TOOL_ROCM_SMI = "rocm-smi"
@@ -51,11 +52,14 @@ _TIMEOUT_S = 5.0
 class AmdBackend:
     """ROCm/HIP util via rocm-smi, falling back to amd-smi."""
 
+    pci_vendor = PCIVendorID.AMD
+
     def sample(self, indices: frozenset[int]) -> dict[int, UtilSample]:
         result = _rocm_smi_samples(indices)
-        if not result:
-            result = _amd_smi_samples(indices)
-        return result
+        if indices <= result.keys():
+            return result
+        # rocm-smi missed a device (a partial failure keeps its other rows): amd-smi fills the gap.
+        return {**_amd_smi_samples(indices), **result}
 
 
 def _amd_smi_output() -> str:
@@ -86,10 +90,12 @@ def _parse_amd_smi(raw: str, indices: frozenset[int]) -> dict[int, UtilSample]:
         return {}
     # amd-smi metric --json emits a list of GPU objects, {"gpu": [...]}, or
     # {"gpu_data": [...]} (AMDSMI 26.x, seen on MI300X).
-    if isinstance(data, list):
-        items: list[object] = data
-    else:
-        items = data.get("gpu_data") or data.get("gpu", [])
+    items = data if isinstance(data, list) else None
+    if isinstance(data, dict):
+        wrapped = data.get("gpu_data") or data.get("gpu", [])
+        items = wrapped if isinstance(wrapped, list) else None
+    if items is None:
+        return {}
     samples: dict[int, UtilSample] = {}
     for item in items:
         if not isinstance(item, dict):

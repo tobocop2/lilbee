@@ -20,6 +20,8 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.local_servers import LocalServerSpec
+from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
+from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
     CompletionResult,
@@ -62,6 +64,9 @@ class FakeBackend:
     list_models_calls: list[tuple[str, str, str]] = field(default_factory=list)
     list_chat_models_calls: list[str] = field(default_factory=list)
     supports_tools_calls: list[str] = field(default_factory=list)
+    count_chat_tokens_result: int = 0
+    raise_count: Exception | None = None
+    count_chat_tokens_calls: list[tuple[ProviderModelRef, str]] = field(default_factory=list)
 
     def available(self) -> bool:
         return True
@@ -125,6 +130,12 @@ class FakeBackend:
     def supports_tools(self, model_ref: str) -> bool:
         self.supports_tools_calls.append(model_ref)
         return self.supports_tools_result
+
+    def count_chat_tokens(self, ref: ProviderModelRef, text: str) -> int:
+        self.count_chat_tokens_calls.append((ref, text))
+        if self.raise_count is not None:
+            raise self.raise_count
+        return self.count_chat_tokens_result
 
 
 @pytest.fixture(autouse=True)
@@ -297,6 +308,15 @@ class TestChatNonStream:
         # A local HF ref is not a local-server ref, so it carries no api_base.
         assert req.api_base is None
 
+    def test_the_request_carries_the_role_of_the_call(self) -> None:
+        backend = FakeBackend()
+        provider = SdkLLMProvider(backend)
+        provider.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
+        provider.chat(
+            [{"role": "user", "content": "hi"}], model="openai/gpt-4o", role=WorkerRole.VISION
+        )
+        assert [req.role for req in backend.complete_calls] == [WorkerRole.CHAT, WorkerRole.VISION]
+
     def test_api_model_omits_api_base(self) -> None:
         backend = FakeBackend()
         provider = SdkLLMProvider(backend)
@@ -339,15 +359,21 @@ class TestChatNonStream:
         assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
         assert backend.complete_calls == []
 
-    def test_anthropic_seed_with_response_format_is_dropped_and_sent(self) -> None:
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_anthropic_seed_with_response_format_is_refused_before_any_request(
+        self, stream: bool
+    ) -> None:
         backend = FakeBackend()
         provider = SdkLLMProvider(backend)
-        provider.chat(
-            [{"role": "user", "content": "hi"}],
-            model="anthropic/claude-sonnet-4-20250514",
-            options={"seed": 0, "response_format": {"type": "json_object"}},
-        )
-        assert backend.complete_calls[-1].options == {"response_format": {"type": "json_object"}}
+        with pytest.raises(ProviderError, match="seed") as caught:
+            provider.chat(
+                [{"role": "user", "content": "hi"}],
+                model="anthropic/claude-sonnet-4-20250514",
+                options={"seed": 0, "response_format": {"type": "json_object"}},
+                stream=stream,
+            )
+        assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
+        assert backend.complete_calls == []
 
     def test_wraps_unexpected_errors_in_provider_error(self) -> None:
         backend = FakeBackend(raise_complete=RuntimeError("boom"))
@@ -356,7 +382,7 @@ class TestChatNonStream:
             provider.chat([{"role": "user", "content": "hi"}])
 
     def test_passes_through_provider_error_unchanged(self) -> None:
-        backend = FakeBackend(raise_complete=ProviderError("original", provider="fake"))
+        backend = FakeBackend(raise_complete=ProviderError("original"))
         provider = SdkLLMProvider(backend)
         with pytest.raises(ProviderError, match="original"):
             provider.chat([{"role": "user", "content": "hi"}])
@@ -505,6 +531,39 @@ class TestChatStream:
             list(stream)
 
 
+class TestEstimateChatTokens:
+    def test_counts_with_the_backend_tokenizer_for_the_named_model(self) -> None:
+        backend = FakeBackend(count_chat_tokens_result=7)
+        provider = SdkLLMProvider(backend)
+        assert provider.estimate_chat_tokens("hello there", model="openai/gpt-4o") == 7
+        ref = parse_model_ref("openai/gpt-4o")
+        assert backend.count_chat_tokens_calls == [(ref, "hello there")]
+
+    def test_counts_for_the_configured_chat_model_when_none_is_named(self) -> None:
+        backend = FakeBackend(count_chat_tokens_result=7)
+        cfg.chat_model = "openai/o3-mini"
+        provider = SdkLLMProvider(backend)
+        assert provider.estimate_chat_tokens("hello there") == 7
+        ref = parse_model_ref("openai/o3-mini")
+        assert backend.count_chat_tokens_calls == [(ref, "hello there")]
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(NotImplementedError("no own tokenizer"), id="no-own-tokenizer"),
+            pytest.param(ProviderError("tokenizer did not load"), id="tokenizer-failed"),
+        ],
+    )
+    def test_falls_back_to_utf8_bytes_when_the_backend_cannot_count(self, error: Exception) -> None:
+        """A failed or missing tokenizer must not fail the count route, nor read low."""
+        backend = FakeBackend(raise_count=error)
+        provider = SdkLLMProvider(backend)
+        text = "héllo there"
+        assert provider.estimate_chat_tokens(text, model="anthropic/claude-sonnet-4-5") == len(
+            text.encode()
+        )
+
+
 class TestEmbed:
     def test_returns_vectors(self) -> None:
         backend = FakeBackend(embed_result=EmbeddingResult(vectors=[[0.0, 1.0]]))
@@ -630,7 +689,7 @@ class TestListModels:
                 self, *, spec: LocalServerSpec, base_url: str, api_key: str
             ) -> list[str]:
                 if base_url == down_url:
-                    raise ProviderError("ollama down", provider="fake")
+                    raise ProviderError("ollama down")
                 return ["lmstudio-model"]
 
         provider = SdkLLMProvider(_PartlyDownBackend())
@@ -674,7 +733,7 @@ class TestListChatModels:
     def test_propagates_provider_error_unchanged(self) -> None:
         class _WrappedError(FakeBackend):
             def list_chat_models(self, provider: str) -> list[str]:
-                raise ProviderError("already-typed", provider="fake")
+                raise ProviderError("already-typed")
 
         provider = SdkLLMProvider(_WrappedError())
         with pytest.raises(ProviderError, match="already-typed"):
@@ -719,7 +778,7 @@ class TestPullModel:
                 base_url: str,
                 on_progress: Any = None,
             ) -> None:
-                raise ProviderError("already-typed", provider="fake")
+                raise ProviderError("already-typed")
 
         provider = SdkLLMProvider(_WrappedError())
         with pytest.raises(ProviderError, match="already-typed"):
@@ -749,7 +808,7 @@ class TestShowModel:
     def test_propagates_provider_error_unchanged(self) -> None:
         class _WrappedError(FakeBackend):
             def show_model(self, model: str, *, base_url: str) -> dict[str, Any] | None:
-                raise ProviderError("already-typed", provider="fake")
+                raise ProviderError("already-typed")
 
         provider = SdkLLMProvider(_WrappedError())
         with pytest.raises(ProviderError, match="already-typed"):
@@ -757,10 +816,10 @@ class TestShowModel:
 
 
 class TestGetCapabilities:
-    def test_returns_backend_capabilities_list(self) -> None:
-        backend = FakeBackend(show_model_result={"capabilities": ["completion", "vision"]})
+    def test_returns_backend_capabilities_without_vision(self) -> None:
+        backend = FakeBackend(show_model_result={"capabilities": ["completion", "vision", "tools"]})
         provider = SdkLLMProvider(backend)
-        assert provider.get_capabilities("ollama/m") == ["completion", "vision"]
+        assert provider.get_capabilities("ollama/m") == ["completion", "tools"]
 
     def test_empty_when_show_model_returns_none(self) -> None:
         backend = FakeBackend(show_model_result=None)

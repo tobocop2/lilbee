@@ -44,14 +44,7 @@ ApplyProfileDialog, SaveProfileDialog, ProfilePathDialog {
     margin-top: 1;
 }
 
-#apply-actions {
-    height: 1;
-    width: 100%;
-    margin-top: 1;
-    align-horizontal: center;
-}
-
-#save-actions, #path-actions {
+#apply-actions, #save-actions, #path-actions {
     dock: bottom;
     height: 1;
     width: 100%;

@@ -87,6 +87,28 @@ def test_unknown_key_without_min_lilbee_is_unknown_setting(tmp_path):
     )
 
 
+def test_a_removed_token_sizing_key_is_ignored_with_the_config_toml_warning(tmp_path, caplog):
+    with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+        entry = _entry(tmp_path, "[values]\ntoken_sizing = true\nchunk_size = 768\n")
+    assert entry.error is None
+    assert entry.file is not None
+    assert dict(entry.file.values) == {"chunk_size": 768}
+    assert [r.getMessage() for r in caplog.records] == [
+        "court-filings.toml: token_sizing is not a setting and is ignored; "
+        "chunk_size always counts the embedding model's tokens"
+    ]
+
+
+def test_a_removed_token_sizing_key_leaves_validation_clean(tmp_path):
+    path = _write(tmp_path / "p", "court-filings", "[values]\ntoken_sizing = true\n")
+    assert validate_file(path, ProfileFolder.GLOBAL).problems == ()
+
+
+def test_a_key_after_a_removed_token_sizing_key_is_still_checked(tmp_path):
+    entry = _entry(tmp_path, "[values]\ntoken_sizing = true\nchunk_size = 10\n")
+    assert entry.error == "Bad value for chunk_size: Input should be greater than or equal to 64"
+
+
 @pytest.mark.parametrize(
     "key", ["chat_model", "num_ctx", "hf_token", "ocr_timeout", "table_model", "wiki", "theme"]
 )
@@ -566,13 +588,13 @@ def test_validating_a_profile_copies_the_config_once_for_all_its_values(monkeypa
     # The first call reads and validates the built-in files, which copy the config too.
     profile_files.builtin_keys()
     calls = []
-    real_copy = type(cfg).model_copy
+    real_copy = config_model.Config.model_copy
 
     def counting_copy(self, *args, **kwargs):
         calls.append(1)
         return real_copy(self, *args, **kwargs)
 
-    monkeypatch.setattr(type(cfg), "model_copy", counting_copy)
+    monkeypatch.setattr(config_model.Config, "model_copy", counting_copy)
     text = "[values]\nchunk_size = 900\nchunk_overlap = 50\ntop_k = 4\n"
     result = profile_files.validate_text(text, Path("many.toml"), ProfileFolder.GLOBAL)
     assert result.problems == ()
@@ -593,3 +615,45 @@ def test_builtin_keys_reads_the_built_in_files_once_per_folder(monkeypatch):
     assert profile_files.builtin_keys() == first
     assert len(reads) == 1
     assert profile_key(DEFAULT_PROFILE_NAME) in first
+
+
+@pytest.mark.parametrize(
+    ("stem", "text", "name"),
+    [
+        ("court", '[profile]\nname = "Court"\n[values]\n', "Court"),
+        ("other", '[profile]\nname = "Court Filings"\n[values]\n', "court filings"),
+        ("court", '[profile]\nname = "Else"\n[values]\n', "COURT"),
+        ("court", "not toml [", "Court"),
+        ("other", '[profile]\nname = "Court filings"\n[values]\ntop_k = "x"\n', "court-filings"),
+    ],
+    ids=["same-name", "folded-name", "folded-stem", "broken-file", "bad-value"],
+)
+def test_plan_write_refuses_a_name_or_stem_held_without_parsing_the_values(
+    tmp_path, monkeypatch, stem, text, name
+):
+    _write(tmp_path, stem, text)
+    real_read_entry = profile_files.read_entry
+
+    def parsed(path, folder):
+        # Only the folder under test: the first built-in-keys lookup in a process reads
+        # and validates the built-in files, which is not the clash check.
+        if path.parent == tmp_path:
+            raise AssertionError("the clash check validated a file")
+        return real_read_entry(path, folder)
+
+    monkeypatch.setattr(profile_files, "read_entry", parsed)
+    new = f'[profile]\nname = "{name}"\n[values]\n'
+    with pytest.raises(profile_files.ProfileNameClashError):
+        profile_files.plan_write(tmp_path, ProfileFolder.GLOBAL, new, stem="x")
+
+
+def test_plan_write_lets_a_file_be_replaced_by_its_own_name(tmp_path):
+    path = _write(tmp_path, "court", '[profile]\nname = "Court"\n[values]\n')
+    planned = profile_files.plan_write(
+        tmp_path,
+        ProfileFolder.GLOBAL,
+        '[profile]\nname = "Court"\n[values]\n',
+        stem="x",
+        replacing=path,
+    )
+    assert planned.path == path

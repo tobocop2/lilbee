@@ -1,0 +1,29 @@
+{
+  "id": "E14",
+  "rows": [],
+  "request": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Reply with a JSON object for Paris: the key city is the name and the key pop is the population as an integer."
+      }
+    ],
+    "schema": {
+      "type": "object",
+      "properties": {
+        "city": {
+          "type": "string"
+        },
+        "pop": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "city",
+        "pop"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "assert": "response_format json_object: the content parses whole to an object, with no fence and no trailing text. response_format json_schema: the content also holds both required keys, with the declared types, and no other key."
+}

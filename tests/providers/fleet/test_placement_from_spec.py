@@ -1,8 +1,13 @@
 import pytest
 
 from lilbee.providers.fleet.placement import InstancePlan, placement_from_spec
-from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.fleet.placement_spec import (
+    PlacementError,
+    PlacementSpec,
+    RolePlacement,
+    TargetRefusedError,
+)
+from lilbee.providers.roles import RoleTarget, WorkerRole
 
 GIB = 1024**3
 
@@ -39,7 +44,13 @@ def test_builds_plans_from_spec():
 
 def test_errors_when_active_role_missing_from_spec():
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
-    with pytest.raises(PlacementError, match="embed has a model but no placement entry"):
+    with pytest.raises(
+        PlacementError,
+        match=(
+            r"embed has a model but the placement has no entry for it\. "
+            r"Add an entry for embed with devices or a target, or clear the placement\."
+        ),
+    ):
         placement_from_spec(
             spec,
             (WorkerRole.CHAT, WorkerRole.EMBED),
@@ -48,9 +59,40 @@ def test_errors_when_active_role_missing_from_spec():
         )
 
 
+def test_a_spec_off_the_cards_refuses_the_missing_role_alone():
+    spec = PlacementSpec(
+        {
+            WorkerRole.CHAT: RolePlacement(devices=(0,)),
+            WorkerRole.RERANK: RolePlacement(devices=(), target=RoleTarget.CPU),
+        }
+    )
+    with pytest.raises(TargetRefusedError) as caught:
+        placement_from_spec(
+            spec,
+            (WorkerRole.CHAT, WorkerRole.EMBED),
+            {0: 80 * GIB},
+            estimate_peak=_peak({WorkerRole.CHAT: [4]}),
+        )
+    assert list(caught.value.reasons) == [WorkerRole.EMBED]
+
+
+def test_a_spec_of_cards_leaves_the_missing_role_to_the_automatic_plan():
+    spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
+    with pytest.raises(PlacementError, match="embed has a model") as caught:
+        placement_from_spec(
+            spec,
+            (WorkerRole.CHAT, WorkerRole.EMBED),
+            {0: 80 * GIB},
+            estimate_peak=_peak({WorkerRole.CHAT: [4]}),
+        )
+    assert not isinstance(caught.value, TargetRefusedError)
+
+
 def test_errors_on_nonexistent_device():
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(5,))})
-    with pytest.raises(PlacementError, match="chat pinned to device 5 but only 1 GPU"):
+    with pytest.raises(
+        PlacementError, match=r"chat is pinned to device 5, but this machine lists only device 0\."
+    ):
         placement_from_spec(
             spec, (WorkerRole.CHAT,), {0: 80 * GIB}, estimate_peak=_peak({WorkerRole.CHAT: [4]})
         )

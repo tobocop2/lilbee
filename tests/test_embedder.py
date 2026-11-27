@@ -8,7 +8,9 @@ import numpy as np
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.core.config.model import published_config
 from lilbee.data.extract.chunk import CHARS_PER_TOKEN
+from lilbee.providers.truncation import cut_inputs_in_scope, truncation_scope
 from lilbee.retrieval.embedder import Embedder, is_model_available
 
 
@@ -23,7 +25,10 @@ def _pin_embedding_model():
 
 @pytest.fixture()
 def mock_provider():
-    return MagicMock()
+    """A provider with no token cap, like a remote embedder: the character cut guards it."""
+    provider = MagicMock()
+    provider.embed_token_cap.return_value = None
+    return provider
 
 
 @pytest.fixture()
@@ -44,6 +49,76 @@ class TestTruncate:
     def test_exact_limit_unchanged(self, embedder):
         text = "a" * embedder.embed_char_budget
         assert embedder.truncate(text) == text
+
+
+class TestTokenBoundedProvider:
+    """A provider with a token cap bounds its own inputs, so no character count cuts a chunk."""
+
+    @pytest.fixture()
+    def capped(self, mock_provider):
+        mock_provider.embed_token_cap.return_value = 640
+        mock_provider.embed.side_effect = lambda texts: [[0.0] * 768 for _ in texts]
+        return mock_provider
+
+    def test_a_chunk_of_long_tokens_reaches_the_provider_whole(self, embedder, capped):
+        # 512 tokens of 8 characters each: 4096 characters, past 4 characters a token.
+        chunk = " ".join(f"identifier_{n:03d}"[:8] + str(n % 7) for n in range(512))
+        assert len(chunk) > cfg.chunk_size * CHARS_PER_TOKEN
+        embedder.embed_batch([chunk])
+        [sent] = capped.embed.call_args[0][0]
+        assert sent == "search_document: " + chunk
+
+    def test_a_query_of_long_tokens_reaches_the_provider_whole(self, embedder, capped):
+        query = "https://example.org/" + "segment/" * 600
+        embedder.embed_query(query)
+        [sent] = capped.embed.call_args[0][0]
+        assert sent.endswith(query)
+
+    def test_nothing_is_counted_as_cut(self, embedder, capped):
+        with truncation_scope():
+            embedder.embed_batch(["x" * (embedder.embed_char_budget + 500)])
+            assert cut_inputs_in_scope() == 0
+
+    def test_a_character_cut_is_counted_in_the_scope_without_a_warning(
+        self, embedder, mock_provider, caplog
+    ):
+        mock_provider.embed_token_cap.return_value = None
+        mock_provider.embed.side_effect = lambda texts: [[0.0] * 768 for _ in texts]
+        with caplog.at_level("WARNING"), truncation_scope():
+            embedder.embed_query("x" * (embedder.embed_char_budget + 500))
+            assert cut_inputs_in_scope() == 1
+        assert not caplog.records
+
+    def test_the_character_cut_still_guards_a_provider_with_no_cap(self, embedder, mock_provider):
+        mock_provider.embed_token_cap.return_value = None
+        mock_provider.embed.side_effect = lambda texts: [[0.0] * 768 for _ in texts]
+        embedder.embed_batch(["x" * (embedder.embed_char_budget + 500)])
+        [sent] = mock_provider.embed.call_args[0][0]
+        assert len(sent) == embedder.embed_char_budget
+
+
+class TestEmbedOverflow:
+    def test_a_context_overflow_is_named_as_the_embedding_calls(self, embedder, mock_provider):
+        from lilbee.providers.base import (
+            EmbeddingOverflowError,
+            ProviderError,
+            ProviderErrorKind,
+        )
+
+        mock_provider.embed.side_effect = ProviderError(
+            "too long", kind=ProviderErrorKind.CONTEXT_OVERFLOW
+        )
+        with pytest.raises(EmbeddingOverflowError, match="too long") as caught:
+            embedder.embed_batch(["a chunk"])
+        assert caught.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+    def test_another_provider_error_passes_through_unchanged(self, embedder, mock_provider):
+        from lilbee.providers.base import EmbeddingOverflowError, ProviderError
+
+        mock_provider.embed.side_effect = ProviderError("engine crashed")
+        with pytest.raises(ProviderError, match="engine crashed") as caught:
+            embedder.embed_batch(["a chunk"])
+        assert not isinstance(caught.value, EmbeddingOverflowError)
 
 
 class TestEmbed:
@@ -222,7 +297,7 @@ class TestValidateModel:
 
         old = cfg.embedding_model
         # Bypass pydantic validation to simulate edge case
-        object.__setattr__(cfg, "embedding_model", "")
+        object.__setattr__(published_config(), "embedding_model", "")
         try:
             embedder = Embedder(cfg, mock_provider)
             assert embedder.embedding_available() is False

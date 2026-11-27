@@ -2,7 +2,11 @@
 
 import os
 import re
+import subprocess
+import sys
 import threading
+import time
+from contextlib import contextmanager
 from dataclasses import fields as dataclass_fields
 from unittest import mock
 
@@ -12,8 +16,19 @@ from lilbee.app.settings_map import SETTINGS_MAP, SettingGroup
 from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 from lilbee.core import settings
 from lilbee.core.config.enums import SettingSource
-from lilbee.core.config.resolve import builtin_value, read_layers, resolve
+from lilbee.core.config.keys import PROVIDER_API_KEYS
+from lilbee.core.config.model import toml_value as _toml_value
+from lilbee.core.config.model import toml_values as _toml_values
+from lilbee.core.config.resolve import (
+    builtin_value,
+    read_config_table,
+    read_layers,
+    read_profile_table,
+    resolve,
+)
+from lilbee.core.config.resolve import toml_is_readable as _toml_is_readable
 from lilbee.core.project_state import ProjectState
+from tests._private_mode import posix_only
 
 # The analyze settings that are genuine Config; every other analyze or profile name is state.
 ANALYZE_SETTINGS = {"analyze_max_files"}
@@ -992,6 +1007,18 @@ class TestOcrPageSelectionSettings:
             appset.apply_settings_update({"force_ocr_pages": [0]})
         assert appset.cfg.force_ocr_pages == [2]
 
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [("ocr_language", 5), ("ocr_language", True), ("n_gpu_layers", [1])],
+    )
+    def test_a_non_string_value_is_refused_as_a_value_error(self, monkeypatch, key, value):
+        """The CLI, HTTP and MCP writes catch ValueError; a TypeError would crash them."""
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
+        with pytest.raises(ValueError, match=key):
+            appset.apply_settings_update({key: value})
+
 
 class TestMemoryTuningSettingsMap:
     """The dynamic-ctx tuning knobs are surfaced in the TUI settings map."""
@@ -1793,22 +1820,327 @@ class TestConcurrentConfigWrites:
         result = settings.load(tmp_path)
         assert sorted(result) == [f"key{i}" for i in range(4)]
 
-    def test_a_stale_lock_does_not_block_the_write(self, tmp_path, monkeypatch, caplog):
-        """Losing an update to an abandoned lock file is worse than the race."""
+    @staticmethod
+    def _writes():
+        return {
+            "set_value": lambda root: settings.set_value(root, "key", "new"),
+            "delete_value": lambda root: settings.delete_value(root, "keep"),
+            "update_values": lambda root: settings.update_values(root, {"key": "new"}),
+            "delete_values": lambda root: settings.delete_values(root, ["keep"]),
+            "mutate_value": lambda root: settings.mutate_value(
+                root, "key", lambda _old: ("new", None)
+            ),
+        }
+
+    @pytest.mark.parametrize(
+        "write", ["set_value", "delete_value", "update_values", "delete_values", "mutate_value"]
+    )
+    def test_a_write_that_cannot_take_the_lock_fails_and_changes_nothing(
+        self, tmp_path, monkeypatch, write
+    ):
         from filelock import FileLock
 
         from lilbee.core import settings as settings_mod
+        from lilbee.core.security import FileLockUnavailableError
 
+        settings.save(tmp_path, {"keep": "me", "key": "old"})
+        before = (tmp_path / "config.toml").read_bytes()
         monkeypatch.setattr(settings_mod, "_CONFIG_LOCK_TIMEOUT_S", 0.01)
         held = FileLock(str(tmp_path / "config.toml") + ".lock")
         held.acquire()
         try:
-            with caplog.at_level("WARNING"):
-                settings.set_value(tmp_path, "key", "value")
+            with pytest.raises(FileLockUnavailableError, match=r"held the lock on config\.toml"):
+                self._writes()[write](tmp_path)
         finally:
             held.release()
+        assert (tmp_path / "config.toml").read_bytes() == before
+
+    def test_mutate_value_does_not_call_its_function_without_the_lock(self, tmp_path, monkeypatch):
+        from filelock import FileLock
+
+        from lilbee.core import settings as settings_mod
+        from lilbee.core.security import FileLockUnavailableError
+
+        monkeypatch.setattr(settings_mod, "_CONFIG_LOCK_TIMEOUT_S", 0.01)
+        calls = []
+        held = FileLock(str(tmp_path / "config.toml") + ".lock")
+        held.acquire()
+        try:
+            with pytest.raises(FileLockUnavailableError):
+                settings.mutate_value(tmp_path, "key", lambda old: calls.append(old) or (1, 1))
+        finally:
+            held.release()
+        assert calls == []
+
+    def test_a_lock_the_system_refuses_fails_and_changes_nothing(self, tmp_path, monkeypatch):
+        import errno
+
+        import filelock
+
+        from lilbee.core.security import FileLockUnavailableError
+
+        settings.save(tmp_path, {"key": "old"})
+        before = (tmp_path / "config.toml").read_bytes()
+
+        def refuse(self, *_args, **_kwargs):
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+
+        monkeypatch.setattr(filelock.FileLock, "acquire", refuse)
+        with pytest.raises(FileLockUnavailableError, match="cannot be taken"):
+            settings.set_value(tmp_path, "key", "new")
+        assert (tmp_path / "config.toml").read_bytes() == before
+
+    @posix_only
+    def test_a_filesystem_without_flock_refuses_the_write(self, tmp_path, monkeypatch):
+        import errno
+        import fcntl
+
+        from lilbee.core.security import FileLockUnavailableError
+
+        settings.save(tmp_path, {"key": "old"})
+        before = (tmp_path / "config.toml").read_bytes()
+
+        def no_locks(_fd, _op):
+            raise OSError(errno.ENOLCK, "No locks available")
+
+        monkeypatch.setattr(fcntl, "flock", no_locks)
+        with pytest.raises(FileLockUnavailableError, match="No locks available"):
+            settings.set_value(tmp_path, "key", "new")
+        assert (tmp_path / "config.toml").read_bytes() == before
+
+    @pytest.mark.parametrize("lock_file_exists", [False, True])
+    @posix_only
+    def test_a_refused_chmod_on_the_lock_file_still_writes_under_the_lock(
+        self, tmp_path, monkeypatch, caplog, lock_file_exists
+    ):
+        import errno
+        import fcntl
+        import pathlib
+
+        lock_path = tmp_path / "config.toml.lock"
+        if lock_file_exists:
+            lock_path.write_text("", encoding="utf-8")
+            lock_path.chmod(0o644)
+        settings.save(tmp_path, {"key": "old"})
+        flocks = []
+        real_flock = fcntl.flock
+
+        def recording_flock(fd, op):
+            flocks.append(op)
+            return real_flock(fd, op)
+
+        def refuse_chmod(*_args, **_kwargs):
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+
+        monkeypatch.setattr(os, "fchmod", refuse_chmod)
+        monkeypatch.setattr(pathlib.Path, "chmod", refuse_chmod)
+        monkeypatch.setattr(fcntl, "flock", recording_flock)
+        with caplog.at_level("WARNING"):
+            settings.set_value(tmp_path, "key", "new")
+        assert settings.get(tmp_path, "key") == "new"
+        assert fcntl.LOCK_EX in [op & ~fcntl.LOCK_NB for op in flocks]
+
+    def test_the_write_goes_ahead_once_the_holder_lets_go(self, tmp_path, monkeypatch):
+        from filelock import FileLock
+
+        from lilbee.core import settings as settings_mod
+        from lilbee.core.security import FileLockUnavailableError
+
+        monkeypatch.setattr(settings_mod, "_CONFIG_LOCK_TIMEOUT_S", 0.01)
+        held = FileLock(str(tmp_path / "config.toml") + ".lock")
+        held.acquire()
+        with pytest.raises(FileLockUnavailableError):
+            settings.set_value(tmp_path, "key", "value")
+        held.release()
+        settings.set_value(tmp_path, "key", "value")
         assert settings.get(tmp_path, "key") == "value"
-        assert "Timed out waiting" in caplog.text
+
+    def test_reading_the_registry_still_proceeds_when_the_lock_is_busy(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A reader sees a whole file because writers replace it atomically."""
+        from filelock import FileLock
+
+        from lilbee.core import settings as settings_mod
+        from lilbee.core.config import Config
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        settings.save(tmp_path, {"linked_roots": {"notes": "/n"}})
+        monkeypatch.setattr(settings_mod, "_CONFIG_LOCK_TIMEOUT_S", 0.01)
+        held = FileLock(str(tmp_path / "config.toml") + ".lock")
+        held.acquire()
+        config = Config(data_root=tmp_path)
+        try:
+            with caplog.at_level("WARNING"):
+                settings.overlay_persisted_roots(config)
+        finally:
+            held.release()
+        assert config.linked_roots == {"notes": "/n"}
+        assert "proceeding without it" in caplog.text
+
+
+_HOLD_LOCK = (
+    "import sys\n"
+    "from filelock import FileLock\n"
+    "lock = FileLock(sys.argv[1])\n"
+    "lock.acquire()\n"
+    "print('held', flush=True)\n"
+    "sys.stdin.read()\n"
+)
+_READ_BOUND_S = 5.0
+
+
+@contextmanager
+def _lock_held_by_another_process(data_root, monkeypatch):
+    """Hold config.toml's lock in a second process; a reader waits 0.2 s for it."""
+    from lilbee.core import settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "_CONFIG_LOCK_TIMEOUT_S", 0.2)
+    lock_path = str(data_root / "config.toml") + ".lock"
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _HOLD_LOCK, lock_path],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    assert holder.stdin is not None
+    assert holder.stdout is not None
+    try:
+        assert holder.stdout.readline() == "held\n"
+        yield
+    finally:
+        holder.stdin.close()
+        holder.stdout.close()
+        holder.wait(timeout=10)
+
+
+def _read_in_a_worker(read):
+    """Run *read* in a thread; return ``(finished within the bound, outcome, seconds)``.
+
+    A read that waits for the lock for good leaves its thread blocked until the holder
+    exits, so the test still ends and the thread does not outlive it.
+    """
+    outcome: dict[str, object] = {}
+
+    def run():
+        try:
+            outcome["value"] = read()
+        except Exception as exc:
+            outcome["raised"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    start = time.monotonic()
+    worker.start()
+    worker.join(_READ_BOUND_S)
+    return not worker.is_alive(), outcome, time.monotonic() - start
+
+
+class TestAReadProceedsWhileAnotherProcessHoldsTheLock:
+    """A busy writer never blocks or fails a read; the read logs one warning."""
+
+    def test_the_persisted_settings_read_returns_the_file(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        settings.save(tmp_path, {"top_k": 7})
+        with (
+            _lock_held_by_another_process(tmp_path, monkeypatch),
+            caplog.at_level("WARNING"),
+        ):
+            finished, outcome, seconds = _read_in_a_worker(
+                lambda: settings.read_persisted(tmp_path)
+            )
+        assert finished, f"the read still waited for the lock after {_READ_BOUND_S} s"
+        assert "raised" not in outcome, outcome
+        stamp, values = outcome["value"]
+        assert stamp is not None
+        assert values is not None
+        assert values["top_k"] == 7
+        assert seconds < _READ_BOUND_S
+        warnings = [r for r in caplog.records if "proceeding without it" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "config.toml" in warnings[0].getMessage()
+
+    def test_the_source_registry_read_returns_the_file(self, tmp_path, monkeypatch, caplog):
+        from lilbee.core.config import Config
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        settings.save(tmp_path, {"linked_roots": {"notes": "/n"}})
+        config = Config(data_root=tmp_path)
+        with (
+            _lock_held_by_another_process(tmp_path, monkeypatch),
+            caplog.at_level("WARNING"),
+        ):
+            finished, outcome, _seconds = _read_in_a_worker(
+                lambda: settings.overlay_persisted_roots(config)
+            )
+        assert finished, f"the read still waited for the lock after {_READ_BOUND_S} s"
+        assert "raised" not in outcome, outcome
+        assert config.linked_roots == {"notes": "/n"}
+        warnings = [r for r in caplog.records if "proceeding without it" in r.getMessage()]
+        assert len(warnings) == 1
+
+    @pytest.mark.parametrize("reader", ["read_persisted", "overlay_persisted_roots"])
+    def test_the_default_wait_for_the_lock_is_finite(self, tmp_path, monkeypatch, reader):
+        """A reader waits for a busy lock, then goes ahead: the wait it asks for must end."""
+        import math
+
+        from lilbee.core import settings as settings_mod
+        from lilbee.core.config import Config
+        from lilbee.core.security import file_lock_or_warn
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        settings.save(tmp_path, {"top_k": 7, "linked_roots": {"notes": "/n"}})
+        waits: list[float] = []
+
+        @contextmanager
+        def recording_lock(path, timeout_s):
+            waits.append(timeout_s)
+            with file_lock_or_warn(path, timeout_s):
+                yield
+
+        monkeypatch.setattr(settings_mod, "file_lock_or_warn", recording_lock)
+        if reader == "read_persisted":
+            settings.read_persisted(tmp_path)
+        else:
+            settings.overlay_persisted_roots(Config(data_root=tmp_path))
+        assert len(waits) == 1
+        assert math.isfinite(waits[0])
+        assert 0 < waits[0] <= 30
+
+
+_LOCK_FREE_READERS = {
+    "load": lambda root: settings.load(root),
+    "persisted_values": lambda root: settings.persisted_values(root),
+    "toml_values": lambda root: _toml_values(root / "config.toml"),
+    "toml_value": lambda root: _toml_value(root / "config.toml", "top_k"),
+    "read_toml": lambda root: read_config_table(root / "config.toml"),
+    "toml_is_readable": lambda root: _toml_is_readable(root / "config.toml"),
+}
+
+
+class TestALockFreeReaderNeverTakesTheLock:
+    """These readers neither wait for the settings lock nor warn about it."""
+
+    @pytest.mark.parametrize("name", sorted(_LOCK_FREE_READERS))
+    def test_the_reader_runs_while_both_locks_are_held(self, tmp_path, monkeypatch, caplog, name):
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        settings.save(tmp_path, {"top_k": 7})
+        read = _LOCK_FREE_READERS[name]
+        expected = read(tmp_path)
+        assert expected
+        settings._settings_lock.acquire()
+        try:
+            with (
+                _lock_held_by_another_process(tmp_path, monkeypatch),
+                caplog.at_level("WARNING"),
+            ):
+                finished, outcome, _seconds = _read_in_a_worker(lambda: read(tmp_path))
+        finally:
+            settings._settings_lock.release()
+        assert finished, f"{name} waited for the settings lock for {_READ_BOUND_S} s"
+        assert "raised" not in outcome, outcome
+        assert outcome["value"] == expected
+        assert not [r for r in caplog.records if "proceeding without it" in r.getMessage()]
 
 
 class TestCredentialsAreMaskable:
@@ -2064,9 +2396,7 @@ class TestResolverIsTheOnlyWriter:
             monkeypatch.setenv("LILBEE_EMBEDDING_MODEL", env_model)
         cfg.embedding_model = "acme/a-GGUF/a.gguf"
         cfg.embedding_dim = 768
-        monkeypatch.setattr(
-            appset, "_embedder_dim_from_gguf", lambda ref, registry=None: widths[ref]
-        )
+        monkeypatch.setattr(appset, "_embedder_dim", lambda ref, registry=None: widths[ref])
         monkeypatch.setattr(appset, "_pin_legacy_store_meta", lambda: None)
         monkeypatch.setattr(appset, "_invalidate_caches", lambda keys: None)
         monkeypatch.setattr(appset, "_embed_reindex_required", lambda: False)
@@ -2098,7 +2428,7 @@ class TestResolverIsTheOnlyWriter:
         appset.apply_settings_update({"temperature": 0.3})
         assert cfg.temperature == 0.3
         appset.apply_settings_update({"temperature": ""})
-        assert cfg.temperature == 0.1
+        assert cfg.temperature is None
         assert "temperature" not in settings.load(cfg.data_root)
 
     def test_null_update_refuses_an_invalid_profile_value_and_changes_nothing(self):
@@ -2348,7 +2678,7 @@ class TestResetRemovesTheUserValue:
             calls.append(settings.load(root).get("embedding_model", "<gone>"))
 
         monkeypatch.setattr(appset, "_pin_legacy_store_meta", pin)
-        monkeypatch.setattr(appset, "_embedder_dim_from_gguf", lambda ref, registry=None: None)
+        monkeypatch.setattr(appset, "_embedder_dim", lambda ref, registry=None: None)
         monkeypatch.setattr(appset, "_invalidate_caches", lambda keys: None)
         monkeypatch.setattr(appset, "_embed_reindex_required", lambda: True)
         result = appset.reset_settings(["embedding_model"])
@@ -2411,6 +2741,17 @@ class TestResetRemovesTheUserValue:
         assert cfg.max_distance == 0.3
         assert settings.load(root)["max_distance"] == 0.3
 
+    @pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
+    def test_reset_refusal_keeps_a_fallback_address_password_out(self, monkeypatch, key):
+        """A reset falls back to the variable's value; the refusal must not print its password."""
+        from lilbee.app import settings as appset
+
+        self._write_config(f'{key} = "http://h:1"\n')
+        monkeypatch.setenv(f"LILBEE_{key.upper()}", "http://u:s3cret@ollama:abc")
+        with pytest.raises(ValueError, match=f"Cannot reset '{key}'") as refused:
+            appset.reset_settings([key])
+        assert "s3cret" not in str(refused.value)
+
     def test_reset_with_duplicate_keys_removes_the_key_once(self):
         from lilbee.app import settings as appset
         from lilbee.core.config import cfg
@@ -2456,6 +2797,16 @@ class TestSourceOfAValueNoLayerSupplies:
         monkeypatch.setattr(appset.cfg, "chat_model", "acme/inherited-model")
         assert appset.setting_sources()["chat_model"] is SettingSource.AUTO
         assert appset.get_setting("chat_model").source is SettingSource.AUTO
+
+    def test_the_source_reads_the_config_it_is_given_not_the_global_one(self, tmp_path):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import Config
+
+        layers = read_layers(tmp_path)
+        live = Config.model_validate({"data_root": tmp_path, "chunk_size": 900})
+        builtin = Config.model_validate({"data_root": tmp_path})
+        assert appset._sources(layers, live)["chunk_size"] is SettingSource.AUTO
+        assert appset._sources(layers, builtin)["chunk_size"] is not SettingSource.AUTO
 
     def test_a_root_that_does_not_parse_keeps_a_value_that_does_not_say_built_in(
         self, monkeypatch, tmp_path
@@ -2506,9 +2857,185 @@ class TestEmbedPickNeedsRebuild:
                 "lilbee.modelhub.role_validator.validate_model_task_assignment",
                 side_effect=ValueError("Model 'not-a-model' is not installed."),
             ),
-            mock.patch.object(appset, "_embedder_dim_from_gguf", return_value=None),
+            mock.patch.object(appset, "_embedder_dim", return_value=None),
         ):
             assert appset.embed_pick_needs_rebuild("not-a-model") is False
         store.index_mismatch.assert_called_once_with(
             model="not-a-model", dim=appset.cfg.embedding_dim
         )
+
+
+HEADER_SECRET_KEYS = sorted([*PROVIDER_API_KEYS, "hf_token"])
+
+
+class TestHeaderSecretWrite:
+    @pytest.mark.parametrize("key", HEADER_SECRET_KEYS)
+    @pytest.mark.parametrize("bad", ["sk-fake\nsecret", "sk-fake\x00secret", "sk-fäke"])
+    def test_write_refuses_a_secret_a_header_cannot_carry(
+        self, key: str, bad: str, monkeypatch, caplog
+    ) -> None:
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, key, "")
+        with (
+            mock.patch.object(appset.persistent_settings, "update_values") as written,
+            caplog.at_level("DEBUG"),
+            pytest.raises(ValueError, match="cannot be sent") as exc,
+        ):
+            appset.apply_settings_update({key: bad})
+        assert key in str(exc.value)
+        assert "secret" not in str(exc.value)
+        assert "secret" not in caplog.text
+        assert getattr(appset.cfg, key) == ""
+        written.assert_not_called()
+
+    @pytest.mark.parametrize("key", HEADER_SECRET_KEYS)
+    def test_write_keeps_a_valid_secret_byte_identical(self, key: str, monkeypatch) -> None:
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, key, "")
+        with mock.patch.object(
+            appset.persistent_settings,
+            "update_values",
+            wraps=appset.persistent_settings.update_values,
+        ) as written:
+            appset.apply_settings_update({key: "sk-FakeKey-0123_abc"})  # pragma: allowlist secret
+        assert getattr(appset.cfg, key) == "sk-FakeKey-0123_abc"  # pragma: allowlist secret
+        written.assert_called_once_with(
+            appset.cfg.data_root,
+            {key: "sk-FakeKey-0123_abc"},  # pragma: allowlist secret
+        )
+
+    def test_a_bad_secret_in_a_batch_refuses_the_whole_batch(self, monkeypatch) -> None:
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, "openai_api_key", "")
+        with pytest.raises(ValueError, match="mistral_api_key"):
+            appset.apply_settings_update(
+                {"openai_api_key": "sk-ok", "mistral_api_key": "sk-bad\nkey"}
+            )
+        assert appset.cfg.openai_api_key == ""
+
+    def test_the_marker_covers_every_secret_that_reaches_a_header(self) -> None:
+        """A new write-only secret must be marked, or named here as one that no header carries."""
+        from lilbee.app import settings as appset
+        from lilbee.core.config import Config
+
+        write_only = {key for key in Config.model_fields if appset._is_write_only(key)}
+        marked = {key for key in write_only if appset._field_flag(key, "header_value")}
+        assert marked == set(HEADER_SECRET_KEYS)
+        assert write_only - marked == {"crawl_authorization", "crawl_password", "crawl_cookie"}
+
+
+class TestHfTokenWrite:
+    @pytest.mark.parametrize("bad", ["hf_fake\nsecret", "hf_fake\x00secret"])
+    def test_write_refuses_a_token_that_cannot_be_sent(self, bad: str, caplog) -> None:
+        from lilbee.app import settings as appset
+
+        before = appset.cfg.hf_token
+        with caplog.at_level("DEBUG"), pytest.raises(ValueError, match="cannot be sent") as exc:
+            appset.apply_settings_update({"hf_token": bad})
+        assert "secret" not in str(exc.value)
+        assert "secret" not in caplog.text
+        assert appset.cfg.hf_token == before
+
+    def test_write_refuses_a_token_with_a_space(self) -> None:
+        from lilbee.app import settings as appset
+
+        with pytest.raises(ValueError, match="cannot be sent"):
+            appset.apply_settings_update({"hf_token": "hf_fake secret"})
+
+    def test_write_keeps_a_valid_token_byte_identical(self, monkeypatch) -> None:
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, "hf_token", "")
+        with mock.patch.object(appset.persistent_settings, "set_value"):
+            appset.apply_settings_update(
+                {"hf_token": "hf_FakeToken-0123_abc"}
+            )  # pragma: allowlist secret
+        assert appset.cfg.hf_token == "hf_FakeToken-0123_abc"  # pragma: allowlist secret
+
+
+class TestUnreadableConfigIsAReadFailure:
+    """A read-modify-write that cannot read config.toml reports a read, not a write."""
+
+    @pytest.fixture
+    def unreadable_root(self, tmp_path):
+        # A directory in place of the file: open fails with IsADirectoryError, even as root.
+        (tmp_path / "config.toml").mkdir()
+        return tmp_path
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda root: settings.set_value(root, "top_k", 7),
+            lambda root: settings.update_values(root, {"top_k": 7}),
+            lambda root: settings.delete_value(root, "top_k"),
+            lambda root: settings.delete_values(root, ["top_k"]),
+        ],
+    )
+    def test_the_failure_text_says_read(self, unreadable_root, call) -> None:
+        from lilbee.app.settings import config_write_failure_message
+
+        with pytest.raises(settings.ConfigReadFailedError) as caught:
+            call(unreadable_root)
+        assert caught.value.errno is not None
+        assert config_write_failure_message(caught.value).startswith("Could not read config.toml")
+
+    def test_a_changed_file_says_read(self) -> None:
+        from lilbee.app.settings import config_write_failure_message
+
+        exc = settings.ConfigChangedWhileReadError("config.toml changed while it was read")
+        assert config_write_failure_message(exc).startswith("Could not read config.toml")
+
+    def test_a_write_failure_still_says_write(self) -> None:
+        from lilbee.app.settings import config_write_failure_message
+
+        text = config_write_failure_message(OSError(28, "No space left on device"))
+        assert text.startswith("Could not write config.toml")
+
+
+class TestThePersistedValuesReadTheFileOnce:
+    """The overlay takes its accepted values, its layers and its readability from one parse."""
+
+    @pytest.mark.parametrize(
+        ("stored", "expected", "parses"),
+        [
+            ("top_k = 4\n", {"top_k": 4}, 1),
+            ('top_k = "many"\nvision_replicas = 3\n', {"vision_replicas": 3}, 1),
+            (None, {}, 0),
+            ("top_k = = 9\n", None, 1),
+        ],
+        ids=["accepted", "refused", "missing", "unparsable"],
+    )
+    def test_one_parse_of_config_toml_and_the_same_values(
+        self, tmp_path, monkeypatch, stored, expected, parses
+    ):
+        import tomllib
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        if stored is not None:
+            (tmp_path / "config.toml").write_text(stored, encoding="utf-8")
+        reads = []
+        real_load = tomllib.load
+        monkeypatch.setattr(tomllib, "load", lambda f, *a, **k: reads.append(1) or real_load(f))
+        values = settings.persisted_values(tmp_path)
+        if expected is None:
+            assert values is None
+        else:
+            assert {k: values[k] for k in expected} == expected
+        assert len(reads) == parses
+
+    def test_an_unparsable_file_gives_an_empty_profile_table_and_empty_layers(self, tmp_path):
+        (tmp_path / "config.toml").write_text("top_k = = 9\n", encoding="utf-8")
+        table = read_profile_table(tmp_path)
+        assert (table.name, dict(table.values)) == (None, {})
+        assert read_layers(tmp_path).user == {}
+
+    @pytest.mark.parametrize(
+        ("stored", "readable"), [("top_k = 4\n", True), ("top_k = = 9\n", False)]
+    )
+    def test_toml_is_readable_says_whether_the_file_parses(self, tmp_path, stored, readable):
+        path = tmp_path / "config.toml"
+        path.write_text(stored, encoding="utf-8")
+        assert _toml_is_readable(path) is readable

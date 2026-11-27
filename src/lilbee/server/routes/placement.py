@@ -14,37 +14,66 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from litestar import delete, get, post, put
 from litestar.exceptions import HTTPException
 from litestar.response import Stream
 
+from lilbee.app.placement import PLACEMENT_READ_ERRORS, PlacementConfigWriteError
+from lilbee.app.settings import config_write_failure_message
 from lilbee.core.config import cfg
+from lilbee.core.security import FileLockUnavailableError
+from lilbee.core.settings import ConfigReadFailedError, ReadOnlyConfigError
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.server import handlers
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import GpusResponse, PlacementResponse, PlacementSpecBody
+from lilbee.server.routes.engines import NO_LIBRARY_KEY
 
 log = logging.getLogger(__name__)
 
 _HTTP_UNPROCESSABLE = 422
 _HTTP_CONFLICT = 409
 _HTTP_UNAVAILABLE = 503
-# OSError is deliberately absent: on this path it means the device probe could
-# not run (no nvidia-smi on PATH, no permission on the device node, a failed
-# spawn), which is a host fault and not something the caller's spec can fix.
+# OSError is deliberately absent: past the config-write arms it means the device
+# probe could not run (no nvidia-smi on PATH, no permission on the device node,
+# a failed spawn), which is a host fault and not something the caller's spec can fix.
 _INPUT_ERRORS = (PlacementError, ValueError)
 _PROBE_FAILED_DETAIL = (
     "Could not probe the GPUs. Check that the vendor tool (nvidia-smi or "
     "rocm-smi) is installed and this process may read the device."
 )
-_MISSING_SPEC_DETAIL = "spec is required to apply placement; send {} to DELETE for auto."
+_MISSING_SPEC_DETAIL = (
+    "spec is required to apply placement; send DELETE to /api/placement to clear it."
+)
 
 
 def _spec_json(body: PlacementSpecBody) -> str | None:
     """Serialize the optional spec dict to JSON, or return None when absent."""
     return json.dumps(body.spec) if body.spec is not None else None
+
+
+@contextmanager
+def _placement_errors() -> Iterator[None]:
+    """Map the failures of a placement preview, apply or clear to one set of HTTP answers."""
+    try:
+        yield
+    except ProviderError as exc:
+        raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
+    except (FileLockUnavailableError, ReadOnlyConfigError):
+        raise  # the app's handlers answer these; they are not probe failures
+    except (ConfigReadFailedError, PlacementConfigWriteError) as exc:
+        raise HTTPException(
+            status_code=_HTTP_UNAVAILABLE, detail=config_write_failure_message(exc)
+        ) from exc
+    except OSError as exc:
+        log.exception("GPU probe failed")
+        raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=_PROBE_FAILED_DETAIL) from exc
+    except _INPUT_ERRORS as exc:
+        raise HTTPException(status_code=_HTTP_UNPROCESSABLE, detail=str(exc)) from exc
 
 
 def _refused() -> HTTPException:
@@ -53,27 +82,20 @@ def _refused() -> HTTPException:
     return HTTPException(status_code=_HTTP_CONFLICT, detail=placement_refused_message())
 
 
-@get("/api/placement")
+@get("/api/placement", opt={NO_LIBRARY_KEY: True})
 async def placement_route() -> PlacementResponse:
     """Current effective placement."""
     try:
         return await handlers.placement()
-    except ProviderError as exc:
+    except PLACEMENT_READ_ERRORS as exc:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
 
 
 @post("/api/placement/preview", status_code=200)
 async def placement_preview_route(data: PlacementSpecBody) -> PlacementResponse:
     """Preview a candidate spec (or auto when no spec). Requires auth: runs subprocess probes."""
-    try:
+    with _placement_errors():
         return await handlers.placement_preview(_spec_json(data))
-    except ProviderError as exc:
-        raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
-    except OSError as exc:
-        log.exception("GPU probe failed")
-        raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=_PROBE_FAILED_DETAIL) from exc
-    except _INPUT_ERRORS as exc:
-        raise HTTPException(status_code=_HTTP_UNPROCESSABLE, detail=str(exc)) from exc
 
 
 @put("/api/placement")
@@ -84,15 +106,8 @@ async def placement_set_route(data: PlacementSpecBody) -> PlacementResponse:
     spec_json = _spec_json(data)
     if spec_json is None:
         raise HTTPException(status_code=_HTTP_UNPROCESSABLE, detail=_MISSING_SPEC_DETAIL)
-    try:
+    with _placement_errors():
         return await handlers.placement_set(spec_json)
-    except ProviderError as exc:
-        raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
-    except OSError as exc:
-        log.exception("GPU probe failed")
-        raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=_PROBE_FAILED_DETAIL) from exc
-    except _INPUT_ERRORS as exc:
-        raise HTTPException(status_code=_HTTP_UNPROCESSABLE, detail=str(exc)) from exc
 
 
 @delete("/api/placement", status_code=200)
@@ -100,31 +115,29 @@ async def placement_clear_route() -> PlacementResponse:
     """Clear placement (back to auto). Refused unless allow_http_placement is enabled."""
     if not cfg.allow_http_placement:
         raise _refused()
-    try:
+    with _placement_errors():
         return await handlers.placement_clear()
-    except ProviderError as exc:
-        raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
 
 
-@get("/api/gpus")
+@get("/api/gpus", opt={NO_LIBRARY_KEY: True})
 async def gpus_route() -> GpusResponse:
     """Detected GPUs with free/total VRAM, plus the host-level Intel util notice."""
     try:
         return await handlers.gpus()
-    except ProviderError as exc:
+    except PLACEMENT_READ_ERRORS as exc:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
 
 
-@get("/api/gpus/stream", media_type=SSE_MEDIA_TYPE)
+@get("/api/gpus/stream", media_type=SSE_MEDIA_TYPE, opt={NO_LIBRARY_KEY: True})
 async def gpu_stats_stream_route() -> Stream:
     """Live per-GPU utilization + free memory as SSE for the placement view."""
-    from lilbee.app.placement import get_placement
+    from lilbee.app.placement import get_planned_placement
 
     try:
-        # get_placement runs resolve_placement_plan, which spawns subprocess
+        # get_planned_placement runs resolve_placement_plan, which spawns subprocess
         # device probes that can wedge for the probe timeout on a broken driver;
         # offload so the probe never blocks the event loop.
-        view = await asyncio.to_thread(get_placement)
-    except ProviderError as exc:
+        view = await asyncio.to_thread(get_planned_placement)
+    except PLACEMENT_READ_ERRORS as exc:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
     return Stream(handlers.gpu_stats_stream(view.gpus), media_type=SSE_MEDIA_TYPE)

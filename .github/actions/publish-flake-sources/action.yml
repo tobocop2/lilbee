@@ -18,10 +18,29 @@ inputs:
     description: "When 'true', print the branch, commit and pull request it would make, and push nothing."
     required: false
     default: "false"
+  deploy-key:
+    description: "The FLAKE_PINS_SSH_KEY secret the caller's checkout used. A real run fails when it is empty; a dry run does not need it."
+    required: false
+    default: ""
 
 runs:
   using: composite
   steps:
+    # Without the key, checkout falls back to the job token. A push made with
+    # that token starts no CI, so the pin pull request never merges. A run
+    # without the repository secrets, as in a fork, fails here by design.
+    - name: The pin push needs the flake pins deploy key
+      shell: bash
+      env:
+        DEPLOY_KEY: ${{ inputs.deploy-key }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        set -euo pipefail
+        if [ "${DRY_RUN}" = "true" ]; then
+          echo "dry run: nothing is pushed, so the deploy key is not needed"
+          exit 0
+        fi
+        [ -n "${DEPLOY_KEY}" ] || { echo "FLAKE_PINS_SSH_KEY is not set, so the flake pin cannot land"; exit 1; }
     - uses: DeterminateSystems/nix-installer-action@v23
     - name: Write sources file
       shell: bash

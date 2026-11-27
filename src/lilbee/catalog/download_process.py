@@ -16,12 +16,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
+from lilbee.catalog.download import (
+    ListingFailedError,
+    ListingOfflineError,
+    RetryCallback,
+    network_error_message,
+)
 from lilbee.catalog.download_progress import ProgressCallback
+from lilbee.catalog.hf_client import HfToken, hub_resumes_to
 from lilbee.catalog.models import CatalogModel
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 if TYPE_CHECKING:
     from multiprocessing.connection import Connection
+
+    from lilbee.providers.fleet.engines.base import EngineAdapter
 
 log = logging.getLogger(__name__)
 
@@ -55,8 +64,16 @@ timeout and 10 second header-probe timeout, not the hub's. Every file the
 child then resolves restarts this clock, so the budget does not grow with
 the shard count."""
 
+_HUB_ATTEMPTS = 6
+"""Requests huggingface_hub makes for one file before it gives up on a stall.
+
+The first request, then 5 resumes in place (the retry default of its
+``http_get``). Any byte that arrives restarts its count."""
+
 # The child's translated errors, rebuilt in the parent by type name.
-_ERRORS_BY_NAME: dict[str, type[Exception]] = {PermissionError.__name__: PermissionError}
+_ERRORS_BY_NAME: dict[str, type[Exception]] = {
+    error.__name__: error for error in (PermissionError, ListingOfflineError, ListingFailedError)
+}
 
 
 @dataclass(frozen=True)
@@ -81,6 +98,16 @@ class _Probed:
 
 
 @dataclass(frozen=True)
+class _Retried:
+    """A child's note that a failed attempt is about to repeat, in ``RetryCallback`` shape."""
+
+    kind: Literal["retry"]
+    attempt: int
+    attempts: int
+    cause: str
+
+
+@dataclass(frozen=True)
 class _Done:
     """A child's success verdict carrying the downloaded model's path."""
 
@@ -97,7 +124,7 @@ class _Failed:
     message: str
 
 
-_ChildMessage = _Progress | _Probed | _Done | _Failed
+_ChildMessage = _Progress | _Probed | _Retried | _Done | _Failed
 
 
 class _ChildStalledError(Exception):
@@ -159,8 +186,10 @@ class _PipeProgress:
     def __init__(self, conn: Connection) -> None:
         self._conn = conn
         self._last_sent: float | None = None
+        self.downloaded = 0  # the latest byte count, sent or not
 
     def __call__(self, downloaded: int, total: int) -> None:
+        self.downloaded = downloaded
         now = time.monotonic()
         final = total > 0 and downloaded >= total
         throttled = self._last_sent is not None and now - self._last_sent < _PROGRESS_MIN_INTERVAL_S
@@ -180,12 +209,52 @@ class _PipeProbe:
         self._conn.send(_Probed(kind="probed", blob=blob))
 
 
+class _PipeRetry:
+    """Retry callback that tells the parent a failed attempt is about to repeat."""
+
+    def __init__(self, conn: Connection) -> None:
+        self._conn = conn
+
+    def __call__(self, attempt: int, attempts: int, cause: str) -> None:
+        self._conn.send(_Retried(kind="retry", attempt=attempt, attempts=attempts, cause=cause))
+
+
+class _HubResumes:
+    """Turns each in-place resume huggingface_hub logs into a retry for *on_retry*.
+
+    The hub restarts its count at each new download call and once bytes arrive,
+    so this count restarts at each call and when *progress* moved since the
+    last resume.
+    """
+
+    def __init__(self, hf_repo: str, progress: _PipeProgress, on_retry: RetryCallback) -> None:
+        self._hf_repo = hf_repo
+        self._progress = progress
+        self._on_retry = on_retry
+        self._at: int | None = None
+        self._count = 0
+
+    def call_started(self) -> None:
+        """Restart the count at the next resume."""
+        self._at = None
+
+    def resumed(self, cause: str) -> None:
+        """Tell *on_retry* about one more in-place resume after *cause*."""
+        if self._progress.downloaded != self._at:
+            self._at = self._progress.downloaded
+            self._count = 0
+        self._count += 1
+        self._on_retry(self._count, _HUB_ATTEMPTS, network_error_message(self._hf_repo, cause))
+
+
 def download_in_subprocess(
     entry: CatalogModel,
     models_dir: Path,
-    token: str | None,
+    token: HfToken,
+    engine: EngineAdapter | None,
     *,
     on_progress: ProgressCallback | None,
+    on_retry: RetryCallback | None = None,
     cancel: CancelSignal,
 ) -> Path:
     """Run one download in its own process, retrying in a fresh child after a stall.
@@ -194,18 +263,27 @@ def download_in_subprocess(
     the bandwidth of a running hf_xet transfer mid-flight. The same terminate
     ends a child that stops reporting bytes, so stopping a wedged transfer does
     not depend on it answering an abort.
+
+    *on_retry* hears each failed attempt while the download runs: the ones the
+    child reports, and each stalled child that a new child follows.
     """
     if cancel.is_set():
         raise TaskCancelledError
     for attempt in range(STALL_ATTEMPTS):
         try:
-            return _run_one_attempt(entry, models_dir, token, on_progress, cancel)
+            return _run_one_attempt(entry, models_dir, token, engine, on_progress, on_retry, cancel)
         except _ChildStalledError:
             log.warning(
                 "Transfer of %s stalled (attempt %d/%d); starting again in a new process.",
                 entry.hf_repo,
                 attempt + 1,
                 STALL_ATTEMPTS,
+            )
+        if on_retry is not None and attempt + 1 < STALL_ATTEMPTS:
+            on_retry(
+                attempt + 1,
+                STALL_ATTEMPTS,
+                f"Transfer of {entry.hf_repo} stalled with almost no data arriving",
             )
     raise RuntimeError(_stalled_download_message(entry.hf_repo))
 
@@ -222,8 +300,10 @@ def _stalled_download_message(hf_repo: str) -> str:
 def _run_one_attempt(
     entry: CatalogModel,
     models_dir: Path,
-    token: str | None,
+    token: HfToken,
+    engine: EngineAdapter | None,
     on_progress: ProgressCallback | None,
+    on_retry: RetryCallback | None,
     cancel: CancelSignal,
 ) -> Path:
     """Spawn one child, relay it, and clear the partials it owned on any failure.
@@ -232,31 +312,52 @@ def _run_one_attempt(
     same partial file any other interrupted attempt leaves. ``SystemExit`` is
     not, so interpreter shutdown skips the filesystem work.
     """
-    worker, receiver = _start_worker(entry, models_dir, token)
+    worker, receiver = _start_worker(entry, models_dir, token, engine)
     owned: list[str] = []
     try:
         try:
-            return _relay_until_done(entry, worker, receiver, on_progress, cancel, owned)
-        finally:
-            _stop_worker(worker)
-            receiver.close()
-    # The inner finally must terminate the child before this delete runs, or the
-    # delete races the child's own writer.
+            path = _relay_until_done(entry, worker, receiver, on_progress, on_retry, cancel, owned)
+        except BaseException:
+            _release_worker_keeping_error(entry.hf_repo, worker, receiver)
+            raise
+        _release_worker(worker, receiver)
+        return path
+    # The child must be stopped before this delete runs, or the delete races the
+    # child's own writer.
     except (Exception, KeyboardInterrupt):
         _discard_partial_blobs(models_dir, entry.hf_repo, owned)
         raise
 
 
+def _release_worker(worker: _Worker, receiver: Connection) -> None:
+    """Stop the child and close the pipe, closing it even when the stop fails."""
+    try:
+        _stop_worker(worker)
+    finally:
+        receiver.close()
+
+
+def _release_worker_keeping_error(hf_repo: str, worker: _Worker, receiver: Connection) -> None:
+    """Release the child for a failed attempt; a cleanup failure is logged, never raised."""
+    try:
+        _release_worker(worker, receiver)
+    except Exception:
+        log.warning("Could not stop the download process for %s", hf_repo, exc_info=True)
+
+
 def _discard_partial_blobs(models_dir: Path, hf_repo: str, owned: list[str]) -> None:
-    """Delete the partial blobs the child reported owning, which nothing reads."""
+    """Delete the partial blobs the child reported owning; a failure is logged, never raised."""
     # heavy: lilbee.catalog.download (>50ms; huggingface_hub fanout)
     from lilbee.catalog.download import discard_partial_blobs
 
-    discard_partial_blobs(models_dir, hf_repo, owned)
+    try:
+        discard_partial_blobs(models_dir, hf_repo, owned)
+    except Exception:
+        log.warning("Could not clear the partial download of %s", hf_repo, exc_info=True)
 
 
 def _start_worker(
-    entry: CatalogModel, models_dir: Path, token: str | None
+    entry: CatalogModel, models_dir: Path, token: HfToken, engine: EngineAdapter | None
 ) -> tuple[_Worker, Connection]:
     """Spawn the download child; fork is unsafe under the parent's threads.
 
@@ -268,7 +369,7 @@ def _start_worker(
     receiver, sender = context.Pipe(duplex=False)
     worker = context.Process(
         target=_run_download_child,
-        args=(sender, entry, str(models_dir), token),
+        args=(sender, entry, str(models_dir), token, engine),
         name=f"lilbee-download-{entry.hf_repo}",
         daemon=True,
     )
@@ -282,6 +383,7 @@ def _relay_until_done(
     worker: _Worker,
     receiver: Connection,
     on_progress: ProgressCallback | None,
+    on_retry: RetryCallback | None,
     cancel: CancelSignal,
     owned: list[str],
 ) -> Path:
@@ -302,7 +404,7 @@ def _relay_until_done(
                 # fails: POSIX raises EOFError at the closed pipe, Windows a
                 # BrokenPipeError.
                 raise _died_silently(entry, worker) from None
-            verdict = _apply(message, on_progress, deadline, owned)
+            verdict = _apply(message, on_progress, on_retry, deadline, owned)
             if verdict is not None:
                 return verdict
         elif receiver.poll():
@@ -323,6 +425,7 @@ def _died_silently(entry: CatalogModel, worker: _Worker) -> RuntimeError:
 def _apply(
     message: _ChildMessage,
     on_progress: ProgressCallback | None,
+    on_retry: RetryCallback | None,
     deadline: _StallDeadline,
     owned: list[str],
 ) -> Path | None:
@@ -336,6 +439,10 @@ def _apply(
         deadline.probed()
         if message.blob is not None:
             owned.append(message.blob)
+        return None
+    if message.kind == "retry":
+        if on_retry is not None:
+            on_retry(message.attempt, message.attempts, message.cause)
         return None
     if message.kind == "done":
         return Path(message.path)
@@ -353,21 +460,30 @@ def _stop_worker(worker: _Worker) -> None:
 
 
 def _run_download_child(
-    conn: Connection, entry: CatalogModel, models_dir: str, token: str | None
+    conn: Connection,
+    entry: CatalogModel,
+    models_dir: str,
+    token: HfToken,
+    engine: EngineAdapter | None,
 ) -> None:
     """Child-process entry: fetch the files and report the verdict over *conn*."""
     _silence_output()
     # heavy: lilbee.catalog.download (>50ms; huggingface_hub fanout)
     from lilbee.catalog.download import fetch_model_files
 
+    progress = _PipeProgress(conn)
+    on_retry = _PipeRetry(conn)
     try:
-        path = fetch_model_files(
-            entry,
-            Path(models_dir),
-            token,
-            on_progress=_PipeProgress(conn),
-            on_probe=_PipeProbe(conn),
-        )
+        with hub_resumes_to(_HubResumes(entry.hf_repo, progress, on_retry)):
+            path = fetch_model_files(
+                entry,
+                Path(models_dir),
+                token,
+                engine,
+                on_progress=progress,
+                on_probe=_PipeProbe(conn),
+                on_retry=on_retry,
+            )
         conn.send(_Done(kind="done", path=str(path)))
     except Exception as exc:
         conn.send(_Failed(kind="failed", error_type=type(exc).__name__, message=str(exc)))

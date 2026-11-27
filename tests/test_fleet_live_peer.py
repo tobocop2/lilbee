@@ -19,19 +19,22 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers import engine_params, gguf_meta
+from lilbee.providers import engine_params
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet import swap_manager as swap_mod
 from lilbee.providers.fleet.binary import engine_pin
 from lilbee.providers.fleet.client import LlamaServerClient
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.fleet.swap_manager import SwapManager, SwapState
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.engine_lock import _user_lock_path, hold_user_lock, live_users_exist
+from tests._fleet_engines import engines_for_all_roles
 from tests.test_fleet_provider import _connection_error, _fake_client, _FakeSwap
 from tests.test_fleet_reload_plan import (
     _NOTES_CHUNK_SIZE,
@@ -73,7 +76,9 @@ class _Box:
 
     def seed_fleet(self, engine_dir: Path) -> dict[SwapGroup, int]:
         """Start the current plan in *engine_dir* as another process; return its pids."""
-        for group, launches in _launches_by_group(planning_mod.plan_all_launches()).items():
+        for group, launches in _launches_by_group(
+            planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
+        ).items():
             self.record(engine_dir, group, list(launches))
         return self.pids(engine_dir)
 
@@ -115,12 +120,12 @@ def box(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Box:
     monkeypatch.setattr(prov_mod, "private_engine_dir", lambda _root: machine.private)
     monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _dir: True)
     monkeypatch.setattr(prov_mod, "_watch_bound_engine", lambda _dir: None)
-    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: True)
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted, _engine: True)
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
     monkeypatch.setattr(prov_mod, "SwapManager", _ProcessSwap)
     monkeypatch.setattr(prov_mod, "stop_engine", machine.stop_engine)
     monkeypatch.setattr(prov_mod, "engine_record_exists", lambda d: bool(machine.records[d.name]))
-    monkeypatch.setattr(prov_mod, "_healthy_states", lambda d: dict(machine.records[d.name]))
+    monkeypatch.setattr(prov_mod, "_healthy_states", lambda d, **_kw: dict(machine.records[d.name]))
     monkeypatch.setattr(cfg, "keep_engine_warm", False)
     return machine
 
@@ -128,7 +133,7 @@ def box(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Box:
 def _pick_reranker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Configure a reranker that the real planner places."""
     resolve = engine_params.resolve_model_path
-    read = gguf_meta.read_gguf_metadata
+    read = llama_mod.read_gguf_metadata
     weights = tmp_path / "rr.gguf"
     weights.write_bytes(b"weights")
     monkeypatch.setattr(
@@ -137,7 +142,7 @@ def _pick_reranker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         lambda ref: weights if ref == _RERANK_REF else resolve(ref),
     )
     monkeypatch.setattr(
-        gguf_meta,
+        llama_mod,
         "read_gguf_metadata",
         lambda path: (
             {"general.architecture": "bert", "bert.context_length": "512"}
@@ -159,7 +164,10 @@ def _assert_serves_all_from_private(provider: FleetProvider, box: _Box) -> None:
     assert set(provider._group_dirs.values()) == {box.private}
     assert not any(swap.bound for swap in provider._swaps.values())
     assert list(provider._engine_holds) == [box.private]
-    planned = {launch.role for launch in planning_mod.plan_all_launches().launches}
+    planned = {
+        launch.role
+        for launch in planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA)).launches
+    }
     assert set(provider._clients) == planned
     assert all(provider._clients[role] for role in planned)
     assert set(box.records[_PRIVATE]) == set(provider._swaps)
@@ -405,7 +413,7 @@ def test_with_the_slot_free_a_dead_private_fleet_leads_to_a_slot_build(
     monkeypatch.setattr(
         prov_mod,
         "_healthy_states",
-        lambda d: {} if d == box.private else dict(box.records[d.name]),
+        lambda d, **_kw: {} if d == box.private else dict(box.records[d.name]),
     )
     _assert_builds_in_the_slot_and_leaves_the_private_dir(_process(monkeypatch), box, private_pids)
 
@@ -517,7 +525,7 @@ def test_a_stream_in_flight_through_a_rediscover_keeps_a_peer_from_ending_its_en
     # The stream ends: its last frame takes the retired client's count to zero.
     assert list(frames) == ["llo"]
     assert stream.in_flight == 0
-    _join_hold_sweeps()
+    # The release runs on the thread that ended the stream, before the stream returns.
     assert list(process._engine_holds) == [box.private]
     assert not own_slot_lock.exists()
     assert peer_hold.release_and_check_last() is True
@@ -535,16 +543,11 @@ def _streaming_client() -> LlamaServerClient:
         transport=httpx.MockTransport(lambda _req: httpx.Response(200, text=body)),
         base_url="http://gpu0",
     )
-    client = LlamaServerClient("http://gpu0", "chat-model", http=http)
+    client = LlamaServerClient(
+        "http://gpu0", "chat-model", http=http, profile=LLAMA.request_profile(WorkerRole.CHAT)
+    )
     client._needs_alternation = False
     return client
-
-
-def _join_hold_sweeps() -> None:
-    """Wait for each hold sweep that a retired client's last request started."""
-    for thread in threading.enumerate():
-        if thread.name == prov_mod._HOLD_SWEEP_THREAD:
-            thread.join()
 
 
 def test_a_process_that_cannot_build_leaves_a_warm_engine_it_cannot_bind(
@@ -553,7 +556,7 @@ def test_a_process_that_cannot_build_leaves_a_warm_engine_it_cannot_bind(
     box.seed_fleet(box.slot)
     warm = dict(box.records[_SLOT])
     cfg.chunk_size = _NOTES_CHUNK_SIZE
-    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: False)
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted, _engine: False)
     assert _process(monkeypatch)._acquire_engine(box.root) is False
     assert box.stopped == []
     assert box.records[_SLOT] == warm
@@ -613,7 +616,7 @@ def _warming_process(monkeypatch: pytest.MonkeyPatch, chat_ref: str) -> FleetPro
         "_configured_model_for",
         lambda role: chat_ref if role is WorkerRole.CHAT else "",
     )
-    monkeypatch.setattr(prov_mod, "_unusable_engine_reason", lambda: None)
+    monkeypatch.setattr(provider, "_unusable_engine_reason", lambda: None)
     provider._engine_refusal = prov_mod._ENGINES_IN_USE_MESSAGE
     provider._warm_tracker.begin(chat_ref)
     return provider

@@ -5,13 +5,19 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Literal
 
 from cachetools import TTLCache
 from pydantic import BaseModel
 
-from lilbee.app.models import list_models_data
-from lilbee.app.services import get_services
+from lilbee.app.models import (
+    ensure_vision_projector,
+    join_warnings,
+    list_models_data,
+    repeat_pull_result,
+)
+from lilbee.app.services import ServicesStoppingError, get_services
 from lilbee.app.settings import apply_settings_update
 from lilbee.catalog import (
     CatalogResult,
@@ -23,12 +29,21 @@ from lilbee.catalog import (
     page_window,
     picks_for,
 )
-from lilbee.catalog.refs import hf_repo_from_ref, is_bare_hf_repo
-from lilbee.catalog.types import CatalogSize, CatalogSort, KeyStatus, ModelSource, ModelTask
+from lilbee.catalog.refs import canonical_ref, hf_repo_from_ref, is_bare_hf_repo, model_format
+from lilbee.catalog.runnable import hidden_summary
+from lilbee.catalog.types import (
+    CatalogSize,
+    CatalogSort,
+    KeyStatus,
+    ModelFormat,
+    ModelSource,
+    ModelTask,
+)
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import classify_all_remote_models, discover_api_models
 from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.modelhub.role_validator import MODEL_FIELD_TO_TASK, validate_model_task_assignment
+from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.key_check import provider_key_status
 from lilbee.providers.local_servers import local_server_for_label
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
@@ -43,10 +58,11 @@ from lilbee.runtime.hardware import (
     make_fit_filter,
 )
 from lilbee.runtime.progress import SseEvent
-from lilbee.server.handlers.sse import SseStream, sse_error, sse_event
+from lilbee.server.handlers.sse import SseStream, sse_done, sse_error, sse_event
 from lilbee.server.models import (
     CatalogEntryResponse,
     ExternalModelsResponse,
+    HiddenEntryResponse,
     ModelsCatalogResponse,
     ModelsDeleteResponse,
     ModelsInstalledResponse,
@@ -148,13 +164,27 @@ async def list_models() -> ModelsResponse:
     # Resolving the picks hits HuggingFace on the first call of the process, so
     # offload it too rather than stalling the event loop. The four picks_for
     # reads below are served from the memo this fills.
-    await asyncio.to_thread(get_picks)
+    await asyncio.to_thread(get_picks, hf_client=get_services().hf_client)
 
     return ModelsResponse(
-        chat=_catalog_section(picks_for(ModelTask.CHAT), cfg.chat_model, installed),
-        embedding=_catalog_section(picks_for(ModelTask.EMBEDDING), cfg.embedding_model, installed),
-        vision=_catalog_section(picks_for(ModelTask.VISION), cfg.vision_model, installed),
-        reranker=_catalog_section(picks_for(ModelTask.RERANK), cfg.reranker_model, installed),
+        chat=_catalog_section(
+            picks_for(ModelTask.CHAT, hf_client=get_services().hf_client), cfg.chat_model, installed
+        ),
+        embedding=_catalog_section(
+            picks_for(ModelTask.EMBEDDING, hf_client=get_services().hf_client),
+            cfg.embedding_model,
+            installed,
+        ),
+        vision=_catalog_section(
+            picks_for(ModelTask.VISION, hf_client=get_services().hf_client),
+            cfg.vision_model,
+            installed,
+        ),
+        reranker=_catalog_section(
+            picks_for(ModelTask.RERANK, hf_client=get_services().hf_client),
+            cfg.reranker_model,
+            installed,
+        ),
     )
 
 
@@ -214,6 +244,7 @@ def _require_model_available(model: str) -> str:
     )
     if not model:
         raise not_available
+    model = canonical_ref(model)
     available = set(get_services().provider.list_models())
     if model in available:
         return model
@@ -245,7 +276,12 @@ def _require_model_for_task(model: str, expected: ModelTask, *, allow_empty: boo
     if allow_empty and not model.strip():
         return ""
     normalized = _require_model_available(model)
-    return validate_model_task_assignment(_TASK_TO_FIELD[expected], normalized, allow_bypass=False)
+    return validate_model_task_assignment(
+        _TASK_TO_FIELD[expected],
+        normalized,
+        allow_bypass=False,
+        hf_client_for=lambda: get_services().hf_client,
+    )
 
 
 async def set_chat_model(model: str) -> SetModelResponse:
@@ -266,7 +302,11 @@ async def set_embedding_model(model: str) -> SetModelResponse:
     """
     normalized = await asyncio.to_thread(_require_model_for_task, model, ModelTask.EMBEDDING)
     result = await asyncio.to_thread(apply_settings_update, {"embedding_model": normalized})
-    return SetModelResponse(model=normalized, reindex_required=result.reindex_required)
+    return SetModelResponse(
+        model=normalized,
+        reindex_required=result.reindex_required,
+        warnings=list(result.warnings),
+    )
 
 
 async def set_vision_model(model: str) -> SetModelResponse:
@@ -309,7 +349,7 @@ def _row_fit(enriched: EnrichedModel, available_bytes: int | None) -> FitLevel |
 def _families_by_repo() -> dict[str, ModelFamily]:
     """Index featured ModelFamilies by every variant's ``hf_repo`` for size-variant lookup."""
     index: dict[str, ModelFamily] = {}
-    for family in get_families():
+    for family in get_families(hf_client=get_services().hf_client):
         for variant in family.variants:
             index[variant.hf_repo] = family
     return index
@@ -351,6 +391,7 @@ def _build_catalog_entry(
         architecture=enriched.architecture,
         compat=enriched.compat,
         safety_stripped=enriched.safety_stripped,
+        formats=sorted(f.value for f in enriched.formats),
     )
 
 
@@ -471,6 +512,7 @@ async def models_catalog(
         # get_catalog resolves the picks, which is HTTP on the first call.
         result = await asyncio.to_thread(
             get_catalog,
+            hf_client=get_services().hf_client,
             task=parsed_task,
             search=search,
             size=parsed_size,
@@ -484,7 +526,7 @@ async def models_catalog(
         )
 
     registry = get_services().registry
-    installed_refs = {m.ref for m in registry.list_installed()}
+    installed_refs = {m.ref for m in await asyncio.to_thread(registry.list_installed)}
     enriched = enrich_catalog(result, installed_refs)
 
     families_by_repo = _families_by_repo()
@@ -501,6 +543,8 @@ async def models_catalog(
         has_more=has_more,
         next_offset=offset + limit if has_more else None,
         truncated=result.truncated,
+        hidden=[HiddenEntryResponse(**asdict(h)) for h in result.hidden],
+        hidden_summary=hidden_summary([h.text for h in result.hidden]),
         models=hosted[offset : offset + limit] + native_rows,
     )
 
@@ -515,7 +559,9 @@ async def models_installed(task: ModelTask | None = None) -> ModelsInstalledResp
 async def enforce_pull_arch_compat(
     model: str, *, source: str = "native", allow_unsupported: bool = False
 ) -> None:
-    """Raise HTTP 409 for an unsupported architecture before the pull stream opens.
+    """Raise HTTP 409 for a GGUF with no engine or an unsupported architecture, before the stream.
+
+    A model of another format needs no engine to download, so it passes.
 
     The route must await this BEFORE returning ``Stream(models_pull(...))``: a raise
     inside the ``models_pull`` async generator fires only on first iteration, after
@@ -524,14 +570,24 @@ async def enforce_pull_arch_compat(
     """
     from litestar.exceptions import HTTPException
 
-    from lilbee.catalog.compat import SUPPORTED_ARCHS, UnsupportedArchError
+    from lilbee.catalog.compat import UnsupportedArchError
 
-    if _parse_source(source) is not ModelSource.NATIVE or allow_unsupported:
+    if _parse_source(source) is not ModelSource.NATIVE:
+        return
+    model = canonical_ref(model)
+    if model_format(model) is not ModelFormat.GGUF:
         return
     manager = get_services().model_manager
     try:
+        manager.require_engine(model)
+    except NoEngineError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if allow_unsupported:
+        return
+    try:
         await asyncio.to_thread(manager.enforce_arch_compat, model)
     except UnsupportedArchError as exc:
+        engine = get_services().engines.for_ref(model)
         raise HTTPException(
             status_code=409,
             detail="unsupported_arch",
@@ -539,8 +595,8 @@ async def enforce_pull_arch_compat(
                 "code": "unsupported_arch",
                 "arch": exc.architecture,
                 "ref": exc.ref,
-                "supported_examples": sorted(SUPPORTED_ARCHS)[:5],
-                "total_supported": len(SUPPORTED_ARCHS),
+                "supported_examples": sorted(engine.architectures)[:5],
+                "total_supported": len(engine.architectures),
             },
         ) from exc
 
@@ -571,13 +627,27 @@ async def models_pull(
             sse.loop.call_soon_threadsafe(sse.queue.put_event_nowait, payload, SseEvent.PROGRESS)
 
         try:
-            manager.pull(
-                model,
-                src,
-                on_bytes=_on_bytes,
-                allow_unsupported=allow_unsupported,
-                cancel=sse.cancel,
+            installed = repeat_pull_result(
+                manager, model, src, on_bytes=_on_bytes, cancel=sse.cancel
             )
+            if installed is not None:
+                warning = installed.warning
+            else:
+                notices: list[str] = []
+                manager.pull(
+                    model,
+                    src,
+                    on_bytes=_on_bytes,
+                    on_notice=notices.append,
+                    allow_unsupported=allow_unsupported,
+                    cancel=sse.cancel,
+                )
+                warning = join_warnings(
+                    *notices,
+                    ensure_vision_projector(model, warn_unreadable=True, cancel=sse.cancel),
+                )
+            done = {} if warning is None else {"warning": warning}
+            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, sse_done(done))
         except TaskCancelledError:
             log.info("Model pull for %s aborted: client disconnected", model)
         except Exception as exc:
@@ -610,7 +680,7 @@ async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteRe
     try:
         # Delegate to the shared remove path so REST reports the same freed size
         # (full multi-shard total) as the CLI and MCP, not a hardcoded 0.
-        result = remove_model_data(model, src)
+        result = await asyncio.to_thread(remove_model_data, model, src)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return ModelsDeleteResponse(
@@ -639,6 +709,8 @@ async def list_external_models() -> ExternalModelsResponse:
         result = ExternalModelsResponse(models=models)
         _external_cache[key] = result
         return result
+    except ServicesStoppingError:
+        raise
     except Exception as exc:
         log.warning("Failed to list external models: %s", exc)
         return ExternalModelsResponse(models=[], error=str(exc))

@@ -282,14 +282,15 @@ class _LockThatSeesWaiters:
 def test_the_engine_retry_take_and_a_request_take_settle_one_write_once(
     client, monkeypatch, caplog
 ):
-    follower = svc_mod._state.config_refresh.__self__  # type: ignore[union-attr]
-    assert svc_mod._state.config_refresh == follower.take_now
+    follower = svc_mod._state.follower
+    assert follower is not None
     lock = _LockThatSeesWaiters(follower._lock)
     monkeypatch.setattr(follower, "_lock", lock)
     real_adopt = config_follow.adopt_external_changes
     inside: list[int] = []
     most_inside: list[int] = []
-    retry = threading.Thread(target=svc_mod.refresh_config)
+    # The engine's retry take, which runs the follower's refresh_now.
+    retry = threading.Thread(target=svc_mod._take_through_the_process_follower)
 
     def adopt_while_the_retry_waits(reading: Any, **kwargs: Any) -> Any:
         inside.append(1)
@@ -315,3 +316,13 @@ def test_the_engine_retry_take_and_a_request_take_settle_one_write_once(
     assert [r.getMessage() for r in caplog.records if r.getMessage().startswith("Took")] == [
         "Took top_k from config.toml."
     ]
+
+
+def test_the_engine_retry_in_serve_takes_a_key_the_library_was_built_with(client):
+    """serve runs until it is stopped, so its engine retry takes chunk_size as a request does."""
+    start = cfg.chunk_size
+    _write_from_another_process("chunk_size", start * 2)
+    follower = svc_mod._state.follower
+    assert follower is not None
+    follower.take_now()
+    assert cfg.chunk_size == start * 2

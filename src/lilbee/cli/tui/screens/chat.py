@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import difflib
+import heapq
 import logging
 import os
 import shlex
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -43,7 +44,10 @@ from lilbee.app.ingest import (
     AddRollback,
     RegisterResult,
     forget_unfinished_on_cancel,
+    held_failures,
+    iter_removable_names,
     leave_as_cancel,
+    removable_among,
     removable_names,
     remove_documents_durably,
 )
@@ -72,9 +76,11 @@ from lilbee.cli.tui.screens.chat_helpers import (
     close_stream,
     open_local_file,
     remember_from_input,
+    report_ingest,
     unregister_added_roots,
 )
 from lilbee.cli.tui.screens.profile_dialogs import run_profile_op, start_profile_switch
+from lilbee.cli.tui.secret_lines import carries_secret
 from lilbee.cli.tui.thread_safe import call_from_thread, post_from_thread
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import (
@@ -106,8 +112,8 @@ from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
 from lilbee.core.text import strip_control_characters
 from lilbee.crawler import (
-    CRAWLER_MISSING_MESSAGE,
     crawler_available,
+    crawler_unavailable_message,
     is_url,
     require_valid_crawl_url,
 )
@@ -117,10 +123,13 @@ from lilbee.crawler.stored_login import crawl_login
 from lilbee.crawler.url_filter import without_userinfo
 from lilbee.data.store import (
     ChunkType,
+    EmbeddingEngineChangedError,
     EmbeddingModelMismatchError,
     SearchScope,
     scope_to_chunk_type,
 )
+from lilbee.providers.base import is_header_safe
+from lilbee.providers.fleet.devices import DLL_MISSING_LEAD
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.retrieval.embedder import is_model_available
@@ -137,7 +146,7 @@ from lilbee.retrieval.query.formatting import AnswerSources, SourceRef
 from lilbee.retrieval.query.history_window import estimate_tokens
 from lilbee.retrieval.reasoning import RetrievalNotice
 from lilbee.runtime import asyncio_loop
-from lilbee.runtime.cancellation import TaskCancelledError
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.lock import ResetRefusedError
 from lilbee.runtime.progress import (
     EventType,
@@ -159,6 +168,8 @@ from lilbee.sessions import (
 )
 
 if TYPE_CHECKING:
+    from lilbee.catalog.models import DownloadProgress
+    from lilbee.cli.tui.engine_commands import EngineCommandResult
     from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
     from lilbee.data.types import SyncResult
 log = logging.getLogger(__name__)
@@ -204,6 +215,8 @@ class _TurnEnded(Message):
 # through its stop signal, so its body always runs and always ends the turn.
 _TURN_WORKER_GROUP = "chat_turn"
 _SYNC_FAILED_TOAST_SECONDS = 8.0
+# Names ``/delete`` lists when given no argument; the rest are counted.
+_DELETE_LISTED = 50
 
 
 # ``/crawl`` command flags.
@@ -267,13 +280,34 @@ def _setting_type_hint(kind: type) -> str:
     return _SETTING_TYPE_HINTS.get(kind, f"a valid {kind.__name__} value")
 
 
-def _closest_source(name: str, known: set[str]) -> str | None:
-    """The indexed name most likely meant by *name*, or None when nothing is close."""
+def _first_removable_names() -> tuple[list[str], int]:
+    """The alphabetically first names ``/delete`` lists, and how many removable names there are.
+
+    The names stream past once and only the page is kept, so memory stays flat.
+    """
+    total = 0
+
+    def counted() -> Iterator[str]:
+        nonlocal total
+        for name in iter_removable_names():
+            total += 1
+            yield name
+
+    return heapq.nsmallest(_DELETE_LISTED, counted()), total
+
+
+def _closest_source(name: str) -> str | None:
+    """The removable name most likely meant by *name*, or None when nothing is close.
+
+    Two name matches are enough to rule out a unique substring, so the store reads two.
+    Close-spelling matches stream the names, keeping nothing but the best.
+    """
     low = name.lower()
-    contains = [k for k in known if low in k.lower()]
+    names = removable_names(get_services().store.source_names(name, limit=2))
+    contains = [n for n in names if low in n.lower()]
     if len(contains) == 1:
         return contains[0]
-    matches = difflib.get_close_matches(name, sorted(known), n=1, cutoff=0.6)
+    matches = difflib.get_close_matches(name, iter_removable_names(), n=1, cutoff=0.6)
     return matches[0] if matches else None
 
 
@@ -486,6 +520,9 @@ class ChatScreen(Screen[None]):
         # Bumped when the input leaves the model argument; a listing started
         # before the bump is stale and its result is dropped.
         self._model_session = 0
+        # The session whose unreadable-registry notice was shown; a key press retries
+        # the listing but the same session does not repeat the notice.
+        self._model_error_session = -1
         # The latest model completion asked for while the listing runs.
         self._model_request: tuple[str, Callable[[bool], None] | None] = ("", None)
         self._rebuild_owed = False
@@ -580,7 +617,7 @@ class ChatScreen(Screen[None]):
                 self._enter_insert_mode()
             else:
                 self.set_focus(self._chat_log)
-        typed, self.app.type_ahead = self.app.type_ahead, ""
+        typed = self.app.take_type_ahead()
         if typed:
             self._enter_insert_mode()
             self._chat_input.insert(typed)
@@ -652,9 +689,15 @@ class ChatScreen(Screen[None]):
             bar.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
 
     def on_key(self, event: events.Key) -> None:
-        """In INSERT mode, type a printable key into the prompt when focus sits elsewhere."""
+        """In INSERT mode, type a printable key into the prompt unless the focus binds it."""
         inp = self._chat_input
-        if self._insert_mode and not inp.has_focus and event.is_printable and event.character:
+        if (
+            self._insert_mode
+            and not inp.has_focus
+            and event.is_printable
+            and event.character
+            and not self._focused_member_binds(event.key)
+        ):
             self.set_focus(inp)
             inp.insert(event.character)
             event.prevent_default()
@@ -744,7 +787,8 @@ class ChatScreen(Screen[None]):
         if not self._ready_to_submit(text):
             return
         chat_input.value = ""
-        self._input_history.append(text)
+        if not carries_secret(text):
+            self._input_history.append(text)
         self._history_index = -1
 
         if text.startswith("/"):
@@ -947,17 +991,16 @@ class ChatScreen(Screen[None]):
         self._notify_registration(reg_result)
         if not reg_result.reached_corpus:
             return
-        # A source that took in another one stays: un-registering it orphans what it took.
-        revocable = reg_result.revocable
         try:
             with forget_unfinished_on_cancel(
-                paths, revocable, reporter, reporter.cancelled_by_user
+                paths, reg_result, reporter, reporter.cancelled_by_user
             ) as rollback:
                 self._sync_added(reg_result.registered, reporter)
         except asyncio.CancelledError as exc:
             raise TaskCancelledError(rollback.message(msg.SYNC_CANCELLED_RESUME)) from exc
         except BaseException:
-            unregister_added_roots(revocable)
+            # A source that took in another one stays after a failure: it covers what it took.
+            unregister_added_roots(reg_result.revocable)
             raise
 
     def _notify_registration(self, reg_result: RegisterResult) -> None:
@@ -1004,6 +1047,8 @@ class ChatScreen(Screen[None]):
             )
         )
         self._notify_unreadable_folders(sync_result)
+        report_ingest(reporter, sync_result)
+        self._report_partly_read(sync_result)
         if sync_result.failed:
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
         if sync_result.skipped:
@@ -1051,7 +1096,7 @@ class ChatScreen(Screen[None]):
 
     def _cmd_crawl(self, args: str) -> None:
         if not crawler_available():
-            self.notify(CRAWLER_MISSING_MESSAGE, severity="error")
+            self.notify(crawler_unavailable_message(), severity="error")
             return
         if not args:
             self._open_crawl_dialog()
@@ -1302,27 +1347,35 @@ class ChatScreen(Screen[None]):
     @work(thread=True, name="chat_cmd_delete", exit_on_error=False)
     def _cmd_delete_worker(self, name: str) -> None:
         """Validate and execute /delete off the UI thread; notify back via dispatch."""
+        # Every read is bounded or streamed: the cost of /delete does not grow with the library.
         try:
-            sources = get_services().store.get_sources()
+            store = get_services().store
+            indexed = store.count_sources()
+            has_failures = bool(held_failures())
+            page, total = _first_removable_names() if not name else ([], 0)
+            exists = bool(name) and bool(removable_among([name]))
+            suggestion = None
+            if name and not exists and (indexed or has_failures):
+                suggestion = _closest_source(name)
         except Exception:
             log.debug("Failed to list documents for /delete", exc_info=True)
             call_from_thread(self, self.notify, msg.CMD_DELETE_READ_FAILED, severity="error")
             return
 
-        known = set(removable_names([s.get("filename", s.get("source", "?")) for s in sources]))
-        if not known:
+        if not indexed and not has_failures:
             call_from_thread(self, self.notify, msg.CMD_DELETE_NO_DOCS, severity="warning")
             return
 
         if not name:
-            names = ", ".join(strip_control_characters(n) for n in sorted(known))
+            names = ", ".join(strip_control_characters(n) for n in page)
+            if total > len(page):
+                names += msg.CMD_DELETE_USAGE_MORE.format(count=total - len(page))
             usage = msg.CMD_DELETE_USAGE.format(names=names)
             call_from_thread(self, self.notify, usage)
             return
 
-        if name not in known:
+        if not exists:
             message = msg.CMD_DELETE_NOT_FOUND.format(name=name)
-            suggestion = _closest_source(name, known)
             if suggestion is not None:
                 hint = msg.CMD_DELETE_SUGGESTION.format(name=strip_control_characters(suggestion))
                 message = f"{message}. {hint}"
@@ -1443,16 +1496,18 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True)
     def _run_hf_login(self, token: str) -> None:
+        if not is_header_safe(token):
+            call_from_thread(self, self.notify, msg.CHAT_LOGIN_UNSENDABLE, severity="error")
+            return
         try:
             from huggingface_hub import login
 
             login(token=token, add_to_git_credential=False)
             call_from_thread(self, self.notify, msg.CHAT_LOGGED_IN)
         except Exception as exc:
-            log.warning("HuggingFace login failed", exc_info=True)
-            call_from_thread(
-                self, self.notify, msg.CHAT_LOGIN_FAILED.format(error=exc), severity="error"
-            )
+            # No exc_info and no str(exc): the library's text can echo the token.
+            log.warning("HuggingFace login failed: %s", type(exc).__name__)
+            call_from_thread(self, self.notify, msg.CHAT_LOGIN_FAILED, severity="error")
 
     def _cmd_model(self, args: str) -> None:
         if args:
@@ -1497,6 +1552,99 @@ class ChatScreen(Screen[None]):
             call_from_thread(
                 self, self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
             )
+
+    def _cmd_preset(self, args: str) -> None:
+        from lilbee.cli.tui.preset_commands import dialog_request, key_typed, remove_target
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        if key_typed(args):
+            self.notify(msg.PRESET_KEY_IN_DIALOG, severity="error")
+            return
+
+        def _notify_dialog_result(notice: str | None) -> None:
+            if notice is not None:
+                self.notify(notice)
+
+        if (request := dialog_request(args)) is not None:
+            self._open_preset_dialog(request.name, _notify_dialog_result)
+            return
+        if (name := remove_target(args)) is not None:
+
+            def _on_confirm(confirmed: bool | None) -> None:
+                if confirmed:
+                    self._run_preset_command(args)
+
+            self.app.push_screen(
+                ConfirmDialog(
+                    msg.PRESET_REMOVE_CONFIRM_TITLE,
+                    msg.PRESET_REMOVE_CONFIRM_MESSAGE.format(name=name),
+                ),
+                _on_confirm,
+            )
+            return
+        self._run_preset_command(args)
+
+    @work(thread=True)
+    def _open_preset_dialog(self, name: str | None, on_done: Callable[[str | None], None]) -> None:
+        from lilbee.app.presets import failure_text, get_preset
+        from lilbee.cli.tui.screens.settings_presets import PresetDialog
+
+        preset = None
+        if name is not None:
+            try:
+                preset = get_preset(name)
+            except (ValueError, OSError) as exc:
+                call_from_thread(self, self.notify, failure_text(exc), severity="error")
+                return
+        call_from_thread(self, self.app.push_screen, PresetDialog(preset), on_done)
+
+    @work(thread=True)
+    def _run_preset_command(self, args: str) -> None:
+        from lilbee.cli.tui.preset_commands import run_preset_command
+
+        result = run_preset_command(args)
+        call_from_thread(
+            self, self.notify, result.text, severity="information" if result.ok else "error"
+        )
+
+    def _cmd_engine(self, args: str) -> None:
+        from lilbee.cli.tui.engine_commands import install_name
+        from lilbee.cli.tui.task_queue import TaskType
+
+        name = install_name(args)
+        if name is None:
+            self._run_engine_command(args)
+            return
+
+        def target(reporter: ProgressReporter) -> None:
+            def on_update(p: DownloadProgress) -> None:
+                reporter.update(p.percent, f"{name}: {p.detail}")
+
+            result = self._engine_command(args, on_update, reporter)
+            if not result.ok:
+                raise RuntimeError(result.text)
+
+        self._task_bar.start_task(msg.ENGINE_TASK_NAME.format(engine=name), TaskType.ENGINE, target)
+
+    @work(thread=True)
+    def _run_engine_command(self, args: str) -> None:
+        self._engine_command(args)
+
+    def _engine_command(
+        self,
+        args: str,
+        on_update: Callable[[DownloadProgress], None] | None = None,
+        cancel: CancelSignal | None = None,
+    ) -> EngineCommandResult:
+        """Run an /engine command on a worker thread, show its result and return it."""
+        from lilbee.cli.tui.engine_commands import announce, run_engine_command
+
+        def on_retry(text: str) -> None:
+            call_from_thread(self, self.notify, text, severity="warning")
+
+        result = run_engine_command(args, on_update, on_retry, cancel)
+        call_from_thread(self, announce, self.app, result)
+        return result
 
     def _cmd_rebuild(self, _args: str) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
@@ -1989,6 +2137,7 @@ class ChatScreen(Screen[None]):
             chat_engine_ready,
             chat_warm_error,
             request_engine_warm,
+            size_unknown_notices,
             wait_chat_ready,
         )
 
@@ -2017,15 +2166,18 @@ class ChatScreen(Screen[None]):
         if wait_chat_ready(on_progress=_paint, should_abort=lambda: self._turn_stopped(turn)):
             with contextlib.suppress(Exception):
                 call_from_thread(self, widget.set_thinking_status, "")
+            for notice in size_unknown_notices(WorkerRole.CHAT):
+                call_from_thread(self, self.notify, notice, severity="warning")
             return True
         if self._turn_stopped(turn):
             return False
         error = chat_warm_error()
-        text = (
-            f"{msg.ENGINE_LOAD_FAILED.format(error=error)}\n{msg.ENGINE_FAILED_HINT}"
-            if error is not None
-            else msg.ENGINE_NOT_READY
-        )
+        if error is None:
+            text = msg.ENGINE_NOT_READY
+        elif DLL_MISSING_LEAD in error:
+            text = msg.ENGINE_LOAD_FAILED.format(error=error)
+        else:
+            text = f"{msg.ENGINE_LOAD_FAILED.format(error=error)}\n{msg.ENGINE_FAILED_HINT}"
         with contextlib.suppress(Exception):
             call_from_thread(self, widget.append_content, text)
         return False
@@ -2079,6 +2231,9 @@ class ChatScreen(Screen[None]):
         self, exc: EmbeddingModelMismatchError, question: str, widget: AssistantMessage
     ) -> None:
         """Offer to adopt the index's embedder (same dim) or explain the rebuild path."""
+        if isinstance(exc, EmbeddingEngineChangedError):
+            widget.append_content(str(exc))
+            return
         if not exc.dims_match:
             widget.append_content(msg.EMBED_ADOPT_REBUILD_NOTICE.format(dim=exc.persisted_dim))
             return
@@ -2119,6 +2274,8 @@ class ChatScreen(Screen[None]):
             )
             return
         call_from_thread(self, self.notify, msg.EMBED_ADOPTED.format(model=ref))
+        if result.warning is not None:
+            call_from_thread(self, self.notify, result.warning, severity="warning", timeout=10)
         if result.reindex_required:  # the re-asked question would meet the same refusal
             call_from_thread(self, self._offer_adopted_rebuild)
             return
@@ -2148,8 +2305,7 @@ class ChatScreen(Screen[None]):
                 break
             try:
                 if isinstance(token, RetrievalNotice):
-                    status = msg.SEARCHING_FOR.format(query=token.query)
-                    call_from_thread(self, widget.set_thinking_status, status)
+                    self._show_retrieval_notice(widget, token)
                     continue
                 if isinstance(token, AnswerSources):
                     # Shown under the answer, saved beside it: never part of its text.
@@ -2162,6 +2318,15 @@ class ChatScreen(Screen[None]):
                 break  # App shutting down (Ctrl-C) -- stop streaming
         with contextlib.suppress(Exception):
             flush()
+
+    def _show_retrieval_notice(self, widget: Any, notice: RetrievalNotice) -> None:
+        """Show the rewritten query in the status row and a toast for each failed search step."""
+        if notice.query is not None:
+            call_from_thread(
+                self, widget.set_thinking_status, msg.SEARCHING_FOR.format(query=notice.query)
+            )
+        for warning in notice.degraded:
+            call_from_thread(self, self.notify, warning.line, severity="warning")
 
     @staticmethod
     def _buffer_token(
@@ -2639,6 +2804,7 @@ class ChatScreen(Screen[None]):
         *,
         force_rebuild: bool = False,
         prune_ignored: bool = False,
+        retry_skipped: bool = False,
     ) -> None:
         """Enqueue a document sync (or full rebuild) in the task bar.
 
@@ -2661,7 +2827,12 @@ class ChatScreen(Screen[None]):
 
         def _target(reporter: ProgressReporter) -> None:
             try:
-                self._do_sync(reporter, force_rebuild=force_rebuild, prune_ignored=prune_ignored)
+                self._do_sync(
+                    reporter,
+                    force_rebuild=force_rebuild,
+                    prune_ignored=prune_ignored,
+                    retry_skipped=retry_skipped,
+                )
             finally:
                 # Re-detect after every sync attempt: success drives the
                 # count to 0, failure or cancel leaves the still-pending
@@ -2684,6 +2855,7 @@ class ChatScreen(Screen[None]):
         *,
         force_rebuild: bool = False,
         prune_ignored: bool = False,
+        retry_skipped: bool = False,
     ) -> None:
         """Sync body. Runs on worker thread."""
         from lilbee.data.ingest import sync
@@ -2698,6 +2870,7 @@ class ChatScreen(Screen[None]):
                     cancel=reporter,
                     force_rebuild=force_rebuild,
                     prune_ignored=prune_ignored,
+                    retry_skipped=retry_skipped,
                     started_by="the lilbee TUI",
                 )
             )
@@ -2706,6 +2879,8 @@ class ChatScreen(Screen[None]):
         if prune_ignored:
             call_from_thread(self, self.notify, msg.prune_ignored_message(len(result.removed)))
         self._notify_unreadable_folders(result)
+        report_ingest(reporter, result)
+        self._report_partly_read(result)
         if result.failed:
             # The footer notice lasts under two seconds; the toast stays long enough to read.
             call_from_thread(
@@ -2728,6 +2903,16 @@ class ChatScreen(Screen[None]):
                 self,
                 self.notify,
                 msg.SYNC_HELD_OUT.format(count=len(result.held_out)),
+                severity="warning",
+            )
+
+    def _report_partly_read(self, result: SyncResult) -> None:
+        """Warn when OCR failed on pages of files a sync indexed."""
+        if result.partial:
+            call_from_thread(
+                self,
+                self.notify,
+                msg.SYNC_PARTLY_READ.format(count=len(result.partial)),
                 severity="warning",
             )
 
@@ -2822,6 +3007,15 @@ class ChatScreen(Screen[None]):
         """
         focused = self.focused
         return bool(focused and any(isinstance(n, ModelBar) for n in focused.ancestors_with_self))
+
+    def _focused_member_binds(self, key: str) -> bool:
+        """True when the focused strip member or drawer control binds *key* itself."""
+        binding = self.active_bindings.get(key)
+        return (
+            binding is not None
+            and binding.node is self.focused
+            and (self._focus_in_model_bar() or self._focus_in_drawer())
+        )
 
     def _tab_into_fleet_or_next(self) -> None:
         """Jump Tab into the open Fleet drawer's first toggle so the placement
@@ -3004,7 +3198,9 @@ class ChatScreen(Screen[None]):
     @on(ChatInput.Changed, "#chat-input")
     def _on_chat_input_changed(self, event: ChatInput.Changed) -> None:
         """Refresh arg-hint and auto-show or hide the completion dropdown."""
-        if not reads_models(self._chat_input.value):
+        # The edit's own text: a later edit may already be in the widget, and an
+        # edit that left the model argument must end the session all the same.
+        if not reads_models(event.text):
             # Also on a programmatic edit: a submit clears the input that way, and
             # a /remove must not leave the removed model in the next listing.
             self._model_names = None
@@ -3054,10 +3250,25 @@ class ChatScreen(Screen[None]):
     @work(thread=True, group="model_completions", exit_on_error=False)
     def _list_models(self, session: int) -> None:
         """List the installed models off the event loop: the listing probes local servers."""
-        names = list_model_options()
+        try:
+            names = list_model_options()
+        except OSError as exc:
+            call_from_thread(self, self._models_unreadable, session, exc)
+            return
         if _get_worker().is_cancelled:
             return
         call_from_thread(self, self._models_listed, session, names)
+
+    def _models_unreadable(self, session: int, error: OSError) -> None:
+        """Report an unreadable registry and let the next keystroke list again."""
+        if session != self._model_session:
+            return
+        self._listing_models = False
+        self._model_request = ("", None)
+        if self._model_error_session == session:
+            return
+        self._model_error_session = session
+        self.notify(msg.MODEL_REGISTRY_UNREADABLE.format(error=error), severity="error")
 
     def _models_listed(self, session: int, names: list[str]) -> None:
         """Keep *names* and answer the latest request, unless the input left the model argument.

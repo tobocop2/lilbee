@@ -135,13 +135,11 @@ async def _open_catalog_chat_grid(app, pilot):
     screen._active_tab_id_cache = "chat"
     screen._activation_settled = True
     await pilot.pause()
-    # _remount_grid_sections mounts the first section and defers the rest through
-    # call_after_refresh. Pilot.pause waits only on widgets that existed when it
-    # was called, so a bare pause returns while the grid is still empty.
+    # Pilot.pause waits only on widgets that existed when it was called, and
     # region.height is 0 until the layout pass runs.
     assert await pump_until(
         pilot, lambda: any(g.region.height for g in screen._grid_container.query(ModelGrid))
-    ), "the deferred grid sections never mounted and laid out"
+    ), "the grid sections never mounted and laid out"
     return screen
 
 

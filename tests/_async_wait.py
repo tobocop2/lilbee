@@ -51,6 +51,80 @@ async def wait_until(
     return True
 
 
+# The wait for something that must not come. Each pause drains one message cascade of the
+# screen, so the pauses are the floor: a slow host cannot end the wait after one cascade.
+# The seconds are the second floor: a fast host does not end it before the delay of a timer.
+ABSENCE_PAUSES = 5
+ABSENCE_SECONDS = 1.0
+
+
+async def comes(pilot: Pilot, predicate: Callable[[], bool]) -> bool:
+    """Whether *predicate* turns true within the absence budget; use it as ``assert not``."""
+    return await wait_until(pilot, predicate, max_pauses=ABSENCE_PAUSES, timeout=ABSENCE_SECONDS)
+
+
+def subtree_mounted(root: Widget) -> bool:
+    """Whether *root* and every widget below it has finished mounting.
+
+    A widget's children join the tree before their own children compose, so a
+    query that finds the children says nothing about the widgets inside them.
+    """
+    return all(widget.is_mounted for widget in root.walk_children(with_self=True))
+
+
+async def wait_for_pull_check(app: App) -> None:
+    """Wait until the catalog's pull checks have ended and posted their verdicts.
+
+    The check posts its verdict with a blocking hop to the UI thread, so a
+    finished worker has already run the enqueue or the notice. With no check
+    alive it returns at once: Textual reads an empty list as every worker.
+    """
+    from lilbee.cli.tui.screens.catalog import _WORKER_CHECK_PULL
+
+    checks = [worker for worker in app.workers if worker.name == _WORKER_CHECK_PULL]
+    if checks:
+        await app.workers.wait_for_complete(checks)
+
+
+async def wait_for_group(app: App, group: str) -> None:
+    """Wait until every worker of *group* has ended.
+
+    A message that a thread worker posts before it ends is in its node's queue
+    when this returns. No wall clock applies: a host that
+    stalls longer than a fixed budget would end such a wait before the worker
+    ends, and pytest's per-test timeout bounds a hang. With no worker of the
+    group alive it returns at once: Textual reads an empty list as every worker.
+    """
+    workers = [worker for worker in app.workers if worker.group == group]
+    if workers:
+        await app.workers.wait_for_complete(workers)
+
+
+async def wait_for_turn_end(pilot: Pilot, screen: Widget) -> None:
+    """Wait until the chat turn's worker ended and *screen* handled the end it posted.
+
+    The worker posts the end of the turn before it ends, so the end is queued
+    once the worker group is done; the pauses after that let the screen handle it.
+    """
+    from lilbee.cli.tui.screens.chat import _TURN_WORKER_GROUP
+
+    await wait_for_group(pilot.app, _TURN_WORKER_GROUP)
+    assert await wait_until(pilot, lambda: not screen.streaming), "the turn never ended"
+
+
+async def laid_out(pilot: Pilot, widget: WidgetT) -> WidgetT:
+    """Return *widget* once it owns a hit area.
+
+    A widget mounts before it lays out, and one pause can cover the mount but
+    not the layout. Until a widget has a region, every point derived from it is
+    the screen's origin, so a click aimed at it lands on whatever occupies the
+    top-left corner instead.
+    """
+    await wait_until(pilot, lambda: bool(widget.region.size))
+    assert widget.region.size, "the widget was never laid out, so it has no hit area"
+    return widget
+
+
 def poll_until(predicate: Callable[[], bool], timeout: float = 10.0) -> bool:
     """Poll *predicate* until it holds or *timeout* seconds pass; returns whether it held."""
     deadline = time.monotonic() + timeout

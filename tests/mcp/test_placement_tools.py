@@ -12,7 +12,7 @@ GIB = 1024**3
 def _view(manual=False):
     return PlacementView(
         gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * GIB, 72 * GIB),),
-        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1),),
+        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp"),),
         unplaceable=(),
         manual=manual,
         spec_json=None,
@@ -26,9 +26,27 @@ def test_get_placement_tool(monkeypatch):
     assert out["manual"] is False
 
 
+def test_get_placement_tool_reads_each_roles_charge(monkeypatch):
+    view = PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * GIB, 72 * GIB),),
+        roles=(
+            RolePlacementView(
+                WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp", charge_bytes=7 * GIB
+            ),
+            RolePlacementView(WorkerRole.RERANK, "org/rerank.gguf", (0,), None, 1, "llama.cpp"),
+        ),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+    )
+    monkeypatch.setattr(mcp_server, "get_placement", lambda: view)
+    out = mcp_server.get_placement_tool()
+    assert [r["charge_bytes"] for r in out["roles"]] == [7 * GIB, None]
+
+
 def test_get_gpus_tool(monkeypatch):
     """get_gpus exposes the detected GPUs to agents, matching HTTP /api/gpus."""
-    monkeypatch.setattr(mcp_server, "get_placement", lambda: _view())
+    monkeypatch.setattr(mcp_server, "get_planned_placement", lambda: _view())
     out = mcp_server.get_gpus_tool()
     assert [g["label"] for g in out["gpus"]] == ["CUDA0"]
     assert out["gpus"][0]["free_bytes"] == 72 * GIB
@@ -40,7 +58,7 @@ def test_get_gpus_tool_includes_intel_notice(monkeypatch):
     from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
 
     hint = IntelUtilHint(IntelHintKind.GRANT, "/usr/bin/intel_gpu_top")
-    monkeypatch.setattr(mcp_server, "get_placement", lambda: _view())
+    monkeypatch.setattr(mcp_server, "get_planned_placement", lambda: _view())
     monkeypatch.setattr(
         "lilbee.providers.fleet.gpu_stats.probe_intel_util_hint", lambda devices: hint
     )
@@ -52,9 +70,9 @@ def test_get_gpus_tool_returns_error_on_provider_failure(monkeypatch):
     from lilbee.providers.base import ProviderError
 
     def _boom():
-        raise ProviderError("engine binary missing", provider="llama-server")
+        raise ProviderError("engine binary missing")
 
-    monkeypatch.setattr(mcp_server, "get_placement", _boom)
+    monkeypatch.setattr(mcp_server, "get_planned_placement", _boom)
     out = mcp_server.get_gpus_tool()
     assert out["error"] == "engine binary missing"
 
@@ -196,6 +214,44 @@ def test_get_placement_tool_provider_error(monkeypatch):
     out = mcp_server.get_placement_tool()
     assert "error" in out
     assert "llama-server" in out["error"]
+
+
+@pytest.mark.parametrize(
+    "tool", [mcp_server.get_placement_tool, mcp_server.get_gpus_tool], ids=["placement", "gpus"]
+)
+def test_a_placement_read_that_hits_an_os_error_returns_a_structured_error(monkeypatch, tool):
+    def boom():
+        raise OSError("device node unreadable")
+
+    monkeypatch.setattr(mcp_server, "get_placement", boom)
+    monkeypatch.setattr(mcp_server, "get_planned_placement", boom)
+    assert tool() == {"error": "device node unreadable"}
+
+
+@pytest.mark.parametrize(
+    "tool", [mcp_server.get_placement_tool, mcp_server.get_gpus_tool], ids=["placement", "gpus"]
+)
+def test_a_placement_read_that_loses_the_config_lock_gets_the_lock_message(monkeypatch, tool):
+    """The read errors include OSError, the lock error's parent, so the lock clause goes first."""
+    from lilbee.core.security import FileLockUnavailableError
+
+    def boom():
+        raise FileLockUnavailableError("config.toml.lock is held")
+
+    monkeypatch.setattr(mcp_server, "get_placement", boom)
+    monkeypatch.setattr(mcp_server, "get_planned_placement", boom)
+    error = tool()["error"]
+    assert "Nothing was changed. Close any other lilbee process and try again." in error
+    assert "config.toml.lock is held" in error
+
+
+def test_a_placement_write_that_hits_an_os_error_still_raises(monkeypatch):
+    def boom(spec):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(mcp_server, "set_placement", boom)
+    with pytest.raises(PermissionError, match="denied"):
+        mcp_server.clear_placement_tool()
 
 
 def test_clear_placement_tool_provider_error(monkeypatch):

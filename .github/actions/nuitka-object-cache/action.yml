@@ -20,6 +20,10 @@ inputs:
     description: "Release holding the mirror."
     required: false
     default: engine-binaries
+  refresh-days:
+    description: "Age bucket in days. The blob is republished once per bucket, and a restore reads the current bucket, then the one before it."
+    required: false
+    default: "30"
   token:
     description: "Token with contents: write. Required for publish."
     required: false
@@ -27,25 +31,44 @@ inputs:
 
 outputs:
   restored:
-    description: "true when the mirror served the cache."
+    description: "true when the mirror served a cache, from the current age bucket or the one before it."
     value: ${{ steps.restore.outputs.restored }}
+  current:
+    description: "true when the mirror served the current age bucket. Publish when this is not true, so the first build of a new bucket writes it."
+    value: ${{ steps.restore.outputs.current }}
 
 runs:
   using: composite
   steps:
+    # A bad refresh-days stops the build here, in a step that has no
+    # continue-on-error. The restore below reads a failed fetch as a cache miss,
+    # and the publish caller swallows errors, so neither would show it.
+    - name: Check the refresh period
+      shell: bash
+      env:
+        MIRROR_REFRESH_DAYS: ${{ inputs.refresh-days }}
+      run: bash tools/wheel-build/ci_mirror.sh check
+
     - name: Restore the Nuitka cache from the mirror
       id: restore
       if: inputs.phase == 'restore'
       shell: bash
       env:
         MIRROR_RELEASE_TAG: ${{ inputs.release-tag }}
+        MIRROR_REFRESH_DAYS: ${{ inputs.refresh-days }}
       run: |
         set -uo pipefail
-        if bash tools/wheel-build/ci_mirror.sh fetch "${{ inputs.key }}" "${{ inputs.cache-dir }}"; then
-          echo "restored=true" >> "$GITHUB_OUTPUT"
-        else
-          echo "restored=false" >> "$GITHUB_OUTPUT"
-        fi
+        bash tools/wheel-build/ci_mirror.sh fetch "${{ inputs.key }}" "${{ inputs.cache-dir }}"
+        status=$?
+        # 0: current bucket. 3: the bucket before it, so restore it and publish
+        # the current one. Anything else: a miss.
+        case "${status}" in
+          0) restored=true;  current=true ;;
+          3) restored=true;  current=false ;;
+          *) restored=false; current=false ;;
+        esac
+        echo "restored=${restored}" >> "$GITHUB_OUTPUT"
+        echo "current=${current}" >> "$GITHUB_OUTPUT"
 
     # No ref guard, deliberately, and this is the point of routing it through the
     # mirror: an actions/cache save on a tag writes to a scope no later run can
@@ -53,8 +76,9 @@ runs:
     # here and the next release reads it.
     #
     # First publish for a key wins; the step is a no-op once the mirror carries
-    # that asset. The key rotates on the dependency set, which is the
-    # invalidation that matters. The caller keys on a lock normalized by
+    # that asset. The key rotates on the dependency set, and the mirror adds an
+    # age bucket of refresh-days to it, so a blob is replaced at least that
+    # often even when no dependency moves. The caller keys on a lock normalized by
     # scripts/strip_own_version.sh: a key carrying lilbee's own version rotates
     # on every release and the restore never hits.
     # First-publish-wins is why the caller must name the build cell in the key.
@@ -66,4 +90,5 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token }}
         MIRROR_RELEASE_TAG: ${{ inputs.release-tag }}
+        MIRROR_REFRESH_DAYS: ${{ inputs.refresh-days }}
       run: bash tools/wheel-build/ci_mirror.sh publish "${{ inputs.key }}" "${{ inputs.cache-dir }}"

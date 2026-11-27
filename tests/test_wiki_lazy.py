@@ -94,6 +94,18 @@ class TestGenerateStubPage:
         assert gen.call_args.kwargs["source_names"] == ["a.md"]
         store.get_chunks_by_source.assert_called_once_with("a.md")
 
+    def test_a_failed_model_call_raises_with_the_cause(self):
+        save_stub_index({"ford": _stub("ford", (("a.md", 0),))})
+        store = _store_with({"a.md": [make_search_chunk(source="a.md", chunk_index=0)]})
+        services = MagicMock()
+        services.provider.chat.side_effect = ConnectionError("The chat model is not running.")
+        services.provider.get_capabilities.return_value = []
+        with (
+            patch("lilbee.wiki.lazy.get_services", return_value=services),
+            pytest.raises(RuntimeError, match=r"The chat model is not running\."),
+        ):
+            generate_stub_page("ford", store, cfg)
+
     @pytest.mark.parametrize(
         ("kind", "subdir"),
         [
@@ -435,6 +447,7 @@ class TestGeneratingOnRequestEndToEnd:
         ]
         # The chunker of the written page reads the embed cap from the services.
         page_services.provider.embed_token_cap.return_value = None
+        page_services.provider.count_tokens.side_effect = lambda text: len(text.split())
         with (
             services_scope(page_services),
             patch("lilbee.wiki.lazy.get_services", return_value=services),

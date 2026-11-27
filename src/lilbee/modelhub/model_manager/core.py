@@ -5,12 +5,15 @@ import threading
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from cachetools import TTLCache
 
 from lilbee.catalog.compat import UnsupportedQuantError
 from lilbee.catalog.models import CatalogModel
-from lilbee.catalog.types import ModelSource
+from lilbee.catalog.refs import REPO_ID_HINT, canonical_ref, model_format
+from lilbee.catalog.refs import parse_model_ref as parse_catalog_ref
+from lilbee.catalog.types import ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.core.security import validate_path_within
 from lilbee.modelhub.model_manager.types import ModelNotFoundError
@@ -18,6 +21,12 @@ from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.local_servers import LOCAL_SERVERS, local_server_for_key
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.runtime.cancellation import CancelSignal
+
+if TYPE_CHECKING:
+    from lilbee.catalog.download import RetryCallback
+    from lilbee.catalog.hf_client import HfClient
+    from lilbee.core.config import Config
+    from lilbee.providers.fleet.engines.base import EngineAdapter
 
 log = logging.getLogger(__name__)
 
@@ -42,11 +51,24 @@ def _prefixed_source(model: str) -> ModelSource | None:
     return ModelSource.FRONTIER if ref.is_api else None
 
 
+def _pull_refusal(model: str) -> ModelNotFoundError:
+    """The refusal for a *model* that names no pullable repo: the format error, else the hint."""
+    try:
+        parse_catalog_ref(model)
+    except ValueError as exc:
+        return ModelNotFoundError(str(exc))
+    return ModelNotFoundError(
+        f"Model '{model}' not recognized. {REPO_ID_HINT} Or give a featured model name."
+    )
+
+
 class ModelManager:
     """Manages model lifecycle with distinct sources."""
 
-    def __init__(self, models_dir: Path) -> None:
+    def __init__(self, models_dir: Path, config: "Config", *, hf_client: "HfClient") -> None:
         self._models_dir = models_dir
+        self._config = config
+        self._hf_client = hf_client
         self._registry = ModelRegistry(self._models_dir)
         # Memoize list_installed results to avoid walking the registry
         # filesystem and hitting the backend HTTP endpoint on every call.
@@ -182,7 +204,10 @@ class ModelManager:
         source: ModelSource,
         *,
         on_bytes: Callable[[int, int], None] | None = None,
+        on_notice: Callable[[str], None] | None = None,
+        on_retry: "RetryCallback | None" = None,
         allow_unsupported: bool = False,
+        report_no_engine: bool = True,
         cancel: CancelSignal | None = None,
     ) -> Path | None:
         """Download a native GGUF model and return its path.
@@ -195,7 +220,11 @@ class ModelManager:
         are refused with ``UnsupportedArchError``, and files whose tensors it
         cannot decode with ``UnsupportedQuantError``, unless *allow_unsupported*
         is True. *on_bytes* receives (downloaded_bytes, total_bytes) progress.
-        A *cancel* signal makes the download cancellable mid-transfer; see
+        *on_notice* receives the sentence that says the model's size is unknown,
+        and after the download the sentence that says no engine loads the model,
+        unless *report_no_engine* is False.
+        *on_retry* hears each failed attempt while the download runs. A *cancel*
+        signal makes the download cancellable mid-transfer; see
         :func:`~lilbee.catalog.download_model`.
         """
         if source is not ModelSource.NATIVE:
@@ -205,23 +234,62 @@ class ModelManager:
                 f"lilbee runs {where} models but doesn't download them. "
                 f"Add the model in {where}, then pick it here."
             )
+        model = canonical_ref(model)
+        engine, no_engine = self._pull_engine(model)
         if not allow_unsupported:
             self.enforce_arch_compat(model)
         try:
-            return self._pull_native(
-                model, on_bytes=on_bytes, cancel=cancel, allow_unsupported=allow_unsupported
+            path = self._pull_native(
+                model,
+                engine,
+                on_bytes=on_bytes,
+                on_notice=on_notice,
+                on_retry=on_retry,
+                cancel=cancel,
+                allow_unsupported=allow_unsupported,
             )
         finally:
             self._invalidate_installed_cache()
+        if report_no_engine and no_engine is not None and on_notice is not None:
+            on_notice(no_engine)
+        return path
+
+    def require_engine(self, ref: str) -> "EngineAdapter":
+        """The engine that loads the format of *ref*; raises ``NoEngineError`` when none does."""
+        from lilbee.app.engine_choice import engine_for_ref
+
+        return engine_for_ref(ref, self._config)
+
+    def _pull_engine(self, ref: str) -> tuple["EngineAdapter | None", str | None]:
+        """The engine a pull of *ref* reads, or ``None`` and the notice that no engine loads it.
+
+        A GGUF pull reads the engine to pick the file, so it raises
+        ``NoEngineError``. Other formats download without one.
+        """
+        from lilbee.providers.fleet.engines.choice import NoEngineError
+
+        try:
+            return self.require_engine(ref), None
+        except NoEngineError as exc:
+            if model_format(ref) is ModelFormat.GGUF:
+                raise
+            return None, str(exc)
 
     def enforce_arch_compat(self, ref: str) -> None:
         """Raise UnsupportedArchError if *ref*'s architecture isn't in the supported set.
 
         Public because the pull preflight on the HTTP surface runs the same
         check before starting a download, so a caller learns the model is
-        unsupported before any bytes move.
+        unsupported before any bytes move. A malformed format qualifier has no
+        architecture to read; the pull refuses it when it resolves the target.
         """
-        from lilbee.app.services import get_services
+        try:
+            parsed = parse_catalog_ref(ref)
+        except ValueError:
+            return
+        if parsed.format is not ModelFormat.GGUF:
+            return
+        ref = parsed.canonical
         from lilbee.catalog.compat import (
             ModelCompat,
             UnsupportedArchError,
@@ -229,15 +297,18 @@ class ModelManager:
             resolve_arch_for_pull,
         )
 
-        arch = resolve_arch_for_pull(ref, get_services().hf_client)
-        if classify(arch) is ModelCompat.UNSUPPORTED:
+        arch = resolve_arch_for_pull(ref, self._hf_client)
+        if classify(arch, self.require_engine(ref)) is ModelCompat.UNSUPPORTED:
             raise UnsupportedArchError(ref, arch)
 
     def _pull_native(
         self,
         model: str,
+        engine: "EngineAdapter | None",
         *,
         on_bytes: Callable[[int, int], None] | None = None,
+        on_notice: Callable[[str], None] | None = None,
+        on_retry: "RetryCallback | None" = None,
         cancel: CancelSignal | None = None,
         allow_unsupported: bool = False,
     ) -> Path:
@@ -246,21 +317,46 @@ class ModelManager:
         from lilbee.catalog import download_model, resolve_pull_target
         from lilbee.modelhub.registry import register_downloaded_model
 
-        entry = resolve_pull_target(model)
+        entry = resolve_pull_target(model, hf_client=self._hf_client)
         if entry is None:
-            raise ModelNotFoundError(
-                f"Model '{model}' not recognized. "
-                "Pass a HuggingFace repo id (owner/name) or a featured model name."
-            )
-        entry = self._resolved_entry(entry, verify=not allow_unsupported)
+            raise _pull_refusal(model)
+        entry = self._resolved_entry(entry, engine, verify=not allow_unsupported)
+        notice = self._log_memory_need(entry, engine)
+        if notice is not None and on_notice is not None:
+            on_notice(notice)
         path = download_model(
-            entry, on_progress=on_bytes, on_complete=register_downloaded_model, cancel=cancel
+            entry,
+            engine,
+            on_progress=on_bytes,
+            on_complete=register_downloaded_model,
+            on_retry=on_retry,
+            cancel=cancel,
         )
         log.info("Downloaded %s to %s", model, path)
         return path
 
     @staticmethod
-    def _resolved_entry(entry: CatalogModel, *, verify: bool) -> CatalogModel:
+    def _log_memory_need(entry: CatalogModel, engine: "EngineAdapter | None") -> str | None:
+        """Log the memory a safetensors chat model needs, before its weights download.
+
+        Returns the sentence that says the size is unknown, or ``None`` when it is known.
+        With no engine the launch context is unknown, so no figure is worked out.
+        """
+        if engine is None or entry.format not in (ModelFormat.SAFETENSORS, ModelFormat.MLX):
+            return None
+        if entry.task is not ModelTask.CHAT:
+            return None
+        # heavy: lilbee.catalog and lilbee.providers.fleet (>50ms)
+        from lilbee.catalog.hf_client import hf_token
+        from lilbee.catalog.pull_fit import chat_pull_fit
+
+        fit = chat_pull_fit(entry.hf_repo, engine, token=hf_token())
+        log.info("%s: %s", entry.hf_repo, fit.text())
+        return None if fit.size_known else fit.text()
+
+    def _resolved_entry(
+        self, entry: CatalogModel, engine: "EngineAdapter | None", *, verify: bool
+    ) -> CatalogModel:
         """*entry* carrying the file the pull will fetch.
 
         Resolution happens here because the engine's verdict is part of choosing
@@ -273,18 +369,15 @@ class ModelManager:
         download reports the gated repo or the missing file properly, so a
         resolution failure here is left to it.
         """
+        if entry.format is not ModelFormat.GGUF or engine is None:
+            return entry
         # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
-        from lilbee.catalog.download import resolve_filename
+        from lilbee.catalog.download import engine_load_check, resolve_filename
         from lilbee.catalog.hf_client import hf_token
-        from lilbee.providers.fleet.loadability import assert_engine_can_load
 
-        token = hf_token()
-
-        def _can_load(hf_repo: str, filename: str) -> None:
-            assert_engine_can_load(hf_repo, filename, token)
-
+        can_load = engine_load_check(engine, hf_token()) if verify else None
         try:
-            filename = resolve_filename(entry, can_load=_can_load if verify else None)
+            filename = resolve_filename(entry, engine, can_load=can_load)
         except (PermissionError, RuntimeError) as exc:
             if isinstance(exc, UnsupportedQuantError):
                 raise

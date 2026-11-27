@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import pytest
 
+from conftest import make_hf_client
 from lilbee.catalog import compat
 from lilbee.catalog.compat import resolve_arch_for_pull
 from lilbee.catalog.header_probe import GgufHeader
 from lilbee.catalog.hf_client import HfClient
+from lilbee.core.config import cfg
 
 
 @pytest.fixture
 def client() -> HfClient:
-    return HfClient()
+    return make_hf_client(cfg)
 
 
 def test_resolve_hits_arch_cache(client: HfClient) -> None:
@@ -54,6 +56,31 @@ def test_resolve_does_not_cache_empty_arch_on_probe_failure(
     monkeypatch.setattr(compat, "probe_header", lambda _url: GgufHeader(architecture="llama"))
     assert resolve_arch_for_pull("acme/flaky-GGUF", client) == "llama"
     assert client.get_cached_arch("acme/flaky-GGUF") == "llama"
+
+
+@pytest.mark.parametrize("endpoint", ["http://xn--", "http://localhost:abc"])
+def test_a_hf_endpoint_httpx_cannot_parse_leaves_the_arch_unknown_and_is_named(
+    client: HfClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    endpoint: str,
+) -> None:
+    """HF_ENDPOINT is the user's value; a bad one must not end the pull with a traceback."""
+    import huggingface_hub.constants
+
+    from lilbee.catalog import header_probe
+
+    monkeypatch.setattr(compat, "probe_header", header_probe.probe_header)
+    # huggingface_hub bakes HF_ENDPOINT into this template when it is imported.
+    monkeypatch.setattr(
+        huggingface_hub.constants,
+        "HUGGINGFACE_CO_URL_TEMPLATE",
+        endpoint + "/{repo_id}/resolve/{revision}/{filename}",
+    )
+    with caplog.at_level("WARNING", logger=header_probe.log.name):
+        assert resolve_arch_for_pull("acme/foo-GGUF/foo.gguf", client) == ""
+    assert "HF_ENDPOINT" in caplog.text
+    assert endpoint not in caplog.text
 
 
 def test_resolve_blob_url_returns_empty_for_glob_filename() -> None:

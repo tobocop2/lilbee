@@ -9,12 +9,15 @@ download entry point runs under the retry loop.
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from lilbee.catalog import download as dl
 from lilbee.catalog.models import CatalogModel
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.runtime.cancellation import TaskCancelledError
 
 
@@ -111,11 +114,54 @@ class TestTransientRetries:
             self._run(monkeypatch, [PermissionError("needs authentication")])
 
 
+class TestCancelDuringBackoff:
+    @staticmethod
+    def _fail(monkeypatch: pytest.MonkeyPatch, attempts: list[int]) -> None:
+        def work() -> Path:
+            attempts.append(1)
+            raise dl._TransientDownloadError("reset")
+
+        monkeypatch.setattr(dl, "_RETRY_BACKOFF_SECONDS", 30)
+        monkeypatch.setattr(dl, "_CANCEL_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(dl, "_hf_download_or_translate", lambda entry, config: work())
+
+    def test_a_cancel_ends_the_wait_between_attempts_at_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        attempts: list[int] = []
+        self._fail(monkeypatch, attempts)
+        cancel = threading.Event()
+        threading.Timer(0.1, cancel.set).start()
+        started = time.monotonic()
+
+        with pytest.raises(TaskCancelledError):
+            dl._retry_transient(
+                lambda: dl._hf_download_or_translate(_entry(), _config()), None, cancel
+            )
+
+        assert time.monotonic() - started < 5
+        assert attempts == [1]
+
+    def test_an_unset_signal_leaves_the_wait_and_the_retries_whole(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        attempts: list[int] = []
+        self._fail(monkeypatch, attempts)
+        monkeypatch.setattr(dl, "_RETRY_BACKOFF_SECONDS", 0.02)
+
+        with pytest.raises(RuntimeError, match="failed 3 times"):
+            dl._retry_transient(
+                lambda: dl._hf_download_or_translate(_entry(), _config()), None, threading.Event()
+            )
+
+        assert attempts == [1, 1, 1]
+
+
 class TestRetryIsOnEveryTransfer:
     @pytest.mark.parametrize(
         "call",
         [
-            pytest.param(lambda entry: dl.download_model(entry), id="model"),
+            pytest.param(lambda entry: dl.download_model(entry, engine=LLAMA), id="model"),
             pytest.param(lambda entry: dl.download_mmproj(entry), id="mmproj"),
         ],
     )
@@ -126,21 +172,50 @@ class TestRetryIsOnEveryTransfer:
         retried: list[str] = []
         gguf = tmp_path / "f.gguf"
 
-        def _fake_retried(entry: CatalogModel, config: dl.DownloadConfig) -> Path:
+        def _fake_retried(
+            entry: CatalogModel,
+            config: dl.DownloadConfig,
+            cancel: object = None,
+            *,
+            on_retry: object = None,
+        ) -> Path:
             retried.append(config.filename)
             gguf.write_bytes(b"g")  # lands only when the transfer ran
             return gguf
 
         monkeypatch.setattr(dl, "_download_with_retry", _fake_retried)
         monkeypatch.setattr(dl, "_models_dir", lambda: tmp_path)
-        monkeypatch.setattr(dl, "resolve_filename", lambda entry: "f.gguf")
+        monkeypatch.setattr(dl, "resolve_filename", lambda entry, engine, **_kw: "f.gguf")
         monkeypatch.setattr(dl, "fetch_remote_file", lambda *a: dl.RemoteFile(size=1, blob="abc"))
         monkeypatch.setattr(dl, "_resolve_mmproj_filename", lambda *a: "mmproj.gguf")
-        monkeypatch.setattr(dl, "repo_has_mmproj", lambda repo: False)
 
         call(_entry())
 
         assert retried, "the transfer bypassed the retry loop"
+
+    def test_a_model_download_hands_on_retry_to_every_transfer(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The model and its projector both report a failed attempt to the caller."""
+        heard: list[tuple[int, int, str]] = []
+        gguf = tmp_path / "f.gguf"
+
+        def _fake_transfer(entry: CatalogModel, config: dl.DownloadConfig) -> Path:
+            if config.filename not in {name for _a, _n, name in heard}:
+                raise dl._TransientDownloadError(config.filename)
+            gguf.write_bytes(b"g")
+            return gguf
+
+        monkeypatch.setattr(dl, "_hf_download_or_translate", _fake_transfer)
+        monkeypatch.setattr(dl.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(dl, "_models_dir", lambda: tmp_path)
+        monkeypatch.setattr(dl, "resolve_filename", lambda entry, engine, **_kw: "f.gguf")
+        monkeypatch.setattr(dl, "fetch_remote_file", lambda *a: dl.RemoteFile(size=1, blob="abc"))
+        monkeypatch.setattr(dl, "_resolve_mmproj_filename", lambda *a: "mmproj.gguf")
+
+        dl.download_model(_entry(), engine=LLAMA, on_retry=lambda *notice: heard.append(notice))
+
+        assert heard == [(1, 3, "f.gguf"), (1, 3, "mmproj.gguf")]
 
 
 class TestTransientErrorTranslation:

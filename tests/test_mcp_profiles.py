@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -120,6 +121,16 @@ async def test_apply_with_reindex_applies_then_returns_the_rebuild_result(monkey
     assert result["rebuild"]["added"] == ["filing.pdf"]
 
 
+async def test_the_rebuild_runs_quiet_and_with_a_stop_token(monkeypatch):
+    _write(_global_dir(), "court-filings", CREDITED)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))
+    await profile_apply("Court filings", reindex=True)
+    assert calls[0]["quiet"] is True
+    assert isinstance(calls[0]["cancel"], threading.Event)
+    assert not calls[0]["cancel"].is_set()
+
+
 async def test_apply_with_reindex_skips_the_rebuild_when_nothing_needs_it(monkeypatch):
     _write(_global_dir(), "tight", '[profile]\nname = "Tight"\n[values]\ntop_k = 4\n')
     calls: list[dict[str, Any]] = []
@@ -150,6 +161,21 @@ async def test_apply_with_reindex_reports_a_refused_rebuild_after_the_apply(monk
     result = await profile_apply("Court filings", reindex=True)
     assert _stored()["profile"]["name"] == "Court filings"
     assert (result["rebuild"], result["rebuild_error"]) == (None, "The library is locked.")
+
+
+async def test_apply_with_reindex_reports_an_embedder_failure_after_the_apply(monkeypatch):
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    failure = ProviderError("The embedder is not running.", kind=ProviderErrorKind.CONNECTION)
+
+    async def _failed(**_kwargs: Any) -> SyncResult:
+        raise failure
+
+    _write(_global_dir(), "court-filings", CREDITED)
+    monkeypatch.setattr("lilbee.data.ingest.sync", _failed)
+    result = await profile_apply("Court filings", reindex=True)
+    assert _stored()["profile"]["name"] == "Court filings"
+    assert (result["rebuild"], result["rebuild_error"]) == (None, str(failure))
 
 
 async def test_apply_with_reindex_of_a_missing_profile_rebuilds_nothing(monkeypatch):

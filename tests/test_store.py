@@ -9,6 +9,7 @@ import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 import numpy as np
@@ -20,6 +21,7 @@ from lilbee.data.store import (
     ChunkType,
     ChunkWrite,
     CitationRecord,
+    FailedPage,
     SearchChunk,
     SearchScope,
     SourceMeta,
@@ -30,6 +32,7 @@ from lilbee.data.store import (
     Store,
     cosine_sim,
     escape_sql_string,
+    failed_pages,
     mmr_rerank,
     scope_to_chunk_type,
 )
@@ -535,6 +538,23 @@ class TestReplaceCitationsForWiki:
             "other"
         ]
 
+    def test_an_empty_record_list_clears_the_page(self, store):
+        from tests.conftest import make_citation
+
+        store.add_citations(
+            [
+                make_citation(wiki_source="wiki/concepts/a.md", citation_key="old"),
+                make_citation(wiki_source="wiki/concepts/b.md", citation_key="other"),
+            ]
+        )
+
+        store.replace_citations_for_wiki("wiki/concepts/a.md", [])
+
+        assert store.get_citations_for_wiki("wiki/concepts/a.md") == []
+        assert [c["citation_key"] for c in store.get_citations_for_wiki("wiki/concepts/b.md")] == [
+            "other"
+        ]
+
 
 class TestEnsureFtsIndex:
     def test_noop_when_no_table(self, store):
@@ -622,7 +642,7 @@ class TestEnsureFtsIndex:
         assert table is not None
 
         with mock.patch.object(
-            type(table), "optimize", side_effect=lambda: _remove_index_files(test_config)
+            type(table), "optimize", side_effect=lambda **_: _remove_index_files(test_config)
         ):
             store.ensure_fts_index()
 
@@ -1068,9 +1088,9 @@ class TestEnsureScalarIndexes:
         assert table is not None
         with mock.patch.object(type(table), "create_scalar_index") as spy:
             store.ensure_scalar_indexes()
-        assert [c.args[0] for c in spy.call_args_list] == ["source_id", "chunk_type"]
+        assert [c.args[0] for c in spy.call_args_list] == ["source_id", "chunk_type", "partly_read"]
         kinds = {c.args[0]: c.kwargs.get("index_type") for c in spy.call_args_list}
-        assert kinds == {"source_id": "BTREE", "chunk_type": "BITMAP"}
+        assert kinds == {"source_id": "BTREE", "chunk_type": "BITMAP", "partly_read": "BITMAP"}
         assert all(c.kwargs.get("replace") is False for c in spy.call_args_list)
 
     def test_idempotent_once_the_indexes_exist(self, store):
@@ -1121,7 +1141,7 @@ class TestEnsureScalarIndexes:
 
         with mock.patch.object(type(table), "create_scalar_index", _record):
             store.ensure_scalar_indexes()
-        assert attempted == ["source_id", "chunk_type"]
+        assert attempted == ["source_id", "chunk_type", "partly_read"]
 
     def test_scalar_index_failure_on_populated_table_warns(self, store, caplog):
         """A create failure on a non-empty table warns (it silently loses the
@@ -1677,7 +1697,7 @@ class TestEnsureVectorIndex:
         with mock.patch.object(
             type(table),
             "optimize",
-            side_effect=lambda: _remove_index_files(test_config, index_types={"FTS"}),
+            side_effect=lambda **_: _remove_index_files(test_config, index_types={"FTS"}),
         ):
             assert store.ensure_vector_index() is True
 
@@ -2599,6 +2619,26 @@ class TestAdaptiveFilter:
         filtered = store._adaptive_filter(results, top_k=1, initial_threshold=0.3)
         assert len(filtered) == 1
 
+    def test_tiny_step_runs_out_the_iteration_cap_then_answers_at_the_cap(self, store, test_config):
+        # 20 steps of 0.001 never reach the cap, so the loop ends by its own bound.
+        test_config.adaptive_threshold_step = 0.001
+        results = [
+            SearchChunk(
+                source="a.md",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="far",
+                chunk_index=0,
+                vector=[0.1],
+                distance=0.9,
+            ),
+        ]
+        filtered = store._adaptive_filter(results, top_k=2, initial_threshold=0.3)
+        assert [c.chunk for c in filtered] == ["far"]
+
     def test_stops_at_max_threshold(self, store):
         results = [
             SearchChunk(
@@ -2619,51 +2659,50 @@ class TestAdaptiveFilter:
 
 
 class TestRemoveDocuments:
+    @staticmethod
+    def _seed(store, *names):
+        for name in names:
+            store.upsert_source(name, f"h-{name}", 1)
+
     def test_removes_known_files(self, store):
-        with (
-            mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "_remove_many_unlocked") as mock_del,
-        ):
+        self._seed(store, "a.md")
+        with mock.patch.object(store, "_remove_many_unlocked") as mock_del:
             result = store.remove_documents(["a.md"])
             assert result.removed == ["a.md"]
             assert result.not_found == []
             mock_del.assert_called_once_with(["a.md"], None)
 
     def test_removes_an_archive_with_its_members(self, store):
-        rows = [{"filename": n} for n in ("docs.zip", "docs.zip/a.pdf", "docs.zip.bak", "other.md")]
-        with (
-            mock.patch.object(store, "get_sources", return_value=rows),
-            mock.patch.object(store, "_remove_many_unlocked") as mock_del,
-        ):
+        self._seed(store, "docs.zip", "docs.zip/a.pdf", "docs.zip.bak", "other.md")
+        with mock.patch.object(store, "_remove_many_unlocked") as mock_del:
             result = store.remove_documents(["docs.zip"])
             assert result.removed == ["docs.zip", "docs.zip/a.pdf"]
             assert result.not_found == []
             mock_del.assert_called_once_with(["docs.zip", "docs.zip/a.pdf"], None)
 
-    def test_removing_many_names_reads_the_source_table_once(self, store):
-        names = [f"n{index}.md" for index in range(500)]
-        rows = [{"filename": n} for n in (*names, "n7.md/inside.txt", "a/b.zip", "a/b.zip/c/d.txt")]
+    def test_removing_many_names_reads_no_full_record(self, store):
+        names = [f"n{index}.md" for index in range(40)]
+        self._seed(store, *names, "n7.md/inside.txt", "a/b.zip", "a/b.zip/c/d.txt", "keep.md")
         with (
-            mock.patch.object(store, "get_sources", return_value=rows) as reads,
+            mock.patch.object(store, "get_sources", side_effect=AssertionError("full read")),
             mock.patch.object(store, "_remove_many_unlocked") as mock_del,
         ):
-            result = store.remove_documents([*names, "a/b.zip"])
-        assert reads.call_count == 1
-        assert result.removed == [*names, "a/b.zip", "n7.md/inside.txt", "a/b.zip/c/d.txt"]
+            result = store.remove_documents([*names, "a/b.zip", "missing.md"])
+        assert sorted(result.removed) == sorted(
+            [*names, "a/b.zip", "n7.md/inside.txt", "a/b.zip/c/d.txt"]
+        )
+        assert result.not_found == ["missing.md"]
         mock_del.assert_called_once_with(result.removed, None)
 
     def test_not_found(self, store):
-        with mock.patch.object(store, "get_sources", return_value=[]):
-            result = store.remove_documents(["missing.md"])
-            assert result.removed == []
-            assert result.not_found == ["missing.md"]
+        result = store.remove_documents(["missing.md"])
+        assert result.removed == []
+        assert result.not_found == ["missing.md"]
 
     def test_never_deletes_physical_file(self, store, tmp_path):
         # Store removal is index-only; the source file on disk is never touched.
-        with (
-            mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "_remove_many_unlocked"),
-        ):
+        self._seed(store, "a.md")
+        with mock.patch.object(store, "_remove_many_unlocked"):
             f = tmp_path / "a.md"
             f.write_text("content")
             result = store.remove_documents(["a.md"])
@@ -2671,10 +2710,8 @@ class TestRemoveDocuments:
             assert f.exists()
 
     def test_nonexistent_file_still_removes_from_store(self, store):
-        with (
-            mock.patch.object(store, "get_sources", return_value=[{"filename": "gone.md"}]),
-            mock.patch.object(store, "_remove_many_unlocked") as mock_del,
-        ):
+        self._seed(store, "gone.md")
+        with mock.patch.object(store, "_remove_many_unlocked") as mock_del:
             result = store.remove_documents(["gone.md"])
             assert result.removed == ["gone.md"]
             mock_del.assert_called_once()
@@ -2692,10 +2729,8 @@ class TestRemoveDocuments:
             acquisitions.append("acquire")
             yield
 
+        self._seed(store, "a.md", "b.md")
         with (
-            mock.patch.object(
-                store, "get_sources", return_value=[{"filename": "a.md"}, {"filename": "b.md"}]
-            ),
             mock.patch.object(store, "source_ids", return_value={"a.md": "ida", "b.md": "idb"}),
             mock.patch.object(store, "_delete_rows_of_unlocked") as mock_chunks,
             mock.patch.object(store, "_drop_source_rows_unlocked") as mock_sources,
@@ -2993,6 +3028,29 @@ class TestGetSourcesPagination:
         # Offset runs in LanceDB, so exactly 5 of the 10 come back.
         assert len(filenames) == 5
 
+    def test_newest_first_lists_the_last_ingested_source_first(self, store):
+        self._seed(store, 6)
+        names = [s["filename"] for s in store.get_sources(newest_first=True)]
+        assert names == [f"doc{i:02d}.md" for i in reversed(range(6))]
+
+    def test_newest_first_pages_join_into_one_ordered_listing(self, store):
+        self._seed(store, 6)
+        pages = [store.get_sources(newest_first=True, limit=2, offset=o) for o in (0, 2, 4)]
+        joined = [s["filename"] for page in pages for s in page]
+        assert joined == [f"doc{i:02d}.md" for i in reversed(range(6))]
+
+    def test_newest_first_breaks_a_tie_by_filename(self, store, monkeypatch):
+        class _Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 1, 1, tzinfo=tz)
+
+        monkeypatch.setattr("lilbee.data.store.core.datetime", _Frozen)
+        for name in ("c.md", "a.md", "b.md"):
+            store.upsert_source(name, "h", 1)
+        names = [s["filename"] for s in store.get_sources(newest_first=True)]
+        assert names == ["a.md", "b.md", "c.md"]
+
     def test_search_filters_by_filename_case_insensitive(self, store):
         store.upsert_source("README.md", "h1", 1)
         store.upsert_source("setup.py", "h2", 1)
@@ -3022,6 +3080,45 @@ class TestGetSourcesPagination:
         store.upsert_source("50xdone.md", "h2", 1)
         matches = {s["filename"] for s in store.get_sources(search="50%done")}
         assert matches == {"50%done.md"}
+
+
+class TestSourceNames:
+    def test_names_hold_the_term_and_ignore_titles(self, store):
+        from lilbee.data.store.types import SourceMeta
+
+        store.upsert_source("README.md", "h1", 1)
+        store.upsert_source("setup.py", "h2", 1, meta=SourceMeta(title="Readme first"))
+        assert store.source_names("readme", limit=10) == ["README.md"]
+        # The full search also matches the title, which is why a name search is separate.
+        assert {s["filename"] for s in store.get_sources(search="readme")} == {
+            "README.md",
+            "setup.py",
+        }
+
+    def test_limit_bounds_the_rows(self, store):
+        for i in range(20):
+            store.upsert_source(f"readme_{i}.md", f"h{i}", 1)
+        assert len(store.source_names("readme", limit=5)) == 5
+        assert len(store.source_names(limit=7)) == 7
+
+    def test_a_library_with_no_sources_reads_empty(self, store):
+        assert store.source_names("x", limit=3) == []
+
+    def test_names_beginning_with_the_term_come_first_whatever_the_store_order(self, store):
+        for i in range(10):
+            store.upsert_source(f"zz/{i:02d}-rep.md", f"h{i}", 1)
+        store.upsert_source("report.md", "hr", 1)
+        store.upsert_source("reports/q1.md", "hq", 1)
+        names = store.source_names("rep", limit=4)
+        assert sorted(names[:2]) == ["report.md", "reports/q1.md"]
+        assert len(names) == 4
+
+    def test_a_name_in_both_reads_is_listed_once(self, store):
+        store.upsert_source("report.md", "h1", 1)
+        store.upsert_source("a-rep.md", "h2", 1)
+        names = store.source_names("rep", limit=5)
+        assert names[0] == "report.md"
+        assert sorted(names) == ["a-rep.md", "report.md"]
 
 
 class TestCountSources:
@@ -3077,6 +3174,77 @@ class TestSourceIngestedAtMap:
         store.source_ingested_at_map()
         store.drop_all()
         assert store.source_ingested_at_map() == {}
+
+
+class TestIngestedAtOf:
+    """The temporal filter reads the dates of the hits, never a map of every source."""
+
+    def test_returns_only_the_named_sources(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        store.upsert_source("b.md", "h2", 1)
+        result = store.ingested_at_of(["a.md", "missing.md"])
+        assert set(result) == {"a.md"}
+        assert result["a.md"] == store.source_ingested_at_map()["a.md"]
+
+    def test_empty_store_and_no_names(self, store):
+        assert store.ingested_at_of(["a.md"]) == {}
+        store.upsert_source("a.md", "h1", 1)
+        assert store.ingested_at_of([]) == {}
+
+    def test_wiki_pages_have_no_date(self, store):
+        store.upsert_source("wiki/a.md", "h1", 1, SourceType.WIKI)
+        assert store.ingested_at_of(["wiki/a.md"]) == {}
+
+    def test_name_with_quote_is_escaped(self, store):
+        store.upsert_source("it's.md", "h1", 1)
+        assert set(store.ingested_at_of(["it's.md"])) == {"it's.md"}
+
+    def test_batches_over_many_names(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        names = [f"n{i}.md" for i in range(700)] + ["a.md"]
+        with mock.patch("lilbee.data.store.core._SOURCE_STAT_BATCH_ROWS", 100):
+            assert set(store.ingested_at_of(names)) == {"a.md"}
+
+    def test_chat_turn_with_time_word_reads_no_full_source_record(self, store, test_config):
+        """A temporal question reads zero full source records and still filters by date."""
+        from lilbee.retrieval.query.searcher import Searcher
+
+        store.upsert_source("old.md", "h1", 1)
+        store.upsert_source("new.md", "h2", 1)
+        store.upsert_source("other.md", "h3", 1)
+        table = store.open_table(SOURCES_TABLE)
+        table.update(where="path = 'old.md'", values={"ingested_at": "2020-01-01T00:00:00+00:00"})
+        store._invalidate_source_cache()
+        searcher = Searcher(
+            test_config,
+            mock.MagicMock(),
+            store,
+            mock.MagicMock(),
+            mock.MagicMock(),
+            mock.MagicMock(),
+        )
+        results = [
+            SearchChunk(
+                source=name,
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="x",
+                chunk_index=0,
+                vector=[0.0],
+            )
+            for name in ("old.md", "new.md")
+        ]
+        with (
+            mock.patch("lilbee.data.store.core._source_record") as record,
+            mock.patch.object(Store, "get_sources") as get_sources,
+            mock.patch.object(Store, "source_ingested_at_map") as whole_map,
+        ):
+            kept = searcher._apply_temporal_filter(results, "what changed recently")
+        assert [r.source for r in kept] == ["new.md"]
+        assert record.call_count + get_sources.call_count + whole_map.call_count == 0
 
 
 def _make_citation(**overrides) -> CitationRecord:
@@ -3455,6 +3623,14 @@ class TestChunkTypePredicate:
 class TestEmbeddingModelGate:
     """Refuse search/ingest when cfg.embedding_model drifts from the persisted _meta row."""
 
+    def test_a_meta_table_with_no_row_reads_as_no_meta(self, store):
+        """A _meta table left empty by an older version holds no identity to read."""
+        store.add_chunks(_make_records())
+        meta_table = store.open_table(META_TABLE)
+        assert meta_table is not None
+        meta_table.delete("embedding_model IS NOT NULL")
+        assert store.get_meta() is None
+
     def test_first_add_chunks_initializes_meta_from_cfg(self, store, test_config):
         """A fresh store has no _meta row; first ingest writes one from current cfg."""
         assert store.get_meta() is None
@@ -3530,12 +3706,7 @@ class TestEmbeddingModelGate:
         import logging
 
         store.add_chunks(_make_records())
-        meta_table = store.open_table(META_TABLE)
-        assert meta_table is not None
-        from lilbee.data.store.lance_helpers import _safe_delete_unlocked
-        from lilbee.data.store.types import META_DELETE_ALL_PREDICATE
-
-        _safe_delete_unlocked(meta_table, META_DELETE_ALL_PREDICATE)
+        store.get_db().drop_table(META_TABLE)
         assert store.get_meta() is None
 
         with caplog.at_level(logging.WARNING, logger="lilbee.data.store"):
@@ -3572,12 +3743,7 @@ class TestEmbeddingModelGate:
         adopting the new model as if it had built the store.
         """
         store.add_chunks(_make_records())
-        meta_table = store.open_table(META_TABLE)
-        assert meta_table is not None
-        from lilbee.data.store.lance_helpers import _safe_delete_unlocked
-        from lilbee.data.store.types import META_DELETE_ALL_PREDICATE
-
-        _safe_delete_unlocked(meta_table, META_DELETE_ALL_PREDICATE)
+        store.get_db().drop_table(META_TABLE)
         original_model = test_config.embedding_model
 
         wrote = store.initialize_meta_if_legacy()
@@ -3718,12 +3884,7 @@ class TestEmbeddingModelGate:
         """Defensive re-check inside the lock: if a concurrent caller already wrote
         meta between the unlocked pre-check and acquiring the lock, do not double-write."""
         store.add_chunks(_make_records())
-        meta_table = store.open_table(META_TABLE)
-        assert meta_table is not None
-        from lilbee.data.store.lance_helpers import _safe_delete_unlocked
-        from lilbee.data.store.types import META_DELETE_ALL_PREDICATE
-
-        _safe_delete_unlocked(meta_table, META_DELETE_ALL_PREDICATE)
+        store.get_db().drop_table(META_TABLE)
 
         winning_meta = {
             "embedding_model": "winner-model:v1",
@@ -3733,6 +3894,62 @@ class TestEmbeddingModelGate:
         }
         with mock.patch.object(store, "get_meta", side_effect=repeat_last(None, winning_meta)):
             assert store.initialize_meta_if_legacy() is False
+
+    def _legacy_store_with_writer_before_lock(self, store, rebuild):
+        """Make a legacy store whose first lock request runs *rebuild* just before it grants."""
+        store.add_chunks(_make_records())
+        store.get_db().drop_table(META_TABLE)
+        real_lock = store._write_lock
+        fired = []
+
+        def lock_after_writer(*args, **kwargs):
+            if not fired:
+                fired.append(True)
+                rebuild()
+            return real_lock(*args, **kwargs)
+
+        return mock.patch.object(store, "_write_lock", side_effect=lock_after_writer)
+
+    def test_legacy_stamp_reads_width_a_writer_set_before_the_lock(self, store, test_config):
+        """A rebuild at a new width between the has-chunks check and the lock is stamped as is."""
+        old_dim = test_config.embedding_dim
+        new_dim = old_dim + 16
+
+        def rebuild():
+            store.drop_all()
+            test_config.embedding_dim = new_dim
+            store.add_chunks(_make_records(dim=new_dim))
+            store.get_db().drop_table(META_TABLE)
+
+        with self._legacy_store_with_writer_before_lock(store, rebuild):
+            assert store.initialize_meta_if_legacy() is True
+        meta = store.get_meta()
+        assert meta is not None
+        assert meta["embedding_dim"] == new_dim
+
+    def test_legacy_stamp_reads_model_a_writer_set_before_the_lock(self, store, test_config):
+        """A model change between the has-chunks check and the lock is stamped as is."""
+        original_model = test_config.embedding_model
+        replacement_model = "ollama/embed-writer:v2"
+
+        def rebuild():
+            store.drop_all()
+            test_config.embedding_model = replacement_model
+            store.add_chunks(_make_records())
+            store.get_db().drop_table(META_TABLE)
+
+        with self._legacy_store_with_writer_before_lock(store, rebuild):
+            assert store.initialize_meta_if_legacy() is True
+        meta = store.get_meta()
+        assert meta is not None
+        assert meta["embedding_model"] == replacement_model
+        assert original_model != replacement_model
+
+    def test_legacy_stamp_writes_nothing_when_a_writer_dropped_the_chunks(self, store):
+        """A rebuild that drops the chunks between the check and the lock leaves no stamp."""
+        with self._legacy_store_with_writer_before_lock(store, store.drop_all):
+            assert store.initialize_meta_if_legacy() is False
+        assert store.get_meta() is None
 
 
 class TestSourceStatColumns:
@@ -3881,9 +4098,13 @@ class TestBatchedSourceUpserts:
 
     def test_optimize_sources_compacts(self, store):
         store.upsert_source("a.md", "h", 1)
-        with mock.patch.object(store, "open_table", return_value=mock.MagicMock()) as opened:
+        with (
+            mock.patch.object(store, "open_table", return_value=mock.MagicMock()) as opened,
+            mock.patch("lilbee.data.store.core.prune_old_versions") as prune,
+        ):
             store.optimize_sources()
-        opened.return_value.optimize.assert_called_once()
+        table = opened.return_value
+        prune.assert_called_once_with(table, keep_version=table.version)
 
     def test_optimize_sources_noop_without_table(self, store):
         with mock.patch.object(store, "open_table", return_value=None) as opened:
@@ -3891,11 +4112,15 @@ class TestBatchedSourceUpserts:
         opened.assert_called_once()
 
     def test_optimize_sources_survives_failure(self, store):
-        failing = mock.MagicMock()
-        failing.optimize.side_effect = RuntimeError("compaction failed")
-        with mock.patch.object(store, "open_table", return_value=failing):
+        with (
+            mock.patch.object(store, "open_table", return_value=mock.MagicMock()),
+            mock.patch(
+                "lilbee.data.store.core.prune_old_versions",
+                side_effect=RuntimeError("compaction failed"),
+            ) as prune,
+        ):
             store.optimize_sources()
-        failing.optimize.assert_called_once()
+        prune.assert_called_once()
 
 
 class TestDeleteBySourceConceptRows:
@@ -4906,6 +5131,13 @@ class TestRelocateInOnePass:
         assert Counted.reads <= 4 * len(names)
 
 
+def _half_made_folder(config, name):
+    """The folder a killed first ``create_table`` leaves: listed, with a temp file, no version."""
+    data = config.lancedb_dir / f"{name}.lance" / "data"
+    data.mkdir(parents=True)
+    (data / ".tmpABC").write_bytes(b"")
+
+
 def _path_keyed_library(config):
     """A Store over a library the layout before source ids wrote: every table keys by path."""
     return _open_after(config, _path_keyed_tables(config))
@@ -4945,16 +5177,17 @@ def _path_keyed_tables(config):
 
 
 def _meta_rows(config, stamped):
-    """The ``_meta`` row of a library stamped schema version *stamped*."""
+    """The ``_meta`` row of a library stamped schema version *stamped*, as before canary columns."""
     from lilbee.data.store.schema import _meta_schema
 
+    legacy = pa.schema([_meta_schema().field(n) for n in _meta_schema().names[:4]])
     row = {
         "embedding_model": config.embedding_model,
         "embedding_dim": config.embedding_dim,
         "schema_version": stamped,
         "updated_at": "2026-01-01T00:00:00+00:00",
     }
-    return pa.Table.from_pylist([row], schema=_meta_schema())
+    return pa.Table.from_pylist([row], schema=legacy)
 
 
 def _untimed(dump):
@@ -5008,6 +5241,33 @@ class TestOpenTimeMigration:
             assert not {"source", "chunk_source", "source_filename"} & set(names), name
         names = db.open_table(SOURCES_TABLE).schema.names
         assert "path" in names and "filename" not in names and "held_out" in names
+
+    def test_a_meta_folder_with_no_committed_version_does_not_stop_the_upgrade(self, test_config):
+        _half_made_folder(test_config, META_TABLE)
+        store = _path_keyed_library(test_config)
+        db = store.get_db()
+
+        assert META_TABLE in table_names(db)
+        assert "source_id" in db.open_table(CHUNKS_TABLE).schema.names
+        assert store.get_meta() is None
+
+    @pytest.mark.parametrize("name", ["entities", PAGE_TEXTS_TABLE, "chunk_concepts"])
+    def test_a_half_made_table_the_library_lacks_does_not_stop_the_upgrade(self, test_config, name):
+        tables = _path_keyed_tables(test_config)
+        tables.pop(name, None)
+        _half_made_folder(test_config, name)
+        store = _open_after(test_config, tables)
+
+        assert name in table_names(store.get_db())
+        assert store.source_ids(["a.md"], SourceType.DOCUMENT) == {"a.md": _md5("a.md")}
+
+    def test_a_half_made_sources_table_does_not_stop_the_upgrade(self, test_config):
+        tables = _path_keyed_tables(test_config)
+        del tables[SOURCES_TABLE]
+        _half_made_folder(test_config, SOURCES_TABLE)
+        store = _open_after(test_config, tables)
+
+        assert "source_id" in store.get_db().open_table(CHUNKS_TABLE).schema.names
 
     def test_an_existing_source_takes_the_md5_of_its_path(self, test_config):
         store = _path_keyed_library(test_config)
@@ -5300,6 +5560,7 @@ class TestOpenTimeMigration:
         assert _indexes(SOURCES_TABLE) == {
             ("path_idx", ("path",)),
             ("source_id_idx", ("source_id",)),
+            ("partly_read_idx", ("partly_read",)),
         }
 
     def test_a_key_index_is_added_when_an_fts_index_has_lost_its_files(self, test_config):
@@ -5350,10 +5611,10 @@ class TestOpenTimeMigration:
 
         assert Store(test_config).get_meta()["schema_version"] == 3
 
-    def test_the_stamped_schema_version_is_three(self):
+    def test_the_stamped_schema_version_is_five(self):
         from lilbee.data.store.types import META_SCHEMA_VERSION
 
-        assert META_SCHEMA_VERSION == 3
+        assert META_SCHEMA_VERSION == 5
 
 
 def _shared_key_tables(config):
@@ -5712,3 +5973,190 @@ def _citation(source, key="src1", **changes):
         "created_at": "",
         **changes,
     }
+
+
+def _write_with_failed_pages(store, name, pages):
+    """Index one chunk of *name* with *pages* as its failed OCR pages."""
+    from lilbee.data.store import ChunkWrite
+
+    records = [{**record, "source": name} for record in _make_records(1)]
+    store.write_chunks_batch(
+        [ChunkWrite(name, "h1", records, needs_cleanup=True, ocr_page_failures=pages)]
+    )
+
+
+class TestSourceFailedPages:
+    """The ``_sources`` column of pages whose OCR failed."""
+
+    _PAGE_3 = FailedPage(page=3, error="timed out", recovered=False)
+    _PAGE_4 = FailedPage(page=4, error="no text", recovered=True)
+    _PAGE_3_ROW: ClassVar[dict] = {"page": 3, "error": "timed out", "recovered": False}
+    _PAGE_4_ROW: ClassVar[dict] = {"page": 4, "error": "no text", "recovered": True}
+
+    def _write(self, store, name, pages):
+        _write_with_failed_pages(store, name, pages)
+
+    def test_a_batched_write_stores_the_pages_and_a_clean_rewrite_clears_them(self, store):
+        self._write(store, "scan.pdf", [self._PAGE_3, self._PAGE_4])
+        [row] = store.get_sources()
+        assert row["ocr_page_failures"] == [self._PAGE_3_ROW, self._PAGE_4_ROW]
+        assert failed_pages(row) == [self._PAGE_3, self._PAGE_4]
+
+        self._write(store, "scan.pdf", [])
+        [row] = store.get_sources()
+        assert row["ocr_page_failures"] is None
+        assert failed_pages(row) == []
+
+    def test_a_long_list_of_failed_pages_is_stored_whole(self, store):
+        pages = [FailedPage(page=number, error="boom", recovered=False) for number in range(1, 201)]
+        self._write(store, "scan.pdf", pages)
+        assert failed_pages(store.get_sources()[0]) == pages
+
+    def test_an_upsert_without_failed_pages_stores_null(self, store):
+        store.upsert_source("notes.md", "h1", 2)
+        assert store.get_sources()[0]["ocr_page_failures"] is None
+
+    def test_failed_pages_of_a_record_without_the_column_is_empty(self):
+        record = {"filename": "old.pdf", "file_hash": "h", "ingested_at": "", "chunk_count": 1}
+        assert failed_pages(record) == []
+
+    def test_an_index_without_the_column_gains_it_when_opened(self, test_config):
+        import lancedb
+
+        from lilbee.data.store.core import _lacks_failed_pages
+        from lilbee.data.store.lance_helpers import ensure_table
+        from lilbee.data.store.schema import _sources_schema
+
+        db = lancedb.connect(str(test_config.lancedb_dir))
+        schema = _sources_schema()
+        ensure_table(db, SOURCES_TABLE, schema.remove(schema.get_field_index("ocr_page_failures")))
+        assert _lacks_failed_pages(db)
+
+        store = Store(test_config)
+        self._write(store, "scan.pdf", [self._PAGE_3])
+
+        assert not _lacks_failed_pages(store.get_db())
+        [row] = store.get_sources()
+        assert row["ocr_page_failures"] == [self._PAGE_3_ROW]
+
+    def test_a_stat_backfill_keeps_the_stored_pages(self, store):
+        from lilbee.data.store import SourceStat, SourceStatBackfill
+
+        self._write(store, "scan.pdf", [self._PAGE_3])
+        [row] = store.get_sources()
+
+        store.update_source_stats([SourceStatBackfill(row, SourceStat(10, 20, 30))])
+
+        [after] = store.get_sources()
+        assert (after["size_bytes"], after["ocr_page_failures"]) == (10, [self._PAGE_3_ROW])
+
+    def test_a_failed_edit_keeps_the_pages_of_the_indexed_version(self, store):
+        from lilbee.data.store import HeldOut, HeldRecord
+
+        self._write(store, "scan.pdf", [self._PAGE_3])
+        store.hold_failed({"scan.pdf": HeldRecord(HeldOut.FAILED, "h2", "timed out")})
+
+        assert store.partly_read_sources(10) == ({"scan.pdf": [self._PAGE_3]}, 1)
+
+
+class TestPartlyReadSources:
+    """The listing of indexed sources with pages whose OCR failed."""
+
+    _PAGE = FailedPage(page=2, error="timed out", recovered=False)
+
+    def _write(self, store, name, pages):
+        _write_with_failed_pages(store, name, pages)
+
+    def test_an_empty_index_has_none(self, store):
+        assert store.partly_read_sources(5) == ({}, 0)
+
+    def test_lists_only_the_partly_read_sources_by_name(self, store):
+        self._write(store, "b.pdf", [self._PAGE])
+        self._write(store, "clean.pdf", [])
+        self._write(store, "a.pdf", [self._PAGE])
+
+        assert store.partly_read_sources(5) == ({"a.pdf": [self._PAGE], "b.pdf": [self._PAGE]}, 2)
+
+    def test_the_limit_caps_the_listing_and_the_count_stays_whole(self, store):
+        for name in ("a.pdf", "b.pdf", "c.pdf"):
+            self._write(store, name, [self._PAGE])
+
+        self._write(store, "clean.pdf", [])
+
+        listed, total = store.partly_read_sources(2)
+        assert (len(listed), total) == (2, 3)
+        assert store.source_summary(0).partly_read == 3
+
+    def test_a_library_read_in_full_has_none(self, store):
+        self._write(store, "clean.pdf", [])
+
+        assert store.partly_read_sources(5) == ({}, 0)
+        assert store.source_summary(0).partly_read == 0
+
+    def test_over_the_limit_the_first_names_are_listed(self, store):
+        for name in ("c.pdf", "b.pdf", "a.pdf"):
+            self._write(store, name, [self._PAGE])
+
+        assert store.partly_read_sources(2) == ({"a.pdf": [self._PAGE], "b.pdf": [self._PAGE]}, 3)
+
+    def test_a_removed_source_and_a_wiki_page_are_not_listed(self, store):
+        from lilbee.data.store import ChunkWrite, HeldOut, HeldRecord, SourceType
+
+        self._write(store, "kept.pdf", [self._PAGE])
+        self._write(store, "removed.pdf", [self._PAGE])
+        store.hold_failed({"removed.pdf": HeldRecord(HeldOut.REMOVED, "h1", "removed")})
+        records = [{**record, "source": "page.md"} for record in _make_records(1)]
+        wiki = ChunkWrite(
+            "page.md",
+            "h1",
+            records,
+            needs_cleanup=True,
+            source_type=SourceType.WIKI,
+            ocr_page_failures=[self._PAGE],
+        )
+        store.write_chunks_batch([wiki])
+
+        assert store.partly_read_sources(5) == ({"kept.pdf": [self._PAGE]}, 1)
+        assert store.source_summary(0).partly_read == 1
+
+    def test_the_scalar_index_build_indexes_the_partly_read_column(self, store):
+        self._write(store, "scan.pdf", [self._PAGE])
+
+        store.ensure_scalar_indexes()
+
+        assert _partly_read_index_types(store) == ["Bitmap"]
+
+    def test_the_upgrade_fills_the_partly_read_column_and_indexes_it(self, test_config):
+        self._write(Store(test_config), "scan.pdf", [self._PAGE])
+        self._write(Store(test_config), "clean.pdf", [])
+        _sources_table_at(test_config).drop_columns(["partly_read"])
+
+        store = Store(test_config)
+
+        assert store.partly_read_sources(5) == ({"scan.pdf": [self._PAGE]}, 1)
+        assert _partly_read_index_types(store) == ["Bitmap"]
+
+    def test_the_upgrade_of_an_empty_table_adds_the_column_and_no_index(self, test_config):
+        self._write(Store(test_config), "scan.pdf", [self._PAGE])
+        sources = _sources_table_at(test_config)
+        sources.delete("true")
+        sources.drop_columns(["partly_read"])
+
+        store = Store(test_config)
+
+        assert "partly_read" in store.open_table(SOURCES_TABLE).schema.names
+        assert _partly_read_index_types(store) == []
+        assert store.partly_read_sources(5) == ({}, 0)
+
+
+def _sources_table_at(test_config):
+    """The ``_sources`` table of the library at *test_config*, opened without a Store."""
+    from lancedb.db import LanceDBConnection
+
+    return LanceDBConnection(str(test_config.lancedb_dir)).open_table(SOURCES_TABLE)
+
+
+def _partly_read_index_types(store):
+    """The types of the indexes on the partly read column of *store*'s ``_sources``."""
+    table = store.open_table(SOURCES_TABLE)
+    return [idx.index_type for idx in table.list_indices() if "partly_read" in idx.columns]

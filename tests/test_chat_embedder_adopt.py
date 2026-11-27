@@ -8,6 +8,7 @@ a generic stream error, and explains the rebuild path when the dims differ.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import MagicMock, PropertyMock, patch
 
 from lilbee.cli.tui import messages as msg
@@ -36,6 +37,23 @@ def _fake_app():
     app = MagicMock()
     with patch.object(ChatScreen, "app", new_callable=PropertyMock, return_value=app):
         yield app
+
+
+class TestEngineChangedMessage:
+    """An engine change shows its message and opens no adopt dialog."""
+
+    def test_the_message_is_shown_and_no_dialog_opens(self):
+        from lilbee.data.store import EmbeddingEngineChangedError
+
+        screen = _bare_screen()
+        widget = MagicMock()
+        error = EmbeddingEngineChangedError(model="m", dim=8, distance=0.2, verified=True)
+
+        with _fake_app() as app:
+            screen._on_embedding_mismatch(error, "q", widget)
+
+        widget.append_content.assert_called_once_with(str(error))
+        app.push_screen.assert_not_called()
 
 
 class TestStreamResponseDispatch:
@@ -188,7 +206,7 @@ class TestDoAdoptAndRetry:
         with (
             patch(
                 "lilbee.app.models.adopt_embedder",
-                return_value=MagicMock(reindex_required=False),
+                return_value=MagicMock(reindex_required=False, warning=None),
             ) as adopt,
             patch(
                 "lilbee.cli.tui.screens.chat.call_from_thread",
@@ -199,6 +217,40 @@ class TestDoAdoptAndRetry:
         adopt.assert_called_once_with("orgA/repoA/built.gguf")
         screen._send_message.assert_called_once_with("q")
 
+    def test_the_download_warning_is_shown_after_the_adopt(self):
+        screen = _bare_screen()
+        screen._send_message = MagicMock()  # type: ignore[method-assign]
+        no_engine = "No engine loads this model."
+        with (
+            patch(
+                "lilbee.app.models.adopt_embedder",
+                return_value=MagicMock(reindex_required=False, warning=no_engine),
+            ),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+            ),
+        ):
+            screen._do_adopt_and_retry("orgA/repoA/built.gguf", "q")
+        warned = [c for c in screen.notify.call_args_list if c.kwargs.get("severity") == "warning"]
+        assert [c.args[0] for c in warned] == [no_engine]
+
+    def test_no_warning_means_no_warning_toast(self):
+        screen = _bare_screen()
+        screen._send_message = MagicMock()  # type: ignore[method-assign]
+        with (
+            patch(
+                "lilbee.app.models.adopt_embedder",
+                return_value=MagicMock(reindex_required=False, warning=None),
+            ),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+            ),
+        ):
+            screen._do_adopt_and_retry("orgA/repoA/built.gguf", "q")
+        assert not [c for c in screen.notify.call_args_list if c.kwargs.get("severity")]
+
     def test_an_index_that_still_mismatches_offers_a_rebuild_and_does_not_resend(self):
         screen = _bare_screen()
         screen._send_message = MagicMock()  # type: ignore[method-assign]
@@ -206,7 +258,7 @@ class TestDoAdoptAndRetry:
         with (
             patch(
                 "lilbee.app.models.adopt_embedder",
-                return_value=MagicMock(reindex_required=True),
+                return_value=MagicMock(reindex_required=True, warning=None),
             ),
             patch(
                 "lilbee.cli.tui.screens.chat.call_from_thread",
@@ -231,3 +283,23 @@ class TestDoAdoptAndRetry:
             screen._do_adopt_and_retry("orgA/repoA/built.gguf", "q")
         screen._send_message.assert_not_called()
         assert any("boom" in str(c.args) for c in screen.notify.call_args_list)
+
+    def test_the_no_engine_notice_of_an_installed_embedder_is_shown(self):
+        screen = _bare_screen()
+        screen._send_message = MagicMock()  # type: ignore[method-assign]
+        notice = "No installed engine loads this model."
+        manager = MagicMock()
+        manager.is_installed.return_value = True
+        update = SimpleNamespace(reindex_required=False, warnings=(notice,))
+        services = SimpleNamespace(model_manager=manager)
+        with (
+            patch("lilbee.app.models.get_services", return_value=services),
+            patch("lilbee.app.settings.apply_settings_update", return_value=update),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+            ),
+        ):
+            screen._do_adopt_and_retry("orgA/repoA/built.gguf", "q")
+        warned = [c for c in screen.notify.call_args_list if c.kwargs.get("severity") == "warning"]
+        assert [c.args[0] for c in warned] == [notice]

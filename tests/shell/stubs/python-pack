@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Stand-in for the Python 3.12 of a pack build. The venv holds this stub again, pip installs nothing,
+# and `build` and `wheel tags` record what they receive and write a placeholder wheel. Every other call
+# runs the real python3. pip accepts only requirements files with --require-hashes, and `build` only
+# --no-isolation: the pip of Python 3.12 refuses the other forms (tests/shell/pack_common.bats runs that pip).
+#
+# Reads:
+#   REAL_PYTHON      the interpreter for the other calls (required)
+#   PYTHON_LOG       a file that receives one line per recorded call (required); `build` lists the files of
+#                    the wheel project in the file of the same name with .tree
+#   PYTHON_VERSION   the version the stub reports (default: 3.12)
+#   BUILD_WHEELS     how many wheels `build` writes (default: 1)
+#   RUNNER_OS        Windows puts the interpreter of a venv in Scripts
+
+set -euo pipefail
+
+record() {
+  echo "$* | epoch=${SOURCE_DATE_EPOCH-unset} umask=$(umask) exe=$0 cwd=${PWD##*/}" >> "${PYTHON_LOG:?}"
+}
+
+# The arguments of a pip call are `install --require-hashes`, optionally `--force-reinstall`, and one or more
+# `-r <file that holds text>`.
+hashed_files() {
+  [ "${1-} ${2-}" = "install --require-hashes" ] || return 1
+  shift 2
+  [ "${1-}" != --force-reinstall ] || shift
+  [ "$#" -gt 0 ] || return 1
+  while [ "$#" -gt 0 ]; do
+    [ "$1" = -r ] || return 1
+    [ -s "${2-}" ] || return 1
+    shift 2
+  done
+}
+
+case "${1-} ${2-} ${3-}" in
+  "-c "*version_info*)
+    echo "${PYTHON_VERSION:-3.12}" ;;
+  "-m venv "*)
+    folder="$3/bin"
+    if [ "${RUNNER_OS-}" = Windows ]; then folder="$3/Scripts"; fi
+    mkdir -p "${folder}"
+    cp "$0" "${folder}/python"
+    record "$*" ;;
+  "-m pip "*)
+    record "$*"
+    shift 2
+    hashed_files "$@" || { echo "stub python: pip installs only with --require-hashes and -r <file>, not: $*" >&2; exit 1; } ;;
+  "-m build "*)
+    record "$*"
+    [[ " $* " == *" --no-isolation "* ]] || { echo "stub python: an isolated build installs tools that no file pins" >&2; exit 1; }
+    find . -type f > "${PYTHON_LOG}.tree"
+    mkdir -p dist
+    for ((n = 1; n <= ${BUILD_WHEELS:-1}; n++)); do
+      cp pyproject.toml "dist/lilbee_engine_mistral_rs-0.9.5-${n}.cpu-py3-none-any.whl"
+    done ;;
+  "-m wheel tags")
+    record "$*"
+    for wheel in dist/*.whl; do mv "${wheel}" "${wheel/-any.whl/-$6.whl}"; done ;;
+  *)
+    exec "${REAL_PYTHON:?}" "$@" ;;
+esac

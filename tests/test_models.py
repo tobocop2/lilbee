@@ -1,35 +1,41 @@
 """Tests for models.py: RAM detection, model selection, picker UI, auto-install."""
 
+import io
 from unittest import mock
 
 import pytest
+from rich.progress import Progress
 
 from conftest import PICKS_CHAT, install_fake_model
+from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.modelhub import models
 from lilbee.modelhub.models import ModelInfo
+from lilbee.providers.fleet.engines.choice import ADAPTERS
 from tests._mock_effects import repeat_last
 from tests._unreadable import POSIX_DENIES_READS
 
 
 class TestModelCatalog:
     def test_not_empty(self):
-        assert len(models.MODEL_CATALOG) > 0
+        assert len(models._get_model_catalog(hf_client=get_services().hf_client)) > 0
 
     def test_all_model_info(self):
-        for m in models.MODEL_CATALOG:
+        for m in models._get_model_catalog(hf_client=get_services().hf_client):
             assert isinstance(m, ModelInfo)
 
     def test_derived_from_catalog(self):
-        """models.MODEL_CATALOG entries match catalog.py's PICKS_CHAT."""
+        """The model catalog entries match catalog.py's PICKS_CHAT."""
 
-        assert len(models.MODEL_CATALOG) == len(PICKS_CHAT)
-        for mc, fc in zip(models.MODEL_CATALOG, PICKS_CHAT, strict=True):
+        assert len(models._get_model_catalog(hf_client=get_services().hf_client)) == len(PICKS_CHAT)
+        for mc, fc in zip(
+            models._get_model_catalog(hf_client=get_services().hf_client), PICKS_CHAT, strict=True
+        ):
             assert mc.ref == fc.ref
 
     def test_frozen(self):
         with pytest.raises(AttributeError):
-            models.MODEL_CATALOG[0].ref = "nope"  # type: ignore[misc]
+            models._get_model_catalog(hf_client=get_services().hf_client)[0].ref = "nope"  # type: ignore[misc]
 
 
 class TestGetSystemRamGb:
@@ -98,80 +104,92 @@ class TestGetFreeDiskGb:
 
 class TestPickDefaultModel:
     def test_returns_model_info(self):
-        result = models.pick_default_model(8.0)
+        result = models.pick_default_model(8.0, hf_client=get_services().hf_client)
         assert isinstance(result, ModelInfo)
 
     def test_low_ram_picks_small(self):
-        result = models.pick_default_model(4.0)
+        result = models.pick_default_model(4.0, hf_client=get_services().hf_client)
         assert result.min_ram_gb <= 4.0
 
     def test_8gb_ram(self):
-        result = models.pick_default_model(8.0)
+        result = models.pick_default_model(8.0, hf_client=get_services().hf_client)
         assert result.min_ram_gb <= 8.0
 
     def test_16gb_ram(self):
-        result = models.pick_default_model(16.0)
+        result = models.pick_default_model(16.0, hf_client=get_services().hf_client)
         assert result.min_ram_gb <= 16.0
 
     def test_32gb_ram(self):
-        result = models.pick_default_model(32.0)
+        result = models.pick_default_model(32.0, hf_client=get_services().hf_client)
         assert result.min_ram_gb <= 32.0
 
     def test_raises_when_the_catalog_is_empty(self, monkeypatch):
         """HuggingFace unreachable must surface as a message, not an IndexError."""
-        monkeypatch.setattr(models, "_get_model_catalog", lambda: ())
+        monkeypatch.setattr(models, "_get_model_catalog", lambda **_: ())
         with pytest.raises(RuntimeError, match="Could not reach HuggingFace"):
-            models.pick_default_model(16.0)
+            models.pick_default_model(16.0, hf_client=get_services().hf_client)
 
     def test_tiny_ram_picks_smallest(self):
         """No repo id is stable any more, so assert the fit rule, not a name."""
-        result = models.pick_default_model(2.0)
+        result = models.pick_default_model(2.0, hf_client=get_services().hf_client)
         assert result.min_ram_gb <= 2.0
-        fitting = [m for m in models.MODEL_CATALOG if m.min_ram_gb <= 2.0]
+        fitting = [
+            m
+            for m in models._get_model_catalog(hf_client=get_services().hf_client)
+            if m.min_ram_gb <= 2.0
+        ]
         assert result.size_gb == max(m.size_gb for m in fitting)
 
 
 class TestModelDownloadSizeGb:
     def test_known_models(self):
-        first = models.MODEL_CATALOG[0]
-        assert models._model_download_size_gb(first.ref) == first.size_gb
+        first = models._get_model_catalog(hf_client=get_services().hf_client)[0]
+        assert (
+            models._model_download_size_gb(first.ref, hf_client=get_services().hf_client)
+            == first.size_gb
+        )
 
     def test_unknown_model_returns_fallback(self):
-        result = models._model_download_size_gb("unknown:latest")
+        result = models._model_download_size_gb(
+            "unknown:latest", hf_client=get_services().hf_client
+        )
         assert isinstance(result, float)
         assert result > 0
 
 
 class TestDisplayModelPicker:
     def test_renders_table(self, capsys):
-        recommended = models.display_model_picker(16.0, 50.0)
+        recommended = models.display_model_picker(16.0, 50.0, hf_client=get_services().hf_client)
         captured = capsys.readouterr()
         assert "Available Models" in captured.err
-        assert models.MODEL_CATALOG[0].display_name in captured.err
+        assert (
+            models._get_model_catalog(hf_client=get_services().hf_client)[0].display_name
+            in captured.err
+        )
         assert isinstance(recommended, ModelInfo)
 
     def test_recommended_highlighted(self, capsys):
-        recommended = models.display_model_picker(32.0, 100.0)
+        recommended = models.display_model_picker(32.0, 100.0, hf_client=get_services().hf_client)
         assert recommended.min_ram_gb <= 32.0
         captured = capsys.readouterr()
         # The star marker should be in the output
         assert "\u2605" in captured.err
 
     def test_disk_warning_with_low_space(self, capsys):
-        models.display_model_picker(32.0, 3.0)
+        models.display_model_picker(32.0, 3.0, hf_client=get_services().hf_client)
         captured = capsys.readouterr()
         # Table still renders with disk info showing low space
         assert "3.0 GB free disk" in captured.err
         assert "Available Models" in captured.err
 
     def test_shows_system_stats(self, capsys):
-        models.display_model_picker(16.0, 42.5)
+        models.display_model_picker(16.0, 42.5, hf_client=get_services().hf_client)
         captured = capsys.readouterr()
         assert "16 GB RAM" in captured.err
         assert "42.5 GB free disk" in captured.err
 
     def test_shows_browse_link(self, capsys):
-        models.display_model_picker(8.0, 50.0)
+        models.display_model_picker(8.0, 50.0, hf_client=get_services().hf_client)
         captured = capsys.readouterr()
         assert models.MODELS_BROWSE_URL in captured.err
 
@@ -180,34 +198,31 @@ class TestPromptModelChoice:
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     def test_default_choice(self, mock_disk_estimate):
         with mock.patch("builtins.input", return_value=""):
-            result = models.prompt_model_choice(8.0)
+            result = models.prompt_model_choice(8.0, hf_client=get_services().hf_client)
         assert isinstance(result, ModelInfo)
         # Default = recommended for 8 GB
-        assert result == models.pick_default_model(8.0)
+        assert result == models.pick_default_model(8.0, hf_client=get_services().hf_client)
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     def test_numeric_choice(self, mock_disk_estimate):
         with mock.patch("builtins.input", return_value="1"):
-            result = models.prompt_model_choice(8.0)
-        assert result == models.MODEL_CATALOG[0]
+            result = models.prompt_model_choice(8.0, hf_client=get_services().hf_client)
+        assert result == models._get_model_catalog(hf_client=get_services().hf_client)[0]
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     def test_invalid_then_valid(self, mock_disk_estimate):
         with mock.patch("builtins.input", side_effect=repeat_last("abc", "99", "2")):
-            result = models.prompt_model_choice(8.0)
-        assert result == models.MODEL_CATALOG[1]
+            result = models.prompt_model_choice(8.0, hf_client=get_services().hf_client)
+        assert result == models._get_model_catalog(hf_client=get_services().hf_client)[1]
 
+    @pytest.mark.parametrize("signal", [EOFError, KeyboardInterrupt])
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
-    def test_eof_returns_recommended(self, mock_disk_estimate):
-        with mock.patch("builtins.input", side_effect=EOFError):
-            result = models.prompt_model_choice(8.0)
-        assert result == models.pick_default_model(8.0)
-
-    @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
-    def test_keyboard_interrupt_returns_recommended(self, mock_disk_estimate):
-        with mock.patch("builtins.input", side_effect=KeyboardInterrupt):
-            result = models.prompt_model_choice(8.0)
-        assert result == models.pick_default_model(8.0)
+    def test_end_of_input_is_not_a_choice(self, mock_disk_estimate, signal):
+        with (
+            mock.patch("builtins.input", side_effect=signal),
+            pytest.raises(RuntimeError, match="lilbee model pull"),
+        ):
+            models.prompt_model_choice(8.0, hf_client=get_services().hf_client)
 
 
 class TestValidateDiskAndPull:
@@ -222,7 +237,7 @@ class TestValidateDiskAndPull:
             description="test",
         )
         result = models.validate_disk_and_pull(info, 50.0)
-        mock_pull.assert_called_once_with(ref, console=None)
+        mock_pull.assert_called_once_with(ref, console=None, report_no_engine=True)
         assert result == ref
 
     def test_insufficient_disk_raises(self):
@@ -243,7 +258,9 @@ class TestPullWithProgress:
 
         mock_manager = mock.MagicMock()
 
-        def fake_pull(model, source, *, on_bytes=None):
+        def fake_pull(
+            model, source, *, on_bytes=None, on_notice=None, on_retry=None, report_no_engine=True
+        ):
             if on_bytes:
                 on_bytes(100, 100)
             return
@@ -258,7 +275,9 @@ class TestPullWithProgress:
 
         mock_manager = mock.MagicMock()
 
-        def fake_pull(model, source, *, on_bytes=None):
+        def fake_pull(
+            model, source, *, on_bytes=None, on_notice=None, on_retry=None, report_no_engine=True
+        ):
             if on_bytes:
                 on_bytes(0, 0)
             return
@@ -266,6 +285,135 @@ class TestPullWithProgress:
         mock_manager.pull.side_effect = fake_pull
         set_services(mock.MagicMock(model_manager=mock_manager))
         models.pull_with_progress("test-model")
+
+
+class TestPullWithProgressProjector:
+    """The first-run picker pull runs the shared projector step after the download."""
+
+    @staticmethod
+    def _services() -> mock.MagicMock:
+        from lilbee.app.services import set_services
+
+        services = mock.MagicMock(model_manager=mock.MagicMock())
+        set_services(services)
+        return services
+
+    def test_fetches_projector_after_download(self):
+        services = self._services()
+        order: list[str] = []
+        services.model_manager.pull.side_effect = lambda *a, **k: order.append("pull")
+        with mock.patch(
+            "lilbee.app.models.ensure_vision_projector",
+            side_effect=lambda ref, **k: order.append(f"projector:{ref}:{k['warn_unreadable']}"),
+        ):
+            models.pull_with_progress("acme/vl-GGUF")
+        assert order == ["pull", "projector:acme/vl-GGUF:True"]
+
+    def test_prints_projector_warning(self):
+        self._services()
+        console = models.PlainConsole(file=io.StringIO(), width=200)
+        with mock.patch(
+            "lilbee.app.models.ensure_vision_projector",
+            return_value="acme/vl is named as a vision model, but lists no projector file.",
+        ):
+            models.pull_with_progress("acme/vl-GGUF", console=console)
+        out = console.file.getvalue()
+        assert "Warning: acme/vl is named as a vision model" in out
+        assert "Model 'acme/vl-GGUF' ready." in out
+
+    def test_prints_the_size_notice_with_the_projector_warning(self):
+        services = self._services()
+        services.model_manager.pull.side_effect = lambda *a, on_notice=None, **k: on_notice(
+            "The size of this model is unknown, so 8.0 GiB is reserved for it."
+        )
+        console = models.PlainConsole(file=io.StringIO(), width=300)
+        with mock.patch("lilbee.app.models.ensure_vision_projector", return_value="no projector"):
+            models.pull_with_progress("acme/vl-GGUF", console=console)
+        out = console.file.getvalue()
+        assert (
+            "Warning: The size of this model is unknown, so 8.0 GiB is reserved for it. "
+            "no projector" in out
+        )
+
+    def test_shows_a_failed_attempt_in_the_progress_line_until_bytes_arrive(self):
+        services = self._services()
+
+        def _pull(*_a, on_bytes, on_retry, **_k):
+            on_retry(1, 6, "Network error downloading acme/vl-GGUF: timed out")
+            on_bytes(10, 100)
+
+        services.model_manager.pull.side_effect = _pull
+        details: list[str] = []
+
+        class _Recording(Progress):
+            def update(self, task_id, **fields):
+                if "detail" in fields:
+                    details.append(fields["detail"])
+                super().update(task_id, **fields)
+
+        console = models.PlainConsole(file=io.StringIO(), width=300)
+        with (
+            mock.patch("lilbee.app.models.ensure_vision_projector", return_value=None),
+            mock.patch.object(
+                models, "live_progress", lambda *cols, **opts: _Recording(*cols, **opts)
+            ),
+        ):
+            models.pull_with_progress("acme/vl-GGUF", console=console)
+        notice = (
+            "Network error downloading acme/vl-GGUF: timed out. "
+            "Attempt 1 of 6 failed; trying again."
+        )
+        assert details == [notice, ""]
+        assert notice not in console.file.getvalue()
+
+    def test_prints_no_warning_when_nothing_is_wrong(self):
+        self._services()
+        console = models.PlainConsole(file=io.StringIO(), width=300)
+        with mock.patch("lilbee.app.models.ensure_vision_projector", return_value=None):
+            models.pull_with_progress("acme/vl-GGUF", console=console)
+        assert "Warning" not in console.file.getvalue()
+
+    def test_unfetchable_projector_is_an_error(self):
+        self._services()
+        with (
+            mock.patch(
+                "lilbee.app.models.ensure_vision_projector",
+                side_effect=RuntimeError("Fetched the projector p.gguf for r, but not found"),
+            ),
+            pytest.raises(RuntimeError, match="Fetched the projector"),
+        ):
+            models.pull_with_progress("acme/vl-GGUF")
+
+
+class TestEnsureChatModelAtEndOfInput:
+    """A tty-looking stdin that is already at end of input pulls nothing."""
+
+    @pytest.mark.parametrize("signal", [EOFError, KeyboardInterrupt])
+    @mock.patch.object(models, "pull_with_progress")
+    @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
+    @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
+    @mock.patch.object(models, "list_installed_models", return_value=[])
+    def test_refuses_and_pulls_nothing(self, _list, _ram, _disk, mock_pull, signal):
+        with (
+            mock.patch.object(models.sys.stdin, "isatty", return_value=True),
+            mock.patch("builtins.input", side_effect=signal),
+            pytest.raises(RuntimeError, match="lilbee model pull"),
+        ):
+            models.ensure_chat_model(hf_client=get_services().hf_client)
+        mock_pull.assert_not_called()
+
+    @mock.patch.object(models, "pull_with_progress")
+    @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
+    @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
+    @mock.patch.object(models, "list_installed_models", return_value=[])
+    def test_enter_on_empty_line_pulls_recommended(self, _list, _ram, _disk, mock_pull):
+        with (
+            mock.patch.object(models.sys.stdin, "isatty", return_value=True),
+            mock.patch("builtins.input", return_value=""),
+        ):
+            pulled = models.ensure_chat_model(hf_client=get_services().hf_client)
+        assert pulled == models.pick_default_model(32.0, hf_client=get_services().hf_client).ref
+        mock_pull.assert_called_once()
 
 
 class TestEnsureChatModel:
@@ -278,7 +426,7 @@ class TestEnsureChatModel:
 
     def test_noop_when_chat_model_exists(self):
         with mock.patch.object(models, "list_installed_models", return_value=["llama3:latest"]):
-            assert models.ensure_chat_model() is None  # no pull
+            assert models.ensure_chat_model(hf_client=get_services().hf_client) is None  # no pull
 
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
@@ -292,7 +440,7 @@ class TestEnsureChatModel:
             mock.patch.object(models.sys.stdin, "isatty", return_value=False),
             pytest.raises(RuntimeError, match="lilbee model pull"),
         ):
-            models.ensure_chat_model()
+            models.ensure_chat_model(hf_client=get_services().hf_client)
         mock_pull.assert_not_called()
 
     @mock.patch.object(models, "pull_with_progress")
@@ -306,8 +454,12 @@ class TestEnsureChatModel:
             mock.patch.object(models.sys.stdin, "isatty", return_value=True),
             mock.patch("builtins.input", return_value="1"),
         ):
-            models.ensure_chat_model()
-        mock_pull.assert_called_once_with(models.MODEL_CATALOG[0].ref, console=None)
+            models.ensure_chat_model(hf_client=get_services().hf_client)
+        mock_pull.assert_called_once_with(
+            models._get_model_catalog(hf_client=get_services().hf_client)[0].ref,
+            console=None,
+            report_no_engine=True,
+        )
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=0.01)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
@@ -318,7 +470,7 @@ class TestEnsureChatModel:
             mock.patch("builtins.input", return_value="1"),
             pytest.raises(RuntimeError, match="Not enough disk space"),
         ):
-            models.ensure_chat_model()
+            models.ensure_chat_model(hf_client=get_services().hf_client)
 
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
@@ -327,13 +479,20 @@ class TestEnsureChatModel:
         """Regression (bb-ziks.67): an installed reranker/vision model is not a chat
         model, so the real (task-filtered) list_installed_models excludes it and the
         bootstrap still engages the picker rather than short-circuiting. Drives the
-        real list_installed_models through reclassify_by_name (no mock of the
-        classifier)."""
+        real list_installed_models with a real ModelManifest, which demotes the
+        reranker by name when it is built."""
         from lilbee.catalog.types import ModelTask
+        from lilbee.modelhub.registry import ModelManifest
 
         # A manifest that declares task="chat" but whose ref names a reranker; the
-        # name-based reclassifier must demote it so it never counts as a chat model.
-        reranker = mock.Mock(ref="bge-reranker-v2-m3", task=ModelTask.CHAT)
+        # manifest demotes it by name so it never counts as a chat model.
+        reranker = ModelManifest(
+            hf_repo="BAAI/bge-reranker-v2-m3",
+            gguf_filename="bge-reranker-v2-m3-Q8_0.gguf",
+            size_bytes=1,
+            task=ModelTask.CHAT,
+            downloaded_at="2026-05-15T00:00:00+00:00",
+        )
         with (
             mock.patch.object(models, "ModelRegistry") as mock_registry,
             mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
@@ -344,8 +503,8 @@ class TestEnsureChatModel:
             # The reranker is excluded, so the chat-task list is empty...
             assert models.list_installed_models() == []
             # ...and the bootstrap therefore prompts for a real chat model.
-            pulled = models.ensure_chat_model()
-        assert pulled == models.pick_default_model(16.0).ref
+            pulled = models.ensure_chat_model(hf_client=get_services().hf_client)
+        assert pulled == models.pick_default_model(16.0, hf_client=get_services().hf_client).ref
         mock_pull.assert_called_once()
 
 
@@ -357,9 +516,9 @@ class TestEnsureChatModel:
 class TestPickDefaultModelFallback:
     def test_nothing_fits_falls_back_to_the_smallest(self, monkeypatch):
         """A host too small for every pick still gets an honest offer."""
-        catalog = tuple(models._get_model_catalog())
-        monkeypatch.setattr(models, "_get_model_catalog", lambda: catalog)
-        result = models.pick_default_model(0.5)
+        catalog = tuple(models._get_model_catalog(hf_client=get_services().hf_client))
+        monkeypatch.setattr(models, "_get_model_catalog", lambda **_: catalog)
+        result = models.pick_default_model(0.5, hf_client=get_services().hf_client)
         assert result.size_gb == min(m.size_gb for m in catalog)
 
 
@@ -397,3 +556,42 @@ class TestMalformedServerListing:
 
         with mock.patch("lilbee.modelhub.model_manager.discovery._http_get", return_value=response):
             assert models.list_installed_models() == [ref]
+
+
+class TestEnsureChatModelWithNoEngine:
+    """A chat model is installed but no installed engine loads it: say so, name the fix."""
+
+    @pytest.fixture
+    def no_engine(self, monkeypatch):
+        monkeypatch.setattr("lilbee.providers.fleet.engines.choice.installed_engines", dict)
+        monkeypatch.setattr("lilbee.modelhub.models.installed_engines", dict)
+        monkeypatch.setattr("lilbee.modelhub.model_manager.classify_all_remote_models", lambda: [])
+
+    @pytest.mark.parametrize("interactive", [False, True])
+    def test_names_the_missing_engine_and_the_command(self, no_engine, interactive):
+        ref = install_fake_model("tiny/Tiny-1B-GGUF", "tiny-1b-Q4_K_M.gguf", "chat")
+        with (
+            mock.patch.object(models.sys.stdin, "isatty", return_value=interactive),
+            mock.patch.object(models, "pull_with_progress") as mock_pull,
+            pytest.raises(RuntimeError, match="No installed engine loads the gguf format") as err,
+        ):
+            models.ensure_chat_model(hf_client=get_services().hf_client)
+        assert ref in str(err.value)
+        assert "lilbee engine list" in str(err.value)
+        assert "No chat model is installed" not in str(err.value)
+        mock_pull.assert_not_called()
+
+    def test_with_no_model_installed_the_pull_guidance_stays(self, no_engine):
+        with (
+            mock.patch.object(models.sys.stdin, "isatty", return_value=False),
+            pytest.raises(RuntimeError, match="No chat model is installed"),
+        ):
+            models.ensure_chat_model(hf_client=get_services().hf_client)
+
+    def test_an_installed_engine_that_loads_the_model_raises_nothing(self, monkeypatch):
+        install_fake_model("tiny/Tiny-1B-GGUF", "tiny-1b-Q4_K_M.gguf", "chat")
+        monkeypatch.setattr(
+            "lilbee.modelhub.models.installed_engines",
+            lambda: {name: adapter.formats for name, adapter in ADAPTERS.items()},
+        )
+        assert models._refuse_a_model_with_no_engine() is None

@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Literal
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
-    Progress,
     SpinnerColumn,
     TimeElapsedColumn,
 )
@@ -25,7 +24,8 @@ from rich.progress import (
 from lilbee.core.config import active_config
 from lilbee.data.ingest.errors import error_reason
 from lilbee.data.types import ShardId, SyncResult
-from lilbee.runtime.console import PlainConsole
+from lilbee.runtime.asyncio_loop import run_main
+from lilbee.runtime.console import PlainConsole, ProgressDisplay, stdout_progress
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
 from lilbee.runtime.progress import (
     BatchProgressEvent,
@@ -96,6 +96,7 @@ class ShardOptions:
 
     parent_pid: int
     rebuild: bool = False
+    retry_skipped: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,12 +113,17 @@ class ShardProgress:
 
 @dataclass(frozen=True)
 class ShardDone:
-    """A worker's verdict; *error* set means it did not finish its slice."""
+    """A worker's verdict; *error* set means it did not finish its slice.
+
+    *refusal* is the sync refusal the worker stopped on (one of ``SYNC_REFUSALS``):
+    the parent stops the other workers and raises it as it is.
+    """
 
     kind: Literal["done"]
     index: int
     result: SyncResult | None
     error: str | None
+    refusal: Exception | None = None
 
 
 ShardMessage = ShardProgress | ShardDone
@@ -139,12 +145,14 @@ def resolve_process_count(devices: int) -> int:
 
 def plan_fanout() -> list[ShardSpec]:
     """The workers for this sync, empty when it runs in this process."""
+    from lilbee.app.services import get_services
     from lilbee.data.ingest.discovery import corpus_has_at_least
     from lilbee.providers.fleet.replicas import gpu_device_count
+    from lilbee.providers.roles import WorkerRole
 
     # The count runs the device probe under the pin, so a gpu_devices pin is the
     # space the workers are dealt in: they are never dealt a card the pin excludes.
-    devices = gpu_device_count()
+    devices = gpu_device_count(get_services().engines.for_role(WorkerRole.EMBED).adapter)
     processes = resolve_process_count(devices)
     if processes < _MIN_FANOUT_WORKERS or not corpus_has_at_least(_MIN_FILES_FOR_FANOUT):
         return []
@@ -155,6 +163,7 @@ def shard_specs(config: Config, processes: int, devices: int) -> list[ShardSpec]
     """One spec per worker, dividing the corpus, the cards and the CPU pools."""
     from lilbee.providers.fleet.gpu_env import shard_visible_devices
 
+    deals_cards = _deals_cards(config)
     cpu_share = max(1, cpu_quota() // processes)
     plan_share = max(1, available_cpu_count() // processes)
     root = config.data_root / SHARDS_DIRNAME
@@ -167,10 +176,32 @@ def shard_specs(config: Config, processes: int, devices: int) -> list[ShardSpec]
             # fleet, workers on different cards never see each other's.
             engine_dir=root / f"gpu{index % devices}" / "engine",
             cpu_share=cpu_share,
-            visible_devices=shard_visible_devices(index % devices),
+            visible_devices=shard_visible_devices(index % devices) if deals_cards else {},
         )
         for index in range(processes)
     ]
+
+
+def _deals_cards(config: Config) -> bool:
+    """Whether each worker gets one card as its mask.
+
+    The mask pins the embed role to one card. With embed on the CPU it pins
+    nothing, and it would hide the card a named role asks for. An auto role
+    still needs its worker held to one card, so the mask stays for it, unless
+    another role names a card, which the mask would hide.
+    """
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
+    from lilbee.providers.roles import RoleTarget, WorkerRole
+
+    if not config.placement:
+        return True
+    roles = PlacementSpec.from_json(config.placement).roles
+    embed = roles.get(WorkerRole.EMBED)
+    if embed is None or embed.device_target is not RoleTarget.CPU:
+        return True
+    others = [entry for role, entry in roles.items() if role is not WorkerRole.EMBED]
+    named = any(entry.devices for entry in others)
+    return not named and any(entry.device_target is RoleTarget.AUTO for entry in others)
 
 
 def _shard_config(config: Config, root: Path, plan_share: int, processes: int) -> Config:
@@ -286,9 +317,9 @@ def _drain(messages: Queue[ShardMessage]) -> list[ShardMessage]:
     return drained
 
 
-def _shard_progress_bar(quiet: bool) -> Progress:
+def _shard_progress_bar(quiet: bool) -> ProgressDisplay:
     """The one bar a fan-out reports on, disabled when the caller wants no output."""
-    return Progress(
+    return stdout_progress(
         SpinnerColumn(),
         literal_text_column("{task.description}", style="progress.description"),
         BarColumn(),
@@ -310,7 +341,8 @@ async def _supervise(
     """Drain worker messages until every worker has reported, keeping one bar current.
 
     Raises ``asyncio.CancelledError`` within one drain interval of a set *cancel*,
-    whether or not a worker reports.
+    whether or not a worker reports. Raises the first refusal a worker reports, so
+    the caller stops the other workers instead of waiting for each to refuse too.
     """
     verdicts: dict[int, ShardDone] = {}
     aggregate = _Aggregate(on_progress)
@@ -319,6 +351,8 @@ async def _supervise(
         while len(verdicts) < len(workers):
             for message in _drain(messages):
                 if message.kind == "done":
+                    if message.refusal is not None:
+                        raise message.refusal
                     verdicts[message.index] = message
                 else:
                     done, planned = aggregate.update(message)
@@ -341,9 +375,13 @@ def _final_verdicts(
 
     A worker the kernel killed (out of memory is the usual reason) reports
     nothing, so it is recorded as failed and the sync does not end as a success.
+    A refusal still in flight is raised, as :func:`_supervise` raises one it drains.
     """
     time.sleep(_FINAL_DRAIN_S)
     late = {m.index: m for m in _drain(messages) if m.kind == "done"}
+    for message in late.values():
+        if message.refusal is not None:
+            raise message.refusal
     for index, worker in enumerate(workers):
         if index in verdicts or index in late:
             continue
@@ -425,6 +463,8 @@ def aggregate_results(verdicts: list[ShardDone]) -> SyncResult:
         relocated=[name for r in results for name in r.relocated],
         failed=[name for r in results for name in r.failed],
         skipped=[name for r in results for name in r.skipped],
+        partial=[partial for r in results for partial in r.partial],
+        reasons={name: reason for r in results for name, reason in r.reasons.items()},
         skipped_ocr={name: ocr for r in results for name, ocr in r.skipped_ocr.items()},
         removed=[name for r in results for name in r.removed],
         held_out=[held for r in results for held in r.held_out],
@@ -440,7 +480,12 @@ def aggregate_results(verdicts: list[ShardDone]) -> SyncResult:
 def run_shard(
     spec: ShardSpec, options: ShardOptions, messages: Queue[ShardMessage], stop: Event
 ) -> None:
-    """Ingest this worker's slice in a fresh process, reporting onto *messages*."""
+    """Ingest this worker's slice in a fresh process, reporting onto *messages*.
+
+    A sync refusal goes to the parent as the error itself, so the parent raises the
+    same class and every entry point that shows a sync refusal shows this one.
+    """
+    from lilbee.app.ingest import SYNC_REFUSALS
     from lilbee.app.services import build_services, services_scope
     from lilbee.core.config.context import config_scope
     from lilbee.data.ingest.pipeline import sync
@@ -452,8 +497,9 @@ def run_shard(
     reporter = _ShardReporter(index, messages)
     try:
         with config_scope(spec.config), services_scope(build_services(spec.config)):
-            result = asyncio.run(
+            result = run_main(
                 sync(
+                    retry_skipped=options.retry_skipped,
                     quiet=True,
                     on_progress=reporter,
                     cancel=stop,
@@ -463,5 +509,7 @@ def run_shard(
             )
         reporter.flush()
         messages.put(ShardDone(kind="done", index=index, result=result, error=None))
+    except SYNC_REFUSALS as exc:
+        messages.put(ShardDone(kind="done", index=index, result=None, error=str(exc), refusal=exc))
     except (Exception, asyncio.CancelledError) as exc:
         messages.put(ShardDone(kind="done", index=index, result=None, error=error_reason(exc)))

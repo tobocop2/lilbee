@@ -21,6 +21,8 @@ htmlcov/
 !tools/qa/**/*.txt
 !tools/qa/**/*.pdf
 !tools/qa/**/*.html
+# The mlx pack's pinned requirements and licence texts must be tracked.
+!packaging/engine-mlx/**/*.txt
 # Site files served by GitHub Pages must be tracked.
 !site/robots.txt
 !site/a6304ff876c16bda1e4371eb04f45c7d.txt
@@ -73,7 +75,6 @@ scripts/*
 !scripts/resolve_rc_run.sh
 !scripts/channel_asset_blockers.sh
 !scripts/ci_retry.sh
-!scripts/install_engine.sh
 !scripts/ci_result.sh
 !scripts/release_ci_passed.sh
 !scripts/flake_pin_pr.sh
@@ -106,7 +107,7 @@ packaging/snap-compat/payload/
 packaging/snap-compat-cuda/payload/
 packaging/snap-cuda/payload/
 # Built engine binaries land here during wheel/executable builds.
-packaging/engine-wheel/lilbee_engine/bin/
+packaging/engine-wheel/lilbee_engine_llama_cpp/bin/
 
 # Benchmark/soak run output is not version-controlled: it is machine- and
 # run-specific data, not documentation.

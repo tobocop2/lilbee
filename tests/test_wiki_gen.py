@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -61,6 +62,8 @@ from lilbee.wiki.shared import (
 from lilbee.wiki.stats import BuildStats
 from lilbee.wiki.synthesis import generate_synthesis_page, group_entities_by_primary_source
 from tests.conftest import make_citation
+
+pytestmark = pytest.mark.usefixtures("counting_provider")
 
 
 @pytest.fixture(autouse=True)
@@ -127,6 +130,7 @@ def _orthogonal_body_vector() -> list[float]:
 def _mock_store() -> MagicMock:
     store = MagicMock(spec=Store)
     store.replace_chunks.side_effect = lambda source, chunk_type, records: len(records)
+    store.source_ids.return_value = {}
     return store
 
 
@@ -1018,6 +1022,23 @@ class TestGenerateSynthesisPage:
         )
         assert result is None
 
+    def test_llm_failure_counts_the_lost_page(self):
+        provider = MagicMock()
+        provider.chat.side_effect = ConnectionError("down")
+        stats = BuildStats()
+
+        result = generate_synthesis_page(
+            "topic",
+            ["a.md"],
+            {"a.md": [_make_chunk("text", source="a.md")]},
+            provider,
+            _mock_store(),
+            cfg,
+            stats=stats,
+        )
+        assert result is None
+        assert (stats.pages_failed, stats.last_model_failure) == (1, "down")
+
     def test_no_valid_citations_returns_none(self, tmp_path: Path):
         chunks_by_source = {"a.md": [_make_chunk("real text", source="a.md")]}
         wiki_text = (
@@ -1287,7 +1308,15 @@ class TestDivertToDrafts:
     @staticmethod
     def _divert(drafts_dir: Path, content: str, sources: list[str]) -> Path:
         return divert_to_drafts(
-            content, drafts_dir, "my-page", 0.45, "diff text", "concepts", sources, source_ids={}
+            content,
+            drafts_dir,
+            "my-page",
+            0.45,
+            "diff text",
+            "concepts",
+            sources,
+            source_ids={},
+            live_ids=None,
         )
 
     def test_writes_draft_with_note(self, tmp_path: Path):
@@ -1396,6 +1425,7 @@ class TestWritePageDrift:
             ["a.md"],
             WikiSubdir.CONCEPTS,
             source_ids={},
+            live_ids=None,
         )
         assert result == page
 
@@ -1410,6 +1440,7 @@ class TestWritePageDrift:
             WikiSubdir.CONCEPTS,
             ["a.md"],
             source_ids={},
+            live_ids=None,
         )
         assert stale.is_file()
         write_page(
@@ -1421,6 +1452,7 @@ class TestWritePageDrift:
             ["a.md"],
             WikiSubdir.CONCEPTS,
             source_ids={},
+            live_ids=None,
         )
         assert not stale.exists()
 
@@ -1437,6 +1469,7 @@ class TestWritePageDrift:
             WikiSubdir.CONCEPTS,
             ["a.md"],
             source_ids={},
+            live_ids=None,
         )
         write_page(
             wiki_root,
@@ -1447,6 +1480,7 @@ class TestWritePageDrift:
             ["b.md"],
             WikiSubdir.ENTITIES,
             source_ids={},
+            live_ids=None,
         )
         assert other.is_file()
         assert "Ford the concept" in other.read_text()
@@ -1462,6 +1496,7 @@ class TestWritePageDrift:
             ["a.md"],
             WikiSubdir.CONCEPTS,
             source_ids={},
+            live_ids=None,
         )
         assert result.is_file()
 
@@ -1486,6 +1521,7 @@ class TestADraftRecordsTheIdsOfItsSources:
             sources,
             WikiSubdir.CONCEPTS,
             source_ids=self._IDS,
+            live_ids=None,
         )
 
     def test_a_page_held_by_the_quality_gate(self, tmp_path: Path):
@@ -1530,6 +1566,7 @@ class TestWritePageToDrafts:
             sources,
             WikiSubdir.CONCEPTS,
             source_ids={},
+            live_ids=None,
         )
 
     def test_the_same_sources_supersede_their_own_draft(self, tmp_path: Path):
@@ -1579,6 +1616,7 @@ class TestWritePageToDrafts:
             WikiSubdir.CONCEPTS,
             ["a.md"],
             source_ids={},
+            live_ids=None,
         )
         result = self._write(wiki_root, "# Brakes\n\nlater proposal", ["a.md"])
         assert result == drift
@@ -1589,7 +1627,12 @@ class TestWritePageToDrafts:
 
 class TestDeleteDriftDraftIfPresent:
     def test_returns_false_when_no_draft_exists(self, tmp_path: Path):
-        assert delete_drift_draft_if_present(tmp_path, "missing", ["a.md"]) is False
+        assert (
+            delete_drift_draft_if_present(
+                tmp_path, "missing", ["a.md"], source_ids={}, live_ids=None
+            )
+            is False
+        )
 
     def test_leaves_a_low_faithfulness_draft_alone(self, tmp_path: Path):
         """The draft names the same sources the publish does, so the
@@ -1599,22 +1642,113 @@ class TestDeleteDriftDraftIfPresent:
         survive on that alone, whatever the marker check did."""
         draft = tmp_path / "x.md"
         draft.write_text('---\nfaithfulness_score: 0.2\nsources: ["a.md"]\n---\n\nbody\n')
-        assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"]) is False
+        assert (
+            delete_drift_draft_if_present(tmp_path, "x", ["a.md"], source_ids={}, live_ids=None)
+            is False
+        )
         assert draft.is_file()
 
     def test_removes_a_drift_draft(self, tmp_path: Path):
         draft = divert_to_drafts(
-            "# body\n", tmp_path, "x", 0.5, "diff", WikiSubdir.CONCEPTS, ["a.md"], source_ids={}
+            "# body\n",
+            tmp_path,
+            "x",
+            0.5,
+            "diff",
+            WikiSubdir.CONCEPTS,
+            ["a.md"],
+            source_ids={},
+            live_ids=None,
         )
-        assert delete_drift_draft_if_present(tmp_path, "x", ["a.md"]) is True
+        assert (
+            delete_drift_draft_if_present(tmp_path, "x", ["a.md"], source_ids={}, live_ids=None)
+            is True
+        )
+        assert not draft.exists()
+
+    def test_removes_a_drift_draft_written_before_ids_by_its_path_key(self, tmp_path: Path):
+        """An older draft keys its marker by the hash of the paths and records no ids."""
+        from lilbee.wiki.batch import short_source_hash
+
+        key = short_source_hash("a.md")
+        draft = tmp_path / "x.md"
+        draft.write_text(
+            f"<!-- DRIFT: 50% content changed; origin: concepts; source: {key}"
+            ' - flagged for human review -->\n\n---\nsources: ["a.md"]\n---\n\nbody\n',
+            encoding="utf-8",
+        )
+        assert delete_drift_draft_if_present(
+            tmp_path, "x", ["a.md"], source_ids={"a.md": "1"}, live_ids=None
+        )
+        assert not draft.exists()
+
+    def test_keeps_an_id_keyed_draft_when_a_new_file_took_the_path(self, tmp_path: Path):
+        """The same path under another id is another source: the path key does not claim it."""
+        draft = divert_to_drafts(
+            '---\nsources: ["a.md"]\n---\n\nbody\n',
+            tmp_path,
+            "x",
+            0.5,
+            "diff",
+            WikiSubdir.CONCEPTS,
+            ["a.md"],
+            source_ids={"a.md": "1"},
+            live_ids=None,
+        )
+        assert not delete_drift_draft_if_present(
+            tmp_path, "x", ["a.md"], source_ids={"a.md": "2"}, live_ids=lambda ids: {"1": "a.md"}
+        )
+        assert draft.is_file()
+
+    def test_removes_an_id_keyed_draft_whose_ids_are_all_gone_from_the_store(self, tmp_path: Path):
+        """A rebuild gives every source a new id: the draft then matches by names."""
+        draft = divert_to_drafts(
+            '---\nsources: ["a.md"]\n---\n\nbody\n',
+            tmp_path,
+            "x",
+            0.5,
+            "diff",
+            WikiSubdir.CONCEPTS,
+            ["a.md"],
+            source_ids={"a.md": "1"},
+            live_ids=None,
+        )
+        assert delete_drift_draft_if_present(
+            tmp_path, "x", ["a.md"], source_ids={"a.md": "2"}, live_ids=lambda ids: {}
+        )
         assert not draft.exists()
 
     def test_keeps_a_drift_draft_belonging_to_another_source(self, tmp_path: Path):
         draft = divert_to_drafts(
-            "# body\n", tmp_path, "x", 0.5, "diff", WikiSubdir.CONCEPTS, ["a.md"], source_ids={}
+            "# body\n",
+            tmp_path,
+            "x",
+            0.5,
+            "diff",
+            WikiSubdir.CONCEPTS,
+            ["a.md"],
+            source_ids={},
+            live_ids=None,
         )
-        assert delete_drift_draft_if_present(tmp_path, "x", ["b.md"]) is False
+        assert (
+            delete_drift_draft_if_present(tmp_path, "x", ["b.md"], source_ids={}, live_ids=None)
+            is False
+        )
         assert draft.is_file()
+
+
+class TestLiveIdsIsRequired:
+    """A default would let a new caller skip the rebuild check without notice."""
+
+    @pytest.mark.parametrize(
+        "writer", [write_page, divert_to_drafts, delete_drift_draft_if_present]
+    )
+    def test_the_writer_has_no_default_for_live_ids(self, writer):
+        assert inspect.signature(writer).parameters["live_ids"].default is inspect.Parameter.empty
+
+    def test_a_call_without_live_ids_is_refused(self, tmp_path: Path):
+        with pytest.raises(TypeError, match="live_ids"):
+            delete_drift_draft_if_present(tmp_path, "x", ["a.md"], source_ids={})  # type: ignore[call-arg]
 
 
 class TestSynthesisDriftDetection:
@@ -1988,6 +2122,29 @@ class TestGroupEntitiesByPrimarySource:
         assert group_entities_by_primary_source([ent]) == {}
 
 
+class TestEntityScoringChunks:
+    def test_a_label_whose_refs_all_fell_outside_the_budget_is_absent(self):
+        from lilbee.wiki.synthesis import _entity_scoring_chunks
+
+        kept = _make_chunk("kept", source="a.md", chunk_index=0)
+        in_budget = ExtractedEntity(
+            slug="x",
+            kind=EntityKind.ENTITY,
+            label="X",
+            type_hint="PERSON",
+            chunk_refs=(ChunkRef("a.md", 0), ChunkRef("a.md", 7)),
+        )
+        dropped = ExtractedEntity(
+            slug="y",
+            kind=EntityKind.ENTITY,
+            label="Y",
+            type_hint="PERSON",
+            chunk_refs=(ChunkRef("a.md", 8),),
+        )
+        scoped = _entity_scoring_chunks([in_budget, dropped], [kept])
+        assert scoped == {"X": [kept]}
+
+
 class TestLegacyConceptsMigration:
     def test_archives_concept_pages_and_deletes_their_rows(self, tmp_path: Path):
         wiki_root = tmp_path / "wiki"
@@ -2244,6 +2401,39 @@ class TestRunFullSynthesize:
         assert result["paths"][0].endswith("typing.md")
 
 
+class TestRunFullSynthesizeWhenTheModelFails:
+    def test_a_run_where_every_call_fails_raises_with_the_cause(self, monkeypatch):
+        from lilbee.retrieval.clustering import SourceCluster
+        from lilbee.wiki.generation import run_full_synthesize
+
+        store = _mock_store()
+        store.get_chunks_by_source.side_effect = lambda name: [_make_chunk("text", source=name)]
+        services = MagicMock()
+        services.store = store
+        services.clusterer = _FakeClusterer(
+            [
+                SourceCluster(
+                    cluster_id="x", label="topic", sources=frozenset({"a.md", "b.md", "c.md"})
+                )
+            ]
+        )
+        services.provider.chat.side_effect = ConnectionError("The chat model is not running.")
+        services.provider.get_capabilities.return_value = []
+        monkeypatch.setattr("lilbee.wiki.generation.get_services", lambda: services)
+
+        with pytest.raises(RuntimeError, match=r"The chat model is not running\."):
+            run_full_synthesize(cfg)
+
+    def test_a_run_with_no_clusters_does_not_raise(self, monkeypatch):
+        from lilbee.wiki.generation import run_full_synthesize
+
+        services = MagicMock()
+        services.clusterer = _FakeClusterer([])
+        monkeypatch.setattr("lilbee.wiki.generation.get_services", lambda: services)
+
+        assert run_full_synthesize(cfg)["count"] == 0
+
+
 class TestRunSummaryStats:
     """Both run entry points report what their gates did, in the summary and log.md."""
 
@@ -2380,7 +2570,7 @@ class TestPersistAndFinalizeDrafts:
             target,
             [],
             ["doc.md"],
-            MagicMock(spec=Store),
+            _mock_store(),
             cfg,
             stats=stats,
         )
@@ -2421,6 +2611,7 @@ class TestWritePendingMarker:
             "concepts",
             ["a.md"],
             source_ids={},
+            live_ids=None,
         )
         with caplog.at_level("WARNING", logger="lilbee.wiki.persistence"):
             result = write_pending_marker(

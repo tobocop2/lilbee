@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from itertools import pairwise
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -17,8 +17,10 @@ from lilbee.providers.base import (
     TokenUsage,
     ToolCall,
     ToolCallDelta,
+    byte_token_estimate,
 )
 from lilbee.server.chat_dispatch.canonical import (
+    IMAGES_DROPPED_REASON,
     CanonicalChatRequest,
     CanonicalMessage,
     CanonicalTool,
@@ -40,6 +42,8 @@ from lilbee.server.chat_dispatch.canonical import (
     ToolUseDelta,
 )
 from lilbee.server.chat_dispatch.dispatch import (
+    _TEMPLATE_MESSAGE_TOKENS,
+    _TEMPLATE_PREAMBLE_TOKENS,
     ModelDoesNotSupportToolsError,
     ModelNotFoundError,
     _provider_chat_kwargs,
@@ -63,6 +67,9 @@ def services_with_model(monkeypatch):
         text="hello", tool_calls=(), finish_reason=FinishReason.STOP
     )
     provider.supports_tools.return_value = False
+    provider.estimate_chat_tokens.side_effect = lambda text, *, model=None: byte_token_estimate(
+        text
+    )
 
     services = make_mock_services(provider=provider)
     installed = MagicMock()
@@ -342,6 +349,27 @@ class TestDispatchChat:
         opts = services_with_model.provider.chat.call_args.kwargs["options"]
         assert opts == {"think": False}
 
+    @pytest.mark.parametrize(
+        "response_format",
+        [
+            {"type": "text"},
+            {"type": "json_object"},
+            {"type": "json_schema", "json_schema": {"name": "city", "schema": {"type": "object"}}},
+            {"type": "bogus"},
+        ],
+    )
+    def test_response_format_passed_verbatim_to_provider(
+        self, services_with_model, response_format
+    ) -> None:
+        dispatch_chat(_req(response_format=response_format))
+        opts = services_with_model.provider.chat.call_args.kwargs["options"]
+        assert opts == {"response_format": response_format}
+
+    def test_response_format_omitted_when_unset(self, services_with_model) -> None:
+        dispatch_chat(_req(temperature=0.2))
+        opts = services_with_model.provider.chat.call_args.kwargs["options"]
+        assert "response_format" not in opts
+
     def test_think_omitted_when_unset(self, services_with_model) -> None:
         dispatch_chat(_req(temperature=0.2))
         opts = services_with_model.provider.chat.call_args.kwargs["options"]
@@ -542,9 +570,18 @@ class TestConfiguredModelPreflight:
         with caplog.at_level("WARNING"):
             assert preflight_chat_request(_req(dropped_images=2)) == "vendor/model::Q4"
         assert [r.getMessage() for r in caplog.records if "image" in r.getMessage()] == [
-            "Dropped 2 image part(s) from a chat request: "
-            "lilbee cannot pass images to vendor/model::Q4"
+            f"Dropped 2 image part(s) from a chat request to vendor/model::Q4: "
+            f"{IMAGES_DROPPED_REASON}"
         ]
+
+    def test_the_log_line_does_not_say_the_model_cannot_read_images(
+        self, services_with_model, caplog
+    ) -> None:
+        with caplog.at_level("WARNING"):
+            preflight_chat_request(_req(dropped_images=1))
+        assert "cannot pass images" not in caplog.text
+        assert "projector" in caplog.text
+        assert "vision role" in caplog.text
 
     def test_no_log_or_probe_when_no_images_were_dropped(self, services_with_model, caplog) -> None:
         with caplog.at_level("WARNING"):
@@ -1253,3 +1290,51 @@ class TestCountRequestTokens:
         steps = [later - earlier for earlier, later in pairwise(counts)]
         assert steps[0] > 0
         assert steps == [steps[0], steps[0] * 2, steps[0] * 4]
+
+    def test_the_estimate_counts_the_text_with_the_providers_counter(
+        self, services_with_model
+    ) -> None:
+        """A counter that reads fewer tokens than bytes lowers the count; the allowances stay."""
+        provider = services_with_model.provider
+        provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        provider.estimate_chat_tokens.side_effect = None
+        provider.estimate_chat_tokens.return_value = 3
+        req = _req(
+            system="be brief",
+            messages=[CanonicalMessage(role="user", content=[TextBlock(text="hello there")])],
+        )
+
+        count = count_request_tokens(req, canonical_model="vendor/model::Q4")
+
+        assert provider.estimate_chat_tokens.call_args == call(
+            "be brief\nhello there", model="vendor/model::Q4"
+        )
+        assert count == PromptTokenCount(
+            tokens=3 + _TEMPLATE_PREAMBLE_TOKENS + 2 * _TEMPLATE_MESSAGE_TOKENS,
+            accuracy=TokenCountAccuracy.ESTIMATED,
+        )
+
+    def test_the_counter_reads_tool_schemas_tool_calls_and_tool_results(
+        self, services_with_model
+    ) -> None:
+        """Every piece of text the request puts into the prompt reaches the counter in one call."""
+        provider = services_with_model.provider
+        provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        req = _req(messages=_TOOL_EXCHANGE, tools=[_BIG_TOOLS[0]])
+
+        count_request_tokens(req, canonical_model="vendor/model::Q4")
+
+        assert provider.estimate_chat_tokens.call_count == 1
+        counted = provider.estimate_chat_tokens.call_args.args[0]
+        tool_use = _TOOL_EXCHANGE[1].content[0]
+        assert isinstance(tool_use, ToolUseBlock)
+        for piece in (
+            _BIG_TOOLS[0].name,
+            _BIG_TOOLS[0].description,
+            json.dumps(_BIG_TOOLS[0].input_schema),
+            tool_use.name,
+            json.dumps(tool_use.input),
+            _TOOL_LOG,
+            "read it",
+        ):
+            assert piece in counted

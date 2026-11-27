@@ -7,6 +7,7 @@ implementation.
 import re
 import tempfile
 from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,18 +21,13 @@ from tests.conftest import make_mock_services
 @pytest.fixture(autouse=True)
 def mock_services():
     """Mock services for every chunker test: the sizer reads the provider's embed cap
-    and binds its tokenizer to the provider; the binding is dropped after each test."""
-    import xberg
-
+    and counts through the tokenizer registered for that provider."""
     import lilbee.app.services as svc_mod
-    from lilbee.data.types import TokenizerBackendName
 
     services = make_mock_services()
     svc_mod.set_services(services)
     yield services
     svc_mod.set_services(None)
-    if TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends():
-        xberg.unregister_tokenizer_backend(TokenizerBackendName.LILBEE)
 
 
 @dataclass
@@ -125,7 +121,96 @@ class TestChunkText:
         assert enabled.chunker_type == "semantic"
 
 
+class TestChunkTextHandsXbergItsArguments:
+    """What chunk_text asks xberg to extract: the mime type and the chunker it picks."""
+
+    @pytest.fixture
+    def asked(self, monkeypatch):
+        calls: list[tuple[str, str]] = []
+
+        def fake_extract_document(data, mime_type, *, config):
+            calls.append((mime_type, config.chunking.chunker_type))
+            return SimpleNamespace(chunks=[])
+
+        monkeypatch.setattr("lilbee.data.extract.xberg.extract_document", fake_extract_document)
+        return calls
+
+    def test_a_plain_call_extracts_plain_text_with_the_semantic_chunker(self, monkeypatch, asked):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+
+        chunk_text("Some text to split.")
+
+        assert asked == [("text/plain", "semantic")]
+
+    def test_the_mime_type_of_the_caller_reaches_the_extraction(self, asked):
+        chunk_text("# Title\n\nSome text.", mime_type="text/markdown")
+
+        assert [mime for mime, _chunker in asked] == ["text/markdown"]
+
+    def test_use_semantic_true_reaches_the_chunker_choice(self, monkeypatch, asked):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+
+        chunk_text("Some text to split.", use_semantic=True)
+        chunk_text("Some text to split.", use_semantic=False)
+
+        assert [chunker for _mime, chunker in asked] == ["semantic", "text"]
+
+    def test_text_of_only_whitespace_is_never_extracted(self, asked):
+        assert chunk_text("   \n\t ") == []
+        assert asked == []
+
+
 class TestBuildChunkingConfig:
+    def test_semantic_chunker_overlaps_by_the_character_budget(self, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, build_chunking_config
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_overlap", 37)
+
+        result = build_chunking_config()
+
+        assert result.overlap == 37 * CHARS_PER_TOKEN
+
+    @pytest.mark.parametrize("semantic", [True, False])
+    def test_table_extraction_repeats_the_header_row_on_every_chunker(self, monkeypatch, semantic):
+        from xberg import TableChunkingMode
+
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import build_chunking_config
+
+        monkeypatch.setattr(cfg, "semantic_chunking", semantic)
+        monkeypatch.setattr(cfg, "table_extraction", True)
+        monkeypatch.setattr(cfg, "chunk_size", 300)
+
+        result = build_chunking_config()
+
+        assert result.table_chunking == TableChunkingMode.REPEAT_HEADER
+        assert result.chunker_type == ("semantic" if semantic else "text")
+        assert result.max_characters == (1200 if semantic else 300)
+
+    @pytest.mark.parametrize("semantic", [True, False])
+    def test_without_table_extraction_the_table_mode_stays_at_the_default(
+        self, monkeypatch, semantic
+    ):
+        from xberg import ChunkingConfig, TableChunkingMode
+
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import build_chunking_config
+
+        monkeypatch.setattr(cfg, "semantic_chunking", semantic)
+        monkeypatch.setattr(cfg, "table_extraction", False)
+
+        result = build_chunking_config()
+
+        assert result.table_chunking == ChunkingConfig().table_chunking
+        assert result.table_chunking != TableChunkingMode.REPEAT_HEADER
+
     def test_semantic_enabled_uses_semantic_chunker_with_embedding(self, monkeypatch):
         """Semantic path requires an EmbeddingConfig or xberg silently falls back."""
         from lilbee.core.config import cfg
@@ -148,22 +233,26 @@ class TestBuildChunkingConfig:
         result = build_chunking_config()
         assert result.max_characters == 512 * CHARS_PER_TOKEN
         assert result.embedding is not None
-        # Boundary detection routes to lilbee's embedder via xberg's plugin backend
-        # (registered in lilbee.data.extract.backends.registry), not the ONNX preset.
-        assert result.embedding.model.type == "plugin"
-        assert str(result.embedding.model) == '{"type":"plugin","name":"lilbee"}'
+        # Boundary detection routes to the current provider's embedder via xberg's plugin
+        # backend (registered in lilbee.data.extract.backends.embedding), not the ONNX preset.
+        from lilbee.app.services import get_services
+        from lilbee.data.extract.backends.embedding import provider_embedders
 
-    def test_char_budget_when_disabled(self, monkeypatch):
+        assert result.embedding.model.type == "plugin"
+        name = provider_embedders.name_for(get_services().provider)
+        assert str(result.embedding.model) == f'{{"type":"plugin","name":"{name}"}}'
+
+    def test_token_budget_when_semantic_disabled(self, monkeypatch):
         from lilbee.core.config import cfg
-        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, build_chunking_config
+        from lilbee.data.extract.chunk import build_chunking_config
 
         monkeypatch.setattr(cfg, "semantic_chunking", False)
         monkeypatch.setattr(cfg, "chunk_size", 512)
         monkeypatch.setattr(cfg, "chunk_overlap", 100)
         result = build_chunking_config()
         assert result.chunker_type == "text"
-        assert result.max_characters == 512 * CHARS_PER_TOKEN
-        assert result.overlap == 100 * CHARS_PER_TOKEN
+        assert (result.max_characters, result.overlap) == (512, 100)
+        assert str(result.sizing) == _current_provider_sizing()
         assert result.embedding is None
 
     def test_disabled_does_not_attach_embedding(self, monkeypatch):
@@ -188,6 +277,8 @@ class TestBuildChunkingConfig:
 
 
 _BGE_SMALL_CAP = 504
+# The chunk size the refusal names for that window: the cap less the input headroom.
+_BGE_SMALL_CHUNK = _BGE_SMALL_CAP - 128
 """bge-small-en-v1.5 serves a 512 window; the cap is one margin below it."""
 _TOKEN = re.compile(r"\w{1,4}|[^\w\s]")
 
@@ -195,6 +286,11 @@ _TOKEN = re.compile(r"\w{1,4}|[^\w\s]")
 def _wordpiece_like(text: str) -> int:
     """A tokenizer that splits words into pieces of four letters and counts punctuation."""
     return len(_TOKEN.findall(text))
+
+
+def _heavy_at(extra: int):
+    """A tokenizer of one token per character and *extra* more for each ``@``."""
+    return lambda text: len(text) + extra * text.count("@")
 
 
 _PROSE = " ".join(
@@ -215,30 +311,42 @@ def bge_small_embedder(mock_services):
 
 
 class TestChunkBudgetUnderTheEmbedWindow:
-    """When the embedder's window is below the character budget, chunks are sized in
-    the embedder's own tokens at the cap; a wide window leaves the character budget."""
+    """Chunks are sized in the embedder's own tokens at ``chunk_size``; a window that
+    cannot hold one chunk refuses instead of shrinking the chunk."""
 
-    def test_binding_window_selects_tokenizer_sizing_at_the_cap(self, monkeypatch, mock_services):
+    def test_a_window_below_one_chunk_refuses_and_names_the_working_size(
+        self, monkeypatch, mock_services
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import EmbedWindowError, _size_params
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        mock_services.provider.embed_token_cap.return_value = _BGE_SMALL_CAP
+        with pytest.raises(EmbedWindowError, match=f"Set chunk_size to {_BGE_SMALL_CHUNK} or"):
+            _size_params()
+
+    def test_a_window_that_holds_the_chunk_selects_tokenizer_sizing_at_chunk_size(
+        self, monkeypatch, mock_services
+    ):
         from lilbee.core.config import cfg
         from lilbee.data.extract.chunk import _size_params
 
-        monkeypatch.setattr(cfg, "token_sizing", False)
-        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_size", _BGE_SMALL_CHUNK)
         monkeypatch.setattr(cfg, "chunk_overlap", 300)
         mock_services.provider.embed_token_cap.return_value = _BGE_SMALL_CAP
         max_size, overlap, sizing = _size_params()
-        assert (max_size, overlap) == (_BGE_SMALL_CAP, _BGE_SMALL_CAP // 2)
-        assert str(sizing) == _TOKENIZER_SIZING
+        assert (max_size, overlap) == (_BGE_SMALL_CHUNK, _BGE_SMALL_CHUNK // 2)
+        assert str(sizing) == _current_provider_sizing()
 
-    def test_wide_window_keeps_the_character_budget(self, monkeypatch, mock_services):
+    def test_wide_window_keeps_chunk_size(self, monkeypatch, mock_services):
         from lilbee.core.config import cfg
-        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, _size_params
+        from lilbee.data.extract.chunk import _size_params
 
-        monkeypatch.setattr(cfg, "token_sizing", False)
         monkeypatch.setattr(cfg, "chunk_size", 512)
         monkeypatch.setattr(cfg, "chunk_overlap", 100)
-        mock_services.provider.embed_token_cap.return_value = 512 * CHARS_PER_TOKEN
-        assert _size_params() == (512 * CHARS_PER_TOKEN, 100 * CHARS_PER_TOKEN, "characters")
+        mock_services.provider.embed_token_cap.return_value = 2048
+        max_size, overlap, _sizing = _size_params()
+        assert (max_size, overlap) == (512, 100)
 
     def test_character_budget_is_never_cut_to_the_cap(self, monkeypatch, mock_services):
         from lilbee.core.config import cfg
@@ -249,127 +357,106 @@ class TestChunkBudgetUnderTheEmbedWindow:
         mock_services.provider.embed_token_cap.return_value = _BGE_SMALL_CAP
         assert _char_budget() == (512 * CHARS_PER_TOKEN, 100 * CHARS_PER_TOKEN)
 
-    def test_no_managed_embedder_keeps_the_character_budget(self, monkeypatch, mock_services):
-        from lilbee.core.config import cfg
-        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, _size_params
-
-        monkeypatch.setattr(cfg, "token_sizing", False)
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        mock_services.provider.embed_token_cap.return_value = None
-        assert _size_params()[0] == 512 * CHARS_PER_TOKEN
-
-    def test_token_sizing_budget_is_cut_to_the_served_cap(self, monkeypatch, mock_services):
+    def test_no_managed_embedder_keeps_chunk_size(self, monkeypatch, mock_services):
         from lilbee.core.config import cfg
         from lilbee.data.extract.chunk import _size_params
 
-        monkeypatch.setattr(cfg, "token_sizing", True)
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "chunk_overlap", 300)
-        mock_services.provider.embed_token_cap.return_value = _BGE_SMALL_CAP
-        max_size, overlap, _sizing = _size_params()
-        assert (max_size, overlap) == (_BGE_SMALL_CAP, _BGE_SMALL_CAP // 2)
+        mock_services.provider.embed_token_cap.return_value = None
+        assert _size_params()[0] == 512
 
     def test_chunks_fit_the_cap_in_the_embedders_tokens_without_shrinking_prose(
         self, monkeypatch, bge_small_embedder
     ):
-        """Under the real bge-small cap, no chunk exceeds it under the tokenizer the
+        """Under the real bge-small cap, no chunk exceeds chunk_size under the tokenizer the
         chunker sized with, and prose chunks keep near the configured size."""
         from lilbee.core.config import cfg
 
-        monkeypatch.setattr(cfg, "token_sizing", False)
         monkeypatch.setattr(cfg, "semantic_chunking", False)
-        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_size", _BGE_SMALL_CHUNK)
         monkeypatch.setattr(cfg, "chunk_overlap", 100)
 
         prose = chunk_text(_PROSE, use_semantic=False)
         dense = chunk_text(_DENSE, use_semantic=False)
 
-        assert max(_wordpiece_like(c) for c in prose + dense) <= _BGE_SMALL_CAP
-        assert max(len(c) for c in prose) > 2 * _BGE_SMALL_CAP
-        assert max(len(c) for c in dense) <= _BGE_SMALL_CAP * 4
+        assert max(_wordpiece_like(c) for c in prose + dense) <= _BGE_SMALL_CHUNK
+        assert max(len(c) for c in prose) > 2 * _BGE_SMALL_CHUNK
+        assert max(len(c) for c in dense) <= _BGE_SMALL_CHUNK * 4
 
-    def test_tokenizer_is_bound_to_the_provider_on_first_use(self, monkeypatch, bge_small_embedder):
+    def test_tokenizer_is_registered_for_the_provider_on_first_use(
+        self, monkeypatch, bge_small_embedder
+    ):
         import xberg
 
         from lilbee.core.config import cfg
-        from lilbee.data.types import TokenizerBackendName
+        from lilbee.data.extract.backends.tokenizer import provider_tokenizers
 
-        monkeypatch.setattr(cfg, "token_sizing", False)
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        assert TokenizerBackendName.LILBEE not in xberg.list_tokenizer_backends()
+        monkeypatch.setattr(cfg, "chunk_size", _BGE_SMALL_CHUNK)
+        before = set(xberg.list_tokenizer_backends())
         chunk_text("a short line", use_semantic=False)
-        assert TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends()
+        added = set(xberg.list_tokenizer_backends()) - before
+        assert added == {provider_tokenizers.name_for(bge_small_embedder)}
         bge_small_embedder.count_tokens.assert_called()
 
 
-_TOKENIZER_SIZING = '{"type":"tokenizer","model":"lilbee"}'
+def _current_provider_sizing() -> str:
+    """The sizing that names the tokenizer registered for the current provider."""
+    from lilbee.app.services import get_services
+    from lilbee.data.extract.backends.tokenizer import provider_tokenizers
+
+    name = provider_tokenizers.name_for(get_services().provider)
+    return f'{{"type":"tokenizer","model":"{name}"}}'
 
 
 class TestTokenSizing:
-    """cfg.token_sizing routes the plain and heading chunkers through lilbee's
-    registered tokenizer backend, so chunk_size is a real token budget."""
+    """The plain and heading chunkers go through lilbee's registered tokenizer
+    backend, so chunk_size is a real token budget."""
 
-    def test_size_params_off_is_char_budget_with_character_sizing(self, monkeypatch):
-        from lilbee.core.config import cfg
-        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, _size_params
-
-        monkeypatch.setattr(cfg, "token_sizing", False)
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "chunk_overlap", 100)
-        max_size, overlap, sizing = _size_params()
-        assert (max_size, overlap) == (512 * CHARS_PER_TOKEN, 100 * CHARS_PER_TOKEN)
-        assert sizing == "characters"
-
-    def test_size_params_on_is_raw_token_budget_with_sizing(self, monkeypatch):
+    def test_size_params_is_raw_token_budget_with_sizing(self, monkeypatch):
         from lilbee.core.config import cfg
         from lilbee.data.extract.chunk import _size_params
 
-        monkeypatch.setattr(cfg, "token_sizing", True)
         monkeypatch.setattr(cfg, "chunk_size", 512)
         monkeypatch.setattr(cfg, "chunk_overlap", 100)
         max_size, overlap, sizing = _size_params()
         assert (max_size, overlap) == (512, 100)
-        assert str(sizing) == _TOKENIZER_SIZING
+        assert str(sizing) == _current_provider_sizing()
 
     def test_overlap_capped_at_half_the_token_budget(self, monkeypatch):
         from lilbee.core.config import cfg
         from lilbee.data.extract.chunk import _size_params
 
-        monkeypatch.setattr(cfg, "token_sizing", True)
         monkeypatch.setattr(cfg, "chunk_size", 100)
         monkeypatch.setattr(cfg, "chunk_overlap", 90)
         _max_size, overlap, _sizing = _size_params()
         assert overlap == 50
 
-    def test_default_chunker_attaches_tokenizer_sizing(self, monkeypatch):
+    def test_the_overlap_cap_of_an_odd_budget_is_a_whole_number_of_tokens(self, monkeypatch):
         from lilbee.core.config import cfg
-        from lilbee.data.extract.chunk import build_chunking_config
+        from lilbee.data.extract.chunk import _size_params
 
-        monkeypatch.setattr(cfg, "semantic_chunking", False)
-        monkeypatch.setattr(cfg, "token_sizing", True)
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        result = build_chunking_config()
-        assert result.max_characters == 512
-        assert str(result.sizing) == _TOKENIZER_SIZING
+        monkeypatch.setattr(cfg, "chunk_overlap", 50)
 
-    def test_semantic_chunker_ignores_token_sizing(self, monkeypatch):
-        """The semantic chunker sizes by characters, so it keeps the char budget even
-        with token_sizing on (xberg's ChunkSizing has no effect on that path)."""
+        _max_size, overlap, _sizing = _size_params(7)
+
+        assert overlap == 3
+        assert isinstance(overlap, int)
+
+    def test_semantic_chunker_keeps_the_character_budget(self, monkeypatch):
+        """The semantic chunker sizes by characters (xberg's ChunkSizing has no
+        effect on that path)."""
         from lilbee.core.config import cfg
         from lilbee.data.extract.chunk import CHARS_PER_TOKEN, build_chunking_config
 
         monkeypatch.setattr(cfg, "semantic_chunking", True)
-        monkeypatch.setattr(cfg, "token_sizing", True)
         monkeypatch.setattr(cfg, "chunk_size", 512)
         result = build_chunking_config()
         assert result.chunker_type == "semantic"
         assert result.max_characters == 512 * CHARS_PER_TOKEN
 
     def test_heading_path_attaches_tokenizer_sizing(self, monkeypatch):
-        from lilbee.core.config import cfg
         from lilbee.data.extract.chunk import chunk_text
 
-        monkeypatch.setattr(cfg, "token_sizing", True)
         captured = {}
 
         def fake_extract_document(data, mime_type, *, config):
@@ -380,8 +467,267 @@ class TestTokenSizing:
 
         monkeypatch.setattr("lilbee.data.extract.xberg.extract_document", fake_extract_document)
         chunk_text("# Heading\n\nbody text", mime_type="text/markdown", heading_context=True)
-        assert captured["sizing"] == _TOKENIZER_SIZING
+        assert captured["sizing"] == _current_provider_sizing()
         assert captured["chunker_type"] == "markdown"
+
+
+def _markdown_table(rows: int, header: str = "| id | city | note |") -> str:
+    lines = [header, "|---|---|---|"]
+    lines.extend(f"| {i:03d} | Lisbon | row {i:03d} |" for i in range(rows))
+    return "\n".join(lines)
+
+
+class TestTablesFitTheEmbedderTokenLimit:
+    """A table chunk is cut to the token budget at its rows."""
+
+    def test_a_table_within_the_budget_is_kept_whole(self, mock_services):
+        from lilbee.data.extract.chunk import fit_table_budget
+
+        mock_services.provider.count_tokens.side_effect = len
+        table = _markdown_table(2)
+
+        assert fit_table_budget(table, 512) == [table]
+
+    def test_a_table_over_the_budget_is_cut_with_its_header_in_each_piece(
+        self, monkeypatch, mock_services
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import fit_table_budget
+
+        monkeypatch.setattr(cfg, "chunk_overlap", 0)
+        mock_services.provider.count_tokens.side_effect = len
+        table = _markdown_table(30)
+
+        pieces = fit_table_budget(table, 128)
+
+        assert len(pieces) > 1
+        assert max(len(p) for p in pieces) <= 128
+        assert all(p.startswith("| id | city | note |\n|---|---|---|") for p in pieces)
+        rows = table.splitlines()[2:]
+        kept = [line for p in pieces for line in p.splitlines()[2:]]
+        assert kept == rows
+
+    def test_a_header_over_half_the_budget_is_not_repeated(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import fit_table_budget
+
+        monkeypatch.setattr(cfg, "chunk_overlap", 0)
+        mock_services.provider.count_tokens.side_effect = len
+        header = "| " + " | ".join(f"column {c:02d}" for c in range(3)) + " |"
+        table = _markdown_table(30, header=header)
+
+        pieces = fit_table_budget(table, 64)
+
+        assert len(pieces) > 1
+        assert max(len(p) for p in pieces) <= 64
+        assert sum(p.count(header) for p in pieces) <= 1
+
+
+class TestChunksFitTheEmbedderTokenLimit:
+    """Chunks are sized by the embedder's own token count under the default config."""
+
+    def test_dense_text_never_exceeds_chunk_size_tokens(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_overlap", 100)
+        mock_services.provider.embed_token_cap.return_value = None
+        mock_services.provider.count_tokens.side_effect = _wordpiece_like
+
+        chunks = chunk_text(_DENSE, use_semantic=False)
+
+        assert len(chunks) > 1
+        assert max(_wordpiece_like(c) for c in chunks) <= 512
+
+    @pytest.fixture
+    def one_semantic_chunk(self, monkeypatch):
+        """xberg's semantic chunker as one chunk of the whole text; other chunkers run for real."""
+        from lilbee.data.extract import xberg as xberg_mod
+
+        real = xberg_mod.extract_document
+
+        def extract(data, mime_type, *, config):
+            if config.chunking.chunker_type == "semantic":
+                return SimpleNamespace(chunks=[SimpleNamespace(content=data.decode("utf-8"))])
+            return real(data, mime_type, config=config)
+
+        monkeypatch.setattr(xberg_mod, "extract_document", extract)
+
+    def test_a_semantic_chunk_of_more_tokens_than_characters_is_cut_to_chunk_size(
+        self, monkeypatch, mock_services, one_semantic_chunk
+    ):
+        """A byte-level tokenizer makes more than one token from a character, so a chunk
+        within the character budget can still pass chunk_size tokens."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "chunk_size", 128)
+        monkeypatch.setattr(cfg, "chunk_overlap", 0)
+        mock_services.provider.embed_token_cap.return_value = None
+        mock_services.provider.count_tokens.side_effect = lambda text: 3 * len(text)
+        text = "\n".join(f"line {i:03d}" for i in range(40))
+
+        chunks = chunk_text(text)
+
+        assert len(text) < 128 * 4
+        assert len(chunks) > 1
+        assert max(3 * len(c) for c in chunks) <= 128
+        assert "".join(chunks).replace("\n", "") == text.replace("\n", "")
+
+    def test_a_semantic_chunk_within_chunk_size_tokens_is_kept_whole(
+        self, monkeypatch, mock_services, one_semantic_chunk
+    ):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "chunk_size", 128)
+        mock_services.provider.embed_token_cap.return_value = None
+        mock_services.provider.count_tokens.side_effect = len
+        text = "A short topic that fits."
+
+        assert chunk_text(text) == [text]
+
+    def test_a_semantic_chunk_is_cut_to_chunk_size_in_the_embedders_tokens(
+        self, monkeypatch, mock_services, one_semantic_chunk
+    ):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        monkeypatch.setattr(cfg, "chunk_overlap", 0)
+        mock_services.provider.embed_token_cap.return_value = 64 + 128
+        mock_services.provider.count_tokens.side_effect = len
+        text = "\n".join(f"line {i:03d}" for i in range(100))
+
+        chunks = chunk_text(text)
+
+        assert len(chunks) > 1
+        assert max(len(c) for c in chunks) <= 64
+
+    def test_breadcrumb_counts_inside_the_budget(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 128)
+        monkeypatch.setattr(cfg, "chunk_overlap", 20)
+        mock_services.provider.embed_token_cap.return_value = None
+        mock_services.provider.count_tokens.side_effect = _wordpiece_like
+        body = "\n\n".join(
+            f"Paragraph {i}: the aqueduct carried water to the city." for i in range(80)
+        )
+        doc = "# Roman Water Supply\n\n## Aqueducts and Channels\n\n" + body
+
+        chunks = chunk_text(doc, mime_type="text/markdown", heading_context=True)
+
+        assert len(chunks) > 1
+        assert any(c.startswith("# Roman Water Supply > ## Aqueducts and Channels") for c in chunks)
+        assert max(_wordpiece_like(c) for c in chunks) <= 128
+
+    def test_a_heading_path_over_half_the_budget_is_dropped(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        monkeypatch.setattr(cfg, "chunk_overlap", 8)
+        mock_services.provider.embed_token_cap.return_value = None
+        mock_services.provider.count_tokens.side_effect = _wordpiece_like
+        heading = " ".join(f"section{i}" for i in range(40))
+        body = "\n\n".join(
+            f"Paragraph {i}: the aqueduct carried water to the city." for i in range(30)
+        )
+
+        chunks = chunk_text(
+            f"# {heading}\n\n{body}", mime_type="text/markdown", heading_context=True
+        )
+
+        assert len(chunks) > 1
+        assert all(heading not in c for c in chunks)
+        assert max(_wordpiece_like(c) for c in chunks) <= 64
+
+
+def _headings(*texts: str) -> SimpleNamespace:
+    """A heading context of one level-1 heading per text."""
+    return SimpleNamespace(headings=[SimpleNamespace(level=1, text=t) for t in texts])
+
+
+def _words(n: int, stem: str = "w") -> str:
+    return " ".join(f"{stem}{i}" for i in range(n))
+
+
+class TestFitBreadcrumb:
+    """The heading path fits inside the budget, or goes when it takes over half of it."""
+
+    @pytest.fixture(autouse=True)
+    def _word_counter(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_overlap", 0)
+        mock_services.provider.embed_token_cap.return_value = None
+        mock_services.provider.count_tokens.side_effect = lambda text: len(text.split())
+
+    def test_a_path_over_half_the_budget_leaves_the_chunk_bare(self):
+        from lilbee.data.extract.chunk import _fit_breadcrumb
+
+        content = _words(8)
+
+        assert _fit_breadcrumb(content, _headings(_words(6, "p")), 10) == [content]
+
+    def test_a_path_of_exactly_half_the_budget_stays_on_every_piece(self):
+        from lilbee.data.extract.chunk import _fit_breadcrumb
+
+        pieces = _fit_breadcrumb(_words(8), _headings(_words(4, "p")), 10)
+
+        assert len(pieces) > 1
+        assert all(p.startswith("# p0 p1 p2 p3\n\n") for p in pieces)
+        assert max(len(p.split()) for p in pieces) <= 10
+
+    def test_a_path_of_exactly_half_an_odd_budget_stays_on_every_piece(self):
+        from lilbee.data.extract.chunk import _fit_breadcrumb
+
+        pieces = _fit_breadcrumb(_words(8), _headings(_words(3, "p")), 7)
+
+        assert len(pieces) > 1
+        assert all(p.startswith("# p0 p1 p2\n\n") for p in pieces)
+        assert max(len(p.split()) for p in pieces) <= 7
+
+    def test_the_re_split_reads_markdown_and_sizes_by_the_embedder_tokenizer(self, monkeypatch):
+        from lilbee.data.extract import chunk
+        from lilbee.data.extract import xberg as xberg_bridge
+
+        real = xberg_bridge.extract_document
+        asked: list[tuple[str, str]] = []
+
+        def spy(data, mime_type, *, config):
+            asked.append((mime_type, str(config.chunking.sizing)))
+            return real(data, mime_type, config=config)
+
+        monkeypatch.setattr(xberg_bridge, "extract_document", spy)
+
+        chunk._fit_breadcrumb(_words(20), _headings("Install"), 10)
+
+        assert asked == [("text/markdown", _current_provider_sizing())]
+
+    def test_a_chunk_that_exactly_fills_the_budget_with_its_path_is_not_re_split(self, monkeypatch):
+        from lilbee.data.extract import chunk
+
+        def no_re_split(*_args):
+            raise AssertionError("a chunk that fits was re-split")
+
+        monkeypatch.setattr(chunk, "_extract_chunks", no_re_split)
+
+        assert chunk._fit_breadcrumb(_words(5), _headings(_words(4, "p")), 10) == [
+            "# p0 p1 p2 p3\n\n" + _words(5)
+        ]
+
+    def test_every_re_split_piece_carries_the_path(self):
+        from lilbee.data.extract.chunk import _fit_breadcrumb
+
+        content = _words(20)
+
+        pieces = _fit_breadcrumb(content, _headings("Install"), 10)
+
+        assert len(pieces) > 2
+        assert all(p.startswith("# Install\n\n") for p in pieces)
+        assert " ".join(p.removeprefix("# Install\n\n") for p in pieces) == content
 
 
 class TestMarkdownChunking:
@@ -437,6 +783,7 @@ class TestMarkdownChunking:
         assert "cite_note" not in joined
 
 
+@pytest.mark.usefixtures("code_parsers_ready")
 @pytest.mark.xdist_group("tree_sitter")
 class TestCodeChunker:
     """Tree-sitter code chunker tests: grouped to avoid fork-unsafe C parser collisions."""
@@ -686,6 +1033,207 @@ class Greeter:
         assert first.line_end == 2
         assert first.chunk_index == 0
 
+    def _chunk_with_parser_result(self, result, source_name="pkg/mod.py"):
+        from unittest.mock import patch
+
+        from lilbee.data.extract.code_chunker import chunk_code
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".py", mode="w", encoding="utf-8", delete=False
+        ) as f:
+            f.write("x = 1\n")
+            path = Path(f.name)
+        try:
+            with (
+                patch("lilbee.data.extract.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.data.extract.code_chunker.process", return_value=result),
+            ):
+                return chunk_code(path, source_name=source_name)
+        finally:
+            path.unlink()
+
+    def test_parser_chunk_over_the_token_budget_is_split_at_line_boundaries(
+        self, monkeypatch, mock_services
+    ):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 100)
+        mock_services.provider.count_tokens.side_effect = _wordpiece_like
+        body = "".join(f"value_{i:03d} = compute({i}, {i + 1})\n" for i in range(60))
+        result = _FakeResult([_FakeTSChunk(body, start_line=0, end_line=60, symbols=["compute"])])
+
+        chunks = self._chunk_with_parser_result(result)
+
+        assert len(chunks) > 1
+        assert max(_wordpiece_like(c.chunk) for c in chunks) <= 100
+        assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
+        assert chunks[0].line_start == 1
+        assert chunks[-1].line_end == 60
+        assert all(a.line_end + 1 == b.line_start for a, b in pairwise(chunks))
+        assert all("# File: pkg/mod.py | compute (lines" in c.chunk for c in chunks)
+        body_lines = [ln for c in chunks for ln in c.chunk.split("\n\n", 1)[1].splitlines()]
+        assert body_lines == body.splitlines()
+
+    def test_one_long_line_over_the_budget_is_split_mid_line(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 100)
+        mock_services.provider.count_tokens.side_effect = _wordpiece_like
+        line = "data = [" + ", ".join(str(i) for i in range(300)) + "]\n"
+        result = _FakeResult([_FakeTSChunk(line, start_line=4, end_line=5, symbols=[])])
+
+        chunks = self._chunk_with_parser_result(result)
+
+        assert len(chunks) > 1
+        assert max(_wordpiece_like(c.chunk) for c in chunks) <= 100
+        assert {c.line_start for c in chunks} == {5}
+        assert "".join(c.chunk.split("\n\n", 1)[1] for c in chunks) == line
+
+    def test_a_piece_that_cannot_shrink_is_kept(self, monkeypatch, mock_services):
+        """One character over the budget on its own leaves nothing to split."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = _heavy_at(100)
+        result = _FakeResult([_FakeTSChunk("@", start_line=0, end_line=1, symbols=[])])
+
+        chunks = self._chunk_with_parser_result(result)
+
+        assert len(chunks) == 1
+        assert chunks[0].chunk == "# File: pkg/mod.py (lines 1-1)\n\n@"
+
+    def test_a_file_name_over_half_the_budget_is_dropped_with_the_header(
+        self, monkeypatch, mock_services
+    ):
+        """A long file name does not split a body into a chunk for each character."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = len
+        body = "".join(f"row_{i:02d} = {i}\n" for i in range(40))
+        result = _FakeResult([_FakeTSChunk(body, start_line=0, end_line=40, symbols=["row"])])
+
+        chunks = self._chunk_with_parser_result(result, source_name="n" * 57 + ".py")
+
+        assert 1 < len(chunks) < 20
+        assert max(len(c.chunk) for c in chunks) <= 64
+        assert all("# File:" not in c.chunk for c in chunks)
+        assert "".join(c.chunk for c in chunks) == body
+        assert (chunks[0].line_start, chunks[-1].line_end) == (1, 40)
+
+    def test_a_symbol_list_over_half_the_budget_is_dropped_from_the_header(
+        self, monkeypatch, mock_services
+    ):
+        """A class of 150 methods does not split into a chunk for each character."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = _wordpiece_like
+        methods = [f"method_with_a_long_name_{i}" for i in range(150)]
+        body = "class Wide:\n" + "".join(f"    def {m}(self):\n        return 1\n" for m in methods)
+        result = _FakeResult([_FakeTSChunk(body, start_line=0, end_line=301, symbols=methods)])
+
+        chunks = self._chunk_with_parser_result(result)
+
+        assert 1 < len(chunks) < 100
+        assert max(_wordpiece_like(c.chunk) for c in chunks) <= 64
+        assert all(c.chunk.startswith("# File: pkg/mod.py (lines ") for c in chunks)
+        body_lines = [ln for c in chunks for ln in c.chunk.split("\n\n", 1)[1].splitlines()]
+        assert body_lines == body.splitlines()
+
+    def _bodies(self, chunks):
+        return [c.chunk.split("\n\n", 1)[1] for c in chunks]
+
+    def test_a_chunk_that_exactly_fills_the_budget_is_not_split(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = lambda text: len(text.split())
+        body = " ".join(["w"] * 59)
+        result = _FakeResult([_FakeTSChunk(body, start_line=0, end_line=1)])
+
+        assert len(self._chunk_with_parser_result(result)) == 1
+
+    def test_a_header_of_exactly_half_the_budget_keeps_its_symbols(
+        self, monkeypatch, mock_services
+    ):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = lambda text: len(text.split())
+        body = "w\n" * 40
+        symbols = [f"s{i}" for i in range(26)]
+        result = _FakeResult([_FakeTSChunk(body, start_line=0, end_line=40, symbols=symbols)])
+
+        chunks = self._chunk_with_parser_result(result)
+
+        assert len(chunks) == 2
+        assert all(c.chunk.startswith("# File: pkg/mod.py | s0, s1, ") for c in chunks)
+
+    def test_two_lines_over_the_budget_split_at_the_line_boundary(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = lambda text: len(text.split())
+        long_line = " ".join(["w"] * 40) + "\n"
+        short_line = " ".join(["w"] * 20) + "\n"
+        result = _FakeResult([_FakeTSChunk(long_line + short_line, start_line=0, end_line=2)])
+
+        chunks = self._chunk_with_parser_result(result)
+
+        assert self._bodies(chunks) == [long_line, short_line]
+
+    def test_four_lines_over_the_budget_split_in_the_middle(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = lambda text: len(text.split())
+        line = " ".join(["w"] * 15) + "\n"
+        result = _FakeResult([_FakeTSChunk(line * 4, start_line=0, end_line=4)])
+
+        chunks = self._chunk_with_parser_result(result)
+
+        assert self._bodies(chunks) == [line * 2, line * 2]
+
+    def test_two_characters_over_the_budget_split_into_single_characters(
+        self, monkeypatch, mock_services
+    ):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = _heavy_at(20)
+        result = _FakeResult([_FakeTSChunk("@@", start_line=0, end_line=1)])
+
+        chunks = self._chunk_with_parser_result(result)
+
+        assert self._bodies(chunks) == ["@", "@"]
+
+    def test_one_long_line_splits_at_its_middle(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = _heavy_at(12)
+        result = _FakeResult([_FakeTSChunk("@a@b@c", start_line=0, end_line=1)])
+
+        chunks = self._chunk_with_parser_result(result)
+
+        assert self._bodies(chunks) == ["@a@", "b@c"]
+
+    def test_a_symbol_list_within_half_the_budget_stays_in_the_header(
+        self, monkeypatch, mock_services
+    ):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = _wordpiece_like
+        body = "".join(f"value_{i:03d} = compute({i}, {i + 1})\n" for i in range(20))
+        result = _FakeResult([_FakeTSChunk(body, start_line=0, end_line=20, symbols=["compute"])])
+
+        chunks = self._chunk_with_parser_result(result)
+
+        assert len(chunks) > 1
+        assert all("# File: pkg/mod.py | compute (lines" in c.chunk for c in chunks)
+
     def test_chunk_code_budget_is_bytes_not_tokens(self):
         """tree-sitter's chunk_max_size is documented in BYTES while
         cfg.chunk_size is a token budget, so the parser path must convert the
@@ -715,6 +1263,17 @@ class Greeter:
 
         proc.assert_called_once()
         assert config_cls.call_args.kwargs["chunk_max_size"] == cfg.chunk_size * CHARS_PER_TOKEN
+
+    def test_a_parser_chunk_without_metadata_has_no_symbols(self):
+        result = SimpleNamespace(
+            chunks=[SimpleNamespace(content="x = 1\n", start_line=0, end_line=1, metadata=None)]
+        )
+
+        chunks = self._chunk_with_parser_result(result, source_name="m.py")
+
+        assert len(chunks) == 1
+        assert chunks[0].chunk.startswith("# File: m.py (lines 1-1)")
+        assert "|" not in chunks[0].chunk
 
     def test_chunk_header_omits_symbols_and_never_says_none(self):
         """A symbol-free (anonymous) chunk omits the symbol segment entirely

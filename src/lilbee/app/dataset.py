@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -24,6 +23,7 @@ from lilbee.data.export import (
 )
 from lilbee.data.offload import owns_ingest_pool
 from lilbee.data.store import EmbeddingModelMismatchError, PageTextRecord
+from lilbee.runtime.cancellation import CancelSignal
 from lilbee.runtime.lock import sync_running
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 
@@ -90,7 +90,7 @@ def export_to_path(
     fmt_value: str,
     source: str | None,
     *,
-    cancel: threading.Event | None = None,
+    cancel: CancelSignal | None = None,
 ) -> ExportSummary:
     """Write the per-page dataset to *output*; format from *fmt_value* or suffix.
 

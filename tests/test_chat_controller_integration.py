@@ -611,7 +611,14 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
     from lilbee.data.ingest import SyncResult
 
     async def fake_sync(
-        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+        started_by,
     ):
         on_progress(
             EventType.FILE_START,
@@ -650,7 +657,14 @@ def test_do_sync_done_event_reports_completion() -> None:
     reporter = MagicMock(spec=ProgressReporter)
 
     async def fake_sync(
-        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+        started_by,
     ):
         on_progress(
             EventType.SYNC_DONE,
@@ -697,7 +711,14 @@ def test_do_sync_reports_what_pruning_dropped() -> None:
     notes: list[str] = []
 
     async def fake_sync(
-        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+        started_by,
     ):
         assert prune_ignored is True
         return SyncResult(removed=["vendor/lib.min.js"])
@@ -738,7 +759,14 @@ def test_do_sync_raises_on_sync_failed() -> None:
     reporter = MagicMock(spec=ProgressReporter)
 
     async def fake_sync(
-        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+        started_by,
     ):
         return SyncResult(failed=["broken.pdf", "bad.md"])
 
@@ -783,7 +811,14 @@ def test_do_sync_reports_a_cancel_with_the_resume_hint() -> None:
     reporter = MagicMock(spec=ProgressReporter)
 
     async def fake_sync(
-        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+        started_by,
     ):
         import asyncio as _asyncio
 
@@ -818,7 +853,14 @@ def test_do_sync_hands_the_task_reporter_to_sync_as_its_cancel() -> None:
     received: list[object] = []
 
     async def fake_sync(
-        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+        started_by,
     ):
         received.append(cancel)
         return SyncResult()
@@ -848,7 +890,14 @@ def test_do_add_hands_the_task_reporter_to_sync_as_its_cancel(tmp_path: Path) ->
     received: list[object] = []
 
     async def fake_sync(
-        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+        started_by,
     ):
         received.append(cancel)
         return SyncResult(added=[src.name])
@@ -1208,7 +1257,14 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
     reg_result = RegisterResult(registered=[src.name])
 
     async def fake_sync(
-        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+        started_by,
     ):
         on_progress(
             EventType.FILE_START,
@@ -1260,7 +1316,14 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
     reg_result = RegisterResult(registered=[src.name])
 
     async def fake_sync(
-        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+        started_by,
     ):
         # Per-page rasterization progress fires while the file is being
         # processed (FILE_START has already named it via the relative source
@@ -1332,7 +1395,14 @@ def test_do_add_progress_label_pins_to_oldest_in_flight_file(tmp_path: Path) -> 
     reg_result = RegisterResult(registered=[src.name])
 
     async def fake_sync(
-        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+        started_by,
     ):
         # Three files start concurrently. The pipeline emits FILE_START for each.
         on_progress(
@@ -1920,7 +1990,14 @@ def test_do_sync_throttles_rapid_embed_events() -> None:
     reporter = MagicMock(spec=ProgressReporter)
 
     async def fake_sync(
-        *, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False, started_by
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+        started_by,
     ):
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=1, total_chunks=10))
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=2, total_chunks=10))
@@ -2090,6 +2167,60 @@ async def test_stop_all_spends_one_budget_on_the_drain_and_the_joins() -> None:
         elapsed = time.monotonic() - started
         release.set()
         assert 1.5 < elapsed < 3.5  # two waits of the budget take 4 seconds
+
+
+async def test_a_quit_spends_one_budget_on_the_unmount_wait_and_stop_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker that ignores its cancel costs the quit the budget once, not once per wait."""
+    import threading
+    import time
+
+    from lilbee.cli.tui.widgets import task_bar_controller
+
+    monkeypatch.setattr(task_bar_controller, "_EXIT_STOP_BUDGET_S", 1.0)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _ignores_cancel(_reporter: ProgressReporter) -> None:
+        entered.set()
+        release.wait(30.0)
+
+    app = LilbeeApp()
+    async with app.run_test():
+        app.task_bar.start_task("Sync", TaskType.SYNC, _ignores_cancel)
+        assert entered.wait(5.0)
+        left_at = time.monotonic()
+    app.task_bar.stop_all(budget_s=1.0)
+    total = time.monotonic() - left_at
+    release.set()
+    assert 0.9 < total < 1.6  # the unmount wait and the stop_all join, at 1 s each, take 2 s
+
+
+async def test_the_unmount_drains_the_loop_so_a_worker_waiting_on_a_coroutine_returns() -> None:
+    """A worker that waits on a coroutine ends by the drain, so the unmount must run it."""
+    import asyncio
+    import concurrent.futures
+    import contextlib
+    import threading
+
+    from lilbee.runtime import asyncio_loop
+
+    started = threading.Event()
+    returned = threading.Event()
+
+    def _waits_on_a_coroutine(_reporter: ProgressReporter) -> None:
+        pending = asyncio.run_coroutine_threadsafe(asyncio.sleep(3600), asyncio_loop.get_loop())
+        started.set()
+        with contextlib.suppress(concurrent.futures.CancelledError):
+            pending.result()
+        returned.set()
+
+    app = LilbeeApp()
+    async with app.run_test():
+        app.task_bar.start_task("Sync", TaskType.SYNC, _waits_on_a_coroutine)
+        assert started.wait(5.0)
+    assert returned.is_set()
 
 
 class _OwnedLock:
@@ -2641,3 +2772,33 @@ async def test_a_queued_task_that_is_cancelled_keeps_no_target(canceller: str) -
             assert set(controller._task_targets) == {running}
         finally:
             release.set()
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_the_embedder_cannot_serve_fails_the_task_with_the_message() -> None:
+    """The task row of a failed rebuild carries the provider's plain message as its detail."""
+    from unittest.mock import AsyncMock
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    refused = ProviderError(
+        "The embedding model is not available. Nothing was rebuilt.",
+        kind=ProviderErrorKind.NOT_FOUND,
+    )
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        controller = TaskBarController(app)
+        screen = ChatScreen.__new__(ChatScreen)
+        with patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refused):
+            task_id = controller.start_task(
+                "Rebuild",
+                TaskType.SYNC,
+                lambda reporter: screen._do_sync(reporter, force_rebuild=True),
+            )
+            await wait_until(
+                pilot,
+                lambda: controller.queue.get_task(task_id).status is TaskStatus.FAILED,
+                timeout=5.0,
+            )
+        assert controller.queue.get_task(task_id).detail == str(refused)

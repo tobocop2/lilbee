@@ -8,22 +8,41 @@ to assemble one llama-server command line.
 
 from __future__ import annotations
 
+import functools
+import logging
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
 from lilbee.core.config.enums import RerankerType
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import engine_help, help_lists_option
 from lilbee.providers.roles import RerankMode, WorkerRole
 from lilbee.runtime.cpu import engine_thread_count
+
+log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
 # llama-server batch flags; gguf-parser accepts the same names, so vram.py shares these.
 FLAG_BATCH_SIZE = "--batch-size"
 FLAG_UBATCH_SIZE = "--ubatch-size"
+FLAG_DEVICE = "--device"
+# The value of ``--device`` that names no device: the engine opens no card.
+NO_DEVICE = "none"
 FLAG_FIT_TARGET = "--fit-target"
 FLAG_KV_UNIFIED = "--kv-unified"
 FLAG_KV_UNIFIED_PER_SLOT = "--kv-unified-per-slot"
+# Refuse a prompt longer than the context instead of cutting it.
+FLAG_NO_CONTEXT_SHIFT = "--no-context-shift"
+# llama-server sends a ":" comment this often while a stream waits for its first token.
+# The flag on the command line beats LLAMA_ARG_SSE_PING_INTERVAL=-1 in the user's
+# environment, and the client's idle bound after the headers relies on the comment.
+FLAG_SSE_PING = "--sse-ping-interval"
+SSE_PING_SECONDS = "30"
+# The host memory the engine may keep idle prompts in, in MiB, and the context
+# checkpoints each slot keeps. Both live in system memory, and the plan sizes both.
+FLAG_CACHE_RAM = "--cache-ram"
+FLAG_CTX_CHECKPOINTS = "--ctx-checkpoints"
 
 
 @dataclass(frozen=True)
@@ -37,10 +56,10 @@ class RoleServerSpec:
 
 
 # Every role runs on the fleet by mirroring the in-process primitive over HTTP:
-# rerank uses rank-pooling embeddings (--pooling rank -> /v1/embeddings, with the
-# same query</s></s>candidate pairing as in-process), NOT the template-dependent
-# /v1/rerank; vision uses the chat endpoint with an --mmproj projector. This keeps
-# the in-process robustness without depending on a model's embedded rerank template.
+# rerank uses rank-pooling embeddings (--pooling rank -> /v1/embeddings, each pair
+# sent as token ids in the GGUF's own pair layout), NOT /v1/rerank, which does not
+# truncate and lacks the extra separator of older XLM-R GGUFs; vision uses the chat
+# endpoint with an --mmproj projector.
 ROLE_SPECS: dict[WorkerRole, RoleServerSpec] = {
     WorkerRole.CHAT: RoleServerSpec(
         role=WorkerRole.CHAT,
@@ -103,6 +122,7 @@ _RERANK_MODE_SPECS: dict[RerankMode, RoleServerSpec] = {
 LLM_RERANK_CONCURRENCY = 8
 
 _FLAG_THREADS = "--threads"
+_FLAG_POOLING = "--pooling"
 
 
 def resolve_rerank_mode(reranker_type: RerankerType, arch: str | None) -> RerankMode:
@@ -204,6 +224,16 @@ def _fit_and_kv_pool_args(
     return args
 
 
+def _host_cache_args(cache_ram_mib: int | None, ctx_checkpoints: int | None) -> list[str]:
+    """``--ctx-checkpoints`` and ``--cache-ram``, each only when given."""
+    args: list[str] = []
+    if ctx_checkpoints is not None:
+        args += [FLAG_CTX_CHECKPOINTS, str(ctx_checkpoints)]
+    if cache_ram_mib is not None:
+        args += [FLAG_CACHE_RAM, str(cache_ram_mib)]
+    return args
+
+
 def _thread_args() -> list[str]:
     """``--threads`` when a CPU cap applies to this process, else empty.
 
@@ -233,6 +263,93 @@ def _no_mmap_args(binary: Path) -> list[str]:
     return []
 
 
+@dataclass(frozen=True)
+class _OptionalFlag:
+    """An optional flag: how many values follow it, and what its absence changes."""
+
+    values: int
+    effect: str
+
+
+# Every optional flag the argv builder and the role specs write, by flag. The embeddings
+# flag and the planner gated flags (--memory, --fit-target, --kv-unified-per-slot) are
+# written by other rules.
+_OPTIONAL_FLAGS: dict[str, _OptionalFlag] = {
+    FLAG_DEVICE: _OptionalFlag(1, "the engine picks its own devices"),
+    "--tensor-split": _OptionalFlag(1, "the engine splits the layers by its own rule"),
+    "--flash-attn": _OptionalFlag(1, "flash attention stays at the engine default"),
+    "--cache-type-k": _OptionalFlag(1, "the K cache keeps the engine default type"),
+    "--cache-type-v": _OptionalFlag(1, "the V cache keeps the engine default type"),
+    FLAG_BATCH_SIZE: _OptionalFlag(1, "the batch size stays at the engine default"),
+    FLAG_UBATCH_SIZE: _OptionalFlag(1, "the micro-batch size stays at the engine default"),
+    "--mmproj": _OptionalFlag(1, "images are not read"),
+    "--n-cpu-moe": _OptionalFlag(1, "expert layers stay on the GPU"),
+    "--cpu-moe": _OptionalFlag(0, "expert layers stay on the GPU"),
+    _FLAG_THREADS: _OptionalFlag(1, "the engine picks its own thread count"),
+    "--jinja": _OptionalFlag(0, "the model's chat template is not applied"),
+    "--reasoning-format": _OptionalFlag(1, "reasoning text stays in the answer"),
+    "--no-prefill-assistant": _OptionalFlag(0, "a trailing assistant message is continued"),
+    _FLAG_POOLING: _OptionalFlag(1, "the model's own pooling applies"),
+    FLAG_KV_UNIFIED: _OptionalFlag(0, "the slots keep separate KV caches"),
+    FLAG_NO_CONTEXT_SHIFT: _OptionalFlag(0, "the engine keeps its own context shift default"),
+    FLAG_SSE_PING: _OptionalFlag(1, "a prefill with no output for 120 s ends the chat stream"),
+    FLAG_CTX_CHECKPOINTS: _OptionalFlag(1, "each slot keeps the engine's default checkpoints"),
+    FLAG_CACHE_RAM: _OptionalFlag(1, "the prompt cache keeps the engine's default size"),
+}
+
+
+@functools.lru_cache(maxsize=256)
+def _warn_once(message: str) -> None:
+    log.warning("%s", message)
+
+
+def _drop_unlisted_flags(binary: Path, args: list[str]) -> list[str]:
+    """*args* without the optional flags *binary*'s ``--help`` does not list, with their values.
+
+    A build that prints no help is not judged: its flags stay, since no evidence
+    says they are missing. Each dropped flag is logged once for each binary.
+    """
+    help_text = engine_help(binary)
+    if not help_text.strip():
+        _warn_once(f"{binary} printed no --help text; its optional flags are sent unchecked")
+        return args
+    kept: list[str] = []
+    skip = 0
+    for arg in args:
+        if skip:
+            skip -= 1
+            continue
+        optional = _OPTIONAL_FLAGS.get(arg)
+        if optional is None or help_lists_option(help_text, arg):
+            kept.append(arg)
+            continue
+        skip = optional.values
+        _warn_once(f"{binary} does not list {arg}; launching without it, so {optional.effect}")
+    return kept
+
+
+class RankPoolingMissingError(ProviderError):
+    """A rank-pooled reranker was asked of a build whose help lists no ``--pooling``."""
+
+
+def _require_rank_pooling(binary: Path, spec: RoleServerSpec) -> None:
+    """Refuse a rank-pooled reranker on a build whose ``--help`` lists no ``--pooling``.
+
+    Without rank pooling the engine returns no real relevance scores. A build that
+    prints no help is not judged.
+    """
+    if spec.role is not WorkerRole.RERANK or _FLAG_POOLING not in spec.extra_args:
+        return
+    help_text = engine_help(binary)
+    if help_text.strip() and not help_lists_option(help_text, _FLAG_POOLING):
+        raise RankPoolingMissingError(
+            f"The engine build {binary} does not list {_FLAG_POOLING}, so it cannot score "
+            f"rerank results. Install an engine build that lists {_FLAG_POOLING}, "
+            "or use the LLM reranker type.",
+            kind=ProviderErrorKind.BAD_REQUEST,
+        )
+
+
 def build_server_argv(
     *,
     binary: Path,
@@ -254,6 +371,8 @@ def build_server_argv(
     memory_endpoint: bool = False,
     fit_target_mib: tuple[int, ...] = (),
     kv_unified_per_slot: int | None = None,
+    cache_ram_mib: int | None = None,
+    ctx_checkpoints: int | None = None,
 ) -> list[str]:
     """Assemble the llama-server command line for one instance, minus ``--port``.
 
@@ -267,7 +386,9 @@ def build_server_argv(
     the memory the engine's own fit leaves free on each device, in
     ``--device`` order.
     ``kv_unified_per_slot`` makes the slots share one KV pool, each slot capped
-    at that window.
+    at that window. Every argv carries ``--no-context-shift`` when the binary's
+    ``--help`` lists it. ``cache_ram_mib`` and ``ctx_checkpoints`` bound the engine's
+    prompt cache and the context checkpoints of each slot; each stays absent when unset.
     """
     argv = [
         str(binary),
@@ -283,19 +404,20 @@ def build_server_argv(
         "--ctx-size",
         str(ctx_per_slot * slots),
     ]
-    argv += _thread_args()
-    argv += _attention_args(flash_attn, cache_type)
+    optional: list[str] = []
+    optional += _thread_args()
+    optional += _attention_args(flash_attn, cache_type)
     if batch_size is not None:
-        argv += [FLAG_BATCH_SIZE, str(batch_size), FLAG_UBATCH_SIZE, str(batch_size)]
+        optional += [FLAG_BATCH_SIZE, str(batch_size), FLAG_UBATCH_SIZE, str(batch_size)]
     if mmproj is not None:  # vision: the CLIP/mtmd projector sidecar
-        argv += ["--mmproj", str(mmproj)]
+        optional += ["--mmproj", str(mmproj)]
     if device_names:
         # Names as --list-devices prints them, which is the space they were parsed
         # from. The Vulkan visible-devices variable takes RAW loader indices
         # instead, so re-emitting parsed ordinals into it silently changes index
         # space, and setting it also turns off ggml's own type filter, support
         # check and same-UUID dedup. This keeps all of that active.
-        argv += ["--device", ",".join(device_names)]
+        optional += [FLAG_DEVICE, ",".join(device_names)]
     if len(devices) > 1 and tensor_split:
         # Only a ratio the planner actually chose. Inventing an even one for a
         # group that did not choose disables the engine's own fit: it aborts the
@@ -304,17 +426,21 @@ def build_server_argv(
         # the tight placement, whose whole promise is that the engine keeps what
         # fits and spills the rest, so an invented split turns that promise into
         # a load-time out-of-memory.
-        argv += ["--tensor-split", ",".join(str(r) for r in tensor_split)]
+        optional += ["--tensor-split", ",".join(str(r) for r in tensor_split)]
     if no_mmap:
-        argv += _no_mmap_args(binary)
+        optional += _no_mmap_args(binary)
     if n_cpu_moe is not None:
-        argv += ["--n-cpu-moe", str(n_cpu_moe)]
+        optional += ["--n-cpu-moe", str(n_cpu_moe)]
     elif cpu_moe:
-        argv += ["--cpu-moe"]
-    argv += _fit_and_kv_pool_args(fit_target_mib, kv_unified_per_slot)
+        optional += ["--cpu-moe"]
+    optional += _fit_and_kv_pool_args(fit_target_mib, kv_unified_per_slot)
+    optional += _host_cache_args(cache_ram_mib, ctx_checkpoints)
     if memory_endpoint:
         from lilbee.providers.fleet.readback import MEMORY_FLAG
 
-        argv += [MEMORY_FLAG]
-    argv += list(spec.extra_args)
-    return argv
+        optional += [MEMORY_FLAG]
+    optional += [FLAG_NO_CONTEXT_SHIFT]
+    optional += list(spec.extra_args)
+    optional += [FLAG_SSE_PING, SSE_PING_SECONDS]
+    _require_rank_pooling(binary, spec)
+    return argv + _drop_unlisted_flags(binary, optional)

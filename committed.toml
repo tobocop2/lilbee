@@ -7,5 +7,5 @@ subject_not_punctuated = true
 imperative_subject = true
 no_fixup = true
 no_wip = true
-merge_commit = false
+merge_commit = true
 style = "none"

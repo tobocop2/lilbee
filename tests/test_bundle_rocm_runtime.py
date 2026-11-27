@@ -30,11 +30,22 @@ _SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "tools/wheel-build/bundl
 # What the engine build itself drops in the wheel's bin/, before any ROCm is packed.
 _BUILT = ("llama-server", "libggml-hip.so", "libggml-base.so")
 
+# The shared libraries the ROCm runtime links that the pack never ships: the host
+# provides them.
+_HOST_LIBS = (
+    "libelf.so.1",
+    "libdrm.so.2",
+    "libdrm_amdgpu.so.1",
+    "libnuma.so.1",
+    "libz.so.1",
+    "libzstd.so.1",
+)
+
 # A plausible ROCm 7.2 dependency graph. libomp sits in lib/llvm/lib rather than lib,
 # which is the split that made the first version of this bundler ship an unloadable
 # wheel, and rocblas <-> amdhip is a genuine cycle the walk has to terminate through.
 _ROCM_GRAPH = {
-    "libamdhip64.so.7": ["librocblas.so.5", "libnuma.so.1"],
+    "libamdhip64.so.7": ["librocblas.so.5", *_HOST_LIBS],
     "librocblas.so.5": ["libamdhip64.so.7", "libstdc++.so.6"],
     # hipBLAS drags in rocSOLVER for LAPACK entry points ggml never calls, and
     # rocSOLVER alone keeps rocroller alive. 888 MB and 80 MB in the real bundle.
@@ -180,21 +191,14 @@ def _run(
     needed: dict[str, list[str]] | None = None,
     targets: str | None = None,
     with_patchelf: bool = True,
-    system_libs: tuple[str, ...] = ("libnuma.so.1",),
 ) -> subprocess.CompletedProcess[str]:
     stub_dir = tmp_path / "stub"
     _write_stub_readelf(stub_dir, _NEEDED if needed is None else needed)
     if with_patchelf:
         _write_stub_patchelf(stub_dir, tmp_path / "patchelf.log")
     _link_real_tools(stub_dir)
-    # The build host's system lib dir, hermetic so the test never reads the real one.
-    system_dir = tmp_path / "sys"
-    system_dir.mkdir(exist_ok=True)
-    for name in system_libs:
-        (system_dir / name).write_text(f"elf: {name}")
     env = {
         "ROCM_PATH": str(rocm_tree),
-        "SYSTEM_LIB_DIRS": str(system_dir),
         "PATH": str(stub_dir),
     }
     if targets is not None:
@@ -250,20 +254,13 @@ def test_leaves_host_libraries_alone(bundled):
     assert not (bundled / "libc.so.6").exists()
 
 
-def test_bundles_libnuma_from_the_system_dirs(bundled):
-    """libnuma is linked but lives outside the ROCm tree, and the flatpak runtime lacks it.
+@pytest.mark.parametrize("soname", _HOST_LIBS)
+def test_leaves_each_host_library_to_the_host(bundled, soname):
+    """libnuma is LGPL and the other five match the host's driver stack or distro.
 
-    Leaving it to the host shipped a rocm flatpak whose llama-server could not load:
-    the freedesktop runtime carries every other host library the bundle relies on.
+    The ROCm tree holds none of them, so the bundler has nothing to copy.
     """
-    assert (bundled / "libnuma.so.1").is_file()
-
-
-def test_fails_when_libnuma_is_missing_from_the_system(bin_dir, rocm_tree, tmp_path):
-    """A build host without libnuma would silently reopen the flatpak gap."""
-    result = _run(bin_dir, rocm_tree, tmp_path, system_libs=())
-    assert result.returncode == 1
-    assert "libnuma" in result.stderr
+    assert not (bundled / soname).exists()
 
 
 def test_bundles_the_rocblas_kernels(bundled):
@@ -356,7 +353,6 @@ def test_repoints_copied_libraries_at_the_bundle(bundled, tmp_path):
         "libhipblas.so.3",
         "libomp.so",
         "libamd_comgr.so.3",
-        "libnuma.so.1",
     }
     assert all("--set-rpath $ORIGIN" in line for line in rewrites)
 

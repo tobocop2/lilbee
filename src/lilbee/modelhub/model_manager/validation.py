@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.types import KeyStatus, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.install_state import InstallState, install_state
@@ -28,14 +27,24 @@ from lilbee.modelhub.model_manager.discovery import (
 from lilbee.modelhub.model_manager.types import ValidationResult
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers import availability
+from lilbee.providers.fleet.engines.choice import loadable_refs
 from lilbee.providers.key_check import provider_key_status
 from lilbee.providers.local_servers import LocalServerSpec
 from lilbee.providers.local_servers.config_urls import base_url_for
-from lilbee.providers.local_servers.registry import LOCAL_SERVER_KEYS, local_server_for_key
+from lilbee.providers.local_servers.registry import local_server_for_key
 from lilbee.providers.model_ref import ProviderModelRef, format_remote_ref, parse_model_ref
+from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD
 
 log = logging.getLogger(__name__)
+
+# The engine role that runs a model of each task.
+_TASK_ROLE = {
+    ModelTask.CHAT: WorkerRole.CHAT,
+    ModelTask.EMBEDDING: WorkerRole.EMBED,
+    ModelTask.VISION: WorkerRole.VISION,
+    ModelTask.RERANK: WorkerRole.RERANK,
+}
 
 # User-facing reasons a persisted ref is unusable, shared across surfaces.
 REASON_PROVIDERS_MISSING = "the providers extra isn't installed"
@@ -94,10 +103,8 @@ def _classify_local_server_ref(spec: LocalServerSpec) -> tuple[ValidationResult,
 def _classify_uninstalled_ref(parsed: ProviderModelRef) -> tuple[ValidationResult, str | None]:
     """Classify a parsed ref that is not installed locally, by provider kind."""
     provider = (parsed.provider or "").lower()
-    if provider in LOCAL_SERVER_KEYS:
-        spec = local_server_for_key(provider)
-        if spec is None:  # pragma: no cover - LOCAL_SERVER_KEYS guarantees a match
-            return ValidationResult.UNKNOWN, REASON_UNAVAILABLE
+    spec = local_server_for_key(provider)
+    if spec is not None:
         return _classify_local_server_ref(spec)
     if provider in PROVIDER_API_KEY_FIELD:
         status, reason = _KEY_STATUS_VALIDATION[provider_key_status(provider)]
@@ -160,9 +167,11 @@ def _first_installed_local_ref(want: ModelTask) -> str | None:
     """
     registry = ModelRegistry(cfg.models_dir)
     for manifest in registry.list_installed():
-        if reclassify_by_name(manifest.ref, manifest.task) != want:
+        if manifest.task != want:
             continue
-        if install_state(manifest.ref, registry) is InstallState.REGISTERED:
+        if install_state(manifest.ref, registry) is InstallState.REGISTERED and loadable_refs(
+            [manifest.ref], _TASK_ROLE[want]
+        ):
             return manifest.ref
     return None
 

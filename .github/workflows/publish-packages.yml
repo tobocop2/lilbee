@@ -42,6 +42,7 @@ jobs:
       sha_windows: ${{ steps.info.outputs.sha_windows }}
       sha_windows_cu125: ${{ steps.info.outputs.sha_windows_cu125 }}
       sha_windows_cu124: ${{ steps.info.outputs.sha_windows_cu124 }}
+      npm: ${{ steps.npm.outputs.requested }}
     steps:
       - name: A dry run publishes nothing
         if: inputs.dry_run
@@ -49,6 +50,25 @@ jobs:
           CHANNELS: ${{ inputs.channels }}
         run: |
           [ "${CHANNELS}" = "nix" ] || { echo "dry_run covers the nix channel only; set channels to 'nix'"; exit 1; }
+      # A dev tag never publishes to npm, so 'all' leaves npm out for one and
+      # the npm job shows as skipped. A run that names npm for a dev tag fails
+      # in the npm script.
+      - name: Decide whether npm is requested
+        id: npm
+        env:
+          CHANNELS: ${{ inputs.channels }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # Case-insensitive, as the contains() and == this replaces were.
+          channels=$(printf '%s' "${CHANNELS}" | tr '[:upper:]' '[:lower:]')
+          case "${channels}" in
+            *npm*) requested=true ;;
+            all) case "${TAG}" in *.dev*) requested=false ;; *) requested=true ;; esac ;;
+            *) requested=false ;;
+          esac
+          echo "npm requested: ${requested}"
+          echo "requested=${requested}" >> "${GITHUB_OUTPUT}"
       - name: Resolve tag and asset digests
         id: info
         env:
@@ -218,6 +238,7 @@ jobs:
           systems-json: ${{ steps.sys.outputs.value }}
           commit-message: "lilbee ${{ needs.resolve.outputs.version }} (flake)"
           dry-run: ${{ inputs.dry_run }}
+          deploy-key: ${{ secrets.FLAKE_PINS_SSH_KEY }}
 
   # The bucket is tobocop2/scoop-lilbee. Scoop updates a bucket with a plain
   # `git pull`, so it cannot live in this repository: users would clone the whole
@@ -312,15 +333,16 @@ jobs:
   # so it must publish after they are attached -- `resolve` is that gate.
   # It publishes packages/lilbee/package.json as committed at the tag, and refuses
   # a package.json whose version is not the npm form of the tag (release.sh and
-  # promote_release.sh stamp it). scripts/publish_npm.sh skips dev builds and a
-  # version already on npm. Auth is npm trusted publishing: the registry takes the
-  # job's OIDC token, so there is no npm token anywhere and provenance is
-  # automatic. That trust is configured per package on npmjs.com and names
-  # this filename, so renaming this workflow breaks the publish -- see
-  # packages/lilbee/docs/publishing.md.
+  # promote_release.sh stamp it). scripts/publish_npm.sh skips a version already
+  # on npm, and fails when it cannot publish. Auth is npm trusted publishing:
+  # the registry takes the job's OIDC token, so there is no npm token anywhere
+  # and provenance is automatic. That trust is configured per package on
+  # npmjs.com and names this filename, so renaming this workflow breaks the
+  # publish -- see packages/lilbee/docs/publishing.md.
   npm:
     needs: resolve
-    if: inputs.channels == 'all' || contains(inputs.channels, 'npm')
+    # The resolve job decides: 'all' leaves npm out for a dev tag.
+    if: needs.resolve.outputs.npm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Mirrors the PyPI job: the `npm` environment name is pinned by npm's

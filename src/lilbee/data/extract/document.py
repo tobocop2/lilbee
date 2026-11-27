@@ -32,6 +32,9 @@ from lilbee.data.types import (
     OcrReport,
 )
 from lilbee.providers.base import aux_options
+from lilbee.providers.engine_params import INPUT_HEADROOM_TOKENS
+from lilbee.providers.model_ref import parse_model_ref
+from lilbee.retrieval.embedding_profiles import resolve_embedding_profile
 from lilbee.runtime.cancellation import CancelSignal
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
@@ -42,10 +45,21 @@ from lilbee.runtime.progress import (
     noop_callback,
 )
 
+from .backends.tokenizer import FALLBACK_CHARS_PER_TOKEN
 from .backends.vision_ocr import backend_options_for, ocr_request
 from .batch import active_extract_batcher
-from .chunk import ChunkLimitError, build_chunking_config, chunk_text, enforce_chunk_limit
+from .chunk import (
+    ChunkLimitError,
+    build_chunking_config,
+    chunk_text,
+    count_embed_tokens,
+    enforce_chunk_limit,
+    fit_table_budget,
+    fit_token_budget,
+    token_budget,
+)
 from .trace import ExtractionTrace, trace_extraction, trace_log
+from .xberg import failed_ocr_pages
 
 if TYPE_CHECKING:
     from xberg import (
@@ -111,16 +125,77 @@ def _title_scope(title: str) -> Generator[None, None, None]:
         _embed_title.reset(token)
 
 
-def _embed_inputs(texts: list[str], title: str | None = None) -> list[str]:
-    """Embedding inputs, title-prefixed when ``cfg.embed_titles`` is on.
+def _embed_inputs(
+    texts: list[str], title: str | None = None, sentences: list[str] | None = None
+) -> list[str]:
+    """Embedding inputs: each chunk after its title (``cfg.embed_titles``) and its sentence.
 
-    Only the vector sees the title; the stored chunk text is unchanged.
-    ``None`` falls back to the scoped per-file title (the OCR chains).
+    Only the vector sees the title and the situating sentence; the stored chunk text is
+    unchanged. ``None`` falls back to the scoped per-file title (the OCR chains).
+    The title and the sentence are cut to the room the embedder's window leaves after a full
+    chunk, so the chunk is never cut.
     """
     effective = title if title is not None else _embed_title.get()
-    if not effective or not active_config().embed_titles:
-        return texts
-    return [f"{effective}\n{text}" for text in texts]
+    if not active_config().embed_titles:
+        effective = ""
+    budget: _HeadBudget | None = None
+    # A title without a sentence is the same head for every chunk: count it once.
+    bounded: dict[str, str] = {}
+    inputs: list[str] = []
+    for text, sentence in zip(texts, sentences or [""] * len(texts), strict=True):
+        head = "\n".join(part for part in (effective, sentence) if part)
+        if not head:
+            inputs.append(text)
+            continue
+        if budget is None:
+            budget = _head_budget()
+        if head not in bounded:
+            bounded[head] = _bounded_head(head, budget)
+        inputs.append(f"{bounded[head]}\n{text}")
+    return inputs
+
+
+@dataclass(frozen=True)
+class _HeadBudget:
+    """The room the title and sentence may take, in the unit *count* measures."""
+
+    room: int
+    count: Callable[[str], int]
+
+
+def _head_budget() -> _HeadBudget:
+    """The room one full chunk leaves for the title and sentence in one embed input.
+
+    A remote embedder has no token window: its bound is the embedder's character guard, less
+    the prefix, the newline and the longest chunk in characters. A local one has the window
+    the provider reports, at most a chunk plus the headroom, less the chunk, prefix and newline.
+    """
+    from lilbee.retrieval.embedder import embed_char_budget
+
+    config = active_config()
+    prefix = resolve_embedding_profile(config.embedding_model).doc_prefix
+    if config.embedding_model and parse_model_ref(config.embedding_model).is_remote:
+        longest_chunk = config.chunk_size * FALLBACK_CHARS_PER_TOKEN
+        return _HeadBudget(embed_char_budget(config) - len(prefix) - 1 - longest_chunk, len)
+    full = config.chunk_size + INPUT_HEADROOM_TOKENS
+    window = get_services().provider.embed_token_cap()
+    total = full if window is None else min(window, full)
+    room = total - config.chunk_size - count_embed_tokens(prefix) - count_embed_tokens("\n")
+    return _HeadBudget(room, count_embed_tokens)
+
+
+def _bounded_head(head: str, budget: _HeadBudget) -> str:
+    """The longest start of *head* that *budget* counts at most its room."""
+    if budget.count(head) <= budget.room:
+        return head
+    low, high = 0, len(head) - 1
+    while low < high:
+        middle = (low + high + 1) // 2
+        if budget.count(head[:middle]) <= budget.room:
+            low = middle
+        else:
+            high = middle - 1
+    return head[:low]
 
 
 # Contextual enrichment: characters of document head shown to the model, and
@@ -136,15 +211,15 @@ _ENRICH_PROMPT = (
 
 
 def _enrich_texts(texts: list[str], doc_head: str, source_name: str) -> list[str]:
-    """Embedding inputs with one LLM-written situating sentence per chunk.
+    """One LLM-written situating sentence per chunk, empty when there is none.
 
     Anthropic-style contextual retrieval, opt-in (``cfg.contextual_enrichment``):
     one generation per chunk, so ingest slows accordingly. Only the vector sees
-    the sentence; stored chunk text and citations stay verbatim. Any failure
-    keeps that chunk's bare text.
+    the sentence (see :func:`_embed_inputs`); stored chunk text and citations stay
+    verbatim. Any failure leaves that chunk's sentence empty.
     """
     if not active_config().contextual_enrichment or not texts:
-        return texts
+        return [""] * len(texts)
     from lilbee.retrieval.reasoning import strip_reasoning
 
     provider = get_services().provider
@@ -164,7 +239,7 @@ def _enrich_texts(texts: list[str], doc_head: str, source_name: str) -> list[str
         except Exception:
             failed += 1
             sentence = ""
-        enriched.append(f"{sentence}\n{text}" if sentence else text)
+        enriched.append(sentence)
     if failed:
         log.warning(
             "Contextual enrichment failed for %d of %d chunks in %s; those embed bare",
@@ -413,6 +488,32 @@ async def extract_batching() -> AsyncGenerator[None]:
         reset_active_batcher(token)
 
 
+def _chunk_pieces(contents: Sequence[str]) -> list[tuple[int, str]]:
+    """``(chunk position, text)`` for each piece; a semantic chunk over the token budget
+    gives several pieces, so each piece can keep the pages of the chunk it was cut from.
+    """
+    if not active_config().semantic_chunking:
+        return list(enumerate(contents))
+    budget = token_budget()
+    return [
+        (i, piece)
+        for i, content in enumerate(contents)
+        for piece in fit_token_budget(content, budget)
+    ]
+
+
+def _table_pieces(markdowns: Sequence[str]) -> list[tuple[int, str]]:
+    """``(table position, text)`` for each piece of each table, cut to the token budget."""
+    if not markdowns:
+        return []
+    budget = token_budget()
+    return [
+        (i, piece)
+        for i, markdown in enumerate(markdowns)
+        for piece in fit_table_budget(markdown, budget)
+    ]
+
+
 def _chunk_pages(page_texts: Sequence[tuple[int, str]]) -> list[tuple[int, str]]:
     """Chunk each page's text. Semantic chunking is off: a single page rarely spans
     multiple topics, so the semantic round-trip is not worth it."""
@@ -439,10 +540,10 @@ async def chunk_and_embed_pages(
     if not all_chunks:
         return []
     texts = [c for _, c in all_chunks]
-    embed_texts = await to_ingest_thread(_enrich_texts, texts, page_texts[0][1], source_name)
+    sentences = await to_ingest_thread(_enrich_texts, texts, page_texts[0][1], source_name)
     vectors = await to_ingest_thread(
         get_services().embedder.embed_batch,
-        _embed_inputs(embed_texts),
+        await to_ingest_thread(_embed_inputs, texts, None, sentences),
         source=source_name,
         on_progress=on_progress,
     )
@@ -554,7 +655,8 @@ async def ingest_document(
     also gets one OCR_START event before its extraction. ``quiet`` is accepted for
     pipeline call compatibility. The returned metadata carries the document's
     extraction title/authors/date and is derived even when extraction yields nothing;
-    the OCR report says which backend the extraction ran and how many pages it OCR'd.
+    the OCR report says which backend the extraction ran and how many pages it OCR'd,
+    and the failed pages are the ones whose OCR failed.
     """
     del quiet
     doc, ocr = await _extract_document(
@@ -568,7 +670,7 @@ async def ingest_document(
         page_texts_out=page_texts_out,
         ocr_backend=ocr.backend,
     )
-    return DocumentRecords(records, meta, ocr)
+    return DocumentRecords(records, meta, ocr, failed_ocr_pages(doc))
 
 
 async def ingest_archive(
@@ -627,7 +729,8 @@ async def _collect_members(
             )
         except ChunkLimitError as exc:
             raise ChunkLimitError(exc.count, exc.limit, member=name) from None
-        members.append(MemberRecords(name, content_type, records, page_texts, meta))
+        failed = failed_ocr_pages(entry.result)
+        members.append(MemberRecords(name, content_type, records, page_texts, meta, failed))
     if unsupported:
         log.info(
             "Skipped %d member(s) of %s, unsupported format: %s",
@@ -737,7 +840,8 @@ async def _extract_document(
 
     A set *cancel* stops vision OCR before its next page, and a pass that
     ends under a set *cancel* raises ``CancelledError`` instead of returning a
-    partial document.
+    partial document. A pass that fails because the backend refused a page for
+    the cancel also raises ``CancelledError``, not the wrapped extraction error.
     """
     from .xberg import aextract_document
 
@@ -753,16 +857,21 @@ async def _extract_document(
 
     trace_log.debug("extract-start source=%r type=%s", source_name, content_type)
     started = time.perf_counter()
-    with ocr_request(timeout=_effective_ocr_timeout(), cancel=cancel) as token:
-        batcher = active_extract_batcher()
-        if batcher is not None:
-            doc = await batcher.submit(mode, data, path.name, token, on_page)
-        else:
-            config = extraction_config(mode, ocr_token=token)
-            # xberg's extract is async; awaiting it keeps the OCR page loop off this thread.
-            doc = await aextract_document(
-                data, filename=path.name, config=config, on_progress=on_page
-            )
+    with ocr_request(timeout=_effective_ocr_timeout(), cancel=cancel) as request:
+        try:
+            batcher = active_extract_batcher()
+            if batcher is not None:
+                doc = await batcher.submit(mode, data, path.name, request.token, on_page)
+            else:
+                config = extraction_config(mode, ocr_token=request.token)
+                # xberg's extract is async; awaiting it keeps the OCR page loop off this thread.
+                doc = await aextract_document(
+                    data, filename=path.name, config=config, on_progress=on_page
+                )
+        except Exception as exc:
+            if request.cancel_refused.is_set():
+                raise asyncio.CancelledError from exc
+            raise
     if cancel is not None and cancel.is_set():
         raise asyncio.CancelledError
     elapsed = time.perf_counter() - started
@@ -811,7 +920,10 @@ async def _records_from_document(
 
     if ocr_backend is OcrBackendUsed.NONE:
         _warn_skipped_scanned_pages(doc, source_name)
-    enforce_chunk_limit(len(doc.chunks or []) + len(tables))
+    chunks = doc.chunks or []
+    pieces = await to_ingest_thread(_chunk_pieces, [chunk.content for chunk in chunks])
+    table_pieces = await to_ingest_thread(_table_pieces, [table.markdown for table in tables])
+    enforce_chunk_limit(len(pieces) + len(table_pieces))
     _capture_result_page_texts(doc, source_name, content_type, page_texts_out)
 
     # One EXTRACT event per file so progress subscribers show "extracted N pages"
@@ -825,14 +937,14 @@ async def _records_from_document(
 
     # Content chunks and table serializations share one embed batch; the vector
     # list is split back apart below by position.
-    texts = [chunk.content for chunk in doc.chunks or []]
-    table_texts = [table.markdown for table in tables]
-    embed_texts = await to_ingest_thread(
+    texts = [text for _, text in pieces]
+    table_texts = [text for _, text in table_pieces]
+    sentences = await to_ingest_thread(
         _enrich_texts, texts + table_texts, texts[0] if texts else "", source_name
     )
     vectors = await to_ingest_thread(
         get_services().embedder.embed_batch,
-        _embed_inputs(embed_texts, meta.title),
+        await to_ingest_thread(_embed_inputs, texts + table_texts, meta.title, sentences),
         source=source_name,
         on_progress=on_progress,
     )
@@ -841,15 +953,15 @@ async def _records_from_document(
             source=source_name,
             content_type=content_type,
             chunk_type=ChunkType.RAW,
-            page_start=chunk.metadata.first_page or 0,
-            page_end=chunk.metadata.last_page or 0,
+            page_start=chunks[pos].metadata.first_page or 0,
+            page_end=chunks[pos].metadata.last_page or 0,
             line_start=0,
             line_end=0,
             chunk=text,
-            chunk_index=chunk.metadata.chunk_index,
+            chunk_index=i,
             vector=vec,
         )
-        for chunk, text, vec in zip(doc.chunks or [], texts, vectors[: len(texts)], strict=True)
+        for i, ((pos, text), vec) in enumerate(zip(pieces, vectors[: len(texts)], strict=True))
     ]
     # Table chunk indices continue after the content chunks so a source's
     # (source, chunk_index) pairs stay unique.
@@ -858,16 +970,16 @@ async def _records_from_document(
             source=source_name,
             content_type=content_type,
             chunk_type=ChunkType.TABLE,
-            page_start=table.page_number,
-            page_end=table.page_number,
+            page_start=tables[pos].page_number,
+            page_end=tables[pos].page_number,
             line_start=0,
             line_end=0,
             chunk=text,
             chunk_index=len(texts) + i,
             vector=vec,
         )
-        for i, (table, text, vec) in enumerate(
-            zip(tables, table_texts, vectors[len(texts) :], strict=True)
+        for i, ((pos, text), vec) in enumerate(
+            zip(table_pieces, vectors[len(texts) :], strict=True)
         )
     )
     return records, meta
@@ -925,10 +1037,10 @@ async def ingest_markdown(
     if page_texts_out is not None:
         page_texts_out.append(_page_text_record(source_name, 0, raw_text, "text"))
 
-    embed_texts = await to_ingest_thread(_enrich_texts, texts, raw_text, source_name)
+    sentences = await to_ingest_thread(_enrich_texts, texts, raw_text, source_name)
     vectors = await to_ingest_thread(
         get_services().embedder.embed_batch,
-        _embed_inputs(embed_texts, meta.title),
+        await to_ingest_thread(_embed_inputs, texts, meta.title, sentences),
         source=source_name,
         on_progress=on_progress,
     )

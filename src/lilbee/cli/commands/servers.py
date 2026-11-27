@@ -6,16 +6,23 @@ import asyncio
 import contextlib
 import logging
 import os
+import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
 import typer
 
 from lilbee.app.services import (
+    answer_provider_waiters,
     exit_after_signal,
+    exit_code_of,
     exit_if_opens_remain,
+    exit_status_after_stop,
     report_library_upgrade,
+    reset_services_on_exit,
     set_server_exit_hook,
+    stop_for_parent_death,
+    stop_on_interrupt,
     wait_for_hard_exit_teardown,
 )
 from lilbee.cli.app import (
@@ -25,11 +32,13 @@ from lilbee.cli.app import (
     global_option,
 )
 from lilbee.cli.commands.serve_logging import (
+    arm_exit_deadline,
     install_health_access_filter,
     setup_server_logging,
 )
 from lilbee.cli.upgrade_line import UpgradeLine
 from lilbee.core.config import cfg
+from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.lock import (
     SERVER_LOCK_TIMEOUT,
@@ -56,6 +65,21 @@ Distinct from a generic failure so a supervisor can tell "another server owns
 this" apart from a crash without parsing output.
 """
 
+_STARTUP_FAILED_EXIT_STATUS = 1
+"""Exit code for a server whose startup failed, such as a failed services build."""
+
+_EXIT_DEADLINE_S = 60.0
+"""Seconds from the start of shutdown until the process ends, whatever holds it."""
+
+_GRACEFUL_SHUTDOWN_S = 10
+"""Seconds open requests get before uvicorn cancels them and runs the lifespan teardown."""
+
+_INTERRUPTED_EXIT_STATUS = 128 + signal.SIGINT
+"""The status a shell reports for a process that Ctrl-C ended."""
+
+_HARD_EXIT_GRACE_S = 1
+"""The same wait on SIGTERM or SIGHUP: long enough for a woken write to send its answer."""
+
 
 def port_file() -> Path:
     """Path to the running server's port file under ``cfg.data_dir``."""
@@ -72,30 +96,22 @@ def _log_loop_exception(_loop: asyncio.AbstractEventLoop, context: dict[str, obj
 
 
 class _ExitRequest:
-    """The exit a serving loop was asked for; a nonzero status ends the responses in flight."""
+    """The exit a serving loop was asked for; a nonzero status cuts the wait for responses."""
 
-    def __init__(self, server: uvicorn.Server, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(self, server: uvicorn.Server) -> None:
         self.status = 0
         self._server = server
-        self._loop = loop
-
-    def _cancel_responses(self) -> None:
-        for task in self._server.server_state.tasks:
-            task.cancel()
 
     def __call__(self, status: int) -> None:
         self.status = status
-        self._server.should_exit = True
         if status:
-            # A signal handler calls this, so the loop runs the cancel itself.
-            self._loop.call_soon_threadsafe(self._cancel_responses)
+            self._server.config.timeout_graceful_shutdown = _HARD_EXIT_GRACE_S
+        self._server.should_exit = True
 
 
 async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str) -> int:
     """Start uvicorn, write port file, clean up on shutdown, and return the exit status."""
     import atexit
-
-    from lilbee.parent_monitor import parse_parent_pid, watch_parent_async
 
     loop = asyncio.get_running_loop()
     loop.set_exception_handler(_log_loop_exception)
@@ -105,30 +121,34 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
     def _cleanup_port_file() -> None:
         port_path.unlink(missing_ok=True)
 
-    exit_request = _ExitRequest(server, loop)
+    exit_request = _ExitRequest(server)
 
     if not config.loaded:
         config.load()
     server.lifespan = config.lifespan_class(config)
 
-    # `server.servers` is set inside `startup()`. The finally below must skip
-    # `shutdown()` when startup never ran: uvicorn dereferences `self.servers`
-    # there and the resulting AttributeError would mask the original failure.
-    started = False
-    parent_watcher: asyncio.Task[None] | None = None
+    def release() -> None:
+        arm_exit_deadline(_EXIT_DEADLINE_S)
+        answer_provider_waiters()
+        set_server_exit_hook(None)
+        port_path.unlink(missing_ok=True)
+
+    # `server.servers` is set inside `startup()`. `shutdown()` runs only after a
+    # start that finished: uvicorn dereferences `self.servers` there and the
+    # resulting AttributeError would mask the original failure.
+    set_server_exit_hook(exit_request)
     try:
-        set_server_exit_hook(exit_request)
         await server.startup()
-        started = True
+    except SystemExit:
+        # uvicorn ends a failed start (lifespan or bind) with the status a lock refusal uses.
+        # A stop signal during the start has set its own nonzero status.
+        release()
+        return exit_request.status or _STARTUP_FAILED_EXIT_STATUS
+    except BaseException:
+        release()
+        raise
 
-        parent_pid = parse_parent_pid()
-        if parent_pid is not None:
-
-            def _on_parent_death() -> None:
-                server.should_exit = True
-
-            parent_watcher = asyncio.create_task(watch_parent_async(parent_pid, _on_parent_death))
-
+    try:
         if server.servers:
             sock = server.servers[0].sockets[0]
             actual_port = sock.getsockname()[1]
@@ -138,15 +158,11 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
             console.print(f"Listening on http://{host}:{actual_port}")
         await server.main_loop()
     finally:
-        set_server_exit_hook(None)
-        if parent_watcher is not None and not parent_watcher.done():
-            parent_watcher.cancel()
-        port_path.unlink(missing_ok=True)
-        if started:
-            # Suppress AttributeError from a partial uvicorn bring-up so any
-            # original exception from main_loop reaches the caller intact.
-            with contextlib.suppress(AttributeError):
-                await server.shutdown()
+        release()
+        # Suppress AttributeError from a partial uvicorn bring-up so any
+        # original exception from main_loop reaches the caller intact.
+        with contextlib.suppress(AttributeError):
+            await server.shutdown()
     return exit_request.status
 
 
@@ -162,6 +178,40 @@ def _refuse_to_start(message: str) -> NoReturn:
     raise typer.Exit(LOCK_REFUSAL_EXIT_CODE)
 
 
+def _take_the_scope() -> ScopeHold | None:
+    """Hold the exclusive scope named by the environment, or refuse to start; None when unset."""
+    scope_env = os.environ.get(SCOPE_ENV)
+    if not scope_env:
+        return None
+    scope_dir = Path(scope_env)
+    try:
+        scope_hold = acquire_scope_lock(scope_dir, cfg.data_dir, timeout=SERVER_LOCK_TIMEOUT)
+    except LockingUnsupportedError as exc:
+        _refuse_to_start(str(exc))
+    if scope_hold is None:
+        owner = read_scope_owner(scope_dir)
+        serving = f" It is serving {owner.data_dir}." if owner else ""
+        message = (
+            f"Another lilbee server is already running for this installation.{serving}"
+            " Stop it or wait for it to exit, then retry."
+        )
+        _refuse_to_start(message)
+    return scope_hold
+
+
+def _watch_the_parent() -> None:
+    """Stop the server once the process named by ``LILBEE_PARENT_PID`` is gone.
+
+    It watches from the start, so a parent that dies while the server waits on a
+    lock or builds its app stops it too.
+    """
+    from lilbee.parent_monitor import parse_parent_pid, watch_parent_thread
+
+    parent_pid = parse_parent_pid()
+    if parent_pid is not None:
+        watch_parent_thread(parent_pid, stop_for_parent_death)
+
+
 def serve(
     host: str = typer.Option(None, "--host", "-H", help="Bind address (default: 127.0.0.1)"),
     port: int = typer.Option(None, "--port", "-p", help="Port (default: 0/random)"),
@@ -169,6 +219,7 @@ def serve(
     use_global: bool = global_option,
 ) -> None:
     """Start the HTTP API server."""
+    _watch_the_parent()
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _report_upgrade_as_log_lines()
     if host is not None:
@@ -180,22 +231,7 @@ def serve(
 
     # One managed server per scope: the plugin passes its shared root here so a
     # second vault's server cannot start while another vault's is serving it.
-    scope_hold = None
-    scope_env = os.environ.get(SCOPE_ENV)
-    if scope_env:
-        scope_dir = Path(scope_env)
-        try:
-            scope_hold = acquire_scope_lock(scope_dir, cfg.data_dir, timeout=SERVER_LOCK_TIMEOUT)
-        except LockingUnsupportedError as exc:
-            _refuse_to_start(str(exc))
-        if scope_hold is None:
-            owner = read_scope_owner(scope_dir)
-            serving = f" It is serving {owner.data_dir}." if owner else ""
-            message = (
-                f"Another lilbee server is already running for this installation.{serving}"
-                " Stop it or wait for it to exit, then retry."
-            )
-            _refuse_to_start(message)
+    scope_hold = _take_the_scope()
 
     # One server per data dir: a second instance would overwrite server.port
     # and spawn a second engine fleet against the same models and vector store.
@@ -222,16 +258,29 @@ def serve(
     try:
         app = create_app()
         install_health_access_filter()
-        config = uvicorn.Config(app, host=cfg.server_host, port=cfg.server_port)
+        config = uvicorn.Config(
+            app,
+            host=cfg.server_host,
+            port=cfg.server_port,
+            timeout_graceful_shutdown=_GRACEFUL_SHUTDOWN_S,
+        )
         server = uvicorn.Server(config)
-        status = asyncio.run(_run_server(server, config, cfg.server_host))
+        # Keeps asyncio from installing its own handler, which only cancels the main task
+        # through a loop callback. An inherited ignore of SIGINT stays ignored.
+        stop_on_interrupt()
+        status = run_main(_run_server(server, config, cfg.server_host))
     except Exception:
         # The exit in the finally can end the process before the traceback prints.
         logging.getLogger(__name__).error("The server run failed.", exc_info=True)
         raise
+    except KeyboardInterrupt:
+        # The exit in the finally can end the process before the interrupt reaches the
+        # interpreter, so the status is the shell's own for Ctrl-C.
+        status = _INTERRUPTED_EXIT_STATUS
+        raise
     finally:
         _stop_server(status, server_lock, scope_hold)
-    raise typer.Exit(status)
+    raise typer.Exit(exit_status_after_stop(status))
 
 
 def _stop_server(status: int, server_lock: FileLock, scope_hold: ScopeHold | None) -> None:
@@ -255,8 +304,23 @@ def mcp_cmd(
     _report_upgrade_as_log_lines()
     from lilbee.mcp_server import main
 
+    # Set before the loop starts, so Ctrl-C has this handler while no loop runs. The
+    # serving loop takes the routed signals as callbacks and gives these handlers back
+    # when it ends, so a late signal still reaches the stop.
+    stop_on_interrupt()
     try:
         main()
     except SystemExit as exc:
-        exit_after_signal(exc.code if isinstance(exc.code, int) else 1)
+        exit_after_signal(exit_code_of(exc))
         raise
+    except Exception as exc:
+        # A failed build logged its own error. Any other failure keeps its traceback in the
+        # debug log. Stderr gets one plain line, and stdout stays the protocol's.
+        logging.getLogger(__name__).debug("The MCP server failed.", exc_info=True)
+        typer.echo(f"lilbee: the MCP server failed: {str(exc) or type(exc).__name__}", err=True)
+        raise typer.Exit(1) from exc
+    # The teardown runs here, not at atexit, so a signal that lands during it sets the status.
+    reset_services_on_exit()
+    status = exit_status_after_stop(0)
+    if status:
+        raise typer.Exit(status)

@@ -141,8 +141,6 @@ class CrawlbergFetcher:
         spec = _CrawlSpec(depth, max_pages, timeout, concurrency, filters)
         shown = url_filter.without_userinfo(seed_url)
         excluded = _ExcludedLinks(spec, shown)
-        if excluded.record_seed(shown):
-            return
         try:
             async with aclosing(self._stream(spec, seed_url, cancel)) as events:
                 async for event in events:

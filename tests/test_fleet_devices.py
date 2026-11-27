@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import devices as dev_mod
 from lilbee.providers.fleet.devices import (
     FleetDevice,
@@ -287,11 +287,11 @@ class TestPresetVisibleDeviceComposition:
         assert env == {"CUDA_VISIBLE_DEVICES": "0,1", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
 
     @pytest.mark.usefixtures("_quiet_probe_env")
-    def test_preset_cuda_device_order_is_respected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_preset_cuda_device_order_is_replaced(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
-        assert dev_mod._probe_env(Path("/bin/srv"))["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"
+        assert dev_mod._probe_env(Path("/bin/srv"))["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
         env = visible_env((FleetDevice("CUDA", 0, "", 0, 0),))
-        assert env["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"  # same order the probe used
+        assert env["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"  # same order the probe used
 
     @pytest.mark.usefixtures("_quiet_probe_env")
     def test_probe_env_defaults_order_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1010,3 +1010,100 @@ class TestReportedEngineBackend:
 
         with pytest.raises(KeyError):
             dev_mod._selected_backend([device], spoke=True)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals and a shell-script fake binary")
+def test_a_probe_killed_by_an_illegal_instruction_names_the_cpu(tmp_path: Path) -> None:
+    script = tmp_path / "llama-server"
+    script.write_text("#!/bin/sh\nkill -ILL $$\n", encoding="utf-8")
+    script.chmod(0o755)
+    with pytest.raises(ProviderError, match="instruction this CPU does not have") as caught:
+        probe_devices(script)
+    assert caught.value.kind is ProviderErrorKind.CPU_UNSUPPORTED
+
+
+def test_a_probe_with_the_windows_illegal_instruction_status_names_the_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dev_mod, "run_bounded", lambda *_a, **_k: ("", 0xC000001D))
+    with pytest.raises(ProviderError, match="instruction this CPU does not have"):
+        probe_devices(Path("llama-server.exe"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals and a shell-script fake binary")
+def test_a_probe_killed_by_an_illegal_instruction_after_its_header_keeps_the_probe(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "llama-server"
+    script.write_text("#!/bin/sh\necho 'Available devices:'\nkill -ILL $$\n", encoding="utf-8")
+    script.chmod(0o755)
+    probe = probe_devices(script)
+    assert probe.devices == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals and a shell-script fake binary")
+def test_a_probe_killed_by_another_signal_is_a_probe_failure_not_a_cpu_host(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "llama-server"
+    script.write_text("#!/bin/sh\necho 'driver fault'\nkill -SEGV $$\n", encoding="utf-8")
+    script.chmod(0o755)
+    with pytest.raises(ProviderError, match=r"stopped by signal 11 \(SIGSEGV\)") as caught:
+        probe_devices(script)
+    assert caught.value.kind is ProviderErrorKind.SERVER
+    assert "driver fault" in str(caught.value)
+    assert "does not appear to support" not in str(caught.value)
+
+
+def test_both_probe_checks_take_the_exit_phrase_from_one_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dev_mod, "_exit_phrase", lambda code: f"ended as <{code}>")
+    monkeypatch.setattr(dev_mod, "run_bounded", lambda *_a, **_k: ("", -9))
+    with pytest.raises(ProviderError) as gpu_probe:
+        probe_devices(Path("llama-server"))
+    with pytest.raises(ProviderError) as listing:
+        dev_mod.require_clean_probe_exit(Path("llama-server"), -9, "")
+    assert "probe (llama-server --list-devices) ended as <-9> before it" in str(gpu_probe.value)
+    assert "probe (llama-server --list-devices) ended as <-9>, so" in str(listing.value)
+
+
+def test_a_probe_killed_by_sigterm_names_the_signal_and_the_probe_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dev_mod, "run_bounded", lambda *_a, **_k: ("ggml_cuda_init: failed\n", -15))
+    with pytest.raises(ProviderError, match=r"stopped by signal 15 \(SIGTERM\)") as caught:
+        probe_devices(Path("llama-server"))
+    assert "ggml_cuda_init: failed" in str(caught.value)
+    assert "does not appear to support" not in str(caught.value)
+    assert caught.value.kind == ProviderErrorKind.SERVER
+    assert (
+        "before it listed any device, so the engine cannot start. Something ended the "
+        "probe: a GPU driver fault, the out-of-memory killer or a service manager. lilbee "
+        "does not guess a GPU from the Vulkan loader of this computer here, "
+        "because the engine would "
+        "then fail the same way.\nThe probe reported: ggml_cuda_init: failed"
+    ) in str(caught.value)
+
+
+def test_a_status_that_is_no_known_signal_is_still_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dev_mod, "run_bounded", lambda *_a, **_k: ("", -200))
+    with pytest.raises(ProviderError, match=r"stopped by signal 200 \(unknown signal\)"):
+        probe_devices(Path("llama-server"))
+
+
+def test_a_killed_probe_is_not_replaced_by_the_host_vulkan_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The planner reads the failure; it never asks the loader for devices instead."""
+    from lilbee.providers.fleet import gpu_select, planning
+    from lilbee.providers.fleet.engines.llama import LLAMA
+
+    monkeypatch.setattr(dev_mod, "run_bounded", lambda *_a, **_k: ("", -15))
+    asked: list[str] = []
+    monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: asked.append("loader") or [])
+    with pytest.raises(ProviderError, match="stopped by signal 15"):
+        planning._read_devices(Path("llama-server"), LLAMA)
+    assert asked == []

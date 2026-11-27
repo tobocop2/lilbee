@@ -143,7 +143,7 @@ def settings_set(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
-    """Set a writable setting; model roles are refused (use 'lilbee model' instead)."""
+    """Set a writable setting; model roles are refused (use 'lilbee model use' instead)."""
     from lilbee.app.settings import apply_settings_update, config_write_failure_message
 
     apply_overrides(data_dir=data_dir, use_global=use_global)

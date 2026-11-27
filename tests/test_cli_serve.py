@@ -36,6 +36,12 @@ def _no_locks_available() -> OSError:
 
 
 @pytest.fixture(autouse=True)
+def _no_exit_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop an in-process server run from ending this process 60 s later."""
+    monkeypatch.setattr("lilbee.cli.commands.servers.arm_exit_deadline", lambda _seconds: None)
+
+
+@pytest.fixture(autouse=True)
 def isolated_env(tmp_path, monkeypatch):
     # CI sets LILBEE_DATA at workflow level; clear it so the token command's
     # apply_overrides() does not clobber cfg.data_dir during invocation.
@@ -110,39 +116,39 @@ class TestTokenCommand:
 class TestServeCommand:
     @mock.patch("lilbee.cli.commands.servers.install_health_access_filter")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
-    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.cli.commands.servers.run_main", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_default_host_port(
         self,
         mock_create_app,
-        mock_asyncio_run,
+        mock_run_main,
         mock_setup_logging,
         mock_install_filter,
     ):
         mock_create_app.return_value = "fake_app"
         result = runner.invoke(app, ["serve"])
         assert result.exit_code == 0
-        mock_asyncio_run.assert_called_once()
+        mock_run_main.assert_called_once()
         mock_setup_logging.assert_called_once()
         mock_install_filter.assert_called_once()
 
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
-    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.cli.commands.servers.run_main", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
-    def test_custom_host_port(self, mock_create_app, mock_asyncio_run, mock_setup_logging):
+    def test_custom_host_port(self, mock_create_app, mock_run_main, mock_setup_logging):
         mock_create_app.return_value = "fake_app"
         result = runner.invoke(app, ["serve", "--host", "0.0.0.0", "--port", "8080"])
         assert result.exit_code == 0
-        mock_asyncio_run.assert_called_once()
+        mock_run_main.assert_called_once()
 
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
-    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.cli.commands.servers.run_main", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
-    def test_short_flags(self, mock_create_app, mock_asyncio_run, mock_setup_logging):
+    def test_short_flags(self, mock_create_app, mock_run_main, mock_setup_logging):
         mock_create_app.return_value = "fake_app"
         result = runner.invoke(app, ["serve", "-H", "0.0.0.0", "-p", "9000"])
         assert result.exit_code == 0
-        mock_asyncio_run.assert_called_once()
+        mock_run_main.assert_called_once()
 
 
 class TestPortFile:
@@ -243,6 +249,20 @@ class TestRunServer:
 
         assert not (cfg.data_dir / "server.port").exists()
 
+    def test_failed_startup_releases_the_hook_and_skips_shutdown(self):
+        from lilbee.app.services import request_server_exit
+        from lilbee.cli.commands.servers import _run_server
+
+        fake_server_obj = mock.MagicMock()
+        fake_server_obj.startup = mock.AsyncMock(side_effect=RuntimeError("bind failed"))
+        fake_server_obj.shutdown = mock.AsyncMock()
+
+        with pytest.raises(RuntimeError, match="bind failed"):
+            asyncio.run(_run_server(fake_server_obj, mock.MagicMock(), "127.0.0.1"))
+
+        fake_server_obj.shutdown.assert_not_awaited()
+        assert request_server_exit(0) is False
+
     def test_no_servers_skips_port_file(self):
         from lilbee.cli.commands.servers import _run_server
 
@@ -261,7 +281,7 @@ class TestRunServer:
     def test_registers_exit_hook_while_serving(self):
         """The shutdown route stops this loop; the hook clears on the way out."""
         from lilbee.app.services import request_server_exit
-        from lilbee.cli.commands.servers import _run_server
+        from lilbee.cli.commands.servers import _HARD_EXIT_GRACE_S, _run_server
 
         fake_server_obj = mock.MagicMock()
         fake_server_obj.servers = []
@@ -274,8 +294,8 @@ class TestRunServer:
             seen.append(request_server_exit())
 
         fake_server_obj.main_loop = capture_hook
-        in_flight = mock.MagicMock()
-        fake_server_obj.server_state.tasks = {in_flight}
+        full_grace = _HARD_EXIT_GRACE_S + 1
+        fake_server_obj.config.timeout_graceful_shutdown = full_grace
         fake_config = mock.MagicMock()
 
         status = asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
@@ -284,19 +304,17 @@ class TestRunServer:
         assert fake_server_obj.should_exit is True
         assert request_server_exit() is False
         assert status == 0
-        in_flight.cancel.assert_not_called()
+        assert fake_server_obj.config.timeout_graceful_shutdown == full_grace
 
-    def test_a_hard_exit_ends_the_responses_in_flight_and_returns_its_status(self):
+    def test_a_hard_exit_cuts_the_wait_for_responses_and_returns_its_status(self):
         """The twin of the test above, where a plain request waits for them and returns 0."""
         from lilbee.app.services import request_server_exit
-        from lilbee.cli.commands.servers import _run_server
+        from lilbee.cli.commands.servers import _HARD_EXIT_GRACE_S, _run_server
 
         fake_server_obj = mock.MagicMock()
         fake_server_obj.servers = []
         fake_server_obj.startup = mock.AsyncMock()
         fake_server_obj.shutdown = mock.AsyncMock()
-        in_flight = mock.MagicMock()
-        fake_server_obj.server_state.tasks = {in_flight}
 
         async def hard_exit() -> None:
             assert request_server_exit(143) is True
@@ -308,7 +326,7 @@ class TestRunServer:
 
         assert status == 143
         assert fake_server_obj.should_exit is True
-        in_flight.cancel.assert_called_once_with()
+        assert fake_server_obj.config.timeout_graceful_shutdown == _HARD_EXIT_GRACE_S
         fake_server_obj.shutdown.assert_awaited_once()
 
     def test_loads_config_when_not_loaded(self):
@@ -396,6 +414,66 @@ class TestRunServer:
 
         assert seen_handler is _log_loop_exception
 
+    def test_a_failed_services_build_ends_the_server_with_a_startup_failure(self):
+        import uvicorn
+
+        from lilbee.cli.commands.servers import (
+            _STARTUP_FAILED_EXIT_STATUS,
+            LOCK_REFUSAL_EXIT_CODE,
+            _run_server,
+        )
+        from lilbee.server.app import create_app
+
+        config = uvicorn.Config(create_app(), host="127.0.0.1", port=0, log_config=None)
+        server = uvicorn.Server(config)
+        # A server that does start returns at once instead of serving.
+        server.should_exit = True
+
+        with mock.patch(
+            "lilbee.server.app.get_services", side_effect=RuntimeError("chat model missing")
+        ):
+            status = asyncio.run(_run_server(server, config, "127.0.0.1"))
+
+        assert status == _STARTUP_FAILED_EXIT_STATUS
+        assert status != LOCK_REFUSAL_EXIT_CODE
+        assert not (cfg.data_dir / "server.port").exists()
+
+    def test_a_stop_signal_during_a_failed_start_keeps_its_status(self):
+        from lilbee.app.services import request_server_exit
+        from lilbee.cli.commands.servers import _run_server
+
+        async def stopped_then_failed():
+            request_server_exit(143)
+            raise SystemExit(3)
+
+        fake_server_obj = mock.MagicMock()
+        fake_server_obj.startup = stopped_then_failed
+
+        status = asyncio.run(_run_server(fake_server_obj, mock.MagicMock(), "127.0.0.1"))
+
+        assert status == 143
+
+    def test_a_port_already_in_use_ends_the_server_with_a_startup_failure(self):
+        import socket
+
+        import uvicorn
+
+        from lilbee.cli.commands.servers import _STARTUP_FAILED_EXIT_STATUS, _run_server
+
+        async def no_app(scope, receive, send):
+            raise AssertionError("the server served on a port it could not bind")
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
+            held.bind(("127.0.0.1", 0))
+            held.listen()
+            port = held.getsockname()[1]
+            config = uvicorn.Config(
+                no_app, host="127.0.0.1", port=port, lifespan="off", log_config=None
+            )
+            status = asyncio.run(_run_server(uvicorn.Server(config), config, "127.0.0.1"))
+
+        assert status == _STARTUP_FAILED_EXIT_STATUS
+
     def test_does_not_call_shutdown_when_startup_fails(self):
         """If `startup()` raises, `server.servers` was never assigned. Calling
         `shutdown()` then would crash inside uvicorn (`AttributeError: 'Server'
@@ -444,10 +522,10 @@ class TestRunServer:
 
 class TestServeSingleton:
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
-    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.cli.commands.servers.run_main", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_serve_exits_when_another_server_holds_the_lock(
-        self, mock_create_app, mock_asyncio_run, mock_setup_logging
+        self, mock_create_app, mock_run_main, mock_setup_logging
     ):
         from lilbee.runtime.lock import acquire_server_lock
 
@@ -461,13 +539,13 @@ class TestServeSingleton:
             holder.release()
         assert result.exit_code == 3
         assert "already running" in result.output
-        mock_asyncio_run.assert_not_called()
+        mock_run_main.assert_not_called()
 
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
-    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.cli.commands.servers.run_main", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_serve_refuses_a_data_directory_that_cannot_lock(
-        self, mock_create_app, mock_asyncio_run, mock_setup_logging
+        self, mock_create_app, mock_run_main, mock_setup_logging
     ):
         with mock.patch.object(FileLock, "acquire", side_effect=_no_locks_available()):
             result = runner.invoke(app, ["serve"])
@@ -475,15 +553,15 @@ class TestServeSingleton:
         assert result.exit_code == 3
         assert "does not support file locking" in result.output
         assert "Errno" not in result.output
-        mock_asyncio_run.assert_not_called()
+        mock_run_main.assert_not_called()
 
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
-    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.cli.commands.servers.run_main", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_serve_refuses_a_shared_folder_that_cannot_lock(
         self,
         mock_create_app,
-        mock_asyncio_run,
+        mock_run_main,
         mock_setup_logging,
         tmp_path,
         monkeypatch,
@@ -497,13 +575,13 @@ class TestServeSingleton:
         assert "does not support file locking" in result.output
         assert "shared-root" in result.output
         assert "Errno" not in result.output
-        mock_asyncio_run.assert_not_called()
+        mock_run_main.assert_not_called()
 
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
-    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.cli.commands.servers.run_main", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_serve_releases_the_lock_on_exit(
-        self, mock_create_app, mock_asyncio_run, mock_setup_logging
+        self, mock_create_app, mock_run_main, mock_setup_logging
     ):
         from lilbee.runtime.lock import acquire_server_lock
 
@@ -515,14 +593,60 @@ class TestServeSingleton:
         reacquired.release()
 
 
+class TestServeWatchesTheParent:
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.run_main", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_the_watch_starts_before_the_server_takes_its_lock(
+        self, mock_create_app, mock_run_main, mock_setup_logging, monkeypatch
+    ):
+        from lilbee.app.services import stop_for_parent_death
+        from lilbee.cli.commands import servers as commands
+
+        mock_create_app.return_value = "fake_app"
+        monkeypatch.setenv("LILBEE_PARENT_PID", "4242")
+        order: list[tuple[object, ...]] = []
+        take_the_lock = commands.acquire_server_lock
+
+        def locked(*args: object, **kwargs: object) -> object:
+            order.append(("lock",))
+            return take_the_lock(*args, **kwargs)
+
+        with (
+            mock.patch(
+                "lilbee.parent_monitor.watch_parent_thread",
+                side_effect=lambda pid, on_death: order.append(("watch", pid, on_death)),
+            ),
+            mock.patch.object(commands, "acquire_server_lock", side_effect=locked),
+        ):
+            result = runner.invoke(app, ["serve"])
+
+        assert result.exit_code == 0, result.output
+        assert order == [("watch", 4242, stop_for_parent_death), ("lock",)]
+
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.run_main", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_no_watch_starts_without_a_parent_pid(
+        self, mock_create_app, mock_run_main, mock_setup_logging, monkeypatch
+    ):
+        mock_create_app.return_value = "fake_app"
+        monkeypatch.delenv("LILBEE_PARENT_PID", raising=False)
+        with mock.patch("lilbee.parent_monitor.watch_parent_thread") as watcher:
+            result = runner.invoke(app, ["serve"])
+
+        assert result.exit_code == 0, result.output
+        watcher.assert_not_called()
+
+
 class TestServeExclusiveScope:
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
-    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.cli.commands.servers.run_main", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_serve_exits_when_the_scope_is_held(
         self,
         mock_create_app,
-        mock_asyncio_run,
+        mock_run_main,
         mock_setup_logging,
         tmp_path,
         monkeypatch,
@@ -544,15 +668,15 @@ class TestServeExclusiveScope:
         # The console hard-wraps at terminal width and a long tmp path can
         # split the dir name across lines; compare with newlines removed.
         assert "other-vault" in result.output.replace("\n", "")
-        mock_asyncio_run.assert_not_called()
+        mock_run_main.assert_not_called()
 
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
-    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.cli.commands.servers.run_main", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_serve_holds_then_releases_the_scope(
         self,
         mock_create_app,
-        mock_asyncio_run,
+        mock_run_main,
         mock_setup_logging,
         tmp_path,
         monkeypatch,
@@ -572,12 +696,12 @@ class TestServeExclusiveScope:
 
 class TestServeScopeReleasedOnDataDirRefusal:
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
-    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.cli.commands.servers.run_main", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_data_dir_refusal_frees_the_scope(
         self,
         mock_create_app,
-        mock_asyncio_run,
+        mock_run_main,
         mock_setup_logging,
         tmp_path,
         monkeypatch,
@@ -596,7 +720,7 @@ class TestServeScopeReleasedOnDataDirRefusal:
             data_dir_holder.release()
         assert result.exit_code == 3
         assert "data directory" in result.output
-        mock_asyncio_run.assert_not_called()
+        mock_run_main.assert_not_called()
         # The scope acquired before the refusal must not stay held.
         reacquired = acquire_scope_lock(scope, cfg.data_dir, timeout=0.05)
         assert reacquired is not None
@@ -605,10 +729,10 @@ class TestServeScopeReleasedOnDataDirRefusal:
 
 class TestServeExitStatus:
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
-    @mock.patch("lilbee.cli.commands.servers.asyncio.run")
+    @mock.patch("lilbee.cli.commands.servers.run_main")
     @mock.patch("lilbee.server.create_app")
     def test_serve_exits_with_the_status_its_loop_returns(
-        self, mock_create_app, mock_asyncio_run, mock_setup_logging
+        self, mock_create_app, mock_run_main, mock_setup_logging
     ):
         """The lock is free afterwards, so the status leaves after the teardown wait."""
         from lilbee.runtime.lock import acquire_server_lock
@@ -618,7 +742,7 @@ class TestServeExitStatus:
             return 143
 
         mock_create_app.return_value = "fake_app"
-        mock_asyncio_run.side_effect = run
+        mock_run_main.side_effect = run
         result = runner.invoke(app, ["serve"])
         assert result.exit_code == 143
         reacquired = acquire_server_lock(cfg.data_dir, timeout=0.05)
@@ -728,12 +852,12 @@ class TestServeExitsPastARunningOpen:
         ],
     )
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
-    @mock.patch("lilbee.cli.commands.servers.asyncio.run")
+    @mock.patch("lilbee.cli.commands.servers.run_main")
     @mock.patch("lilbee.server.create_app")
     def test_serve_ends_the_process_only_while_an_open_runs(
         self,
         mock_create_app,
-        mock_asyncio_run,
+        mock_run_main,
         mock_setup_logging,
         monkeypatch,
         open_done,
@@ -758,7 +882,7 @@ class TestServeExitsPastARunningOpen:
             exits.append(status)
 
         mock_create_app.return_value = "fake_app"
-        mock_asyncio_run.side_effect = run
+        mock_run_main.side_effect = run
         monkeypatch.setattr(services_mod.os, "_exit", record_exit)
         monkeypatch.setattr(services_mod, "wait_for_opens", lambda timeout: open_done)
         monkeypatch.setattr(servers_mod, "exit_if_opens_remain", services_mod.exit_if_opens_remain)
@@ -767,10 +891,10 @@ class TestServeExitsPastARunningOpen:
         assert result.exit_code == 143
 
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
-    @mock.patch("lilbee.cli.commands.servers.asyncio.run")
+    @mock.patch("lilbee.cli.commands.servers.run_main")
     @mock.patch("lilbee.server.create_app")
     def test_a_serve_test_returns_while_an_open_runs_without_its_own_patch(
-        self, mock_create_app, mock_asyncio_run, mock_setup_logging, monkeypatch
+        self, mock_create_app, mock_run_main, mock_setup_logging, monkeypatch
     ):
         """The autouse guard keeps the real process exit out of a CliRunner serve test."""
         from lilbee.app import services as services_mod
@@ -783,17 +907,17 @@ class TestServeExitsPastARunningOpen:
             raise AssertionError("the test reached the real process exit")
 
         mock_create_app.return_value = "fake_app"
-        mock_asyncio_run.side_effect = run
+        mock_run_main.side_effect = run
         monkeypatch.setattr(services_mod.os, "_exit", forbidden)
         monkeypatch.setattr(services_mod, "wait_for_opens", lambda timeout: False)
         result = runner.invoke(app, ["serve"])
         assert result.exit_code == 0
 
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
-    @mock.patch("lilbee.cli.commands.servers.asyncio.run")
+    @mock.patch("lilbee.cli.commands.servers.run_main")
     @mock.patch("lilbee.server.create_app")
     def test_serve_runs_the_open_exit_when_the_loop_raises(
-        self, mock_create_app, mock_asyncio_run, mock_setup_logging, monkeypatch, caplog
+        self, mock_create_app, mock_run_main, mock_setup_logging, monkeypatch, caplog
     ):
         """A raising run still ends the process while an open runs, and the error is logged."""
         from lilbee.cli.commands import servers as servers_mod
@@ -804,7 +928,7 @@ class TestServeExitsPastARunningOpen:
 
         exits: list[int] = []
         mock_create_app.return_value = "fake_app"
-        mock_asyncio_run.side_effect = run
+        mock_run_main.side_effect = run
         monkeypatch.setattr(servers_mod, "exit_if_opens_remain", exits.append)
         with caplog.at_level("ERROR"):
             result = runner.invoke(app, ["serve"])
@@ -812,16 +936,37 @@ class TestServeExitsPastARunningOpen:
         assert isinstance(result.exception, RuntimeError)
         assert "the loop failed" in caplog.text
 
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.run_main")
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_ends_a_ctrl_c_with_the_shell_status_while_an_open_runs(
+        self, mock_create_app, mock_run_main, mock_setup_logging, monkeypatch
+    ):
+        """The open exit ends the process before the interrupt does, so it carries 130."""
+        from lilbee.cli.commands import servers as servers_mod
+
+        def run(coro):
+            coro.close()
+            raise KeyboardInterrupt
+
+        exits: list[int] = []
+        mock_create_app.return_value = "fake_app"
+        mock_run_main.side_effect = run
+        monkeypatch.setattr(servers_mod, "exit_if_opens_remain", exits.append)
+        result = runner.invoke(app, ["serve"])
+        assert exits == [130]
+        assert result.exit_code == 130
+
 
 class TestServeHoldsLocksThroughTeardown:
     @mock.patch("lilbee.cli.commands.servers.wait_for_hard_exit_teardown")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
-    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.cli.commands.servers.run_main", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_serve_waits_out_a_signal_teardown_before_releasing(
         self,
         mock_create_app,
-        mock_asyncio_run,
+        mock_run_main,
         mock_setup_logging,
         mock_wait,
     ):
@@ -847,3 +992,17 @@ class TestServeHoldsLocksThroughTeardown:
         reacquired = acquire_server_lock(cfg.data_dir, timeout=0.05)
         assert reacquired is not None
         reacquired.release()
+
+
+def test_the_shutdown_answers_the_callers_that_wait_on_the_provider() -> None:
+    from lilbee.cli.commands.servers import _run_server
+
+    fake_server = mock.MagicMock()
+    fake_server.servers = []
+    fake_server.startup = mock.AsyncMock()
+    fake_server.main_loop = mock.AsyncMock()
+    fake_server.shutdown = mock.AsyncMock()
+    services = mock.MagicMock()
+    with mock.patch("lilbee.app.services.peek_services", return_value=services):
+        asyncio.run(_run_server(fake_server, mock.MagicMock(), "127.0.0.1"))
+    services.provider.stop_waiting.assert_called_once_with()

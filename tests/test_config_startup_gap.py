@@ -105,13 +105,15 @@ def test_the_tui_engine_retry_takes_the_file_and_shows_it_on_the_app_thread(monk
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
-    assert svc_mod._state.config_refresh == app.take_external_settings_now
+    # The engine's retry runs the process's one follower, the one the TUI checks on focus.
+    retry = app._config_follower.take_now
+    assert svc_mod._state.follower is app._config_follower
     shown: list[tuple[Any, ...]] = []
     monkeypatch.setattr(tui_app_mod, "call_from_thread", lambda *args: shown.append(args))
-    svc_mod.refresh_config()
+    retry()
     assert shown == []  # nothing changed, nothing to show
     _write_from_another_process("top_k", 23, tick=3)
-    svc_mod.refresh_config()
+    retry()
     assert cfg.top_k == 23
     assert len(shown) == 1
     node, show, result = shown[0]
@@ -122,6 +124,7 @@ def test_the_tui_engine_retry_takes_the_file_and_shows_it_on_the_app_thread(monk
 
 
 def test_a_failed_take_on_the_tui_retry_is_logged_and_does_not_raise(monkeypatch, caplog):
+    from lilbee.app import config_follow
     from lilbee.cli.tui import app as tui_app_mod
     from lilbee.cli.tui.app import LilbeeApp
 
@@ -132,9 +135,9 @@ def test_a_failed_take_on_the_tui_retry_is_logged_and_does_not_raise(monkeypatch
     def refuse(_reading, **_options):
         raise ValueError("refused value")
 
-    monkeypatch.setattr(tui_app_mod, "adopt_external_changes", refuse)
-    with caplog.at_level("ERROR", logger=tui_app_mod.log.name):
-        assert app.take_external_settings_now() is None
+    monkeypatch.setattr(config_follow, "adopt_external_changes", refuse)
+    with caplog.at_level("ERROR", logger=config_follow.log.name):
+        assert app._config_follower.take_now() is None
     assert shown == []
     assert [r.exc_info[1].args for r in caplog.records if r.exc_info] == [("refused value",)]
 
@@ -148,7 +151,7 @@ def test_a_provider_switch_from_outside_stops_the_fleet_after_the_tui_lock_is_fr
 
     def stop_the_fleet() -> None:
         # Another take during the stop finds the reading current: nothing is taken twice.
-        held = app._config_lock.locked()
+        held = app._config_follower._lock.locked()
         seen.append((held, cfg.llm_provider, None if held else app.adopt_external_settings()))
 
     monkeypatch.setattr(svc_mod, "reset_services", stop_the_fleet)
@@ -210,7 +213,7 @@ _PROBE_BUDGET_S = 120.0
 def test_the_default_path_takes_a_write_made_before_the_product_started(
     tmp_path, monkeypatch, mode, data_env
 ):
-    from tests.conftest import clean_env
+    from tests.conftest import child_pythonpath, clean_env
 
     home = tmp_path / "home"
     home.mkdir()
@@ -237,7 +240,7 @@ def test_the_default_path_takes_a_write_made_before_the_product_started(
         "HF_HUB_OFFLINE": "1",
         "LILBEE_ENGINE_DIR": str(home / "engine-slot"),
         # The child runs in another directory; it must import the lilbee under test.
-        "PYTHONPATH": str(Path(lilbee.__file__).resolve().parents[1]),
+        "PYTHONPATH": child_pythonpath(Path(lilbee.__file__).resolve().parents[1]),
     }
     if data_env is not None:
         env["LILBEE_DATA"] = data_env

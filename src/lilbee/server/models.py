@@ -5,12 +5,13 @@ Typed pydantic models so Litestar's OpenAPI schema has field-level detail.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar, cast
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator, model_validator
 
 from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
 from lilbee.app.models import ModelEntry
+from lilbee.app.placement import PlacementRefusal
 from lilbee.app.profiles import (
     ActiveProfile,
     ApplyResult,
@@ -26,7 +27,7 @@ from lilbee.app.profiles import (
 )
 from lilbee.app.settings import SettingInfo, SettingsUpdateResult
 from lilbee.app.settings_map import SettingGroup
-from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
+from lilbee.catalog.types import KeyStatus, ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.core.config.defaults import MAX_CRAWL_DEPTH, MAX_CRAWL_PAGES
 from lilbee.core.config.enums import (
     CrawlRenderMode,
@@ -39,7 +40,8 @@ from lilbee.core.health_warnings import HealthWarning
 from lilbee.core.profile_files import ProfileEntry, ProfileFolder, ProfileValidation
 from lilbee.data.store import ChunkType, IndexMismatch, MemoryKind, scope_to_chunk_type
 from lilbee.data.types import SkippedSource
-from lilbee.providers.roles import EngineBackend, WorkerRole
+from lilbee.providers.roles import EngineBackend, RoleTarget, WorkerRole
+from lilbee.providers.server_registry import RerankWire
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 from lilbee.runtime.progress import LibraryUpgradeEvent
 from lilbee.sessions import MessageRole
@@ -56,6 +58,7 @@ if TYPE_CHECKING:
         TipState,
     )
     from lilbee.app.placement import PlacementView
+    from lilbee.app.presets import ServerPreset
     from lilbee.data.analyze import PdfSignals
 
 
@@ -126,8 +129,8 @@ class SyncRequest(_OcrRequest):
     or ingest because ``cfg.embedding_model`` no longer matches the persisted vectors).
     ``retry_skipped`` is the lighter recovery: it clears the markers for files that
     failed a previous sync (Tesseract timeout, decode failure, no usable text) so this
-    sync attempts them again, without dropping the existing store. The default is an
-    incremental sync.
+    sync attempts them again, and it reads partly read files again, without dropping
+    the existing store. The default is an incremental sync.
     ``prune_ignored`` drops sources a ``.lilbeeignore`` now excludes. Off by default:
     the patterns govern what sync takes in, not what a past sync already indexed.
     """
@@ -137,11 +140,31 @@ class SyncRequest(_OcrRequest):
     prune_ignored: bool = False
 
 
+ADD_ID_PATTERN = r"^[A-Za-z0-9_-]+$"
+ADD_ID_MAX_LENGTH = 64
+AddId = Annotated[str, Field(min_length=1, max_length=ADD_ID_MAX_LENGTH, pattern=ADD_ID_PATTERN)]
+"""The id a client gives an add, so ``POST /api/add/cancel`` can name it."""
+
+
 class AddRequest(_OcrRequest):
     """Request body for /api/add."""
 
     paths: list[str]
     force: bool = False
+    add_id: AddId | None = None
+
+
+class AddCancelRequest(BaseModel):
+    """Request body for /api/add/cancel."""
+
+    add_id: AddId
+
+
+class AddCancelResponse(BaseModel):
+    """Answer of /api/add/cancel: the add stops, and its stream ends with a ``done`` event."""
+
+    add_id: str
+    cancelling: bool
 
 
 class SetModelRequest(BaseModel):
@@ -198,6 +221,23 @@ class CleanedChunk(BaseModel):
     citation_number: int | None = None
 
 
+class FailedPageInfo(BaseModel):
+    """One page whose OCR failed."""
+
+    page: int
+    """The page number, starting at 1."""
+    error: str
+    recovered: bool
+    """Whether the page still has native text or text from an embedded image."""
+
+
+class PartialFileInfo(BaseModel):
+    """An indexed file with at least one page whose OCR failed."""
+
+    name: str
+    pages: list[FailedPageInfo]
+
+
 class StatusSourceInfo(BaseModel):
     """A single indexed source in a status response."""
 
@@ -244,6 +284,19 @@ class StatusIndexInfo(BaseModel):
 
     embedding_model: str
     embedding_dim: int
+    engine_mismatch: str | None = None
+    """Why search and ingest stop when the embedding engine gives other vectors."""
+    chunk_drift: list[str] = []
+    """The settings now in force that differ from the ones the chunks were cut with."""
+
+
+class ServingInfo(BaseModel):
+    """The engine and version that serve one configured role."""
+
+    role: WorkerRole
+    model: str
+    engine: str
+    version: str
 
 
 class StatusResponse(BaseModel):
@@ -264,8 +317,13 @@ class StatusResponse(BaseModel):
     skipped: list[SkippedSource] = []
     """Failed files held out of the index, capped; ``skipped_total`` is the real count."""
     skipped_total: int = 0
+    partly_read: list[PartialFileInfo] = []
+    """Indexed sources with pages whose OCR failed, capped; ``partial_total`` is the real count."""
+    partial_total: int = 0
     ocr_note: str = ""
     """What happens to scanned pages: skipped, or read by which engine."""
+    serving: list[ServingInfo] = []
+    """The engine and version that serve each configured role."""
 
 
 class ShutdownResponse(BaseModel):
@@ -279,6 +337,8 @@ class HealthResponse(BaseModel):
 
     status: str
     version: str
+    chat_engine: str | None = None
+    """The engine that serves the chat model; absent when no chat model resolves."""
     chat_ready: bool = False
     """True once the chat engine is loaded and ready to serve a first token.
 
@@ -351,6 +411,8 @@ class AskResponse(BaseModel):
     """The standalone rewrite retrieval ran on, when a follow-up was rewritten."""
     dropped_sources: list[CleanedChunk] = Field(default_factory=list)
     """Chunks the budget fit shed, so a client can say what was trimmed."""
+    warnings: list[HealthWarning] = Field(default_factory=list)
+    """Search steps that failed, so a client can say the answer used fewer matches."""
 
 
 class SetModelResponse(BaseModel):
@@ -427,6 +489,8 @@ class DocumentInfo(BaseModel):
     filename: str
     chunk_count: int = 0
     ingested_at: str = ""
+    ocr_page_failures: list[FailedPageInfo] = []
+    """The pages whose OCR failed; empty when every page was read."""
 
 
 class DocumentListResponse(BaseModel):
@@ -564,8 +628,18 @@ class CatalogEntryResponse(BaseModel):
     architecture: str = ""
     compat: ModelCompat = ModelCompat.UNKNOWN
     safety_stripped: bool = False
+    formats: list[str] = Field(default_factory=lambda: [ModelFormat.GGUF.value])
+    """The weight formats this host can run for the row; a pull takes one of them."""
     provider: str = ""
     key_status: KeyStatus | None = None
+
+
+class HiddenEntryResponse(BaseModel):
+    """A catalog row the listing left out, and why."""
+
+    hf_repo: str
+    reason: str
+    text: str
 
 
 class ModelsCatalogResponse(BaseModel):
@@ -583,6 +657,8 @@ class ModelsCatalogResponse(BaseModel):
     has_more: bool = False
     next_offset: int | None
     truncated: bool = False
+    hidden: list[HiddenEntryResponse] = Field(default_factory=list)
+    hidden_summary: str = ""
 
 
 class ModelsInstalledResponse(BaseModel):
@@ -616,10 +692,15 @@ class SyncSummary(BaseModel):
     relocated: list[str] = []
     failed: list[str] = []
     skipped: list[str] = []
+    partial: list[PartialFileInfo] = []
+    """Indexed files with pages whose OCR failed."""
+    reasons: dict[str, str] = {}
+    """Why each failed or skipped file was not indexed, by filename."""
     held_out: list[SkippedSource] = []
     truncated: int = 0
     unreadable_folders: list[str] = []
     index_mismatch: IndexMismatch | None = None
+    chunk_drift: list[str] = []
 
 
 class AddSummary(BaseModel):
@@ -647,6 +728,10 @@ class AddSummary(BaseModel):
     terminal event so a client that missed the earlier ``already_ingesting``
     frames can still tell the batch was partial.
     """
+    cancelled: bool = False
+    """True when ``POST /api/add/cancel`` stopped the add."""
+    not_added: list[str] = []
+    """The names a cancelled add did not add: nothing of them stays in the knowledge base."""
 
 
 class WikiCitationRecord(BaseModel):
@@ -912,9 +997,19 @@ class RolePlacementResponse(BaseModel):
 
     role: WorkerRole
     model: str
+    engine: str
     devices: list[int]
     tensor_split: list[int] | None
     replicas: int
+    target: RoleTarget = RoleTarget.GPU
+    charge_bytes: int | None = Field(
+        default=None,
+        description=(
+            "Bytes the planner charges for one instance of the role, on the memory the role "
+            "runs in: card memory for a GPU role, system memory for a CPU role. Multiply by "
+            "replicas for the total. Null when the planner has no charge for the role."
+        ),
+    )
 
 
 class SkippedRoleResponse(BaseModel):
@@ -922,6 +1017,31 @@ class SkippedRoleResponse(BaseModel):
 
     role: WorkerRole
     model: str
+
+
+class SkippedNoEngineResponse(BaseModel):
+    """A configured role left unplaced because no installed engine loads its model."""
+
+    role: WorkerRole
+    model: str
+    notice: str
+
+
+class SizeUnknownResponse(BaseModel):
+    """A placed role whose model has no known size, and the reserve it is charged."""
+
+    role: WorkerRole
+    model: str
+    notice: str
+
+
+class TightRoleResponse(BaseModel):
+    """A placed role whose estimate exceeds the memory on its card, and what to do about it."""
+
+    role: WorkerRole
+    model: str
+    shortfall_bytes: int
+    notice: str
 
 
 class PlacementResponse(BaseModel):
@@ -933,13 +1053,29 @@ class PlacementResponse(BaseModel):
     manual: bool
     spec_json: str | None
     skipped_not_installed: list[SkippedRoleResponse] = []
+    skipped_no_engine: list[SkippedNoEngineResponse] = []
     co_tenants: list[str] = []
+    swap_classes: list[list[str]] = []
     notice: str | None = None
     rejected_spec_json: str | None = None
+    refusal: str | None = None
+    # waiting: the saved spec applies once an engine or model is installed; unreadable: the
+    # saved text cannot be parsed; refused: an engine refuses roles, the spec places no role
+    # on this machine, or a saved spec does not fit the hardware. Null without a refusal.
+    refusal_kind: PlacementRefusal | None = None
+    # Where each pinned role runs after the auto plan replaced the saved spec; empty otherwise.
+    pins_dropped: str = ""
     # The backend the engine selected, reported rather than inferred. ``gpus``
     # being empty does not mean ``cpu``: a host whose device probe never answered
     # reports ``unknown``, so a client never mislabels a GPU box as a CPU one.
     engine_backend: EngineBackend = EngineBackend.UNKNOWN
+    # Vendors whose GPU is in this machine but hidden from the engine at launch, so
+    # ``gpus`` has no row for them and no pin can name them. Empty when none is hidden.
+    hidden_gpus: list[str] = []
+    # Roles placed on the unknown-size reserve; empty when every size is known.
+    size_unknown: list[SizeUnknownResponse] = []
+    # Roles placed on a card that cannot hold them; empty when every role fits.
+    tight: list[TightRoleResponse] = []
 
     @classmethod
     def from_view(cls, view: PlacementView) -> PlacementResponse:
@@ -950,9 +1086,12 @@ class PlacementResponse(BaseModel):
                 RolePlacementResponse(
                     role=r.role,
                     model=r.model,
+                    engine=r.engine,
                     devices=list(r.devices),
                     tensor_split=list(r.tensor_split) if r.tensor_split else None,
                     replicas=r.replicas,
+                    target=r.target,
+                    charge_bytes=r.charge_bytes,
                 )
                 for r in view.roles
             ],
@@ -962,10 +1101,211 @@ class PlacementResponse(BaseModel):
             skipped_not_installed=[
                 SkippedRoleResponse(role=s.role, model=s.model) for s in view.skipped_not_installed
             ],
+            skipped_no_engine=[
+                SkippedNoEngineResponse(role=s.role, model=s.model, notice=s.notice)
+                for s in view.skipped_no_engine
+            ],
             co_tenants=[r.value for r in view.co_tenants],
+            swap_classes=[sorted(r.value for r in members) for members in view.swap_classes],
             rejected_spec_json=view.rejected_spec_json,
+            refusal=view.refusal,
+            refusal_kind=view.refusal_kind,
+            pins_dropped=view.pins_dropped,
             engine_backend=view.engine_backend,
+            hidden_gpus=list(view.hidden_gpus),
+            size_unknown=[
+                SizeUnknownResponse(role=s.role, model=s.model, notice=s.notice)
+                for s in view.size_unknown
+            ],
+            tight=[
+                TightRoleResponse(
+                    role=t.role, model=t.model, shortfall_bytes=t.shortfall_bytes, notice=t.notice
+                )
+                for t in view.tight
+            ],
         )
+
+
+class PresetResponse(BaseModel):
+    """One server preset: whether a key is set, never the key."""
+
+    name: str
+    base_url: str
+    roles: list[WorkerRole]
+    has_key: bool
+    valid: bool
+    rerank_wire: RerankWire | None
+    memory_reserve_gb: float | None
+    reserve_note: str | None
+
+    @classmethod
+    def from_view(cls, view: ServerPreset) -> PresetResponse:
+        """The canonical serialized preset, shared by the CLI, HTTP and MCP surfaces."""
+        return cls(
+            name=view.name,
+            base_url=view.base_url,
+            roles=list(view.roles),
+            has_key=view.has_key,
+            valid=view.valid,
+            rerank_wire=view.rerank_wire,
+            memory_reserve_gb=view.memory_reserve_gb,
+            reserve_note=view.reserve_note,
+        )
+
+
+class PresetListResponse(BaseModel):
+    """Response for the preset list."""
+
+    presets: list[PresetResponse]
+
+
+class PresetRemovedResponse(BaseModel):
+    """Response for a preset removal."""
+
+    removed: str
+
+
+class EngineRoleResponse(BaseModel):
+    """The engine of one role: its model, the engine it runs on and the notice, if any."""
+
+    role: WorkerRole
+    model: str
+    format: str
+    engine: str | None
+    notice: str | None
+
+
+class EngineRolesResponse(BaseModel):
+    """Response for the engine of every role."""
+
+    roles: list[EngineRoleResponse]
+
+
+class EngineBuildResponse(BaseModel):
+    """One installed engine build."""
+
+    engine: str
+    version: str
+    backend: str
+    not_run_on: list[str] = []
+    differs_from_pin: bool = False
+
+
+class EngineDamagedResponse(BaseModel):
+    """One engine folder that cannot be used, with the error that names the fix."""
+
+    folder: str
+    error: str
+
+
+class EngineBuildsResponse(BaseModel):
+    """Response for the installed engine builds."""
+
+    builds: list[EngineBuildResponse]
+    damaged: list[EngineDamagedResponse]
+    not_installed: list[str]
+    experimental: dict[str, list[str]]
+    engines_folder: str
+
+
+class EngineRemovedResponse(BaseModel):
+    """Response for a build removal: the build as one line."""
+
+    removed: str
+
+
+class EngineUseBody(BaseModel):
+    """Request body that chooses the engine for the model of one role."""
+
+    model: str
+    engine: str
+    confirm_embed_change: bool = False
+
+
+class EnginePreferBody(BaseModel):
+    """Request body that sets the global engine preference."""
+
+    engine: str
+    confirm_embed_change: bool = False
+
+
+class EngineChosenResponse(BaseModel):
+    """Response for an engine write: the engine now stored."""
+
+    engine: str
+
+
+WHEEL_CLI_ONLY = "The wheel option works only with the lilbee engine install command."
+
+
+class RefusesWheel(BaseModel):
+    """Mixin for a remote engine install input: a ``wheel`` entry is refused."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_wheel(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "wheel" in data:
+            raise ValueError(WHEEL_CLI_ONLY)
+        return data
+
+
+_M = TypeVar("_M", bound=BaseModel)
+
+
+def refusing_wheel(model: type[_M]) -> type[_M]:
+    """A subclass of *model* that refuses a ``wheel`` entry."""
+    return cast("type[_M]", create_model(model.__name__, __base__=(model, RefusesWheel)))
+
+
+class HidesInput(BaseModel):
+    """Mixin for an input model whose validation errors never echo the rejected input."""
+
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+
+def hiding_input(model: type[_M]) -> type[_M]:
+    """A subclass of *model* whose validation errors leave out the rejected input."""
+    return cast("type[_M]", create_model(model.__name__, __base__=(model, HidesInput)))
+
+
+class EngineInstallBody(RefusesWheel):
+    """Request body for installing an engine build from its pack."""
+
+    engine: str
+
+
+class EngineInstalledResponse(BaseModel):
+    """Response for an engine install: the build now in the store."""
+
+    engine: str
+    version: str
+    backend: str
+    note: str = ""
+    not_run_on: list[str] = []
+    engines_folder: str
+
+
+class PresetAddBody(BaseModel):
+    """Request body for adding a server preset. The key is write only."""
+
+    name: str
+    url: str
+    roles: list[str]
+    api_key: str | None = None
+    rerank_wire: str = RerankWire.V1
+    memory_reserve_gb: float | None = None
+
+
+class PresetEditBody(BaseModel):
+    """Request body for changing a server preset. Send only what changes."""
+
+    url: str | None = None
+    roles: list[str] | None = None
+    api_key: str | None = None
+    rerank_wire: str | None = None
+    memory_reserve_gb: float | None = None
+    clear_reserve: bool = False
+    clear_key: bool = False
 
 
 class PlacementSpecBody(BaseModel):
@@ -1437,7 +1777,10 @@ class AnalyzeFailureResponse(BaseModel):
 
 
 class AnalyzePdfResponse(BaseModel):
-    """PDF pages, scans and tables; ``scanned_share`` also counts image files at the sample rate."""
+    """PDF pages, scans and tables; ``scanned_share`` is scanned pages over all pages.
+
+    A non-PDF file counts as one page.
+    """
 
     files: int
     pages: int

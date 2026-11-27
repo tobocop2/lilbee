@@ -8,12 +8,14 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from lilbee.app.services import get_services
-from lilbee.app.settings import scanned_pages_state
+from lilbee.app.settings import chunk_drift, scanned_pages_state
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType, OcrMode
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, default_data_dir
 from lilbee.data.store import HeldOut
-from lilbee.data.types import SkippedSource
+from lilbee.data.types import PartialFile, SkippedSource
+from lilbee.providers.roles import WorkerRole
+from lilbee.providers.serving import role_serving
 
 LILBEE_LABEL_MAX_LEN = 40
 """Hard cap on the compact-label width. The leaf gets its own internal
@@ -112,6 +114,10 @@ class IndexStatus(BaseModel):
 
     embedding_model: str
     embedding_dim: int
+    engine_mismatch: str | None = None
+    """Why search and ingest stop when the embedding engine gives other vectors; None otherwise."""
+    chunk_drift: list[str] = []
+    """The settings now in force that differ from the ones the chunks were cut with."""
 
 
 class SourceInfo(BaseModel):
@@ -128,6 +134,15 @@ class EntityStatus(BaseModel):
 
     types: list[str]
     rows: int
+
+
+class ServingStatus(BaseModel):
+    """The engine that serves one configured role."""
+
+    role: WorkerRole
+    model: str
+    engine: str
+    version: str
 
 
 class StatusResult(BaseModel):
@@ -147,8 +162,38 @@ class StatusResult(BaseModel):
     skipped: list[SkippedSource] = []
     """Files a held-out record holds out of the index, capped at ``STATUS_SKIPPED_LIMIT``."""
     skipped_total: int = 0
+    partly_read: list[PartialFile] = []
+    """Indexed sources with pages whose OCR failed, the first ``STATUS_SKIPPED_LIMIT`` by name."""
+    partial_total: int = 0
+    """How many indexed sources have pages whose OCR failed."""
     ocr_note: str = ""
     """What happens to scanned pages: skipped, or read by which engine."""
+    serving: list[ServingStatus] = []
+    """The engine and version that serve each configured role."""
+
+
+def serving_roles() -> list[ServingStatus]:
+    """The engine for each configured role, from the ref each role routes by."""
+    configured = (
+        (WorkerRole.CHAT, cfg.chat_model),
+        (WorkerRole.EMBED, cfg.embedding_model),
+        (WorkerRole.RERANK, cfg.reranker_model),
+        (WorkerRole.VISION, cfg.vision_model),
+    )
+    rows: list[ServingStatus] = []
+    for role, model in configured:
+        if not model:
+            continue
+        served = role_serving(role, model)
+        rows.append(
+            ServingStatus(role=role, model=model, engine=served.engine, version=served.version)
+        )
+    return rows
+
+
+def chat_engine() -> str | None:
+    """The engine name that serves the chat model, or None when it names none."""
+    return next((row.engine for row in serving_roles() if row.role is WorkerRole.CHAT), None)
 
 
 def _index_status() -> IndexStatus | None:
@@ -156,13 +201,26 @@ def _index_status() -> IndexStatus | None:
     meta = get_services().store.get_meta()
     if meta is None:
         return None
-    return IndexStatus(embedding_model=meta["embedding_model"], embedding_dim=meta["embedding_dim"])
+    store = get_services().store
+    mismatch = store.canary_mismatch() if store.index_mismatch() is None else None
+    return IndexStatus(
+        embedding_model=meta["embedding_model"],
+        embedding_dim=meta["embedding_dim"],
+        engine_mismatch=str(mismatch) if mismatch is not None else None,
+        chunk_drift=chunk_drift(),
+    )
 
 
 def gather_status() -> StatusResult:
     """Collect status data as a typed model (shared by human + JSON output)."""
     summary = get_services().store.source_summary(STATUS_RECENT_LIMIT)
     skipped, skipped_total = held_out_sources()
+    # The summary pass counts the partly read sources; the listing query runs only for one.
+    partly_read, partial_total = (
+        get_services().store.partly_read_sources(STATUS_SKIPPED_LIMIT)
+        if summary.partly_read
+        else ({}, 0)
+    )
     return StatusResult(
         index=_index_status(),
         config=StatusConfig(
@@ -198,7 +256,10 @@ def gather_status() -> StatusResult:
         entities=entity_status(),
         skipped=skipped,
         skipped_total=skipped_total,
+        partly_read=[PartialFile(name, pages) for name, pages in partly_read.items()],
+        partial_total=partial_total,
         ocr_note=scanned_pages_state(),
+        serving=serving_roles(),
     )
 
 

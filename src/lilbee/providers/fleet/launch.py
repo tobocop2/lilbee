@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
+from lilbee.providers.fleet.rerank_pair import RerankPair
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 # Separator between a role and its replica index in a llama-swap model id.
 _REPLICA_SEP = "-"
 # Stand-in for the binary of a record whose argv arrived empty (a foreign state file).
 _UNKNOWN_BINARY = "an unrecorded binary"
+# State keys that record a measurement, not a plan choice. Two readings of one
+# volume differ, so a reload compares launches without them.
+MEASURED_STATE_KEYS: frozenset[str] = frozenset({"read_bytes_per_s"})
 
 
 def role_model_prefix(role: WorkerRole) -> str:
@@ -35,11 +41,17 @@ class InstanceLaunch:
     # served window is smaller: the same planner aiming at least as high
     # already achieved this window, so a rebuild cannot beat it.
     built_ctx_target: int = 0
+    # The context length the model's header says it was trained for; 0 for non-chat
+    # roles and when the header gives none. Plan-time only: not written to state.
+    trained_ctx: int = 0
     # The vision slot ceiling the builder fitted against (vision_ocr_concurrency);
     # 0 for other roles and pre-field records.
     built_slots_target: int = 0
     replica: int = 0  # index within the role's data-parallel pool (0 = single server)
     rerank_mode: RerankMode | None = None  # set only for RERANK; picks the client scoring path
+    # The special tokens a cross-encoder reranker reads around a query and a
+    # document, from its GGUF; None for every other launch and pre-field records.
+    rerank_pair: RerankPair | None = None
     # GPU bytes placement charged this instance. Carried so the engine's own
     # startup report can be checked against it once the server is up; 0 for a
     # model the estimator could not size, where there is nothing to compare.
@@ -67,6 +79,34 @@ class InstanceLaunch:
     The readback says the engine left chat weights in system memory when the
     host holds more than this. 0 where the engine's fit does not run.
     """
+    est_host_cache_bytes: int = 0
+    """System memory the plan grants the engine's prompt cache and context checkpoints.
+
+    The ``--cache-ram`` limit plus every slot's checkpoints. Apart from
+    ``est_host_bytes``: the readback compares that with the engine's buffers, and
+    these caches are not buffers.
+    """
+    swap_extras: Mapping[str, Any] = field(default_factory=dict)
+    """Keys the engine adds to its llama-swap model entry; empty for llama.cpp."""
+    server_binary: str = ""
+    """The server executable the launch runs; argv may start with a wrapper such as env.
+
+    Empty in a record written before the field existed.
+    """
+    swap_class: str = ""
+    """The residency class this launch stays loaded with; empty means a class of its own."""
+    engine: str = ""
+    """The engine the plan chose for this launch; empty in a record from before the field.
+
+    Adoption reads the engine from here, so it never asks the engine book again.
+    """
+    read_bytes_per_s: int = field(default=0, repr=False)
+    """The measured read rate of the volume that holds the weights; 0 when not measured.
+
+    A volume slower than the conservative disk rate stretches the cold-load timeout.
+    The value is a reading of this host's disk, not a plan decision, so the repr
+    that pins a plan leaves it out.
+    """
 
     def to_state(self) -> dict:
         """JSON-safe form written into every engine state file so a guest lilbee
@@ -84,17 +124,25 @@ class InstanceLaunch:
             "built_slots_target": self.built_slots_target,
             "replica": self.replica,
             "rerank_mode": self.rerank_mode.value if self.rerank_mode else None,
+            "rerank_pair": self.rerank_pair.to_state() if self.rerank_pair else None,
             "est_vram_bytes": self.est_vram_bytes,
             "est_vram_by_device": dict(self.est_vram_by_device),
             "est_unreported_bytes": self.est_unreported_bytes,
             "est_host_bytes": self.est_host_bytes,
+            "est_host_cache_bytes": self.est_host_cache_bytes,
             "settings": self.settings,
+            "swap_extras": dict(self.swap_extras),
+            "server_binary": self.server_binary,
+            "swap_class": self.swap_class,
+            "engine": self.engine,
+            "read_bytes_per_s": self.read_bytes_per_s,
         }
 
     @classmethod
     def from_state(cls, payload: dict) -> InstanceLaunch:
         """Rebuild a launch from :meth:`to_state` output; raises on a foreign shape."""
         raw_mode = payload.get("rerank_mode")
+        raw_pair = payload.get("rerank_pair")
         return cls(
             role=WorkerRole(payload["role"]),
             argv=list(payload["argv"]),
@@ -106,6 +154,7 @@ class InstanceLaunch:
             est_vram_bytes=int(payload.get("est_vram_bytes") or 0),
             est_unreported_bytes=int(payload.get("est_unreported_bytes") or 0),
             est_host_bytes=int(payload.get("est_host_bytes") or 0),
+            est_host_cache_bytes=int(payload.get("est_host_cache_bytes") or 0),
             est_vram_by_device={
                 str(k): int(v) for k, v in (payload.get("est_vram_by_device") or {}).items()
             },
@@ -114,7 +163,13 @@ class InstanceLaunch:
             built_slots_target=int(payload.get("built_slots_target") or 0),
             replica=int(payload.get("replica") or 0),
             rerank_mode=RerankMode(raw_mode) if raw_mode else None,
+            rerank_pair=RerankPair.from_state(raw_pair) if raw_pair else None,
             settings=str(payload.get("settings") or ""),
+            swap_extras=dict(payload.get("swap_extras") or {}),
+            server_binary=str(payload.get("server_binary") or ""),
+            swap_class=str(payload.get("swap_class") or ""),
+            engine=str(payload.get("engine") or ""),
+            read_bytes_per_s=int(payload.get("read_bytes_per_s") or 0),
         )
 
     @property

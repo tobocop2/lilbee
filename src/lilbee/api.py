@@ -24,7 +24,6 @@ it.
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,6 +45,7 @@ from lilbee.data.store import (
     SearchScope,
     scope_to_chunk_type,
 )
+from lilbee.runtime.asyncio_loop import run_main
 
 if TYPE_CHECKING:
     from lilbee.app.services import Services
@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from lilbee.providers.base import LLMProvider
     from lilbee.retrieval.embedder import Embedder
     from lilbee.retrieval.query import Searcher
+    from lilbee.retrieval.query.searcher import SearchReport
 
 # What a sync of this API is called in the notice of a sync that waits for it.
 _SYNC_STARTER = "the lilbee Python API"
@@ -145,7 +146,7 @@ class Lilbee:
         from lilbee.data.ingest import sync as _sync
 
         with config_scope(self._config), services_scope(self._services):
-            return asyncio.run(_sync(quiet=quiet, started_by=_SYNC_STARTER))
+            return run_main(_sync(quiet=quiet, started_by=_SYNC_STARTER))
 
     def search(
         self, query: str, *, top_k: int = 0, scope: SearchScope = SearchScope.BOTH
@@ -153,9 +154,22 @@ class Lilbee:
         """Search indexed documents. Returns ranked chunks.
 
         ``scope`` selects raw document chunks, generated wiki chunks, or both.
+        This returns the rows only. To learn that a search step failed (for
+        example the rerank), call ``search_report``.
+        """
+        return self.search_report(query, top_k=top_k, scope=scope).rows
+
+    def search_report(
+        self, query: str, *, top_k: int = 0, scope: SearchScope = SearchScope.BOTH
+    ) -> SearchReport:
+        """Search indexed documents. Returns the rows and the search steps that failed.
+
+        A failed step (a widening step or the rerank) does not fail the search.
+        ``degraded`` holds one warning for each, with a ``code``, a ``message``
+        and a ``remedy``, the same list REST, MCP and the CLI show.
         """
         with config_scope(self._config), services_scope(self._services):
-            return self._services.searcher.search(
+            return self._services.searcher.search_report(
                 query, top_k=top_k, chunk_type=scope_to_chunk_type(scope)
             )
 
@@ -173,7 +187,7 @@ class Lilbee:
         with config_scope(self._config), services_scope(self._services):
             if not register_sources(resolved, force=True).reached_corpus:
                 return SyncResult()
-            return asyncio.run(_sync(quiet=True, started_by=_SYNC_STARTER))
+            return run_main(_sync(quiet=True, started_by=_SYNC_STARTER))
 
     def remove(self, name: str) -> None:
         """Remove a document from the index by source name (source bytes are kept).
@@ -223,7 +237,7 @@ class Lilbee:
         from lilbee.data.ingest import sync as _sync
 
         with config_scope(self._config), services_scope(self._services):
-            return asyncio.run(_sync(force_rebuild=True, quiet=True, started_by=_SYNC_STARTER))
+            return run_main(_sync(force_rebuild=True, quiet=True, started_by=_SYNC_STARTER))
 
     def remember(
         self,
@@ -250,6 +264,7 @@ class Lilbee:
         from lilbee.data.store import human_recall_predicate
 
         with config_scope(self._config), services_scope(self._services):
+            self._services.store.ensure_servable()
             return self._services.store.search_memories(
                 self._services.embedder.embed_query(query),
                 owner_predicate=human_recall_predicate(),

@@ -13,11 +13,13 @@ from litestar import Litestar
 from litestar.testing import AsyncTestClient
 
 from lilbee.app.services import set_services
-from lilbee.providers.base import ChatResult, FinishReason, ToolCall
+from lilbee.providers.base import ChatResult, FinishReason, ToolCall, byte_token_estimate
 from lilbee.server import auth as _auth_mod
 from lilbee.server.anthropic_api.routes import COUNT_ACCURACY_HEADER, anthropic_router
 from lilbee.server.chat_dispatch.canonical import (
     IMAGES_DROPPED_HEADER,
+    IMAGES_DROPPED_REASON,
+    IMAGES_DROPPED_REASON_HEADER,
     IMAGES_ONLY_MESSAGE,
     TokenCountAccuracy,
 )
@@ -59,6 +61,9 @@ def _services_with(provider: MagicMock, installed: list[MagicMock]) -> Any:
 
     provider.max_concurrent_chats.return_value = 1
     provider.served_chat_ctx.return_value = None
+    provider.estimate_chat_tokens.side_effect = lambda text, *, model=None: byte_token_estimate(
+        text
+    )
     services = make_mock_services(provider=provider)
     services.registry.list_installed = MagicMock(return_value=installed)
     refs = {m.ref for m in installed}
@@ -173,9 +178,35 @@ class TestValidation:
             resp = await client.post("/v1/messages", json=body, headers=_h())
         assert resp.status_code == 200
         assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        assert resp.headers[IMAGES_DROPPED_REASON_HEADER] == IMAGES_DROPPED_REASON
         assert resp.json()["content"] == [{"type": "text", "text": "hello"}]
         sent = services_with_chat_model.provider.chat.call_args.kwargs["messages"]
         assert [m["content"] for m in sent] == ["q"]
+
+    async def test_image_block_with_null_source_is_counted_as_dropped(
+        self, services_with_chat_model, _auth_token
+    ):
+        malformed = {"type": "image", "source": None}
+        body = _body(
+            messages=[{"role": "user", "content": [malformed, {"type": "text", "text": "q"}]}]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=body, headers=_h())
+        assert resp.status_code == 200
+        assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        assert resp.headers[IMAGES_DROPPED_REASON_HEADER] == IMAGES_DROPPED_REASON
+
+    async def test_unknown_block_type_is_not_counted_as_an_image(
+        self, services_with_chat_model, _auth_token
+    ):
+        unknown = {"type": "thinking", "thinking": "hm"}
+        body = _body(
+            messages=[{"role": "user", "content": [unknown, {"type": "text", "text": "q"}]}]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=body, headers=_h())
+        assert resp.status_code == 200
+        assert IMAGES_DROPPED_HEADER.lower() not in resp.headers
 
     async def test_streamed_image_request_carries_the_dropped_header(
         self, services_with_chat_model, _auth_token
@@ -189,6 +220,7 @@ class TestValidation:
             resp = await client.post("/v1/messages", json=body, headers=_h())
         assert resp.status_code == 200
         assert resp.headers[IMAGES_DROPPED_HEADER] == "2"
+        assert resp.headers[IMAGES_DROPPED_REASON_HEADER] == IMAGES_DROPPED_REASON
 
     async def test_text_only_request_has_no_dropped_header(
         self, services_with_chat_model, _auth_token
@@ -197,6 +229,7 @@ class TestValidation:
             resp = await client.post("/v1/messages", json=_body(), headers=_h())
         assert resp.status_code == 200
         assert IMAGES_DROPPED_HEADER.lower() not in resp.headers
+        assert IMAGES_DROPPED_REASON_HEADER.lower() not in resp.headers
 
     async def test_image_only_request_is_400_naming_the_cause(
         self, services_with_chat_model, _auth_token
@@ -205,7 +238,11 @@ class TestValidation:
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post("/v1/messages", json=body, headers=_h())
         assert resp.status_code == 400
-        assert resp.json()["error"]["message"] == IMAGES_ONLY_MESSAGE
+        message = resp.json()["error"]["message"]
+        assert message == IMAGES_ONLY_MESSAGE
+        assert "projector" in message
+        assert "vision role" in message
+        assert "cannot pass images" not in message
 
     async def test_dropped_image_is_logged_once_by_the_route(
         self, services_with_chat_model, _auth_token
@@ -218,7 +255,7 @@ class TestValidation:
                 resp = await client.post("/v1/messages", json=body, headers=_h())
         assert resp.status_code == 200
         log.warning.assert_called_once()
-        assert log.warning.call_args.args[1:] == (1, INSTALLED_REF)
+        assert log.warning.call_args.args[1:] == (1, INSTALLED_REF, IMAGES_DROPPED_REASON)
 
     async def test_image_to_a_vision_tagged_model_is_dropped_and_reported(
         self, services_with_chat_model, _auth_token
@@ -231,6 +268,7 @@ class TestValidation:
             resp = await client.post("/v1/messages", json=body, headers=_h())
         assert resp.status_code == 200
         assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        assert resp.headers[IMAGES_DROPPED_REASON_HEADER] == IMAGES_DROPPED_REASON
         services_with_chat_model.provider.chat.assert_called_once()
 
     async def test_unknown_model_is_404_not_found_error(
@@ -413,6 +451,31 @@ class TestErrorPaths:
         assert resp.headers["retry-after"] == "1"
         assert resp.json()["error"]["type"] == "rate_limit_error"
 
+    async def test_a_refused_preflight_is_returned_before_a_chat_slot_is_taken(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        # The stub hands the refusal back as a value. The real preflight raises
+        # inside a worker thread, and on Python 3.11 the coverage tracer loses
+        # the route frame after that caught exception.
+        from litestar import Response
+
+        refusal = Response(content={"refused": "by preflight"}, status_code=409)
+
+        async def _refuse(_req):
+            return refusal
+
+        async def _no_slot(_limit):
+            raise AssertionError("a refused request took a chat slot")
+
+        monkeypatch.setattr("lilbee.server.anthropic_api.routes._preflight_resolved_model", _refuse)
+        monkeypatch.setattr(
+            "lilbee.server.anthropic_api.routes.acquire_chat_slot_or_busy", _no_slot
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(), headers=_h())
+        assert resp.status_code == 409
+        assert resp.json() == {"refused": "by preflight"}
+
     async def test_unclassified_preflight_error_is_500_api_error(
         self, services_with_chat_model, _auth_token, monkeypatch
     ):
@@ -451,7 +514,7 @@ class TestErrorPaths:
         fleet = FleetProvider()
         reason = "backs only a 512-token context; use a smaller model or set num_ctx"
         monkeypatch.setattr(fleet, "_ensure_fleet", lambda: True)
-        fleet._skipped_unusable_ctx = {WorkerRole.CHAT: reason}
+        fleet._refused_roles = {WorkerRole.CHAT: reason}
         with pytest.raises(ProviderError) as excinfo:
             fleet._require_clients(WorkerRole.CHAT)
         services_with_chat_model.provider.chat.side_effect = excinfo.value

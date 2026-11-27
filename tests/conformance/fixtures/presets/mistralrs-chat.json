@@ -1,0 +1,128 @@
+{
+ "server": "mistralrs-chat",
+ "version": "mistralrs 0.9.5 v0.9.5 cpu",
+ "roles": [
+  "chat"
+ ],
+ "models": {
+  "chat": "Qwen/Qwen3-0.6B"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "strict": false,
+ "results": {
+  "template": {
+   "ok": true,
+   "detail": "finish=stop"
+  },
+  "tool": {
+   "ok": true,
+   "detail": "tool_calls=['get_weather']"
+  },
+  "overflow": {
+   "ok": true,
+   "detail": "kind=context_overflow"
+  }
+ },
+ "error_answers": [
+  [
+   400,
+   "{\"error\":{\"message\":\"Prompt sequence length is greater than 40960, perhaps consider using `truncate_sequence`?\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+  ]
+ ],
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "max_tokens": 1024,
+    "messages": [
+     {
+      "content": "You answer in one short sentence.",
+      "role": "system"
+     },
+     {
+      "content": "What is the capital of France?",
+      "role": "user"
+     },
+     {
+      "content": "Paris.",
+      "role": "assistant"
+     },
+     {
+      "content": "And of Italy?",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen/Qwen3-0.6B",
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"id\":\"7\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"\\n\\nRome.\",\"role\":\"assistant\",\"tool_calls\":null,\"reasoning_content\":\"\\nOkay, the user first asked about the capital of France, and I correctly answered Paris. Now they're asking about Italy. I need to make sure I provide the correct answer. Italy's capital is Rome, right? Let me confirm that. Yes, Rome is the capital. I should state it clearly and concisely in one sentence. No need for extra information. Just the capital name. Alright, that should do it.\\n\"},\"logprobs\":null}],\"created\":1795576076,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":95,\"prompt_tokens\":43,\"total_tokens\":138,\"avg_tok_per_sec\":2.2315292,\"avg_prompt_tok_per_sec\":18.94273,\"avg_compl_tok_per_sec\":1.5947356,\"total_time_sec\":61.841,\"total_prompt_time_sec\":2.27,\"total_completion_time_sec\":59.571}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "max_tokens": 1024,
+    "messages": [
+     {
+      "content": "What is the weather in Paris? Use the tool.",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen/Qwen3-0.6B",
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "function": {
+       "description": "Get the weather for a city.",
+       "name": "get_weather",
+       "parameters": {
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ],
+        "type": "object"
+       }
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"id\":\"8\",\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"content\":null,\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call-71061de7-aeb3-4bf7-a732-0610c3d64b63\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}],\"reasoning_content\":\"\\nOkay, the user is asking for the weather in Paris. I need to use the get_weather function. The function requires the city parameter. So I should call get_weather with \\\"Paris\\\" as the argument. Let me make sure the city name is correctly spelled and matches what the function expects. Once I get the response, I can relay the weather information back to the user.\\n\"},\"logprobs\":null}],\"created\":1795576138,\"model\":\"Qwen/Qwen3-0.6B\",\"system_fingerprint\":\"local\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":101,\"prompt_tokens\":158,\"total_tokens\":259,\"avg_tok_per_sec\":4.2941937,\"avg_prompt_tok_per_sec\":32.363785,\"avg_compl_tok_per_sec\":1.8220522,\"total_time_sec\":60.314,\"total_prompt_time_sec\":4.882,\"total_completion_time_sec\":55.432}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "max_tokens": 16,
+    "messages": [
+     {
+      "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen/Qwen3-0.6B",
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
+   },
+   "status": 400,
+   "content_type": "application/json",
+   "body": "{\"error\":{\"message\":\"Prompt sequence length is greater than 40960, perhaps consider using `truncate_sequence`?\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+  }
+ ]
+}

@@ -2,37 +2,53 @@
 
 import fnmatch
 import logging
+import ntpath
+import os
 import shutil
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from http import HTTPStatus
-from pathlib import Path
-from typing import Any, NamedTuple, TypeVar
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
+from urllib.parse import urlparse
 
-import httpx
 import httpx2
+from filelock import FileLock, Timeout
 from pydantic import BaseModel
 
 from lilbee.catalog.compat import UnsupportedQuantError, classify, file_header
 from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
+from lilbee.catalog.formats import (
+    SAFETENSORS_INDEX,
+    formats_from_tags,
+    require_declared_shards,
+    select_files,
+)
 from lilbee.catalog.hf_client import (
     DEFAULT_TIMEOUT,
-    HF_API_URL,
-    hf_headers,
+    HfToken,
     hf_token,
-    repo_has_mmproj,
+    hub_call_started,
 )
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.refs import (
     DEFAULT_MMPROJ_PATTERN,
     FLOAT_QUANTS,
     WILDCARD,
+    ModelRef,
     quant_label,
     rank_gguf_candidates,
     split_shard_filenames,
 )
-from lilbee.catalog.types import ModelCompat, ModelTask
+from lilbee.catalog.types import ModelCompat, ModelFormat
+from lilbee.catalog.xdna import write_ticket
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
+
+if TYPE_CHECKING:
+    from huggingface_hub.hf_api import ModelInfo
+
+    from lilbee.providers.fleet.engines.base import EngineAdapter
 
 _T = TypeVar("_T")
 
@@ -44,6 +60,24 @@ LoadCheck = Callable[[str, str], None]
 ProbeCallback = Callable[[str | None], None]
 
 log = logging.getLogger(__name__)
+
+# Seconds the projector check waits on the Hub listing; a hung Hub must not stall a re-pull.
+PROJECTOR_LISTING_TIMEOUT = 3.0
+
+
+def gated_repo_message(hf_repo: str) -> str:
+    """The one text every surface shows when a HuggingFace repo needs a login."""
+    return (
+        f"{hf_repo} requires HuggingFace authentication. "
+        "Run `lilbee login`, run `/login` in the TUI, or set the HF_TOKEN variable. "
+        "A running TUI must restart to read HF_TOKEN. "
+        "Then request access on the repo page."
+    )
+
+
+def network_error_message(hf_repo: str, cause: object) -> str:
+    """The one text a failed or resumed transfer of *hf_repo* shows for a network error."""
+    return f"Network error downloading {hf_repo}: {cause}"
 
 
 class RemoteFile(NamedTuple):
@@ -70,7 +104,7 @@ class DownloadConfig(BaseModel):
 
     repo_id: str
     filename: str
-    token: str | None
+    token: HfToken
     force_download: bool = False
     cache_dir: str | None = None
     tqdm_class: Any = None
@@ -125,27 +159,74 @@ def discard_partial_blobs(models_dir: Path, hf_repo: str, blobs: Iterable[str]) 
     Scoped to the blobs the caller resolved, because another quant of the same
     repo downloads into the same directory at the same time and its temporary
     file is live.
+
+    A blob whose huggingface_hub lock another process holds is skipped: that
+    process is mid-transfer and the partial in the folder is its own. The hub
+    holds the lock for the whole transfer, and the OS frees it when the holder
+    dies, so a terminated child never blocks its own cleanup.
+
+    Raises RuntimeError naming the folder when the cache cannot be listed.
     """
     from huggingface_hub.file_download import repo_folder_name
 
-    repo_dir = models_dir / repo_folder_name(repo_id=hf_repo, repo_type="model")
+    repo_folder = repo_folder_name(repo_id=hf_repo, repo_type="model")
+    repo_dir = models_dir / repo_folder
     for blob in blobs:
-        for partial in repo_dir.glob(f"blobs/{blob}.*.incomplete"):
+        lock_path = models_dir / ".locks" / repo_folder / f"{blob}.lock"
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
             try:
-                partial.unlink()
-            except OSError:
-                log.warning("Left a partial download behind: %s", partial)
+                with FileLock(extended_path(lock_path), timeout=0):
+                    _unlink_partials(repo_dir, blob)
+            except NotImplementedError:
+                # The filesystem has no flock, so the hub uses a soft lock that
+                # this check cannot see: clean this blob as before the lock check.
+                _unlink_partials(repo_dir, blob)
+        except Timeout:
+            log.info("Kept the partial download of %s: another transfer holds it.", blob)
+        except OSError as exc:
+            raise _unreadable_cache(repo_dir, exc) from exc
 
 
-def _require_disk_space(entry: CatalogModel, models_dir: Path, needed: int) -> None:
-    """Refuse a download the disk cannot hold, naming the shortfall.
+_WINDOWS_PATH_LIMIT = 255
 
-    huggingface_hub only warns, and the xet path reports a full disk as a
-    reconstruction error naming neither the disk nor the file.
+
+def extended_path(path: Path, *, windows: bool = os.name == "nt") -> str:
+    r"""Return *path* with the ``\\?\`` prefix when Windows would refuse its length.
+
+    huggingface_hub does the same for its lock path above 255 characters, so the
+    hub and this check open one file. A path that already has the prefix, or is
+    short, stays as it is; a network share takes the ``\\?\UNC`` form.
     """
-    message = disk_shortfall(models_dir, entry.hf_repo, needed)
-    if message is not None:
-        raise RuntimeError(message)
+    text = str(path)
+    if not windows:
+        return text
+    absolute = ntpath.abspath(text)
+    if len(absolute) <= _WINDOWS_PATH_LIMIT or absolute.startswith("\\\\?\\"):
+        return text
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute[2:]
+    return "\\\\?\\" + absolute
+
+
+def _unreadable_cache(repo_dir: Path, exc: OSError) -> RuntimeError:
+    return RuntimeError(
+        f"Cannot read the model cache folder {repo_dir}: {exc.strerror or exc}. "
+        "Check that lilbee can read and write that folder."
+    )
+
+
+def _unlink_partials(repo_dir: Path, blob: str) -> None:
+    """Delete the temporary files of one blob; a failed delete is logged."""
+    try:
+        partials = list(repo_dir.glob(f"blobs/{blob}.*.incomplete"))
+    except OSError as exc:
+        raise _unreadable_cache(repo_dir, exc) from exc
+    for partial in partials:
+        try:
+            partial.unlink()
+        except OSError:
+            log.warning("Left a partial download behind: %s", partial)
 
 
 _LOW_DISK_FLOOR = 512 * 1024**2
@@ -178,19 +259,59 @@ def _raise_if_disk_exhausted(
 
 _TRANSFER_RETRIES = 2
 _RETRY_BACKOFF_SECONDS = 5
+_CANCEL_POLL_SECONDS = 0.2
 
 
 class _TransientDownloadError(RuntimeError):
     """A transfer fault another attempt can clear: a network or an I/O error."""
 
 
-def _retry_transient(work: Callable[[], _T]) -> _T:
+RetryCallback = Callable[[int, int, str], None]
+"""Receives (attempt, attempts, cause) when a failed attempt is about to repeat."""
+
+_RETRY_TEXT = "{cause}. Attempt {attempt} of {attempts} failed; trying again."
+
+
+def retry_reporter(on_retry: Callable[[str], None] | None) -> RetryCallback | None:
+    """Turn each failed attempt into the sentence *on_retry* shows; None when nobody listens."""
+    if on_retry is None:
+        return None
+
+    def report(attempt: int, attempts: int, cause: str) -> None:
+        on_retry(_RETRY_TEXT.format(cause=cause, attempt=attempt, attempts=attempts))
+
+    return report
+
+
+def _backoff(seconds: float, cancel: CancelSignal | None) -> None:
+    """Wait *seconds*; a set *cancel* ends the wait at once with ``TaskCancelledError``."""
+    if cancel is None:
+        time.sleep(seconds)
+        return
+    deadline = time.monotonic() + seconds
+    while True:
+        if cancel.is_set():
+            raise TaskCancelledError
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(_CANCEL_POLL_SECONDS, remaining))
+
+
+def _retry_transient(
+    work: Callable[[], _T],
+    on_retry: RetryCallback | None = None,
+    cancel: CancelSignal | None = None,
+) -> _T:
     """Run *work*, retrying only the faults another attempt can clear.
+
+    *on_retry* hears each failed attempt that another attempt follows. A set
+    *cancel* ends the wait between attempts with ``TaskCancelledError``.
 
     Every other error propagates on the first attempt, cancellation included,
     so a defect or a configuration error is never hidden behind a retry. A
-    transfer that goes quiet raises nothing here, so it is the parent process
-    that ends it, not this loop.
+    model transfer that goes quiet raises nothing here, so it is the parent
+    process that ends it, not this loop.
     """
     last_error: Exception | None = None
     for attempt in range(_TRANSFER_RETRIES + 1):
@@ -200,16 +321,123 @@ def _retry_transient(work: Callable[[], _T]) -> _T:
             last_error = exc
             log.warning("%s (attempt %d/%d)", exc, attempt + 1, _TRANSFER_RETRIES + 1)
         if attempt < _TRANSFER_RETRIES:
-            time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))
+            if on_retry is not None:
+                on_retry(attempt + 1, _TRANSFER_RETRIES + 1, str(last_error))
+            _backoff(_RETRY_BACKOFF_SECONDS * (attempt + 1), cancel)
     raise RuntimeError(
         f"{last_error}. The transfer failed {_TRANSFER_RETRIES + 1} times. Check the "
         "network connection and retry; the files that finished are kept."
     ) from last_error
 
 
-def _download_with_retry(entry: CatalogModel, config: DownloadConfig) -> Path:
-    """Run one file's transfer, retrying the faults another attempt can clear."""
-    return _retry_transient(lambda: _hf_download_or_translate(entry, config))
+def url_filename(url: str) -> str:
+    """The last path segment of *url*."""
+    return PurePosixPath(urlparse(url).path).name
+
+
+_PERMANENT_STATUSES = frozenset(
+    {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND, HTTPStatus.GONE}
+)
+_BUSY_STATUSES = (HTTPStatus.REQUEST_TIMEOUT, HTTPStatus.TOO_MANY_REQUESTS)
+
+
+def download_url(
+    url: str,
+    dest: Path,
+    size: int,
+    *,
+    on_progress: ProgressCallback | None = None,
+    on_retry: RetryCallback | None = None,
+    cancel: CancelSignal | None = None,
+) -> Path:
+    """Download *url* into *dest*, resuming a partial file; return the file path.
+
+    Network and I/O faults retry. A refusal the server will repeat, and the hub's
+    offline switch, end the transfer at once.
+    *on_progress* receives byte counts and *on_retry* each failed attempt. A set
+    *cancel* ends the wait between attempts with ``TaskCancelledError``.
+
+    A network error ends an attempt at once, so a server that goes quiet is
+    reported after one read timeout.
+    """
+    from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
+
+    dest.mkdir(parents=True, exist_ok=True)
+    target = dest / url_filename(url)
+
+    def fetch() -> Path:
+        done = target.stat().st_size if target.exists() else 0
+        if done == size:
+            return target
+        try:
+            done = _stream_into(url, target, done, size, on_progress)
+        except HfHubHTTPError as exc:
+            if exc.response.status_code in _PERMANENT_STATUSES:
+                raise RuntimeError(
+                    f"The server cannot give the file at {url} (HTTP {exc.response.status_code})."
+                ) from exc
+            raise _TransientDownloadError(f"Transfer failed: {exc}") from None
+        except OfflineModeIsEnabled as exc:
+            raise RuntimeError(f"Downloads are switched off, so {url} was not fetched.") from exc
+        except (httpx2.RequestError, OSError) as exc:
+            raise _TransientDownloadError(f"Transfer failed: {exc}") from None
+        if done != size:
+            raise _TransientDownloadError(
+                f"Transfer failed: {url} should be {size} bytes, but {done} arrived."
+            )
+        return target
+
+    return _retry_transient(fetch, on_retry, cancel)
+
+
+def _stream_into(
+    url: str, target: Path, done: int, size: int, on_progress: ProgressCallback | None
+) -> int:
+    """Append *url* to *target* from byte *done*; return the bytes on disk.
+
+    Only a busy answer (408, 429) is retried here, after the wait the server asks
+    for; every network error ends the call at once.
+    """
+    from huggingface_hub import constants as hub_constants
+    from huggingface_hub.utils import hf_raise_for_status, http_stream_backoff
+
+    headers = {"Range": f"bytes={done}-"} if done else {}
+    with (
+        http_stream_backoff(
+            "GET",
+            url,
+            headers=headers,
+            timeout=hub_constants.HF_HUB_DOWNLOAD_TIMEOUT,
+            retry_on_exceptions=(),
+            retry_on_status_codes=_BUSY_STATUSES,
+        ) as response,
+        target.open("ab") as handle,
+    ):
+        hf_raise_for_status(response)
+        if response.status_code == HTTPStatus.OK:
+            handle.truncate(0)  # the server sent the whole file, not the range
+            done = 0
+        for chunk in response.iter_bytes(chunk_size=hub_constants.DOWNLOAD_CHUNK_SIZE):
+            handle.write(chunk)
+            done += len(chunk)
+            if on_progress is not None:
+                on_progress(done, size)
+    return done
+
+
+def _download_with_retry(
+    entry: CatalogModel,
+    config: DownloadConfig,
+    cancel: CancelSignal | None = None,
+    *,
+    on_retry: RetryCallback | None = None,
+) -> Path:
+    """Run one file's transfer, retrying the faults another attempt can clear.
+
+    *on_retry* hears each failed attempt that another attempt follows. A set
+    *cancel* ends the wait between attempts with ``TaskCancelledError``.
+    """
+    return _retry_transient(lambda: _hf_download_or_translate(entry, config), on_retry, cancel)
 
 
 def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:
@@ -217,21 +445,19 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, RepositoryNotFoundError
 
+    hub_call_started()
     try:
         return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
     except TaskCancelledError:
         raise
     except GatedRepoError:
-        raise PermissionError(
-            f"{entry.hf_repo} requires HuggingFace authentication. "
-            "Set HF_TOKEN env var or visit the repo page to request access."
-        ) from None
+        raise PermissionError(gated_repo_message(entry.hf_repo)) from None
     except RepositoryNotFoundError:
         raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
     except EntryNotFoundError:
         raise RuntimeError(_missing_file_message(entry.hf_repo, config.filename)) from None
     except httpx2.TransportError as exc:
-        raise _TransientDownloadError(f"Network error downloading {entry.hf_repo}: {exc}") from None
+        raise _TransientDownloadError(network_error_message(entry.hf_repo, exc)) from None
     except OSError as exc:
         raise _TransientDownloadError(f"I/O error downloading {entry.hf_repo}: {exc}") from None
     except Exception as exc:
@@ -254,15 +480,20 @@ _NEVER_CANCELLED = _NeverCancelled()
 
 def download_model(
     entry: CatalogModel,
+    engine: "EngineAdapter | None",
     *,
     on_progress: ProgressCallback | None = None,
     on_complete: CompleteCallback | None = None,
+    on_retry: RetryCallback | None = None,
     cancel: CancelSignal | None = None,
 ) -> Path:
     """Download a GGUF model from HuggingFace to the models dir.
     Uses huggingface_hub for caching and auth; a stalled file starts again
     from the top, and files already finished are kept.
     The optional *on_progress(downloaded, total)* callback receives byte counts.
+    The optional *on_retry(attempt, attempts, cause)* callback hears each
+    failed attempt while the download runs: a resume the hub makes in place, a
+    transfer started again, and a stalled child process started again.
     The optional *on_complete(entry, file_path)* callback runs after every file
     is on disk; modelhub uses it to write a registry manifest. For vision
     models, also downloads the mmproj (CLIP projection) file.
@@ -283,6 +514,10 @@ def download_model(
         TaskCancelledError: the cancel signal was set
     """
     models_dir = _models_dir()
+    if entry.format is ModelFormat.XDNA:
+        return write_ticket(
+            models_dir, entry.hf_repo, entry.task, entry.footprint_gb, entry.context_length
+        )
     models_dir.mkdir(parents=True, exist_ok=True)
     token = hf_token()
     # circular: download -> download_process via fetch_model_files
@@ -292,7 +527,9 @@ def download_model(
         entry,
         models_dir,
         token,
+        engine,
         on_progress=on_progress,
+        on_retry=on_retry,
         cancel=_NEVER_CANCELLED if cancel is None else cancel,
     )
     if on_complete is not None:
@@ -300,214 +537,394 @@ def download_model(
     return dest
 
 
+@dataclass(frozen=True)
+class PlannedFile:
+    """One repo file a pull fetches.
+
+    *size* is the byte count the Hub reports, or the size on disk for a file
+    the cache layout holds. *blob* is the cache blob the Hub names, None when it
+    names none or was not asked. *held* is the copy on disk the pull reuses,
+    None while the pull still has to fetch the file.
+    """
+
+    name: str
+    size: int
+    blob: str | None
+    held: Path | None
+
+
+@dataclass(frozen=True)
+class PullPlan:
+    """Every file a pull of *hf_repo* fetches.
+
+    *files* are the model files, entry file first; the projector of a vision
+    GGUF is fetched last. An XDNA pull has no repo files, so its plan is empty.
+    """
+
+    hf_repo: str
+    files: tuple[PlannedFile, ...] = ()
+    projector: PlannedFile | None = None
+
+    @property
+    def missing(self) -> list[PlannedFile]:
+        """The files of the plan that the disk does not hold yet."""
+        every = [*self.files, *([self.projector] if self.projector is not None else [])]
+        return [file for file in every if file.held is None]
+
+
+def plan_pull(
+    entry: CatalogModel,
+    models_dir: Path,
+    engine: "EngineAdapter | None",
+    token: HfToken,
+    *,
+    on_probe: ProbeCallback | None = None,
+    on_retry: RetryCallback | None = None,
+) -> PullPlan:
+    """The files a pull of *entry* fetches, and which of them the disk already holds.
+
+    This is the one selection of a pull's files: the download and the TUI check
+    before the enqueue both call it, then ``preflight``. A safetensors index is
+    fetched here, after its own space check, because only its content says
+    which shards the model needs. *on_probe* hears the cache blob of each file
+    resolved with the Hub, and *on_retry* each failed transfer of the index.
+
+    Raises:
+        PermissionError: the repo is gated and needs authentication.
+        ListingOfflineError: the Hub cannot be reached to list the repo.
+        ListingFailedError: the Hub did not give the repo listing.
+        UnsupportedQuantError: the engine can load no GGUF file of the repo.
+        RuntimeError: the repo holds no files of the format, a named file is
+            missing, or the index does not fit on the disk.
+        ValueError: the index declares a shard the repo lacks.
+    """
+    if entry.format is ModelFormat.XDNA:
+        return PullPlan(entry.hf_repo)  # an engine tag, not a repo: its engine downloads it
+    if entry.format is not ModelFormat.GGUF:
+        files = _format_files(entry, models_dir, token, on_probe, on_retry)
+        return PullPlan(entry.hf_repo, files)
+    if engine is None:
+        raise RuntimeError(f"A GGUF download needs an engine to pick the file: {entry.hf_repo}")
+    filename = resolve_filename(entry, engine, can_load=engine_load_check(engine, token))
+    files = _gguf_files(entry.hf_repo, models_dir, filename, on_probe)
+    return PullPlan(
+        entry.hf_repo, files, _vision_projector(entry, models_dir, files[0].held, on_probe)
+    )
+
+
+def preflight(plan: PullPlan, models_dir: Path) -> str | None:
+    """Reclaim the leftover partials of the files *plan* still fetches, then check they fit.
+
+    Returns the shortfall text, or None when the files fit or a size is
+    unknown. The reclaim comes first: a leftover partial is unreadable bytes
+    that still occupy the volume the check measures. An empty plan touches
+    nothing.
+
+    Raises RuntimeError naming the folder when the cache cannot be listed.
+    """
+    missing = plan.missing
+    if not missing:
+        return None
+    discard_partial_blobs(
+        models_dir, plan.hf_repo, [file.blob for file in missing if file.blob is not None]
+    )
+    sizes = [file.size for file in missing]
+    needed = _SIZE_UNKNOWN if _SIZE_UNKNOWN in sizes else sum(sizes)
+    return disk_shortfall(models_dir, plan.hf_repo, needed)
+
+
+def _require_room(plan: PullPlan, models_dir: Path) -> None:
+    """Refuse a transfer the disk cannot hold, naming the shortfall.
+
+    huggingface_hub only warns, and the xet path reports a full disk as a
+    reconstruction error naming neither the disk nor the file.
+    """
+    message = preflight(plan, models_dir)
+    if message is not None:
+        raise RuntimeError(message)
+
+
 def fetch_model_files(
     entry: CatalogModel,
     models_dir: Path,
-    token: str | None,
+    token: HfToken,
+    engine: "EngineAdapter | None",
     *,
     on_progress: ProgressCallback | None = None,
     on_probe: ProbeCallback | None = None,
+    on_retry: RetryCallback | None = None,
 ) -> Path:
-    """Fetch *entry*'s GGUF shards, plus its projector when the repo ships one.
+    """Fetch the files of *entry*'s pull plan, the projector last; return the entry file.
 
     Takes the models dir and token as arguments so a download child process
-    can run it without reading cfg. Writes no registry state. *on_probe* fires
-    once per file resolved with the Hub, which is the only sign of life a
-    caller gets before the first bytes, and it names the cache blob so the
-    caller can clear that file's leftovers.
+    can run it without reading cfg. Writes no registry state. The whole plan,
+    projector included, is checked against the free space before the transfer;
+    only a safetensors index, which the plan fetches after its own check, moves
+    before that. *on_probe* fires once per file resolved with the Hub, which is the
+    only sign of life a caller gets before the first bytes, and it names the
+    cache blob so the caller can clear that file's leftovers. *on_retry* hears
+    each failed transfer that another attempt follows.
     """
-    filename = resolve_filename(entry)
-    shards = split_shard_filenames(filename)
-    paths = _cached_shards(entry, models_dir, shards, on_probe)
-    if paths is not None:
-        dest = paths[0]
-        log.info("Model already downloaded: %s", dest)
-        if on_progress is not None:
-            size = sum(path.stat().st_size for path in paths)
-            on_progress(size, size)  # Report 100% immediately (every shard)
-        _ensure_projector(entry, models_dir, token, on_progress=on_progress, on_probe=on_probe)
-        return dest
+    plan = plan_pull(entry, models_dir, engine, token, on_probe=on_probe, on_retry=on_retry)
+    _require_room(plan, models_dir)
+    if not plan.missing:
+        log.info("Model already downloaded: %s", plan.files[0].held)
+    dest = _transfer(entry, models_dir, token, plan.files, on_progress, on_retry)[0]
+    if plan.projector is not None and plan.projector.held is None:
+        _transfer(entry, models_dir, token, (plan.projector,), on_progress, on_retry)
+    return dest
 
-    remote = [_probed_shard(entry, shard, on_probe) for shard in shards]
-    shard_sizes = [file.size for file in remote]
-    sizes_known = all(size != _SIZE_UNKNOWN for size in shard_sizes)
-    # Reclaim first: a leftover partial is unreadable bytes that still occupy
-    # the volume the space check is about to measure.
-    discard_partial_blobs(models_dir, entry.hf_repo, _blobs(remote))
-    _require_disk_space(entry, models_dir, sum(shard_sizes) if sizes_known else 0)
 
-    # Sum the shard sizes up front so a multi-shard pull reports one monotonic
-    # 0->100% against the real total, not N separate per-shard cycles. Only use
-    # the sum when every shard size is known (0 = unresolved/offline); a partial
-    # sum would undercount the total and let progress run past 100%.
-    grand_total = sum(shard_sizes) if len(shards) > 1 and sizes_known else 0
+def _transfer(
+    entry: CatalogModel,
+    models_dir: Path,
+    token: HfToken,
+    files: Sequence[PlannedFile],
+    on_progress: ProgressCallback | None,
+    on_retry: RetryCallback | None,
+    cancel: CancelSignal | None = None,
+) -> list[Path]:
+    """Fetch the files of *files* the disk lacks, in order; return the path of every file.
+
+    The files share one 0 to 100 percent progress run, which ends at the total.
+    *on_retry* hears each failed transfer that another attempt follows, and a
+    set *cancel* ends the wait between attempts with ``TaskCancelledError``.
+    """
+    # Sum the sizes up front so a multi-file pull reports one monotonic 0->100%
+    # against the real total, not N separate per-file cycles. Only use the sum
+    # when every size is known (0 = unresolved/offline); a partial sum would
+    # undercount the total and let progress run past 100%.
+    sizes_known = all(file.size != _SIZE_UNKNOWN for file in files)
+    grand_total = sum(file.size for file in files) if len(files) > 1 and sizes_known else 0
     tracker = _ProgressTracker(on_progress, grand_total=grand_total) if on_progress else None
-    shard_paths: list[Path] = []
-    for shard in shards:
-        log.info("Downloading %s/%s → %s", entry.hf_repo, shard, models_dir)
-        config = DownloadConfig(
-            repo_id=entry.hf_repo,
-            filename=shard,
-            token=token,
-            cache_dir=str(models_dir),
-            tqdm_class=tracker.make_tqdm_class() if tracker else None,
-        )
-        shard_path = _download_with_retry(entry, config)
-        shard_paths.append(shard_path)
+    paths: list[Path] = []
+    for file in files:
+        path = file.held
+        if path is None:
+            log.info("Downloading %s/%s → %s", entry.hf_repo, file.name, models_dir)
+            config = DownloadConfig(
+                repo_id=entry.hf_repo,
+                filename=file.name,
+                token=token,
+                cache_dir=str(models_dir),
+                tqdm_class=tracker.make_tqdm_class() if tracker else None,
+            )
+            path = _download_with_retry(entry, config, cancel, on_retry=on_retry)
+        paths.append(path)
         if tracker is not None:
-            tracker.shard_done(shard_path.stat().st_size)
-    first_shard_path = shard_paths[0]  # the 00001-of-N shard llama.cpp loads from
-
-    if on_progress:
-        total_size = sum(path.stat().st_size for path in shard_paths)
-        if not tracker or not tracker.was_used:
-            log.info("Model found in HuggingFace cache: %s", first_shard_path)
-        on_progress(total_size, total_size)
-    _ensure_projector(entry, models_dir, token, on_progress=on_progress, on_probe=on_probe)
-    return first_shard_path
+            tracker.shard_done(path.stat().st_size)
+    if on_progress is not None:
+        total = sum(path.stat().st_size for path in paths)
+        on_progress(total, total)
+    return paths
 
 
-def _blobs(files: Iterable[RemoteFile]) -> list[str]:
-    """The cache blob names among *files*, dropping the ones the Hub did not report."""
-    return [file.blob for file in files if file.blob is not None]
+def cached_file_path(hf_repo: str, name: str, models_dir: Path) -> Path | None:
+    """The snapshot path of *name* when the cache holds the whole file under it, else None."""
+    from huggingface_hub import try_to_load_from_cache
+
+    found = try_to_load_from_cache(hf_repo, name, cache_dir=str(models_dir))
+    return Path(found) if isinstance(found, str) else None
 
 
-def _probe(on_probe: ProbeCallback | None, file: RemoteFile) -> RemoteFile:
-    """Report *file* as resolved, then hand it back to the caller."""
+def _resolved(hf_repo: str, name: str, on_probe: ProbeCallback | None) -> RemoteFile:
+    """The Hub's answer about *name*, reported to *on_probe* as it arrives."""
+    file = fetch_remote_file(hf_repo, name)
     if on_probe is not None:
         on_probe(file.blob)
     return file
 
 
-def _cached_shard(
-    entry: CatalogModel, models_dir: Path, shard: str, on_probe: ProbeCallback | None
-) -> Path | None:
-    """The on-disk copy of *shard* at the size the Hub reports for it, or None.
+def _hub_file(
+    hf_repo: str, models_dir: Path, name: str, on_probe: ProbeCallback | None
+) -> PlannedFile:
+    """*name* as the cache layout holds it, or as the Hub reports it when the cache lacks it."""
+    held = cached_file_path(hf_repo, name, models_dir)
+    if held is not None:
+        return PlannedFile(name, held.stat().st_size, None, held)
+    remote = _resolved(hf_repo, name, on_probe)
+    return PlannedFile(name, remote.size, remote.blob, None)
+
+
+def _format_files(
+    entry: CatalogModel,
+    models_dir: Path,
+    token: HfToken,
+    on_probe: ProbeCallback | None,
+    on_retry: RetryCallback | None,
+) -> tuple[PlannedFile, ...]:
+    """The selected file set of a non-GGUF *entry*, entry file first."""
+    selected = select_files(entry.format, _repo_sibling_files(entry.hf_repo))
+    if not selected:
+        raise RuntimeError(f"No {entry.format} model files found in {entry.hf_repo}")
+    if SAFETENSORS_INDEX in selected:
+        index = _hub_file(entry.hf_repo, models_dir, SAFETENSORS_INDEX, on_probe)
+        # Its own check first: a held index has nothing to fetch, so both steps pass it through.
+        _require_room(PullPlan(entry.hf_repo, (index,)), models_dir)
+        index_path = _transfer(entry, models_dir, token, (index,), None, on_retry)[0]
+        require_declared_shards(index_path.read_text(encoding="utf-8"), selected)
+    return tuple(_hub_file(entry.hf_repo, models_dir, name, on_probe) for name in selected)
+
+
+def _gguf_files(
+    hf_repo: str, models_dir: Path, filename: str, on_probe: ProbeCallback | None
+) -> tuple[PlannedFile, ...]:
+    """Every shard of *filename*; held only when the disk holds every shard at the Hub's size."""
+    shards = [
+        (shard, _resolved(hf_repo, shard, on_probe)) for shard in split_shard_filenames(filename)
+    ]
+    held = [_held_shard(hf_repo, models_dir, shard, remote.size) for shard, remote in shards]
+    whole = None not in held
+    return tuple(
+        PlannedFile(shard, remote.size, remote.blob, path if whole else None)
+        for (shard, remote), path in zip(shards, held, strict=True)
+    )
+
+
+def _held_shard(hf_repo: str, models_dir: Path, shard: str, size: int) -> Path | None:
+    """The on-disk copy of *shard* at *size*, or None.
 
     Looks in the Hub cache layout first, then at the flat path an older
     install used.
     """
-    from huggingface_hub import try_to_load_from_cache
-
-    file = _probe(on_probe, fetch_remote_file(entry.hf_repo, shard))
-    hit = try_to_load_from_cache(entry.hf_repo, shard, cache_dir=str(models_dir))
-    for path in (Path(hit) if isinstance(hit, str) else None, models_dir / shard):
-        if path is not None and path.exists() and _size_matches(path, file.size):
+    hit = cached_file_path(hf_repo, shard, models_dir)
+    for path in (hit, models_dir / shard):
+        if path is not None and path.exists() and _size_matches(path, size):
             return path
     return None
 
 
-def _cached_shards(
-    entry: CatalogModel, models_dir: Path, shards: list[str], on_probe: ProbeCallback | None
-) -> list[Path] | None:
-    """Every shard's on-disk copy, or None at the first one that is missing."""
-    paths: list[Path] = []
-    for shard in shards:
-        path = _cached_shard(entry, models_dir, shard, on_probe)
-        if path is None:
-            return None
-        paths.append(path)
-    return paths
+def _projector_on_disk(model_path: Path) -> bool:
+    """True when the engine launch finds a projector beside *model_path*."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.gguf_meta import find_mmproj_for_model
+
+    try:
+        find_mmproj_for_model(model_path)
+    except ProviderError:
+        return False
+    return True
 
 
-def _probed_shard(entry: CatalogModel, shard: str, on_probe: ProbeCallback | None) -> RemoteFile:
-    """The Hub's answer about *shard*, reported to *on_probe* as it arrives."""
-    return _probe(on_probe, fetch_remote_file(entry.hf_repo, shard))
+def _vision_projector(
+    entry: CatalogModel, models_dir: Path, model_path: Path | None, on_probe: ProbeCallback | None
+) -> PlannedFile | None:
+    """The projector a GGUF pull fetches, or None when one sits beside the held *model_path*.
 
-
-def _ensure_projector(
-    entry: CatalogModel,
-    models_dir: Path,
-    token: str | None,
-    *,
-    on_progress: ProgressCallback | None = None,
-    on_probe: ProbeCallback | None = None,
-) -> None:
-    """Fetch the projector whenever the repo ships one, not only for VISION entries.
-
-    Dual-use VL repos (Qwen-VL, InternVL, gemma-3) classify as chat by
-    name and arch, and without their projector the vision role dies at plan
-    time with a missing-mmproj warning a re-pull cannot cure.
+    The Hub listing alone says whether the repo ships one, so dual-use VL repos
+    (Qwen-VL, InternVL, SmolVLM, gemma-3), which classify as chat, get theirs.
+    An unreadable listing is no answer: the pull of the model stands and the
+    caller re-checks the listing and warns.
     """
-    if entry.task == ModelTask.VISION or repo_has_mmproj(entry.hf_repo):
-        _fetch_mmproj(entry, models_dir, token, on_progress=on_progress, on_probe=on_probe)
+    if model_path is not None and _projector_on_disk(model_path):
+        return None
+    try:
+        return _projector_file(entry.hf_repo, models_dir, on_probe)
+    except ProjectorListingError as exc:
+        log.info("Could not check %s for a projector: %s", entry.hf_repo, exc)
+        return None
+
+
+def _projector_file(
+    hf_repo: str, models_dir: Path, on_probe: ProbeCallback | None
+) -> PlannedFile | None:
+    """The projector the Hub lists for *hf_repo*, or None when it lists none.
+
+    Raises ``ProjectorListingError`` when the repo listing cannot be read.
+    """
+    name = _resolve_mmproj_filename(hf_repo, DEFAULT_MMPROJ_PATTERN)
+    if not name:
+        log.info("%s lists no mmproj file", hf_repo)
+        return None
+    return _hub_file(hf_repo, models_dir, name, on_probe)
 
 
 def download_mmproj(
     entry: CatalogModel,
     *,
     on_progress: ProgressCallback | None = None,
+    cancel: CancelSignal | None = None,
 ) -> Path | None:
     """Download the mmproj (CLIP projection) file for a vision model.
-    Returns the path to the downloaded file, or None if no mmproj is configured.
+    Returns the path to the downloaded file, or None if the repo lists none.
+    Raises ``ProjectorListingError`` when the repo listing cannot be read.
+    A set *cancel* ends the wait between attempts with ``TaskCancelledError``.
     The optional ``on_progress`` callback receives ``(downloaded, total)`` byte
     counts and is wired through the same tqdm hook used by the main download.
     """
-    return _fetch_mmproj(entry, _models_dir(), hf_token(), on_progress=on_progress)
-
-
-def _fetch_mmproj(
-    entry: CatalogModel,
-    models_dir: Path,
-    token: str | None,
-    *,
-    on_progress: ProgressCallback | None = None,
-    on_probe: ProbeCallback | None = None,
-) -> Path | None:
-    """Fetch *entry*'s mmproj into *models_dir*, or None when the repo names none."""
-    mmproj_filename = _resolve_mmproj_filename(entry.hf_repo, DEFAULT_MMPROJ_PATTERN)
-    if not mmproj_filename:
-        log.warning("Could not resolve mmproj file for %s", entry.hf_repo)
+    models_dir = _models_dir()
+    projector = _projector_file(entry.hf_repo, models_dir, None)
+    if projector is None:
         return None
+    _require_room(PullPlan(entry.hf_repo, projector=projector), models_dir)
+    return _transfer(entry, models_dir, hf_token(), (projector,), on_progress, None, cancel)[0]
 
-    tracker = _ProgressTracker(on_progress) if on_progress else None
-    log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, models_dir)
-    projector = _probe(on_probe, fetch_remote_file(entry.hf_repo, mmproj_filename))
-    discard_partial_blobs(models_dir, entry.hf_repo, _blobs([projector]))
-    _require_disk_space(entry, models_dir, projector.size)
-    # The projector gets the same error translation and retry as the GGUF.
-    path = _download_with_retry(
-        entry,
-        DownloadConfig(
-            repo_id=entry.hf_repo,
-            filename=mmproj_filename,
-            token=token,
-            cache_dir=str(models_dir),
-            tqdm_class=tracker.make_tqdm_class() if tracker else None,
-        ),
+
+class ListingOfflineError(RuntimeError):
+    """The Hub cannot be reached: offline mode is on, or the network is down."""
+
+
+class ListingFailedError(RuntimeError):
+    """The Hub answered, or failed in transit, without giving the repo listing."""
+
+
+def _model_info(hf_repo: str, timeout: float) -> "ModelInfo":
+    """The Hub record of *hf_repo*; a gated repo, an unreachable Hub and a failed read are typed."""
+    from huggingface_hub import HfApi
+    from huggingface_hub.errors import (
+        GatedRepoError,
+        HfHubHTTPError,
+        OfflineModeIsEnabled,
+        RepositoryNotFoundError,
     )
-    if on_progress is not None and (not tracker or not tracker.was_used):
-        # Cache hit: HF returned the cached path without invoking tqdm.
-        size = path.stat().st_size
-        on_progress(size, size)
-    return path
+
+    token = hf_token()
+    try:
+        return HfApi().model_info(hf_repo, timeout=timeout, token=token)
+    except GatedRepoError as exc:
+        raise PermissionError(gated_repo_message(hf_repo)) from exc
+    except RepositoryNotFoundError as exc:
+        if token:
+            reason = (
+                f"Repository {hf_repo!r} not found on HuggingFace, or your token has no access."
+            )
+        else:
+            reason = (
+                f"Repository {hf_repo!r} is missing, private or gated on HuggingFace. "
+                "Set HF_TOKEN to get access if it exists."
+            )
+        raise ListingFailedError(reason) from exc
+    except HfHubHTTPError as exc:
+        raise ListingFailedError(f"Cannot query files for {hf_repo}: {exc}") from exc
+    except (OfflineModeIsEnabled, httpx2.TransportError) as exc:
+        raise ListingOfflineError(
+            f"Cannot reach HuggingFace to list the files of {hf_repo}. "
+            f"Connect to the network, or turn offline mode off, and pull again. ({exc})"
+        ) from exc
+    except Exception as exc:
+        raise ListingFailedError(f"Cannot query files for {hf_repo}: {exc}") from exc
 
 
-def _repo_sibling_files(hf_repo: str) -> list[str]:
-    """Every filename the HuggingFace API lists for *hf_repo*.
+def _repo_sibling_files(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
+    """Every filename the HuggingFace Hub lists for *hf_repo*.
 
     Raises:
         PermissionError: the repo is gated and needs authentication.
-        RuntimeError: the listing could not be fetched.
+        ListingOfflineError: the Hub cannot be reached, or offline mode is on.
+        ListingFailedError: the Hub did not give the listing.
     """
-    try:
-        resp = httpx.get(
-            f"{HF_API_URL}/{hf_repo}",
-            timeout=DEFAULT_TIMEOUT,
-            headers=hf_headers(),
-        )
-        if resp.status_code == HTTPStatus.UNAUTHORIZED:
-            raise PermissionError(
-                f"{hf_repo} requires HuggingFace authentication. "
-                "Set HF_TOKEN env var or visit the repo page to request access."
-            )
-        resp.raise_for_status()
-        siblings = resp.json().get("siblings", [])
-    except PermissionError:
-        raise
-    except Exception as exc:
-        raise RuntimeError(f"Cannot query files for {hf_repo}: {exc}") from exc
-    return [s.get("rfilename", "") for s in siblings]
+    return [s.rfilename for s in _model_info(hf_repo, timeout).siblings or []]
+
+
+def _repo_tags(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
+    """The Hub tags of *hf_repo*.
+
+    Raises:
+        PermissionError: the repo is gated and needs authentication.
+        ListingOfflineError: the Hub cannot be reached, or offline mode is on.
+        ListingFailedError: the Hub did not give the record.
+    """
+    return list(_model_info(hf_repo, timeout).tags or [])
 
 
 def _mmproj_rank(filename: str) -> tuple[bool, str]:
@@ -515,20 +932,37 @@ def _mmproj_rank(filename: str) -> tuple[bool, str]:
     return (quant_label(filename) not in FLOAT_QUANTS, filename)
 
 
+class ProjectorListingError(RuntimeError):
+    """The Hub listing that names a repo's projector could not be read."""
+
+
 def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
-    """Resolve an mmproj filename pattern to a concrete filename via the HF API."""
+    """Resolve an mmproj filename pattern via the HF API; None when the repo lists none."""
     if WILDCARD not in pattern:
         return pattern
     try:
-        names = _repo_sibling_files(hf_repo)
+        names = _repo_sibling_files(hf_repo, timeout=PROJECTOR_LISTING_TIMEOUT)
     except (PermissionError, RuntimeError) as exc:
-        log.warning("Cannot query mmproj files for %s: %s", hf_repo, exc)
-        return None
+        raise ProjectorListingError(
+            f"Could not look for the vision projector of {hf_repo}: {str(exc).rstrip('.')}. "
+            "Run the pull again to fetch it."
+        ) from exc
     matches = [name for name in names if fnmatch.fnmatch(name, pattern)]
     return min(matches, key=_mmproj_rank) if matches else None
 
 
-def resolve_filename(entry: CatalogModel, *, can_load: LoadCheck | None = None) -> str:
+def engine_load_check(engine: "EngineAdapter", token: HfToken) -> LoadCheck:
+    """*engine*'s verdict on one repo file, in the form ``resolve_filename`` asks it."""
+
+    def _can_load(hf_repo: str, filename: str) -> None:
+        engine.assert_loadable(hf_repo, filename, token)
+
+    return _can_load
+
+
+def resolve_filename(
+    entry: CatalogModel, engine: "EngineAdapter", *, can_load: LoadCheck | None = None
+) -> str:
     """The repo file a pull of *entry* fetches, gated on each candidate's GGUF header.
 
     Quant labels only order the candidates. A file whose header calls it a
@@ -556,11 +990,12 @@ def resolve_filename(entry: CatalogModel, *, can_load: LoadCheck | None = None) 
         return named
     unsupported: str | None = None
     refused: UnsupportedQuantError | None = None
-    for candidate in rank_gguf_candidates(_repo_sibling_files(entry.hf_repo)):
+    siblings = _repo_sibling_files(entry.hf_repo)
+    for candidate in rank_gguf_candidates(siblings):
         header = file_header(entry.hf_repo, candidate)
         if not header.is_model:
             continue
-        if classify(header.architecture) is ModelCompat.UNSUPPORTED:
+        if classify(header.architecture, engine) is ModelCompat.UNSUPPORTED:
             unsupported = unsupported or candidate
             continue
         if can_load is not None:
@@ -574,7 +1009,58 @@ def resolve_filename(entry: CatalogModel, *, can_load: LoadCheck | None = None) 
         return unsupported
     if refused is not None:
         raise refused
-    raise RuntimeError(f"No GGUF model weights found in {entry.hf_repo}")
+    raise RuntimeError(_no_gguf_message(entry.hf_repo, siblings))
+
+
+_ADAPTER_BASE_TAG = "base_model:adapter:"
+_ADAPTER_CONFIG = "adapter_config.json"
+_ADAPTER_WEIGHTS_PREFIX = "adapter_model"
+
+
+def _holds_weights(siblings: list[str]) -> bool:
+    """Whether the listing holds safetensors weight files, complete or not."""
+    try:
+        return bool(select_files(ModelFormat.SAFETENSORS, siblings))
+    except ValueError:
+        # An incomplete shard set still means weights; the folder pull names the missing part.
+        return True
+
+
+def _is_adapter_only(siblings: list[str]) -> bool:
+    """Whether every root safetensors file of the listing is a LoRA adapter's weights."""
+    weights = [n for n in siblings if "/" not in n and n.endswith(".safetensors")]
+    return _ADAPTER_CONFIG in siblings and all(
+        name.startswith(_ADAPTER_WEIGHTS_PREFIX) for name in weights
+    )
+
+
+def _adapter_message(message: str, tags: list[str]) -> str:
+    """The refusal for a LoRA adapter repo, naming each base model the Hub tags give."""
+    named = [t.removeprefix(_ADAPTER_BASE_TAG) for t in tags if t.startswith(_ADAPTER_BASE_TAG)]
+    target = " or ".join(named) or "the base model it was trained from"
+    return f"{message}. It holds a LoRA adapter, not a model. Pull {target} instead."
+
+
+def _no_gguf_message(hf_repo: str, siblings: list[str]) -> str:
+    """The refusal for a repo with no GGUF weights, naming the ref that pulls its folder."""
+    message = f"No GGUF model weights found in {hf_repo}"
+    if not _holds_weights(siblings):
+        return message
+    try:
+        tags = _repo_tags(hf_repo)
+    except (RuntimeError, PermissionError):
+        # Without the tags an MLX repo reads as plain safetensors, so name nothing.
+        tags = None
+    if _is_adapter_only(siblings):
+        return _adapter_message(message, tags or [])
+    if tags is None:
+        return message
+    fmt = ModelFormat.MLX if ModelFormat.MLX in formats_from_tags(tags) else ModelFormat.SAFETENSORS
+    ref = ModelRef(hf_repo, "", fmt).canonical
+    return (
+        f"{message}. It holds {fmt} weights: pull them with 'lilbee model pull {ref}' "
+        "(or POST /api/models/pull)."
+    )
 
 
 _SIZE_UNKNOWN = 0
@@ -626,25 +1112,17 @@ def fetch_remote_file(hf_repo: str, filename: str) -> RemoteFile:
     the cached file. A file the Hub reports as nonexistent raises instead: that
     answer is definitive, and treating it as unknown let a pull of a mistyped
     filename accept a stale local file and report success without downloading
-    anything.
+    anything. A gated repo raises ``PermissionError`` with the login text for
+    the same reason: the transfer would be refused.
     """
-    from huggingface_hub.errors import RemoteEntryNotFoundError
+    from huggingface_hub.errors import GatedRepoError, RemoteEntryNotFoundError
 
     try:
         size, blob = _hf_file_metadata(hf_repo, filename)
     except RemoteEntryNotFoundError:
         raise RuntimeError(_missing_file_message(hf_repo, filename)) from None
+    except GatedRepoError:
+        raise PermissionError(gated_repo_message(hf_repo)) from None
     except Exception:
         return RemoteFile(size=_SIZE_UNKNOWN, blob=None)
     return RemoteFile(size=size or _SIZE_UNKNOWN, blob=blob)
-
-
-def download_bytes(hf_repo: str, filename: str) -> int:
-    """Bytes a pull of *filename* fetches, every shard summed, or 0 when unknown.
-
-    The exact figure HuggingFace reports, not the catalog row's approximation:
-    a disk check refuses a real download, so it asks about the real file. A
-    single unresolvable shard makes the sum unknown rather than short.
-    """
-    sizes = [fetch_remote_file(hf_repo, shard).size for shard in split_shard_filenames(filename)]
-    return sum(sizes) if all(sizes) else _SIZE_UNKNOWN

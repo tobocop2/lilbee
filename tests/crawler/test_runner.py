@@ -40,6 +40,9 @@ from lilbee.runtime.progress import CrawlDoneEvent, CrawlStartEvent, EventType
 from tests._crawlberg_stub import StubCrawlberg, complete, refusing_patterns
 from tests._crawlberg_stub import page as crawlberg_page
 
+# The autouse fixture replaces the sitemap count; keep the real one for the crawl test below.
+_REAL_COUNT_SITEMAP_URLS = sitemap_mod._count_sitemap_urls
+
 
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path, monkeypatch):
@@ -597,6 +600,29 @@ class TestSitemapRobotsSetting:
         with stub.installed():
             await crawl_and_save("https://example.com/", depth=1, max_pages=5)
         assert [call["respect_robots_txt"] for call in asked] == [respect]
+
+
+class TestSitemapInvalidUrl:
+    """An address httpx rejects skips the sitemap; the crawl goes on."""
+
+    @pytest.mark.parametrize("respect", [True, False])
+    async def test_the_crawl_goes_on_without_a_sitemap(
+        self, monkeypatch, caplog: pytest.LogCaptureFixture, respect: bool
+    ):
+        import httpx
+
+        def reject(url: str, **kwargs: object) -> httpx.Response:
+            raise httpx.InvalidURL("Invalid non-printable ASCII character in URL")
+
+        monkeypatch.setattr("lilbee.crawler.sitemap._count_sitemap_urls", _REAL_COUNT_SITEMAP_URLS)
+        monkeypatch.setattr("httpx.get", reject)
+        cfg.crawl_respect_robots_txt = respect
+        home = crawlberg_page("https://example.com/", "# Home", depth=0)
+        stub = StubCrawlberg([home, complete(1)])
+        with caplog.at_level("INFO", logger="lilbee.crawler.sitemap"), stub.installed():
+            await crawl_and_save("https://example.com/", depth=1, max_pages=5)
+        assert len(stub.configs) == 1
+        assert len([r for r in caplog.records if r.name == "lilbee.crawler.sitemap"]) == 1
 
 
 class TestUserAgentSetting:

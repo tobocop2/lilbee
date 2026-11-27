@@ -3,11 +3,17 @@
 import functools
 import re
 from dataclasses import dataclass
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from lilbee.catalog.refs import ggml_bytes_per_param, ggml_quant_block_sizes, quant_label
-from lilbee.catalog.types import ModelCompat, ModelTask
+from lilbee.catalog.refs import (
+    FORMAT_SEPARATOR,
+    ggml_bytes_per_param,
+    ggml_quant_block_sizes,
+    quant_label,
+)
+from lilbee.catalog.types import ModelCompat, ModelFormat, ModelTask
 
 # Minimum recommended floor so a tiny model still reports a sane RAM ask.
 _MIN_RAM_FLOOR_GB = 2.0
@@ -70,11 +76,14 @@ def estimate_min_ram_gb(size_gb: float) -> float:
 def estimate_size_gb(params: int, gguf_filename: str) -> float:
     """Approximate the on-disk GB of *gguf_filename* from a model's parameter count.
 
-    A lower bound, and the browse list renders it as approximate. llama.cpp
-    promotes ``output.weight`` and an untied ``token_embd`` above the ftype and
-    leaves the norms in F32, so a published file costs more per weight than the
-    type its name carries; how much more needs the header's vocabulary and
-    embedding lengths, which a listing row does not have.
+    An approximation that usually reads at or under the file, and the browse
+    list renders it as approximate. llama.cpp promotes ``output.weight`` and an
+    untied ``token_embd`` above the ftype and leaves the norms in F32, so a
+    published file usually costs more per weight than the type its name carries.
+    An ftype can also mix a cheaper type into some tensors, so a file can land a
+    little below its type: published IQ2_S files measure about 0.93 of it. How
+    far a file moves needs the header's vocabulary and embedding lengths, which a
+    listing row does not have.
 
     This is the one place a size cannot be read: the HF listing API reports a
     parameter count (``gguf.total``) and no per-file bytes, and getting the real
@@ -138,11 +147,27 @@ class CatalogModel:
     # Safety-stripped (abliterated/uncensored) per the repo's HF tags. Browse
     # rows carry it; recommendation rails exclude rows that set it.
     safety_stripped: bool = False
+    # The weight format a pull fetches. For a non-GGUF format ``gguf_filename`` is
+    # the entry file the engine loads from.
+    format: ModelFormat = ModelFormat.GGUF
+    # Every format the repo ships that this host can run; ``format`` is the one a pull takes.
+    formats: frozenset[ModelFormat] = frozenset({ModelFormat.GGUF})
+    # The memory in GiB that the publisher states for the loaded model. 0 when it states none.
+    footprint_gb: float = 0.0
+    # The context window in tokens that the publisher states. 0 when it states none.
+    context_length: int = 0
 
     @property
     def ref(self) -> str:
         """Browse-time ref (the HF repo); concrete filename is resolved at install."""
         return self.hf_repo
+
+    @property
+    def pull_ref(self) -> str:
+        """The reference a pull takes: the repo for GGUF, ``<repo>#<format>`` for another format."""
+        if self.format is ModelFormat.GGUF:
+            return self.hf_repo
+        return f"{self.hf_repo}{FORMAT_SEPARATOR}{self.format}"
 
     @property
     def display_name(self) -> str:
@@ -151,6 +176,15 @@ class CatalogModel:
         from lilbee.catalog.formatting import clean_display_name
 
         return clean_display_name(self.hf_repo)
+
+
+@dataclass(frozen=True)
+class HiddenModel:
+    """A row the listing left out, with the text that says why."""
+
+    hf_repo: str
+    reason: str
+    text: str
 
 
 @dataclass(frozen=True)
@@ -167,6 +201,25 @@ class CatalogResult:
     models: list[CatalogModel]
     has_more: bool = False
     truncated: bool = False
+    hidden: tuple[HiddenModel, ...] = ()
+
+
+@runtime_checkable
+class ListsModels(Protocol):
+    """An engine whose models no Hub listing shows: it publishes a list of its own.
+
+    The catalog reads ``models_url`` and passes the decoded JSON to ``parse_models``.
+    """
+
+    @property
+    def name(self) -> str: ...
+
+    models_url: str
+    """Where the engine's own model list is published."""
+
+    def parse_models(self, payload: Any) -> list[CatalogModel]:
+        """The catalog rows of *payload*; ``ValueError`` when it has the wrong shape."""
+        ...
 
 
 @dataclass(frozen=True)

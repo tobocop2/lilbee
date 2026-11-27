@@ -19,6 +19,7 @@ from filelock import FileLock, Timeout
 from lilbee.app.services import get_services, reset_services, set_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
+from lilbee.core.config.model import published_config
 from lilbee.crawler import (
     CRAWLER_MISSING_MESSAGE,
     CrawlResult,
@@ -478,6 +479,22 @@ def _write_web(name: str, text: str) -> Path:
     return path
 
 
+def _crawler_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """The warning and error records that the crawler package logged."""
+    return [
+        r
+        for r in caplog.records
+        if r.name.startswith("lilbee.crawler") and r.levelno >= logging.WARNING
+    ]
+
+
+def _log_unheld_role_warning() -> None:
+    """Log the role-check warning that a startup check in an earlier test leaves behind."""
+    logging.getLogger("lilbee.modelhub.role_validator").warning(
+        "chat_model is set to 'x', which the model registry does not hold."
+    )
+
+
 def _legacy_meta_file() -> Path:
     """The crawl metadata file an older lilbee kept."""
     return cfg.data_dir / "crawl_meta.json"
@@ -637,49 +654,90 @@ def _no_dns(monkeypatch):
 class TestCrawlerAvailable:
     """Exercises the un-patched ``crawler_available`` install probe.
 
-    Uses ``importlib.util.find_spec`` so the check stays cheap on the UI
-    thread; the Settings screen calls this synchronously during compose
-    via ``_FEATURE_GATED_GROUPS``.
+    The probe imports each module of the extra once and caches the answer, so a
+    crawlberg that is installed but cannot load counts as unavailable, with the
+    reason.
     """
 
-    def test_returns_true_when_installed(self):
-        from lilbee.crawler import crawler_available
+    @pytest.fixture(autouse=True)
+    def _fresh_probe(self):
+        from lilbee.crawler import availability
 
-        crawler_available.cache_clear()
-        with patch(
-            "importlib.util.find_spec",
-            return_value=MagicMock(name="crawlberg_spec"),
+        availability.crawler_unavailable_reason.cache_clear()
+        yield
+        availability.crawler_unavailable_reason.cache_clear()
+
+    def test_returns_true_when_installed(self):
+        from lilbee.crawler import crawler_available, crawler_unavailable_message
+
+        with (
+            patch("importlib.util.find_spec", return_value=MagicMock(name="spec")),
+            patch("importlib.import_module"),
         ):
             assert crawler_available() is True
-        crawler_available.cache_clear()
+        assert crawler_unavailable_message() == CRAWLER_MISSING_MESSAGE
 
     def test_returns_false_when_not_installed(self):
-        from lilbee.crawler import crawler_available
+        from lilbee.crawler import crawler_available, crawler_unavailable_message
 
-        crawler_available.cache_clear()
         with patch("importlib.util.find_spec", return_value=None):
             assert crawler_available() is False
-        crawler_available.cache_clear()
+            assert crawler_unavailable_message() == CRAWLER_MISSING_MESSAGE
 
-    def test_does_not_execute_module_init(self):
-        """Regression guard: probe must not actually import ``crawlberg``.
+    def test_broken_install_is_unavailable_with_the_reason(self, broken_crawlberg):
+        from lilbee.crawler import crawler_available, crawler_unavailable_message
 
-        crawlberg loads a native library. The Settings screen calls this on
-        the UI thread, so executing the module here would block the TUI.
-        """
-        import sys as _sys
+        assert crawler_available() is False
+        message = crawler_unavailable_message()
+        assert broken_crawlberg in message
+        assert message != CRAWLER_MISSING_MESSAGE
+        assert "pip install --force-reinstall 'lilbee[crawler]'" in message
 
+    def test_broken_install_names_no_internal_word(self, broken_crawlberg):
+        from lilbee.crawler import crawler_unavailable_message
+
+        message = crawler_unavailable_message()
+        for word in ("find_spec", "importlib", "ImportError", "OSError", "cache"):
+            assert word not in message
+
+    def test_import_error_inside_the_crawler_is_unavailable_with_the_reason(self, monkeypatch):
+        from lilbee.crawler import crawler_available, crawler_unavailable_message
+
+        def _fail(name):
+            raise ImportError("DLL load failed")
+
+        monkeypatch.setattr("importlib.util.find_spec", lambda name: MagicMock(name="spec"))
+        monkeypatch.setattr("importlib.import_module", _fail)
+        assert crawler_available() is False
+        assert "DLL load failed" in crawler_unavailable_message()
+
+    def test_another_error_is_not_swallowed(self, monkeypatch):
         from lilbee.crawler import crawler_available
 
-        crawler_available.cache_clear()
-        with patch(
-            "importlib.util.find_spec",
-            return_value=MagicMock(name="crawlberg_spec"),
-        ):
-            had_module = "crawlberg" in _sys.modules
+        def _fail(name):
+            raise RuntimeError("bug")
+
+        monkeypatch.setattr("importlib.util.find_spec", lambda name: MagicMock(name="spec"))
+        monkeypatch.setattr("importlib.import_module", _fail)
+        with pytest.raises(RuntimeError, match="bug"):
             crawler_available()
-            assert ("crawlberg" in _sys.modules) is had_module
-        crawler_available.cache_clear()
+
+    def test_the_answer_is_probed_once(self):
+        from lilbee.crawler import crawler_available
+
+        with (
+            patch("importlib.util.find_spec", return_value=MagicMock(name="spec")),
+            patch("importlib.import_module") as import_module,
+        ):
+            crawler_available()
+            crawler_available()
+        assert import_module.call_count == 2  # crawlberg and ada_url, once each
+
+    async def test_crawl_single_raises_the_reason(self, broken_crawlberg):
+        from lilbee.crawler import CrawlerBackendError
+
+        with pytest.raises(CrawlerBackendError, match=re.escape(broken_crawlberg)):
+            await crawl_single("https://example.com")
 
 
 class TestIsUrl:
@@ -1617,6 +1675,28 @@ class TestPlaywrightBrowserCheck:
         monkeypatch.setattr("sys.platform", "win32")
         assert _browsers_cache_path() == Path("/tmp/localappdata/ms-playwright")
 
+    def test_path_win32_skips_home_when_localappdata_set(self, monkeypatch):
+        """LOCALAPPDATA names the directory, so no home directory lookup runs."""
+        from lilbee.crawler.bootstrap import _browsers_cache_path
+
+        def no_home():
+            raise RuntimeError("Could not determine home directory.")
+
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", "/tmp/localappdata")
+        monkeypatch.setattr("sys.platform", "win32")
+        monkeypatch.setattr(Path, "home", staticmethod(no_home))
+        assert _browsers_cache_path() == Path("/tmp/localappdata/ms-playwright")
+
+    def test_path_win32_falls_back_to_home_when_localappdata_unset(self, monkeypatch, tmp_path):
+        from lilbee.crawler.bootstrap import _browsers_cache_path
+
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr("sys.platform", "win32")
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        assert _browsers_cache_path() == tmp_path / "AppData" / "Local" / "ms-playwright"
+
 
 class TestSetupEventHelpers:
     """bb-wq8g: _emit_setup_start / _emit_setup_done no-op when callback is None."""
@@ -2503,7 +2583,7 @@ def _oversized_number(config: cb.Recorded) -> str | None:
 
 def _oversized_setting() -> None:
     """Force the timeout past its bound, which no entry point lets through, to reach the engine."""
-    object.__setattr__(cfg, "crawl_timeout", OVERSIZED_TIMEOUT)
+    object.__setattr__(published_config(), "crawl_timeout", OVERSIZED_TIMEOUT)
 
 
 def _refuse_or_overflow(config: cb.Recorded) -> str | None:
@@ -2746,7 +2826,7 @@ class TestRefusedEngine:
 
     async def test_an_error_while_lilbee_builds_the_config_stays_a_failed_crawl(self, isolated_env):
         # Past the validator, which refuses an infinite delay on every entry point.
-        object.__setattr__(cfg, "crawl_mean_delay", float("inf"))
+        object.__setattr__(published_config(), "crawl_mean_delay", float("inf"))
         events: list[EventType] = []
         stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0)])
         with stub.installed():
@@ -3138,6 +3218,14 @@ class TestSavePage:
             save_page(CrawlResult(url=url, markdown="# P"), crawl_record(), MagicMock())
         assert recorded()[url].content_hash == content_hash("# P")
 
+    def test_forgetting_a_page_before_the_table_exists_changes_nothing(self, isolated_env):
+        record = crawl_record()
+        page = CrawlPage("https://example.com/never", "never.md", "h", "2026-01-01T00:00:00+00:00")
+        with record.pages.held():
+            record.pages.forget(page)
+        assert recorded() == {}
+        assert _rows() == set()
+
     def test_a_page_whose_row_was_lost_is_adopted_and_updated_later(self, isolated_env):
         urls = ["https://example.com/a", "https://example.com/b"]
         record = crawl_record()
@@ -3251,7 +3339,8 @@ class TestSavePage:
     ):
         host = _write_web("example.com", "a user's file")
         record = crawl_record()
-        with caplog.at_level("WARNING", logger="lilbee.crawler.save"):
+        with caplog.at_level("WARNING"):
+            _log_unheld_role_warning()
             saved = [
                 save_page(
                     CrawlResult(url=f"https://example.com/{p}", markdown=f"# {p}"),
@@ -3261,7 +3350,7 @@ class TestSavePage:
                 for p in ("a", "b")
             ]
         assert saved == [None, None]
-        warned = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        warned = [r.getMessage() for r in _crawler_warnings(caplog)]
         assert len(warned) == 1
         assert str(host) in warned[0]
         assert "move or delete it" in warned[0]
@@ -4035,6 +4124,7 @@ class TestStreamingFlush:
         _write_web("example.com", "a user's file")
 
         async def _gen():
+            _log_unheld_role_warning()
             for path in ("a", "b", "c"):
                 yield cb.page(f"https://example.com/{path}", f"# {path}")
 
@@ -4042,7 +4132,7 @@ class TestStreamingFlush:
         with stub.installed(), caplog.at_level("WARNING"):
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert paths == []
-        warned = [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
+        warned = _crawler_warnings(caplog)
         assert [r.exc_info for r in warned] == [None]
         assert "example.com" in warned[0].getMessage()
         assert recorded() == {}

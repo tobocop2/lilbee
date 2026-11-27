@@ -16,7 +16,7 @@ No external services are required. lilbee downloads models locally (native GGUF)
 
 ```bash
 git clone https://github.com/tobocop2/lilbee && cd lilbee
-uv sync
+uv sync --extra providers  # make check replays the recorded presets, which needs this extra
 uv run lilbee self-check   # downloads a tiny model, runs an inference + embedding
 uv run lilbee              # launch the terminal app
 ```
@@ -25,9 +25,18 @@ Optional extras (only needed if you work on those areas):
 
 ```bash
 uv sync --extra crawler    # website crawling (/crawl, Playwright)
-uv sync --extra providers    # hosted-provider bridge (Ollama, LM Studio, cloud)
 uv sync --extra graph      # concept-graph search
 ```
+
+To get the real engine in a dev install, run this inside the checkout:
+
+```bash
+uv run lilbee engine install
+```
+
+The command downloads the engine pack into lilbee's engine cache. To use your own build, set `LILBEE_LLAMA_SERVER_PATH` to your `llama-server`.
+
+The dev group depends on `lilbee-engine-llama-cpp`, which `uv` resolves to the 0.0.0 placeholder package in `packaging/engine-wheel`. The placeholder has no `llama-server` binary, so it is not an engine.
 
 Optionally install the git hooks so lint, format, and type checks run on each commit (the same checks CI enforces):
 
@@ -62,7 +71,7 @@ Tests live under `tests/`, mirroring the source layout, with `tests/integration/
 
 ```bash
 make format        # auto-format (ruff)
-make check         # lint + format-check + typecheck + tests (same as CI)
+make check         # lint + license-check + format-check + typecheck + tests + preset replay (same as CI)
 ```
 
 `make check` is the gate CI runs. Run it locally and make sure it's green before opening a PR.
@@ -76,6 +85,7 @@ Useful individual targets:
 ```bash
 make test          # tests with coverage
 make lint          # ruff + style-rule check
+make license-check # fail on a GPL or AGPL package in uv.lock (needs the network and Python 3.12)
 make typecheck     # mypy (strict)
 make format-check  # verify formatting without changing files
 ```

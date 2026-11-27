@@ -289,6 +289,7 @@ class TestMaxConcurrent:
         services = MagicMock()
         services.provider.vision_slot_capacity.return_value = value
         monkeypatch.setattr(pipeline, "get_services", lambda: services)
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda _engine: 1)
 
     def test_defaults_to_cpu_quota_without_vision(self, monkeypatch) -> None:
         from lilbee.data.ingest import pipeline
@@ -383,6 +384,6 @@ class TestMaxConcurrent:
         monkeypatch.setattr(pipeline, "cpu_quota", lambda: 2)
         monkeypatch.setattr(cfg, "vision_model", "")
         monkeypatch.setattr(cfg, "embed_replicas", 0)
-        monkeypatch.setattr(replicas_mod, "gpu_device_count", lambda: 4)
+        monkeypatch.setattr(replicas_mod, "gpu_device_count", lambda _engine: 4)
         result = pipeline._max_concurrent()
         assert result >= 4, f"expected at least 4 (one per GPU), got {result}"

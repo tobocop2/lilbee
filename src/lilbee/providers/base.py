@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
@@ -44,9 +45,19 @@ CHAT_MESSAGE_OVERHEAD_TOKENS = 8
 BUDGET_CHARS_PER_TOKEN = 3
 
 
+def is_header_safe(secret: str) -> bool:
+    """True when *secret* can travel in an HTTP header: printable ASCII only."""
+    return secret.isascii() and secret.isprintable()
+
+
 def prompt_token_budget(ctx: int, num_predict: int | None = None) -> int:
     """Tokens a prompt may occupy in a *ctx*-token window, reserve and margin removed."""
     return ctx - (num_predict or GENERATION_RESERVE_TOKENS) - CONTEXT_WINDOW_MARGIN_TOKENS
+
+
+def byte_token_estimate(text: str) -> int:
+    """UTF-8 bytes of *text*: no token encodes fewer than one byte, so this never reads low."""
+    return len(text.encode("utf-8"))
 
 
 def estimate_budget_tokens(text: str) -> int:
@@ -103,17 +114,20 @@ class LLMOptions(BaseModel):
         return {k: v for k, v in self.model_dump().items() if v is not None}
 
 
-def filter_options(options: dict[str, Any]) -> dict[str, Any]:
-    """Validate and filter generation options through LLMOptions model."""
-    return LLMOptions(**options).to_dict()
-
-
 class ChosenSeed(int):
     """A seed lilbee picked for an internal call, not one the user set.
 
     A provider with no seed field drops it and answers the call. A seed that is
     a plain ``int`` came from the user, and that provider refuses it.
     """
+
+
+def filter_options(options: dict[str, Any]) -> dict[str, Any]:
+    """Validate and filter generation options through LLMOptions model, keeping a ChosenSeed."""
+    filtered = LLMOptions(**options).to_dict()
+    if isinstance(options.get("seed"), ChosenSeed):
+        filtered["seed"] = options["seed"]
+    return filtered
 
 
 def aux_options(num_predict: int, **extra: Any) -> dict[str, Any]:
@@ -142,6 +156,10 @@ def normalize_generation_options(options: dict[str, Any] | None) -> dict[str, An
     return filtered
 
 
+SERVER_STOPPING_MESSAGE = "The server is stopping."
+"""What a caller reads when a stop of the server ends its wait or its stream."""
+
+
 class ProviderErrorKind(StrEnum):
     """Provider-agnostic category of a failed provider call.
 
@@ -160,6 +178,12 @@ class ProviderErrorKind(StrEnum):
     CAPACITY = "capacity"
     PORT_CONFLICT = "port_conflict"
     MODEL_FILE_BROKEN = "model_file_broken"
+    CPU_UNSUPPORTED = "cpu_unsupported"
+    MISSING_LIBRARY = "missing_library"
+    STARTING = "starting"
+    # The engine did not finish starting within the waits: not retried, not rebuilt.
+    WARM_TIMEOUT = "warm_timeout"
+    ENGINE_MISSING = "engine_missing"
     UNKNOWN = "unknown"
 
 
@@ -174,13 +198,40 @@ class ProviderError(Exception):
         self,
         message: str,
         *,
-        provider: str = "",
         kind: ProviderErrorKind = ProviderErrorKind.UNKNOWN,
     ) -> None:
-        self.provider = provider
         self.kind = kind
         super().__init__(message)
 
+    @property
+    def repeats_on_retry(self) -> bool:
+        """Whether the same input fails the same way again, so a retry cannot help."""
+        return self.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+class EmbeddingOverflowError(ProviderError):
+    """A context overflow raised by the embedding call."""
+
+
+class WarmTimeoutError(ProviderError):
+    """An engine that did not finish starting within *wait_s* seconds (None: not known)."""
+
+    def __init__(self, message: str, *, wait_s: float | None = None) -> None:
+        super().__init__(message, kind=ProviderErrorKind.WARM_TIMEOUT)
+        self.wait_s = wait_s
+
+
+# The 400 message of a server that refuses a prompt longer than its window.
+_PROMPT_LENGTH_OVERFLOW = re.compile(r"Prompt sequence length is greater than \d+")
+
+
+def is_prompt_length_overflow(text: str) -> bool:
+    """Whether *text* is the 400 message of a server refusing a prompt past its window."""
+    return _PROMPT_LENGTH_OVERFLOW.search(text) is not None
+
+
+# Capability tag for image input. Chat drops every image part, so no chat model reports it.
+VISION_CAPABILITY = "vision"
 
 # Human word per role for the not-configured error ("embedding model", not "embed model").
 _ROLE_WORDS: dict[WorkerRole, str] = {
@@ -191,13 +242,12 @@ _ROLE_WORDS: dict[WorkerRole, str] = {
 }
 
 
-def require_role_ref(ref: str, role: WorkerRole, *, provider: str = "") -> str:
+def require_role_ref(ref: str, role: WorkerRole) -> str:
     """Reject an unconfigured role with a clean error instead of parsing ''."""
     if not ref:
         raise ProviderError(
             f"No {_ROLE_WORDS[role]} model is configured. Pick one from the catalog "
             f"or run 'lilbee model pull <model>'.",
-            provider=provider,
             kind=ProviderErrorKind.NOT_FOUND,
         )
     return ref
@@ -336,6 +386,14 @@ class LLMProvider(Protocol):
         """
         ...
 
+    def count_chat_text_tokens(self, text: str) -> int | None:
+        """Tokens in *text* under the chat model's tokenizer, or None with no tokenize route.
+
+        Retrieval budgets the prompt with this count. None sends it back to
+        the character rule.
+        """
+        return None
+
     def count_chat_prompt_tokens(
         self,
         messages: list[ChatMessage],
@@ -353,9 +411,23 @@ class LLMProvider(Protocol):
         the first call against a fresh replica may issue the same one-token
         template probe :meth:`chat` issues, so this can block for a cold start.
         Raise ``NotImplementedError`` when the backend cannot render or
-        tokenize, and the caller estimates instead.
+        tokenize, and the caller estimates instead with
+        :meth:`estimate_chat_tokens`.
         """
         ...
+
+    def estimate_chat_tokens(self, text: str, *, model: str | None = None) -> int:
+        """Tokens *text* takes for the chat model *model*, never fewer than the real count.
+
+        Called when :meth:`count_chat_prompt_tokens` raised ``NotImplementedError``,
+        for the request text without the chat template. *model* defaults to the
+        configured chat model. A backend that has no tokenizer of the model's own,
+        or whose tokenizer reports a load or count error, answers with the default,
+        the UTF-8 byte count. Any other exception from the tokenizer is raised. A
+        backend's first call for a model may load that model's tokenizer, so it can
+        block.
+        """
+        return byte_token_estimate(text)
 
     @overload
     def chat(
@@ -517,6 +589,10 @@ class LLMProvider(Protocol):
         """Release resources (e.g. background threads). No-op if nothing to clean up."""
         ...
 
+    def stop_waiting(self) -> None:
+        """Answer the callers that wait on this provider's work now. No-op default."""
+        return
+
     def warm_up_pool(self) -> None:
         """Eagerly start the configured role servers so the first call lands warm.
 
@@ -545,6 +621,10 @@ class LLMProvider(Protocol):
         caller already off the event loop); the default returns immediately.
         """
         return
+
+    def reload_notice(self) -> str | None:
+        """What is true of the engines while a reload runs or after one failed; None here."""
+        return None
 
     def replan_fleet(self, *, wait: bool = False) -> None:
         """Re-plan the fleet from current cfg, restarting only moved roles.
@@ -595,11 +675,15 @@ class LLMProvider(Protocol):
         """
         return None
 
-    def embed_token_cap(self) -> int | None:
+    def embed_token_cap(self, *, known_only: bool = False) -> int | None:
         """Tokens the embedder truncates one input to, or None when it has no fixed cap.
 
         The chunker bounds its budget to this so no chunk loses text at embedding
-        time. Default ``None``: a remote embedder advertises no window.
+        time. Default ``None``: a remote embedder advertises no window, and the
+        embedder cuts its inputs to ``max_embed_chars`` instead. A provider that
+        returns a cap bounds every input by that token count itself and reports
+        each cut input through ``providers.truncation.note_cut_to_limit``. With
+        *known_only* the provider sends no request and reports only a cap it knows.
         """
         return None
 

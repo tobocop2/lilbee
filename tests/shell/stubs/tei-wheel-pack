@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Write a complete text-embeddings-inference wheel, which check_tei_wheel.py accepts, and its licence expression:
+#
+#   tei-wheel-pack <wheel-folder> <expression-file> <platform>
+#
+# Reads:
+#   REAL_PYTHON     the interpreter that writes the wheel (required)
+#   BACKEND         the backend of the wheel (required)
+#   WHEEL_NAME      the file name (default: the right one for the backend and the platform)
+#   WHEEL_TAG       the platform in the WHEEL file (default: the platform)
+#   WHEEL_WITHOUT   the end of the one member name to leave out
+#   WHEEL_COUNT     how many wheels to write (default: 1)
+#   WHEEL_CRLF      when set, METADATA and WHEEL have CRLF line ends
+
+set -euo pipefail
+
+dir="$1" expression_file="$2" platform="$3"
+mkdir -p "${dir}"
+expression="Apache-2.0 AND MIT"
+case "${BACKEND:?}" in cuda*) expression="${expression} AND LicenseRef-NVIDIA-CUDA-EULA" ;; esac
+printf '%s\n' "${expression}" > "${expression_file}"
+for ((n = 1; n <= ${WHEEL_COUNT:-1}; n++)); do
+  name="${WHEEL_NAME:-lilbee_engine_tei-1.9.4-$((BUILD_NUMBER + n - 1)).${BACKEND//-/_}-py3-none-${platform}.whl}"
+  "${REAL_PYTHON:?}" - "${dir}/${name}" "${expression}" "${WHEEL_TAG:-${platform}}" "${BACKEND}" "${WHEEL_WITHOUT-}" <<'PY'
+import os
+import sys
+import zipfile
+
+path, expression, platform, backend, without = sys.argv[1:]
+router = '#!/bin/sh\necho "router $*" >> "$ROUTER_LOG"\n[ -z "$ROUTER_FAIL" ] || exit 1\n[ "$1" = --version ] || exec sleep 30\n'
+info, licences = "lilbee_engine_tei-1.9.4.dist-info", "lilbee_engine_tei-1.9.4.dist-info/licenses"
+members = {
+    "lilbee_engine_tei/__init__.py": "",
+    "lilbee_engine_tei/bin/text-embeddings-router": router,
+    f"{info}/METADATA": f"Metadata-Version: 2.4\nLicense-Expression: {expression}\n\n",
+    f"{info}/WHEEL": f"Wheel-Version: 1.0\nTag: py3-none-{platform}\n",
+    f"{licences}/LICENSE-tei": "tei",
+    f"{licences}/LICENSE-openssl": "openssl",
+    f"{licences}/THIRD-PARTY/tei/LICENSES.txt": "crates",
+}
+if backend.startswith("cuda"):
+    members[f"{licences}/NOTICE-NVIDIA-CUDA"] = "notice"
+    members[f"{licences}/THIRD-PARTY/tei-notices/candle/cutlass/LICENSE.txt"] = "cutlass"
+with zipfile.ZipFile(path, "w") as wheel:
+    for name, text in members.items():
+        if without and name.endswith(without):
+            continue
+        if os.environ.get("WHEEL_CRLF") and name in (f"{info}/METADATA", f"{info}/WHEEL"):
+            text = text.replace("\n", "\r\n")
+        member = zipfile.ZipInfo(name)
+        member.external_attr = (0o100755 if "/bin/" in name else 0o100644) << 16
+        wheel.writestr(member, text)
+PY
+done

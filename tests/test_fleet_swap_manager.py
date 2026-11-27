@@ -2,23 +2,36 @@
 
 from __future__ import annotations
 
+import ctypes
+import dataclasses
 import itertools
 import json
 import logging
 import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Any, ClassVar
 
 import httpx
+import psutil
 import pytest
 
+from lilbee import parent_monitor
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import swap_manager as sm
+from lilbee.providers.fleet.build_use import IN_USE_NAME, build_in_use, removing
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines.llama import LlamaCppAdapter
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_manager import EngineLifetime, SwapManager
 from lilbee.providers.roles import EngineBackend, WorkerRole
+from tests._engine_logs import enrol_launch
+from tests._fleet_engines import engines_for_all_roles
+from tests._router_release import ROUTER, router_reports
 
 # All lifecycle tests run one manager for the chat group unless stated otherwise.
 _GROUP = SwapGroup.CHAT
@@ -46,6 +59,20 @@ class _FakeProc:
         self.killed = True
 
 
+def _no_such_process(_pid: int) -> int:
+    raise ProcessLookupError(_pid)
+
+
+def _pin_macos(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the start as on macOS, on any host; the pid of the fake swap names no process.
+
+    The pin holds for the whole process, so on Windows the start asks for the process
+    group of the swap, which Windows has no call for.
+    """
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(sm.os, "getpgid", _no_such_process, raising=False)
+
+
 def _fake_response(*, status: int = 200, payload: object = None) -> object:
     # A live llama-swap answers /running with a {"running": [...]} body; default to
     # the empty-but-valid shape so "engine answers" fakes pass the identity check
@@ -69,6 +96,19 @@ def _patch_spawn(monkeypatch: pytest.MonkeyPatch, proc: _FakeProc) -> None:
     monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
 
 
+def _record_spawn(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Patch the spawn like :func:`_patch_spawn`; return the argv of each llama-swap spawned."""
+    spawned: list[list[str]] = []
+
+    def spawn(argv: list[str], *_a: object, **_k: object) -> _FakeProc:
+        spawned.append(argv)
+        return _FakeProc(poll_result=None)
+
+    _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+    monkeypatch.setattr(sm, "spawn_bound_child", spawn)
+    return spawned
+
+
 class _FakeProbeClient:
     """Stands in for the shared probe client; probes call .get on it."""
 
@@ -89,6 +129,12 @@ def _raise_connect_error(url):
     raise httpx.ConnectError("refused", request=None)
 
 
+class _NoOwnLogEngine(LlamaCppAdapter):
+    """An engine like TEI: it reads no log variables, so llama-swap keeps its output."""
+
+    writes_own_log = False
+
+
 def _launch(role: WorkerRole) -> InstanceLaunch:
     return InstanceLaunch(
         role=role,
@@ -98,6 +144,99 @@ def _launch(role: WorkerRole) -> InstanceLaunch:
     )
 
 
+class _FakeResource:
+    """A stand-in for the resource module holding one open-file limit pair."""
+
+    RLIMIT_NOFILE = 7
+    RLIM_INFINITY = -1
+
+    def __init__(self, soft: int, hard: int) -> None:
+        self.limits = (soft, hard)
+        self.refuse: Exception | None = None
+
+    def getrlimit(self, _which: int) -> tuple[int, int]:
+        return self.limits
+
+    def setrlimit(self, _which: int, limits: tuple[int, int]) -> None:
+        if self.refuse is not None:
+            raise self.refuse
+        self.limits = limits
+
+
+class TestOpenFileLimit:
+    """llama-swap passes its start limit to the engines, one socket per admitted request."""
+
+    def _start(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, res: _FakeResource) -> None:
+        monkeypatch.setattr(sm, "resource", res)
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
+
+    def test_a_low_soft_limit_is_raised_to_the_floor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        res = _FakeResource(soft=256, hard=65536)
+        self._start(tmp_path, monkeypatch, res)
+        assert res.limits == (1088, 65536)
+
+    def test_a_soft_limit_past_the_floor_is_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        res = _FakeResource(soft=4096, hard=4096)
+        self._start(tmp_path, monkeypatch, res)
+        assert res.limits == (4096, 4096)
+
+    def test_an_unlimited_hard_limit_takes_the_floor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        res = _FakeResource(soft=256, hard=_FakeResource.RLIM_INFINITY)
+        self._start(tmp_path, monkeypatch, res)
+        assert res.limits == (1088, _FakeResource.RLIM_INFINITY)
+
+    def test_a_hard_limit_under_the_floor_is_used_and_warned_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        res = _FakeResource(soft=256, hard=512)
+        with caplog.at_level(logging.WARNING, logger=sm.log.name):
+            self._start(tmp_path, monkeypatch, res)
+        assert res.limits == (512, 512)
+        warnings = [r for r in caplog.records if "open-file" in r.getMessage()]
+        assert len(warnings) == 1
+
+    @pytest.mark.parametrize("error", [OSError("not permitted"), ValueError("bad limit")])
+    def test_a_refused_raise_warns_once_and_the_start_goes_on(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        error: Exception,
+    ) -> None:
+        res = _FakeResource(soft=256, hard=65536)
+        res.refuse = error
+        monkeypatch.setattr(sm, "resource", res)
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        with caplog.at_level(logging.WARNING, logger=sm.log.name):
+            mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
+        assert mgr.running
+        warnings = [r for r in caplog.records if "open-file" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "1088" in warnings[0].getMessage()
+
+    def test_a_platform_without_the_resource_module_starts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sm, "resource", None)
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
+        assert mgr.running
+
+
 class TestStart:
     def test_log_path_is_the_file_the_proxy_writes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -105,9 +244,167 @@ class TestStart:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         assert mgr.log_path == tmp_path / "logs" / "llama-swap-chat.log"
         assert mgr.log_path.is_file()
+
+    def test_a_start_forgets_the_findings_of_the_engine_before_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        spill = HealthWarning(code=WarningCode.HOST_SPILL, message="spills")
+        divergence = HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan")
+        mgr._record_findings("chat-0", 0, divergence, [spill])
+        assert mgr.health_warnings() == [divergence, spill]
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
+        assert mgr.health_warnings() == []
+
+    def test_a_worker_without_its_own_log_has_its_output_copied_to_the_group_log(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, SwapGroup.EMBED)
+        mgr.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(_NoOwnLogEngine()))
+        config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
+        assert config["logToStdout"] == "proxy,upstream"
+        assert "env" not in config["models"]["embed-0"]
+
+    def test_a_worker_with_its_own_log_is_pointed_at_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, SwapGroup.EMBED)
+        mgr.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(LLAMA))
+        config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
+        assert config["logToStdout"] == "proxy"
+        log_file = tmp_path / "logs" / "engine-embed-0.log"
+        assert f"LLAMA_LOG_FILE={log_file}" in config["models"]["embed-0"]["env"]
+
+    def test_a_co_tenant_chat_that_serves_its_memory_keeps_the_engine_output_out_of_the_group_log(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        chat = _launch(WorkerRole.CHAT)
+        chat.argv = ["/bin/llama-server", "--memory"]
+        mgr = SwapManager(tmp_path, SwapGroup.CO_TENANT)
+        mgr.start([chat, _launch(WorkerRole.EMBED)], engines=engines_for_all_roles(LLAMA))
+        config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
+        assert config["logToStdout"] == "proxy"
+        log_file = tmp_path / "logs" / "engine-chat-0.log"
+        assert config["models"]["chat-0"]["env"] == [
+            f"LLAMA_LOG_FILE={log_file}",
+            f"LLAMA_ARG_LOG_FILE={log_file}",
+        ]
+
+    def test_an_old_router_starts_a_group_of_llama_members_with_the_proxy_stream(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        spawned = _record_spawn(monkeypatch)
+        probes = router_reports(monkeypatch, "version: 223 (8c5e40e), built at x\n")
+        stops: list[object] = []
+        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: stops.append(cfg))
+        monkeypatch.setattr(sm, "reap_stale", lambda data_dir, **_kw: stops.append(data_dir))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, SwapGroup.EMBED)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.swap_manager"):
+            mgr.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(LLAMA))
+        config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
+        assert config["logToStdout"] == "proxy"
+        assert [argv[0] for argv in spawned] == [str(ROUTER)]
+        assert stops == [tmp_path, mgr._config_path]
+        assert probes == [[str(ROUTER), "--version"]]
+        assert caplog.text == ""
+
+    def test_an_old_router_starts_a_member_that_writes_no_log_with_a_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        spawned = _record_spawn(monkeypatch)
+        router_reports(monkeypatch, "version: 223 (8c5e40e), built at x\n")
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, SwapGroup.EMBED)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.swap_manager"):
+            mgr.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(_NoOwnLogEngine()))
+        config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
+        assert config["logToStdout"] == "proxy"
+        assert [argv[0] for argv in spawned] == [str(ROUTER)]
+        text = (
+            f"The llama-swap router at {ROUTER} is v223, so the output of embed-0 "
+            f"is not in {mgr.log_path}."
+        )
+        remedy = (
+            f"Replace the file at {ROUTER} with llama-swap v259 or later. "
+            "Download it from https://github.com/mostlygeek/llama-swap/releases, or run "
+            "'go install github.com/mostlygeek/llama-swap@latest' and copy the llama-swap "
+            f"file from your Go bin folder to {ROUTER}. Then restart lilbee."
+        )
+        assert [record.getMessage() for record in caplog.records] == [f"{text} {remedy}"]
+        (warning,) = mgr.health_warnings()
+        assert (warning.code, warning.message, warning.remedy) == (
+            WarningCode.ROUTER_OUTDATED,
+            text,
+            remedy,
+        )
+
+    def test_the_old_router_warning_clears_when_the_router_is_current(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _record_spawn(monkeypatch)
+        router_reports(monkeypatch, "version: 223 (8c5e40e), built at x\n")
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, SwapGroup.EMBED)
+        engines = engines_for_all_roles(_NoOwnLogEngine())
+        mgr.start([_launch(WorkerRole.EMBED)], engines=engines)
+        assert [w.code for w in mgr.health_warnings()] == [WarningCode.ROUTER_OUTDATED]
+        router_reports(monkeypatch, "version: v272 (802f1c4), built at x\n")
+        mgr.start([_launch(WorkerRole.EMBED)], engines=engines)
+        assert mgr.health_warnings() == []
+
+    def test_an_old_router_keeps_a_co_tenant_chat_that_serves_its_memory_on_the_proxy_stream(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _record_spawn(monkeypatch)
+        router_reports(monkeypatch, "version: v258 (abc1234), built at x\n")
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        chat = _launch(WorkerRole.CHAT)
+        chat.argv = ["/bin/llama-server", "--memory"]
+        mgr = SwapManager(tmp_path, SwapGroup.CO_TENANT)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.swap_manager"):
+            mgr.start([chat, _launch(WorkerRole.EMBED)], engines=engines_for_all_roles(LLAMA))
+        config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
+        assert config["logToStdout"] == "proxy"
+        log_file = tmp_path / "logs" / "engine-chat-0.log"
+        assert config["models"]["chat-0"]["env"] == [
+            f"LLAMA_LOG_FILE={log_file}",
+            f"LLAMA_ARG_LOG_FILE={log_file}",
+        ]
+        assert caplog.text == ""
+
+    @pytest.mark.parametrize(
+        "stdout",
+        ["version: v272 (802f1c4), built at x\n", "version: 0 (unknown), built at unknown\n"],
+        ids=["pin", "source-build"],
+    )
+    def test_a_router_that_reads_the_stream_list_copies_a_member_that_writes_no_log(
+        self,
+        stdout: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        _record_spawn(monkeypatch)
+        router_reports(monkeypatch, stdout)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, SwapGroup.EMBED)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.swap_manager"):
+            mgr.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(_NoOwnLogEngine()))
+        config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
+        assert config["logToStdout"] == "proxy,upstream"
+        assert caplog.text == ""
 
     def test_writes_config_and_becomes_ready(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -115,7 +412,10 @@ class TestStart:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)])
+        mgr.start(
+            [_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)],
+            engines=engines_for_all_roles(LLAMA),
+        )
         # Config was written and the endpoint is live.
         config = json.loads(mgr._config_path.read_text())
         assert mgr.endpoint().startswith("http://127.0.0.1:")
@@ -137,25 +437,34 @@ class TestStart:
 
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.engine_binary_identity",
+            lambda binary: f"{binary}@digest",
+        )
         monkeypatch.setattr(planning_mod, "engine_build_id", lambda: "wheel:0.6.91")
-        monkeypatch.setattr(planning_mod, "engine_backend", lambda: EngineBackend.VULKAN)
+        monkeypatch.setattr(planning_mod, "engine_backend", lambda engine: EngineBackend.VULKAN)
         monkeypatch.setattr(
             planning_mod,
             "probed_devices",
-            lambda: (FleetDevice("Vulkan", 0, "NVIDIA GeForce RTX 3090", 1, 1),),
+            lambda engine: (FleetDevice("Vulkan", 0, "NVIDIA GeForce RTX 3090", 1, 1),),
         )
 
         with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
             SwapManager(tmp_path, _GROUP).start(
-                [_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)]
+                [_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)],
+                engines=engines_for_all_roles(LLAMA),
             )
 
         launched = [r.message for r in caplog.records if r.message.startswith("Launched")]
+        # The build names the binary as a path of this platform; the launch keeps its argv text.
+        built_from = Path("/bin/llama-server")
         assert launched == [
             "Launched chat-0 serving chat-model on /bin/llama-server "
-            "(build wheel:0.6.91, backend vulkan, devices: Vulkan0: NVIDIA GeForce RTX 3090)",
+            f"(engine llama.cpp, build wheel:0.6.91 {built_from}@digest, "
+            "backend vulkan, devices: Vulkan0: NVIDIA GeForce RTX 3090)",
             "Launched embed-0 serving embed-model on /bin/llama-server "
-            "(build wheel:0.6.91, backend vulkan, devices: Vulkan0: NVIDIA GeForce RTX 3090)",
+            f"(engine llama.cpp, build wheel:0.6.91 {built_from}@digest, "
+            "backend vulkan, devices: Vulkan0: NVIDIA GeForce RTX 3090)",
         ]
 
     def test_redirects_llama_swap_stdio_to_a_log_file(
@@ -177,7 +486,7 @@ class TestStart:
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
 
         mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
 
         log_path = tmp_path / "logs" / "llama-swap-chat.log"
         assert log_path.exists()
@@ -229,7 +538,9 @@ class TestStart:
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
 
-        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)], lifetime=lifetime)
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA), lifetime=lifetime
+        )
 
         assert captured["bind_lifetime"] is bound
         assert asked == ([tmp_path] if reaper_asked else [])
@@ -240,7 +551,9 @@ class TestStart:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=1))  # already exited
         _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
         with pytest.raises(ProviderError, match="exited before it was ready"):
-            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+            )
 
     def test_raises_when_never_healthy_in_time(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -258,7 +571,9 @@ class TestStart:
         clock = itertools.count(0.0, 10.4)
         monkeypatch.setattr(sm.time, "monotonic", lambda: next(clock))
         with pytest.raises(ProviderError, match="did not start in time"):
-            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+            )
 
 
 class TestBootFailureLog:
@@ -287,7 +602,9 @@ class TestBootFailureLog:
         )
         _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
         with pytest.raises(ProviderError) as excinfo:
-            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+            )
         message = str(excinfo.value)
         assert "exited before it was ready" in message
         assert "bind: address already in use" in message
@@ -302,7 +619,9 @@ class TestBootFailureLog:
         self._spawn_writing(monkeypatch, _FakeProc(poll_result=1), b"fresh boot output\n")
         _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
         with pytest.raises(ProviderError) as excinfo:
-            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+            )
         assert "fresh boot output" in str(excinfo.value)
         assert "old boot noise" not in str(excinfo.value)
 
@@ -313,7 +632,9 @@ class TestBootFailureLog:
         self._spawn_writing(monkeypatch, _FakeProc(poll_result=1), output)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
         with pytest.raises(ProviderError) as excinfo:
-            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+            )
         assert "FINAL-LINE" in str(excinfo.value)
         assert "EARLIEST-LINE" not in str(excinfo.value)
 
@@ -323,7 +644,9 @@ class TestBootFailureLog:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=1))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
         with pytest.raises(ProviderError) as excinfo:
-            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+            )
         assert str(excinfo.value) == "The local model engine exited before it was ready."
 
     def test_timeout_failure_also_carries_the_tail(
@@ -339,7 +662,9 @@ class TestBootFailureLog:
         clock = itertools.count(0.0, 10.4)
         monkeypatch.setattr(sm.time, "monotonic", lambda: next(clock))
         with pytest.raises(ProviderError) as excinfo:
-            SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+            SwapManager(tmp_path, _GROUP).start(
+                [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+            )
         message = str(excinfo.value)
         assert "did not start in time" in message
         assert "still loading the model" in message
@@ -355,12 +680,16 @@ class TestEndpoint:
             SwapManager(tmp_path, _GROUP).endpoint()
 
 
+def _own_record(tmp_path: Path) -> dict:
+    return json.loads(_own_state_path(tmp_path).read_text(encoding="utf-8"))
+
+
 class TestRoleReady:
     def _started(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, responder) -> SwapManager:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         _patch_http(monkeypatch, responder)
         return mgr
 
@@ -402,6 +731,389 @@ class TestRoleReady:
         mgr = SwapManager(tmp_path, _GROUP)  # never started -> _port is None
         assert mgr.role_ready(WorkerRole.CHAT) is False
 
+    def test_a_ready_member_stamps_the_state_file_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        running = {"running": [{"model": "chat-0", "state": "ready"}]}
+        mgr = self._started(tmp_path, monkeypatch, lambda _url: _fake_response(payload=running))
+        assert "ready_at" not in _own_record(tmp_path)
+        assert mgr.role_ready(WorkerRole.CHAT) is True
+        first = _own_record(tmp_path)["ready_at"]
+        assert mgr.role_ready(WorkerRole.CHAT) is True
+        assert _own_record(tmp_path)["ready_at"] == first
+
+    def test_a_starting_member_leaves_the_state_file_unstamped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        running = {"running": [{"model": "chat-0", "state": "starting"}]}
+        mgr = self._started(tmp_path, monkeypatch, lambda _url: _fake_response(payload=running))
+        mgr.role_ready(WorkerRole.CHAT)
+        assert "ready_at" not in _own_record(tmp_path)
+
+    def test_a_bound_manager_never_stamps(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        running = {"running": [{"model": "chat-0", "state": "ready"}]}
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload=running))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr._bound = True
+        mgr.record_ready()
+        assert not mgr._state_path.exists()
+
+    def test_a_restart_clears_the_previous_engines_stamp(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mgr = self._started(
+            tmp_path, monkeypatch, lambda _url: _fake_response(payload={"running": []})
+        )
+        mgr.record_ready()
+        assert "ready_at" in _own_record(tmp_path)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
+        assert "ready_at" not in _own_record(tmp_path)
+
+    def test_the_stamp_survives_a_state_rewrite(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mgr = self._started(
+            tmp_path, monkeypatch, lambda _url: _fake_response(payload={"running": []})
+        )
+        mgr.record_ready()
+        mgr._write_state()
+        state = sm._load_state(_own_state_path(tmp_path))
+        assert state is not None and state.ready_at is not None
+
+
+class _FakeLibc:
+    """The ``sysctlbyname`` of a macOS libc: names the boot, or fails when the clock says so."""
+
+    def __init__(self, clock: dict[str, float | str]) -> None:
+        self._clock = clock
+
+    def sysctlbyname(self, _key: bytes, buffer, _size, _new, _newlen) -> int:
+        if self._clock.get("fail"):
+            return -1
+        buffer.value = str(self._clock["boot"]).encode("ascii")
+        return 0
+
+
+def _readiness_state(
+    *, ready_at: float | None = None, created_at: float | None = 1000.0
+) -> sm.SwapState:
+    launches = tuple(launch.to_state() for launch in [_launch(WorkerRole.CHAT)])
+    return sm.SwapState(
+        pid=1,
+        pgid=None,
+        created_at=created_at,
+        proxy_port=4100,
+        launches=launches,
+        ready_at=ready_at,
+    )
+
+
+class TestEngineReadiness:
+    _deadline = sm.health_check_timeout_s([_launch(WorkerRole.CHAT)]) + sm._BOOT_TIMEOUT_S
+
+    def _listing(self, monkeypatch: pytest.MonkeyPatch, *states: str) -> None:
+        running = {"running": [{"model": f"m{i}", "state": s} for i, s in enumerate(states)]}
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload=running))
+
+    @pytest.mark.parametrize(
+        ("listed", "expected"),
+        [
+            (("ready",), sm.EngineReadiness.READY),
+            (("starting", "ready"), sm.EngineReadiness.READY),
+            (("starting",), sm.EngineReadiness.LOADING),
+            (("stopping", "starting"), sm.EngineReadiness.LOADING),
+        ],
+    )
+    def test_a_listed_member_decides_at_any_age(
+        self, monkeypatch: pytest.MonkeyPatch, listed: tuple[str, ...], expected
+    ) -> None:
+        self._listing(monkeypatch, *listed)
+        state = _readiness_state()
+        assert sm.engine_readiness(state, now=1000.0 + 10 * self._deadline) is expected
+
+    @pytest.mark.parametrize("state", [[1], {"a": 1}, 7])
+    def test_a_member_state_that_is_not_a_string_is_a_failed_read(
+        self, monkeypatch: pytest.MonkeyPatch, state: object
+    ) -> None:
+        running = {"running": [{"model": "m0", "state": state}]}
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload=running))
+        assert sm.engine_readiness(_readiness_state(), now=1e12) is None
+
+    def test_nothing_loaded_and_young_is_idle(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._listing(monkeypatch)
+        state = _readiness_state()
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline - 1) is (
+            sm.EngineReadiness.IDLE
+        )
+
+    def test_nothing_loaded_and_old_is_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._listing(monkeypatch, "stopping")
+        state = _readiness_state()
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
+            sm.EngineReadiness.FAILED
+        )
+
+    def test_a_stamped_record_is_idle_at_any_age(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._listing(monkeypatch)
+        state = _readiness_state(ready_at=1500.0)
+        assert sm.engine_readiness(state, now=1000.0 + 10 * self._deadline) is (
+            sm.EngineReadiness.IDLE
+        )
+
+    def test_a_record_without_a_creation_time_is_idle(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._listing(monkeypatch)
+        state = _readiness_state(created_at=None)
+        assert sm.engine_readiness(state, now=1e12) is sm.EngineReadiness.IDLE
+
+    def test_a_record_without_a_boot_stamp_keeps_the_wall_clock_age(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A process that reads an old record once still sees it fail (macOS, Windows)."""
+        self._listing(monkeypatch)
+        monkeypatch.setattr(sm, "linux_age_s", lambda _boot, _ticks: pytest.fail("no stamp"))
+        state = _readiness_state(created_at=1000.0)
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
+            sm.EngineReadiness.FAILED
+        )
+
+    def test_a_record_with_a_boot_stamp_ages_by_the_boot_clock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._listing(monkeypatch)
+        ages = {"age": self._deadline - 1}
+        monkeypatch.setattr(sm, "linux_age_s", lambda _boot, _ticks: ages["age"])
+        state = dataclasses.replace(_readiness_state(), boot_id="boot-A", start_ticks=5000.0)
+        assert sm.engine_readiness(state, now=1e12) is sm.EngineReadiness.IDLE
+        ages["age"] = self._deadline
+        assert sm.engine_readiness(state, now=1000.0) is sm.EngineReadiness.FAILED
+
+    def test_a_boot_stamp_needs_no_creation_time(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._listing(monkeypatch)
+        monkeypatch.setattr(sm, "linux_age_s", lambda _boot, _ticks: self._deadline)
+        state = dataclasses.replace(
+            _readiness_state(created_at=None), boot_id="boot-A", start_ticks=5000.0
+        )
+        assert sm.engine_readiness(state, now=1000.0) is sm.EngineReadiness.FAILED
+
+    def test_a_boot_stamp_from_another_boot_falls_back_to_the_wall_clock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._listing(monkeypatch)
+        monkeypatch.setattr(sm, "linux_age_s", lambda _boot, _ticks: None)
+        state = dataclasses.replace(_readiness_state(), boot_id="boot-A", start_ticks=5000.0)
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline - 1) is (
+            sm.EngineReadiness.IDLE
+        )
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
+            sm.EngineReadiness.FAILED
+        )
+
+    def test_the_deadline_follows_the_slowest_recorded_member(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._listing(monkeypatch)
+        heavy = InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=["/bin/llama-server"],
+            env_overrides={},
+            model="big",
+            weights_bytes=600 * (1 << 30),
+        )
+        state = sm.SwapState(
+            pid=1, pgid=None, created_at=0.0, proxy_port=4100, launches=(heavy.to_state(),)
+        )
+        slow = sm.health_check_timeout_s([heavy]) + sm._BOOT_TIMEOUT_S
+        assert slow > self._deadline
+        assert sm.engine_readiness(state, now=slow - 1) is sm.EngineReadiness.IDLE
+        assert sm.engine_readiness(state, now=slow) is sm.EngineReadiness.FAILED
+
+    def test_the_deadline_follows_the_recorded_read_rate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A record from a slow volume is not called failed while llama-swap still waits.
+        self._listing(monkeypatch)
+        slow_volume = InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=["/bin/llama-server"],
+            env_overrides={},
+            model="big",
+            weights_bytes=20 * (1 << 30),
+            read_bytes_per_s=25 * (1 << 20),
+        )
+        state = sm.SwapState(
+            pid=1, pgid=None, created_at=0.0, proxy_port=4100, launches=(slow_volume.to_state(),)
+        )
+        deadline = 1638 + sm._BOOT_TIMEOUT_S
+        assert sm.engine_readiness(state, now=deadline - 1) is sm.EngineReadiness.IDLE
+        assert sm.engine_readiness(state, now=deadline) is sm.EngineReadiness.FAILED
+
+    def test_a_stalled_recorded_reading_caps_the_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A record that says 1 B/s is called failed after the cap, not after centuries.
+        self._listing(monkeypatch)
+        stalled = InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=["/bin/llama-server"],
+            env_overrides={},
+            model="big",
+            weights_bytes=60 * (1 << 30),
+            read_bytes_per_s=1,
+        )
+        state = sm.SwapState(
+            pid=1, pgid=None, created_at=0.0, proxy_port=4100, launches=(stalled.to_state(),)
+        )
+        deadline = 3600 + sm._BOOT_TIMEOUT_S
+        assert sm.engine_readiness(state, now=deadline - 1) is sm.EngineReadiness.IDLE
+        assert sm.engine_readiness(state, now=deadline) is sm.EngineReadiness.FAILED
+
+    def test_an_undecodable_contract_uses_the_default_ceiling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._listing(monkeypatch)
+        state = sm.SwapState(
+            pid=1, pgid=None, created_at=0.0, proxy_port=4100, launches=({"role": "chat"},)
+        )
+        ceiling = sm.health_check_timeout_s([]) + sm._BOOT_TIMEOUT_S
+        assert sm.engine_readiness(state, now=ceiling - 1) is sm.EngineReadiness.IDLE
+        assert sm.engine_readiness(state, now=ceiling) is sm.EngineReadiness.FAILED
+
+    def test_a_silent_proxy_is_not_answering(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_http(monkeypatch, _raise_connect_error)
+        assert sm.engine_readiness(_readiness_state(), now=1e12) is None
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload={"ok": True}))
+        assert sm.engine_readiness(_readiness_state(), now=1e12) is None
+
+    def test_a_record_without_a_port_is_not_answering(self) -> None:
+        state = sm.SwapState(pid=1, pgid=None)
+        assert sm.engine_readiness(state, now=1e12) is None
+
+    def test_one_read_of_running_serves_the_verdict(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        urls: list[str] = []
+
+        def _record(url: str) -> object:
+            urls.append(url)
+            return _fake_response(payload={"running": []})
+
+        _patch_http(monkeypatch, _record)
+        sm.engine_readiness(_readiness_state(), now=1e12)
+        assert urls == ["http://127.0.0.1:4100/running"]
+
+    def test_a_non_object_entry_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload={"running": ["junk"]}))
+        assert sm.engine_readiness(_readiness_state(), now=1000.0) is sm.EngineReadiness.IDLE
+
+    def _spawned_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: dict[str, float | str]
+    ) -> sm.SwapState:
+        """The record a real start writes on a host with no boot pair, read back from disk."""
+        clock.setdefault("boot", "boot-1")
+        clock.setdefault("boot_time", 1_700_000_000.0)
+        monkeypatch.setattr(sm.time, "monotonic", lambda: clock["mono"])
+        # A macOS host: the boot is named by the kernel's boot session UUID, while the boot time
+        # that psutil reports follows the wall clock (XNU adjusts it on a clock step).
+        _pin_macos(monkeypatch)
+        monkeypatch.setattr(ctypes, "CDLL", lambda _name: _FakeLibc(clock))
+        monkeypatch.setattr(psutil, "boot_time", lambda: clock["boot_time"])
+        monkeypatch.setattr(sm, "linux_start_stamp", lambda _pid: None)
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
+        self._listing(monkeypatch)
+        state = sm._load_state(_own_state_path(tmp_path))
+        assert state is not None
+        return dataclasses.replace(state, created_at=1000.0)
+
+    def test_a_forward_wall_clock_step_does_not_fail_a_loading_engine_without_a_boot_pair(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = {"mono": 5000.0}
+        state = self._spawned_record(tmp_path, monkeypatch, clock)
+        clock["mono"] += self._deadline - 1
+        # The wall clock stepped a day ahead: the recorded create time is far behind it, and
+        # the boot time derived from the wall clock moved with it.
+        clock["boot_time"] += 86400.0
+        assert sm.engine_readiness(state, now=1000.0 + 86400.0) is sm.EngineReadiness.IDLE
+        clock["mono"] += 1
+        assert sm.engine_readiness(state, now=1000.0) is sm.EngineReadiness.FAILED
+
+    @pytest.mark.parametrize("mono_now", [10.0, 5010.0], ids=["ahead", "behind"])
+    def test_a_record_of_another_boot_falls_back_to_the_wall_clock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mono_now: float
+    ) -> None:
+        # The recorded reading is 5000; this boot's clock reads ahead of it or behind it. Either
+        # way the reading is meaningless, so the wall clock decides.
+        clock: dict[str, float | str] = {"mono": 5000.0}
+        state = self._spawned_record(tmp_path, monkeypatch, clock)
+        clock.update(mono=mono_now, boot="boot-2")
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline - 1) is (
+            sm.EngineReadiness.IDLE
+        )
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
+            sm.EngineReadiness.FAILED
+        )
+
+    @pytest.mark.parametrize(("recorded", "current"), [("41", "42"), ("41", "100"), ("7", "7.5")])
+    def test_close_numeric_boot_identities_are_different_boots(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recorded: str, current: str
+    ) -> None:
+        # A Windows boot id is a counter, so the next boot's id is numerically close. Only an
+        # exact match is the same boot; a near one still falls back to the wall clock.
+        clock: dict[str, float | str] = {"mono": 5000.0, "boot": recorded}
+        state = self._spawned_record(tmp_path, monkeypatch, clock)
+        clock.update(mono=5010.0, boot=current)
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
+            sm.EngineReadiness.FAILED
+        )
+
+    def test_no_boot_identity_on_either_side_is_not_a_match(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock: dict[str, float | str] = {"mono": 5000.0}
+        state = dataclasses.replace(
+            self._spawned_record(tmp_path, monkeypatch, clock), started_boot=None
+        )
+        clock.update(mono=5010.0, fail=1.0)
+        assert state.started_mono == 5000.0
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
+            sm.EngineReadiness.FAILED
+        )
+
+    def test_a_host_that_gives_no_boot_identity_stores_none_and_the_wall_clock_decides(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock: dict[str, float | str] = {"mono": 5000.0, "fail": 1.0}
+        state = self._spawned_record(tmp_path, monkeypatch, clock)
+        assert state.started_mono is None and state.started_boot is None
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
+            sm.EngineReadiness.FAILED
+        )
+
+    def test_a_record_with_a_reading_but_no_boot_identity_loads_without_either(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / sm._state_filename(223, _GROUP.value)
+        path.write_text(
+            json.dumps({"pid": 2, "member_ports": [], "started_mono": 5.0}), encoding="utf-8"
+        )
+        state = sm._load_state(path)
+        assert state is not None and state.started_mono is None and state.started_boot is None
+
+    def test_an_old_record_written_without_ready_at_loads_unstamped(self, tmp_path: Path) -> None:
+        path = tmp_path / sm._state_filename(222, _GROUP.value)
+        path.write_text(
+            json.dumps({"pid": 2, "member_ports": [], "created_at": 5.0}), encoding="utf-8"
+        )
+        state = sm._load_state(path)
+        assert state is not None and state.ready_at is None
+
 
 class TestLifecycle:
     def test_shutdown_is_noop_when_not_started(self, tmp_path: Path) -> None:
@@ -427,7 +1139,7 @@ class TestLifecycle:
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: terminated.append(cfg))
         mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         mgr.shutdown()
         assert terminated  # the owned fleet was torn down
         with pytest.raises(ProviderError):
@@ -445,7 +1157,7 @@ class TestLifecycle:
         released: list[int] = []
         monkeypatch.setattr(sm, "release_death_pipe", released.append)
         mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         mgr.shutdown()
         assert released == [proc.pid]
 
@@ -710,6 +1422,17 @@ def _write_state(
     return state_path
 
 
+def _write_fake_proc(root: Path, *, pid: int, boot_id: str, start_ticks: int) -> None:
+    """A /proc with *pid*'s stat (start ticks in field 22) and the boot id."""
+    (root / str(pid)).mkdir(parents=True, exist_ok=True)
+    after_comm = ["S", "1"] + ["0"] * 17 + [str(start_ticks), "0", "0"]
+    stat_line = f"{pid} (llama-swap) " + " ".join(after_comm) + "\n"
+    (root / str(pid) / "stat").write_text(stat_line, encoding="utf-8")
+    boot_file = root / "sys" / "kernel" / "random" / "boot_id"
+    boot_file.parent.mkdir(parents=True, exist_ok=True)
+    boot_file.write_text(boot_id + "\n", encoding="utf-8")
+
+
 def _own_state_path(tmp_path: Path) -> Path:
     """The state file this process's SwapManager writes for itself."""
     return tmp_path / sm._state_filename(os.getpid(), _GROUP)
@@ -726,7 +1449,9 @@ class TestCrossRunReaping:
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         state = json.loads(_own_state_path(tmp_path).read_text())
         assert state["pid"] == 4321
         assert state["name"] == "llama-swap"
@@ -737,7 +1462,7 @@ class TestCrossRunReaping:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         assert _own_state_path(tmp_path).exists()
         mgr.shutdown()
         assert not _own_state_path(tmp_path).exists()
@@ -751,7 +1476,9 @@ class TestCrossRunReaping:
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         assert stopped == []  # nothing alive to kill
         # the stale file is gone; this owner's own file records the NEW swap
         assert not (tmp_path / "llama-swap.state.json").exists()
@@ -767,7 +1494,9 @@ class TestCrossRunReaping:
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         assert [state.pid for state in stopped] == [7777]
 
     def test_pid_reuse_with_foreign_cmdline_is_not_killed(
@@ -781,7 +1510,9 @@ class TestCrossRunReaping:
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         assert stopped == []
 
     def test_corrupt_state_file_is_skipped_not_deleted(
@@ -793,9 +1524,31 @@ class TestCrossRunReaping:
         corrupt.write_text("{not json")
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         assert corrupt.read_text() == "{not json"
         assert json.loads(_own_state_path(tmp_path).read_text())["pid"] == 4321
+
+    def test_reap_reports_whether_it_stopped_an_engine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert sm.reap_stale(tmp_path) is False
+        _write_state(tmp_path, pid=7777, created_at=42.0)
+        stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=42.0)
+        _patch_psutil_process(monkeypatch, {7777: stale})
+        monkeypatch.setattr(sm, "_stop_stale_swap", lambda _state: None)
+        assert sm.reap_stale(tmp_path) is True
+        assert sm.reap_stale(tmp_path) is False
+
+    def test_reap_of_a_dead_record_with_nothing_alive_reports_no_stop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_path = _write_state(tmp_path, pid=7777, created_at=42.0)
+        monkeypatch.setattr(sm, "_is_live_llama_swap", lambda _state: False)
+        monkeypatch.setattr(sm, "_find_orphan_servers", lambda _ports: [])
+        assert sm.reap_stale(tmp_path) is False
+        assert not state_path.exists()
 
     def test_torn_state_file_is_left_in_place_by_reap(self, tmp_path: Path) -> None:
         torn = tmp_path / "llama-swap.state.json"
@@ -867,8 +1620,220 @@ class TestCrossRunReaping:
         )
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         assert json.loads(_own_state_path(tmp_path).read_text())["created_at"] == 777.0
+
+    def test_clock_step_does_not_hide_a_live_router_from_the_reaper(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # On Linux psutil's create_time moves with a wall-clock step; the router
+        # (same start ticks, same boot) is still the recorded one and must be reaped.
+        proc_root = tmp_path / "proc"
+        _write_fake_proc(proc_root, pid=4321, boot_id="boot-A", start_ticks=5000)
+        monkeypatch.setattr(parent_monitor, "_is_linux", lambda: True)
+        monkeypatch.setattr(parent_monitor, "_PROC_ROOT", proc_root)
+        router = _FakePsProcess(4321, cmdline=["/opt/llama-swap"], create_time=777.0)
+        _patch_psutil_process(monkeypatch, {4321: router})
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        data_dir = tmp_path / "engines"
+        data_dir.mkdir()
+        SwapManager(data_dir, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
+        router._create_time = 777.0 + 3600.0  # the clock stepped forward an hour
+        monkeypatch.setattr(sm, "state_is_healthy", lambda _state: False)
+        stopped: list[sm.SwapState] = []
+        monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
+        SwapManager(data_dir, _GROUP).reap_stale()
+        assert [state.pid for state in stopped] == [4321]
+
+    @staticmethod
+    def _on_macos(
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        create_time: float,
+        boot: str | None = "boot-A",
+        mach_start: int | None = 55,
+    ) -> None:
+        """A macOS host whose live 7777 has *create_time* and the mach start *mach_start*."""
+        monkeypatch.setattr(parent_monitor.sys, "platform", "darwin")
+        monkeypatch.setattr(parent_monitor, "_macos_boot_session", lambda: boot)
+        monkeypatch.setattr(parent_monitor, "_macos_start_abstime", lambda _pid: mach_start)
+        _patch_psutil_process(
+            monkeypatch,
+            {7777: _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=create_time)},
+        )
+
+    @staticmethod
+    def _macos_record(tmp_path: Path, **mach_start: object) -> sm.SwapState:
+        """A record of 7777 created at 1000.0, loaded as a later lilbee reads it."""
+        payload: dict[str, object] = {"pid": 7777, "pgid": None, "created_at": 1000.0}
+        if mach_start:
+            payload["mach_start"] = mach_start
+        path = tmp_path / "llama-swap.state.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        state = sm._load_state(path)
+        assert state is not None
+        return state
+
+    def test_a_clock_step_keeps_the_recorded_mach_start_live(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # psutil's create time moved +2 h with the step; the mach start did not.
+        self._on_macos(monkeypatch, create_time=8200.0)
+        record = self._macos_record(tmp_path, boot="boot-A", abstime=55)
+        assert sm._is_live_llama_swap(record) is True
+
+    @pytest.mark.parametrize(
+        ("boot", "mach_start"),
+        [("boot-A", 56), ("boot-B", 55), (None, 55), ("boot-A", None)],
+        ids=["other-mach-start", "other-boot", "no-boot-session", "failed-read"],
+    )
+    def test_the_mach_start_is_compared_exactly(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        boot: str | None,
+        mach_start: int | None,
+    ) -> None:
+        # The create time equals the record, so only the mach start can say "reused pid".
+        self._on_macos(monkeypatch, create_time=1000.0, boot=boot, mach_start=mach_start)
+        record = self._macos_record(tmp_path, boot="boot-A", abstime=55)
+        assert sm._is_live_llama_swap(record) is False
+
+    @pytest.mark.parametrize(
+        ("create_time", "live"),
+        [(1000.5, True), (8200.0, False)],
+        ids=["no-step-since-the-write", "a-step-since-the-write"],
+    )
+    def test_an_old_macos_record_falls_back_to_the_create_time(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_time: float, live: bool
+    ) -> None:
+        self._on_macos(monkeypatch, create_time=create_time)
+        assert sm._is_live_llama_swap(self._macos_record(tmp_path)) is live
+
+    def test_clock_step_that_leaves_the_create_time_alone_keeps_a_live_swap_live(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Windows: the wall clock steps +2 h and the process's create time stays put.
+        _patch_psutil_process(
+            monkeypatch,
+            {7777: _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=1000.0)},
+        )
+        record = sm.SwapState(pid=7777, pgid=None, created_at=1000.0)
+        assert sm._is_live_llama_swap(record) is True
+
+    @pytest.mark.parametrize(
+        ("boot", "mach_start", "written"),
+        [
+            ("boot-A", 55, {"boot": "boot-A", "abstime": 55}),
+            (None, 55, None),
+            ("boot-A", None, None),
+        ],
+        ids=["both-read", "no-boot-session", "failed-read"],
+    )
+    def test_start_writes_the_mach_start_on_macos(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        boot: str | None,
+        mach_start: int | None,
+        written: dict | None,
+    ) -> None:
+        _pin_macos(monkeypatch)
+        monkeypatch.setattr(parent_monitor, "_macos_boot_session", lambda: boot)
+        monkeypatch.setattr(parent_monitor, "_macos_start_abstime", lambda _pid: mach_start)
+        _patch_psutil_process(
+            monkeypatch, {4321: _FakePsProcess(4321, cmdline=["llama-swap"], create_time=777.0)}
+        )
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
+        record = json.loads(_own_state_path(tmp_path).read_text(encoding="utf-8"))
+        assert record.get("mach_start") == written
+        assert "boot_id" not in record and "start_ticks" not in record
+        loaded = sm._load_state(_own_state_path(tmp_path))
+        assert loaded is not None
+        assert loaded.mach_start == (None if written is None else ("boot-A", 55))
+
+    def test_same_ticks_after_a_reboot_is_a_reused_pid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc_root = tmp_path / "proc"
+        _write_fake_proc(proc_root, pid=7777, boot_id="boot-B", start_ticks=5000)
+        monkeypatch.setattr(parent_monitor, "_is_linux", lambda: True)
+        monkeypatch.setattr(parent_monitor, "_PROC_ROOT", proc_root)
+        _patch_psutil_process(
+            monkeypatch,
+            {7777: _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=42.0)},
+        )
+        recorded = sm.SwapState(
+            pid=7777, pgid=None, created_at=42.0, boot_id="boot-A", start_ticks=5000.0
+        )
+        assert sm._is_live_llama_swap(recorded) is False
+
+    def test_other_start_ticks_in_the_same_boot_is_a_reused_pid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc_root = tmp_path / "proc"
+        _write_fake_proc(proc_root, pid=7777, boot_id="boot-A", start_ticks=6000)
+        monkeypatch.setattr(parent_monitor, "_is_linux", lambda: True)
+        monkeypatch.setattr(parent_monitor, "_PROC_ROOT", proc_root)
+        _patch_psutil_process(
+            monkeypatch,
+            {7777: _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=42.0)},
+        )
+        recorded = sm.SwapState(
+            pid=7777, pgid=None, created_at=42.0, boot_id="boot-A", start_ticks=5000.0
+        )
+        assert sm._is_live_llama_swap(recorded) is False
+
+    def test_record_without_a_boot_id_keeps_the_create_time_comparison(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A state file written before the boot id existed still loads and is compared by
+        # create time, with its tolerance, even on Linux.
+        proc_root = tmp_path / "proc"
+        _write_fake_proc(proc_root, pid=7777, boot_id="boot-A", start_ticks=5000)
+        monkeypatch.setattr(parent_monitor, "_is_linux", lambda: True)
+        monkeypatch.setattr(parent_monitor, "_PROC_ROOT", proc_root)
+        _patch_psutil_process(
+            monkeypatch,
+            {7777: _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=42.5)},
+        )
+        state_path = _write_state(tmp_path, pid=7777, created_at=42.0)
+        legacy = sm._load_state(state_path)
+        assert legacy is not None
+        assert legacy.boot_id is None
+        assert sm._is_live_llama_swap(legacy) is True
+        _patch_psutil_process(
+            monkeypatch,
+            {7777: _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=5000.0)},
+        )
+        assert sm._is_live_llama_swap(legacy) is False
+
+    def test_start_records_the_boot_id_and_start_ticks_on_linux(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc_root = tmp_path / "proc"
+        _write_fake_proc(proc_root, pid=4321, boot_id="boot-A", start_ticks=5000)
+        monkeypatch.setattr(parent_monitor, "_is_linux", lambda: True)
+        monkeypatch.setattr(parent_monitor, "_PROC_ROOT", proc_root)
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        data_dir = tmp_path / "engines"
+        data_dir.mkdir()
+        SwapManager(data_dir, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
+        recorded = json.loads(_own_state_path(data_dir).read_text(encoding="utf-8"))
+        assert recorded["boot_id"] == "boot-A"
+        assert recorded["start_ticks"] == 5000.0
 
     def test_start_records_the_swap_pgid_on_posix(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -878,7 +1843,9 @@ class TestCrossRunReaping:
         monkeypatch.setattr(sm.os, "getpgid", lambda pid: 999, raising=False)
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         assert json.loads(_own_state_path(tmp_path).read_text())["pgid"] == 999
 
     def test_healthy_engine_is_spared_whoever_started_it(
@@ -905,7 +1872,9 @@ class TestCrossRunReaping:
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         assert [state.pid for state in stopped] == [7777]
 
     def test_two_writers_records_coexist_while_healthy(
@@ -925,7 +1894,7 @@ class TestCrossRunReaping:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr_b = SwapManager(tmp_path, _GROUP)
-        mgr_b.start([_launch(WorkerRole.CHAT)])
+        mgr_b.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         assert a_path.read_text() == original  # A's record untouched
         assert _own_state_path(tmp_path).exists()  # B wrote its own
         mgr_b.shutdown()
@@ -1058,7 +2027,9 @@ class TestAtomicStateWrite:
         monkeypatch.setattr(sm.os, "replace", _spy)
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
+        SwapManager(tmp_path, _GROUP).start(
+            [_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA)
+        )
         config_path = tmp_path / f"llama-swap-{_GROUP.value}.{os.getpid()}.json"
         assert replaced == [str(config_path), str(_own_state_path(tmp_path))]
         assert json.loads(_own_state_path(tmp_path).read_text())["pid"] == 4321
@@ -1085,6 +2056,9 @@ class _FakeParentProc:
     def name(self) -> str:
         return self._name
 
+    def parent(self) -> None:
+        return None
+
 
 class _FakeServerProc:
     """A stand-in psutil.Process for the orphan-server sweep."""
@@ -1110,12 +2084,20 @@ class _FakeServerProc:
             raise sm.psutil.NoSuchProcess(self.pid)
         return self._cmdline
 
+    def name(self) -> str:
+        return self.info["name"]
+
     def parent(self) -> _FakeParentProc | None:
         if self._parent_name == _PARENT_RAISES:
             raise sm.psutil.NoSuchProcess(self.pid)
         if self._parent_name is None:
             return None
         return _FakeParentProc(self._parent_name)
+
+    def parents(self) -> list[_FakeParentProc]:
+        # Like psutil: the whole chain at once, raising when a hop cannot be read.
+        parent = self.parent()
+        return [] if parent is None else [parent]
 
     def is_running(self) -> bool:
         return True
@@ -1134,7 +2116,10 @@ class TestOrphanServerReaping:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)])
+        mgr.start(
+            [_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)],
+            engines=engines_for_all_roles(LLAMA),
+        )
         config = json.loads(mgr._config_path.read_text())
         expected = sorted(
             int(entry["cmd"].rsplit(" ", 1)[-1]) for entry in config["models"].values()
@@ -1266,7 +2251,7 @@ def test_running_reflects_the_spawned_process(
     _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
     mgr = SwapManager(tmp_path, _GROUP)
     assert mgr.running is False
-    mgr.start([_launch(WorkerRole.CHAT)])
+    mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
     assert mgr.running is True
     mgr.shutdown()
     assert mgr.running is False
@@ -1331,8 +2316,8 @@ class TestPerGroupNaming:
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         chat = SwapManager(tmp_path, SwapGroup.CHAT)
         embed = SwapManager(tmp_path, SwapGroup.EMBED)
-        chat.start([_launch(WorkerRole.CHAT)])
-        embed.start([_launch(WorkerRole.EMBED)])
+        chat.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
+        embed.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(LLAMA))
         # Each group runs against its own config, so stopping one group's fleet
         # (keyed on config-path identity) can never touch the other's servers.
         assert (tmp_path / sm._config_filename(os.getpid(), "chat")).exists()
@@ -1374,7 +2359,7 @@ class TestStateFilePersistenceKeys:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         state = sm._load_state(mgr._state_path)
         assert state is not None
         assert state.proxy_port == mgr._port
@@ -1385,7 +2370,7 @@ class TestStateFilePersistenceKeys:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         state = sm._load_state(mgr._state_path)
         assert state is not None and state.pid == 4321
 
@@ -1405,7 +2390,7 @@ class TestStateFilePersistenceKeys:
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, _GROUP)
         first = sm.PlanOrigin("/root/a", '{"flash_attention": true}')
-        mgr.start([_launch(WorkerRole.CHAT)], origin=first)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA), origin=first)
         state = sm._load_state(mgr._state_path)
         assert state is not None and state.origin == first
         later = sm.PlanOrigin("/root/a", '{"flash_attention": false}')
@@ -1414,13 +2399,37 @@ class TestStateFilePersistenceKeys:
         assert restamped is not None and restamped.origin == later
         assert restamped.pid == state.pid and restamped.launches == state.launches
 
+    @pytest.mark.parametrize(
+        ("planned", "followed"),
+        [(None, None), ('{"chat_model": "x"}', frozenset()), ("{}", frozenset({"num_ctx"}))],
+    )
+    def test_the_planned_view_and_the_followed_keys_round_trip_and_none_writes_neither(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        planned: str | None,
+        followed: frozenset[str] | None,
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        origin = sm.PlanOrigin("/root/a", "{}", planned_view=planned, followed=followed)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA), origin=origin)
+        payload = json.loads(mgr._state_path.read_text(encoding="utf-8"))
+        assert payload["fleet_view"] == "{}"
+        assert ("planned_view" in payload) is (planned is not None)
+        assert ("followed_keys" in payload) is (followed is not None)
+        state = sm._load_state(mgr._state_path)
+        assert state is not None and state.origin is not None
+        assert (state.origin.planned_view, state.origin.followed) == (planned, followed)
+
     def test_a_start_with_no_origin_writes_none(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         payload = json.loads(mgr._state_path.read_text(encoding="utf-8"))
         assert "config_root" not in payload
         state = sm._load_state(mgr._state_path)
@@ -1437,7 +2446,7 @@ class TestLiveStateLaunchContract:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         state = sm._load_state(mgr._state_path)
         assert state is not None
         assert len(state.launches) == 1
@@ -1453,10 +2462,27 @@ class TestEnginePinInState:
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         monkeypatch.setattr(sm, "engine_pin", lambda: "llama-cpp-1.2.3+swap-v9+gguf-v1")
         mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         state = sm._load_state(mgr._state_path)
         assert state is not None
         assert state.engine_pin == "llama-cpp-1.2.3+swap-v9+gguf-v1"
+
+    def test_start_records_the_router_binary(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
+        state = sm._load_state(mgr._state_path)
+        assert state is not None
+        assert state.swap_binary == str(Path("/fake/llama-swap"))
+        legacy = tmp_path / "legacy.json"
+        legacy.write_text(json.dumps({"pid": 123, "member_ports": [4000]}), encoding="utf-8")
+        old = sm._load_state(legacy)
+        assert old is not None
+        assert old.swap_binary == ""
 
     def test_legacy_state_without_a_pin_parses_as_none(self, tmp_path: Path) -> None:
         legacy = tmp_path / "legacy.json"
@@ -1608,6 +2634,127 @@ class TestStopEngine:
         monkeypatch.setattr(sm.psutil, "pid_exists", lambda _pid: False)  # owner dead
         sm.stop_engine(tmp_path)
         assert not dead_config.exists()
+
+
+_TRAPS_SIGTERM = (
+    "import signal, sys, time\n"
+    "signal.signal(signal.SIGTERM, lambda *_a: None)\n"
+    "print('ready', flush=True)\n"
+    "time.sleep(900)\n"
+)
+
+
+class TestKillEngine:
+    """The shutdown's stop of a starting engine: SIGKILL at once, no SIGTERM grace."""
+
+    def test_sigkills_the_recorded_group_without_a_term(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / sm._state_filename(999_999, "chat")
+        path.write_text(
+            json.dumps({"pid": 7777, "pgid": 8888, "member_ports": [4000]}), encoding="utf-8"
+        )
+        swap = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
+        _patch_psutil_process(monkeypatch, {7777: swap})
+        monkeypatch.setattr(sm.sys, "platform", "linux")
+        monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
+        monkeypatch.setattr(sm, "_find_orphan_servers", lambda _ports: [])
+        signals: list[tuple[int, int]] = []
+        monkeypatch.setattr(
+            sm.os, "killpg", lambda pgid, sig: signals.append((pgid, sig)), raising=False
+        )
+        waits: list[list[object]] = []
+
+        def _wait_procs(procs: list[object], timeout: float) -> tuple[list, list]:
+            waits.append(list(procs))
+            return (list(procs), [])
+
+        monkeypatch.setattr(sm.psutil, "wait_procs", _wait_procs)
+
+        assert sm.kill_engine(tmp_path) == ["chat"]
+
+        assert signals == [(8888, sm._SIGKILL)]
+        assert waits == [[swap]]
+        assert not path.exists()
+
+    def test_kills_surviving_servers_without_a_term(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _Server:
+            def __init__(self) -> None:
+                self.terminated = False
+                self.killed = False
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+            def kill(self) -> None:
+                self.killed = True
+
+        path = tmp_path / sm._state_filename(999_999, "chat")
+        path.write_text(
+            json.dumps({"pid": 999_998, "member_ports": [4000, 4001]}), encoding="utf-8"
+        )
+        monkeypatch.setattr(sm, "_is_live_llama_swap", lambda _state: False)
+        server = _Server()
+        monkeypatch.setattr(sm, "_find_orphan_servers", lambda _ports: [server])
+        monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: (list(procs), []))
+
+        assert sm.kill_engine(tmp_path) == ["chat"]
+
+        assert server.killed and not server.terminated
+        assert not path.exists()
+
+    def test_a_dead_record_reports_nothing_killed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / sm._state_filename(999_999, "chat")
+        path.write_text(json.dumps({"pid": 999_998, "member_ports": []}), encoding="utf-8")
+        monkeypatch.setattr(sm, "_is_live_llama_swap", lambda _state: False)
+
+        assert sm.kill_engine(tmp_path) == []
+
+        assert not path.exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="process groups")
+    def test_ends_a_recorded_process_that_traps_sigterm_at_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The real llama-server traps SIGTERM; the kill must not spend the TERM grace on it."""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _TRAPS_SIGTERM],
+            stdout=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            assert proc.stdout is not None and proc.stdout.readline() == b"ready\n"
+            path = tmp_path / sm._state_filename(os.getpid(), "chat")
+            path.write_text(
+                json.dumps(
+                    {
+                        "pid": proc.pid,
+                        "pgid": os.getpgid(proc.pid),
+                        "created_at": sm.psutil.Process(proc.pid).create_time(),
+                        "member_ports": [],
+                        "name": sm._LLAMA_SWAP_PROCESS_NAME,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            monkeypatch.setattr(sm, "_is_live_llama_swap", lambda _state: True)
+
+            begin = time.monotonic()
+            killed = sm.kill_engine(tmp_path)
+            elapsed = time.monotonic() - begin
+
+            assert killed == ["chat"]
+            # The kill reaps the child, so its exit is read from the process table.
+            assert not sm.psutil.pid_exists(proc.pid)
+            assert elapsed < sm._STOP_TIMEOUT_S, f"kill took {elapsed:.2f} s"
+            assert not path.exists()
+        finally:
+            proc.kill()
+            proc.wait(timeout=30)
 
 
 class TestLiveStateHelpers:
@@ -1847,11 +2994,16 @@ class TestEstimateReadback:
             est_vram_bytes=est,
         )
 
+    @staticmethod
+    def _enrol(manager, launch, engine=LLAMA) -> None:
+        """Record *launch* the way ``start`` does, with the log file its engine writes."""
+        enrol_launch(manager, launch, engine)
+
     def test_a_ready_engine_is_checked_against_its_estimate(self, tmp_path, caplog) -> None:
         from lilbee.providers.fleet.readback import engine_log_path
 
         manager = self._manager(tmp_path)
-        manager._launch_by_model = {"chat-0": self._launch(4 * 1024**3)}
+        self._enrol(manager, self._launch(4 * 1024**3))
         log_dir = manager._log_path.parent
         log_dir.mkdir(parents=True, exist_ok=True)
         engine_log_path(log_dir, "chat-0").write_text(
@@ -1865,7 +3017,7 @@ class TestEstimateReadback:
         from lilbee.providers.fleet.readback import engine_log_path
 
         manager = self._manager(tmp_path)
-        manager._launch_by_model = {"chat-0": self._launch(4 * 1024**3)}
+        self._enrol(manager, self._launch(4 * 1024**3))
         log_dir = manager._log_path.parent
         log_dir.mkdir(parents=True, exist_ok=True)
         engine_log_path(log_dir, "chat-0").write_text(
@@ -1882,7 +3034,7 @@ class TestEstimateReadback:
         from lilbee.providers.fleet.readback import engine_log_path
 
         manager = self._manager(tmp_path)
-        manager._launch_by_model = {"chat-0": self._launch(0)}
+        self._enrol(manager, self._launch(0))
         log_dir = manager._log_path.parent
         log_dir.mkdir(parents=True, exist_ok=True)
         engine_log_path(log_dir, "chat-0").write_text(
@@ -1897,14 +3049,175 @@ class TestEstimateReadback:
         # build never accepted the settings that produce one. Silent, that reads
         # as a passing check forever, which is how a wrong variable name hid.
         manager = self._manager(tmp_path)
-        manager._launch_by_model = {"chat-0": self._launch(4 * 1024**3)}
+        self._enrol(manager, self._launch(4 * 1024**3))
         manager._log_path.parent.mkdir(parents=True, exist_ok=True)
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
             manager._check_estimates({"chat-0"})
         assert "wrote no log" in caplog.text
+
+    def test_a_ready_engine_that_writes_no_log_of_its_own_is_not_reported(
+        self, tmp_path, caplog
+    ) -> None:
+        # Its output is in the group log, so there is no file of its own to miss.
+        manager = self._manager(tmp_path)
+        self._enrol(manager, self._launch(4 * 1024**3), engine=_NoOwnLogEngine())
+        manager._log_path.parent.mkdir(parents=True, exist_ok=True)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
+            manager._check_estimates({"chat-0"})
+        assert caplog.text == ""
 
     def test_an_unknown_model_id_is_skipped(self, tmp_path, caplog) -> None:
         manager = self._manager(tmp_path)
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
             manager._check_estimates({"ghost-0"})
         assert caplog.text == ""
+
+
+class TestKillRecordedEngine:
+    def test_a_reused_pid_keeps_its_children(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The record names a live process that is no longer llama-swap, so its
+        # children belong to another program and the kill at exit leaves them.
+        killed: list[int] = []
+
+        class _Child:
+            pid = 8888
+
+            def kill(self) -> None:
+                killed.append(self.pid)
+
+        state = sm.SwapState(pid=7777, pgid=None, member_ports=())
+        monkeypatch.setattr(sm, "_is_live_llama_swap", lambda _state: False)
+        monkeypatch.setattr(sm, "_live_children", lambda _pid: [_Child()])
+        monkeypatch.setattr(sm, "_find_orphan_servers", lambda _ports: [])
+        monkeypatch.setattr(sm, "_await_killed", lambda _procs: None)
+        assert sm._kill_recorded_engine(state) is False
+        assert killed == []
+
+
+# The interpreter itself, not a venv launcher: on Windows the launcher starts the interpreter
+# as its own child, which inherits the held files and outlives a kill of the launcher.
+_SLEEP = [getattr(sys, "_base_executable", sys.executable), "-c", "import time; time.sleep(60)"]
+# Folder modes bind only a POSIX user who is not root.
+_PERMISSIONS_APPLY = pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0, reason="folder modes do not bind this user"
+)
+
+
+class TestRouterHoldsItsBuilds:
+    """The router started by the manager keeps its store builds in use, not the launcher."""
+
+    @pytest.fixture
+    def builds(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+        root = tmp_path / "engines"
+        router, server = root / "llama-swap" / "1-cpu", root / "llama-cpp" / "2-cpu"
+        router.mkdir(parents=True)
+        server.mkdir(parents=True)
+        real_spawn = sm.spawn_bound_child
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        monkeypatch.setattr(sm, "resolve_llama_swap", lambda: router / "llama-swap")
+        # The router is a real child that sleeps, started with the manager's own arguments.
+        monkeypatch.setattr(sm, "spawn_bound_child", lambda _argv, **kw: real_spawn(_SLEEP, **kw))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        return router, server
+
+    def _start(self, tmp_path: Path, server: Path) -> SwapManager:
+        launch = InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=[str(server / "llama-server")],
+            env_overrides={},
+            model="chat-model",
+            server_binary=str(server / "llama-server"),
+        )
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([launch], engines=engines_for_all_roles(LLAMA))
+        return mgr
+
+    def _stop_router(self, mgr: SwapManager) -> None:
+        proc = mgr._proc
+        assert proc is not None
+        proc.kill()
+        proc.wait()
+
+    def test_the_router_holds_its_own_build_and_the_server_build(
+        self, tmp_path: Path, builds: tuple[Path, Path]
+    ) -> None:
+        router, server = builds
+        mgr = self._start(tmp_path, server)
+        try:
+            assert build_in_use(router) is True
+            assert build_in_use(server) is True
+        finally:
+            self._stop_router(mgr)
+
+    def test_the_builds_are_free_once_the_router_exits(
+        self, tmp_path: Path, builds: tuple[Path, Path]
+    ) -> None:
+        router, server = builds
+        mgr = self._start(tmp_path, server)
+        self._stop_router(mgr)
+        assert build_in_use(router) is False
+        assert build_in_use(server) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows refuses the rename instead")
+    def test_a_start_from_a_build_being_removed_fails_and_starts_nothing(
+        self, tmp_path: Path, builds: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _router, server = builds
+        spawned: list[object] = []
+        monkeypatch.setattr(sm, "spawn_bound_child", lambda *a, **k: spawned.append(a))
+        with (
+            removing(server),
+            pytest.raises(ProviderError, match=r"Engine llama-cpp 2 \(cpu\) is being removed"),
+        ):
+            self._start(tmp_path, server)
+        assert spawned == []
+        assert build_in_use(server) is False
+
+    @_PERMISSIONS_APPLY
+    def test_a_start_holds_read_only_builds_and_writes_to_neither(
+        self, tmp_path: Path, builds: tuple[Path, Path]
+    ) -> None:
+        router, server = builds
+        for build in builds:
+            (build / IN_USE_NAME).touch(mode=0o400)
+            build.chmod(0o555)
+        try:
+            mgr = self._start(tmp_path, server)
+            try:
+                assert build_in_use(router) is True
+                assert build_in_use(server) is True
+            finally:
+                self._stop_router(mgr)
+        finally:
+            for build in builds:
+                build.chmod(0o755)
+
+    @_PERMISSIONS_APPLY
+    def test_a_start_from_older_read_only_builds_runs_unheld_and_writes_nothing(
+        self, tmp_path: Path, builds: tuple[Path, Path]
+    ) -> None:
+        router, server = builds
+        for build in builds:
+            build.chmod(0o555)
+        try:
+            mgr = self._start(tmp_path, server)
+            self._stop_router(mgr)
+        finally:
+            for build in builds:
+                build.chmod(0o755)
+        assert not (router / IN_USE_NAME).exists()
+        assert not (server / IN_USE_NAME).exists()
+
+    def test_a_start_from_older_builds_makes_their_in_use_files_and_holds_them(
+        self, tmp_path: Path, builds: tuple[Path, Path]
+    ) -> None:
+        router, server = builds
+        mgr = self._start(tmp_path, server)
+        try:
+            assert (router / IN_USE_NAME).is_file()
+            assert build_in_use(server) is True
+        finally:
+            self._stop_router(mgr)

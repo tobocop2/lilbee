@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
-import threading
+import os
+import shutil
+import sys
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, cast
 
+from lilbee.core.security import sibling_temp_path
 from lilbee.data.extract.document import _title_scope, chunk_and_embed_pages
 from lilbee.data.store import ChunkWrite, PageTextRecord, SourceMeta, SourceType
 from lilbee.data.title import derive_title
-from lilbee.runtime.cancellation import TaskCancelledError
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 
 if TYPE_CHECKING:
@@ -59,7 +64,7 @@ def resolve_format(value: str, path: Path) -> DatasetFormat:
         return DatasetFormat(suffix)
     except ValueError:
         raise ValueError(
-            f"Could not infer format from {path.name!r}; use a .parquet or .jsonl path"
+            f"Could not infer format from '{path.name}'; use a .parquet or .jsonl path"
         ) from None
 
 
@@ -161,7 +166,7 @@ def _reconstruct_from_chunks(store: Store, source: str) -> list[PageTextRecord]:
 _WRITE_BATCH_ROWS = 10_000
 
 
-def _write_parquet(table: pa.Table, sink: IO[bytes], cancel: threading.Event | None = None) -> None:
+def _write_parquet(table: pa.Table, sink: IO[bytes], cancel: CancelSignal | None = None) -> None:
     """Encode *table* into *sink* as parquet, one row group per batch.
 
     Driving a ParquetWriter row group by row group rather than calling
@@ -181,7 +186,7 @@ def _write_parquet(table: pa.Table, sink: IO[bytes], cancel: threading.Event | N
             writer.write_table(pa.Table.from_batches([batch], table.schema))
 
 
-def _write_jsonl(table: pa.Table, sink: IO[bytes], cancel: threading.Event | None = None) -> None:
+def _write_jsonl(table: pa.Table, sink: IO[bytes], cancel: CancelSignal | None = None) -> None:
     """Encode *table* into *sink* as jsonl, one write per batch.
 
     One JSON object per row, keyed by the table's columns, so jsonl stays in step
@@ -199,6 +204,27 @@ def _write_jsonl(table: pa.Table, sink: IO[bytes], cancel: threading.Event | Non
 
 _WRITERS = {DatasetFormat.PARQUET: _write_parquet, DatasetFormat.JSONL: _write_jsonl}
 
+# Windows refuses a rename onto a file that another handle has open: a second
+# export's rename onto the same name, or a virus scanner that reads the file the
+# first rename just put there. The refusal is a PermissionError and ends when
+# that handle closes, so the rename is tried again, as pip does. The bound is
+# fixed: 5 attempts with 0.2 s between them, 0.8 s of waiting at most.
+_RENAME_ATTEMPTS = 5
+_RENAME_RETRY_WAIT_S = 0.2
+
+
+def _replace_when_free(partial: Path, target: Path) -> None:
+    """Rename *partial* onto *target*, again on Windows while another handle holds it."""
+    for _ in range(_RENAME_ATTEMPTS - 1):
+        try:
+            os.replace(partial, target)
+            return
+        except PermissionError:
+            if sys.platform != "win32":
+                raise
+        time.sleep(_RENAME_RETRY_WAIT_S)
+    os.replace(partial, target)
+
 
 def serialize_dataset(table: pa.Table, fmt: DatasetFormat) -> bytes:
     """Encode the dataset *table* to bytes in the given format.
@@ -214,20 +240,59 @@ def serialize_dataset(table: pa.Table, fmt: DatasetFormat) -> bytes:
 
 
 def write_dataset(
-    table: pa.Table, path: Path, fmt: DatasetFormat, cancel: threading.Event | None = None
+    table: pa.Table, path: Path, fmt: DatasetFormat, cancel: CancelSignal | None = None
 ) -> None:
     """Write the dataset *table* to *path* in the given format, a batch at a time.
 
-    A cancelled write removes the partial file: half a dataset is not a smaller
-    dataset, and leaving one behind would be indistinguishable from a complete
-    export to anything that reads it later.
+    The batches go to a temporary file beside *path*, and ``os.replace`` moves it
+    onto *path* only when the write completes. Half a dataset is not a smaller
+    dataset, and a reader cannot tell one from a complete export, so no stop (a
+    cancel, a second Ctrl-C, a full disk) may leave one under the final name.
+    Any exception removes the temporary file; a kill leaves it under its
+    temporary name. Each call gets its own temporary name, so two exports to one
+    path (the MCP server runs tools in threads) cannot share one; the last to
+    finish wins whole. On Windows, a rename that another handle on *path* blocks
+    is tried again for a fixed bound. An error on the temporary file names *path*, the file the
+    caller asked for. A new file gets the umask mode; a replaced file keeps its own.
+    A symlink at *path* stays a link: the export replaces its target, also a
+    missing one, as opening *path* for writing would.
     """
+    # realpath, not Path.resolve: before Python 3.13 resolve raises RuntimeError on
+    # a symlink loop. realpath stops at the loop and returns a link; opening *path*
+    # failed there with ELOOP, so this does too.
+    target = Path(os.path.realpath(path))
+    if target.is_symlink():
+        raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path))
+    partial = sibling_temp_path(target)
     try:
-        with path.open("wb") as sink:
+        sink = partial.open("xb")
+    except OSError as exc:
+        # Not created, so nothing to remove: the name may be another writer's.
+        raise _naming_the_output(exc, path) from None
+    try:
+        with sink:
             _WRITERS[fmt](table, sink, cancel)
-    except TaskCancelledError:
-        path.unlink(missing_ok=True)
+        if target.is_file():
+            shutil.copymode(target, partial)
+        _replace_when_free(partial, target)
+    except BaseException as exc:
+        partial.unlink(missing_ok=True)
+        # open() and os.replace() store the path they were given, a Path here.
+        if isinstance(exc, OSError) and str(exc.filename) == str(partial):
+            raise _naming_the_output(exc, path) from None
         raise
+
+
+def _naming_the_output(exc: OSError, path: Path) -> OSError:
+    """Return *exc* restated about *path*, the file the caller asked for.
+
+    An open or a write failed on the temporary file beside *path*; a failed
+    rename (it carries a second name) failed to put the finished export at *path*.
+    """
+    if exc.filename2 is None:
+        return type(exc)(exc.errno, exc.strerror, str(path))
+    reason = f"Could not put the finished export there: {exc.strerror}"
+    return type(exc)(exc.errno, reason, str(path))
 
 
 def _coerce_row(raw: dict) -> PageTextRecord:

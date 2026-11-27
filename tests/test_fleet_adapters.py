@@ -3,24 +3,31 @@
 from __future__ import annotations
 
 import re
+import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from lilbee.core.config.enums import RerankerType
+from lilbee.providers.base import ProviderErrorKind
 from lilbee.providers.fleet import adapters
 from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet.adapters import (
     LLM_RERANK_SPEC,
     ROLE_SPECS,
+    RankPoolingMissingError,
     build_server_argv,
     embed_spec,
     expert_offload_patterns,
     rerank_spec,
     resolve_rerank_mode,
 )
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.fleet.engines.base import LaunchRequest
+from lilbee.providers.fleet.engines.choice import ADAPTERS
+from lilbee.providers.fleet.engines.llama import LLAMA
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 
 def test_every_worker_role_has_a_spec() -> None:
@@ -395,6 +402,55 @@ def test_build_argv_no_mmap_reads_help_on_stderr(monkeypatch) -> None:
     assert _mmap_tokens(argv) == ["--load-mode", "none"]
 
 
+def _reaches_llama_argv(adapter) -> bool:
+    """Whether the adapter's module uses the shared argv builder, directly or through LLAMA."""
+    module_values = vars(sys.modules[type(adapter).__module__]).values()
+    return any(v is build_server_argv or v is LLAMA for v in module_values)
+
+
+_LLAMA_ARGV_ADAPTERS = {n: a for n, a in ADAPTERS.items() if _reaches_llama_argv(a)}
+
+
+@pytest.mark.parametrize(
+    "adapter", list(_LLAMA_ARGV_ADAPTERS.values()), ids=[n.value for n in _LLAMA_ARGV_ADAPTERS]
+)
+def test_no_mmap_help_read_targets_the_launched_binary(monkeypatch, adapter) -> None:
+    """With two builds side by side, an adapter's flag comes from the build its argv launches.
+
+    Every adapter whose module uses the shared argv builder runs, so a new one is covered.
+    Each must read help from the launched build and match its flag.
+    """
+    old_build, new_build = Path("/engines/old/llama-server"), Path("/engines/new/llama-server")
+    helps = {old_build: _HELP_NO_MMAP, new_build: _HELP_LOAD_MODE}
+    read: list[Path] = []
+
+    def _run(cmd, *_a, **_k):
+        read.append(Path(cmd[0]))
+        return SimpleNamespace(stdout=helps[Path(cmd[0])], stderr="")
+
+    monkeypatch.setattr(binary_mod.subprocess, "run", _run)
+    for launched, tokens in (
+        (old_build, ["--no-mmap"]),
+        (new_build, ["--load-mode", "none"]),
+    ):
+        binary_mod._read_help.cache_clear()
+        read.clear()
+        request = LaunchRequest(
+            binary=launched,
+            model_path=Path("/models/chat.gguf"),
+            devices=(0,),
+            n_gpu_layers=-1,
+            slots=1,
+            ctx_per_slot=4096,
+            no_mmap=True,
+            target=RoleTarget.CPU,
+        )
+        argv = adapter.launch_argv(adapter.role_spec(WorkerRole.CHAT, None, None), request)
+        assert read == [launched]
+        assert str(launched) in argv
+        assert _mmap_tokens(argv) == tokens
+
+
 def test_build_argv_defaults_to_mmap(monkeypatch) -> None:
     argv = _argv_with_help(monkeypatch, _HELP_NO_MMAP + _HELP_LOAD_MODE, no_mmap=False)
     assert _mmap_tokens(argv) == []
@@ -507,3 +563,451 @@ def test_build_argv_emits_the_device_names_it_is_given() -> None:
         device_names=("Vulkan0", "Vulkan2"),
     )
     assert argv[argv.index("--device") + 1] == "Vulkan0,Vulkan2"
+
+
+def _help_listing(flags, *, indent: str = "") -> str:
+    return "\n".join(f"{indent}{flag} X    what it does" for flag in flags) + "\n"
+
+
+def _every_optional_flag_argv(
+    monkeypatch, help_text: str | None, *, cpu_moe_only: bool = False
+) -> list[str]:
+    """A chat argv that carries every optional flag, built against a binary printing *help_text*."""
+
+    def _run(*_a, **_k):
+        if help_text is None:
+            raise OSError("no such file")
+        return SimpleNamespace(stdout=help_text, stderr="")
+
+    binary_mod._read_help.cache_clear()
+    monkeypatch.setattr(binary_mod.subprocess, "run", _run)
+    monkeypatch.setattr(adapters, "engine_thread_count", lambda: 4)
+    spec = replace(
+        ROLE_SPECS[WorkerRole.CHAT],
+        extra_args=(*ROLE_SPECS[WorkerRole.CHAT].extra_args, "--pooling", "rank"),
+    )
+    return build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=spec,
+        model_path=Path("/models/chat.gguf"),
+        devices=(0, 1),
+        device_names=("CUDA0", "CUDA1"),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=4096,
+        tensor_split=(1, 1),
+        mmproj=Path("/models/mmproj.gguf"),
+        flash_attn="on",
+        cache_type="q8_0",
+        batch_size=512,
+        cpu_moe=cpu_moe_only,
+        n_cpu_moe=None if cpu_moe_only else 3,
+        kv_unified_per_slot=4096,
+        cache_ram_mib=1024,
+        ctx_checkpoints=4,
+    )
+
+
+_OPTIONAL = sorted(adapters._OPTIONAL_FLAGS)
+_ALWAYS_WRITTEN = [
+    "--embeddings",
+    "--fit-target",
+    "--kv-unified-per-slot",
+]
+
+
+# Literal argv, written by hand from the engine's flag grammar: each flag and its values
+# leave together. They do not read the width from the flag table under test.
+def _argv(text: str) -> list[str]:
+    # A path token renders with the platform separator (backslash on Windows), as str(Path) does.
+    return [str(Path(token)) if token.startswith("/") else token for token in text.split()]
+
+
+_FULL_ARGV = _argv(
+    "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 --n-gpu-layers "
+    "-1 --parallel 1 --cont-batching --ctx-size 4096 --threads 4 --flash-attn on "
+    "--cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 --ubatch-size 512 "
+    "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+    "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+    "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
+    "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+)
+_FULL_ARGV_CPU_MOE = _argv(
+    "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 --n-gpu-layers "
+    "-1 --parallel 1 --cont-batching --ctx-size 4096 --threads 4 --flash-attn on "
+    "--cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 --ubatch-size 512 "
+    "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+    "--cpu-moe --kv-unified --kv-unified-per-slot 4096 --ctx-checkpoints 4 "
+    "--cache-ram 1024 --no-context-shift --jinja "
+    "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+)
+_ARGV_WITHOUT = {
+    "--device": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 "
+        "--ubatch-size 512 --mmproj /models/mmproj.gguf --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--tensor-split": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 "
+        "--ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--flash-attn": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 --ubatch-size "
+        "512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--cache-type-k": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-v q8_0 --batch-size 512 --ubatch-size 512 "
+        "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--cache-type-v": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --batch-size 512 --ubatch-size 512 "
+        "--mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--batch-size": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --ubatch-size "
+        "512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--ubatch-size": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--mmproj": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --device CUDA0,CUDA1 --tensor-split 1,1 "
+        "--n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--n-cpu-moe": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--cpu-moe": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 --no-context-shift --jinja "
+        "--reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--threads": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 "
+        "--flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 512 "
+        "--ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 "
+        "--no-context-shift --jinja --reasoning-format deepseek --no-prefill-assistant --pooling "
+        "rank"
+    ),
+    "--jinja": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 "
+        "--no-context-shift --reasoning-format deepseek --no-prefill-assistant "
+        "--pooling rank"
+    ),
+    "--reasoning-format": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 "
+        "--no-context-shift --jinja --no-prefill-assistant --pooling rank"
+    ),
+    "--no-prefill-assistant": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 "
+        "--no-context-shift --jinja --reasoning-format deepseek --pooling rank"
+    ),
+    "--pooling": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 "
+        "--no-context-shift --jinja --reasoning-format deepseek --no-prefill-assistant"
+    ),
+    "--kv-unified": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified-per-slot 4096 --ctx-checkpoints 4 "
+        "--cache-ram 1024 --no-context-shift "
+        "--jinja --reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--no-context-shift": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --cache-ram 1024 "
+        "--jinja --reasoning-format deepseek --no-prefill-assistant --pooling rank"
+    ),
+    "--ctx-checkpoints": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--cache-ram 1024 --no-context-shift --jinja --reasoning-format deepseek "
+        "--no-prefill-assistant --pooling rank"
+    ),
+    "--cache-ram": _argv(
+        "/bin/llama-server --model /models/chat.gguf --host 127.0.0.1 "
+        "--n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 4096 --threads "
+        "4 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --batch-size "
+        "512 --ubatch-size 512 --mmproj /models/mmproj.gguf --device CUDA0,CUDA1 "
+        "--tensor-split 1,1 --n-cpu-moe 3 --kv-unified --kv-unified-per-slot 4096 "
+        "--ctx-checkpoints 4 --no-context-shift --jinja --reasoning-format deepseek "
+        "--no-prefill-assistant --pooling rank"
+    ),
+}
+
+# The stream heartbeat is the last flag of every argv. A build that does not list it gets the
+# argv the rows above spell out; a build that lists it gets the same tokens and the two below.
+_PING = ["--sse-ping-interval", "30"]
+_ARGV_WITHOUT = {flag: argv + _PING for flag, argv in _ARGV_WITHOUT.items()}
+_ARGV_WITHOUT["--sse-ping-interval"] = _FULL_ARGV
+_FULL_ARGV = _FULL_ARGV + _PING
+_FULL_ARGV_CPU_MOE = _FULL_ARGV_CPU_MOE + _PING
+
+
+def test_the_optional_flag_table_is_not_empty() -> None:
+    assert len(_OPTIONAL) == 20
+
+
+def test_the_stream_heartbeat_is_written_every_thirty_seconds_when_the_help_lists_it(
+    monkeypatch,
+) -> None:
+    """Without the flag, a user's LLAMA_ARG_SSE_PING_INTERVAL=-1 silences a long prefill."""
+    argv = _every_optional_flag_argv(monkeypatch, _help_listing(_OPTIONAL + _ALWAYS_WRITTEN))
+    assert argv[-2:] == ["--sse-ping-interval", "30"]
+    assert argv.count("--sse-ping-interval") == 1
+
+
+def test_a_build_without_the_stream_heartbeat_flag_launches_without_it_and_warns(
+    monkeypatch, caplog
+) -> None:
+    listed = [f for f in _OPTIONAL + _ALWAYS_WRITTEN if f != "--sse-ping-interval"]
+    with caplog.at_level("WARNING"):
+        argv = _every_optional_flag_argv(monkeypatch, _help_listing(listed))
+    assert "--sse-ping-interval" not in argv
+    assert "30" not in argv
+    assert any("does not list --sse-ping-interval" in r.getMessage() for r in caplog.records)
+
+
+def test_a_build_whose_help_lacks_the_context_shift_flag_gets_the_argv_it_had_before(
+    monkeypatch,
+) -> None:
+    """The base argv: the same tokens as the table row for a help without the flag."""
+    listed = _help_listing([f for f in _OPTIONAL if f != "--no-context-shift"] + _ALWAYS_WRITTEN)
+    argv = _every_optional_flag_argv(monkeypatch, listed)
+    assert argv == _ARGV_WITHOUT["--no-context-shift"]
+    assert "--no-context-shift" not in argv
+
+
+def test_a_build_that_lists_the_context_shift_flag_gets_it_in_every_role(monkeypatch) -> None:
+    listed = _help_listing(_OPTIONAL + _ALWAYS_WRITTEN)
+    for role in WorkerRole:
+        argv = _role_argv(monkeypatch, listed, ROLE_SPECS[role])
+        assert argv.count("--no-context-shift") == 1, role
+
+
+def test_the_literal_argv_table_names_every_optional_flag() -> None:
+    assert sorted(_ARGV_WITHOUT) == _OPTIONAL
+
+
+def test_a_build_that_lists_every_flag_gets_the_literal_full_argv(monkeypatch) -> None:
+    listed = _help_listing(_OPTIONAL + _ALWAYS_WRITTEN)
+    assert _every_optional_flag_argv(monkeypatch, listed) == _FULL_ARGV
+    cpu_moe = _every_optional_flag_argv(monkeypatch, listed, cpu_moe_only=True)
+    assert cpu_moe == _FULL_ARGV_CPU_MOE
+
+
+@pytest.mark.parametrize("flag", _OPTIONAL)
+def test_a_flag_the_build_does_not_list_is_dropped_with_its_value(
+    monkeypatch, caplog, flag: str
+) -> None:
+    cpu_moe_only = flag == "--cpu-moe"
+    listed = [f for f in _OPTIONAL + _ALWAYS_WRITTEN if f != flag]
+    with caplog.at_level("WARNING"):
+        argv = _every_optional_flag_argv(
+            monkeypatch, _help_listing(listed), cpu_moe_only=cpu_moe_only
+        )
+    assert argv == _ARGV_WITHOUT[flag]
+    lines = [r.getMessage() for r in caplog.records if f"list {flag};" in r.getMessage()]
+    assert len(lines) == 1
+    assert adapters._OPTIONAL_FLAGS[flag].effect in lines[0]
+
+
+def test_a_build_that_lists_every_flag_gets_the_full_argv(monkeypatch, caplog) -> None:
+    full = _every_optional_flag_argv(monkeypatch, None)
+    with caplog.at_level("WARNING"):
+        argv = _every_optional_flag_argv(monkeypatch, _help_listing(_OPTIONAL + _ALWAYS_WRITTEN))
+    assert argv == full
+    assert not [r for r in caplog.records if "does not list" in r.getMessage()]
+
+
+def test_option_lines_indented_as_in_ik_layout_count_as_listed(monkeypatch) -> None:
+    full = _every_optional_flag_argv(monkeypatch, None)
+    help_text = _help_listing(_OPTIONAL[:7], indent="  ") + _help_listing(
+        _OPTIONAL[7:], indent="         "
+    )
+    assert _every_optional_flag_argv(monkeypatch, help_text) == full
+
+
+def test_a_flag_quoted_in_a_description_does_not_count_as_listed(monkeypatch) -> None:
+    help_text = _help_listing([f for f in _OPTIONAL if f != "--jinja"])
+    help_text += "-x, --other X                 see --jinja for details\n"
+    assert "--jinja" not in _every_optional_flag_argv(monkeypatch, help_text)
+
+
+def test_placement_flags_are_dropped_when_the_help_lists_neither(monkeypatch) -> None:
+    argv = _every_optional_flag_argv(monkeypatch, _help_listing(["--model"]))
+    assert "--device" not in argv
+    assert "--tensor-split" not in argv
+    assert "CUDA0,CUDA1" not in argv
+
+
+def test_the_embeddings_flag_is_written_whatever_the_help_says() -> None:
+    embed = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.EMBED],
+        model_path=Path("/models/embed.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=512,
+    )
+    assert "--embeddings" in embed
+
+
+def test_a_build_with_no_help_text_keeps_every_flag_and_warns_once(monkeypatch, caplog) -> None:
+    full = _every_optional_flag_argv(monkeypatch, None)
+    with caplog.at_level("WARNING"):
+        first = _every_optional_flag_argv(monkeypatch, "")
+        second = _every_optional_flag_argv(monkeypatch, "")
+    assert first == second == full
+    blind = [r for r in caplog.records if "printed no --help text" in r.getMessage()]
+    assert len(blind) == 1
+
+
+def test_a_dropped_flag_is_logged_once_per_binary(monkeypatch, caplog) -> None:
+    help_text = _help_listing([f for f in _OPTIONAL if f != "--jinja"])
+    with caplog.at_level("WARNING"):
+        _every_optional_flag_argv(monkeypatch, help_text)
+        _every_optional_flag_argv(monkeypatch, help_text)
+    lines = [r for r in caplog.records if "list --jinja;" in r.getMessage()]
+    assert len(lines) == 1
+
+
+_NO_POOLING_HELP = _help_listing(["--model", "--embeddings", "--jinja"])
+_POOLING_HELP = _help_listing(["--model", "--embeddings", "--jinja", "--pooling"])
+
+
+def _role_argv(monkeypatch, help_text: str, spec) -> list[str]:
+    def _run(*_a, **_k):
+        return SimpleNamespace(stdout=help_text, stderr="")
+
+    binary_mod._read_help.cache_clear()
+    monkeypatch.setattr(binary_mod.subprocess, "run", _run)
+    return build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=spec,
+        model_path=Path("/models/m.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=512,
+    )
+
+
+def test_a_reranker_is_refused_on_a_build_that_lists_no_pooling_flag(monkeypatch) -> None:
+    with pytest.raises(RankPoolingMissingError) as raised:
+        _role_argv(monkeypatch, _NO_POOLING_HELP, ROLE_SPECS[WorkerRole.RERANK])
+    assert raised.value.kind is ProviderErrorKind.BAD_REQUEST
+    assert str(raised.value) == (
+        f"The engine build {Path('/bin/llama-server')} does not list --pooling, so it cannot "
+        "score rerank results. Install an engine build that lists --pooling, "
+        "or use the LLM reranker type."
+    )
+
+
+def test_a_reranker_starts_on_a_build_that_lists_the_pooling_flag(monkeypatch) -> None:
+    argv = _role_argv(monkeypatch, _POOLING_HELP, ROLE_SPECS[WorkerRole.RERANK])
+    assert argv[-2:] == ["--pooling", "rank"]
+
+
+def test_a_reranker_on_a_build_with_no_help_text_is_not_judged(monkeypatch) -> None:
+    argv = _role_argv(monkeypatch, "", ROLE_SPECS[WorkerRole.RERANK])
+    assert argv[-4:] == ["--pooling", "rank", "--sse-ping-interval", "30"]
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        ROLE_SPECS[WorkerRole.CHAT],
+        ROLE_SPECS[WorkerRole.EMBED],
+        embed_spec({"architecture": "qwen3"}),
+        LLM_RERANK_SPEC,
+    ],
+    ids=["chat", "embed", "embed-last-pooling", "llm-rerank"],
+)
+def test_other_loads_still_start_on_a_build_that_lists_no_pooling_flag(monkeypatch, spec) -> None:
+    argv = _role_argv(monkeypatch, _NO_POOLING_HELP, spec)
+    assert "--pooling" not in argv
+    assert "--model" in argv

@@ -6,17 +6,28 @@ import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn
+from rich.progress import BarColumn, DownloadColumn, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
-from lilbee.catalog.query import reclassify_by_name
+from lilbee.catalog.refs import model_format
+from lilbee.catalog.runnable import session_host
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.runtime.console import PlainConsole, styled
+from lilbee.providers.fleet.engines.choice import (
+    choose_engine,
+    installed_engines,
+    loadable_refs,
+)
+from lilbee.providers.roles import WorkerRole
+from lilbee.runtime.console import PlainConsole, live_progress, styled
 from lilbee.runtime.progress.columns import literal_text_column
+
+if TYPE_CHECKING:
+    from lilbee.catalog.hf_client import HfClient
 
 log = logging.getLogger(__name__)
 
@@ -46,18 +57,12 @@ def _catalog_from_picks(picks: tuple) -> tuple[ModelInfo, ...]:
     )
 
 
-def _get_model_catalog() -> tuple[ModelInfo, ...]:
+def _get_model_catalog(*, hf_client: "HfClient") -> tuple[ModelInfo, ...]:
     """Chat picks as ModelInfo. Not cached here: picks are already memoized for
     the process, and a second cache would survive ``reset_picks()``."""
     from lilbee.catalog import picks_for
 
-    return _catalog_from_picks(picks_for(ModelTask.CHAT))
-
-
-def __getattr__(name: str) -> tuple[ModelInfo, ...]:
-    if name == "MODEL_CATALOG":
-        return _get_model_catalog()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return _catalog_from_picks(picks_for(ModelTask.CHAT, hf_client=hf_client))
 
 
 def get_system_ram_gb() -> float:
@@ -100,14 +105,14 @@ def get_free_disk_gb(path: Path) -> float:
     return usage.free / (1024**3)
 
 
-def pick_default_model(ram_gb: float) -> ModelInfo:
+def pick_default_model(ram_gb: float, *, hf_client: "HfClient") -> ModelInfo:
     """Choose the largest catalog model that fits in *ram_gb*.
 
     Raises ``RuntimeError`` when the catalog is empty, which happens when
     HuggingFace cannot be reached: callers surface that far better than the
     ``IndexError`` an empty catalog would otherwise produce.
     """
-    catalog = _get_model_catalog()
+    catalog = _get_model_catalog(hf_client=hf_client)
     if not catalog:
         raise RuntimeError(
             "Could not reach HuggingFace to choose a chat model. "
@@ -120,19 +125,23 @@ def pick_default_model(ram_gb: float) -> ModelInfo:
     return max(eligible, key=lambda m: m.size_gb)
 
 
-def _model_download_size_gb(model: str) -> float:
+def _model_download_size_gb(model: str, *, hf_client: "HfClient") -> float:
     """Estimated download size in GiB for an HF model ref."""
-    catalog_sizes = {m.ref: m.size_gb for m in _get_model_catalog()}
+    catalog_sizes = {m.ref: m.size_gb for m in _get_model_catalog(hf_client=hf_client)}
     fallback = 5.0  # reasonable default for unknown models
     return catalog_sizes.get(model, fallback)
 
 
 def display_model_picker(
-    ram_gb: float, free_disk_gb: float, *, console: PlainConsole | None = None
+    ram_gb: float,
+    free_disk_gb: float,
+    *,
+    hf_client: "HfClient",
+    console: PlainConsole | None = None,
 ) -> ModelInfo:
     """Show a Rich table of catalog models and return the recommended model."""
     console = console or PlainConsole(stderr=True)
-    recommended = pick_default_model(ram_gb)
+    recommended = pick_default_model(ram_gb, hf_client=hf_client)
 
     table = Table(title="Available Models", show_lines=False)
     table.add_column("#", justify="right", style="bold")
@@ -140,7 +149,7 @@ def display_model_picker(
     table.add_column("Size", justify="right")
     table.add_column("Description")
 
-    for idx, model in enumerate(_get_model_catalog(), 1):
+    for idx, model in enumerate(_get_model_catalog(hf_client=hf_client), 1):
         is_recommended = model == recommended
         disk_too_small = free_disk_gb < model.size_gb + _DISK_HEADROOM_GB
         emphasis = "bold" if is_recommended else ""
@@ -162,17 +171,30 @@ def display_model_picker(
     return recommended
 
 
-def prompt_model_choice(ram_gb: float) -> ModelInfo:
-    """Prompt the user to pick a model by number. Returns the chosen ModelInfo."""
+NO_CHAT_MODEL_GUIDANCE = (
+    "No chat model is installed. Run 'lilbee model pull <model>' to install one, "
+    "or run 'lilbee' in a terminal to pick from the model catalog."
+)
+
+
+def prompt_model_choice(ram_gb: float, *, hf_client: "HfClient") -> ModelInfo:
+    """Prompt the user to pick a model by number. Returns the chosen ModelInfo.
+
+    Raises ``RuntimeError`` when input ends or is interrupted: no one chose.
+    The prompt goes to stderr with the catalog table, so stdout keeps only output.
+    """
     free_disk_gb = get_free_disk_gb(cfg.data_dir)
-    recommended = display_model_picker(ram_gb, free_disk_gb)
-    default_idx = list(_get_model_catalog()).index(recommended) + 1
+    recommended = display_model_picker(ram_gb, free_disk_gb, hf_client=hf_client)
+    catalog = _get_model_catalog(hf_client=hf_client)
+    default_idx = list(catalog).index(recommended) + 1
 
     while True:
+        sys.stderr.write(f"Choice [{default_idx}]: ")
+        sys.stderr.flush()
         try:
-            raw = input(f"Choice [{default_idx}]: ").strip()
+            raw = input().strip()
         except (EOFError, KeyboardInterrupt):
-            return recommended
+            raise RuntimeError(NO_CHAT_MODEL_GUIDANCE) from None
 
         if not raw:
             return recommended
@@ -180,19 +202,27 @@ def prompt_model_choice(ram_gb: float) -> ModelInfo:
         try:
             choice = int(raw)
         except ValueError:
-            sys.stderr.write(f"Enter a number 1-{len(_get_model_catalog())}.\n")
+            sys.stderr.write(f"Enter a number 1-{len(catalog)}.\n")
             continue
 
-        if 1 <= choice <= len(_get_model_catalog()):
-            return _get_model_catalog()[choice - 1]
+        if 1 <= choice <= len(catalog):
+            return catalog[choice - 1]
 
-        sys.stderr.write(f"Enter a number 1-{len(_get_model_catalog())}.\n")
+        sys.stderr.write(f"Enter a number 1-{len(catalog)}.\n")
 
 
 def validate_disk_and_pull(
-    model_info: ModelInfo, free_gb: float, *, console: PlainConsole | None = None
+    model_info: ModelInfo,
+    free_gb: float,
+    *,
+    console: PlainConsole | None = None,
+    report_no_engine: bool = True,
 ) -> str:
-    """Check disk space and pull the model. Returns the pulled ref; persist via the caller."""
+    """Check disk space and pull the model. Returns the pulled ref; persist via the caller.
+
+    *report_no_engine* False leaves the no-engine notice out of the pull, for a caller
+    whose settings update reports it.
+    """
     required_gb = model_info.size_gb + _DISK_HEADROOM_GB
     if free_gb < required_gb:
         raise RuntimeError(
@@ -201,40 +231,62 @@ def validate_disk_and_pull(
             f"Free up space or choose a smaller model."
         )
 
-    pull_with_progress(model_info.ref, console=console)
+    pull_with_progress(model_info.ref, console=console, report_no_engine=report_no_engine)
     return model_info.ref
 
 
-def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> None:
-    """Pull a model via model_manager, showing a Rich progress bar."""
+def pull_with_progress(
+    model: str, *, console: PlainConsole | None = None, report_no_engine: bool = True
+) -> None:
+    """Pull a model via model_manager with a progress bar, then check its vision projector."""
+    from lilbee.app.models import ensure_vision_projector, join_warnings
     from lilbee.app.services import get_services
+    from lilbee.catalog.download import retry_reporter
     from lilbee.catalog.types import ModelSource
 
     if console is None:
         console = PlainConsole(file=sys.__stderr__ or sys.stderr)
     manager = get_services().model_manager
-    with Progress(
+    notices: list[str] = []
+    with live_progress(
         SpinnerColumn(),
         literal_text_column("{task.description}"),
         BarColumn(),
         DownloadColumn(),
         TextColumn("{task.percentage:>3.0f}%"),
+        literal_text_column("{task.fields[detail]}"),
         transient=True,
         console=console,
     ) as progress:
         desc = f"Downloading model '{model}'..."
-        ptask = progress.add_task(desc, total=None)
+        ptask = progress.add_task(desc, total=None, detail="")
 
         def _on_bytes(downloaded: int, total: int) -> None:
             if total > 0:
-                progress.update(ptask, total=total, completed=downloaded)
+                progress.update(ptask, total=total, completed=downloaded, detail="")
 
-        manager.pull(model, ModelSource.NATIVE, on_bytes=_on_bytes)
+        def _on_retry(text: str) -> None:
+            progress.update(ptask, detail=text)
+
+        manager.pull(
+            model,
+            ModelSource.NATIVE,
+            on_bytes=_on_bytes,
+            on_notice=notices.append,
+            on_retry=retry_reporter(_on_retry),
+            report_no_engine=report_no_engine,
+        )
+    warning = join_warnings(*notices, ensure_vision_projector(model, warn_unreadable=True))
+    if warning is not None:
+        console.print(f"Warning: {warning}", soft_wrap=True)
     console.print(f"Model '{model}' ready.", soft_wrap=True)
 
 
-def ensure_chat_model() -> str | None:
+def ensure_chat_model(*, hf_client: "HfClient", report_no_engine: bool = True) -> str | None:
     """If no chat models are installed, prompt for one and pull it. Returns the pulled ref or None.
+
+    *report_no_engine* False leaves the no-engine notice out of the pull, for a caller
+    whose settings update reports it.
 
     Interactive (TTY): show catalog picker with descriptions and sizes.
     Non-interactive (CI/pipes): raise with guidance; models are never
@@ -249,16 +301,14 @@ def ensure_chat_model() -> str | None:
     if list_installed_models():
         return None
 
+    _refuse_a_model_with_no_engine()
     if not sys.stdin.isatty():
-        raise RuntimeError(
-            "No chat model is installed. Run 'lilbee model pull <model>' to install one, "
-            "or run 'lilbee' in a terminal to pick from the model catalog."
-        )
+        raise RuntimeError(NO_CHAT_MODEL_GUIDANCE)
 
     ram_gb = get_system_ram_gb()
     free_gb = get_free_disk_gb(cfg.data_dir)
-    model_info = prompt_model_choice(ram_gb)
-    return validate_disk_and_pull(model_info, free_gb)
+    model_info = prompt_model_choice(ram_gb, hf_client=hf_client)
+    return validate_disk_and_pull(model_info, free_gb, report_no_engine=report_no_engine)
 
 
 def _remote_chat_model_names() -> list[str]:
@@ -290,10 +340,32 @@ def list_installed_models() -> list[str]:
     tree never reads as "no chat model is installed". An unusable remote
     server only drops its own names.
     """
-    names: list[str] = []
-    registry = ModelRegistry(cfg.models_dir)
-    for manifest in registry.list_installed():
-        if reclassify_by_name(manifest.ref, manifest.task) == ModelTask.CHAT:
-            names.append(manifest.ref)
+    names = loadable_refs(_registry_chat_refs(), WorkerRole.CHAT)
     names.extend(_remote_chat_model_names())
     return sorted(set(names))
+
+
+def _registry_chat_refs() -> list[str]:
+    """Chat-task refs in the native registry, whether or not an engine loads them."""
+    return [
+        manifest.ref
+        for manifest in ModelRegistry(cfg.models_dir).list_installed()
+        if manifest.task == ModelTask.CHAT
+    ]
+
+
+def _refuse_a_model_with_no_engine() -> None:
+    """Raise the engine notice when a chat model is installed but no engine loads it."""
+    refs = _registry_chat_refs()
+    if not refs:
+        return
+    choice = choose_engine(
+        fmt=model_format(refs[0]),
+        host=session_host,
+        installed=installed_engines(),
+        preferred=str(cfg.preferred_engine),
+        override=None,
+        model=refs[0],
+    )
+    if choice.name is None:
+        raise RuntimeError(choice.notice)

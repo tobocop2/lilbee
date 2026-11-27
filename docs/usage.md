@@ -183,7 +183,7 @@ Tabs for features that aren't installed are hidden, not greyed out:
 - **API-Keys** appears only when the `providers` extra is installed.
 - **Crawling** appears only when the `crawler` extra is installed.
 - **Wiki** appears only when the wiki layer is enabled
-  (`cfg.wiki = true` in `config.toml` or `LILBEE_WIKI=1`).
+  (`wiki = true` in `config.toml` or `LILBEE_WIKI=1`).
 
 Install the relevant extra (or flip the wiki flag) and the tab shows up on
 the next visit.
@@ -199,6 +199,8 @@ tab-complete; `/help` opens the same catalog live.
 | `/models` | `/m`, `/catalog` | Browse the full model catalog |
 | `/add <path>` | | Add a file or directory to the index (tab-completes paths) |
 | `/crawl [url]` | | Crawl a URL. No args opens a dialog |
+| `/engine [subcommand]` | | Show the engine of each role (`roles`), list the installed builds (`list`), remove one (`remove NAME VERSION BACKEND`), or choose it (`use ROLE MODEL ENGINE`, `prefer ENGINE`); add `--yes` to confirm a change that can make the index vectors unusable |
+| `/preset <subcommand>` | | List, add, edit or remove server presets (edit opens a dialog) |
 | `/delete <name>` | | Remove a document from the index |
 | `/prune-ignored` | | Drop indexed documents a `.lilbeeignore` now excludes |
 | `/rebuild` | | Re-index the documents directory from scratch (asks for confirmation) |
@@ -233,6 +235,13 @@ Background jobs (sync, crawl, wiki build, model pull) appear in the Task
 Center with live progress. `/cancel` cancels the active operation. The TUI
 stays responsive throughout; each inference role (chat, embed, rerank,
 vision) runs in its own subprocess so a stuck model doesn't lock the chat.
+
+A finished sync or add shows one of three colours. Green means every file was
+indexed in full. Amber means the task indexed files, and some files were partly
+read or skipped. Red means a file failed, or the sync itself stopped with an
+error. Press `i` on a row, or click it, to
+list the partly read files with one line for each failed page, and the
+failed and skipped files with their reasons.
 
 ### Wiki
 
@@ -441,6 +450,30 @@ lilbee engine stop
 
 It reports whether anything was running, frees the GPU immediately, and is safe
 to run at any time.
+
+### Choose the engine
+
+Each model runs on the engine that loads its format. By default, `auto` chooses
+the engine for each role from the format of the model and the hardware. Use these
+commands to see or change the choice:
+
+```bash
+lilbee engine roles
+lilbee engine use chat <model> <engine>
+lilbee engine prefer <engine>
+lilbee engine list
+lilbee engine install <engine>
+```
+
+The [engine guide](engines/README.md) has the details:
+
+- [The engines](engines/README.md): what each engine is, the hardware it serves,
+  and which engines are opt-in.
+- [How auto chooses an engine](engines/auto.md): the choice for each role and each
+  kind of hardware.
+- [Choose the engine of a model](engines/choose.md): the CLI, the TUI, REST and MCP.
+- [Install, list and remove engine builds](engines/install.md): packs, local
+  installs, and the engines you install yourself.
 
 ## Memory
 
@@ -675,6 +708,7 @@ lilbee --json ask "question"                   # full local RAG (local llama-ser
 lilbee --json model pull <ref>                 # download a model, streams JSON progress events
 lilbee --json model pull <ref> --allow-unsupported  # override the architecture-compat check
 lilbee --json model rm <ref>                   # delete an installed model
+lilbee --json model use chat <ref>             # set the chat model (also rerank, vision)
 lilbee --json reset --yes                      # factory reset (destructive, requires --yes)
 lilbee --json init [path]                      # create a .lilbee/ in a directory
 ```
@@ -710,6 +744,22 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
   when your agent has its own LLM and just needs context from your files. `ask` runs
   lilbee's local RAG end-to-end and returns an answer with sources. Most
   non-MCP agents want `search`.
+- **Read `warnings`.** When a search step fails (hyde blend, query
+  expansion, concept boost, concept expansion or reranking), the search still
+  returns the rows it has, and `warnings` names each failed step with a `code`, a
+  `message` and a `remedy`. The rows can miss matches, or stay in retrieval
+  order when reranking failed. A `rerank_failed` `message` names the kind of
+  failure in fixed text (the server log holds the full error). The text CLI prints
+  the same warnings on stderr. `GET /api/search` keeps its array body and
+  sends the list in the `X-Lilbee-Warnings` response header, only when it is
+  not empty. `/api/ask` and `/api/chat` carry `warnings` in the body, the
+  streams send a `search_degraded` event before the first token, and the MCP
+  `search` tool returns `warnings` in its structured result. The first search
+  after the engine pack installs on a computer with a GPU the pack cannot use
+  carries one more warning, with the code `gpu_not_served`, once.
+- **A refused embedding role answers 400.** If the saved placement refuses the
+  embedding role, `GET /api/search` answers 400 with the reason in the
+  body. Earlier versions answered 503. Other search failures still answer 503.
 - **Citation rule still applies.** Every fact stated from `search` results must
   trace back to a chunk's `source` + line range, exactly as returned. Don't
   invent.
@@ -720,22 +770,27 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
 // lilbee --json search "oil change interval" --top-k 3
 {"command": "search", "query": "oil change interval", "results": [
   {"source": "manual.pdf", "label": "manual.pdf", "chunk": "Change oil every 5,000 miles...", "distance": 0.23, "chunk_type": "raw"}
-]}
+], "warnings": []}
 
 // lilbee --json ask "oil change interval?"  (each source also carries the [n] the answer cites it by)
 {"command": "ask", "question": "oil change interval?", "answer": "Every 5,000 miles [1].", "sources": [
   {"source": "manual.pdf", "label": "manual.pdf", "citation_number": 1, "chunk": "Change oil every 5,000 miles...", "chunk_type": "raw"}
-], "cited_sources": [...], "dropped_sources": [...], "retrieval_query": null}
+], "cited_sources": [...], "dropped_sources": [...], "retrieval_query": null, "warnings": []}
 
 // lilbee --json status  (sources: the newest 10; document_count: the real count)
-{"command": "status", "config": {...}, "sources": [{"filename": "manual.pdf", "file_hash": "3f9a1c0b7d2e", "chunk_count": 42, "ingested_at": "2026-10-16T09:30:12"}], "source_kinds": {"document": 1}, "document_count": 1, "total_chunks": 42, "index": {"embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", "embedding_dim": 768}, "skipped": [], "skipped_total": 0, "ocr_note": "..."}
+{"command": "status", "config": {...}, "sources": [{"filename": "manual.pdf", "file_hash": "3f9a1c0b7d2e", "chunk_count": 42, "ingested_at": "2026-10-16T09:30:12"}], "source_kinds": {"document": 1}, "document_count": 1, "total_chunks": 42, "index": {"embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", "embedding_dim": 768}, "skipped": [], "skipped_total": 0, "partly_read": [], "partial_total": 0, "ocr_note": "..."}
 
 // lilbee --json status --list-sources  (every document, one object per line)
 {"filename": "manual.pdf", "file_hash": "3f9a1c0b7d2e...", "chunk_count": 42, "ingested_at": "2026-10-16T09:30:12.481000+00:00"}
 
+// lilbee --json sync  (OCR failed on one page of a scanned PDF, one file failed)
+{"command": "sync", "added": ["scan.pdf"], "updated": [], "failed": ["locked.pdf"], "skipped": [], "partial": [{"name": "scan.pdf", "pages": [{"page": 3, "error": "...", "recovered": false}]}], "reasons": {"locked.pdf": "..."}, ...}
+
 // lilbee --json model pull <ref>  (streams events, then a final "done" line)
 {"event": "progress", "model": "...", "bytes": 12345678, "total": 999999999}
 {"event": "done", "model": "...", "installed": true}
+// "warning" is optional: it is a string only when the pull could not confirm a vision projector
+{"event": "done", "model": "...", "installed": true, "warning": "... is named as a vision model, but its repo lists no projector file."}
 ```
 
 **Gaps vs MCP.** The CLI doesn't expose `crawl` (non-blocking URL crawling) or
@@ -891,6 +946,9 @@ key. There are two ways to use cloud models when you want to:
 Either way your files and the index never leave the machine; only the queries
 and the snippets the model needs to answer cross the wire when you opt in.
 
+To use a server that you run yourself, add a server preset. See
+[Server presets](presets.md).
+
 ---
 
 ## Reference for advanced users
@@ -909,6 +967,11 @@ model installed first (the default Nomic v1.5 GGUF is fine):
 lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF   # required before `lilbee add`
 lilbee model browse                                     # pick a chat model interactively
 ```
+
+When a model download stalls, `lilbee model pull`, the first-run pull and the
+TUI task show each failed attempt in the progress line while the download runs.
+With `HF_HUB_VERBOSITY=error`, the notices for the hub's in-place resumes are
+hidden; the notices for a repeated transfer and a restarted download still show.
 
 Without an embedding model installed, every `lilbee add` call reports the file
 as `failed` with `Model '…' not found in registry`.
@@ -934,6 +997,18 @@ Press Ctrl+C to stop `lilbee add`, `lilbee sync`, `lilbee rebuild`, or the sync
 that runs before `lilbee ask`. The command exits with status 130. A stopped
 `add` names the files it did not add, and `lilbee --json add` lists them in
 `not_added`.
+
+Over HTTP, give `POST /api/add` an `add_id` in its body, or `POST /api/add/upload`
+an `add_id` query parameter. The id has 1 to 64 letters, digits, `_` or `-`. To
+cancel that add, send `POST /api/add/cancel` with `{"add_id": "..."}`. The route
+answers `200` with `{"add_id": "...", "cancelling": true}`, or `404` when no add
+runs with that id. An add that already runs with the same id answers `409`. The
+cancel removes what the add did not finish, as Ctrl+C does: a source with no
+file indexed is no longer added, and its files on disk stay as they are. An
+uploaded file that the upload created and the server did not index is deleted.
+The add stream ends with a `done` event that carries `"cancelled": true` and
+`not_added`. A client that only closes the stream stops the sync and keeps every
+source.
 
 If you add a folder that contains a source you already added, the folder takes
 that source in. `lilbee add ~/notes` after `lilbee add ~/notes/work` prints
@@ -980,9 +1055,26 @@ A file that fails to ingest is held out of later syncs, and `lilbee status`
 lists it. `lilbee remove` also takes held-out files, by name, folder or glob.
 The TUI `/delete` takes a held-out file by name, and Tab completes it. A removed
 file stays out of every later sync and leaves the status list.
-`lilbee sync --retry-skipped` retries failed files only, so it does not bring a
-removed file back. To restore a removed file, edit it, add its path again, or
-run `lilbee rebuild`.
+`lilbee sync --retry-skipped` retries failed files and reads partly read files
+again. It does not bring a removed file back. To restore a removed file, edit
+it, add its path again, or run `lilbee rebuild`.
+
+When OCR fails on some pages of a file, lilbee indexes the text it has and
+reports the file as partly read. `lilbee sync`, `lilbee add` and
+`lilbee rebuild` print a `Partly read` count and, for each file, one line for
+each failed page: `page 3: <error>`. The line ends with `(other text kept)`
+when the page still has native text or text from an embedded image. With
+`--json`, `partial` lists each file as `{"name", "pages"}`. Each entry of
+`pages` is `{"page", "error", "recovered"}`: the page number from 1, the OCR
+error, and whether the page kept other text. `reasons` gives the reason for
+each failed or skipped file. `lilbee status` lists the partly read files in a
+`Partly read` table of the first 50 files by name, and says how many of them
+it shows when there are more; with `--json`, `partly_read` lists
+them in the same shape, and `partial_total` counts all of them. The text output
+shows the first five failed pages of a file and counts the rest; `--json`
+carries all of them. A normal sync does not read a partly read file again.
+`lilbee sync --retry-skipped` reads it again, and so does a sync after the
+file changes. A later read without failed pages clears the list.
 
 ### Wiki
 
@@ -1175,8 +1267,15 @@ that manages several data dirs (the Obsidian plugin's shared root) can pass
 `LILBEE_EXCLUSIVE_SCOPE=<dir>` to extend the same guarantee across all of them;
 the refusal then names the data dir the running server is serving. To replace a
 running server, ask it to stop with `POST /api/shutdown` (token-authed): it
-shuts down as an external SIGTERM would, except that it waits for responses in
-flight and exits with status 0. Its locks release the moment it exits.
+shuts down as an external SIGTERM would, except that it gives responses in
+flight 10 seconds in place of 1 second and exits with status 0. Its locks
+release the moment it exits.
+
+The server builds its services (the model provider, the embedder and the library)
+before it serves. If that build fails, the server does not start: it writes the error
+to its log and exits with status 1. Fix the cause with `lilbee settings`, then start
+the server again. A stop signal during the build ends the server with the status of
+that signal, as at any other time.
 
 Every route needs the session token, reads included, `GET /api/health` among
 them; the daemon writes the token to `server.json` (mode `0600`) next to the
@@ -1202,6 +1301,18 @@ reference. A Python-library API reference is still being written; for now,
 the source under `src/lilbee/` is the canonical reference.)
 
 The server settings, such as `LILBEE_SERVER_PORT`, are in the [settings reference](settings.md#file-and-environment-only).
+
+A partly read file is an indexed file with at least one page whose OCR
+failed. Each failed page is `{"page", "error", "recovered"}`: the page number
+from 1, the OCR error, and whether the page kept native text or text from an
+embedded image. The API reports partly read files in these places:
+
+- The `done` event of `POST /api/sync`, and `sync` in the `done` event of `POST /api/add` and `POST /api/add/upload`: `partial` lists each partly read file as `{"name", "pages"}`, where `pages` holds its failed pages, and `reasons` maps each failed or skipped file to its reason.
+- The `file_done` progress event: `status` is `ok`, `partial`, `skipped` or `error`. The `sync_done` event carries a `partial` count, and `batch_progress` uses the `partial` status for the same files.
+- `GET /api/status`: `partly_read` lists the partly read files as `{"name", "pages"}`, the first 50 by name, and `partial_total` counts all of them.
+- `GET /api/documents`: each document carries `ocr_page_failures`.
+
+`POST /api/sync` with `{"retry_skipped": true}` reads the partly read files again.
 
 ### Running as a service
 
@@ -1251,6 +1362,24 @@ lilbee resolves the data directory in this order (highest priority first):
 | Linux | `~/.local/share/lilbee/` |
 | Windows | `%LOCALAPPDATA%/lilbee/` |
 
+### What the data directory holds
+
+The data directory holds your documents, the search index, `config.toml`
+and the logs. Four locations stay outside it and are shared by every data
+directory:
+
+| Location | Platform default | Variable that moves it |
+|----------|------------------|------------------------|
+| Models folder (also the Hugging Face cache) | `models/` in the platform data folder | `LILBEE_MODELS_DIR` |
+| Engines folder | `engines/` next to the models folder | follows `LILBEE_MODELS_DIR` |
+| Machine engine slot | `engine/` in the platform state folder | `LILBEE_ENGINE_DIR` |
+| GGUF metadata cache | the platform cache folder | `XDG_CACHE_HOME` (Linux), `HOME` (macOS) |
+
+A model you pull once is available to every data directory. To isolate a
+run fully, set `LILBEE_DATA`, `LILBEE_MODELS_DIR` and `LILBEE_ENGINE_DIR`
+to new folders. On Linux, also set `XDG_DATA_HOME`, `XDG_STATE_HOME` and
+`XDG_CACHE_HOME`. On macOS, set `HOME`.
+
 Run `lilbee init` to create a `.lilbee/` directory in your project. It
 contains `documents/` (your indexed files), `data/` (the search index), a
 `.gitignore` that excludes derived data, and a commented `.lilbeeignore` to
@@ -1264,29 +1393,24 @@ Every persisted lilbee setting lives in a single TOML file at
 next to your code. Same file, same shape, regardless of which data dir you're
 on; the path just follows wherever the data dir is resolved to.
 
-Sections mirror the setting groups in the
-[settings reference](settings.md): `[general]`, `[retrieval]`, `[chunking]`,
-`[generation]`, `[server]`, etc. Example:
+Every setting is a top-level key, named as in the
+[settings reference](settings.md). The file has no section tables for settings.
+The only table is `[profile]`, which the `lilbee profile` commands write. Example:
 
 ```toml
 # .lilbee/config.toml
 
-[general]
 chat_model = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
 theme = "rose-pine"
-
-[retrieval]
 top_k = 12
 max_distance = 0.6
 reranker_model = "Qwen/Qwen3-Reranker-0.6B-GGUF/qwen3-reranker-0.6b.Q8_0.gguf"
-
-[generation]
 temperature = 0.2
 num_ctx_max = 32768
 ```
 
-You don't have to write the file by hand: the TUI's `/settings` screen and the
-`/set <key> <value>` slash command both persist to it, and the equivalent
+You don't have to write the file by hand: the TUI's `/settings` screen, the
+`/set <key> <value>` slash command and `lilbee settings set <key> <value>` all persist to it, and the equivalent
 `LILBEE_<KEY>=...` env vars override individual values at runtime without
 touching the file.
 
@@ -1311,43 +1435,53 @@ never drifts from the code.
 ## Optional extras
 
 Extras exist only on a `pip` or `uv` install. If you installed a bundled build
-(standalone binary, Homebrew, AUR, Nix, Docker, Flatpak, Snap, Scoop) all four
+(standalone binary, Homebrew, AUR, Nix, Docker, Flatpak, Snap, Scoop) all three
 are already inside it and none of this applies to you.
 
-`[engine]` is the `llama-server` that runs your models, and it is the one extra
-that is not really optional. `[graph]`, `[crawler]` and `[providers]` add
-capabilities you can happily live without.
+The model engine is not an extra. Run `lilbee engine install` to get the
+`llama-server` that runs your models, or let lilbee install it the first time a
+model needs it. `[graph]`, `[crawler]` and `[providers]` add capabilities you
+can happily live without.
 
 <details>
-<summary><strong>pip / uv: installing the engine extra</strong></summary>
+<summary><strong>pip / uv: installing the engine</strong></summary>
 
-`[engine]` is not on PyPI. The CUDA and ROCm wheels run 444 MiB to 863 MiB each,
-several times [PyPI's default 100 MiB per-file limit](https://pypi.org/help/#file-size-limit),
-so every backend is published from lilbee's own
-[PEP 503](https://peps.python.org/pep-0503/) package index at `lilbee.sh`. That
-is what `--extra-index-url` is for. Install without it and lilbee still starts,
-but the first call that needs a model fails with an error naming the engine and
-repeating the command for your hardware.
-
-The builds are not interchangeable, so pick the index for your hardware: `cpu` is
-built with every GPU backend off, `metal` ships only a macOS arm64 wheel, and
-`vulkan` only Linux and Windows ones.
+Install lilbee, then install the engine pack:
 
 ```bash
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/    # NVIDIA (CUDA)
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/rocm/     # AMD (ROCm)
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/metal/    # Apple silicon
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/vulkan/   # other GPUs
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/      # no GPU
+pip install --pre lilbee
+lilbee engine install
 ```
 
-Use the `uv` form that matches how you installed lilbee. The error message picks it for you.
-Swap the index the same way as above.
+The command downloads the pack for your hardware into lilbee's engine cache and
+checks its digest. Packs exist for Apple silicon (Metal), NVIDIA on Linux and
+Windows (CUDA), AMD and Intel GPUs on Linux and Windows (Vulkan), AMD GPUs on
+Linux (ROCm), and x86_64 Linux and Windows (CPU). lilbee picks the CUDA pack
+when it finds a usable NVIDIA driver. Next it picks the ROCm pack for a Linux
+computer with a supported AMD GPU, then the Vulkan pack for an AMD or Intel GPU.
+The ROCm pack needs the NUMA library on the computer: install `numactl-libs` on
+Fedora and RHEL, or `libnuma1` on Debian and Ubuntu. Without it, the computer
+gets the Vulkan pack. The Vulkan pack needs the Vulkan loader on Linux:
+install `vulkan-loader` or `libvulkan1`. Without it, the computer gets the CPU
+pack. If you skip the command, lilbee runs the
+same install the first time a model needs an engine. A computer with no network
+needs the pack copied into the `packs` folder of the engine cache by hand. The
+error from a failed download names the file to copy.
+
+**Your own engine.** No pack exists for Linux on ARM, Windows on ARM, or Intel
+Macs. On a computer with an AMD or Intel GPU that no pack can use, lilbee
+installs the CPU pack and logs a warning that names the GPU vendor. On those
+computers, use a bundled build, or run your own `llama-server`. Build `llama-server` from llama.cpp for your hardware. For ROCm,
+build with `GGML_HIP=ON`. For Vulkan, build with `GGML_VULKAN=ON`. Install
+lilbee with any of these commands. Then set `LILBEE_LLAMA_SERVER_PATH` to the
+binary.
 
 ```bash
-uv tool install --force --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/   # uv tool install
-uv pip install --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/             # a uv venv or a source checkout
-pipx install --force --pip-args='--pre --extra-index-url https://lilbee.sh/cpu/' 'lilbee[engine]'     # pipx
+pip install --pre lilbee                       # pip
+uv tool install --prerelease=allow lilbee      # uv tool install
+uv pip install --prerelease=allow lilbee       # a uv venv
+pipx install --pip-args=--pre lilbee           # pipx
+export LILBEE_LLAMA_SERVER_PATH=/path/to/llama-server
 ```
 
 </details>
@@ -1369,14 +1503,14 @@ uv tool install --prerelease=allow 'lilbee[crawler]'
 uv tool install --prerelease=allow 'lilbee[providers]'
 ```
 
-Install several at once, engine included:
+Install several at once:
 
 ```bash
 # uv tool
-uv tool install --prerelease=allow 'lilbee[engine,graph,crawler,providers]' --extra-index-url https://lilbee.sh/cu125/
+uv tool install --prerelease=allow 'lilbee[graph,crawler,providers]'
 
 # pip
-pip install --pre 'lilbee[engine,graph,crawler,providers]' --extra-index-url https://lilbee.sh/cu125/
+pip install --pre 'lilbee[graph,crawler,providers]'
 ```
 
 </details>
@@ -1389,14 +1523,14 @@ setups. Same `lilbee` command, links straight against your NVIDIA driver:
 brew install tobocop2/lilbee/lilbee-cuda
 paru -S lilbee-cuda
 nix run github:tobocop2/lilbee#lilbee-cuda
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/   # devs
+pip install --pre lilbee   # devs; downloads the CUDA engine pack
 ```
 
 The `lilbee-cuda` AUR package conflicts with `lilbee` and provides it, so
 `paru -S lilbee-cuda` swaps automatically. On Homebrew, run `brew
 uninstall lilbee` first because the two formulas both ship a `lilbee`
 binary. For older drivers swap `cu125` for `cu124` or `cu121` (run
-`nvidia-smi` to see which matches). cu121 and cu124 are wheel-index and
+`nvidia-smi` to see which matches). cu121 and cu124 are
 direct-download only; cu125 is the variant fanned out to the package
 managers.
 
@@ -1456,7 +1590,12 @@ export LILBEE_CONCEPT_MAX_PER_CHUNK=5         # max concepts extracted per chunk
 ```
 
 The graph is built automatically during `lilbee sync`. No extra commands
-needed; search results are boosted transparently.
+needed; search results are boosted transparently. If you turn the graph on for
+a library that is already indexed, the next sync builds it for the documents
+already there. You do not need to rebuild the index. If that sync stops part
+way, the sync after it continues with the documents it did not reach and then
+clusters the graph. The sync logs a line when it starts this work and one after
+each batch of 50 documents.
 
 Based on: Microsoft Research's LazyGraphRAG technique, Church & Hanks 1990
 (PMI), Traag et al. 2019 (Leiden).
@@ -1634,6 +1773,10 @@ lilbee placement set --spec placement.json
 lilbee placement show
 ```
 
+The output names the engine backend under the GPU table. If it says `unknown`,
+the device probe did not answer. Run `lilbee engine list`. Then run
+`lilbee engine install` to repair the engine. A host with no usable GPU says `cpu`.
+
 **To go back to automatic:**
 
 ```bash
@@ -1661,7 +1804,7 @@ Defaults suit most machines; these exist for the cases where they don't.
 | Setting | Env var | Default | Description |
 |---------|---------|---------|-------------|
 | `usable_vram_fraction` | `LILBEE_USABLE_VRAM_FRACTION` | `0.9` | Fraction of a card's **free** VRAM the planner may fill. The rest absorbs driver overhead and allocator fragmentation, which the engine's own report does not include. Range 0.5–1.0 |
-| `system_memory_reserve_gb` | `LILBEE_SYSTEM_MEMORY_RESERVE_GB` | `4.0` | Host RAM held back from any model that offloads to system memory, so the OS and everything else keep room. Range 0–64 |
+| `system_memory_reserve_gb` | `LILBEE_SYSTEM_MEMORY_RESERVE_GB` | `4.0` | Host RAM held back from any model that offloads to system memory, so the OS and everything else keep room. It is not a reserve for one server: set `memory_reserve_gb` on a [preset](presets.md#the-memory-reserve) for that. Range 0–64 |
 | `gpu_memory_fraction` | `LILBEE_GPU_MEMORY_FRACTION` | `0.75` | Fraction of the card chat sizes its KV cache against. Keep it at or below `usable_vram_fraction`; raising it past that only shrinks what chat is charged |
 
 Raise `usable_vram_fraction` toward `1.0` on a dedicated box with nothing else
@@ -1674,7 +1817,11 @@ running, if a model that offloads to host memory is being refused.
 Both are writable at runtime through `/settings`, `lilbee settings set`, and MCP.
 
 **If a model is refused for memory it looks like it should have:** run
-`lilbee placement preview` to see what the planner budgeted. The planner charges
+`lilbee placement preview` to see what the planner budgeted. Each role row shows
+its `charge`: the memory the planner charges for one instance of the role, on a
+card for a GPU role and in system memory for a CPU role. `GET /api/placement`
+returns the same figure as `charge_bytes`, or `null` when the planner has no
+charge for the role. The planner charges
 free VRAM rather than the card's total, so another process holding memory shows
 up here. On a partially offloaded model, check `system_memory_reserve_gb` too:
 the host side is budgeted separately from the card.
@@ -1683,6 +1830,35 @@ the host side is budgeted separately from the card.
 retries rather than respawning the same launch. Repeated shrink-and-retry
 messages for one model mean the estimate is too optimistic for that card;
 lowering `usable_vram_fraction` fixes it more directly than pinning placement.
+
+### Use another llama-server build
+
+Set `llama_server_path` (`LILBEE_LLAMA_SERVER_PATH`) to any llama-server binary, for example a CPU build of ik_llama.cpp:
+
+```bash
+git clone https://github.com/ikawrakow/ik_llama.cpp
+cd ik_llama.cpp
+git checkout 229c703c4c948382e634a0c563a049740ceac3ff
+cmake -B build -DGGML_NATIVE=OFF
+cmake --build build -j --target llama-server
+LILBEE_LLAMA_SERVER_PATH=$PWD/build/bin/llama-server lilbee
+```
+
+lilbee reads the `--help` text of the binary once. It writes an optional flag (`--flash-attn`, `--cache-type-k`, `--cache-type-v`, `--batch-size`, `--ubatch-size`, `--mmproj`, `--n-cpu-moe`, `--cpu-moe`, `--threads`, `--jinja`, `--reasoning-format`, `--no-prefill-assistant`, `--pooling`, `--kv-unified`, `--device`, `--tensor-split`, `--no-context-shift`, `--sse-ping-interval`, `--ctx-checkpoints`, `--cache-ram`) only if the help lists it. For each flag the build lacks, lilbee logs one warning that names the flag and the effect, and the launch continues. The one exception is `--pooling` for a cross-encoder reranker, described below.
+
+These rules keep the launch safe:
+
+- If the binary prints no help text, lilbee writes every optional flag and logs one warning.
+- lilbee always writes `--embeddings` for an embedding model and for a reranker. It does not check the help text for this flag. A build that lacks it stops with its own error.
+- A cross-encoder reranker needs `--pooling`. If the help text does not list it, lilbee refuses to load the reranker and names the build and the flag. Chat and embedding models still load. Set `reranker_type` to `llm` to rerank with such a build.
+- A build whose help text does not list `--device` or `--tensor-split` gets neither flag. Placement across several GPUs then does not apply to that build.
+- A build whose help text lists `--no-context-shift` starts with context shift off. llama.cpp already starts that way. ik_llama.cpp starts with context shift on, and then cuts a prompt that is longer than the context and can abort in its sampler. With the flag, the server refuses such a prompt with HTTP 400 and stays up.
+- lilbee writes `--sse-ping-interval 30`, so the server sends a keep-alive comment every 30 seconds while it reads a long prompt. The chat client ends a stream that is silent for 120 seconds after the headers. A `LLAMA_ARG_SSE_PING_INTERVAL=-1` in the environment does not turn the comment off, because the flag wins. If the help text does not list the flag, the launch goes without it, and a prompt that takes more than 120 seconds to read ends the stream on that build.
+- The engine keeps idle prompts and context checkpoints in system memory: up to 8 GiB of prompts, and 32 checkpoints a slot, by default. lilbee bounds both. A chat, vision or LLM reranker launch keeps at most 4 checkpoints a slot (`--ctx-checkpoints`), and a prompt cache (`--cache-ram`) of half the system memory that the plan leaves free, shared among those launches, at most 8 GiB each. The room is installed memory less the system reserve and what the loaded models hold, so the same plan writes the same flags every time. An embedding model and a cross-encoder reranker get `--cache-ram 0`. If the plan leaves no room, the model still loads with `--cache-ram 0`, and lilbee logs one warning: a conversation that returns after another one then reprocesses its whole prompt. If the room holds no checkpoint for a model that makes them, lilbee logs one warning that each turn reprocesses the whole conversation, also when the prompt cache stays.
+
+An ik_llama.cpp build does not list `--list-devices`. lilbee then reads the GPU list from the Vulkan loader of the computer. The ik_llama.cpp README lists ROCm, Vulkan and Metal as unsupported, so use a CPU or CUDA build. The CPU build of the commit below answered chat and embed requests from lilbee.
+
+The help text of ik_llama.cpp commit 229c703c4c948382e634a0c563a049740ceac3ff (2026-11-03) lists `--flash-attn`, `--cache-type-k`, `--cache-type-v`, `--batch-size`, `--ubatch-size`, `--mmproj`, `--n-cpu-moe`, `--cpu-moe`, `--threads`, `--jinja`, `--reasoning-format`, `--no-prefill-assistant`, `--pooling`, `--memory` and `--no-context-shift`. It does not list `--device`, `--tensor-split`, `--kv-unified`, `--list-devices` or `--load-mode`. It lists the embedding flag as `--embedding(s)`.
 
 ---
 
@@ -1753,9 +1929,10 @@ export LILBEE_SEMANTIC_CHUNKING=true
 
 # TUI /set command (interactive)
 /set semantic_chunking true
+```
 
+```toml
 # config.toml in your .lilbee/ vault
-[general]
 semantic_chunking = true
 ```
 
@@ -1809,6 +1986,10 @@ surface can clear it:
 `lilbee status`, the TUI status screen and the OCR rows of `/settings` show one
 "Scanned pages" line: read by the vision model, read by Tesseract with its
 languages, every page read (`ocr = all`), or skipped (`ocr = off`).
+
+If OCR fails on some pages of a file, lilbee keeps the text it has and
+reports the file as partly read on every surface. See
+[Manage documents](#manage-documents).
 
 | | Tesseract | Vision model |
 |---|---|---|

@@ -38,7 +38,10 @@ from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
 from lilbee.app.status import held_out_sources
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
+from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.cli.tui.screens.profile_tab import ProfileSnapshot, ProfileTab, load_snapshot
+from lilbee.cli.tui.screens.settings_engines import ENGINES_PANE_ID, EnginesPane
+from lilbee.cli.tui.screens.settings_presets import PRESETS_PANE_ID, PresetsPane
 from lilbee.cli.tui.screens.settings_widgets import (
     ADVANCED_COLLAPSIBLE_CLASS,
     ADVANCED_COLLAPSIBLE_ID_PREFIX,
@@ -120,7 +123,7 @@ class _LazyGroupBody(VerticalScroll, can_focus=False):
             self.mount_all(widgets)
 
 
-class SettingsScreen(Screen[None]):
+class SettingsScreen(MountWhenAttached, Screen[None]):
     """Interactive settings viewer with grouped, type-aware editors."""
 
     app: LilbeeApp  # type: ignore[assignment]
@@ -191,6 +194,8 @@ class SettingsScreen(Screen[None]):
         self._eagerly_populate = PROFILE_PANE_ID
         # What each editor showed when last built or refreshed; a save acts on a change from it.
         self._mount_display: dict[str, str] = {}
+        # Keys whose field lost focus and whose save on blur has not run yet.
+        self._saves_pending: set[str] = set()
         self._stale_source_keys: set[str] = set()
         # The index-changing values in force when the user came in; None while away.
         self._index_values: dict[str, Any] | None = None
@@ -218,7 +223,7 @@ class SettingsScreen(Screen[None]):
             yield StableFooter()
 
     def _compose_group_tabs(self) -> ComposeResult:
-        """Yield one TabPane per setting group; bodies populate on activation."""
+        """Yield one TabPane per setting group, Engines after Models, then Presets."""
         for group_name, items in group_settings().items():
             pane_id = f"settings-tab-{group_name.lower().replace('-', '_')}"
             self._pane_groups[pane_id] = _PaneGroup(
@@ -230,6 +235,19 @@ class SettingsScreen(Screen[None]):
                 _LazyGroupBody(id=f"{pane_id}-body"),
                 id=pane_id,
             )
+            if group_name == SettingGroup.MODELS:
+                self._pane_ids.append(ENGINES_PANE_ID)
+                yield TabPane(
+                    msg.SETTINGS_ENGINES_TAB,
+                    EnginesPane(id=f"{ENGINES_PANE_ID}-body"),
+                    id=ENGINES_PANE_ID,
+                )
+        self._pane_ids.append(PRESETS_PANE_ID)
+        yield TabPane(
+            msg.SETTINGS_PRESETS_TAB,
+            PresetsPane(id=f"{PRESETS_PANE_ID}-body"),
+            id=PRESETS_PANE_ID,
+        )
 
     def on_mount(self) -> None:
         """Defer first-pane content mount until after the screen has painted.
@@ -327,28 +345,51 @@ class SettingsScreen(Screen[None]):
         return top is self or top.styles.background.a < 1
 
     def _sync_editor(self, row: Widget, key: str) -> None:
-        """Show cfg's value in the editor in *row*, unless the user is typing in it."""
+        """Show cfg's value in the editor in *row*, unless the user is typing in it.
+
+        A field whose save on blur has not run yet keeps its text too: that save
+        must find what the user typed, not cfg's value.
+        """
         editor = row.query(f"#{EDITOR_ID_PREFIX}{key}")
-        if editor and not editor.first().has_focus_within:
+        if editor and not editor.first().has_focus_within and key not in self._saves_pending:
             self._show_editor_value(key, editor.first(), getattr(cfg, key))
+
+    def watch_focused(self, old: Widget | None, _new: Widget | None) -> None:
+        """Mark the field focus just left as waiting for its save on blur.
+
+        Focus moves at once, but the save runs later from the field's Blurred message.
+        Every Input and ListTextArea named after a setting is a field that saves on blur.
+        """
+        name = old.name if isinstance(old, Input | ListTextArea) else None
+        if name is not None and name in SETTINGS_MAP:
+            self._saves_pending.add(name)
 
     @work(exclusive=True, group="profile-load", exit_on_error=False)
     async def reload_profile(self) -> None:
         """Load the profile state off the loop, then show it on the line and the Profile tab.
 
         Only the read runs on a thread. A newer load cancels this task at the await,
-        and a cancelled thread worker would still deliver its old snapshot.
+        and a cancelled thread worker would still deliver its old snapshot. A quit
+        during the read leaves the screen detached, so nothing is shown then.
         """
         try:
-            snapshot = await asyncio.to_thread(load_snapshot)
+            result: ProfileSnapshot | OSError = await asyncio.to_thread(load_snapshot)
         except OSError as exc:
-            self._show_profile_failure(str(exc))
+            result = exc
+        if not self.is_attached:
             return
-        self._show_profile(snapshot)
+        if isinstance(result, OSError):
+            self._show_profile_failure(str(result))
+        else:
+            self._show_profile(result)
 
     def _mounted_profile_tabs(self) -> list[ProfileTab]:
-        """The tabs that can take a snapshot: filling one before it mounts raises."""
-        return [tab for tab in self.query(ProfileTab) if tab.is_mounted]
+        """The tabs that can take a snapshot: filling one before it mounts raises.
+
+        Textual marks a tab mounted even when the exiting app skipped its children, so it must
+        also be attached: a detached tab has nothing to query.
+        """
+        return [tab for tab in self.query(ProfileTab) if tab.is_mounted and tab.is_attached]
 
     def _show_profile_failure(self, reason: str) -> None:
         for tab in self._mounted_profile_tabs():
@@ -367,6 +408,18 @@ class SettingsScreen(Screen[None]):
     def _on_profile_jump(self) -> None:
         self.show_profile_tab()
 
+    def request_profile_tab(self) -> None:
+        """Show the Profile tab after the next refresh, also when asked before the screen mounts.
+
+        The screen's queue holds the call until Compose and Mount have run.
+        """
+        self.call_after_refresh(self._show_requested_profile_tab)
+
+    def _show_requested_profile_tab(self) -> None:
+        # A quit after the request leaves the screen running but detached.
+        if self.is_attached:
+            self.show_profile_tab()
+
     def show_profile_tab(self) -> None:
         """Activate the Profile tab and put focus on its dropdown."""
         self.query_one("#settings-tabs", TabbedContent).active = PROFILE_PANE_ID
@@ -374,8 +427,10 @@ class SettingsScreen(Screen[None]):
         self.call_after_refresh(self._focus_profile_select)
 
     def _focus_profile_select(self) -> None:
+        # Focus can land before the tab's own Mount settles, so it needs attached, not mounted.
         for tab in self.query(ProfileTab):
-            tab.focus_select()
+            if tab.is_attached:
+                tab.focus_select()
 
     @on(TabbedContent.TabActivated)
     def _on_tab_activated(self, event: TabbedContent.TabActivated) -> None:
@@ -528,6 +583,7 @@ class SettingsScreen(Screen[None]):
         name = event.input.name
         if name is None:
             return
+        self._saves_pending.discard(name)
         defn = SETTINGS_MAP.get(name)
         if defn is None:
             return
@@ -544,6 +600,7 @@ class SettingsScreen(Screen[None]):
         name = ta.name
         if name is None:
             return
+        self._saves_pending.discard(name)
         defn = SETTINGS_MAP.get(name)
         if defn is None:
             return
@@ -624,6 +681,7 @@ class SettingsScreen(Screen[None]):
         key = ta.name
         if key is None:
             return
+        self._saves_pending.discard(key)
         defn = SETTINGS_MAP.get(key)
         if defn is None:
             return
@@ -727,9 +785,17 @@ class SettingsScreen(Screen[None]):
         from lilbee.cli.tui.widgets.model_bar import classify_installed_models_full
 
         task = picker_scope_to_task(scope)
-        buckets = classify_installed_models_full()
+        try:
+            buckets = classify_installed_models_full()
+        except OSError as exc:
+            call_from_thread(self, self._registry_unreadable, exc)
+            return
         options = list(buckets.get(task, []))
         call_from_thread(self, self._push_model_picker, key, scope, options)
+
+    def _registry_unreadable(self, error: OSError) -> None:
+        """Say why no picker opens: an empty one would read as "nothing installed"."""
+        self.notify(msg.MODEL_REGISTRY_UNREADABLE.format(error=error), severity="error")
 
     def _push_model_picker(self, key: str, scope: PickerScope, options: list[ModelOption]) -> None:
         """Push ModelPickerModal once the worker has resolved options."""
@@ -754,7 +820,11 @@ class SettingsScreen(Screen[None]):
                 *options,
             ]
         self.app.push_screen(
-            ModelPickerModal(scope=scope, options=options),
+            ModelPickerModal(
+                scope=scope,
+                options=options,
+                pick_later=lambda ref: self._on_model_picker_dismissed(key, ref),
+            ),
             lambda ref: self._on_model_picker_dismissed(key, ref),
         )
 
@@ -957,7 +1027,7 @@ class SettingsScreen(Screen[None]):
         tabs = self.query_one("#settings-tabs", TabbedContent)
         active_pane_id = tabs.active
         try:
-            body = self.query_one(f"#{active_pane_id}-body", _LazyGroupBody)
+            body = self.query_one(f"#{active_pane_id}-body", VerticalScroll)
         except Exception:
             self._focus_adjacent(direction)
             return
@@ -976,6 +1046,8 @@ class SettingsScreen(Screen[None]):
             return
         target_index = (pane_ids.index(active_pane_id) + direction) % len(pane_ids)
         target_pane = pane_ids[target_index]
+        # Drop focus first: a widget focused in the hiding pane gets focus back and reverts the tab.
+        self.set_focus(None)
         tabs.active = target_pane
         self._populate_pane(target_pane)
         # Park focus on the first/last field of the new pane so the next
@@ -984,7 +1056,7 @@ class SettingsScreen(Screen[None]):
 
     def _focus_pane_edge(self, pane_id: str, direction: int) -> None:
         try:
-            body = self.query_one(f"#{pane_id}-body", _LazyGroupBody)
+            body = self.query_one(f"#{pane_id}-body", VerticalScroll)
         except Exception:
             return
         focusables = self._focus_stops(body)
@@ -992,7 +1064,7 @@ class SettingsScreen(Screen[None]):
             return
         focusables[0 if direction == 1 else -1].focus()
 
-    def _focus_stops(self, body: _LazyGroupBody) -> list[Widget]:
+    def _focus_stops(self, body: VerticalScroll) -> list[Widget]:
         """The widgets in *body* that Tab can reach, without the hidden ones."""
         return [
             w for w in self.focus_chain if body in w.ancestors and not isinstance(w, SettingRow)

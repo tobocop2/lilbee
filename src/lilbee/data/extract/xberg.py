@@ -8,15 +8,20 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from lilbee.core.config import active_config
+from lilbee.data.store import FailedPage
+from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.cpu import cpu_quota
 
+from .backends.tokenizer import TOKENIZER_SIZING_TYPE, TokenCountError, provider_tokenizers
+
 if TYPE_CHECKING:
-    from collections.abc import Coroutine
+    from collections.abc import Callable, Coroutine
 
     from xberg import (
         ConcurrencyConfig,
@@ -40,6 +45,14 @@ class BatchItem:
     on_progress: ProgressCallback | None = None
 
 
+def failed_ocr_pages(doc: ExtractedDocument) -> tuple[FailedPage, ...]:
+    """The pages of *doc* whose OCR failed, as xberg lists them; empty when none did."""
+    return tuple(
+        FailedPage(page=failure.page, error=failure.error, recovered=failure.recovered)
+        for failure in doc.ocr_page_failures or []
+    )
+
+
 def _input(data: bytes, mime_type: str | None, filename: str | None) -> ExtractInput:
     from xberg import ExtractInput, ExtractInputKind
 
@@ -58,6 +71,30 @@ def _concurrency_config() -> ConcurrencyConfig:
 def _with_concurrency(config: ExtractionConfig) -> ExtractionConfig:
     """*config* carrying the active concurrency; xberg latches the first call's pools."""
     return replace(config, concurrency=_concurrency_config())
+
+
+def _tokenizer_name(config: ExtractionConfig) -> str | None:
+    """The registered tokenizer *config* sizes its chunks with, or None."""
+    from xberg import ChunkSizing
+
+    chunking = config.chunking
+    # sizing is a ChunkSizing or the plain string "characters".
+    if chunking is None or not isinstance(chunking.sizing, ChunkSizing):
+        return None
+    if chunking.sizing.type != TOKENIZER_SIZING_TYPE:
+        return None
+    # ChunkSizing exposes the tokenizer name only in its JSON form.
+    name: str = json.loads(str(chunking.sizing))["model"]
+    return name
+
+
+def _count_failed_since(config: ExtractionConfig) -> Callable[[], bool]:
+    """A check that *config*'s tokenizer failed a count, or lost its provider, after this call."""
+    name = _tokenizer_name(config)
+    if name is None:
+        return lambda: False
+    start = provider_tokenizers.failures(name)
+    return lambda: start is None or provider_tokenizers.failures(name) != start
 
 
 def _first(result: ExtractionResult) -> ExtractedDocument:
@@ -85,13 +122,18 @@ async def aextract_document(
     """Extract one in-memory document. For callers already on the event loop.
 
     xberg calls *on_progress* once per OCR'd page, from a worker thread, and
-    swallows whatever it raises.
+    swallows whatever it raises. It also swallows a failed token count, so a count
+    that fails during the extraction raises :class:`TokenCountError` here.
     """
     from xberg.progress import extract
 
-    return _first(
+    count_failed = _count_failed_since(config)
+    doc = _first(
         await extract(_input(data, mime_type, filename), _with_concurrency(config), on_progress)
     )
+    if count_failed():
+        raise TokenCountError
+    return doc
 
 
 def _route_by_input(items: list[BatchItem]) -> ProgressCallback | None:
@@ -118,7 +160,8 @@ async def aextract_batch(
     Each item's OCR config overrides the batch default for that file, and each item's
     ``on_progress`` receives only that file's OCR page events. xberg compacts
     ``results`` to successes in input order and reports failures in ``errors`` by
-    input index; this remaps them back to one slot per input.
+    input index; this remaps them back to one slot per input. A token count that
+    fails during the batch makes every extracted input a :class:`TokenCountError`.
     """
     from xberg import ExtractInput, ExtractInputKind, FileExtractionConfig
     from xberg.progress import extract_batch
@@ -133,12 +176,15 @@ async def aextract_batch(
         )
         for item in items
     ]
+    count_failed = _count_failed_since(config)
     result = await extract_batch(inputs, _with_concurrency(config), _route_by_input(items))
     failed: dict[int, Exception] = {e.index: RuntimeError(e.message) for e in result.errors}
     success_indices = [i for i in range(len(items)) if i not in failed]
     by_index: dict[int, ExtractedDocument | Exception] = dict(
         zip(success_indices, result.results, strict=True)
     )
+    if count_failed():
+        by_index.update({i: TokenCountError() for i in success_indices})
     by_index.update(failed)
     return [by_index[i] for i in range(len(items))]
 
@@ -152,7 +198,7 @@ def extract_document(
 ) -> ExtractedDocument:
     """Extract one in-memory document from synchronous code.
 
-    Uses ``asyncio.run``; if a loop is already running on this thread, drives the
+    Uses ``run_main``; if a loop is already running on this thread, drives the
     coroutine on a fresh worker thread so it never re-enters that loop.
     """
     return _run(aextract_document(data, mime_type, filename=filename, config=config))
@@ -162,6 +208,6 @@ def _run(coro: Coroutine[None, None, ExtractedDocument]) -> ExtractedDocument:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
+        return run_main(coro)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
+        return pool.submit(contextvars.copy_context().run, run_main, coro).result()

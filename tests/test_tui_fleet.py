@@ -11,6 +11,7 @@ import threading
 
 import pytest
 
+from lilbee.app.placement import CLEAR_INSTRUCTION
 from lilbee.cli.tui.widgets.fleet_body import FleetPill
 from tests._lilbee_app_test_host import LilbeeAppHost
 
@@ -22,7 +23,7 @@ def _make_view(  # type: ignore[type-arg]
     manual: bool = False,
     unplaceable: tuple = (),
     spec_json=None,
-    co_tenants: tuple = (),
+    swap_classes: tuple = (),
     rejected_spec_json=None,
 ):
     from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
@@ -33,13 +34,13 @@ def _make_view(  # type: ignore[type-arg]
             GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(4)
         ),
         roles=(
-            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),
-            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1,), None, 1),
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1,), None, 1, "llama.cpp"),
         ),
         unplaceable=unplaceable,
         manual=manual,
         spec_json=spec_json,
-        co_tenants=co_tenants,
+        swap_classes=swap_classes,
         rejected_spec_json=rejected_spec_json,
     )
 
@@ -118,7 +119,7 @@ def _make_view_with_skipped():
 
     return PlacementView(
         gpus=(GpuInfo(0, "MTL", "MTL0", "Apple M3", 24 * GIB, 20 * GIB),),
-        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),),
+        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),),
         unplaceable=(),
         manual=False,
         spec_json=None,
@@ -138,6 +139,8 @@ async def test_skipped_role_shows_not_downloaded_note(monkeypatch):
 
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
         await pilot.pause()
         note = app.screen.query_one("#placement-skipped", Static)
         assert note.display is True
@@ -167,8 +170,137 @@ async def test_skipped_note_shows_a_bracketed_model_name_as_written(monkeypatch,
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
         rendered = str(app.screen.query_one("#placement-skipped", Static).render())
     assert f"chat: {fbm._clean_model_name(model)} not downloaded" in rendered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(140, 44), (80, 30)])
+async def test_a_role_with_no_engine_shows_its_notice(monkeypatch, size):
+    """A role no installed engine loads shows its notice, naming the fix, not an empty table."""
+    from dataclasses import replace
+
+    from textual.widgets import Static
+
+    from lilbee.app.placement import SkippedNoEngine
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import WorkerRole
+
+    notice = "No installed engine loads the mlx format. Run lilbee engine list to see them."
+    view = replace(
+        _make_view(), skipped_no_engine=(SkippedNoEngine(WorkerRole.CHAT, "org/m#mlx", notice),)
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+
+    app = FleetTestApp()
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        note = app.screen.query_one("#placement-skipped", Static)
+        assert note.display is True
+        assert str(note.render()) == f"chat: {notice}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(140, 44), (80, 30)])
+async def test_a_model_of_unknown_size_shows_its_notice(monkeypatch, size):
+    """A role placed on the unknown-size reserve says so in the fleet note, once."""
+    from dataclasses import replace
+
+    from textual.widgets import Static
+
+    from lilbee.app.placement import SizeUnknownRole
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import WorkerRole
+
+    notice = "The size of the chat model org/m is unknown, so 8.0 GiB is reserved for it."
+    view = replace(_make_view(), size_unknown=(SizeUnknownRole(WorkerRole.CHAT, "org/m", notice),))
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+
+    app = FleetTestApp()
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        note = app.screen.query_one("#placement-skipped", Static)
+        assert note.display is True
+        assert str(note.render()) == notice
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(140, 44), (80, 30)])
+async def test_a_tight_role_shows_how_much_memory_it_lacks_and_what_to_do(monkeypatch, size):
+    """A role placed on a card that cannot hold it says so in the fleet note."""
+    from textual.widgets import Static
+
+    from lilbee.app import placement as app_placement
+    from lilbee.core.config import cfg
+    from lilbee.providers.fleet.devices import FleetDevice
+    from lilbee.providers.fleet.placement import InstancePlan
+    from lilbee.providers.fleet.planning import ResolvedPlacement
+    from lilbee.providers.roles import WorkerRole
+
+    plan = ResolvedPlacement(
+        devices=(FleetDevice("CUDA", 0, "NVIDIA A40", 44 * GIB, 44 * GIB),),
+        instances=(InstancePlan(role=WorkerRole.CHAT, devices=(0,)),),
+        unplaceable_roles=(),
+        model_refs={WorkerRole.CHAT: "org/m"},
+        tight_roles={WorkerRole.CHAT: 3 * GIB},
+    )
+    monkeypatch.setattr(cfg, "placement", None)
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: plan)
+
+    app = FleetTestApp()
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        note = app.screen.query_one("#placement-skipped", Static)
+        assert note.display is True
+        rendered = str(note.render())
+        assert "Memory is tight for the chat model org/m" in rendered
+        assert "3.0 GiB more GPU memory than is available" in rendered
+        assert "free up GPU memory or use a smaller model" in rendered
+
+
+@pytest.mark.asyncio
+async def test_two_tight_roles_show_one_line_each(monkeypatch):
+    """The fleet note puts each tight role on its own line, in role-name order."""
+    from textual.widgets import Static
+
+    from lilbee.app import placement as app_placement
+    from lilbee.core.config import cfg
+    from lilbee.providers.fleet.devices import FleetDevice
+    from lilbee.providers.fleet.placement import InstancePlan
+    from lilbee.providers.fleet.planning import ResolvedPlacement
+    from lilbee.providers.roles import WorkerRole
+
+    plan = ResolvedPlacement(
+        devices=(FleetDevice("CUDA", 0, "NVIDIA A40", 44 * GIB, 44 * GIB),),
+        instances=(
+            InstancePlan(role=WorkerRole.CHAT, devices=(0,)),
+            InstancePlan(role=WorkerRole.EMBED, devices=(0,)),
+        ),
+        unplaceable_roles=(),
+        model_refs={WorkerRole.CHAT: "org/chat", WorkerRole.EMBED: "org/embed"},
+        tight_roles={WorkerRole.EMBED: 1 * GIB, WorkerRole.CHAT: 3 * GIB},
+    )
+    monkeypatch.setattr(cfg, "placement", None)
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: plan)
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        lines = str(app.screen.query_one("#placement-skipped", Static).render()).split("\n")
+
+    assert len(lines) == 2
+    assert lines[0].startswith("Memory is tight for the chat model org/chat:")
+    assert lines[1].startswith("Memory is tight for the embed model org/embed:")
 
 
 @pytest.mark.asyncio
@@ -182,6 +314,8 @@ async def test_no_skipped_note_when_all_models_installed(monkeypatch):
 
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
         await pilot.pause()
         assert app.screen.query_one("#placement-skipped", Static).display is False
 
@@ -199,7 +333,7 @@ async def test_fleet_view_shows_live_rows_with_role_badges(monkeypatch):
         await pilot.pause()
         panel = app.screen.query_one(GpuFleetPanel)
         # chat is on device 1; role badge for device 1 must start with "chat"
-        assert panel._roles[1].startswith("chat")
+        assert panel._roles[1].plain.startswith("\u25a0 chat")
 
 
 @pytest.mark.asyncio
@@ -249,7 +383,9 @@ def _make_split_view():  # type: ignore[no-untyped-def]
         gpus=tuple(
             GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(4)
         ),
-        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1, 2), (3, 1), 1),),
+        roles=(
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1, 2), (3, 1), 1, "llama.cpp"),
+        ),
         unplaceable=(),
         manual=True,
         spec_json=None,
@@ -485,23 +621,78 @@ async def test_unplaceable_warns(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ignored_saved_placement_warns(monkeypatch):
-    """A stale pin reaches the surface the user is looking at, not just the log."""
-    from lilbee.cli.tui.widgets import fleet_body as fbm
+async def test_the_drawer_says_why_a_role_does_not_fit(monkeypatch):
+    """A role that gets no server shows the planner's reason beside the warning, as the CLI does."""
+    from dataclasses import replace
 
-    view = _make_view(rejected_spec_json='{"embed": {"devices": [7]}}')
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import WorkerRole
+
+    reason = (
+        "vision model org/vision.gguf does not fit available memory and will not be served. "
+        "Pick a smaller model."
+    )
+    view = replace(_make_view(unplaceable=(WorkerRole.VISION,)), refusal=reason)
     monkeypatch.setattr(fbm, "get_placement", lambda: view)
 
-    notes: list[str] = []
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
-        body = app.screen.query_one("FleetBody")
-        body.notify = lambda msg, **k: notes.append(msg)  # type: ignore[method-assign]
-        body._load_worker()
-        await app.workers.wait_for_complete()
         await pilot.pause()
+        line = app.screen.query_one("#placement-skipped", Static)
+        assert line.display
+        assert str(line.render()) == reason
 
-    assert any("does not fit this hardware" in n for n in notes)
+
+@pytest.mark.asyncio
+async def test_a_fallback_drawer_names_the_reason_and_where_each_pinned_role_runs(monkeypatch):
+    """After a placement fallback the drawer says what CLI, REST and MCP say."""
+    from dataclasses import replace
+
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+
+    reason = "embed is pinned to device 7, but this machine lists only devices 0 to 3."
+    dropped = "The pins are dropped: embed was pinned to device 7 and now runs on device 0."
+    view = replace(
+        _make_view(rejected_spec_json='{"embed": {"devices": [7]}}'),
+        refusal=reason,
+        pins_dropped=dropped,
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        line = app.screen.query_one("#placement-skipped", Static)
+        assert line.display
+        assert str(line.render()).split("\n") == [reason, dropped, CLEAR_INSTRUCTION]
+
+
+@pytest.mark.asyncio
+async def test_a_drawer_for_a_waiting_spec_does_not_offer_to_clear_it(monkeypatch):
+    """A spec that waits for an engine is kept, so the drawer gives no clear instruction."""
+    from dataclasses import replace
+
+    from textual.widgets import Static
+
+    from lilbee.app.placement import PlacementRefusal
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+
+    view = replace(
+        _make_view(rejected_spec_json='{"chat": {"devices": [0]}}'),
+        refusal="The saved placement applies once an engine is installed.",
+        refusal_kind=PlacementRefusal.WAITING_FOR_ENGINE,
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        line = app.screen.query_one("#placement-skipped", Static)
+        assert CLEAR_INSTRUCTION not in str(line.render())
 
 
 @pytest.mark.asyncio
@@ -511,7 +702,7 @@ async def test_co_tenant_roles_are_surfaced(monkeypatch):
     from lilbee.cli.tui.widgets import fleet_body as fbm
     from lilbee.providers.roles import WorkerRole
 
-    view = _make_view(co_tenants=(WorkerRole.CHAT, WorkerRole.VISION))
+    view = _make_view(swap_classes=(frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION})))
     monkeypatch.setattr(fbm, "get_placement", lambda: view)
 
     notes: list[str] = []
@@ -537,7 +728,7 @@ async def test_apply_disables_editor_while_running(monkeypatch):
 
     monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
     gate = threading.Event()
-    monkeypatch.setattr(fbm, "set_placement", lambda spec: gate.wait())
+    monkeypatch.setattr(fbm, "set_placement", lambda spec: gate.wait() and _make_view())
 
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
@@ -565,6 +756,7 @@ async def test_apply_ignored_while_applying(monkeypatch):
     def _blocking(spec):  # type: ignore[no-untyped-def]
         calls.append(spec)
         gate.wait()
+        return _make_view()
 
     monkeypatch.setattr(fbm, "set_placement", _blocking)
 
@@ -635,8 +827,8 @@ async def test_remove_device_when_multiple_devices(monkeypatch):
         return PlacementView(
             gpus=tuple(GpuInfo(i, "CUDA", f"CUDA{i}", "A40", 44 * GIB, 44 * GIB) for i in range(4)),
             roles=(
-                RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0, 3), None, 1),
-                RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1,), None, 1),
+                RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0, 3), None, 1, "llama.cpp"),
+                RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1,), None, 1, "llama.cpp"),
             ),
             unplaceable=(),
             manual=False,
@@ -899,7 +1091,7 @@ async def test_apply_shows_rebuilding_status(monkeypatch):
 
     monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
     gate = threading.Event()
-    monkeypatch.setattr(fbm, "set_placement", lambda spec: gate.wait())
+    monkeypatch.setattr(fbm, "set_placement", lambda spec: gate.wait() and _make_view())
 
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
@@ -931,7 +1123,7 @@ async def test_reset_shows_rebuilding_then_clears_draft(monkeypatch):
 
     monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
     gate = threading.Event()
-    monkeypatch.setattr(fbm, "set_placement", lambda spec: gate.wait())
+    monkeypatch.setattr(fbm, "set_placement", lambda spec: gate.wait() and _make_view())
 
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
@@ -989,13 +1181,16 @@ async def test_failed_change_restores_live_view(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reload_read_error_after_change_notifies(monkeypatch):
-    """If re-reading the live placement after an applied change fails, the error
-    surfaces and the editor doesn't hang in the applying state."""
+async def test_reload_read_error_after_a_failed_change_keeps_the_change_error(monkeypatch):
+    """A change that failed is followed by a re-read of the live placement. If that read
+    fails too, the change error surfaces and the editor doesn't hang in the applying state."""
     from lilbee.cli.tui.widgets import fleet_body as fbm
     from lilbee.cli.tui.widgets.fleet_body import FleetBody
 
-    monkeypatch.setattr(fbm, "set_placement", lambda spec: _make_view(manual=True))
+    def _fail(spec):  # type: ignore[no-untyped-def]
+        raise RuntimeError("apply failed")
+
+    monkeypatch.setattr(fbm, "set_placement", _fail)
     reads = {"n": 0}
 
     def _get():
@@ -1017,7 +1212,7 @@ async def test_reload_read_error_after_change_notifies(monkeypatch):
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert body.applying is False
-    assert any("probe failed on reload" in n for n in notes)
+    assert any("apply failed" in n for n in notes)
 
 
 @pytest.mark.asyncio
@@ -1047,6 +1242,7 @@ async def test_spec_from_editor_errors_on_empty_devices(monkeypatch):
         ("Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf", "Qwen3-Embedding-8B"),
         ("Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf", "Qwen3-4B"),
         ("bartowski/Llama-3.3-70B.gguf", "Llama-3.3-70B"),
+        ("bartowski/Llama-3.3-70B.gguf#gguf", "Llama-3.3-70B"),
         ("plain-name-Q6_K.gguf", "plain-name"),
         ("solo-model-Q4_K_M-00001-of-00003.gguf", "solo-model"),
     ],
@@ -1067,8 +1263,12 @@ def _make_big_view(n: int):  # type: ignore[no-untyped-def]
             GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A100", 80 * GIB, 80 * GIB) for i in range(n)
         ),
         roles=(
-            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", tuple(range(n)), None, 1),
-            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", tuple(range(n)), None, n),
+            RolePlacementView(
+                WorkerRole.CHAT, "org/chat.gguf", tuple(range(n)), None, 1, "llama.cpp"
+            ),
+            RolePlacementView(
+                WorkerRole.EMBED, "org/embed.gguf", tuple(range(n)), None, n, "llama.cpp"
+            ),
         ),
         unplaceable=(),
         manual=True,
@@ -1127,9 +1327,9 @@ def _make_view_rerank():  # type: ignore[no-untyped-def]
             GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(4)
         ),
         roles=(
-            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0, 1), None, 1),
-            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),
-            RolePlacementView(WorkerRole.RERANK, "org/rerank.gguf", (0,), None, 1),
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0, 1), None, 1, "llama.cpp"),
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),
+            RolePlacementView(WorkerRole.RERANK, "org/rerank.gguf", (0,), None, 1, "llama.cpp"),
         ),
         unplaceable=(),
         manual=True,
@@ -1163,3 +1363,640 @@ async def test_rerank_is_single_select(monkeypatch):
         assert body._edits[WorkerRole.RERANK].devices == {2}
         assert app.screen.query_one("#dev-rerank-2", FleetPill).has_class("on")
         assert not app.screen.query_one("#dev-rerank-0", FleetPill).has_class("on")
+
+
+def _view_naming(spec_json: str, roles):  # type: ignore[no-untyped-def]
+    """A four-card manual view whose saved spec is *spec_json*, with *roles* as the plan."""
+    from lilbee.app.placement import GpuInfo, PlacementView
+
+    return PlacementView(
+        gpus=tuple(
+            GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(4)
+        ),
+        roles=roles,
+        unplaceable=(),
+        manual=True,
+        spec_json=spec_json,
+    )
+
+
+async def _press_until(pilot, selector: str, predicate) -> None:  # type: ignore[no-untyped-def]
+    """Press a pill and wait on the state the press must produce."""
+    from tests._async_wait import wait_until
+
+    pilot.app.screen.query_one(selector, FleetPill).press()
+    assert await wait_until(pilot, predicate)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(80, 30), (140, 44)])
+async def test_the_cpu_and_auto_choices_render_on_every_role_row(monkeypatch, size):
+    """Row tui_cpu_choice_rendered: each role row offers cpu and auto, with no raw value."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+    app = FleetTestApp()
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        rows = [str(row.render()) for row in body.query(".dev-toggle")]
+        assert rows.count(" cpu ") == 2
+        assert rows.count(" auto ") == 2
+        assert not [text for text in rows if "None" in text or "RoleTarget" in text]
+        assert _generated(app) == '{"chat": {"devices": [1]}, "embed": {"devices": [0]}}'
+
+
+@pytest.mark.asyncio
+async def test_the_cpu_choice_takes_a_role_off_its_cards_and_keeps_the_others(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        await _press_until(
+            pilot, "#tgt-embed-cpu", lambda: body.query_one("#tgt-embed-cpu").has_class("on")
+        )
+        assert _generated(app) == '{"chat": {"devices": [1]}, "embed": {"target": "cpu"}}'
+        await _press_until(
+            pilot, "#tgt-embed-auto", lambda: body.query_one("#tgt-embed-auto").has_class("on")
+        )
+        assert not body.query_one("#tgt-embed-cpu").has_class("on")
+        assert _generated(app) == '{"chat": {"devices": [1]}, "embed": {"target": "auto"}}'
+        await _press_until(
+            pilot, "#dev-embed-2", lambda: body.query_one("#dev-embed-2").has_class("on")
+        )
+        assert not body.query_one("#tgt-embed-auto").has_class("on")
+        assert _generated(app) == '{"chat": {"devices": [1]}, "embed": {"devices": [2]}}'
+
+
+@pytest.mark.asyncio
+async def test_pressing_a_chosen_target_again_leaves_the_role_with_no_card(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        await _press_until(
+            pilot, "#tgt-chat-cpu", lambda: body.query_one("#tgt-chat-cpu").has_class("on")
+        )
+        await _press_until(
+            pilot, "#tgt-chat-cpu", lambda: not body.query_one("#tgt-chat-cpu").has_class("on")
+        )
+        assert _generated(app) == "chat needs at least one GPU"
+
+
+@pytest.mark.asyncio
+async def test_an_unedited_apply_keeps_the_target_the_spec_names(monkeypatch):
+    """The editor rebuilds the spec it loaded: a cpu role, an auto role and a named gpu stay."""
+    from lilbee.app.placement import RolePlacementView
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import RoleTarget, WorkerRole
+
+    spec = (
+        '{"chat": {"devices": [1], "target": "gpu"}, "embed": {"target": "cpu"}, '
+        '"vision": {"target": "auto"}}'
+    )
+    view = _view_naming(
+        spec,
+        (
+            RolePlacementView(WorkerRole.CHAT, "c.gguf", (1,), None, 1, "llama.cpp"),
+            RolePlacementView(
+                WorkerRole.EMBED, "e.gguf", (), None, 1, "llama.cpp", target=RoleTarget.CPU
+            ),
+            RolePlacementView(WorkerRole.VISION, "v.gguf", (2,), None, 1, "llama.cpp"),
+        ),
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        assert _generated(app) == (
+            '{"chat": {"devices": [1], "target": "gpu"}, "embed": {"target": "cpu"}, '
+            '"vision": {"target": "auto"}}'
+        )
+
+
+@pytest.mark.asyncio
+async def test_one_card_still_offers_the_cpu_choice(monkeypatch):
+    from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+
+    view = PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A40", 44 * GIB, 44 * GIB),),
+        roles=(RolePlacementView(WorkerRole.EMBED, "e.gguf", (0,), None, 1, "llama.cpp"),),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+    app = FleetTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        await _press_until(
+            pilot, "#tgt-embed-cpu", lambda: body.query_one("#tgt-embed-cpu").has_class("on")
+        )
+        assert _generated(app) == '{"embed": {"target": "cpu"}}'
+
+
+_LOST_CARD = (
+    "chat is pinned to device 1, but this machine lists only device 0. "
+    "Set the chat devices to a card that exists, or set its target to cpu."
+)
+_LOST_CARD_SPEC = (
+    '{"chat": {"devices": [1], "target": "gpu"}, "embed": {"target": "cpu"}, '
+    '"vision": {"devices": [0], "target": "gpu"}}'
+)
+
+
+def _one_card_view(roles, **kwargs):  # type: ignore[no-untyped-def]
+    from lilbee.app.placement import GpuInfo, PlacementView
+
+    return PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A40", 24 * GIB, 24 * GIB),),
+        roles=roles,
+        unplaceable=(),
+        **kwargs,
+    )
+
+
+def _refused_view():  # type: ignore[no-untyped-def]
+    """What the service returns for a spec that names a card the machine lost."""
+    from lilbee.app.placement import RolePlacementView
+    from lilbee.providers.roles import RoleTarget, WorkerRole
+
+    return _one_card_view(
+        (
+            RolePlacementView(
+                WorkerRole.EMBED, "e.gguf", (), None, 1, "llama.cpp", target=RoleTarget.CPU
+            ),
+            RolePlacementView(WorkerRole.VISION, "v.gguf", (0,), None, 1, "llama.cpp"),
+        ),
+        manual=False,
+        spec_json=None,
+        rejected_spec_json=_LOST_CARD_SPEC,
+        refusal=_LOST_CARD,
+    )
+
+
+@pytest.mark.asyncio
+async def test_choosing_cpu_on_a_swap_plan_leaves_the_other_roles_to_the_planner(monkeypatch):
+    """Pinning chat and vision to the one card drops their swap group, so the spec is refused."""
+    from lilbee.app.placement import RolePlacementView
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+
+    view = _one_card_view(
+        tuple(
+            RolePlacementView(role, f"{role.value}.gguf", (0,), None, 1, "llama.cpp")
+            for role in (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION)
+        ),
+        manual=False,
+        spec_json=None,
+        swap_classes=(frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION})),
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        await _press_until(
+            pilot, "#tgt-embed-cpu", lambda: body.query_one("#tgt-embed-cpu").has_class("on")
+        )
+        assert _generated(app) == (
+            '{"chat": {"target": "auto"}, "embed": {"target": "cpu"}, "vision": {"target": "auto"}}'
+        )
+        assert body.query_one("#dev-chat-0").has_class("on")
+
+
+@pytest.mark.asyncio
+async def test_a_card_pressed_on_a_planned_role_pins_that_role(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import WorkerRole
+
+    view = _make_view(swap_classes=(frozenset({WorkerRole.CHAT, WorkerRole.EMBED}),))
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        assert _generated(app) == '{"chat": {"target": "auto"}, "embed": {"target": "auto"}}'
+        await _toggle_device(pilot, "#dev-chat-2")
+        assert _generated(app) == '{"chat": {"devices": [1, 2]}, "embed": {"target": "auto"}}'
+        await _step_until_generated(
+            pilot,
+            "#rep-embed-inc",
+            app,
+            lambda text: '"embed": {"devices": [0], "replicas": 2}' in text,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_spec_keeps_every_role_the_user_chose(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+
+    monkeypatch.setattr(fbm, "get_placement", _refused_view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        assert body.query_one("#tgt-embed-cpu").has_class("on")
+        assert list(body._edits) == [WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION]
+        assert _generated(app) == _LOST_CARD_SPEC
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(60, 24), (140, 44)])
+async def test_a_refused_spec_shows_the_service_reason_and_not_the_ignored_text(monkeypatch, size):
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    monkeypatch.setattr(fbm, "get_placement", _refused_view)
+    app = FleetTestApp()
+    notes: list[str] = []
+    async with app.run_test(size=size) as pilot:
+        body = app.screen.query_one(FleetBody)
+        body.notify = lambda msg, **k: notes.append(msg)  # type: ignore[method-assign]
+        body._load_worker()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        line = body.query_one("#placement-skipped", Static)
+        assert line.display
+        assert str(line.render()) == f"{_LOST_CARD}\n{CLEAR_INSTRUCTION}"
+    assert not [note for note in notes if "being ignored" in note]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(60, 24), (140, 44)])
+async def test_a_hidden_gpu_shows_the_line_that_says_how_to_use_it(monkeypatch, size):
+    from dataclasses import replace
+
+    from textual.widgets import Static
+
+    from lilbee.app.placement import RolePlacementView
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import WorkerRole
+
+    note = "Intel GPU not used: lilbee runs the engine on the NVIDIA GPU."
+    view = replace(
+        _one_card_view(
+            (RolePlacementView(WorkerRole.CHAT, "c.gguf", (0,), None, 1, "llama.cpp"),),
+            manual=False,
+            spec_json=None,
+        ),
+        hidden_gpus=("Intel",),
+        hidden_note=note,
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+    app = FleetTestApp()
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        line = app.screen.query_one("#placement-skipped", Static)
+        assert line.display
+        assert str(line.render()) == note
+
+
+@pytest.mark.asyncio
+async def test_a_refused_spec_applies_unedited_and_applies_a_correction(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import RoleTarget, WorkerRole
+
+    monkeypatch.setattr(fbm, "get_placement", _refused_view)
+    calls: list[object] = []
+    monkeypatch.setattr(fbm, "set_placement", lambda spec: calls.append(spec) or _refused_view())
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        await _press_until(
+            pilot, "#tgt-chat-cpu", lambda: body.query_one("#tgt-chat-cpu").has_class("on")
+        )
+        body.action_apply()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert len(calls) == 1
+    roles = calls[0].roles
+    assert roles[WorkerRole.CHAT].target is RoleTarget.CPU
+    assert roles[WorkerRole.EMBED].target is RoleTarget.CPU
+    assert roles[WorkerRole.VISION].devices == (0,)
+
+
+@pytest.mark.asyncio
+async def test_a_card_pressed_on_a_role_drops_the_card_the_machine_lost(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+
+    monkeypatch.setattr(fbm, "get_placement", _refused_view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await _toggle_device(pilot, "#dev-chat-0")
+        assert '"chat": {"devices": [0], "target": "gpu"}' in _generated(app)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(120, 40), (60, 30)])
+async def test_the_screen_shows_the_saved_placement_and_each_missing_engine(
+    monkeypatch, tmp_path, size
+):
+    """With no engine installed, the real read feeds the screen: no patched placement."""
+    from textual.widgets import Static
+
+    from lilbee.app import placement as app_placement
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+    from lilbee.core.config import cfg
+    from tests._async_wait import wait_until
+
+    monkeypatch.setattr(cfg, "data_root", tmp_path)
+    monkeypatch.setattr(cfg, "placement", '{"chat": {"devices": [0]}}')
+    monkeypatch.setattr("lilbee.app.engine_choice.installed_engines", dict)
+    monkeypatch.setattr(app_placement, "peek_services", lambda: None)
+    # The stats tick would also settle the panel after a second; stop it so that
+    # only the repaint on an empty device list can show the text.
+    monkeypatch.setattr(GpuFleetPanel, "_request_stats", lambda self: None)
+
+    app = FleetTestApp()
+    async with app.run_test(size=size) as pilot:
+        panel = app.screen.query_one("#gpu-fleet-panel", Static)
+        assert await wait_until(pilot, lambda: msg.FLEET_NO_GPUS in str(panel.render()))
+        assert msg.FLEET_GPU_PROBING not in str(panel.render())
+        skipped = app.screen.query_one("#placement-skipped", Static)
+        await wait_until(pilot, lambda: skipped.display is True)
+        notes = str(skipped.render())
+        assert "No installed engine loads" in notes
+        assert notes.startswith("chat:")
+        assert app_placement.SAVED_PLACEMENT_WAITS_FOR_ENGINE in notes
+        state = str(app.screen.query_one("#placement-state", Static).render())
+        assert state == msg.FLEET_STATE_AUTO
+
+
+def _no_engine_saved_view():  # type: ignore[no-untyped-def]
+    """What the service returns when a saved spec exists and no installed engine can run it."""
+    from lilbee.app.placement import PlacementRefusal, PlacementView
+
+    return PlacementView(
+        gpus=(),
+        roles=(),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+        rejected_spec_json=_LOST_CARD_SPEC,
+        # A sentence the screen has never seen: it reads the kind, not the words.
+        refusal="Install an engine and this placement applies.",
+        refusal_kind=PlacementRefusal.WAITING_FOR_ENGINE,
+    )
+
+
+def _no_model_saved_view():  # type: ignore[no-untyped-def]
+    """What the service returns when a saved spec exists and no model is installed for it."""
+    from lilbee.app.placement import (
+        SAVED_PLACEMENT_WAITS_FOR_A_MODEL,
+        PlacementRefusal,
+        PlacementView,
+    )
+
+    return PlacementView(
+        gpus=(),
+        roles=(),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+        rejected_spec_json=_LOST_CARD_SPEC,
+        refusal=SAVED_PLACEMENT_WAITS_FOR_A_MODEL,
+        refusal_kind=PlacementRefusal.WAITING_FOR_MODEL,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_saved_spec_with_no_model_keeps_the_saved_rows(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+    from tests._async_wait import wait_until
+
+    monkeypatch.setattr(fbm, "get_placement", _no_model_saved_view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        body = app.screen.query_one(FleetBody)
+        assert await wait_until(pilot, lambda: WorkerRole.CHAT in body._edits)
+
+
+@pytest.mark.asyncio
+async def test_a_saved_spec_with_no_engine_adds_no_editor_row(monkeypatch):
+    from textual.css.query import NoMatches
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from tests._async_wait import wait_until
+
+    monkeypatch.setattr(fbm, "get_placement", _no_engine_saved_view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        body = app.screen.query_one(FleetBody)
+        skipped = app.screen.query_one("#placement-skipped", Static)
+        assert await wait_until(pilot, lambda: skipped.display is True)
+        assert body._edits == {}
+        for selector in ("#tgt-chat-cpu", "#tgt-chat-auto"):
+            with pytest.raises(NoMatches):
+                body.query_one(selector)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_spec_with_an_engine_keeps_a_row_for_a_role_the_plan_lacks(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import RoleTarget, WorkerRole
+    from tests._async_wait import wait_until
+
+    monkeypatch.setattr(fbm, "get_placement", _refused_view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        body = app.screen.query_one(FleetBody)
+        assert await wait_until(pilot, lambda: WorkerRole.CHAT in body._edits)
+        chat = body._edits[WorkerRole.CHAT]
+        assert chat.model == ""
+        assert chat.target == RoleTarget.GPU
+        assert chat.devices == {1}
+        assert body.query_one("#tgt-chat-cpu")
+        assert body.query_one("#tgt-chat-auto")
+
+
+def _refused_nothing_placed_view():  # type: ignore[no-untyped-def]
+    """What the service returns on a CPU host with an engine: the refused spec places no role."""
+    from lilbee.app.placement import PlacementView, SkippedRole
+    from lilbee.providers.roles import EngineBackend, WorkerRole
+
+    return PlacementView(
+        gpus=(),
+        roles=(),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+        rejected_spec_json=_LOST_CARD_SPEC,
+        refusal=(
+            "chat is pinned to device 1, but this machine lists no devices. "
+            "Set the chat devices to a card that exists, or set its target to cpu."
+        ),
+        skipped_not_installed=(SkippedRole(WorkerRole.EMBED, "e.gguf"),),
+        engine_backend=EngineBackend.CPU,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_spec_with_an_engine_and_nothing_placed_keeps_the_saved_rows(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import RoleTarget, WorkerRole
+    from tests._async_wait import wait_until
+
+    monkeypatch.setattr(fbm, "get_placement", _refused_nothing_placed_view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        body = app.screen.query_one(FleetBody)
+        assert await wait_until(pilot, lambda: WorkerRole.CHAT in body._edits)
+        assert set(body._edits) == {WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION}
+        chat = body._edits[WorkerRole.CHAT]
+        assert chat.target == RoleTarget.GPU
+        assert chat.devices == {1}
+        assert body._edits[WorkerRole.EMBED].target == RoleTarget.CPU
+        assert body.query_one("#tgt-chat-cpu")
+        assert body.query_one("#tgt-chat-auto")
+
+
+def _editor_row_view(spec_json, rejected_spec_json):  # type: ignore[no-untyped-def]
+    """A view whose chat row runs a split model, with the saved spec in the named field."""
+    from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+    from lilbee.providers.roles import WorkerRole
+
+    return PlacementView(
+        gpus=tuple(
+            GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(3)
+        ),
+        roles=(
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1, 2), (3, 1), 1, "llama.cpp"),
+        ),
+        unplaceable=(),
+        manual=spec_json is not None,
+        spec_json=spec_json,
+        rejected_spec_json=rejected_spec_json,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("spec_json", "rejected_spec_json", "split"),
+    [
+        pytest.param(None, None, (3, 1), id="no-saved-spec"),
+        pytest.param('{"chat": {"devices": [1, 2]}}', None, (3, 1), id="saved-spec-names-the-role"),
+        pytest.param(None, '{"chat": {"devices": [1, 2]}}', None, id="refused-spec-names-the-role"),
+    ],
+)
+async def test_an_editor_row_keeps_the_model_the_plan_runs(
+    monkeypatch, spec_json, rejected_spec_json, split
+):
+    """Each branch that builds a row hands on the plan's model, and the plan's split unless a
+    refused spec names the role."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+    from tests._async_wait import wait_until
+
+    view = _editor_row_view(spec_json, rejected_spec_json)
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        body = app.screen.query_one(FleetBody)
+        assert await wait_until(pilot, lambda: WorkerRole.CHAT in body._edits)
+        row = body._edits[WorkerRole.CHAT]
+        assert row.model == "org/chat.gguf"
+        assert row.tensor_split == split
+
+
+@pytest.mark.asyncio
+async def test_a_clear_the_planner_cannot_read_names_the_models_still_running(monkeypatch):
+    """A clear that cannot read the plan shows the view it returned, not a fresh read that fails."""
+    from textual.widgets import Static
+
+    from lilbee.app.placement import PlacementView, SkippedNoEngine
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import WorkerRole
+    from tests._async_wait import wait_until
+
+    notice = (
+        "The chat model org/chat.gguf is still running: the placement could not be read, "
+        "so the clear is saved but not applied. Restart lilbee to apply it."
+    )
+    returned = PlacementView(
+        gpus=(),
+        roles=(),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+        skipped_no_engine=(SkippedNoEngine(WorkerRole.CHAT, "org/chat.gguf", notice),),
+    )
+    reads = iter([_make_view()])
+
+    def _read():  # type: ignore[no-untyped-def]
+        try:
+            return next(reads)
+        except StopIteration:
+            raise RuntimeError("the plan cannot be read") from None
+
+    monkeypatch.setattr(fbm, "get_placement", _read)
+    monkeypatch.setattr(fbm, "set_placement", lambda spec: returned)
+    monkeypatch.setattr(fbm, "wait_chat_ready", lambda: None)
+    notes: list[str] = []
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(
+            app.screen.query_one("FleetBody"), "notify", lambda msg, **_k: notes.append(msg)
+        )
+        await pilot.press("ctrl+x")
+        line = app.screen.query_one("#placement-skipped", Static)
+        assert await wait_until(pilot, lambda: line.display)
+        assert notice in str(line.render())
+
+    assert notes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("backend", "expected"),
+    [("cpu", "Engine backend: cpu"), ("unknown", "lilbee engine install")],
+)
+async def test_the_fleet_names_the_engine_backend(monkeypatch, backend, expected):
+    """A CPU host and a probe that never answered no longer draw the same empty table."""
+    from dataclasses import replace
+
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import EngineBackend
+
+    view = replace(_make_view(), gpus=(), engine_backend=EngineBackend(backend))
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        line = app.screen.query_one("#placement-backend", Static)
+        assert expected in str(line.render())

@@ -1,7 +1,7 @@
-.PHONY: lint lint-shell test-shell format format-check typecheck test test-ci test-ci-split test-ci-serial test-ci-forked test-integration imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
+.PHONY: coverage-gate lint license-check lint-shell test-shell format format-check typecheck test test-ci test-ci-split test-ci-serial test-ci-forked test-integration test-presets imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint: lint-shell
-	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py hatch_build.py
+	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py tools/check_pack_licences.py tools/wheel-build/metal_floor.py tools/wheel-build/llama_cuda_notice.py tools/wheel-build/repack_llama_archives.py hatch_build.py
 	uv run python scripts/check_style_rules.py
 	# docs/settings.md is generated from the Config fields; a new setting must
 	# land in the reference with the code that adds it.
@@ -10,9 +10,12 @@ lint: lint-shell
 	# xberg or tree-sitter bump that changes the set lands in the table.
 	uv run python tools/gen_formats_table.py --check
 
+license-check:  ## fail on a GPL or AGPL package in uv.lock (needs the network and Python 3.12)
+	bash tools/ci/check_licenses.sh
+
 lint-shell:  ## shellcheck the release scripts and actionlint every workflow
 	@if command -v shellcheck >/dev/null; then \
-	  shellcheck -s bash scripts/*.sh tools/ci/*.sh tools/qa/artifact_smoke.sh tests/shell/*.bash tests/shell/stubs/*; \
+	  shellcheck -s bash scripts/*.sh tools/ci/*.sh tools/qa/artifact_smoke.sh tools/qa/find_engine_bin.sh tools/wheel-build/pack_*.sh tools/wheel-build/check_*_wheel.sh tools/wheel-build/check_ik_repro.sh tools/wheel-build/write_engine_pin.sh tests/shell/*.bash tests/shell/stubs/*; \
 	  shellcheck -x -s sh site/install.sh tests/installer/select_asset.sh tests/installer/probe_hardware.sh; \
 	else echo "lint-shell: shellcheck is not installed, skipping"; fi
 	# actionlint also shellchecks every inline `run:` block.
@@ -29,30 +32,68 @@ test-shell:  ## Run the bats and Pester tests for the release scripts
 	else echo "test-shell: pwsh is not installed, skipping Pester"; fi
 
 format:
-	uv run ruff format src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py hatch_build.py
+	uv run ruff format src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py tools/check_pack_licences.py tools/wheel-build/llama_cuda_notice.py tools/wheel-build/repack_llama_archives.py hatch_build.py
 
 format-check:
-	uv run ruff format --check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py hatch_build.py
+	uv run ruff format --check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py tools/check_pack_licences.py tools/wheel-build/llama_cuda_notice.py tools/wheel-build/repack_llama_archives.py hatch_build.py
 
 typecheck:
 	uv run mypy src/lilbee/
 	# The GPU QA tools read lilbee's own types, so they rot silently when one
 	# changes: multi_gpu_smoke crashed on its first check from #540 until this
 	# was added. The rest of tools/qa/ is not clean yet and is not listed.
-	uv run mypy tools/qa/placement_matrix/ tools/qa/multi_gpu_smoke.py
+	uv run mypy tools/qa/placement_matrix/ tools/qa/engine_demo/ tools/qa/multi_gpu_smoke.py
 	# hatch_build.py builds the PyPI long description, so a break here breaks
 	# the release rather than a test.
-	uv run mypy tools/readme_media.py tools/gen_formats_table.py hatch_build.py
+	uv run mypy tools/readme_media.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py tools/check_pack_licences.py tools/wheel-build/llama_cuda_notice.py tools/wheel-build/repack_llama_archives.py hatch_build.py
 
 # A replaced worker deadlocks --dist loadgroup (pytest-dev/pytest-xdist#1378),
 # so a worker that dies fails the run instead.
 XDIST := -n logical --dist loadgroup --max-worker-restart=0
 
+# The pack tests read the build workflow and the cells file of the engine-packs repository.
+# A sibling checkout named lilbee-engine-packs next to this one supplies them.
+ENGINE_PACKS_WORKFLOW ?= $(abspath $(wildcard ../lilbee-engine-packs/.github/workflows/build-packs.yml))
+export ENGINE_PACKS_WORKFLOW
+ENGINE_PACKS_CELLS ?= $(abspath $(wildcard ../lilbee-engine-packs/cells.yml))
+export ENGINE_PACKS_CELLS
+
+# The hang watchdog (tests/_hang_watchdog.py) prints every stack when a test runs long,
+# so a lost worker leaves a trace in the job log. This Makefile owns the seconds for
+# the unit test recipes, and CI sets only the folder. An empty value would switch the
+# watchdog off without a word, so make stops instead. The integration and preset
+# recipes do not get the variables: the watchdog ignores a test's own timeout, so it
+# would kill a slow test that is marked to run longer.
+LILBEE_TEST_HANG_DUMP_S ?= 90
+LILBEE_TEST_HANG_DUMP_DIR ?= $(or $(TMPDIR),/tmp)/lilbee-hang-dumps
+ifeq ($(strip $(LILBEE_TEST_HANG_DUMP_S)),)
+$(error LILBEE_TEST_HANG_DUMP_S is empty: the hang watchdog would be off)
+endif
+UNIT_TEST_RECIPES := test test-ci test-ci-split test-ci-serial test-ci-forked
+$(UNIT_TEST_RECIPES): export LILBEE_TEST_HANG_DUMP_S := $(LILBEE_TEST_HANG_DUMP_S)
+$(UNIT_TEST_RECIPES): export LILBEE_TEST_HANG_DUMP_DIR := $(LILBEE_TEST_HANG_DUMP_DIR)
+
+# Branch data is on for the whole run. coverage.py has no per-package branch switch, so pytest-cov's
+# own threshold is off and two reports of the one .coverage file gate at 100%: one counts branches
+# outside LINE_ONLY, the other counts lines only inside it (.coveragerc-lineonly). Each step that
+# clears a package takes it out of LINE_ONLY; when it is empty, set branch = true in pyproject.toml
+# and drop both reports. The Windows lane and the site build measure lines only: they set COV_FLAGS
+# and BRANCH_CHECK themselves.
+LINE_ONLY := src/lilbee/cli/tui/*,src/lilbee/providers/fleet/*
+COV_FLAGS ?= --cov-branch --cov-fail-under=0
+BRANCH_CHECK ?= $(MAKE) --no-print-directory coverage-gate
+
+coverage-gate:
+	uv run coverage report --include='src/lilbee/*' --omit='src/lilbee/_generated/*,$(LINE_ONLY)' --fail-under=100 --skip-covered
+	uv run coverage report --rcfile=.coveragerc-lineonly --include='$(LINE_ONLY)' --fail-under=100 --skip-covered
+
 test:
-	uv run pytest --cov=lilbee --cov-report=term-missing -v $(XDIST)
+	uv run pytest --cov=lilbee --cov-report=term-missing $(COV_FLAGS) -v $(XDIST)
+	$(BRANCH_CHECK)
 
 test-ci:
 	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html $(COV_FLAGS) -v $(XDIST)
+	$(BRANCH_CHECK)
 
 # One coverage session over the whole suite stalls the TUI pilot past its 30 s
 # screen wait on the 3 vCPU macOS runner; two shorter sessions do not.
@@ -72,14 +113,20 @@ imports-check:
 	uv run python -c "import lilbee; from lilbee import cli; from lilbee.core import config; from lilbee.data.extract import chunk, code_chunker; from lilbee.data import store, ingest; from lilbee.retrieval import embedder, query"
 
 # The hosted-key tests need the providers extra, which only this job installs.
-# So do the real-types tests, which run the adapter on the library's own response types.
+# Every test that needs the library lives in tests/integration/ and imports it plainly,
+# so a job without the extra fails here and the plain test job never collects them.
 test-integration:
-	uv run pytest tests/integration/ tests/providers/test_hosted_request_key.py tests/providers/test_sdk_real_types.py -v
+	uv run pytest tests/integration/ tests/providers/test_hosted_request_key.py tests/test_estimator_real_binary.py tests/test_gguf_meta.py -v
+
+# The preset replay needs the client library, so the plain test job cannot collect it.
+# It is offline and takes about a minute, so the local gate runs it by name.
+test-presets:
+	uv run pytest tests/integration/test_preset_fixtures.py -v $(XDIST)
 
 fuzz-smoke:  ## Seeded adversarial TUI fuzz, fixed seeds (deterministic, CI-sized)
 	uv run python scripts/qa/tui_fuzz.py smoke
 
-check: lint format-check typecheck test test-shell  ## Run all checks (same as CI)
+check: lint license-check format-check typecheck test test-presets test-shell  ## Run all checks (same as CI)
 
 install:
 	uv tool install ".[crawler]" --force --reinstall --compile-bytecode
@@ -148,7 +195,8 @@ docs-api:  ## Generate OpenAPI schema and Redoc static HTML
 
 docs-site: docs-api  ## Build the full dev portal (coverage + API docs)
 	# Tests gate CI and releases, not the site build; the coverage report deploys regardless of the test outcome.
-	-$(MAKE) test-ci
+	# The site shows one percentage, so this run measures lines only.
+	-$(MAKE) test-ci COV_FLAGS= BRANCH_CHECK=true
 	cp -r htmlcov site/coverage
 	uv run python tools/update_site_coverage.py
 

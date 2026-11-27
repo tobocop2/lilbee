@@ -5,15 +5,25 @@ from __future__ import annotations
 import functools
 import re
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from enum import IntEnum
+
+from lilbee.catalog.header_probe import SPLIT_GGUF_NAME
+from lilbee.catalog.types import ModelFormat
+from lilbee.catalog.xdna import XDNA_TAG_RE
 
 # A native GGUF ref ``<org>/<repo>/<file>.gguf`` has at least two ``/`` separators;
 # the filename may add more when a quant lives in a repo subdir (``Q4_K_M/...``).
 NATIVE_GGUF_REF_MIN_SLASHES = 2
 
+# Separates the repo from a non-GGUF format; ``#`` cannot occur in a repo id.
+FORMAT_SEPARATOR = "#"
+
 WILDCARD = "*"
 GGUF_SUFFIX = ".gguf"
 GGUF_GLOB = f"{WILDCARD}{GGUF_SUFFIX}"
+
+REPO_ID_HINT = "Write a repo id as '<org>/<repo>', for example 'Qwen/Qwen3-0.6B-GGUF'."
 
 # Vision models need both the main GGUF and an mmproj (CLIP projection) file.
 # Resolved by glob rather than a per-repo table: every mainstream VL repo names
@@ -100,7 +110,6 @@ def _quant_token_re() -> re.Pattern[str]:
     )
 
 
-_SPLIT_SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
 _SHARD_NUMBER_WIDTH = 5
 _FIRST_SHARD_INDEX = 1
 
@@ -160,10 +169,10 @@ def split_shard_filenames(filename: str) -> list[str]:
     shard but needs every part on disk, so the catalog must fetch all of them and
     only consider the model installed once the full set is present.
     """
-    match = _SPLIT_SHARD_RE.match(filename)
+    match = SPLIT_GGUF_NAME.match(filename)
     if match is None:
         return [filename]
-    base = match.group("base")
+    base = match.group("prefix")
     total = int(match.group("total"))
     return [_shard_name(base, index, total) for index in range(_FIRST_SHARD_INDEX, total + 1)]
 
@@ -174,10 +183,10 @@ def _first_shard(filename: str) -> str:
     Only the first shard carries the full metadata header, so it is the one a
     header probe can read and the only part worth ranking as a candidate.
     """
-    match = _SPLIT_SHARD_RE.match(filename)
+    match = SPLIT_GGUF_NAME.match(filename)
     if match is None:
         return filename
-    return _shard_name(match.group("base"), _FIRST_SHARD_INDEX, int(match.group("total")))
+    return _shard_name(match.group("prefix"), _FIRST_SHARD_INDEX, int(match.group("total")))
 
 
 def _rank_key(filename: str) -> tuple[int, int, str]:
@@ -204,9 +213,107 @@ def rank_gguf_candidates(filenames: Iterable[str]) -> list[str]:
     return sorted(candidates, key=_rank_key)
 
 
+def invalid_repo_id_message(value: str) -> str:
+    """The error text for a rejected repo id: the value, the form, and an example."""
+    return f"Invalid repo id {value!r}. {REPO_ID_HINT}"
+
+
+def is_gguf_filename(name: str) -> bool:
+    """True when *name* ends with the GGUF suffix (case-sensitive)."""
+    return name.endswith(GGUF_SUFFIX)
+
+
+def _has_native_shape(ref: str) -> bool:
+    return is_gguf_filename(ref) and ref.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES
+
+
+def is_native_gguf_shape(ref: str) -> bool:
+    """True when *ref* has the ``<org>/<repo>/<file>.gguf`` shape; ``#gguf`` reads as plain."""
+    return _has_native_shape(canonical_ref(ref))
+
+
 def is_bare_hf_repo(ref: str) -> bool:
     """True if *ref* has the bare ``<org>/<repo>`` shape (no filename segment)."""
-    return ref.count("/") == 1 and not ref.endswith(GGUF_SUFFIX)
+    ref = canonical_ref(ref)
+    return ref.count("/") == 1 and not is_gguf_filename(ref)
+
+
+@dataclass(frozen=True)
+class ModelRef:
+    """A model reference split into repo, entry file and weight format."""
+
+    hf_repo: str
+    filename: str
+    format: ModelFormat
+
+    @property
+    def canonical(self) -> str:
+        """The one string form: ``<repo>/<file>.gguf``, a bare repo, or ``<repo>#<format>``."""
+        if self.format != ModelFormat.GGUF:
+            return f"{self.hf_repo}{FORMAT_SEPARATOR}{self.format}"
+        return f"{self.hf_repo}/{self.filename}" if self.filename else self.hf_repo
+
+
+def parse_model_ref(raw: str) -> ModelRef:
+    """Parse *raw* into a :class:`ModelRef`; raise ``ValueError`` on a malformed format.
+
+    ``<org>/<repo>/<file>.gguf`` and a bare ``<org>/<repo>`` read GGUF.
+    ``<org>/<repo>#<format>`` reads that format. Any other string reads GGUF
+    with the whole string as the repo, as provider-prefixed refs always did.
+    """
+    base, separator, tail = raw.partition(FORMAT_SEPARATOR)
+    if not separator:
+        return _gguf_ref(raw)
+    try:
+        fmt = ModelFormat(tail)
+    except ValueError:
+        formats = ", ".join(f.value for f in ModelFormat)
+        raise ValueError(
+            f"Model ref '{raw}' names format {tail!r}. Use one of: {formats}."
+        ) from None
+    if fmt == ModelFormat.GGUF:
+        return _gguf_ref(base)
+    if fmt == ModelFormat.XDNA:
+        if not XDNA_TAG_RE.fullmatch(base):
+            raise ValueError(f"Model ref '{raw}' must be '<name>:<tag>#{fmt}'.")
+        return ModelRef(base, "", fmt)
+    if base.count("/") != 1:
+        raise ValueError(f"Model ref '{raw}' must be '<org>/<repo>#{fmt}'.")
+    return ModelRef(base, "", fmt)
+
+
+def model_format(ref: str) -> ModelFormat:
+    """The weight format of *ref*; GGUF for any string that names no other format.
+
+    Total: a malformed format qualifier reads as GGUF here, and the code
+    that parses the ref for use refuses it.
+    """
+    try:
+        return parse_model_ref(ref).format
+    except ValueError:
+        return ModelFormat.GGUF
+
+
+def canonical_ref(ref: str) -> str:
+    """The one string form of *ref*; a malformed qualifier reads as written.
+
+    Total, like :func:`model_format`: the code that uses the ref refuses it.
+    """
+    try:
+        return parse_model_ref(ref).canonical
+    except ValueError:
+        return ref
+
+
+def _gguf_ref(raw: str) -> ModelRef:
+    if _has_native_shape(raw):
+        parts = raw.split("/")
+        return ModelRef(
+            "/".join(parts[:NATIVE_GGUF_REF_MIN_SLASHES]),
+            "/".join(parts[NATIVE_GGUF_REF_MIN_SLASHES:]),
+            ModelFormat.GGUF,
+        )
+    return ModelRef(raw, "", ModelFormat.GGUF)
 
 
 def hf_repo_from_ref(ref: str) -> str:
@@ -218,9 +325,19 @@ def hf_repo_from_ref(ref: str) -> str:
     Provider-prefixed refs (``openai/gpt-4``, ``ollama/llama3:8b``) and bare
     repos lack the ``.gguf`` suffix and are returned unchanged.
     """
-    if ref.endswith(GGUF_SUFFIX) and ref.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES:
-        return "/".join(ref.split("/")[:NATIVE_GGUF_REF_MIN_SLASHES])
-    return ref
+    return _gguf_ref(canonical_ref(ref)).hf_repo
+
+
+def installed_keys(refs: Iterable[str]) -> frozenset[tuple[str, ModelFormat]]:
+    """The ``(repo, format)`` of each installed ref; a malformed format qualifier reads as GGUF."""
+    keys: set[tuple[str, ModelFormat]] = set()
+    for ref in refs:
+        try:
+            parsed = parse_model_ref(ref)
+        except ValueError:
+            parsed = _gguf_ref(ref)
+        keys.add((parsed.hf_repo, parsed.format))
+    return frozenset(keys)
 
 
 def gguf_filename_from_ref(ref: str) -> str:
@@ -230,9 +347,7 @@ def gguf_filename_from_ref(ref: str) -> str:
     ``Q4_K_M/``), so everything past the first two segments is kept.
     Returns empty string for non-native refs (bare repos, provider-prefixed).
     """
-    if ref.endswith(GGUF_SUFFIX) and ref.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES:
-        return "/".join(ref.split("/")[NATIVE_GGUF_REF_MIN_SLASHES:])
-    return ""
+    return _gguf_ref(canonical_ref(ref)).filename
 
 
 def format_native_gguf_ref(hf_repo: str, gguf_filename: str) -> str:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import MagicMock
 
 import pytest
@@ -24,6 +24,8 @@ from lilbee.server import auth as _auth_mod
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.chat_dispatch.canonical import (
     IMAGES_DROPPED_HEADER,
+    IMAGES_DROPPED_REASON,
+    IMAGES_DROPPED_REASON_HEADER,
     IMAGES_ONLY_MESSAGE,
 )
 from lilbee.server.chat_dispatch.concurrency import ChatSlotGuard, chat_gate
@@ -441,6 +443,37 @@ class TestNonStreamingCompletion:
         assert body["choices"][0]["message"]["content"] == "hello"
         assert body["choices"][0]["finish_reason"] == "stop"
 
+    async def test_a_refused_preflight_is_returned_before_a_chat_slot_is_taken(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        # The stub hands the refusal back as a value. The real preflight raises
+        # inside a worker thread, and on Python 3.11 the coverage tracer loses
+        # the route frame after that caught exception.
+        from litestar import Response
+
+        refusal = Response(content={"refused": "by preflight"}, status_code=409)
+
+        async def _refuse(_req):
+            return refusal
+
+        async def _no_slot(_limit):
+            raise AssertionError("a refused request took a chat slot")
+
+        monkeypatch.setattr(
+            "lilbee.server.chat_completions_api.routes._preflight_resolved_model", _refuse
+        )
+        monkeypatch.setattr(
+            "lilbee.server.chat_completions_api.routes.acquire_chat_slot_or_busy", _no_slot
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={"model": INSTALLED_REF, "messages": [{"role": "user", "content": "hi"}]},
+            )
+        assert resp.status_code == 409
+        assert resp.json() == {"refused": "by preflight"}
+
     async def test_unknown_model_returns_404_openai_error_body(
         self, services_with_chat_model, _auth_token
     ):
@@ -566,6 +599,7 @@ class TestNonStreamingCompletion:
             )
         assert resp.status_code == 200
         assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        assert resp.headers[IMAGES_DROPPED_REASON_HEADER] == IMAGES_DROPPED_REASON
         sent = services_with_chat_model.provider.chat.call_args.kwargs["messages"]
         assert [m["content"] for m in sent] == ["describe"]
 
@@ -585,6 +619,7 @@ class TestNonStreamingCompletion:
             )
         assert resp.status_code == 200
         assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        assert resp.headers[IMAGES_DROPPED_REASON_HEADER] == IMAGES_DROPPED_REASON
 
     async def test_image_only_request_is_400_naming_the_cause(
         self, services_with_chat_model, _auth_token
@@ -597,7 +632,11 @@ class TestNonStreamingCompletion:
                 json={"model": INSTALLED_REF, "messages": [message]},
             )
         assert resp.status_code == 400
-        assert resp.json()["error"]["message"] == IMAGES_ONLY_MESSAGE
+        message = resp.json()["error"]["message"]
+        assert message == IMAGES_ONLY_MESSAGE
+        assert "projector" in message
+        assert "vision role" in message
+        assert "cannot pass images" not in message
 
     async def test_image_to_a_vision_tagged_model_is_dropped_and_reported(
         self, services_with_chat_model, _auth_token
@@ -611,6 +650,7 @@ class TestNonStreamingCompletion:
             )
         assert resp.status_code == 200
         assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        assert resp.headers[IMAGES_DROPPED_REASON_HEADER] == IMAGES_DROPPED_REASON
         sent = services_with_chat_model.provider.chat.call_args.kwargs["messages"]
         assert [m["content"] for m in sent] == ["describe"]
 
@@ -1795,14 +1835,14 @@ class TestIgnoredParamsLogged:
                 json={
                     "model": INSTALLED_REF,
                     "messages": [{"role": "user", "content": "hi"}],
-                    "response_format": {"type": "json_object"},
+                    "top_logprobs": 2,
                     "logprobs": True,
                 },
             )
         assert resp.status_code == 200
         spy.assert_called_once_with(
             "chat/completions ignoring unsupported params: %s",
-            ["logprobs", "response_format"],
+            ["logprobs", "top_logprobs"],
         )
 
     async def test_no_log_when_only_supported_params(
@@ -2182,3 +2222,48 @@ class TestModelNamedByPath:
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post("/v1/chat/completions", json=_path_body(missing), headers=_h())
         assert resp.status_code == 404
+
+
+class TestResponseFormatOnRoute:
+    _BODY: ClassVar[dict[str, Any]] = {
+        "model": INSTALLED_REF,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize("bad", ["json_object", ["json_object"], 7])
+    async def test_a_value_that_is_not_an_object_is_refused_naming_the_field(
+        self, services_with_chat_model, _auth_token, bad, stream
+    ):
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={**self._BODY, "response_format": bad, "stream": stream},
+            )
+        assert resp.status_code == 400
+        error = resp.json()["error"]
+        assert error["type"] == "invalid_request_error"
+        assert "response_format" in error["message"]
+        services_with_chat_model.provider.chat.assert_not_called()
+
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize(
+        "value",
+        [{"type": "json_object"}, {"type": "bogus"}, {"type": "json_schema"}],
+    )
+    async def test_an_object_reaches_the_provider_as_sent(
+        self, services_with_chat_model, _auth_token, value, stream
+    ):
+        provider = services_with_chat_model.provider
+        if stream:
+            provider.chat.return_value = FakeProviderStream(["ok"])
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={**self._BODY, "response_format": value, "stream": stream},
+            )
+        assert resp.status_code == 200
+        provider.chat.assert_called_once()
+        assert provider.chat.call_args.kwargs["options"]["response_format"] == value

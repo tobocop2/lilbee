@@ -1,4 +1,4 @@
-"""Public API for reading model architecture metadata from GGUF files."""
+"""Public API for reading model architecture metadata for the configured models."""
 
 from __future__ import annotations
 
@@ -20,55 +20,30 @@ class ModelArchInfo:
     active_handler: str = "not loaded"
 
 
-# Cache: (chat_model_ref, embed_model_ref, vision_model_ref) -> ModelArchInfo.
-# Reading GGUF headers is hundreds of ms cold (file open + parse); the result
-# is stable as long as the configured refs
-# stay the same. Status screen visits, MCP status calls, and any other
-# read-side caller share this cache. ``invalidate_cache`` lets settings
-# updates clear it explicitly when a model ref changes.
-_arch_cache: dict[tuple[str, str, str], ModelArchInfo] = {}
-
-
-def _cache_key() -> tuple[str, str, str]:
-    return (cfg.chat_model or "", cfg.embedding_model or "", cfg.vision_model or "")
-
-
-def invalidate_cache() -> None:
-    """Drop the architecture cache. Call when a model ref changes."""
-    _arch_cache.clear()
-
-
 def get_model_architecture() -> ModelArchInfo:
     """Return architecture metadata for the currently configured models.
 
-    Memoized on (chat_model, embed_model, vision_model). First call
-    reads GGUF headers (binding-free) for each; subsequent calls under
-    the same refs return the cached result instantly. Each reader
-    degrades gracefully when its model is unset or unavailable.
+    Read on every call: the header reader caches by file, so a repeat read
+    costs microseconds, and the chat handler follows the engine choice.
+    Each reader degrades gracefully when its model is unset or unavailable.
     """
-    key = _cache_key()
-    cached = _arch_cache.get(key)
-    if cached is not None:
-        return cached
-    info = ModelArchInfo()
-    info = _read_chat_arch(info)
-    info = _read_embed_arch(info)
-    info = _read_vision_arch(info)
-    _arch_cache[key] = info
-    return info
+    return _read_vision_arch(_read_embed_arch(_read_chat_arch(ModelArchInfo())))
 
 
 def _read_chat_arch(info: ModelArchInfo) -> ModelArchInfo:
-    """Read chat model architecture from GGUF metadata."""
+    """Read the chat architecture from the GGUF header and the handler from the chat engine."""
     try:
+        from lilbee.app.engine_choice import resolve_engines
         from lilbee.providers.engine_params import resolve_model_path
-        from lilbee.providers.gguf_meta import read_gguf_metadata
+        from lilbee.providers.fleet.engines.llama import LLAMA
+        from lilbee.providers.roles import WorkerRole
 
         path = resolve_model_path(cfg.chat_model)
-        meta = read_gguf_metadata(path)
+        engine = resolve_engines(cfg).for_role(WorkerRole.CHAT).adapter
+        info.active_handler = engine.request_profile(WorkerRole.CHAT).label
+        meta = LLAMA.model_meta(path)
         if meta:
             info.chat_arch = meta.get("architecture", "unknown")
-            info.active_handler = "llama-server"
     except Exception:
         log.debug("Failed to read chat model architecture", exc_info=True)
     return info
@@ -78,10 +53,11 @@ def _read_embed_arch(info: ModelArchInfo) -> ModelArchInfo:
     """Read embedding model architecture from GGUF metadata."""
     try:
         from lilbee.providers.engine_params import resolve_model_path
+        from lilbee.providers.fleet.engines.llama import starts_with_gguf_magic
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
         path = resolve_model_path(cfg.embedding_model)
-        meta = read_gguf_metadata(path)
+        meta = read_gguf_metadata(path) if starts_with_gguf_magic(path) else None
         if meta:
             info.embed_arch = meta.get("architecture", "unknown")
     except Exception:
@@ -102,12 +78,15 @@ def _read_vision_arch(info: ModelArchInfo) -> ModelArchInfo:
         return info
     try:
         from lilbee.providers.engine_params import resolve_model_path
+        from lilbee.providers.fleet.engines.llama import starts_with_gguf_magic
         from lilbee.providers.gguf_meta import (
             find_mmproj_for_model,
             read_mmproj_projector_type,
         )
 
         path = resolve_model_path(cfg.vision_model)
+        if not starts_with_gguf_magic(path):
+            return info
         mmproj = find_mmproj_for_model(path)
         proj_type = read_mmproj_projector_type(mmproj)
         info.vision_projector = proj_type or "unknown"

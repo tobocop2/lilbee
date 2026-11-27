@@ -63,7 +63,7 @@ IMAGE_SCAN_NOTE = (
     "scaled by the share of documents sampled."
 )
 TARGET_WITHOUT_SAVE_MESSAGE = "target takes effect only with apply or save; nothing was read."
-RELATIVE_DIRECTORY_MESSAGE = "directory must be an absolute path on the lilbee server: {value!r}"
+RELATIVE_DIRECTORY_MESSAGE = "directory must be an absolute path on the lilbee server: '{value}'"
 DIRECTORY_NOT_READABLE_MESSAGE = "Path '{path}' is not readable."
 TIP_TEXT = (
     "This project uses the Default profile. Run lilbee analyze to get a profile "
@@ -190,8 +190,14 @@ def _notes_share(signals: CorpusSignals) -> float:
 
 
 def _tables_share(signals: CorpusSignals) -> float:
-    pdf = signals.pdf
-    return pdf.files_with_tables / pdf.files if pdf.files else 0.0
+    """PDFs with tables over every file, like the code and notes shares.
+
+    Tables are counted in the read sample, so the sample's rate is scaled up to every document.
+    """
+    if not (signals.files_read and signals.files_total):
+        return 0.0
+    in_sample = signals.pdf.files_with_tables / signals.files_read
+    return in_sample * signals.documents_total / signals.files_total
 
 
 _PICK_RULES: tuple[_PickRule, ...] = (
@@ -200,7 +206,9 @@ _PICK_RULES: tuple[_PickRule, ...] = (
     ),
     _PickRule(CODE_REPOSITORY, CODE_REPOSITORY_SHARE, lambda s: s.code_share, "of files are code"),
     _PickRule(NOTES_AND_MARKDOWN, NOTES_SHARE, _notes_share, "of files are Markdown or text"),
-    _PickRule(RESEARCH_PAPERS, RESEARCH_TABLES_SHARE, _tables_share, "of PDFs have tables"),
+    _PickRule(
+        RESEARCH_PAPERS, RESEARCH_TABLES_SHARE, _tables_share, "of files are PDFs with tables"
+    ),
 )
 
 

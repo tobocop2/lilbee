@@ -7,8 +7,7 @@ import threading
 import time
 from dataclasses import replace
 
-from lilbee.app.services import get_services
-from lilbee.catalog.hf_client import repo_has_mmproj
+from lilbee.catalog.hf_client import HfClient, repo_has_mmproj
 from lilbee.catalog.models import CatalogModel, dedupe_models
 from lilbee.catalog.refs import hf_repo_from_ref
 from lilbee.catalog.types import CatalogSize, ModelCompat, ModelTask
@@ -67,7 +66,9 @@ def _serves_role(model: CatalogModel, task: ModelTask) -> bool:
     return reclassify_by_name(model.hf_repo, ModelTask.CHAT) == task
 
 
-def _fetch_trending(task: ModelTask, limit: int, needed: int | None = None) -> list[CatalogModel]:
+def _fetch_trending(
+    task: ModelTask, limit: int, needed: int | None = None, *, hf_client: HfClient
+) -> list[CatalogModel]:
     """Trending models serving *task*, most popular first. Empty on fetch failure.
 
     Stops at *needed* so the vision probe costs one request per candidate
@@ -79,7 +80,7 @@ def _fetch_trending(task: ModelTask, limit: int, needed: int | None = None) -> l
     pipeline_tags, library = task_to_pipeline(task)
     models: list[CatalogModel] = []
     for tag in pipeline_tags:
-        page = get_services().hf_client.fetch_models(
+        page = hf_client.fetch_models(
             pipeline_tag=tag,
             sort=TRENDING_SORT,
             limit=limit,
@@ -98,12 +99,12 @@ def _fetch_trending(task: ModelTask, limit: int, needed: int | None = None) -> l
     return qualified
 
 
-def _chat_picks() -> list[CatalogModel]:
+def _chat_picks(*, hf_client: HfClient) -> list[CatalogModel]:
     """The most popular chat models of each parameter tier, in tier order."""
     # circular: query -> picks via get_picks
     from lilbee.catalog.query import size_bucket
 
-    candidates = _fetch_trending(ModelTask.CHAT, _CANDIDATE_WINDOW)
+    candidates = _fetch_trending(ModelTask.CHAT, _CANDIDATE_WINDOW, hf_client=hf_client)
     by_tier: dict[CatalogSize, list[CatalogModel]] = {}
     for model in candidates:
         tier = size_bucket(model.params)  # None when the repo publishes no count
@@ -118,11 +119,13 @@ def _chat_picks() -> list[CatalogModel]:
     return picks
 
 
-def _resolve_picks() -> tuple[CatalogModel, ...]:
+def _resolve_picks(*, hf_client: HfClient) -> tuple[CatalogModel, ...]:
     """One full set of picks across every role, flagged for the picks section."""
-    picks = list(_chat_picks())
+    picks = list(_chat_picks(hf_client=hf_client))
     for task in _UNTIERED_ROLES:
-        picks.extend(_fetch_trending(task, _UNTIERED_WINDOW, needed=_PICKS_PER_ROLE))
+        picks.extend(
+            _fetch_trending(task, _UNTIERED_WINDOW, needed=_PICKS_PER_ROLE, hf_client=hf_client)
+        )
     # The flag is what puts a row in the picks section and keeps the browse
     # list from duplicating it.
     return tuple(replace(m, featured=True) for m in picks)
@@ -148,8 +151,8 @@ class ModelPicks:
         self._next_attempt_at = 0.0
         self._lock = threading.Lock()
 
-    def all(self) -> tuple[CatalogModel, ...]:
-        """Every pick across every role.
+    def all(self, *, hf_client: HfClient) -> tuple[CatalogModel, ...]:
+        """Every pick across every role, read through *hf_client* when not memoized.
 
         A set missing a role is served but not treated as final: each role is
         fetched independently, so one failure would otherwise leave that role
@@ -167,7 +170,7 @@ class ModelPicks:
                 return ()
 
         try:
-            resolved = _resolve_picks()
+            resolved = _resolve_picks(hf_client=hf_client)
         except Exception:
             log.warning("Could not fetch model picks from HuggingFace", exc_info=True)
             resolved = ()
@@ -200,22 +203,22 @@ class ModelPicks:
 _PICKS = ModelPicks()
 
 
-def get_picks() -> tuple[CatalogModel, ...]:
-    """Every pick across every role, resolved once per process."""
-    return _PICKS.all()
+def get_picks(*, hf_client: HfClient) -> tuple[CatalogModel, ...]:
+    """Every pick across every role, resolved once per process through *hf_client*."""
+    return _PICKS.all(hf_client=hf_client)
 
 
-def picks_for(task: ModelTask) -> tuple[CatalogModel, ...]:
+def picks_for(task: ModelTask, *, hf_client: HfClient) -> tuple[CatalogModel, ...]:
     """Picks for a single role."""
-    return tuple(m for m in get_picks() if m.task == task)
+    return tuple(m for m in get_picks(hf_client=hf_client) if m.task == task)
 
 
-def find_pick(ref: str) -> CatalogModel | None:
+def find_pick(ref: str, *, hf_client: HfClient) -> CatalogModel | None:
     """The pick matching *ref* by repo id, or None. Case-insensitive."""
     if not ref:
         return None
     wanted = hf_repo_from_ref(ref).lower()
-    return next((m for m in get_picks() if m.hf_repo.lower() == wanted), None)
+    return next((m for m in get_picks(hf_client=hf_client) if m.hf_repo.lower() == wanted), None)
 
 
 def seed_picks(picks: tuple[CatalogModel, ...]) -> None:

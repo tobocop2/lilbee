@@ -1,7 +1,6 @@
 """Thin wrapper around LLM provider embeddings API."""
 
 import logging
-import threading
 
 import numpy as np
 
@@ -10,8 +9,9 @@ from lilbee.core.vectors import Vector
 from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 from lilbee.modelhub.install_state import InstallState, install_state
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.base import LLMProvider
+from lilbee.providers.base import EmbeddingOverflowError, LLMProvider, ProviderError
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
+from lilbee.providers.truncation import note_char_cut
 from lilbee.retrieval.embedding_profiles import EmbeddingProfile, resolve_embedding_profile
 from lilbee.runtime.progress import DetailedProgressCallback, EmbedEvent, EventType, noop_callback
 
@@ -57,24 +57,27 @@ def is_model_available(model: str, provider: LLMProvider) -> bool:
     return is_model_installed(model)
 
 
+def embed_char_budget(config: Config) -> int:
+    """Effective char limit for an embedder with no token cap, never below the chunk size.
+
+    ``max_embed_chars`` guards the embed model's context; clamping it up to
+    ``chunk_size * CHARS_PER_TOKEN`` stops a finished full-budget chunk from
+    silently losing its tail to a limit set below what the chunker emits.
+    """
+    return max(config.max_embed_chars, config.chunk_size * CHARS_PER_TOKEN)
+
+
 class Embedder:
     """Embedding wrapper: truncates, batches, validates vectors, and counts truncations."""
 
     def __init__(self, config: Config, provider: LLMProvider) -> None:
         self._config = config
         self._provider = provider
-        self._truncated_total = 0
-        self._truncated_lock = threading.Lock()
 
     @property
     def embed_char_budget(self) -> int:
-        """Effective char limit, never below the chunker's max chunk size.
-
-        ``max_embed_chars`` guards the embed model's context; clamping it up to
-        ``chunk_size * CHARS_PER_TOKEN`` stops a finished full-budget chunk from
-        silently losing its tail to a limit set below what the chunker emits.
-        """
-        return max(self._config.max_embed_chars, self._config.chunk_size * CHARS_PER_TOKEN)
+        """Effective char limit for an embedder with no token cap (:func:`embed_char_budget`)."""
+        return embed_char_budget(self._config)
 
     @property
     def batch_char_budget(self) -> int:
@@ -86,12 +89,6 @@ class Embedder:
         """
         return self._config.embed_batch_sequences * self._config.chunk_size * CHARS_PER_TOKEN
 
-    @property
-    def truncated_total(self) -> int:
-        """Cumulative count of chunks truncated since process start (thread-safe read)."""
-        with self._truncated_lock:
-            return self._truncated_total
-
     def truncate(self, text: str, reserved: int = 0) -> str:
         """Truncate text to the embed char budget, counting any truncation.
 
@@ -102,8 +99,7 @@ class Embedder:
         if len(text) <= budget:
             return text
         log.debug("Truncating chunk from %d to %d chars for embedding", len(text), budget)
-        with self._truncated_lock:
-            self._truncated_total += 1
+        note_char_cut()
         return text[:budget]
 
     def validate_vector(self, vector: Vector) -> None:
@@ -111,13 +107,23 @@ class Embedder:
         if len(vector) != self._config.embedding_dim:
             raise ValueError(
                 f"Embedding dimension mismatch: expected {self._config.embedding_dim}, "
-                f"got {len(vector)}"
+                f"got {len(vector)}. The embedding model changed width, so re-embed the "
+                "index under it: run `lilbee rebuild` (CLI), `/rebuild` (TUI), "
+                "POST /api/sync with force_rebuild true (REST), or the sync tool "
+                "with force_rebuild true (MCP)."
             )
         arr = np.asarray(vector, dtype=np.float64)
         bad = np.where(~np.isfinite(arr))[0]
         if bad.size:
             i = int(bad[0])
             raise ValueError(f"Embedding contains invalid value at index {i}: {vector[i]}")
+
+    def adopt_served_width(self, probe: str) -> None:
+        """Set ``embedding_dim`` to the width of the vector one embed call of *probe* returns."""
+        vectors = self._provider.embed([self._profile().doc_prefix + probe])
+        if not vectors or not len(vectors[0]):
+            raise ValueError("The embedding model returned no vector for the width probe.")
+        self._config.embedding_dim = len(vectors[0])
 
     def validate_model(self) -> bool:
         """Availability gate for the startup and ingest paths: warns when it fails.
@@ -137,7 +143,7 @@ class Embedder:
             log.info("No embedding model configured; embedding is off until one is set.")
             return False
         log.warning(
-            "Embedding model %r is not available; embedding will fail. "
+            "Embedding model '%s' is not available; embedding will fail. "
             "Pull it or set a different embedding_model.",
             self._config.embedding_model,
         )
@@ -187,6 +193,15 @@ class Embedder:
             texts, self._profile().query_instruction, source=source, on_progress=on_progress
         )
 
+    def _embed_batch_of(self, batch: list[str]) -> list[Vector]:
+        """Embed one batch, naming a context overflow as the embedding call's own."""
+        try:
+            return self._provider.embed(batch)
+        except ProviderError as exc:
+            if exc.repeats_on_retry:
+                raise EmbeddingOverflowError(str(exc), kind=exc.kind) from exc
+            raise
+
     def _embed_with(
         self,
         texts: list[str],
@@ -203,6 +218,8 @@ class Embedder:
             return []
         total_chunks = len(texts)
         max_batch_chars = self.batch_char_budget
+        # A provider with a token cap cuts to it; the character cut guards only one without.
+        token_bounded = self._provider.embed_token_cap() is not None
         vectors: list[Vector] = []
         batch: list[str] = []
         batch_chars = 0
@@ -210,10 +227,11 @@ class Embedder:
             # The prefix is charged against the budget: it is part of what the
             # embed model receives, so counting only the text would ship
             # budget+len(prefix) chars and lose the tail the clamp protects.
-            truncated = prefix + self.truncate(text, reserved=len(prefix))
+            sent = text if token_bounded else self.truncate(text, reserved=len(prefix))
+            truncated = prefix + sent
             chunk_len = len(truncated)
             if batch and batch_chars + chunk_len > max_batch_chars:
-                vectors.extend(self._provider.embed(batch))
+                vectors.extend(self._embed_batch_of(batch))
                 on_progress(
                     EventType.EMBED,
                     EmbedEvent(file=source, chunk=len(vectors), total_chunks=total_chunks),
@@ -222,12 +240,12 @@ class Embedder:
                 batch_chars = 0
             batch.append(truncated)
             batch_chars += chunk_len
-        if batch:
-            vectors.extend(self._provider.embed(batch))
-            on_progress(
-                EventType.EMBED,
-                EmbedEvent(file=source, chunk=len(vectors), total_chunks=total_chunks),
-            )
+        # *texts* is non-empty, so the last text always leaves the final batch non-empty.
+        vectors.extend(self._embed_batch_of(batch))
+        on_progress(
+            EventType.EMBED,
+            EmbedEvent(file=source, chunk=len(vectors), total_chunks=total_chunks),
+        )
         for vec in vectors:
             self.validate_vector(vec)
         return vectors

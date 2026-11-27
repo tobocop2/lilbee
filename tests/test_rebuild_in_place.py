@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.app.services import set_services
+from lilbee.app.settings import reindex_values
 from lilbee.core.config import cfg
 from lilbee.data.ingest import sync
 from lilbee.data.store import Store
@@ -39,7 +40,6 @@ def _embedder() -> MagicMock:
     embedder = MagicMock()
     embedder.validate_model.return_value = True
     embedder.embedding_available.return_value = True
-    embedder.truncated_total = 0
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * DIM for _ in texts]
     return embedder
 
@@ -92,9 +92,7 @@ async def test_rebuild_where_every_embed_fails_keeps_the_index_and_reports_the_f
     embedder = _embedder()
     store = await _indexed(embedder)
     chunks = store.count_chunks()
-    embedder.embed_batch.side_effect = ProviderError(
-        "No embed model server is running.", provider="fleet"
-    )
+    embedder.embed_batch.side_effect = ProviderError("No embed model server is running.")
     result = await sync(force_rebuild=True, quiet=True)
     assert store.count_chunks() == chunks
     assert sorted(result.failed) == ["a.txt", "b.txt", "c.txt"]
@@ -144,7 +142,7 @@ async def test_rebuild_keeps_the_old_chunks_of_the_one_file_that_fails_to_embed(
 
     def embed(texts, **kw):
         if any(text.startswith("b.txt") for text in texts):
-            raise ProviderError("embed failed", provider="fleet")
+            raise ProviderError("embed failed")
         return [[0.1] * DIM for _ in texts]
 
     embedder.embed_batch.side_effect = embed
@@ -161,7 +159,7 @@ async def test_rebuild_with_a_changed_embedder_and_a_dead_probe_keeps_the_index(
     cfg.embedding_model = "other/embedder-GGUF"
     cfg.embedding_dim = DIM + 4
     assert store.index_mismatch() is not None
-    embedder.embed_batch.side_effect = ProviderError("down", provider="fleet")
+    embedder.adopt_served_width.side_effect = ProviderError("down")
     with pytest.raises(RuntimeError, match="embedding model did not answer"):
         await sync(force_rebuild=True, quiet=True)
     assert store.count_chunks() == chunks
@@ -185,7 +183,7 @@ async def test_clean_rebuild_stamps_the_store_with_the_current_schema():
     stamped = MagicMock()
     store.restamp_meta = stamped
     await sync(force_rebuild=True, quiet=True)
-    stamped.assert_called_once_with()
+    stamped.assert_called_once_with(reindex_values())
 
 
 async def test_rebuild_with_a_failed_file_leaves_the_schema_stamp_alone():
@@ -193,6 +191,6 @@ async def test_rebuild_with_a_failed_file_leaves_the_schema_stamp_alone():
     store = await _indexed(embedder)
     stamped = MagicMock()
     store.restamp_meta = stamped
-    embedder.embed_batch.side_effect = ProviderError("down", provider="fleet")
+    embedder.embed_batch.side_effect = ProviderError("down")
     await sync(force_rebuild=True, quiet=True)
     stamped.assert_not_called()

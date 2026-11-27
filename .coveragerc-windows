@@ -3,6 +3,10 @@
 # POSIX-only by design (fd-2 duplication and /proc/mounts in core/system.py,
 # the pass_fds splash subprocess in runtime/splash.py). The Linux and macOS
 # lanes measure those files at 100%, Windows skips their tests wholesale.
+# A line marked "pragma: posix only" is excluded here alone: it cannot run on
+# Windows, and the Linux and macOS lanes still measure it. A line marked
+# "pragma: windows only" is the reverse: pyproject.toml excludes it, and this
+# file measures it.
 [run]
 source = lilbee
 concurrency = thread
@@ -15,5 +19,7 @@ show_missing = True
 fail_under = 100
 exclude_lines =
     pragma: no cover
+    pragma: posix only
     if TYPE_CHECKING:
     class.*Protocol
+    @(typing\.)?overload

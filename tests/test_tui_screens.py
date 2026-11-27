@@ -19,7 +19,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Static
 from textual.widgets._tabbed_content import ContentTabs
 
-from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
+from conftest import TEST_EMBED_REF, TEST_LOCAL_REF, make_hf_client
 from lilbee.app.services import set_services
 from lilbee.app.settings_map import SettingGroup
 from lilbee.catalog import (
@@ -54,7 +54,6 @@ from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
-from lilbee.core.config.resolve import builtin_value
 from lilbee.crawler import CRAWLER_MISSING_MESSAGE
 from lilbee.data.store import Store
 from lilbee.modelhub.model_manager import RemoteModel
@@ -63,18 +62,23 @@ from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
 from lilbee.wiki.drafts import StaleDraftError
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
-from tests._async_wait import wait_for_widget, wait_until
+from lilbee.wiki.stats import BuildStats
+from tests import _tui_screen_fixtures as _fixtures
+from tests._async_wait import wait_for_pull_check, wait_for_turn_end, wait_for_widget, wait_until
 from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
-from tests._crawlberg_stub import StubCrawlberg, refusing_patterns
+from tests._crawlberg_stub import StubCrawlberg
 from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
-from tests._lilbee_app_test_host import (
-    LilbeeAppHost,
-    await_chat,
-    patch_model_write,
-    pump_until,
-    saved_setting,
-)
+from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, patch_model_write, pump_until
+from tests._settings_test_app import LazySettingsTestApp, SettingsTestApp
 from tests._toasts import posted_toasts
+from tests._tui_screen_fixtures import (  # noqa: F401
+    _isolated_cfg,
+    _patch_chat_setup,
+    _settings_gates_open,
+)
+
+# Bound by assignment, so a test argument named mock_svc does not shadow an import.
+mock_svc = _fixtures.mock_svc
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 _RESET_REFUSED_MID_SYNC = (
@@ -87,87 +91,11 @@ _RESET_REFUSED_MID_SYNC = (
 _real_embedding_ready = _ChatScreen._embedding_ready
 
 
-@pytest.fixture(autouse=True)
-def _isolated_cfg(tmp_path):
-    """Snapshot and restore cfg for every test."""
-    snapshot = cfg.model_copy()
-    cfg.data_root = tmp_path
-    cfg.data_dir = tmp_path / "data"
-    cfg.documents_dir = tmp_path / "documents"
-    cfg.lancedb_dir = tmp_path / "lancedb"
-    cfg.chat_model = TEST_LOCAL_REF
-    cfg.embedding_model = TEST_EMBED_REF
-    cfg.chunk_size = 512
-    # Simulate "already-initialized" state so the app does not read this as
-    # a fresh install and route away from tests that exercise chat.
-    cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
-    yield
-    for name in type(cfg).model_fields:
-        setattr(cfg, name, getattr(snapshot, name))
-
-
-@pytest.fixture(autouse=True)
-def mock_svc():
-    """Inject mock Services so TUI screens never touch real backends."""
-    from lilbee.data.store import SourceSummary
-    from tests.conftest import make_mock_services
-
-    store = MagicMock()
-    store.search.return_value = []
-    store.bm25_probe.return_value = []
-    store.get_sources.return_value = []
-    store.source_summary.return_value = SourceSummary(0, 0, {}, [])
-    store.count_sources.return_value = 0
-    store.add_chunks.side_effect = len
-    store.delete_by_source.return_value = None
-    store.delete_source.return_value = None
-    services = make_mock_services(store=store)
-    set_services(services)
-    yield services
-    set_services(None)
-
-
 def _with_real_store(services):
     """A copy of *services* whose store is a real one at the test's index, bound as current."""
     real = dataclasses.replace(services, store=Store(cfg))
     set_services(real)
     return real
-
-
-@pytest.fixture(autouse=True)
-def _patch_chat_setup():
-    """Patch out embedding model checks and model scanning so ChatScreen mounts cleanly."""
-    from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-    with (
-        patch("lilbee.cli.tui.app.chat_ready", return_value=True),
-        patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
-        patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
-            return_value=False,
-        ),
-        patch.object(ModelBar, "_scan_models"),
-    ):
-        yield
-
-
-@pytest.fixture(autouse=True)
-def _settings_gates_open():
-    """Open all SettingsScreen feature gates so legacy tests can query
-    every group's editors regardless of which optional extras are
-    installed in the test environment."""
-    with (
-        patch(
-            "lilbee.providers.availability.provider_sdk_available",
-            return_value=True,
-        ),
-        patch(
-            "lilbee.cli.tui.screens.settings_widgets.crawler_available",
-            return_value=True,
-        ),
-    ):
-        cfg.wiki = True
-        yield
 
 
 def _make_catalog_model(
@@ -553,249 +481,6 @@ class TestGroupRowsForGrid:
         assert len(experimental.rows) == 1
 
 
-def _make_eager_settings_screen():
-    """SettingsScreen subclass that populates every pane on mount.
-
-    Production lazy-mounts non-active panes on activation; the test
-    suite predates that pattern and queries editors across all panes
-    by id, so this subclass hooks ``on_mount`` to walk pane groups
-    and populate every body before tests query. CSS_PATH is pinned
-    to the original module's directory because Textual otherwise
-    resolves it next to the test file.
-    """
-    import importlib
-    from pathlib import Path
-
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    src_module = importlib.import_module(SettingsScreen.__module__)
-    css_path = str(Path(src_module.__file__ or "").parent / "settings.tcss")
-
-    class _EagerSettingsScreen(SettingsScreen):
-        CSS_PATH = css_path
-
-        def on_mount(self) -> None:
-            super().on_mount()
-            self.populate_all_panes()
-
-    return _EagerSettingsScreen
-
-
-class SettingsTestApp(LilbeeAppHost):
-    """Test fixture that pre-populates every Settings pane on mount."""
-
-    CSS = ""
-
-    def compose(self) -> ComposeResult:
-        yield Footer()
-
-    def on_mount(self) -> None:
-        self.push_screen(_make_eager_settings_screen()())
-
-
-async def test_settings_screen_mounts_grouped_sections():
-    """Settings screen renders grouped sections with setting rows."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        groups = app.screen.query("TabPane")
-        assert len(groups) > 0
-        rows = app.screen.query(".setting-row")
-        assert len(rows) > 0
-
-
-async def test_settings_api_keys_group_shows_plaintext_warning():
-    """API-Keys group renders a warning naming the config.toml path."""
-    from textual.widgets import Static
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 60)) as _pilot:
-        warnings = list(app.screen.query(".api-keys-warning").results(Static))
-        assert len(warnings) == 1
-        rendered = str(warnings[0].render())
-        assert "plain text" in rendered
-        assert "config.toml" in rendered
-        assert "sensitive" in rendered.lower()
-
-
-async def test_settings_hf_token_help_warns_plaintext():
-    """hf_token row in the System tab warns the user about plain-text storage."""
-    from textual.widgets import Static, TabbedContent
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 60)) as pilot:
-        tabbed = app.screen.query_one("#settings-tabs", TabbedContent)
-        tabbed.active = "settings-tab-system"
-        await pilot.pause(0.2)
-        row = app.screen.query_one("#row-hf_token")
-        help_widget = row.query_one(".setting-help", Static)
-        rendered = str(help_widget.render())
-        assert "plain text" in rendered.lower()
-        assert "config.toml" in rendered.lower()
-
-
-async def test_settings_tab_activation_populates_pane():
-    """Activating a settings tab mounts its rows.
-
-    With lazy tab bodies, only the active pane composes its editors
-    on first paint. Switching to another tab triggers
-    ``TabbedContent.TabActivated`` and the pane's body fills in.
-    """
-    from textual.widgets import TabbedContent
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause(0.15)
-        tabbed = app.screen.query_one("#settings-tabs", TabbedContent)
-        # Find a non-active tab; activating it should populate its body.
-        target_pane_id = None
-        for pane in tabbed.query("TabPane"):
-            if pane.id and pane.id != tabbed.active:
-                target_pane_id = pane.id
-                break
-        assert target_pane_id is not None
-        tabbed.active = target_pane_id
-        await pilot.pause(0.15)
-        target_pane = app.screen.query_one(f"#{target_pane_id}")
-        rows = list(target_pane.query(".setting-row"))
-        assert rows, f"activating {target_pane_id} did not mount any rows"
-
-
-async def test_settings_bool_renders_checkbox():
-    """Boolean settings render as Checkbox widgets."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        checkboxes = app.screen.query("Checkbox.setting-editor")
-        assert len(checkboxes) >= 1
-
-
-async def test_settings_readonly_no_editor():
-    """Read-only settings do not have editor widgets."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        chat_row = app.screen.query_one("#row-chat_model")
-        editors = chat_row.query(".setting-editor")
-        assert len(editors) == 0
-
-
-async def test_settings_model_picker_button_renders_for_model_fields():
-    """Each model field surfaces a picker button instead of a plain editor."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        for key in ("chat_model", "embedding_model", "vision_model", "reranker_model"):
-            row = app.screen.query_one(f"#row-{key}")
-            buttons = list(row.query(".setting-model-picker-button"))
-            assert len(buttons) == 1, f"{key} missing its picker button"
-
-
-async def test_settings_model_picker_button_pushes_modal_after_worker():
-    """Clicking the picker runs discovery in a worker, then pushes the modal."""
-    from unittest.mock import patch
-
-    from textual.widgets import TabbedContent
-
-    from lilbee.catalog.types import ModelTask
-    from lilbee.cli.tui.screens.model_picker import ModelPickerModal
-    from lilbee.cli.tui.widgets.model_bar import ModelOption
-
-    fake_buckets = {
-        ModelTask.CHAT: [ModelOption(label="fake-chat", ref="fake/chat.gguf")],
-        ModelTask.EMBEDDING: [],
-        ModelTask.VISION: [],
-        ModelTask.RERANK: [],
-    }
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.screen.query_one("#settings-tabs", TabbedContent).active = "settings-tab-models"
-        await pilot.pause()
-        with patch(
-            "lilbee.cli.tui.widgets.model_bar.classify_installed_models_full",
-            return_value=fake_buckets,
-        ):
-            await pilot.click("#model-pick-chat_model")
-            await pilot.pause(0.3)
-        assert isinstance(app.screen, ModelPickerModal), (
-            f"expected ModelPickerModal on top, got {type(app.screen).__name__}"
-        )
-
-
-def test_settings_screen_has_expected_handlers_and_actions() -> None:
-    """Structural regression test: SettingsScreen event handlers + action
-    bindings must be class methods, not nested functions captured by a
-    misplaced module-level helper.
-
-    The polish-pass commit 6ecd206 silently moved a helper into the
-    class body with matching indentation, which closed the class early
-    and turned every event handler into unreachable dead code. Parsing
-    succeeded because the indentation stayed consistent, and all
-    behavioural tests stayed red until caught by CI failures on
-    release/next-style platforms. See 5ffc5d6 for the fix.
-
-    This test fires before any pilot harness, so if someone re-breaks
-    the class boundary it surfaces immediately instead of at runtime.
-    """
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    expected = (
-        "_on_input_save",
-        "_on_checkbox_save",
-        "_on_select_save",
-        "_persist_value",
-        "_parse_value",
-        "_refresh_help",
-        "action_go_back",
-        "action_cursor_down",
-        "action_cursor_up",
-        "action_jump_top",
-        "action_jump_bottom",
-    )
-    missing = [name for name in expected if not callable(getattr(SettingsScreen, name, None))]
-    assert not missing, f"SettingsScreen missing expected methods: {missing}"
-
-
-async def test_settings_persist_on_change():
-    """Changing a setting persists the value to cfg."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
-
-        editor = app.screen.query_one("#ed-top_k", Input)
-        editor.focus()
-        assert await wait_until(pilot, lambda: app.focused is editor), "the editor never got focus"
-        editor.value = "20"
-        await pilot.press("enter")
-        await pump_until(pilot, lambda: cfg.top_k == 20)
-        assert cfg.top_k == 20
-
-
-async def test_settings_cycle_pane_wraps_through_strip():
-    """> / < jump straight to the next/previous group tab; wraps off either end."""
-    from textual.widgets import TabbedContent
-
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        tabs = screen.query_one("#settings-tabs", TabbedContent)
-        pane_ids = screen._pane_ids
-        assert len(pane_ids) >= 2
-        # Start on the first pane.
-        first = pane_ids[0]
-        tabs.active = first
-        await pilot.pause()
-        # > moves to the next pane.
-        screen.action_cycle_pane(1)
-        await pilot.pause()
-        assert tabs.active == pane_ids[1]
-        # < wraps back when called from the first pane.
-        tabs.active = first
-        await pilot.pause()
-        screen.action_cycle_pane(-1)
-        await pilot.pause()
-        assert tabs.active == pane_ids[-1]
-
-
 async def test_catalog_cycle_tab_wraps_through_strip():
     """Catalog > / < cycle across model categories with wrap-around."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -869,76 +554,6 @@ async def test_catalog_cycle_tab_unknown_active_starts_from_zero():
     mock_select.assert_called_with(1)
 
 
-async def test_settings_cycle_pane_handles_missing_tabs():
-    """If TabbedContent isn't queryable (mid-mount), action_cycle_pane is a no-op
-    rather than raising."""
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    screen = SettingsScreen.__new__(SettingsScreen)
-    screen._pane_groups = {}
-    with patch.object(SettingsScreen, "query_one", side_effect=Exception("not yet mounted")):
-        SettingsScreen.action_cycle_pane(screen, 1)
-
-
-async def test_settings_cycle_pane_before_compose_stays_on_the_profile_pane():
-    """Before compose adds the group panes, cycling has only the Profile pane to land on."""
-    from textual.widgets import TabbedContent
-
-    from lilbee.cli.tui.screens.settings import PROFILE_PANE_ID, SettingsScreen
-
-    screen = SettingsScreen()
-    fake_tabs = MagicMock(spec=TabbedContent)
-    fake_tabs.active = "settings-tab-models"
-    with patch.object(SettingsScreen, "query_one", return_value=fake_tabs):
-        SettingsScreen.action_cycle_pane(screen, 1)
-    assert fake_tabs.active == PROFILE_PANE_ID
-
-
-async def test_settings_cycle_pane_unknown_active_starts_from_zero():
-    """ValueError fallback: if tabs.active isn't in ``_pane_ids`` (stale id
-    from a hot-reload / refactor), cycle starts from index 0."""
-    from textual.widgets import TabbedContent
-
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    screen = SettingsScreen.__new__(SettingsScreen)
-    screen._pane_ids = ["settings-tab-models", "settings-tab-ingest"]
-    fake_tabs = MagicMock(spec=TabbedContent)
-    fake_tabs.active = "not-in-pane-groups"
-    with patch.object(SettingsScreen, "query_one", return_value=fake_tabs):
-        SettingsScreen.action_cycle_pane(screen, 1)
-    # Fell through to index 0 + delta 1 -> second pane.
-    assert fake_tabs.active == "settings-tab-ingest"
-
-
-async def test_settings_active_pane_body_handles_missing_tabs():
-    """``_active_pane_body`` returns None on every error path: TabbedContent
-    not queryable, no active pane, and body widget not yet mounted."""
-    from textual.widgets import TabbedContent
-
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    screen = SettingsScreen.__new__(SettingsScreen)
-    with patch.object(SettingsScreen, "query_one", side_effect=Exception("not mounted")):
-        assert screen._active_pane_body() is None
-    fake_empty_tabs = MagicMock(spec=TabbedContent)
-    fake_empty_tabs.active = ""
-    with patch.object(SettingsScreen, "query_one", return_value=fake_empty_tabs):
-        assert screen._active_pane_body() is None
-    fake_tabs = MagicMock(spec=TabbedContent)
-    fake_tabs.active = "settings-tab-models"
-    calls = {"n": 0}
-
-    def _fake_query_one(*args, **kwargs):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return fake_tabs
-        raise Exception("body not yet mounted")
-
-    with patch.object(SettingsScreen, "query_one", side_effect=_fake_query_one):
-        assert screen._active_pane_body() is None
-
-
 async def test_catalog_mouse_scroll_no_more_pages_short_circuits():
     """on_mouse_scroll_down early-returns when there's nothing more to fetch."""
     from textual.events import MouseScrollDown
@@ -960,1731 +575,6 @@ async def test_catalog_mouse_scroll_no_more_pages_short_circuits():
             with patch.object(screen, "_load_more") as load_more:
                 screen.on_mouse_scroll_down(event)
                 assert not load_more.called
-
-
-async def test_settings_persist_value_does_not_toast_on_success():
-    """Saving a setting (Input.Blurred / Input.Submitted / Checkbox.Changed
-    etc.) must NOT pop a success toast. The editor already shows the new
-    value and the write is persisted; the toast is noise that fires en
-    masse when a user pages through tabs and blurs the prior pane's
-    inputs. Errors still toast."""
-    from textual.widgets import Input
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        editor = app.screen.query_one("#ed-top_k", Input)
-        editor.focus()
-        assert await wait_until(pilot, lambda: app.focused is editor), "the editor never got focus"
-        editor.value = "21"
-        with patch.object(app.screen, "notify") as mock_notify:
-            await pilot.press("enter")
-            await pilot.pause()
-        # Persist must have happened (cfg updated)...
-        assert cfg.top_k == 21
-        # ...but no success toast.
-        assert mock_notify.call_count == 0, (
-            f"unexpected toast on settings save: {mock_notify.call_args_list}"
-        )
-
-
-async def test_settings_persist_value_still_toasts_on_error():
-    """Error path keeps its toast: the user has to know why a value didn't take."""
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        from lilbee.app.settings_map import SETTINGS_MAP
-
-        defn = SETTINGS_MAP["top_k"]
-        with patch.object(screen, "notify") as mock_notify:
-            screen._persist_value("top_k", defn, "not_an_int")
-        assert mock_notify.call_count == 1
-        assert mock_notify.call_args.kwargs.get("severity") == "error"
-
-
-async def test_settings_first_pane_populate_is_deferred():
-    """The first-pane content build must be queued via call_after_refresh,
-    not invoked from on_mount. Running mount_all for ~25 editor widgets
-    inline with on_mount adds the layout pass to the screen-switch latency
-    budget; deferring lets the screen paint empty first.
-
-    Uses a stub instead of the eager test fixture because the fixture's
-    ``populate_all_panes`` would itself call ``_populate_pane`` and mask
-    the production code path under inspection.
-    """
-    from unittest.mock import MagicMock, patch
-
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    screen = SettingsScreen.__new__(SettingsScreen)
-    screen._eagerly_populate = "settings-tab-models"
-    with (
-        patch.object(SettingsScreen, "_populate_pane") as mock_populate,
-        patch.object(SettingsScreen, "call_after_refresh", MagicMock()) as mock_defer,
-        patch.object(SettingsScreen, "app", new_callable=PropertyMock),
-    ):
-        SettingsScreen.on_mount(screen)
-        assert not mock_populate.called, (
-            "on_mount must defer first-pane populate via call_after_refresh"
-        )
-        mock_defer.assert_called_once()
-        args = mock_defer.call_args.args
-        assert args[1] == "settings-tab-models"
-
-
-async def test_settings_pane_body_owns_horizontal_padding():
-    """Padding on the inner pane VerticalScroll (not the outer Container)
-    keeps column 0 stable on rapid wheel-up; putting padding on the
-    Container leaked stale glyphs into the leftmost column when the
-    inner scroll repainted (filed bug bb-...-tear)."""
-    from textual.containers import VerticalScroll
-    from textual.widgets import TabbedContent
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        # Outer Container must NOT carry left/right padding any more.
-        outer = app.screen.query_one("#settings-scroll")
-        assert outer.styles.padding.left == 0
-        assert outer.styles.padding.right == 0
-        # Each pane body's VerticalScroll owns the 1-char gutter instead.
-        tabs = app.screen.query_one("#settings-tabs", TabbedContent)
-        for pane in tabs.query("TabPane"):
-            body = pane.query(VerticalScroll).first()
-            assert body.styles.padding.left == 1, (
-                f"{pane.id} body lost left padding; column-0 tear will return"
-            )
-            assert body.styles.padding.right == 1
-
-
-async def test_settings_outer_container_does_not_double_scroll():
-    """bb-e1e2: Settings tearing on Wiki tab scroll-up was caused by two
-    VerticalScrolls on the same column (outer #settings-scroll wrapping
-    the inner _LazyGroupBody per pane). Drop the outer to a Container so
-    only the active pane scrolls; this test pins that invariant."""
-    from textual.containers import Container, VerticalScroll
-
-    from lilbee.cli.tui.screens.settings import _LazyGroupBody
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        outer = app.screen.query_one("#settings-scroll")
-        assert isinstance(outer, Container)
-        assert not isinstance(outer, VerticalScroll), (
-            "#settings-scroll regressed to a VerticalScroll; nested-scroll "
-            "tearing on Settings → Wiki will return."
-        )
-        # Every pane body is itself a VerticalScroll, and from any pane body
-        # to the screen root there must be exactly one VerticalScroll on
-        # the chain (the body itself).
-        for body in app.screen.query(_LazyGroupBody):
-            scroll_ancestors = sum(
-                1 for n in body.ancestors_with_self if isinstance(n, VerticalScroll)
-            )
-            assert scroll_ancestors == 1, (
-                f"{body.id}: {scroll_ancestors} VerticalScroll ancestors, expected 1"
-            )
-
-
-async def test_settings_wiki_pane_scroll_clamps_past_top():
-    """Wheeling the Wiki settings pane up past its top edge must clamp at
-    scroll_y=0 cleanly. With the previous nested-scroll layout, this is
-    where Textual reflow tore the screen and lost the tab strip."""
-    from textual.widgets import TabbedContent
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        tabs = app.screen.query_one("#settings-tabs", TabbedContent)
-        tabs.active = "settings-tab-wiki"
-        await pilot.pause()
-        body = app.screen.query_one("#settings-tab-wiki-body")
-        body.scroll_to(y=0, animate=False)
-        await pilot.pause()
-        body.scroll_relative(y=-50, animate=False)
-        await pilot.pause()
-        assert body.scroll_y == 0.0
-        # Tabs strip must still be queryable -- the visual symptom of the
-        # original bug was that the strip vanished entirely on scroll-up.
-        assert app.screen.query_one("#settings-tabs", TabbedContent) is not None
-
-
-async def test_settings_exposes_wiki_fields():
-    """Settings screen renders an editor for every writable wiki config field."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        writable_wiki_keys = [
-            "wiki",
-            "wiki_prune_raw",
-            "wiki_embedding_faithfulness_threshold",
-            "wiki_stale_citation_threshold",
-            "wiki_drift_threshold",
-            "wiki_clusterer",
-            "wiki_clusterer_k",
-        ]
-        for key in writable_wiki_keys:
-            assert app.screen.query_one(f"#ed-{key}") is not None
-        # wiki_dir is read-only (writing it silently strands existing wiki
-        # content), so the row exists but no editor is rendered.
-        assert app.screen.query_one("#row-wiki_dir") is not None
-
-
-async def test_settings_wiki_clusterer_k_persists():
-    """Editing wiki_clusterer_k writes through to cfg."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
-
-        editor = app.screen.query_one("#ed-wiki_clusterer_k", Input)
-        editor.focus()
-        assert await wait_until(pilot, lambda: app.focused is editor), "the editor never got focus"
-        editor.value = "8"
-        await pilot.press("enter")
-        await pump_until(pilot, lambda: cfg.wiki_clusterer_k == 8)
-        assert cfg.wiki_clusterer_k == 8
-
-
-async def test_settings_checkbox_persist():
-    """Toggling a checkbox persists the boolean value."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)):
-        from textual.widgets import Checkbox
-
-        cb = app.screen.query_one("#ed-show_reasoning", Checkbox)
-        original = cfg.show_reasoning
-        async with saved_setting(app, "show_reasoning"):
-            cb.toggle()
-        assert cfg.show_reasoning != original
-
-
-async def test_settings_tab_reaches_checkbox_and_space_toggles():
-    """Tab walks focus to the checkbox in the active group; Space toggles it.
-
-    Settings groups its editors into a TabbedContent, so reaching a
-    given editor requires (a) activating its tab via the TabbedContent
-    API and (b) tab-walking inside the active pane until focus lands
-    on the editor."""
-    from textual.widgets import Checkbox, TabbedContent
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        tabs = app.screen.query_one(TabbedContent)
-        tabs.active = "settings-tab-display"  # group hosting show_reasoning
-        await pilot.pause()
-        cb = app.screen.query_one("#ed-show_reasoning", Checkbox)
-        original = cfg.show_reasoning
-        for _ in range(20):
-            await pilot.press("tab")
-            await pilot.pause()
-            if app.focused is cb:
-                break
-        assert app.focused is cb, "Tab failed to reach show_reasoning checkbox"
-        async with saved_setting(app, "show_reasoning"):
-            await pilot.press("space")
-        assert cfg.show_reasoning != original
-
-
-async def test_settings_vim_keys():
-    """Vim navigation keys work on the scroll container."""
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.press("j")
-        await pilot.press("k")
-        await pilot.press("g")
-        await pilot.press("G")
-        assert isinstance(app.screen, SettingsScreen)
-        assert app.screen.query("TabPane")
-
-
-async def test_settings_pop_screen():
-    """Pressing q switches the host to the Chat view via SettingsScreen.action_go_back."""
-    from unittest.mock import patch
-
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        assert isinstance(app.screen, SettingsScreen)
-        with patch.object(app, "switch_view") as switch:
-            await pilot.press("q")
-            switch.assert_called_once_with("Chat")
-
-
-async def test_settings_crawl_exclude_patterns_renders_collapsible():
-    """crawl_exclude_patterns renders as a Collapsible with line count in title."""
-    from textual.widgets import Collapsible
-
-    from lilbee.core.config import cfg
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        collapsible = app.screen.query_one("#collapsible-crawl_exclude_patterns", Collapsible)
-        assert collapsible.collapsed is True
-        assert "crawl_exclude_patterns" in collapsible.title
-        current = cfg.crawl_exclude_patterns or []
-        assert f"({len(current)} lines)" in collapsible.title
-
-
-async def test_settings_list_editor_can_be_expanded():
-    """Setting `collapsed = False` on the public Collapsible API reveals the editor."""
-    from textual.widgets import Collapsible
-
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        collapsible = app.screen.query_one("#collapsible-crawl_exclude_patterns", Collapsible)
-        assert collapsible.collapsed is True
-        collapsible.collapsed = False
-        await pilot.pause()
-        # The TextArea is inside the body once the Collapsible is open.
-        ta = collapsible.query_one(ListTextArea)
-        assert ta is not None
-
-
-async def test_settings_list_editor_saves_on_blur():
-    """Typing into the list TextArea and blurring persists the parsed list."""
-
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
-        ta.focus()
-        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
-        ta.load_text("foo\nbar")
-        async with saved_setting(app, "crawl_exclude_patterns"):
-            ta.blur()
-        assert cfg.crawl_exclude_patterns == ["foo", "bar"]
-
-
-async def test_settings_list_editor_blur_without_edit_leaves_config_untouched(tmp_path):
-    """Blurring a list-typed editor with no edit must not write config.toml.
-
-    Mirrors the scalar mount-baseline fix: a list editor's blur handler used
-    to persist unconditionally, so tabbing past crawl_exclude_patterns
-    without editing it rewrote config.toml on every visit.
-    """
-    from textual.widgets import Input
-
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-    from lilbee.core import settings as settings_store
-
-    cfg.data_root = tmp_path
-    # A baseline write unrelated to the field under test, so "byte-identical"
-    # proves no write happened at all, not just that this key stayed absent.
-    settings_store.update_values(tmp_path, {"top_k": 99})
-    baseline = (tmp_path / "config.toml").read_bytes()
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
-        ta.focus()
-        await pilot.pause()
-        app.screen.query_one("#ed-top_k", Input).focus()
-        await pilot.pause()
-
-    assert (tmp_path / "config.toml").read_bytes() == baseline
-
-
-async def test_settings_list_editor_strips_blanks():
-    """Blank lines and surrounding whitespace are stripped during parsing."""
-
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
-        ta.focus()
-        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
-        ta.load_text("a\n\nb\n")
-        async with saved_setting(app, "crawl_exclude_patterns"):
-            ta.blur()
-        assert cfg.crawl_exclude_patterns == ["a", "b"]
-
-
-async def test_settings_list_editor_refused_pattern_blocks_save():
-    """A pattern crawlberg refuses shows its line and reason and does not mutate cfg."""
-    from textual.widgets import Static
-
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-
-    refused = r"\Z"
-    stub = StubCrawlberg(refuse=refusing_patterns(refused))
-    app = SettingsTestApp()
-    with stub.installed():
-        async with app.run_test(size=(120, 40)) as pilot:
-            cfg.crawl_exclude_patterns = ["keep"]
-            ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
-            ta.focus()
-            assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
-            ta.load_text(f"/ok\n{refused}")
-            ta.blur()
-            err = app.screen.query_one("#err-crawl_exclude_patterns", Static)
-            # Focus change → blur handler → check → error widget class toggle are all
-            # async. Single pilot.pause is not enough on slower runners; poll until
-            # the -visible class lands.
-            await pump_until(pilot, lambda: err.has_class("-visible"))
-            shown = str(err.render())
-            assert "line 2" in shown
-            assert "unrecognized escape sequence" in shown
-            assert cfg.crawl_exclude_patterns == ["keep"]
-
-
-async def test_settings_list_editor_saves_a_pattern_only_crawlberg_compiles():
-    """Python's re refuses this pattern; crawlberg compiles it, so the screen saves it."""
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-
-    pattern = r"/wiki/\p{L}+:"
-    stub = StubCrawlberg(refuse=refusing_patterns(r"\Z"))
-    app = SettingsTestApp()
-    with stub.installed():
-        async with app.run_test(size=(120, 40)) as pilot:
-            cfg.crawl_exclude_patterns = ["keep"]
-            ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
-            ta.focus()
-            assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
-            ta.load_text(pattern)
-            async with saved_setting(app, "crawl_exclude_patterns"):
-                ta.blur()
-            assert cfg.crawl_exclude_patterns == [pattern]
-
-
-async def test_settings_browser_flags_editor_saves_on_blur():
-    """The launch-flag list editor stores each line as one flag."""
-    from textual.widgets import Collapsible
-
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        ta = app.screen.query_one("#ed-crawl_browser_extra_args", ListTextArea)
-        ta.focus()
-        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
-        ta.load_text("--lang=fr\n--mute-audio\n--disable-gpu")
-        async with saved_setting(app, "crawl_browser_extra_args"):
-            ta.blur()
-        flags = ["--lang=fr", "--mute-audio", "--disable-gpu"]
-        assert cfg.crawl_browser_extra_args == flags
-        title = app.screen.query_one("#collapsible-crawl_browser_extra_args", Collapsible).title
-        assert "(3 lines)" in title
-
-
-async def test_settings_browser_flags_editor_stores_a_flag_crawlberg_refuses():
-    """The editor stores every line and counts it; crawlberg checks the flags at crawl time."""
-    from textual.widgets import Collapsible
-
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        cfg.crawl_browser_extra_args = ["--lang=fr"]
-        ta = app.screen.query_one("#ed-crawl_browser_extra_args", ListTextArea)
-        ta.focus()
-        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
-        ta.load_text("--lang=fr\n--headless=new\nmute-audio")
-        async with saved_setting(app, "crawl_browser_extra_args"):
-            ta.blur()
-        flags = ["--lang=fr", "--headless=new", "mute-audio"]
-        assert cfg.crawl_browser_extra_args == flags
-        title = app.screen.query_one("#collapsible-crawl_browser_extra_args", Collapsible).title
-        assert "(3 lines)" in title
-
-
-async def test_settings_crawl_user_agent_editor_saves_the_override():
-    """The crawl user agent editor stores the text it holds."""
-    from textual.widgets import Input
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        cfg.crawl_user_agent = ""
-        editor = app.screen.query_one("#ed-crawl_user_agent", Input)
-        editor.focus()
-        assert await wait_until(pilot, lambda: app.focused is editor), "the editor never got focus"
-        editor.value = "Probe/1.0"
-        async with saved_setting(app, "crawl_user_agent"):
-            await pilot.press("enter")
-        assert cfg.crawl_user_agent == "Probe/1.0"
-
-
-async def test_settings_extra_browser_wait_editor_saves_the_wait():
-    """The extra browser wait editor stores the milliseconds it holds."""
-    from textual.widgets import Input
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        cfg.crawl_browser_extra_wait_ms = 1000
-        editor = app.screen.query_one("#ed-crawl_browser_extra_wait_ms", Input)
-        editor.focus()
-        assert await wait_until(pilot, lambda: app.focused is editor), "the editor never got focus"
-        editor.value = "2500"
-        async with saved_setting(app, "crawl_browser_extra_wait_ms"):
-            await pilot.press("enter")
-        assert cfg.crawl_browser_extra_wait_ms == 2500
-
-
-async def test_settings_robots_txt_checkbox_turns_the_setting_off():
-    """The robots.txt checkbox starts ticked and unticking it stores off."""
-    from textual.widgets import Checkbox
-
-    cfg.crawl_respect_robots_txt = True
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)):
-        checkbox = app.screen.query_one("#ed-crawl_respect_robots_txt", Checkbox)
-        assert checkbox.value is True
-        async with saved_setting(app, "crawl_respect_robots_txt"):
-            checkbox.toggle()
-        assert cfg.crawl_respect_robots_txt is False
-
-
-async def test_settings_list_editor_restore_defaults():
-    """Pressing Restore resets both cfg and the TextArea to the defaults."""
-    from textual.widgets import Button
-
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-    from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)):
-        cfg.crawl_exclude_patterns = ["old"]
-        btn = app.screen.query_one("#list-restore-crawl_exclude_patterns", Button)
-        async with saved_setting(app, "crawl_exclude_patterns"):
-            btn.press()
-        assert cfg.crawl_exclude_patterns == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
-        ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
-        assert ta.text == "\n".join(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
-
-
-async def test_settings_list_editor_restore_then_blur_does_not_resave():
-    """Blurring the list editor right after Restore, unedited, must not save again.
-
-    First edit the field so its mount-display baseline diverges from the
-    default; if Restore left that stale baseline in place instead of
-    updating it, the restored (default) text would still look changed on
-    the next blur and get persisted again.
-    """
-    from textual.widgets import Button, Input
-
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        screen = app.screen
-        ta = screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
-        ta.focus()
-        await pilot.pause()
-        ta.load_text("edited")
-        ta.blur()
-        await pump_until(pilot, lambda: cfg.crawl_exclude_patterns == ["edited"])
-
-        btn = screen.query_one("#list-restore-crawl_exclude_patterns", Button)
-        btn.press()
-        await pump_until(pilot, lambda: cfg.crawl_exclude_patterns != ["edited"])
-        assert screen._mount_display["crawl_exclude_patterns"] == ta.text
-
-        with patch.object(screen, "_persist_value") as mock_pv:
-            ta.focus()
-            await pilot.pause()
-            screen.query_one("#ed-top_k", Input).focus()
-            await pilot.pause()
-            mock_pv.assert_not_called()
-
-
-async def test_settings_parse_value_list_branch():
-    """_parse_value splits, strips, and drops blanks for list-typed settings."""
-    from lilbee.app.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    defn = SettingDef(list, nullable=False, group=SettingGroup.INGEST)
-    screen = SettingsScreen()
-    result = screen._parse_value(defn, "a\n\nb")
-    assert result == ["a", "b"]
-
-
-async def test_settings_list_editor_persists_through_toml_round_trip(tmp_path):
-    """Editing a list-typed setting survives a full settings.save + pydantic reload.
-
-    Guards against the bug where `_persist_value` used `str(parsed)` for lists,
-    which wrote Python repr such as "['foo', 'bar']" into the TOML store.
-    After reload, the pydantic `splitlines()` validator then produced a
-    one-element list with corrupt contents.
-    """
-
-    from lilbee.app.settings_map import SETTINGS_MAP
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-    from lilbee.core import settings
-
-    cfg.data_root = tmp_path
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
-        ta.focus()
-        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
-        ta.load_text("pat-a\npat-b")
-        # The blur handler posts Blurred, the screen handles it, and only then
-        # is the value written and the change published.
-        async with saved_setting(app, "crawl_exclude_patterns"):
-            ta.blur()
-
-    # Raw TOML value is a newline-joined string (not Python repr of the list).
-    reloaded = settings.load(tmp_path)
-    raw = reloaded["crawl_exclude_patterns"]
-    assert raw == "pat-a\npat-b"
-    assert "[" not in raw  # would indicate list repr leaked into TOML
-
-    # Pydantic's `splitlines()` validator then reconstructs the list cleanly.
-    screen = SettingsScreen()
-    parsed = screen._parse_value(SETTINGS_MAP["crawl_exclude_patterns"], raw)
-    assert parsed == ["pat-a", "pat-b"]
-
-
-async def test_settings_every_list_setting_gets_the_list_editor():
-    """A list-typed setting never lands in a plain Input.
-
-    The Input path is seeded from ``effective_value``, which summarises a list
-    as "N lines"; saving the form then wrote that summary back as the value.
-    """
-    from textual.widgets import Collapsible
-
-    from lilbee.app.settings_map import SETTINGS_MAP
-    from lilbee.cli.tui.screens.settings_widgets import group_settings
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-
-    list_keys = [
-        key
-        for group in group_settings().values()
-        for key, defn in group
-        if SETTINGS_MAP[key].type is list
-    ]
-    assert "ocr_language" in list_keys
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 60)):
-        for key in list_keys:
-            app.screen.query_one(f"#collapsible-{key}", Collapsible)
-            assert isinstance(app.screen.query_one(f"#ed-{key}"), ListTextArea), key
-
-
-async def test_settings_ocr_language_round_trips_through_the_list_editor(tmp_path):
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-    from lilbee.core import settings
-
-    cfg.data_root = tmp_path
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        ta = app.screen.query_one("#ed-ocr_language", ListTextArea)
-        ta.focus()
-        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
-        ta.load_text("eng\ndeu")
-        async with saved_setting(app, "ocr_language"):
-            ta.blur()
-    assert cfg.ocr_language == ["eng", "deu"]
-    assert settings.load(tmp_path)["ocr_language"] == "eng\ndeu"
-
-
-async def test_settings_force_ocr_pages_round_trips_through_the_list_editor(tmp_path, monkeypatch):
-    """The list editor renders and saves integer items, not only strings."""
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-    from lilbee.core import settings
-
-    cfg.data_root = tmp_path
-    monkeypatch.setattr(cfg, "force_ocr_pages", [1, 3])
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        ta = app.screen.query_one("#ed-force_ocr_pages", ListTextArea)
-        assert ta.text == "1\n3"
-        ta.focus()
-        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
-        ta.load_text("5\n2")
-        async with saved_setting(app, "force_ocr_pages"):
-            ta.blur()
-    assert cfg.force_ocr_pages == [2, 5]
-    assert settings.load(tmp_path)["force_ocr_pages"] == "2\n5"
-
-
-def test_list_editor_shows_integer_items_one_per_line():
-    from lilbee.cli.tui.screens.settings_widgets import set_widget_value
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-
-    editor = ListTextArea("")
-    set_widget_value(editor, [2, 4])
-    assert editor.text == "2\n4"
-
-
-async def test_list_text_area_posts_blurred():
-    """ListTextArea posts its Blurred message when focus moves away."""
-    from textual.widgets import Input
-
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-
-    captured: list[ListTextArea.Blurred] = []
-
-    class _TestApp(LilbeeAppHost):
-        CSS = ""
-
-        def compose(self) -> ComposeResult:
-            yield ListTextArea(id="ta")
-            yield Input(id="other")
-
-        def on_list_text_area_blurred(self, event: ListTextArea.Blurred) -> None:
-            captured.append(event)
-
-    app = _TestApp()
-    async with app.run_test(size=(80, 20)) as pilot:
-        ta = app.query_one("#ta", ListTextArea)
-        ta.focus()
-        assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
-        await pilot.pause()
-        assert not captured, "ListTextArea posted Blurred before focus left it"
-        app.query_one("#other", Input).focus()
-        assert await wait_until(pilot, lambda: bool(captured)), (
-            "Expected a Blurred message from ListTextArea"
-        )
-        assert len(captured) == 1
-        assert captured[0].control is ta
-
-
-async def test_settings_effective_value_shows_set_value_or_none():
-    """A set value shows as its text; an unset one shows as "None", with no marker."""
-    from lilbee.cli.tui.screens.settings_widgets import effective_value
-
-    old_temp = cfg.temperature
-    try:
-        cfg.temperature = 0.9
-        assert effective_value("temperature") == "0.9"
-        cfg.temperature = None
-        assert effective_value("temperature") == "None"
-    finally:
-        cfg.temperature = old_temp
-
-
-async def test_settings_generation_tab_blur_without_edit_leaves_config_untouched(tmp_path):
-    """Moving focus through the Generation editors without typing must not write config.toml.
-
-    Several Generation fields are nullable and show blank when the user
-    hasn't set a value. Losing focus on an untouched field must not save
-    that blank text as if the user had typed it.
-    """
-    from textual.widgets import TabbedContent
-
-    from lilbee.core import settings as settings_store
-    from tests._async_wait import wait_until
-
-    cfg.data_root = tmp_path
-    # A baseline write unrelated to the fields under test, so "byte-identical"
-    # proves no write happened at all, not just that these keys stayed absent.
-    settings_store.update_values(tmp_path, {"top_k": 99})
-    baseline = (tmp_path / "config.toml").read_bytes()
-
-    cfg.temperature = None
-    cfg.top_p = None
-    cfg.top_k_sampling = None
-    cfg.repeat_penalty = None
-    cfg.num_ctx = None
-    cfg.max_tokens = None
-    cfg.seed = None
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 60)) as pilot:
-        tabs = app.screen.query_one("#settings-tabs", TabbedContent)
-        tabs.active = "settings-tab-generation"
-        await pilot.pause()
-        body = app.screen.query_one("#settings-tab-generation-body")
-        # Only an Input or a ListTextArea saves on blur; a Checkbox or Select
-        # saves on change and a reset button on press. Each settled focus
-        # change rebuilds the footer and restyles the screen, so focus moves
-        # through the blur-saving editors in one batch and settles once.
-        editors = list(body.query("Input.setting-editor, ListTextArea"))
-        assert "ed-temperature" in {editor.id for editor in editors}
-        for editor in editors:
-            editor.focus()
-        reset = app.screen.query_one("#reset-temperature")
-        reset.focus()
-        assert await wait_until(pilot, lambda: app.screen.focused is reset)
-        await pilot.pause()
-
-    assert (tmp_path / "config.toml").read_bytes() == baseline
-    assert cfg.temperature is None
-    assert cfg.top_p is None
-    assert cfg.top_k_sampling is None
-    assert cfg.repeat_penalty is None
-    assert cfg.num_ctx is None
-    assert cfg.max_tokens is None
-    assert cfg.seed is None
-
-
-async def test_settings_edit_over_unset_value_saves(tmp_path):
-    """Typing a value into a field that shows blank saves it."""
-    from textual.widgets import Input
-
-    cfg.data_root = tmp_path
-    cfg.temperature = None
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        editor = app.screen.query_one("#ed-temperature", Input)
-        assert editor.value == ""
-        editor.focus()
-        editor.value = "0.85"
-        await pilot.press("enter")
-        await pump_until(pilot, lambda: cfg.temperature == 0.85)
-    assert cfg.temperature == 0.85
-
-
-async def test_settings_is_writable():
-    """is_writable correctly identifies writable vs read-only fields."""
-    from lilbee.cli.tui.screens.settings_widgets import is_writable
-
-    assert is_writable("top_k")
-    assert is_writable("temperature")
-    assert not is_writable("chat_model")
-    assert not is_writable("embedding_model")
-    assert not is_writable("nonexistent_key_xyz")
-
-
-async def test_settings_persist_invalid_int():
-    """Invalid value for int field shows error and does not change cfg."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
-
-        original = cfg.top_k
-        editor = app.screen.query_one("#ed-top_k", Input)
-        editor.focus()
-        assert await wait_until(pilot, lambda: app.focused is editor), "the editor never got focus"
-        editor.value = "abc"
-        await pilot.press("enter")
-        await pilot.pause()
-        assert cfg.top_k == original
-
-
-async def test_settings_repeated_identical_invalid_blur_notifies_twice():
-    """Two identical invalid blurs on the same field must both notify.
-
-    The mount-display baseline updates only when ``_persist_value``
-    succeeds, so an unparseable value never gets treated as the field's
-    shown text; without that, the baseline picked up the invalid text on
-    the first blur and a second identical invalid blur compared equal to it
-    and stayed silent.
-    """
-    from textual.widgets import Input
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        original = cfg.top_k
-        editor = app.screen.query_one("#ed-top_k", Input)
-        with patch.object(app.screen, "notify") as mock_notify:
-            editor.focus()
-            editor.value = "abc"
-            await pilot.press("enter")
-            await pump_until(pilot, lambda: mock_notify.call_count >= 1)
-            assert mock_notify.call_count == 1
-
-            editor.focus()
-            editor.value = "abc"
-            await pilot.press("enter")
-            await pump_until(pilot, lambda: mock_notify.call_count >= 2)
-            assert mock_notify.call_count == 2
-
-        assert cfg.top_k == original
-
-
-async def test_settings_select_save():
-    """_on_select_save routes through _persist_value correctly."""
-    from lilbee.app.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        defn = SettingDef(type=str, nullable=False, group="Generation")
-        event = MagicMock()
-        event.select.name = "test_select"
-        event.value = "chosen"
-        with (
-            patch.dict(
-                "lilbee.cli.tui.screens.settings.SETTINGS_MAP",
-                {"test_select": defn},
-            ),
-            patch.object(screen, "_persist_value") as mock_persist,
-        ):
-            screen._on_select_save(event)
-            mock_persist.assert_called_once_with("test_select", defn, "chosen")
-
-
-async def test_settings_select_save_compares_against_mount_baseline_not_cfg():
-    """A Select save compares the new value to the mount baseline, not to cfg.
-
-    The two always agree in practice; this manufactures the divergence to
-    prove which one the comparison actually uses.
-    """
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        key = "wiki_clusterer"
-        assert screen._mount_display.get(key) is not None
-        screen._mount_display[key] = "concepts"
-        cfg.wiki_clusterer = "embedding"
-        event = MagicMock()
-        event.select.name = key
-        event.value = "concepts"
-        with patch.object(screen, "_persist_value") as mock_pv:
-            screen._on_select_save(event)
-            mock_pv.assert_not_called()
-
-
-async def test_reset_button_resets_scalar():
-    """Pressing the reset button restores a scalar setting to its cfg default."""
-    from textual.widgets import Button, Input
-
-    cfg.wiki_clusterer_k = 99
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)):
-        button = app.screen.query_one("#reset-wiki_clusterer_k", Button)
-        async with saved_setting(app, "wiki_clusterer_k"):
-            button.press()
-        target = builtin_value("wiki_clusterer_k")
-        assert cfg.wiki_clusterer_k == target
-        editor = app.screen.query_one("#ed-wiki_clusterer_k", Input)
-        assert editor.value == str(target)
-
-
-async def test_reset_button_absent_for_readonly():
-    """Read-only rows (e.g. chat_model) do not render a reset button."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        chat_row = app.screen.query_one("#row-chat_model")
-        buttons = chat_row.query(".setting-reset-button")
-        assert len(buttons) == 0
-
-
-async def test_ctrl_r_resets_focused_row():
-    """Ctrl+R walks up from the focused editor to reset its row."""
-    from textual.widgets import Input
-
-    cfg.top_k = 99
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        editor = app.screen.query_one("#ed-top_k", Input)
-        editor.focus()
-        assert await wait_until(pilot, lambda: app.focused is editor), "the editor never got focus"
-        await pilot.press("ctrl+r")
-        await pilot.pause()
-        assert cfg.top_k == builtin_value("top_k")
-
-
-async def test_ctrl_r_with_no_focus_is_noop():
-    """action_reset_focused is a no-op when nothing is focused."""
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        with patch.object(screen, "_reset_to_default") as mock_reset:
-            screen.focused = None  # type: ignore[misc]
-            screen.action_reset_focused()
-            mock_reset.assert_not_called()
-
-
-async def test_ctrl_r_on_non_row_focus_is_noop():
-    """action_reset_focused ignores focus that isn't inside a setting row.
-
-    AUTO_FOCUS targets ``#settings-tabs Tabs`` -- the Tabs strip widget,
-    which sits outside any setting row -- so the screen lands on a
-    non-row widget by construction. ``Tab`` would move into the first
-    row's editor (which IS a row), so do NOT press Tab here; assert
-    directly from the auto-focus state.
-    """
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        await pilot.pause()
-        with patch.object(screen, "_reset_to_default") as mock_reset:
-            screen.action_reset_focused()
-            mock_reset.assert_not_called()
-
-
-async def test_refresh_editor_updates_checkbox():
-    """Resetting a boolean setting syncs the Checkbox widget to the default."""
-    from textual.widgets import Checkbox
-
-    default = bool(builtin_value("show_reasoning"))
-    cfg.show_reasoning = not default
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
-        checkbox.value = not default
-        await pilot.pause()
-        from textual.widgets import Button
-
-        button = app.screen.query_one("#reset-show_reasoning", Button)
-        async with saved_setting(app, "show_reasoning"):
-            button.press()
-        assert cfg.show_reasoning == default
-        assert checkbox.value == default
-
-
-async def test_reset_nullable_to_none():
-    """Resetting a nullable scalar clears cfg and empties the Input widget."""
-    from textual.widgets import Button, Input
-
-    cfg.seed = 42
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)):
-        button = app.screen.query_one("#reset-seed", Button)
-        async with saved_setting(app, "seed"):
-            button.press()
-        assert cfg.seed is None
-        editor = app.screen.query_one("#ed-seed", Input)
-        assert editor.value == ""
-
-
-async def test_reset_select_clears_when_default_none():
-    """Resetting a Select-backed field to a None default clears the widget."""
-    import dataclasses
-
-    from textual.widgets import Select
-
-    from lilbee.app.settings_map import SETTINGS_MAP, SettingDef
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    # The blank row exists only on a Select built for a nullable setting.
-    nullable = dataclasses.replace(SETTINGS_MAP["wiki_clusterer"], nullable=True)
-    app = SettingsTestApp()
-    with patch.dict(SETTINGS_MAP, {"wiki_clusterer": nullable}):
-        async with app.run_test(size=(120, 40)) as _pilot:
-            screen = app.screen
-            assert isinstance(screen, SettingsScreen)
-            select_widget = screen.query_one("#ed-wiki_clusterer", Select)
-            # Seed a non-default choice so we can detect the clear.
-            select_widget.value = "embedding"
-            defn = SettingDef(
-                type=str, nullable=True, group="Wiki", choices=("embedding", "concepts")
-            )
-            screen._refresh_editor("wiki_clusterer", defn, None)
-            # clear() yields the "no selection" sentinel, not the seeded choice.
-            assert select_widget.value is Select.NULL
-
-
-async def test_reset_select_sets_value_when_default_provided():
-    """Resetting a Select to a concrete string sets widget.value accordingly."""
-    from textual.widgets import Select
-
-    from lilbee.app.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        select_widget = screen.query_one("#ed-wiki_clusterer", Select)
-        select_widget.value = "embedding"
-        defn = SettingDef(type=str, nullable=False, group="Wiki", choices=("embedding", "concepts"))
-        screen._refresh_editor("wiki_clusterer", defn, "concepts")
-        assert select_widget.value == "concepts"
-
-
-async def test_refresh_editor_missing_widget_is_logged(caplog):
-    """Missing editor widget on refresh logs a debug message instead of raising."""
-    from lilbee.app.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        defn = SettingDef(type=str, nullable=True, group=SettingGroup.SYSTEM)
-        with caplog.at_level("DEBUG", logger="lilbee.cli.tui.screens.settings"):
-            screen._refresh_editor("nonexistent_key_xyz", defn, "irrelevant")
-        assert any("nonexistent_key_xyz" in record.message for record in caplog.records)
-
-
-async def test_refresh_editor_updates_textarea_list(monkeypatch):
-    """Future-proofing: _refresh_editor loads list values into a TextArea."""
-    from textual.widgets import TextArea
-
-    from lilbee.app.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        fake = MagicMock(spec=TextArea)
-        monkeypatch.setattr(screen, "query_one", lambda *a, **kw: fake)
-        defn = SettingDef(type=list, nullable=False, group="Crawling")
-        screen._refresh_editor("fake_list", defn, ["a", "b"])
-        fake.load_text.assert_called_once_with("a\nb")
-
-
-async def test_refresh_editor_updates_textarea_scalar(monkeypatch):
-    """TextArea non-list scalar values go through load_text as plain str."""
-    from textual.widgets import TextArea
-
-    from lilbee.app.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        fake = MagicMock(spec=TextArea)
-        monkeypatch.setattr(screen, "query_one", lambda *a, **kw: fake)
-        defn = SettingDef(type=str, nullable=False, group=SettingGroup.SYSTEM)
-        screen._refresh_editor("fake_str", defn, "hello")
-        fake.load_text.assert_called_once_with("hello")
-
-
-async def test_refresh_editor_updates_textarea_none(monkeypatch):
-    """TextArea with None value loads an empty string."""
-    from textual.widgets import TextArea
-
-    from lilbee.app.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        fake = MagicMock(spec=TextArea)
-        monkeypatch.setattr(screen, "query_one", lambda *a, **kw: fake)
-        defn = SettingDef(type=str, nullable=True, group=SettingGroup.SYSTEM)
-        screen._refresh_editor("fake_str", defn, None)
-        fake.load_text.assert_called_once_with("")
-
-
-async def test_refresh_editor_guard_skips_untracked_key():
-    """_refresh_editor must not seed a baseline for a key not already tracked.
-
-    Every writable key with a real editor is seeded into ``_mount_display``
-    at row construction, so the ``key in self._mount_display`` guard here is
-    always satisfied today; it exists to stop a future editor kind from
-    gaining a baseline through a plain refresh before its own construction
-    path starts tracking it. Clearing an already-tracked key's entry stands
-    in for that "never tracked" case.
-    """
-    from lilbee.app.settings_map import SETTINGS_MAP
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        assert "top_k" in screen._mount_display
-        del screen._mount_display["top_k"]
-        screen._refresh_editor("top_k", SETTINGS_MAP["top_k"], cfg.top_k)
-        assert "top_k" not in screen._mount_display
-
-
-async def test_reset_to_default_ignores_readonly_keys():
-    """_reset_to_default is a no-op for read-only settings."""
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        with patch.object(app, "reset_and_publish") as mock_reset:
-            screen._reset_to_default("chat_model")
-            mock_reset.assert_not_called()
-
-
-@pytest.mark.parametrize("error", [RuntimeError, OSError, ValueError])
-async def test_a_store_error_at_reset_shows_a_message_and_keeps_the_tui(error):
-    from lilbee.cli.tui import messages as msg
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        with (
-            patch.object(app, "reset_and_publish", side_effect=error("lance: table corrupt")),
-            patch.object(screen, "notify") as notify,
-        ):
-            screen._reset_to_default("top_k")
-        await pilot.pause()
-        assert app.is_running
-        notify.assert_called_once_with(
-            msg.SETTINGS_INVALID_VALUE.format(error="lance: table corrupt"), severity="error"
-        )
-
-
-async def test_reset_to_default_ignores_unknown_keys():
-    """_reset_to_default is a no-op when the key is not in SETTINGS_MAP."""
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        with patch.object(app, "reset_and_publish") as mock_reset:
-            screen._reset_to_default("nonexistent_key_xyz")
-            mock_reset.assert_not_called()
-
-
-async def test_reset_button_with_malformed_id_is_noop():
-    """Button press events with unexpected ids are gracefully ignored."""
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        event = MagicMock()
-        event.button.id = "not-a-reset-button"
-        with patch.object(screen, "_reset_to_default") as mock_reset:
-            screen._on_reset_pressed(event)
-            mock_reset.assert_not_called()
-        event.button.id = None
-        with patch.object(screen, "_reset_to_default") as mock_reset:
-            screen._on_reset_pressed(event)
-            mock_reset.assert_not_called()
-
-
-async def test_list_restore_removes_the_user_key(tmp_path):
-    """Restore defaults deletes the list key from config.toml and shows the resolved list."""
-    from textual.widgets import Button
-
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-
-    persistent_settings.update_values(tmp_path, {"crawl_exclude_patterns": "mine"})
-    cfg.crawl_exclude_patterns = ["mine"]
-    expected = builtin_value("crawl_exclude_patterns")
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        screen = app.screen
-        screen.query_one("#list-restore-crawl_exclude_patterns", Button).press()
-        await wait_until(pilot, lambda: cfg.crawl_exclude_patterns == expected)
-        assert cfg.crawl_exclude_patterns == expected
-        assert "crawl_exclude_patterns" not in persistent_settings.load(tmp_path)
-        ta = screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
-        assert ta.text == "\n".join(expected)
-
-
-async def test_ctrl_r_then_blur_writes_nothing(tmp_path):
-    """Ctrl+R deletes the key; blurring the reset field afterwards does not write it back."""
-    from textual.widgets import Input
-
-    persistent_settings.update_values(tmp_path, {"top_k": 99, "chunk_size": 1024})
-    cfg.top_k = 99
-    default = builtin_value("top_k")
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        editor = app.screen.query_one("#ed-top_k", Input)
-        editor.focus()
-        await wait_until(pilot, lambda: app.screen.focused is editor)
-        await pilot.press("ctrl+r")
-        await wait_until(pilot, lambda: cfg.top_k == default)
-        assert editor.value == str(default)
-        assert persistent_settings.load(tmp_path) == {"chunk_size": 1024}
-        app.screen.query_one("#ed-max_distance", Input).focus()
-        await wait_until(pilot, lambda: not editor.has_focus)
-        for _ in range(5):
-            await pilot.pause()
-        assert persistent_settings.load(tmp_path) == {"chunk_size": 1024}
-
-
-async def _blur_after_focus(pilot, app, editor) -> None:
-    """Focus *editor*, then move focus to another row so its blur handler runs."""
-    from textual.widgets import Input
-
-    editor.focus()
-    await wait_until(pilot, lambda: app.screen.focused is editor)
-    app.screen.query_one("#ed-max_distance", Input).focus()
-    await wait_until(pilot, lambda: not editor.has_focus)
-    for _ in range(5):
-        await pilot.pause()
-
-
-@pytest.mark.parametrize(
-    ("stored", "shown"),
-    [(None, ""), (True, "True"), (False, "False")],
-)
-async def test_flash_attention_shows_three_distinct_states(tmp_path, stored, shown):
-    """Auto, on and off each look different: a Select, not a Checkbox that hides auto as off."""
-    from textual.widgets import Select
-
-    cfg.data_root = tmp_path
-    cfg.flash_attention = stored
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)):
-        select = app.screen.query_one("#ed-flash_attention", Select)
-        assert select.is_blank() if shown == "" else (select.value == shown)
-
-
-async def test_flash_attention_picks_save_and_auto_clears(tmp_path):
-    """Picking On or Off stores a bool; clearing the Select stores auto (None)."""
-    from textual.widgets import Select
-
-    cfg.data_root = tmp_path
-    cfg.flash_attention = None
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        select = app.screen.query_one("#ed-flash_attention", Select)
-        select.value = "False"
-        await pump_until(pilot, lambda: cfg.flash_attention is False)
-        assert cfg.flash_attention is False
-        select.value = "True"
-        await pump_until(pilot, lambda: cfg.flash_attention is True)
-        assert cfg.flash_attention is True
-        select.clear()
-        await pump_until(pilot, lambda: cfg.flash_attention is None)
-        assert cfg.flash_attention is None
-
-
-async def test_a_late_editor_sync_does_not_save_the_old_select_value_again(tmp_path):
-    """The first pick's editor sync runs after the second pick; the second pick stays saved."""
-    from textual.widgets import Select
-
-    cfg.data_root = tmp_path
-    cfg.flash_attention = None
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        screen = app.screen
-        select = screen.query_one("#ed-flash_attention", Select)
-        held = []
-        real_after_refresh = screen.call_after_refresh
-        screen.call_after_refresh = lambda cb, *a, **k: held.append((cb, a, k))
-        select.value = "False"
-        await pump_until(pilot, lambda: cfg.flash_attention is False)
-        screen.call_after_refresh = real_after_refresh
-        assert held
-        select.value = "True"
-        for callback, args, kwargs in held:
-            callback(*args, **kwargs)
-        await pump_until(pilot, lambda: cfg.flash_attention is True)
-        await pilot.pause()
-        assert cfg.flash_attention is True
-
-
-async def test_select_reset_then_blur_writes_nothing(tmp_path):
-    """A reset Select shows the resolved value and its blur does not write it back."""
-    from textual.widgets import Button, Select
-
-    persistent_settings.update_values(tmp_path, {"ocr_strategy": "scanned_pages", "top_k": 5})
-    cfg.ocr_strategy = "scanned_pages"
-    default = str(builtin_value("ocr_strategy"))
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        select = app.screen.query_one("#ed-ocr_strategy", Select)
-        app.screen.query_one("#reset-ocr_strategy", Button).press()
-        await wait_until(pilot, lambda: str(select.value) == default)
-        assert persistent_settings.load(tmp_path) == {"top_k": 5}
-        await _blur_after_focus(pilot, app, select)
-        assert persistent_settings.load(tmp_path) == {"top_k": 5}
-
-
-async def test_multiline_reset_then_blur_writes_nothing(tmp_path):
-    """A reset multiline editor shows the resolved text and its blur does not write it back."""
-    from textual.widgets import Button
-
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-
-    persistent_settings.update_values(tmp_path, {"general_system_prompt": "mine", "top_k": 5})
-    cfg.general_system_prompt = "mine"
-    default = str(builtin_value("general_system_prompt"))
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        editor = app.screen.query_one("#ed-general_system_prompt", ListTextArea)
-        app.screen.query_one("#reset-general_system_prompt", Button).press()
-        await wait_until(pilot, lambda: editor.text == default)
-        assert persistent_settings.load(tmp_path) == {"top_k": 5}
-        await _blur_after_focus(pilot, app, editor)
-        assert persistent_settings.load(tmp_path) == {"top_k": 5}
-
-
-async def test_list_restore_then_blur_writes_nothing(tmp_path):
-    """Restoring a list's defaults and then leaving the editor writes nothing back."""
-    from textual.widgets import Button
-
-    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-
-    persistent_settings.update_values(tmp_path, {"crawl_exclude_patterns": "mine", "top_k": 5})
-    cfg.crawl_exclude_patterns = ["mine"]
-    expected = builtin_value("crawl_exclude_patterns")
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        editor = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
-        app.screen.query_one("#list-restore-crawl_exclude_patterns", Button).press()
-        await wait_until(pilot, lambda: editor.text == "\n".join(expected))
-        assert persistent_settings.load(tmp_path) == {"top_k": 5}
-        await _blur_after_focus(pilot, app, editor)
-        assert persistent_settings.load(tmp_path) == {"top_k": 5}
-
-
-async def test_list_restore_updates_the_title_and_clears_the_error(tmp_path):
-    """Restore defaults shows the resolved line count and hides a visible list error."""
-    from textual.widgets import Button, Collapsible, Static
-
-    from lilbee.cli.tui import messages as msg
-    from lilbee.cli.tui.screens.settings_widgets import LIST_ERROR_VISIBLE_CLASS
-
-    key = "crawl_exclude_patterns"
-    persistent_settings.update_values(tmp_path, {key: "a\nb\nc\nd\ne"})
-    cfg.crawl_exclude_patterns = ["a", "b", "c", "d", "e"]
-    expected = builtin_value("crawl_exclude_patterns")
-    assert len(expected) != 5
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        collapsible = app.screen.query_one("#collapsible-crawl_exclude_patterns", Collapsible)
-        assert str(collapsible.title) == msg.SETTINGS_LIST_EDITOR_TITLE.format(key=key, count=5)
-        error = app.screen.query_one("#err-crawl_exclude_patterns", Static)
-        error.add_class(LIST_ERROR_VISIBLE_CLASS)
-        app.screen.query_one("#list-restore-crawl_exclude_patterns", Button).press()
-        await wait_until(pilot, lambda: cfg.crawl_exclude_patterns == expected)
-        assert str(collapsible.title) == msg.SETTINGS_LIST_EDITOR_TITLE.format(
-            key=key, count=len(expected)
-        )
-        assert not error.has_class(LIST_ERROR_VISIBLE_CLASS)
-
-
-async def test_checkbox_reset_does_not_write_the_value_back(tmp_path):
-    """Resetting a checkbox moves its value without the change handler saving it."""
-    from textual.widgets import Button, Checkbox
-
-    default = bool(builtin_value("show_reasoning"))
-    persistent_settings.update_values(tmp_path, {"show_reasoning": not default, "top_k": 7})
-    cfg.show_reasoning = not default
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
-        app.screen.query_one("#reset-show_reasoning", Button).press()
-        await wait_until(pilot, lambda: checkbox.value == default)
-        for _ in range(5):
-            await pilot.pause()
-        assert checkbox.value == default
-        assert cfg.show_reasoning == default
-        assert persistent_settings.load(tmp_path) == {"top_k": 7}
-
-
-async def test_checkbox_toggle_queued_before_a_reset_does_not_resave(tmp_path):
-    """A Changed message still queued when a reset runs must not undo it.
-
-    The toggle is applied directly (not via pilot.press) so its Changed
-    message is still sitting in the widget's queue, unprocessed, when the
-    reset call runs synchronously right after it in the same tick.
-    """
-    from textual.widgets import Checkbox
-
-    default = bool(builtin_value("show_reasoning"))
-    persistent_settings.update_values(tmp_path, {"show_reasoning": not default, "top_k": 5})
-    cfg.show_reasoning = not default
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
-        checkbox.toggle()
-        app.screen._reset_to_default("show_reasoning")
-        for _ in range(5):
-            await pilot.pause()
-        assert checkbox.value == default
-        assert cfg.show_reasoning == default
-        assert persistent_settings.load(tmp_path) == {"top_k": 5}
-
-
-async def test_reset_all_removes_every_user_key(tmp_path):
-    """Reset-all leaves config.toml with no writable key, even after the checkboxes settle."""
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    persistent_settings.update_values(tmp_path, {"top_k": 99, "show_reasoning": True})
-    cfg.top_k = 99
-    cfg.show_reasoning = True
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        screen._on_reset_all_confirmed(True)
-        for _ in range(5):
-            await pilot.pause()
-        assert persistent_settings.load(tmp_path) == {}
-        assert cfg.top_k == builtin_value("top_k")
-
-
-async def test_a_refresh_of_every_key_walks_the_screen_once():
-    """The refresh after a reset of N keys costs one walk of the screen, not N walks."""
-    from textual.css import query as query_module
-
-    from lilbee.app.settings_map import SETTINGS_MAP
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)):
-        screen = app.screen
-        widgets = len(list(screen.walk_children()))
-        screen._stale_source_keys = {key for key, defn in SETTINGS_MAP.items() if defn.writable}
-        with patch.object(query_module, "match", wraps=query_module.match) as matched:
-            screen._refresh_changed_rows()
-        assert matched.call_count <= 3 * widgets
-
-
-async def test_reset_failure_toasts_and_changes_nothing(tmp_path):
-    """A boundary refusal on reset toasts an error and leaves the field and file alone."""
-    from textual.widgets import Input
-
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    persistent_settings.update_values(tmp_path, {"top_k": 99})
-    cfg.top_k = 99
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        with (
-            patch(
-                "lilbee.app.settings.persistent_settings.delete_values",
-                side_effect=OSError("disk full"),
-            ),
-            patch.object(screen, "notify") as mock_notify,
-        ):
-            screen._reset_to_default("top_k")
-        assert mock_notify.call_args.kwargs.get("severity") == "error"
-        assert cfg.top_k == 99
-        assert screen.query_one("#ed-top_k", Input).value == "99"
-        assert persistent_settings.load(tmp_path) == {"top_k": 99}
-
-
-async def test_reset_that_turns_the_wiki_off_offers_the_wipe(tmp_path):
-    """A reset that switches the wiki off makes the same wipe offer /set does."""
-    persistent_settings.update_values(tmp_path, {"wiki": True})
-    cfg.wiki = True
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app, "_offer_wiki_wipe") as offer:
-            assert app.reset_and_publish(["wiki"]) == ["wiki"]
-        offer.assert_called_once()
-        assert cfg.wiki is False
-        assert "wiki" not in persistent_settings.load(tmp_path)
-
-
-async def test_reset_with_the_wiki_already_off_offers_nothing(tmp_path):
-    """Reset only offers the wipe when it is what turned the wiki off."""
-    cfg.wiki = False
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app, "_offer_wiki_wipe") as offer:
-            assert app.reset_and_publish(["wiki", "top_k"]) == ["top_k", "wiki"]
-        offer.assert_not_called()
-
-
-async def test_a_reset_toasts_the_warning_of_its_update(tmp_path, monkeypatch):
-    """A reset that brings an env var's vision model back under ocr = off toasts the notice."""
-    ref = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-    monkeypatch.setenv("LILBEE_VISION_MODEL", ref)
-    (tmp_path / "config.toml").write_text("ocr = 'off'\n", encoding="utf-8")
-    cfg.ocr = OcrMode.OFF
-    cfg.vision_model = ""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with (
-            patch("lilbee.app.settings._invalidate_caches"),
-            patch.object(app, "notify") as notify,
-        ):
-            assert app.reset_and_publish(["vision_model"]) == ["vision_model"]
-        notify.assert_called_once()
-        assert ref in notify.call_args.args[0]
-        assert notify.call_args.kwargs.get("severity") == "warning"
-        assert cfg.ocr is OcrMode.OFF
-
-
-async def test_reset_theme_applies_the_resolved_theme(tmp_path):
-    """Resetting the theme repaints with the resolved theme, not only cfg."""
-    default = builtin_value("theme")
-    other = next(name for name in ("gruvbox", "nord", "dracula") if name != default)
-    persistent_settings.update_values(tmp_path, {"theme": other})
-    cfg.theme = other
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        app.theme = other
-        app.reset_and_publish(["theme"])
-        assert cfg.theme == default
-        assert app.theme == default
-
-
-async def test_reset_all_uses_footer_binding_not_button():
-    """Reset-all is now a Ctrl+Shift+R footer binding, not a button widget.
-
-    Per user feedback the button was awkwardly placed; replaced with a
-    keyboard binding shown in the Footer so the destructive action is
-    deliberate (modal confirms before mutating cfg).
-    """
-    from textual.widgets import Button
-
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        # The button widget must be gone.
-        assert not list(app.screen.query("#reset-all-defaults").results(Button))
-        # The footer-visible binding must be present.
-        names = [b.action for b in screen.BINDINGS]  # type: ignore[attr-defined]
-        assert "reset_all" in names
-
-
-async def test_reset_all_cancel_does_nothing():
-    """Dismissing the confirm dialog with False leaves cfg untouched."""
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        with patch.object(screen, "_reset_to_default") as mock_reset:
-            screen._on_reset_all_confirmed(False)
-            mock_reset.assert_not_called()
-        with patch.object(screen, "_reset_to_default") as mock_reset:
-            screen._on_reset_all_confirmed(None)
-            mock_reset.assert_not_called()
-
-
-async def test_reset_all_confirm_deletes_in_one_batch():
-    """Confirming the dialog issues one batched delete and writes no value."""
-    from lilbee.app.settings import reset_settings
-    from lilbee.app.settings_map import SETTINGS_MAP
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    # The screen resets whatever the boundary accepts under skip_unresettable=True;
-    # query that set so this test stays agnostic to which keys the boundary refuses.
-    writable_keys = set(
-        reset_settings(
-            [k for k, d in SETTINGS_MAP.items() if d.writable], skip_unresettable=True
-        ).updated
-    )
-    assert writable_keys
-    readonly_keys = {k for k, d in SETTINGS_MAP.items() if not d.writable}
-    assert readonly_keys, "test invariant: SETTINGS_MAP must contain a readonly field"
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        with (
-            patch("lilbee.app.settings.persistent_settings.update_values") as mock_update,
-            patch("lilbee.app.settings.persistent_settings.delete_values") as mock_delete,
-        ):
-            screen._on_reset_all_confirmed(True)
-        mock_update.assert_not_called()
-        mock_delete.assert_called_once()
-        deleted = set(mock_delete.call_args.args[1])
-        assert deleted == writable_keys
-        assert not deleted & readonly_keys
-
-
-async def test_reset_all_suppresses_per_field_toasts():
-    """Reset-all fires exactly one summary toast; no per-field CMD_SET_SUCCESS spam."""
-    from lilbee.cli.tui import messages as msg
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        with (
-            patch("lilbee.app.settings.persistent_settings.delete_values"),
-            patch.object(screen, "notify") as mock_notify,
-        ):
-            screen._on_reset_all_confirmed(True)
-        assert mock_notify.call_count == 1
-        assert mock_notify.call_args.args[0] == msg.SETTINGS_RESET_ALL_SUCCESS
-
-
-async def test_reset_all_actually_mutates_cfg():
-    """Batch reset restores cfg values to pydantic defaults (not just the TOML write)."""
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    default_top_k = builtin_value("top_k")
-    cfg.top_k = 999
-    assert cfg.top_k == 999
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        with patch("lilbee.app.settings.persistent_settings.delete_values"):
-            screen._on_reset_all_confirmed(True)
-        assert cfg.top_k == default_top_k
-
-
-async def test_reset_all_leaves_cfg_on_disk_write_failure():
-    """OSError from the TOML write leaves cfg as it was so UI and disk stay in sync."""
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    cfg.top_k = 999
-    cfg.wiki_clusterer_k = 77
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        with (
-            patch(
-                "lilbee.app.settings.persistent_settings.delete_values",
-                side_effect=OSError("disk full"),
-            ),
-            patch.object(screen, "notify") as mock_notify,
-        ):
-            screen._on_reset_all_confirmed(True)
-        assert cfg.top_k == 999
-        assert cfg.wiki_clusterer_k == 77
-        assert mock_notify.called
-        notify_kwargs = mock_notify.call_args.kwargs
-        assert notify_kwargs.get("severity") == "error"
-
-
-async def test_reset_all_publishes_signals_on_lilbee_app():
-    """When the screen runs under LilbeeApp, the reset loop fans out a signal per key."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await await_chat(app, pilot)
-        await pilot.pause()
-        app.push_screen(SettingsScreen())
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        with (
-            patch("lilbee.app.settings.persistent_settings.delete_values"),
-            patch.object(app.settings_changed_signal, "publish") as mock_pub,
-        ):
-            screen._on_reset_all_confirmed(True)
-        # One publish per writable setting the boundary actually resets.
-        from lilbee.app.settings import reset_settings
-        from lilbee.app.settings_map import SETTINGS_MAP
-
-        expected = len(
-            reset_settings(
-                [k for k, d in SETTINGS_MAP.items() if d.writable], skip_unresettable=True
-            ).updated
-        )
-        assert mock_pub.call_count == expected
-
-
-async def test_reset_all_action_opens_confirm_dialog():
-    """Triggering action_reset_all (Ctrl+Shift+R) pushes the ConfirmDialog."""
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-    from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        with patch.object(screen.app, "push_screen") as mock_push:
-            screen.action_reset_all()
-        mock_push.assert_called_once()
-        pushed_screen = mock_push.call_args.args[0]
-        assert isinstance(pushed_screen, ConfirmDialog)
 
 
 class StatusTestApp(LilbeeAppHost):
@@ -2718,7 +608,7 @@ async def test_status_screen_has_collapsible_sections(mock_svc):
 
         await wait_for_widget(pilot, app, "#storage-section")
         sections = app.screen.query(Collapsible)
-        assert len(sections) == 5
+        assert len(sections) == 6
 
 
 async def test_status_screen_sections_start_expanded(mock_svc):
@@ -2729,9 +619,10 @@ async def test_status_screen_sections_start_expanded(mock_svc):
 
         await wait_for_widget(pilot, app, "#storage-section")
         sections = list(app.screen.query(Collapsible))
-        assert len(sections) == 5
-        # The held-out section opens only when the store holds something out.
-        assert all(section.collapsed is (section.id == "held-out-section") for section in sections)
+        assert len(sections) == 6
+        # The held-out and partly read sections open only when they have a file to show.
+        closed = {"held-out-section", "partly-read-section"}
+        assert all(section.collapsed is (section.id in closed) for section in sections)
 
 
 async def test_status_screen_config_shows_models(mock_svc):
@@ -2834,7 +725,9 @@ async def test_status_screen_first_load_is_one_page_of_a_huge_library(mock_svc):
     assert hint == msg.STATUS_DOCS_MORE.format(count=DOCUMENTS_PAGE_DEFAULT)
     assert "lilbee status" not in hint
     assert "8800000" in storage.replace(",", "")
-    mock_svc.store.get_sources.assert_called_once_with(limit=DOCUMENTS_PAGE_DEFAULT, offset=0)
+    mock_svc.store.get_sources.assert_called_once_with(
+        limit=DOCUMENTS_PAGE_DEFAULT, offset=0, newest_first=True
+    )
     mock_svc.store.source_summary.assert_not_called()
 
 
@@ -2853,6 +746,52 @@ async def test_status_screen_lists_held_out_files(mock_svc, monkeypatch):
         table = await wait_for_widget(pilot, app, "#held-out-table", DataTable)
         await _wait_for_row_count(pilot, table, 2)
         assert app.screen.query_one("#held-out-section", Collapsible).collapsed is False
+
+
+async def test_status_screen_lists_partly_read_files_with_a_line_for_each_page(
+    mock_svc, monkeypatch
+):
+    """A source with failed OCR pages shows one line for each page, in an open section."""
+    from textual.widgets import Collapsible, DataTable
+
+    from lilbee.cli.tui.screens import status as status_screen
+    from lilbee.data.store import FailedPage
+
+    pages = [
+        FailedPage(page=number, error="[timeout]", recovered=number == 2) for number in range(1, 8)
+    ]
+    mock_svc.store.partly_read_sources.return_value = ({"scan[1].pdf": pages}, 3)
+    monkeypatch.setattr(status_screen, "held_out_sources", lambda: ([], 0))
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        table = app.screen.query_one("#partly-read-table", DataTable)
+        await _wait_for_row_count(pilot, table, 2)
+        assert table.get_row_at(1) == ["1 of 3 partly read files shown", ""]
+        filename, pages = table.get_row_at(0)
+        assert filename.plain == "scan[1].pdf"
+        assert pages.plain.splitlines() == [
+            "page 1: [timeout]",
+            "page 2: [timeout] (other text kept)",
+            *(f"page {number}: [timeout]" for number in range(3, 6)),
+            "and 2 more",
+        ]
+        assert app.screen.query_one("#partly-read-section", Collapsible).collapsed is False
+
+
+async def test_status_screen_keeps_the_partly_read_section_closed_when_empty(mock_svc, monkeypatch):
+    from textual.widgets import Collapsible, DataTable
+
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens import status as status_screen
+
+    mock_svc.store.get_sources.return_value = [{"filename": "fine.md", "chunk_count": 2}]
+    monkeypatch.setattr(status_screen, "held_out_sources", lambda: ([], 0))
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        table = app.screen.query_one("#partly-read-table", DataTable)
+        await _wait_for_row_count(pilot, table, 1)
+        assert table.get_row_at(0) == [msg.STATUS_PARTLY_READ_EMPTY, ""]
+        assert app.screen.query_one("#partly-read-section", Collapsible).collapsed is True
 
 
 async def test_status_screen_renders_bracketed_held_out_and_doc_names_as_written(
@@ -2996,8 +935,12 @@ def test_status_read_chat_arch_success():
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.gguf_meta.read_gguf_metadata",
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata",
             return_value={"architecture": "llama"},
+        ),
+        patch(
+            "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic",
+            return_value=True,
         ),
     ):
         result = _read_chat_arch(info)
@@ -3017,6 +960,10 @@ def test_status_read_embed_arch_success():
         patch(
             "lilbee.providers.gguf_meta.read_gguf_metadata",
             return_value={"architecture": "bert"},
+        ),
+        patch(
+            "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic",
+            return_value=True,
         ),
     ):
         result = _read_embed_arch(info)
@@ -3040,6 +987,10 @@ def test_status_read_vision_arch_success():
         patch(
             "lilbee.providers.gguf_meta.read_mmproj_projector_type",
             return_value="resampler",
+        ),
+        patch(
+            "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic",
+            return_value=True,
         ),
     ):
         result = _read_vision_arch(info)
@@ -3067,33 +1018,6 @@ def test_status_read_vision_arch_swallows_errors():
     ):
         result = _read_vision_arch(info)
     assert result.vision_projector == "unknown"
-
-
-def test_get_model_architecture_caches_within_session():
-    """Repeated calls under the same model refs return the cached instance."""
-    from lilbee.modelhub.model_info import get_model_architecture, invalidate_cache
-
-    invalidate_cache()
-    first = get_model_architecture()
-    second = get_model_architecture()
-    # Cached identity, not just equal value: a cache hit returns the
-    # exact same object so callers can rely on cheap reads.
-    assert first is second
-
-
-def test_invalidate_cache_forces_reread():
-    """invalidate_cache drops the memoized arch info so the next call
-    re-reads instead of returning the stale instance."""
-    from lilbee.modelhub.model_info import get_model_architecture, invalidate_cache
-
-    invalidate_cache()
-    first = get_model_architecture()
-    invalidate_cache()
-    second = get_model_architecture()
-    # Different instances after invalidate (re-read happens), even
-    # though the values are equal because nothing changed on disk.
-    assert first is not second
-    assert first == second
 
 
 async def test_app_mounts_chat_screen():
@@ -3437,14 +1361,24 @@ async def test_chat_slash_theme_no_arg():
         assert app.screen.query_one("#chat-input").value == "/theme "
 
 
+def _delete_library(mock_svc, names, *, missing=frozenset()):
+    """Make the mock store answer /delete's bounded reads for a library holding *names*."""
+    store = mock_svc.store
+    store.count_sources.return_value = len(names)
+    store.source_names.side_effect = lambda term="", *, limit: [
+        n for n in names if term.lower() in n.lower()
+    ][:limit]
+    store.iter_source_heads.side_effect = lambda: iter({"filename": n} for n in names)
+    store.missing_sources.side_effect = lambda asked: set(asked) & set(missing)
+    store.get_sources.side_effect = AssertionError("/delete must not load every source")
+
+
 async def test_chat_slash_delete_with_match(mock_svc):
     """``/delete <name>`` deletes both the chunks and the source row.
 
     Awaits the worker before asserting so the dispatch lands first.
     """
-    mock_svc.store.get_sources.return_value = [
-        {"filename": "notes.md", "source": "notes.md"},
-    ]
+    _delete_library(mock_svc, ["notes.md"])
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         # Re-inject mock after mount (model bar events may call reset_services)
@@ -3459,7 +1393,7 @@ async def test_chat_slash_delete_where_the_library_cannot_lock_files(mock_svc):
     from lilbee.runtime.lock import LockingUnsupportedError
 
     refused = "/data is on a filesystem that does not support file locking."
-    mock_svc.store.get_sources.return_value = [{"filename": "notes.md", "source": "notes.md"}]
+    _delete_library(mock_svc, ["notes.md"])
     mock_svc.store.remove_documents.side_effect = LockingUnsupportedError(refused)
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -3472,9 +1406,7 @@ async def test_chat_slash_delete_where_the_library_cannot_lock_files(mock_svc):
 
 
 async def test_chat_slash_delete_not_found(mock_svc):
-    mock_svc.store.get_sources.return_value = [
-        {"filename": "notes.md", "source": "notes.md"},
-    ]
+    _delete_library(mock_svc, ["notes.md"], missing={"nonexistent.md"})
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
@@ -3488,10 +1420,11 @@ async def test_chat_slash_delete_not_found(mock_svc):
 
 async def test_chat_slash_delete_not_found_suggests_near_match(mock_svc):
     """A miss that is a substring of exactly one indexed name offers it back."""
-    mock_svc.store.get_sources.return_value = [
-        {"filename": "qa-corpus/tested-models.md", "source": "qa-corpus/tested-models.md"},
-        {"filename": "qa-corpus/usage.md", "source": "qa-corpus/usage.md"},
-    ]
+    _delete_library(
+        mock_svc,
+        ["qa-corpus/tested-models.md", "qa-corpus/usage.md"],
+        missing={"tested"},
+    )
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
@@ -3506,9 +1439,7 @@ async def test_chat_slash_delete_not_found_suggests_near_match(mock_svc):
 
 
 async def test_chat_slash_delete_no_arg(mock_svc):
-    mock_svc.store.get_sources.return_value = [
-        {"filename": "notes.md", "source": "notes.md"},
-    ]
+    _delete_library(mock_svc, ["notes.md"])
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
@@ -3521,7 +1452,7 @@ async def test_chat_slash_delete_no_arg(mock_svc):
 
 
 async def test_chat_slash_delete_store_error(mock_svc):
-    mock_svc.store.get_sources.side_effect = Exception("no store")
+    mock_svc.store.count_sources.side_effect = Exception("no store")
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
@@ -3534,8 +1465,44 @@ async def test_chat_slash_delete_store_error(mock_svc):
             assert "Could not read" in mock_notify.call_args[0][0]
 
 
+async def test_chat_slash_delete_lists_a_page_and_counts_the_rest(mock_svc):
+    from lilbee.cli.tui.screens.chat import _DELETE_LISTED
+
+    # Store order is the reverse of alphabetical; a failure that is also listed counts once.
+    names = [f"doc-{i:04d}.md" for i in reversed(range(_DELETE_LISTED + 7))]
+    _delete_library(mock_svc, names)
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(mock_svc)
+        with (
+            patch.object(app.screen, "notify") as mock_notify,
+            patch("lilbee.app.ingest.held_failures", return_value={"doc-0003.md": object()}),
+        ):
+            app.screen._cmd_delete("")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
+            text = mock_notify.call_args[0][0]
+            listed = text.split("\n")[0].removeprefix("Documents: ").split(", and ")[0]
+            assert listed.split(", ") == [f"doc-{i:04d}.md" for i in range(_DELETE_LISTED)]
+            assert text.split("\n")[0].endswith(", and 7 more")
+
+
+async def test_chat_slash_delete_suggests_a_close_spelling(mock_svc):
+    _delete_library(
+        mock_svc, ["qa-corpus/usage.md", "qa-corpus/other.md"], missing={"qa-corpus/usagee.md"}
+    )
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(mock_svc)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_delete("qa-corpus/usagee.md")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
+            assert "Did you mean qa-corpus/usage.md" in mock_notify.call_args[0][0]
+
+
 async def test_chat_slash_delete_empty_sources(mock_svc):
-    mock_svc.store.get_sources.return_value = []
+    _delete_library(mock_svc, [])
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
@@ -3570,12 +1537,12 @@ async def test_chat_tab_completes_a_held_out_source_for_delete(mock_svc):
 
 async def test_chat_tab_delete_completion_follows_the_store(mock_svc):
     """A source indexed after the first ``/delete <Tab>`` is offered by the next one."""
-    mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}]
+    mock_svc.store.source_names.side_effect = lambda term="", *, limit: ["a.txt"]
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         set_services(mock_svc)
         assert await _tab_complete(app, pilot, "/delete a") == "/delete a.txt"
-        mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}, {"filename": "b.md"}]
+        mock_svc.store.source_names.side_effect = lambda term="", *, limit: ["a.txt", "b.md"]
         assert await _tab_complete(app, pilot, "/delete b") == "/delete b.md"
 
 
@@ -3642,8 +1609,6 @@ async def test_chat_slash_delete_turns_a_failure_under_a_directory_root_into_a_r
 
 
 class _DatasetStubEmbedder:
-    truncated_total = 0
-
     def embed_batch(self, texts, *, source="", on_progress=None, **_kwargs):
         if on_progress is not None:
             from lilbee.runtime.progress import EmbedEvent, EventType
@@ -3971,7 +1936,14 @@ async def test_chat_slash_reset_refused_while_an_import_runs(tmp_path):
             patch.object(app.screen, "notify") as mock_notify,
         ):
             app.screen._cmd_import(str(out))
-            assert await pump_until(_pilot, started.is_set)
+            # The import body runs on the task worker thread after a slow first import and a
+            # store open. The pauses of the pilot do not wait for a thread, so the test waits
+            # on the worker's own signal; the loop stays free for the worker. The entry wait
+            # ends below the test timeout, so a worker that never signals fails with a message
+            # and its thread does not block the loop shutdown.
+            assert await asyncio.to_thread(started.wait, _SYNC_ENTRY_WAIT_S), (
+                "the import worker never reached the import body"
+            )
             app.screen._handle_slash("/reset")
             await _pilot.pause()
             await _pilot.press("y")
@@ -4105,7 +2077,7 @@ async def test_settings_tab_does_not_turn_unreadable_bool_text_into_false():
     from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -4116,8 +2088,10 @@ async def test_settings_tab_does_not_turn_unreadable_bool_text_into_false():
 async def test_chat_slash_set_nullable_none():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._cmd_set("temperature 0.5")
+        assert cfg.temperature == 0.5
         app.screen._cmd_set("temperature none")
-        assert cfg.temperature == 0.1  # the built-in, as a fresh Config() gives
+        assert cfg.temperature is None  # the built-in, as a fresh Config() gives
 
 
 async def test_chat_slash_set_refused_list_value_reads_for_users():
@@ -5493,6 +3467,9 @@ async def test_chat_log_follows_again_once_the_user_returns_to_the_bottom():
         assert log.scroll_y == log.max_scroll_y, "following did not resume at the bottom"
 
 
+# Took 56.6 s on a loaded build host (D5, 2026-11-24), 3.4 s under the 60 s limit. The thread
+# timeout method ends the whole run at the limit, so the test gets room.
+@pytest.mark.timeout(180)
 @pytest.mark.xdist_group("tui_pilot")
 async def test_chat_log_does_not_follow_again_from_part_way_back_down():
     """Scrolling part of the way back is still reading, not catching up.
@@ -5752,7 +3729,8 @@ async def test_command_provider_retry_skipped_action(mock_svc):
             provider._action_retry_skipped()
             await app.workers.wait_for_complete()
             await wait_until(pilot, lambda: mock_sync.called)
-            mock_sync.assert_called_once()
+            # True is retry_skipped: the sync reads the partly read files again too.
+            mock_sync.assert_called_once_with(True)
         notify.assert_called_once_with(retry_skipped_message(1))
     assert held_hashes(store) == {"gone.txt": "cafef00d"}
     assert released_on and released_on[0] is not threading.main_thread()
@@ -5978,12 +3956,31 @@ async def test_command_provider_model_commands_error():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch(
-            "lilbee.modelhub.models.list_installed_models",
-            side_effect=Exception("no provider"),
+        with (
+            patch(
+                "lilbee.modelhub.models.list_installed_models",
+                side_effect=OSError("manifests unreadable"),
+            ),
+            pytest.raises(OSError, match="manifests unreadable"),
         ):
-            cmds = provider._model_commands()
-            assert cmds == []
+            provider._model_commands()
+
+
+async def test_an_unreadable_registry_is_reported_in_the_palette_not_shown_as_no_models():
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        provider = LilbeeCommandProvider(chat, match_style=None)
+        lookup: asyncio.Future[list] = asyncio.get_running_loop().create_future()
+        lookup.set_exception(OSError("manifests unreadable"))
+        with patch.object(app, "notify") as notify:
+            provider._models_landed(chat, lookup)
+        assert "manifests unreadable" in notify.call_args.args[0]
+        assert notify.call_args.kwargs["severity"] == "error"
+        assert provider._models == []
 
 
 async def test_the_palette_lists_models_once_per_open_and_off_the_event_loop():
@@ -6370,12 +4367,11 @@ async def test_catalog_install_already_installed(tmp_path):
             dest = tmp_path / "resolved.gguf"
             dest.write_text("fake")
             with (
-                patch(
-                    "lilbee.cli.tui.screens.catalog.resolve_filename", return_value="resolved.gguf"
-                ),
+                patch("lilbee.catalog.download.resolve_filename", return_value="resolved.gguf"),
                 patch.object(screen, "notify") as mock_notify,
             ):
                 screen._install_model(m)
+                await wait_for_pull_check(screen.app)
                 mock_notify.assert_called_once()
                 assert "already installed" in mock_notify.call_args[0][0]
 
@@ -6404,6 +4400,7 @@ async def test_catalog_install_new_model():
                 patch.object(screen, "_enqueue_download") as mock_enqueue,
             ):
                 screen._install_model(m)
+                await wait_for_pull_check(screen.app)
                 await _pilot.pause()
                 mock_enqueue.assert_called_once_with(m)
 
@@ -8175,6 +6172,72 @@ def test_consume_stream_shows_the_rewrite_in_the_status_row():
     widget.append_content.assert_called_once_with("In 1910.")
 
 
+def test_consume_stream_toasts_each_degraded_step_and_keeps_the_status_row():
+    """A notice with no rewrite still toasts every failed step, and sets no status."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.core.health_warnings import HealthWarning, WarningCode
+    from lilbee.retrieval.reasoning import RetrievalNotice, StreamToken
+
+    warning = HealthWarning(
+        code=WarningCode.HYDE_BLEND_FAILED, message="hyde failed.", remedy="Run lilbee status."
+    )
+    screen = ChatScreen.__new__(ChatScreen)
+    widget = MagicMock()
+    stream = iter(
+        [
+            RetrievalNotice(degraded=(warning,)),
+            StreamToken(content="Answer.", is_reasoning=False),
+        ]
+    )
+    with (
+        patch(
+            "lilbee.cli.tui.screens.chat.call_from_thread",
+            side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+        ),
+        patch.object(ChatScreen, "notify", create=True) as notify,
+    ):
+        screen._consume_stream(stream, _Turn("q", widget, 0, None), [])
+    notify.assert_called_once_with(warning.line, severity="warning")
+    widget.set_thinking_status.assert_not_called()
+
+
+@pytest.mark.parametrize("size", [(80, 24), (160, 48)])
+async def test_chat_toasts_a_failed_search_step(mock_svc, size):
+    """The chat screen raises a warning toast when a search step failed."""
+    from lilbee.core.health_warnings import HealthWarning, WarningCode
+    from lilbee.retrieval.reasoning import RetrievalNotice, StreamToken
+
+    warning = HealthWarning(
+        code=WarningCode.CONCEPT_BOOST_FAILED,
+        message="Concept boost failed.",
+        remedy="Run lilbee status, then search again.",
+    )
+    mock_svc.searcher.ask_stream = MagicMock(
+        return_value=iter(
+            [
+                RetrievalNotice(query="q", degraded=(warning,)),
+                StreamToken(content="Answer.", is_reasoning=False),
+            ]
+        )
+    )
+    app = ChatTestApp()
+    async with app.run_test(size=size) as pilot:
+        # Textual drops a toast from its list five seconds after it is raised,
+        # so a poll on that list can miss a toast on a loaded host. Record the
+        # call that raises it and wait on that.
+        with patch.object(app, "notify", wraps=app.notify) as notify:
+            inp = app.screen.query_one("#chat-input", ChatInput)
+            inp.value = "test"
+            await pilot.press("enter")
+            assert await wait_until(
+                pilot,
+                lambda: any(c.args[:1] == (warning.line,) for c in notify.call_args_list),
+                timeout=10,
+            ), "the failed search step never raised its toast"
+        raised = next(c for c in notify.call_args_list if c.args[:1] == (warning.line,))
+        assert raised.kwargs["severity"] == "warning"
+
+
 async def test_chat_stream_response_error_worker(mock_svc):
     """Cover the error branch in _stream_response."""
     app = ChatTestApp()
@@ -8185,7 +6248,7 @@ async def test_chat_stream_response_error_worker(mock_svc):
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
-        assert await pump_until(_pilot, lambda: not app.screen.streaming)
+        await wait_for_turn_end(_pilot, app.screen)
 
 
 async def test_chat_stream_embedder_mismatch_adopt_worker(mock_svc):
@@ -8238,7 +6301,7 @@ async def test_chat_stream_response_reasoning_worker(mock_svc):
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
-        assert await pump_until(_pilot, lambda: not app.screen.streaming)
+        await wait_for_turn_end(_pilot, app.screen)
 
 
 async def test_chat_stream_response_inner_exception(mock_svc):
@@ -8261,7 +6324,7 @@ async def test_chat_stream_response_inner_exception(mock_svc):
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
-        assert await pump_until(_pilot, lambda: not app.screen.streaming)
+        await wait_for_turn_end(_pilot, app.screen)
 
 
 async def test_chat_run_sync_worker():
@@ -8642,6 +6705,17 @@ async def test_chat_slash_crawl_unavailable():
         notify.assert_called_once_with(CRAWLER_MISSING_MESSAGE, severity="error")
 
 
+async def test_chat_slash_crawl_with_a_crawler_that_cannot_load(broken_crawlberg):
+    """_cmd_crawl tells the user why an installed crawler cannot run."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as notify:
+            app.screen._cmd_crawl("https://example.com")
+        message = notify.call_args.args[0]
+    assert broken_crawlberg in message
+    assert "pip install --force-reinstall 'lilbee[crawler]'" in message
+
+
 async def test_chat_slash_crawl_no_args():
     """Cover /crawl with no URL showing usage hint."""
     app = ChatTestApp()
@@ -8792,7 +6866,7 @@ async def test_chat_half_page_actions():
 
 async def test_settings_key_g_G():
     """g/G scroll settings via action methods."""
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen.action_jump_bottom()
         app.screen.action_jump_top()
@@ -9067,10 +7141,6 @@ async def test_catalog_grid_renders_hf_overflow_cta():
                 screen, "_build_hf_rows", return_value=[_hf_row(f"m{i}") for i in range(30)]
             ):
                 screen._refresh_grid()
-                # Two pauses: first lets call_after_refresh schedule
-                # _mount_remaining_grid_sections, the second lets it mount
-                # the CTA that surfaces the "{count} loaded" hint.
-                await _pilot.pause()
                 await _pilot.pause()
             grid_text = " ".join(str(s.render()) for s in screen.query("#grid-chat > Static"))
             assert any(c.isdigit() for c in grid_text)
@@ -9150,7 +7220,7 @@ async def test_catalog_delete_accepts_bare_hf_repo_row():
                 downloaded_at=datetime.now(UTC).isoformat(),
             ),
         )
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         services = MagicMock()
         services.model_manager = mgr
 
@@ -9211,6 +7281,29 @@ async def test_catalog_resolve_delete_ref_picks_one_quant():
             assert screen._resolve_delete_ref(full_q8) == full_q8
             # Remote SDK names pass through unchanged.
             assert screen._resolve_delete_ref("qwen3:0.6b") == "qwen3:0.6b"
+
+
+async def test_catalog_resolve_delete_ref_reads_a_gguf_suffixed_ref_as_the_plain_ref():
+    """A ``#gguf`` ref deletes the same installed file as the plain ref."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
+        ):
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            await screen.workers.wait_for_complete()
+
+            repo = "Qwen/Qwen3-0.6B-GGUF"
+            full_q4 = f"{repo}/Qwen3-0.6B-Q4_K_M.gguf"
+            screen._installed_names = {repo, full_q4}
+
+            assert screen._resolve_delete_ref(f"{full_q4}#gguf") == full_q4
+            assert screen._resolve_delete_ref(f"{repo}#gguf") == full_q4
 
 
 async def test_catalog_delete_not_installed():
@@ -9317,7 +7410,9 @@ async def test_chat_slash_remove_deletes_an_unregistered_gguf(tmp_path):
         with (
             patch(
                 "lilbee.cli.tui.screens.chat.get_services",
-                return_value=MagicMock(model_manager=ModelManager(models_dir)),
+                return_value=MagicMock(
+                    model_manager=ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
+                ),
             ),
             patch(
                 "lilbee.modelhub.model_manager.discovery.classify_all_remote_models",
@@ -10014,10 +8109,9 @@ async def test_an_unknown_command_keeps_the_draft_and_says_so():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.press(*"/sync", "enter")
-        await pilot.pause()
+        unknown = msg.CMD_UNKNOWN.format(cmd="/sync")
+        assert await wait_until(pilot, lambda: any(n.message == unknown for n in posted_toasts()))
         assert app.screen._chat_input.value == "/sync"
-        notes = [note.message for note in posted_toasts()]
-        assert msg.CMD_UNKNOWN.format(cmd="/sync") in notes
 
 
 async def test_do_add_raises_on_sync_failed(tmp_path):
@@ -10068,6 +8162,43 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
         assert "exc" in captured
         assert isinstance(captured["exc"], RuntimeError)
         assert "doc.txt" in str(captured["exc"])
+
+
+async def test_a_tui_sync_whose_embed_engine_cannot_warm_fails_on_the_plain_refusal():
+    """The sync task fails with the refusal's own text, which the Task Center shows."""
+    import threading
+
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+    from lilbee.data.extract.chunk import EmbedWarmError
+
+    refusal = EmbedWarmError("nomic-ai/nomic-embed-text-v1.5#safetensors", 8064, 120.0)
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+
+        async def refused_sync(**kwargs):
+            raise refusal
+
+        row_id = app.task_bar.add_task("Sync", TaskType.SYNC.value)
+        reporter = ProgressReporter(app.task_bar, app.task_bar.queue.get_task(row_id))
+        captured: dict[str, Exception] = {}
+
+        def _run_worker() -> None:
+            try:
+                app.screen._do_sync(reporter)
+            except Exception as exc:
+                captured["exc"] = exc
+
+        with patch("lilbee.data.ingest.sync", new=refused_sync):
+            thread = threading.Thread(target=_run_worker)
+            thread.start()
+            thread.join(timeout=5)
+
+        assert captured["exc"] is refusal
+        assert str(captured["exc"]) == (
+            "nomic-ai/nomic-embed-text-v1.5#safetensors cannot embed chunks of 8064 tokens on "
+            "this machine: its engine did not finish starting within 120 s at that size. Set "
+            "chunk_size to a smaller value, or run the embedding model on a GPU."
+        )
 
 
 async def test_sync_called_with_quiet_true():
@@ -11784,7 +9915,12 @@ class TestWikify:
     async def test_b_runs_a_full_build_as_a_wiki_task(self, tmp_path):
         cfg.wiki = True
         cfg.data_root = tmp_path
-        summary = {"paths": ["a.md", "b.md"], "entities": 4, "count": 2}
+        summary = {
+            "paths": ["a.md", "b.md"],
+            "entities": 4,
+            "count": 2,
+            "stats": BuildStats().as_dict(),
+        }
 
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -11806,6 +9942,43 @@ class TestWikify:
                 (TaskType.WIKI.value, TaskStatus.DONE)
             ]
             assert notify.call_args.args[0] == msg.WIKI_BUILD_DONE.format(count=2)
+
+    @pytest.mark.parametrize(
+        ("written", "lost", "concept_calls", "lines"),
+        [
+            (1, 2, (), "2 of 3 pages could not be written."),
+            (0, 1, (), "1 of 1 page could not be written."),
+            (1, 1, (), "1 of 2 pages could not be written."),
+            (1, 0, (True,), "Concepts could not be extracted from 1 of 1 source."),
+        ],
+    )
+    async def test_a_build_that_lost_some_pages_shows_the_count_as_an_error(
+        self, tmp_path, written, lost, concept_calls, lines
+    ):
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        stats = BuildStats()
+        paths = [f"p{index}.md" for index in range(written)]
+        for path in paths:
+            stats.record_published(path, 1)
+        stats.record_model_call("engine down")
+        stats.record_failed_pages(lost)
+        for failed in concept_calls:
+            stats.record_concept_call(failed=failed)
+        summary = {"paths": paths, "entities": 3, "count": written, "stats": stats.as_dict()}
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with (
+                patch("lilbee.wiki.generation.run_full_build", return_value=summary),
+                patch.object(app, "notify") as notify,
+            ):
+                await pilot.press("b")
+                assert await pump_until(pilot, lambda: bool(app.task_bar.queue.history)), (
+                    "build never finished"
+                )
+            assert notify.call_args.args[0] == f"{lines}\nLast error: engine down."
+            assert notify.call_args.kwargs["severity"] == "error"
 
     async def test_wikify_refuses_while_a_build_is_already_pending(self, tmp_path):
         """A second press must not queue a duplicate corpus-wide build."""
@@ -13814,10 +11987,11 @@ async def test_catalog_install_model_already_exists(tmp_path):
             dest = tmp_path / "test.gguf"
             dest.write_text("fake")
             with (
-                patch("lilbee.cli.tui.screens.catalog.resolve_filename", return_value="test.gguf"),
+                patch("lilbee.catalog.download.resolve_filename", return_value="test.gguf"),
                 patch.object(screen, "notify") as mock_notify,
             ):
                 screen._install_model(m)
+                await wait_for_pull_check(screen.app)
                 mock_notify.assert_called_once()
                 assert "already installed" in mock_notify.call_args[0][0]
 
@@ -14118,6 +12292,49 @@ async def test_chat_login_with_token_error():
             mock_login.assert_called_once()
 
 
+@pytest.mark.parametrize("bad", ["hf_fake\nsecret", "hf_fake\x00secret"])
+async def test_chat_login_refuses_a_token_that_cannot_be_a_header_value(bad, caplog):
+    """The token never reaches the login call, the log or the toast."""
+    from lilbee.cli.tui import messages as msg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch("huggingface_hub.login") as mock_login,
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
+            app.screen._cmd_login(bad)
+            while app.screen.workers:
+                await pilot.pause()
+            await pilot.pause()
+        mock_login.assert_not_called()
+        mock_notify.assert_called_once_with(msg.CHAT_LOGIN_UNSENDABLE, severity="error")
+        assert "secret" not in caplog.text
+        assert "secret" not in repr(mock_notify.call_args)
+
+
+async def test_chat_login_failure_keeps_the_library_text_out_of_log_and_toast(caplog):
+    """A library error that echoes the token reaches neither the log nor the toast."""
+    from lilbee.cli.tui import messages as msg
+
+    echo = ValueError("Illegal header value b'Bearer hf_fakesecret'")
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch("huggingface_hub.login", side_effect=echo),
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
+            app.screen._cmd_login("hf_fakesecret")
+            while app.screen.workers:
+                await pilot.pause()
+            await pilot.pause()
+        mock_notify.assert_called_once_with(msg.CHAT_LOGIN_FAILED, severity="error")
+        assert "fakesecret" not in caplog.text
+        assert "HuggingFace login failed: ValueError" in caplog.text
+
+
 async def test_chat_enter_normal_mode_while_streaming_drops_to_normal():
     """action_enter_normal_mode now always goes to NORMAL, even mid-stream.
 
@@ -14199,7 +12416,7 @@ async def test_settings_on_input_save_name_none():
     """_on_input_save returns early when name is None."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14215,7 +12432,7 @@ async def test_settings_on_input_save_defn_none():
     """_on_input_save returns early when SETTINGS_MAP has no entry."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14231,7 +12448,7 @@ async def test_settings_on_input_save_same_value_skip():
     """_on_input_save skips persist when the value matches what the row showed at mount."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("top_k")
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14253,7 +12470,7 @@ async def test_settings_on_input_save_different_value_persists():
     from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14270,7 +12487,7 @@ async def test_settings_on_checkbox_save_name_none():
     """_on_checkbox_save returns early when name is None."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14286,7 +12503,7 @@ async def test_settings_on_checkbox_save_defn_none():
     """_on_checkbox_save returns early when SETTINGS_MAP has no entry."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14302,7 +12519,7 @@ async def test_settings_on_select_save_name_none():
     """_on_select_save returns early when name is None."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14318,7 +12535,7 @@ async def test_settings_on_select_save_defn_none():
     """_on_select_save returns early when SETTINGS_MAP has no entry."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14334,7 +12551,7 @@ async def test_settings_on_list_blur_save_name_none():
     """_on_list_blur_save returns early when the TextArea has no name."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14349,7 +12566,7 @@ async def test_settings_on_list_blur_save_defn_none():
     """_on_list_blur_save returns early when SETTINGS_MAP has no entry."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14364,7 +12581,7 @@ async def test_settings_on_list_restore_bad_button_id():
     """_on_list_restore ignores buttons whose id does not start with the list-restore prefix."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14383,7 +12600,7 @@ async def test_settings_on_list_restore_defn_none():
     """_on_list_restore returns early when SETTINGS_MAP has no entry for the key."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14398,7 +12615,7 @@ async def test_settings_refresh_list_title_missing_swallows():
     """_refresh_list_title logs (does not raise) when the Collapsible is absent."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14410,7 +12627,7 @@ async def test_settings_parse_value_nullable_none():
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         screen = app.screen
@@ -14425,7 +12642,7 @@ async def test_settings_parse_value_nullable_empty():
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         screen = app.screen
@@ -14440,7 +12657,7 @@ async def test_settings_refresh_help_exception():
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14453,7 +12670,7 @@ async def test_settings_go_back_invokes_switch_view():
     """action_go_back asks the host to switch to the Chat view."""
     from unittest.mock import patch
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
@@ -15400,8 +13617,8 @@ async def test_catalog_is_installed_by_repo():
             assert screen._is_installed("x", repo="org/other", filename="other.gguf") is False
 
 
-async def test_catalog_install_model_resolve_exception():
-    """_install_model handles resolve_filename exception."""
+async def test_catalog_install_model_shows_a_resolve_failure_and_enqueues_nothing():
+    """A file the pull cannot pick fails the download at once, so the install refuses."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -15416,18 +13633,16 @@ async def test_catalog_install_model_resolve_exception():
             cm = _make_catalog_model(name="fail-resolve")
             with (
                 patch(
-                    "lilbee.cli.tui.screens.catalog.resolve_filename",
+                    "lilbee.catalog.download.resolve_filename",
                     side_effect=RuntimeError("fail"),
                 ),
-                # Otherwise this asserts on the runner's free space.
-                patch(
-                    "lilbee.cli.tui.screens.catalog.disk_shortfall",
-                    return_value=None,
-                ),
+                patch.object(screen, "notify") as mock_notify,
                 patch.object(screen, "_enqueue_download") as mock_dl,
             ):
                 screen._install_model(cm)
-                mock_dl.assert_called_once_with(cm)
+                await wait_for_pull_check(screen.app)
+                mock_dl.assert_not_called()
+                mock_notify.assert_called_once_with("fail", severity="error")
 
 
 async def test_catalog_delete_when_input_focused():
@@ -16226,7 +14441,7 @@ async def test_profile_source_shows_pill_in_settings_screen(tmp_path):
         '[profile]\nname = "Court filings"\n\n[profile.values]\ntop_k = 77\n',
         encoding="utf-8",
     )
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("top_k", "chunk_overlap")
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(pilot, lambda: bool(app.screen.query("#row-top_k")))
         assert "Court filings" in _row_title(app, "top_k")
@@ -16273,7 +14488,7 @@ async def test_env_pill_hidden_for_empty_env_var(monkeypatch):
     """An empty LILBEE_X= has no effect, so its row shows no env pill; a set one does."""
     monkeypatch.setenv("LILBEE_TOP_K", "")
     monkeypatch.setenv("LILBEE_CHUNK_SIZE", "900")
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("chunk_size", "top_k")
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(pilot, lambda: bool(app.screen.query("#row-chunk_size")))
         assert "LILBEE_CHUNK_SIZE" in _row_title(app, "chunk_size")
@@ -16285,7 +14500,7 @@ async def test_user_pill_only_on_set_key(tmp_path):
     from lilbee.cli.tui import messages as msg
 
     persistent_settings.update_values(tmp_path, {"top_k": 7})
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("top_k", "chunk_overlap")
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(pilot, lambda: bool(app.screen.query("#row-top_k")))
         assert msg.SETTINGS_SOURCE_USER_PILL in _row_title(app, "top_k")
@@ -16333,7 +14548,7 @@ async def test_no_pill_on_built_in_or_auto():
     sources = setting_sources()
     assert sources["temperature"] is SettingSource.BUILT_IN
     assert sources["num_ctx"] is SettingSource.AUTO
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("temperature", "num_ctx")
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(pilot, lambda: bool(app.screen.query("#row-num_ctx")))
         for key in ("temperature", "num_ctx"):
@@ -16348,7 +14563,7 @@ async def test_user_pill_follows_save_and_reset(tmp_path):
 
     from lilbee.cli.tui import messages as msg
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("top_k")
     async with app.run_test(size=(120, 40)) as pilot:
         editor = app.screen.query_one("#ed-top_k", Input)
         assert msg.SETTINGS_SOURCE_USER_PILL not in _row_title(app, "top_k")
@@ -16373,7 +14588,7 @@ async def test_pill_refresh_reads_sources_once_per_batch(tmp_path):
     from lilbee.cli.tui import messages as msg
 
     persistent_settings.update_values(tmp_path, {"top_k": 7, "chunk_overlap": 50})
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("top_k", "chunk_overlap")
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(pilot, lambda: bool(app.screen.query("#row-chunk_overlap")))
         assert msg.SETTINGS_SOURCE_USER_PILL in _row_title(app, "top_k")
@@ -16516,14 +14731,15 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
 
     from lilbee.cli.tui.screens.settings_widgets import MODEL_PICKER_BUTTON_PREFIX
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("chat_model")
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with patch_model_write() as mock_apply:
             screen._on_model_picker_dismissed("chat_model", "fake/new-model.gguf")
-            # The persist + role reload now runs in a thread worker; await it.
-            await app.workers.wait_for_complete()
-            await pilot.pause()
+            # The persist + role reload runs in a thread worker. The write publishes,
+            # which starts other screen workers that may cancel each other, so wait
+            # for the write itself, not for every worker.
+            assert await pump_until(pilot, lambda: mock_apply.called)
             mock_apply.assert_called_once()
         button = app.screen.query_one(f"#{MODEL_PICKER_BUTTON_PREFIX}chat_model", Button)
         # Label was repainted via model_picker_label; the chat_model field
@@ -16546,7 +14762,7 @@ async def test_settings_model_picker_dismissed_reloads_worker_once():
 
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = False
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with (
@@ -16559,7 +14775,9 @@ async def test_settings_model_picker_dismissed_reloads_worker_once():
             ),
         ):
             screen._on_model_picker_dismissed("vision_model", "fake/vision.gguf")
-            await app.workers.wait_for_complete()
+            # The write publishes, and the screen's own workers may cancel each
+            # other then, so wait for the reload, not for every worker.
+            assert await pump_until(pilot, lambda: services_mock.reload_role.called)
             await pilot.pause()
             services_mock.reload_role.assert_called_once_with(WorkerRole.VISION, wait=True)
 
@@ -16582,7 +14800,7 @@ async def test_settings_clearing_the_vision_model_updates_the_ocr_rows():
     cfg.ocr = OcrMode.AUTO
     cfg.ocr_language = ["eng"]
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("ocr", "vision_model", "ocr_language")
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         # Settle the mount-time profile reload before triggering another one below:
@@ -16609,7 +14827,7 @@ async def test_settings_turning_ocr_off_updates_the_vision_model_row():
 
     cfg.ocr = OcrMode.AUTO
     cfg.vision_model = ""
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("ocr", "vision_model")
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert "read by Tesseract" in _ocr_help_texts(screen)["vision_model"]
@@ -16625,7 +14843,7 @@ async def test_settings_ocr_picker_shows_the_scanned_pages_labels(size):
     from textual.widgets import Select
 
     cfg.ocr = OcrMode.ALL
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("ocr")
     async with app.run_test(size=size):
         select = app.screen.query_one("#ed-ocr", Select)
         options = [(str(label), value) for label, value in select._options if str(label)]
@@ -16666,7 +14884,7 @@ async def test_settings_model_picker_dismissed_reload_failure_notifies_the_brack
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = False
     services_mock.reload_role.side_effect = RuntimeError("no route to [gpu0]")
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         notes: list[str] = []
@@ -16695,7 +14913,7 @@ async def test_settings_model_picker_dismissed_reload_success_notifies_the_brack
 
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = False
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         notes: list[str] = []
@@ -16708,8 +14926,11 @@ async def test_settings_model_picker_dismissed_reload_success_notifies_the_brack
             patch.object(app, "notify", lambda msg, **_k: notes.append(msg)),
         ):
             screen._on_model_picker_dismissed("vision_model", "fake/vision[q4].gguf")
-            await app.workers.wait_for_complete()
-            await pilot.pause()
+            # The write publishes, and the screen's own workers may cancel each
+            # other then, so wait for the toast, not for every worker.
+            assert await pump_until(
+                pilot, lambda: any("Now using fake/vision[q4].gguf" in n for n in notes)
+            )
             services_mock.reload_role.assert_called_once_with(WorkerRole.VISION, wait=True)
 
     assert any("Now using fake/vision[q4].gguf" in n for n in notes)
@@ -16723,7 +14944,7 @@ async def test_settings_embed_picker_against_populated_store_pushes_confirm():
 
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = True
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with (
@@ -16745,7 +14966,7 @@ async def test_settings_embed_picker_against_empty_store_applies_directly():
     from unittest.mock import patch
 
     services_mock = MagicMock()
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with (
@@ -16786,6 +15007,9 @@ class _SyncWorkerApp:
     is_running = True
 
     def notify(self, *_args, **_kwargs) -> None:
+        pass
+
+    def publish_settings(self, _keys) -> None:
         pass
 
     def run_worker(self, work, **_kwargs):
@@ -17082,9 +15306,9 @@ async def test_catalog_get_highlighted_model_name_grid_select_branch():
             await screen._grid_container.mount(grid)
             await grid.mount(ModelCard(row))
             await wait_until(_pilot, lambda: bool(grid.children))
-            grid.highlighted = 0
             grid.focus()
-            await wait_until(_pilot, lambda: grid.highlighted == 0)
+            # Widget.focus() only queues the focus change; the cursor is set by the app on focus.
+            assert await wait_until(_pilot, lambda: grid.has_focus and grid.highlighted == 0)
             with patch.object(screen, "_focused_grid", return_value=grid):
                 assert screen._get_highlighted_model_name() == "ref-grid"
 
@@ -17147,6 +15371,8 @@ def test_status_worker_state_changed_dispatches_when_sections_mounted():
     screen._load_documents = loaded_docs.append
     screen._load_storage = loaded_storage.append
     screen._load_held_out = lambda _docs: None
+    loaded_partly_read: list[_DocsResult] = []
+    screen._load_partly_read = loaded_partly_read.append
     screen._load_arch = loaded_arch.append
 
     docs_result = _DocsResult(sources=[], load_failed=False, document_count=2)
@@ -17160,6 +15386,7 @@ def test_status_worker_state_changed_dispatches_when_sections_mounted():
     )()
     screen.on_worker_state_changed(sources_event)
     assert loaded_docs == [docs_result]
+    assert loaded_partly_read == [docs_result]
     assert loaded_storage == [2]
 
     arch_payload = ModelArchInfo()
@@ -17175,8 +15402,8 @@ def test_status_worker_state_changed_dispatches_when_sections_mounted():
     assert loaded_arch == [arch_payload]
 
 
-async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
-    """_mount_remaining_grid_sections mounts each remaining section after the first paint."""
+async def test_catalog_remount_grid_sections_mounts_every_section():
+    """_remount_grid_sections mounts a heading for each section it is given."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen, GridSection
     from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 
@@ -17205,35 +15432,17 @@ async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
-            # The screen's own first paint queues a tail mount through
-            # call_after_refresh. Left pending, it lands on the pause below the
-            # mount and reaches _remount_grid_sections, which clears the
-            # container's children before remounting the real sections -- so the
-            # section mounted here disappears and the count reads unchanged.
-            # Drain it now, while nothing has been counted yet. Stubbing the
-            # method cannot help: call_after_refresh captured the bound method
-            # when it scheduled.
-            for _ in range(3):
-                await _pilot.pause()
-            # Hand the screen one extra section to mount; the iteration
-            # is the previously-uncovered branch.
-            sections = [GridSection(heading="Extras", rows=[row])]
-            # _mount_remaining_grid_sections returns early unless the container
-            # is running; assert it so a regression reads as the precondition
-            # failing, not as a bare "no heading appeared".
-            assert screen._grid_container.is_running
-            before = len(list(screen._grid_container.query(".section-heading")))
-            mounts = screen._mount_remaining_grid_sections(
-                screen._grid_container, sections, hf_count=1
-            )
-            # Awaited: pause only settles the widgets that existed when it was
-            # called, so it never waits for the ones just mounted.
-            assert mounts, "expected the iteration to mount the remaining section"
-            for mount in mounts:
-                await mount
-            await _pilot.pause()
-            after = len(list(screen._grid_container.query(".section-heading")))
-            assert after > before, "expected an additional section heading"
+            sections = [
+                GridSection(heading="Picks", rows=[row]),
+                GridSection(heading="Extras", rows=[row]),
+            ]
+            screen._remount_grid_sections(sections, hf_count=1)
+            headings = [
+                str(w.render())
+                for w in screen._grid_container.displayed_children
+                if w.has_class("section-heading")
+            ]
+            assert headings == ["Picks", "Extras"]
 
 
 class TestWikiSafeCoerce:
@@ -17439,9 +15648,11 @@ async def test_settings_masks_credentials_but_keeps_the_value():
     secret_keys = [k for k, d in SETTINGS_MAP.items() if d.secret]
     assert secret_keys, "no setting is marked secret"
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp(*secret_keys)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause(0.15)
+        assert await wait_until(
+            pilot, lambda: bool(app.screen.query("#settings-tabs")), timeout=30.0
+        )
         tabbed = app.screen.query_one("#settings-tabs", TabbedContent)
         # Panes compose lazily, so every group has to be visited to reach its
         # editors; a credential hiding in an unvisited pane is the whole risk.
@@ -17450,18 +15661,26 @@ async def test_settings_masks_credentials_but_keeps_the_value():
             if not pane.id:
                 continue
             tabbed.active = pane.id
-            await pilot.pause(0.15)
+            assert await wait_until(
+                pilot, lambda target=pane.id: tabbed.active == target, timeout=30.0
+            )
+
+        def _every_credential_editor_rendered() -> bool:
+            checked.clear()
             for key in secret_keys:
                 for editor in app.screen.query(f"#{EDITOR_ID_PREFIX}{key}").results(Input):
                     assert editor.password is True, f"{key} renders in plain text"
                     checked.append(key)
-        missing = set(secret_keys) - set(checked)
-        assert not missing, f"credential editors never rendered: {missing}"
+            return not set(secret_keys) - set(checked)
+
+        rendered = await wait_until(pilot, _every_credential_editor_rendered, timeout=30.0)
+        assert rendered, f"credential editors never rendered: {set(secret_keys) - set(checked)}"
 
         editor = app.screen.query(f"#{EDITOR_ID_PREFIX}{checked[-1]}").first(Input)
         editor.value = "sk-proj-REALSECRET123"
-        await pilot.pause()
-        assert editor.value == "sk-proj-REALSECRET123"
+        assert await wait_until(
+            pilot, lambda: editor.value == "sk-proj-REALSECRET123", timeout=30.0
+        )
 
 
 async def test_settings_leaves_non_credentials_visible():
@@ -17470,7 +15689,7 @@ async def test_settings_leaves_non_credentials_visible():
 
     from lilbee.app.settings_map import SETTINGS_MAP
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         for editor in app.screen.query(Input):
             key = editor.name or ""
@@ -17488,7 +15707,7 @@ async def test_settings_invalid_regex_error_shows_brackets_as_written():
     def refuse(config):
         return "invalid_config: invalid exclude_path regex\nerror: bad group name '[/x]'"
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     with StubCrawlberg(refuse=refuse).installed():
         async with app.run_test(size=(120, 40)) as pilot:
             screen = app.screen
@@ -17514,7 +15733,7 @@ async def test_a_choice_select_offers_no_blank_when_the_setting_is_not_nullable(
     from lilbee.cli.tui.screens.settings import SettingsScreen
     from tests._async_wait import wait_until
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("chat_mode")
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -17534,7 +15753,7 @@ async def test_blanking_a_select_hands_the_save_an_empty_value():
     from lilbee.cli.tui.screens.settings import SettingsScreen
     from lilbee.cli.tui.screens.settings_widgets import make_select
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("chat_mode")
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -17581,7 +15800,7 @@ async def test_status_screen_tables_show_a_name_without_control_characters(
 
 @pytest.mark.parametrize("name", CONTROL_TITLES)
 async def test_chat_slash_delete_lists_a_name_without_control_characters(mock_svc, name):
-    mock_svc.store.get_sources.return_value = [{"filename": name, "source": name}]
+    _delete_library(mock_svc, [name])
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
@@ -17736,7 +15955,7 @@ async def test_settings_advanced_section_expands_and_reaches_field_at_80x24():
     from lilbee.cli.tui.screens.settings_widgets import ADVANCED_COLLAPSIBLE_ID_PREFIX
     from tests._async_wait import wait_until
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("reranker_type")
     async with app.run_test(size=(80, 24)) as pilot:
         collapsible = app.screen.query_one(
             f"#{ADVANCED_COLLAPSIBLE_ID_PREFIX}settings-tab-models", Collapsible

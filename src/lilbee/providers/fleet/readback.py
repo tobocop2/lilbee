@@ -33,12 +33,18 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.providers.fleet.binary import engine_help, help_lists_option
 from lilbee.providers.fleet.devices import FleetDevice
+from lilbee.providers.fleet.model_memory import memory_size_text
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.roles import WorkerRole
+
+if TYPE_CHECKING:
+    from lilbee.providers.fleet.engines.base import EngineAdapter
+    from lilbee.providers.fleet.launch import InstanceLaunch
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +69,11 @@ VERIFIED_ENGINE_BUILD = "9310 (e2ef8fe42)"
 # The device label is whatever the backend calls itself: CUDA0, MTL0, Vulkan1,
 # CPU. A timestamp and level prefix the line under --log-file, so the match is
 # not anchored to the start.
-_BUFFER_RE = re.compile(r"\S+:\s+(?P<device>\S+)\s+.*?buffer size\s*=\s*(?P<mib>[\d.]+)\s*MiB")
+_BUFFER_RE = re.compile(
+    r"\S+:\s+(?P<device>\S+)\s+(?P<kind>.*?)buffer size\s*=\s*(?P<mib>[\d.]+)\s*MiB"
+)
+# The buffer kind of a weight allocation: "model" in "CPU_Mapped model buffer size".
+_MODEL_BUFFER_RE = re.compile(r"\bmodel\b")
 # The engine names an mmapped weight buffer "<device>_Mapped" beside the same
 # device's other buffers. Same memory, so the suffix is folded away rather than
 # splitting one card's total across two keys.
@@ -169,8 +179,8 @@ def divergence_warning(
     return HealthWarning(
         code=WarningCode.PLACEMENT_DIVERGED,
         message=(
-            f"The {role.value} model {model} allocated {actual_bytes / 1024**3:.1f} GiB "
-            f"of GPU memory but was planned for {estimated_bytes / 1024**3:.1f} GiB "
+            f"The {role.value} model {model} allocated {memory_size_text(actual_bytes)} "
+            f"of GPU memory but was planned for {memory_size_text(estimated_bytes)} "
             f"({(ratio - 1.0) * 100:+.0f}%). Placement decisions for this model were "
             f"made on the smaller figure; if it fails to load or runs slowly, that "
             f"gap is why."
@@ -229,24 +239,31 @@ def engine_log_path(log_dir: Path, model_id: str) -> Path:
     return log_dir / _ENGINE_LOG_TEMPLATE.format(model_id=model_id)
 
 
-def writes_engine_log(argv: list[str]) -> bool:
-    """Whether a launch with *argv* writes the engine log file.
+def engine_log_of(engine: EngineAdapter, launch: InstanceLaunch, log_dir: Path) -> Path | None:
+    """The file *launch*'s engine writes its own output to, or None when it writes none.
 
-    A launch carrying ``--memory`` serves its numbers over HTTP and gets no log
-    env, so no file exists for it.
+    Only an engine that reads the log variables writes one. A launch carrying
+    ``--memory`` writes one too, at the engine's default verbosity: it serves its
+    numbers over HTTP, so it needs no load report, but its boot errors still
+    need a file (:func:`engine_log_env`).
     """
-    return MEMORY_FLAG not in argv
+    if not engine.writes_own_log:
+        return None
+    return engine_log_path(log_dir, launch.model_id)
 
 
-def engine_log_env(log_dir: Path, model_id: str) -> dict[str, str]:
-    """Environment that makes the engine report what it allocated, and where."""
-    path = str(engine_log_path(log_dir, model_id))
-    return {
-        ENV_LOG_FILE: path,
-        ENV_ARG_LOG_FILE: path,
-        ENV_LOG_VERBOSITY: LOAD_REPORT_VERBOSITY,
-        ENV_ARG_LOG_VERBOSITY: LOAD_REPORT_VERBOSITY,
-    }
+def engine_log_env(log_path: Path, *, load_report: bool = True) -> dict[str, str]:
+    """Environment that makes the engine write its output to *log_path*.
+
+    With *load_report* the engine also logs at the verbosity that reports what it
+    allocated. Without it the engine keeps its default verbosity.
+    """
+    path = str(log_path)
+    env = {ENV_LOG_FILE: path, ENV_ARG_LOG_FILE: path}
+    if load_report:
+        env[ENV_LOG_VERBOSITY] = LOAD_REPORT_VERBOSITY
+        env[ENV_ARG_LOG_VERBOSITY] = LOAD_REPORT_VERBOSITY
+    return env
 
 
 def check_launch(
@@ -258,8 +275,12 @@ def check_launch(
     est_by_device: dict[str, int] | None = None,
     unreported_bytes: int = 0,
     est_host_bytes: int = 0,
+    spills: list[HealthWarning] | None = None,
 ) -> HealthWarning | None:
     """Compare the engine's own report for *model_id* against the estimate.
+
+    A host spill found in the report is appended to *spills* when the caller
+    passes a list, because it is a second finding beside the placement one.
 
     Checked per device when *est_by_device* says what each card was planned for,
     because per device is the only dimension the planner decides in: a split is a
@@ -290,7 +311,9 @@ def check_launch(
         # report_missing_log is how a caller that knows the engine is up says so.
         return None
     buffers = parse_device_buffers(text)
-    report_host_spill(role, model, _host_bytes(buffers), est_host_bytes)
+    spill = report_host_spill(role, model, _host_weight_bytes(text), est_host_bytes)
+    if spill is not None and spills is not None:
+        spills.append(spill)
     per_device = {label: size for label, size in buffers.items() if not _is_host_device(label)}
     actual = sum(per_device.values())
     if actual > 0 and est_by_device:
@@ -315,27 +338,39 @@ def check_launch(
     )
 
 
-def _host_bytes(per_device: dict[str, int]) -> int:
-    """The bytes of *per_device* that sit in host memory."""
-    return sum(size for label, size in per_device.items() if _is_host_device(label))
+def _host_weight_bytes(text: str) -> int:
+    """The model-weight bytes the engine log puts in host memory.
+
+    KV, compute and output buffers on the host are not weights, so they do not count.
+    """
+    return sum(
+        int(float(match.group("mib")) * MIB)
+        for match in _BUFFER_RE.finditer(text)
+        if _is_host_device(match.group("device")) and _MODEL_BUFFER_RE.search(match.group("kind"))
+    )
 
 
-def report_host_spill(role: WorkerRole, model: str, host_bytes: int, est_host_bytes: int) -> bool:
+def report_host_spill(
+    role: WorkerRole, model: str, host_bytes: int, est_host_bytes: int
+) -> HealthWarning | None:
     """Warn when the engine's fit left more of *model* in system memory than estimated.
 
     *est_host_bytes* is what the host holds with every layer on the card; 0
     means the engine's fit does not run for this launch, and nothing is said.
+    The warning goes to the log and is returned for the health warnings.
     """
     if est_host_bytes <= 0 or host_bytes <= est_host_bytes * (1.0 + _TOLERANCE):
-        return False
-    log.warning(
-        "The %s model %s does not fit in GPU memory: the engine keeps %.1f GiB of it in "
-        "system memory, where it runs slower. Free GPU memory or use a smaller model.",
-        role.value,
-        model,
-        host_bytes / 1024**3,
+        return None
+    warning = HealthWarning(
+        code=WarningCode.HOST_SPILL,
+        message=(
+            f"The {role.value} model {model} does not fit in GPU memory: the engine keeps "
+            f"{memory_size_text(host_bytes)} of it in system memory, where it runs slower."
+        ),
+        remedy="Free GPU memory or use a smaller model.",
     )
-    return True
+    log.warning("%s", warning.line)
+    return warning
 
 
 def _without_unreported(est_by_device: dict[str, int], unreported: int) -> dict[str, int]:
@@ -405,8 +440,8 @@ def _per_device_warning(
         code=WarningCode.PLACEMENT_DIVERGED,
         message=(
             f"The {role.value} model {model} did not land where it was planned: "
-            f"{worst_label} holds {actual.get(worst_label, 0) / 1024**3:.1f} GiB but was "
-            f"planned for {estimated.get(worst_label, 0) / 1024**3:.1f} GiB. Placement, "
+            f"{worst_label} holds {memory_size_text(actual.get(worst_label, 0))} but was "
+            f"planned for {memory_size_text(estimated.get(worst_label, 0))}. Placement, "
             f"the tensor split and the context were all decided per card, so a total "
             f"that looks right can still overrun one of them."
         ),
@@ -437,10 +472,6 @@ def _report_per_device(
 # the readback mode off its presence.
 MEMORY_FLAG = "--memory"
 
-# The flag as --help advertises it. The lookahead keeps historic longer flags
-# (--memory-f32) from reading as support for the endpoint.
-_HELP_MEMORY_RE = re.compile(r"--memory(?!\S)")
-
 
 def supports_memory_readback(binary: Path) -> bool:
     """Whether *binary* serves ``GET /memory`` when launched with ``--memory``.
@@ -450,7 +481,7 @@ def supports_memory_readback(binary: Path) -> bool:
     carry it on advertisement it did not see. A binary that cannot run or answer
     reads as unsupported, which degrades to the log path rather than a failed launch.
     """
-    return bool(_HELP_MEMORY_RE.search(engine_help(binary)))
+    return engine_advertises(binary, MEMORY_FLAG)
 
 
 def engine_advertises(binary: Path, flag: str) -> bool:
@@ -464,8 +495,20 @@ def engine_advertises(binary: Path, flag: str) -> bool:
 _MEMORY_ROW_FIELDS = ("model", "context", "compute", "mmproj")
 
 
-def parse_memory_rows(payload: object) -> dict[str, int]:
+_MEMORY_WEIGHT_FIELDS = ("model",)
+
+
+def _host_weights(rows: dict[str, int]) -> int:
+    """The weight bytes of *rows* that sit in host memory."""
+    return sum(size for label, size in rows.items() if _is_host_device(label))
+
+
+def parse_memory_rows(
+    payload: object, fields: tuple[str, ...] = _MEMORY_ROW_FIELDS
+) -> dict[str, int]:
     """Bytes the engine reported allocating per device, from a /memory payload.
+
+    *fields* picks which byte fields of a row are summed; the default is all of them.
 
     Empty for anything that is not the endpoint's ``{"data": [rows]}`` shape,
     and per row for junk within it: this crosses a process boundary, and the
@@ -482,7 +525,7 @@ def parse_memory_rows(payload: object) -> dict[str, int]:
         if not isinstance(name, str) or not name:
             continue
         size = 0
-        for field in _MEMORY_ROW_FIELDS:
+        for field in fields:
             value = row.get(field, 0)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 size += int(value)
@@ -497,9 +540,10 @@ def check_memory_report(
     est_by_device: dict[str, int] | None,
     payload: object,
     est_host_bytes: int = 0,
+    spills: list[HealthWarning] | None = None,
 ) -> HealthWarning | None:
     """Compare a ``GET /memory`` payload against the estimate; the API-mode twin
-    of :func:`check_launch`.
+    of :func:`check_launch`, with the same *spills* list.
 
     No ``unreported_bytes`` adjustment exists here on purpose: the endpoint
     reports the vision projector per device in its ``mmproj`` field, so the
@@ -511,7 +555,10 @@ def check_memory_report(
     silent, it looks exactly like a correct estimate.
     """
     rows = parse_memory_rows(payload)
-    report_host_spill(role, model, _host_bytes(rows), est_host_bytes)
+    weight_rows = parse_memory_rows(payload, fields=_MEMORY_WEIGHT_FIELDS)
+    spill = report_host_spill(role, model, _host_weights(weight_rows), est_host_bytes)
+    if spill is not None and spills is not None:
+        spills.append(spill)
     per_device = {label: size for label, size in rows.items() if not _is_host_device(label)}
     if not per_device:
         log.warning(

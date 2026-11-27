@@ -294,15 +294,26 @@ def _escape(char: str, upper: bool) -> str:
 
 
 def _spell(tokens: tuple[_Token, ...], data: st.DataObject, kept: frozenset[str] = _KEPT) -> str:
-    """One spelling of *tokens*: each character raw or escaped where that keeps the address."""
+    """One spelling of *tokens*: each character raw or escaped where that keeps the address.
+
+    One draw of ``ceil(2 * len(tokens) / 8)`` bytes gives two independent, fair choice bits for
+    each character (escaped or raw, upper or lower case hex). A draw for each choice made this
+    test spend most of its time in Hypothesis itself, which a loaded host stretched past the
+    test timeout. A bounded integer draw is not used: Hypothesis samples it by bit length, so
+    the late characters of a long segment would almost never be escaped.
+    """
+    size = (2 * len(tokens) + 7) // 8
+    choices = int.from_bytes(data.draw(st.binary(min_size=size, max_size=size)), "little")
     spelled = []
-    for token in tokens:
+    for position, token in enumerate(tokens):
+        escaped = bool(choices >> (2 * position) & 1)
+        upper = bool(choices >> (2 * position + 1) & 1)
         if token.kept_escape:
-            spelled.append(_escape(token.char, data.draw(st.booleans())))
+            spelled.append(_escape(token.char, upper))
         elif token.char in kept:
             spelled.append(token.char)
-        elif data.draw(st.booleans()):
-            spelled.append(_escape(token.char, data.draw(st.booleans())))
+        elif escaped:
+            spelled.append(_escape(token.char, upper))
         else:
             spelled.append(token.char)
     return "".join(spelled)
@@ -345,8 +356,10 @@ def _illegal_parts(segment: str) -> list[str]:
 
 
 _PROPERTY_SETTINGS = settings(max_examples=1000, deadline=None, derandomize=True, database=None)
+_PROPERTY_TIMEOUT = pytest.mark.timeout(300)
 
 
+@_PROPERTY_TIMEOUT
 @_PROPERTY_SETTINGS
 @given(one=_addresses, data=st.data())
 def test_two_addresses_never_share_a_saved_path(one: _Address, data: st.DataObject):
@@ -359,6 +372,7 @@ def test_two_addresses_never_share_a_saved_path(one: _Address, data: st.DataObje
     )
 
 
+@_PROPERTY_TIMEOUT
 @_PROPERTY_SETTINGS
 @given(address=_addresses, data=st.data())
 def test_two_spellings_of_one_address_share_a_saved_path(address: _Address, data: st.DataObject):
@@ -366,6 +380,7 @@ def test_two_spellings_of_one_address_share_a_saved_path(address: _Address, data
     assert url_to_filename(one_url) == url_to_filename(other_url), (one_url, other_url)
 
 
+@_PROPERTY_TIMEOUT
 @_PROPERTY_SETTINGS
 @given(address=_addresses, data=st.data())
 def test_every_segment_is_a_legal_windows_name_that_prints(address: _Address, data: st.DataObject):
@@ -375,6 +390,7 @@ def test_every_segment_is_a_legal_windows_name_that_prints(address: _Address, da
     assert len(saved.encode("utf-8")) <= _MAX_PATH_BYTES, url
 
 
+@_PROPERTY_TIMEOUT
 @_PROPERTY_SETTINGS
 @given(address=_label_addresses, data=st.data())
 def test_a_label_shows_no_escape_the_address_did_not_hold(address: _Address, data: st.DataObject):
@@ -383,6 +399,7 @@ def test_a_label_shows_no_escape_the_address_did_not_hold(address: _Address, dat
     assert not _ESCAPE.search(label), (url, label)
 
 
+@_PROPERTY_TIMEOUT
 @_PROPERTY_SETTINGS
 @given(
     word=st.text(st.characters(categories=("Ll", "Lu", "Lo", "Nd")), min_size=1, max_size=20).map(
@@ -395,6 +412,7 @@ def test_a_letter_and_digit_segment_reads_as_written(word: str):
     assert word in saved, (word, saved)
 
 
+@_PROPERTY_TIMEOUT
 @settings(max_examples=200, deadline=None, derandomize=True, database=None)
 @given(address=_label_addresses)
 def test_every_label_address_meets_the_label_precondition_by_construction(address: _Address):
@@ -454,6 +472,50 @@ def test_two_pages_keep_two_saved_paths(one: str, other: str):
 @pytest.mark.parametrize(("one", "other"), _SAME)
 def test_two_spellings_of_one_page_share_a_saved_path(one: str, other: str):
     assert url_to_filename(one) == url_to_filename(other)
+
+
+class _FixedBytes:
+    """A stand-in for ``data`` that hands back chosen bytes and records each draw."""
+
+    def __init__(self, value: bytes) -> None:
+        self.value = value
+        self.draws: list[Any] = []
+
+    def draw(self, strategy: Any) -> bytes:
+        self.draws.append(strategy)
+        return self.value
+
+
+def _long_segment() -> tuple[_Token, ...]:
+    return tuple(_Token("a", kept_escape=False) for _ in range(40))
+
+
+def test_the_byte_draw_reads_one_escape_bit_per_character_of_a_long_segment():
+    """Pins the bit layout of the byte draw; the late-character test is below."""
+    data = _FixedBytes(b"\x55" * 10)  # every escape bit set, every case bit clear
+    assert _spell(_long_segment(), data) == "%61" * 40  # type: ignore[arg-type]
+    assert len(data.draws) == 1
+
+
+def test_the_byte_draw_puts_the_escape_bit_of_the_last_character_at_the_end_of_the_bytes():
+    """Pins the bit layout of the byte draw, as the test above does."""
+    data = _FixedBytes(bytes(9) + b"\x40")  # only the escape bit of position 39 (bit 78)
+    assert _spell(_long_segment(), data) == "a" * 39 + "%61"  # type: ignore[arg-type]
+
+
+def test_the_last_character_of_a_long_segment_is_escaped_about_half_the_time():
+    drawn: list[bytes] = []
+
+    @given(st.data())
+    @settings(max_examples=200, deadline=None)
+    def run(data: st.DataObject) -> None:
+        spelled = _spell(_long_segment(), data)
+        drawn.append(spelled.encode())
+
+    run()
+    last_escaped = sum(1 for s in drawn if s.endswith(b"%61"))
+    # Fair bits: the last character is escaped in about half of the draws.
+    assert 0.3 < last_escaped / len(drawn) < 0.7
 
 
 def test_a_long_address_is_cut_to_a_path_every_file_system_accepts():
@@ -530,7 +592,6 @@ def library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Store]:
     embedder.embed_batch.side_effect = lambda texts, **kw: [
         np.full(cfg.embedding_dim, 0.1, dtype=np.float32) for _ in texts
     ]
-    embedder.truncated_total = 0
     set_services(
         make_mock_services(
             store=store,

@@ -334,6 +334,11 @@ def test_parse_amd_smi_util_none_when_no_flat_or_nested() -> None:
     assert result[0].temperature_c == 50
 
 
+@pytest.mark.parametrize("raw", ["5", "null", '{"gpu_data": 5}', '{"gpu": "x"}'])
+def test_amd_smi_scalar_json_gives_no_rows(raw: str) -> None:
+    assert _parse_amd_smi(raw, frozenset({0})) == {}
+
+
 def test_parse_rocm_smi_skips_non_dict_card_value() -> None:
     """A card whose value is not a dict is skipped."""
     assert _parse_rocm_smi('{"card0": "x"}', frozenset({0})) == {}

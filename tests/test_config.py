@@ -1,5 +1,6 @@
 """Tests for Config (pydantic-settings BaseSettings) and env var overrides."""
 
+import datetime
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ import pytest
 from pydantic import ValidationError
 
 from conftest import PICKS_CHAT, PICKS_RERANK, PICKS_VISION, clean_env
+from lilbee.app.services import get_services
 from lilbee.core.config import (
     CHUNKS_TABLE,
     DEFAULT_IGNORE_DIRS,
@@ -32,6 +34,7 @@ from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX, env_var_name
 from lilbee.core.config.enums import ChatMode, FtsLanguage, KvCacheType, OcrMode
 from lilbee.core.config.model import (
     _TAKES_DEFAULT_WHEN_REFUSED,
+    SERVICE_ONLY_FIELDS,
     _TomlSource,
     env_value,
     value_is_set,
@@ -42,6 +45,7 @@ from tests._sys_modules import inject_modules
 _SAMPLE_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 _SAMPLE_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
 _SAMPLE_VISION_REF = "Qwen/Qwen2.5-VL-3B-Instruct-GGUF/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf"
+_SECRET_ADDRESS = "http://user:s3cret@ollama:abc"
 
 
 class TestFromEnvDefaults:
@@ -277,6 +281,16 @@ class TestOcrLanguage:
         with pytest.raises(ValueError, match="language code"):
             Config(ocr_language=value)
 
+    @pytest.mark.parametrize(
+        "value",
+        [5, 1.5, True, datetime.date(2026, 1, 1), {"eng": 1}, ["eng", 5], ["eng", None], [["eng"]]],
+        ids=["int", "float", "bool", "date", "table", "int-item", "none-item", "nested-list"],
+    )
+    def test_rejects_non_string_values_with_a_validation_error(self, value):
+        """A non-string value gets the refusal any bad code gets, never a TypeError."""
+        with pytest.raises(ValidationError, match="ocr_language"):
+            Config(ocr_language=value)
+
     def test_chat_mode_defaults_to_search_when_none_or_empty(self):
         """The validator coerces None / "" to 'search' so old configs round-trip."""
         from lilbee.core.config.model import Config as ConfigCls
@@ -507,7 +521,7 @@ class TestTomlConfigFile:
         assert {k for k in keys if getattr(built, k) != getattr(probe, k)} == set()
         assert (built.top_k, built.chunk_size, built.chunk_overlap) == (7, 1024, 50)
         assert built.rerank_min_score == 0.7
-        assert built.top_p == 0.9
+        assert built.top_p is None
 
     def test_toml_values_loaded(self, tmp_path):
         ref = "ollama/my-saved-model:latest"
@@ -758,6 +772,25 @@ class TestOcrFromConfigToml:
         assert (loaded.ocr, loaded.top_k) == (OcrMode.AUTO, 7)
         assert caplog.records == []
 
+    def test_a_removed_token_sizing_key_is_ignored_with_a_warning(self, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            loaded = self._load(tmp_path, "token_sizing = true\ntop_k = 7\n")
+        assert loaded.top_k == 7
+        assert not hasattr(loaded, "token_sizing")
+        assert [r.getMessage() for r in caplog.records] == [
+            "config.toml: token_sizing is not a setting and is ignored; "
+            "chunk_size always counts the embedding model's tokens"
+        ]
+
+    def test_a_removed_token_sizing_variable_is_ignored_with_a_warning(self, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            loaded = self._load(tmp_path, "top_k = 7\n", LILBEE_TOKEN_SIZING="true")
+        assert loaded.top_k == 7
+        assert [r.getMessage() for r in caplog.records] == [
+            "LILBEE_TOKEN_SIZING is not a setting and is ignored; "
+            "chunk_size always counts the embedding model's tokens"
+        ]
+
 
 class TestFlashAttentionConfig:
     def test_default_is_none(self, tmp_path) -> None:
@@ -832,6 +865,16 @@ class TestNGpuLayersConfig:
             c = Config()
             c.n_gpu_layers = 3.0  # type: ignore[assignment]
             assert c.n_gpu_layers == 3
+
+    @pytest.mark.parametrize(
+        "value",
+        [[1], {"a": 1}, datetime.date(2026, 1, 1)],
+        ids=["list", "table", "date"],
+    )
+    def test_non_number_value_is_a_validation_error(self, value) -> None:
+        """A value that is no number gets a refusal, never a TypeError from int()."""
+        with pytest.raises(ValidationError, match="n_gpu_layers"):
+            Config(n_gpu_layers=value)
 
 
 class TestGpuDevicesConfig:
@@ -942,6 +985,72 @@ class TestSemanticChunkingConfig:
         built, warnings = _build_with(tmp_path, f"{key} = {bad}\ntop_k = 7\n")
         assert (getattr(built, key), built.top_k) == (stored, 7)
         assert warnings == (f"config.toml: {key} = {bad[1:-1]!r} {reason}; {key} uses its default",)
+
+    @pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
+    def test_config_toml_with_an_unparseable_server_address_loads_and_names_it(
+        self, tmp_path, key
+    ) -> None:
+        built, warnings = _build_with(tmp_path, f'{key} = "http://ollama:abc"\ntop_k = 7\n')
+        assert (getattr(built, key), built.top_k) == ("", 7)
+        assert len(warnings) == 1
+        assert key in warnings[0]
+
+    @pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
+    def test_the_load_warning_for_a_server_address_keeps_its_credentials_out(
+        self, tmp_path, key
+    ) -> None:
+        _, warnings = _build_with(tmp_path, f'{key} = "{_SECRET_ADDRESS}"\n')
+        assert len(warnings) == 1
+        assert "s3cret" not in warnings[0]
+        assert warnings[0].count("is not a valid web address") == 1
+
+    @pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
+    def test_a_bad_server_address_variable_is_refused_by_name_without_its_value(
+        self, tmp_path, key
+    ) -> None:
+        variable = f"LILBEE_{key.upper()}"
+        env = {**clean_env(tmp_path), variable: _SECRET_ADDRESS}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            pytest.raises(RefusedVariableError) as refused,
+        ):
+            Config()
+        assert variable in str(refused.value)
+        assert "s3cret" not in str(refused.value)
+
+    @pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
+    def test_the_stored_server_address_is_the_one_that_was_checked(self, key) -> None:
+        assert getattr(Config(**{key: "  http://h:1/  "}), key) == "http://h:1"
+
+    @pytest.mark.parametrize(
+        ("key", "default"),
+        [
+            ("ollama_base_url", "http://localhost:11434"),
+            ("lm_studio_base_url", "http://localhost:1234/v1"),
+        ],
+    )
+    def test_the_refusal_example_is_the_default_of_the_refused_setting(self, key, default) -> None:
+        with pytest.raises(ValidationError) as refused:
+            Config(**{key: "http://ollama:abc"})
+        text = str(refused.value)
+        assert f"for example {default}" in text
+        assert "with a scheme and a host," in text
+        assert "host and port" not in text
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "http://localhost:11434",
+            "https://ollama.example.com",
+            "http://my-host:9000/v1",
+            "http://localhost:1234/v1/",
+            "http://[::1]:11434",
+            "",
+        ],
+    )
+    @pytest.mark.parametrize("key", ["ollama_base_url", "lm_studio_base_url"])
+    def test_a_usable_server_address_is_kept(self, key, address) -> None:
+        assert getattr(Config(**{key: address}), key) == address.rstrip("/")
 
     @pytest.mark.parametrize(
         ("key", "bad"),
@@ -1312,6 +1421,12 @@ class TestGenerationOptions:
         assert c.max_tokens is None
         assert "num_predict" not in c.generation_options()
 
+    def test_default_sends_no_sampling_keys(self):
+        # A near-greedy 0.1 / 0.9 / 40 on every request kept a thinking model
+        # thinking until the token cap; unset leaves sampling to the engine.
+        opts = Config().generation_options()
+        assert {"temperature", "top_p", "top_k"} & opts.keys() == set()
+
     def test_max_tokens_reaches_the_providers_as_num_predict(self):
         from lilbee.providers.base import filter_options, normalize_generation_options
 
@@ -1381,6 +1496,12 @@ class TestIgnoreDirs:
             assert "output" in c.ignore_dirs
             assert "generated" in c.ignore_dirs
             assert "node_modules" in c.ignore_dirs
+
+    @pytest.mark.parametrize("value", [[["a"]], [{"a": 1}]], ids=["nested-list", "table"])
+    def test_unhashable_entry_is_a_validation_error(self, value):
+        """A list entry that cannot join a set gets a refusal, never a TypeError."""
+        with pytest.raises(ValidationError, match="ignore_dirs"):
+            Config(ignore_dirs=value)
 
     def test_lilbee_ignore_dirs_empty_string(self):
         env = clean_env()
@@ -1496,7 +1617,7 @@ class TestBlankOptionalNumberInTheEnvironment:
         env["LILBEE_TEMPERATURE"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-        assert c.temperature == 0.1
+        assert c.temperature is None
 
     def test_whitespace_seed_variable_leaves_seed_unset(self, tmp_path):
         env = clean_env(tmp_path)
@@ -1536,7 +1657,8 @@ ADDRESS_FOR_EACH_DEFAULT_PATTERN = {
     r"\?elementor_library": "https://blog.example/?elementor_library=header",
     r"/page/\d+/?$": "https://blog.example/news/page/5/",
     r"\?paged?=\d+": "https://blog.example/?paged=3",
-    r"/20\d{2}(/\d{2}(/\d{2})?)?/?$": "https://blog.example/2024/06/15/",
+    r"/20\d{2}/\d{2}(/\d{2})?/?$": "https://blog.example/2024/06/15/",
+    r"^https?://[^/?#]+/20\d{2}/?$": "https://blog.example/2024/",
     r"/tag/": "https://blog.example/tag/gardening/",
     r"/category/": "https://blog.example/category/growing/",
     r"/author/": "https://blog.example/author/tobias/",
@@ -1720,6 +1842,9 @@ CONTENT_PATHS = [
     "/docs/payments/checkout",
     "/guides/login",
     "/api/account",
+    "/wiki/2023",
+    "/wiki/2024/",
+    "/events/2023",
 ]
 
 
@@ -2325,44 +2450,79 @@ class TestValidateModelTaskAssignment:
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         ref = f"{PICKS_CHAT[0].hf_repo}/tiny-1b-Q4_K_M.gguf"
-        assert validate_model_task_assignment("chat_model", ref) == ref
+        assert (
+            validate_model_task_assignment(
+                "chat_model", ref, hf_client_for=lambda: get_services().hf_client
+            )
+            == ref
+        )
 
     def test_chat_slot_rejects_vision_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="vision"):
-            validate_model_task_assignment("chat_model", PICKS_VISION[0].hf_repo)
+            validate_model_task_assignment(
+                "chat_model",
+                PICKS_VISION[0].hf_repo,
+                hf_client_for=lambda: get_services().hf_client,
+            )
 
     def test_chat_slot_rejects_reranker_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="rerank"):
-            validate_model_task_assignment("chat_model", PICKS_RERANK[0].hf_repo)
+            validate_model_task_assignment(
+                "chat_model",
+                PICKS_RERANK[0].hf_repo,
+                hf_client_for=lambda: get_services().hf_client,
+            )
 
     def test_embedding_slot_rejects_chat_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="chat"):
-            validate_model_task_assignment("embedding_model", PICKS_CHAT[0].hf_repo)
+            validate_model_task_assignment(
+                "embedding_model",
+                PICKS_CHAT[0].hf_repo,
+                hf_client_for=lambda: get_services().hf_client,
+            )
 
     def test_vision_slot_rejects_chat_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="chat"):
-            validate_model_task_assignment("vision_model", PICKS_CHAT[0].hf_repo)
+            validate_model_task_assignment(
+                "vision_model",
+                PICKS_CHAT[0].hf_repo,
+                hf_client_for=lambda: get_services().hf_client,
+            )
 
     def test_reranker_slot_rejects_vision_model(self, _task_validation_enabled):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="vision"):
-            validate_model_task_assignment("reranker_model", PICKS_VISION[0].hf_repo)
+            validate_model_task_assignment(
+                "reranker_model",
+                PICKS_VISION[0].hf_repo,
+                hf_client_for=lambda: get_services().hf_client,
+            )
 
     def test_empty_string_passes_through(self, _task_validation_enabled):
         """Empty or whitespace refs bypass validation (role unset)."""
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
-        assert validate_model_task_assignment("vision_model", "") == ""
-        assert validate_model_task_assignment("reranker_model", "   ") == "   "
+        assert (
+            validate_model_task_assignment(
+                "vision_model", "", hf_client_for=lambda: get_services().hf_client
+            )
+            == ""
+        )
+        assert (
+            validate_model_task_assignment(
+                "reranker_model", "   ", hf_client_for=lambda: get_services().hf_client
+            )
+            == "   "
+        )
 
     def test_provider_prefix_bypasses_catalog(self, _task_validation_enabled):
         """Provider-prefixed refs (ollama/, openai/, ...) bypass the featured
@@ -2371,21 +2531,35 @@ class TestValidateModelTaskAssignment:
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         ref = "ollama/qwen3:0.6b"
-        assert validate_model_task_assignment("chat_model", ref) == ref
+        assert (
+            validate_model_task_assignment(
+                "chat_model", ref, hf_client_for=lambda: get_services().hf_client
+            )
+            == ref
+        )
 
     def test_bare_hf_repo_canonicalizes_to_the_picks_ref(self, _task_validation_enabled):
         """A bare ``hf_repo`` that is a current pick resolves to that pick's ref."""
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         repo = PICKS_RERANK[0].hf_repo
-        assert validate_model_task_assignment("reranker_model", repo) == repo
+        assert (
+            validate_model_task_assignment(
+                "reranker_model", repo, hf_client_for=lambda: get_services().hf_client
+            )
+            == repo
+        )
 
     def test_out_of_catalog_rejected(self, _task_validation_enabled):
         """Refs that are neither featured nor installed are rejected as not installed."""
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="not installed"):
-            validate_model_task_assignment("chat_model", "totally-unknown-model:99b")
+            validate_model_task_assignment(
+                "chat_model",
+                "totally-unknown-model:99b",
+                hf_client_for=lambda: get_services().hf_client,
+            )
 
     def test_skip_env_var_disables_check(self, tmp_path):
         """LILBEE_SKIP_MODEL_TASK_VALIDATION bypasses the role check when pytest is imported."""
@@ -2393,7 +2567,11 @@ class TestValidateModelTaskAssignment:
 
         with mock.patch.dict(os.environ, {"LILBEE_SKIP_MODEL_TASK_VALIDATION": "1"}):
             # Bypass: returns input unchanged, does not raise.
-            result = validate_model_task_assignment("chat_model", "totally-unknown-model:99b")
+            result = validate_model_task_assignment(
+                "chat_model",
+                "totally-unknown-model:99b",
+                hf_client_for=lambda: get_services().hf_client,
+            )
         assert result == "totally-unknown-model:99b"
 
     def test_skip_env_var_alone_does_not_bypass_in_production(self, tmp_path):
@@ -2408,7 +2586,11 @@ class TestValidateModelTaskAssignment:
                 mock.patch.dict(os.environ, {"LILBEE_SKIP_MODEL_TASK_VALIDATION": "1"}),
                 pytest.raises(ValueError, match="not installed"),
             ):
-                validate_model_task_assignment("chat_model", "totally-unknown-model:99b")
+                validate_model_task_assignment(
+                    "chat_model",
+                    "totally-unknown-model:99b",
+                    hf_client_for=lambda: get_services().hf_client,
+                )
         finally:
             if saved_pytest is not None:
                 sys.modules["pytest"] = saved_pytest
@@ -2420,7 +2602,9 @@ class TestValidateModelTaskAssignment:
 
         vision = PICKS_VISION[0].hf_repo
         with pytest.raises(TaskMismatchError) as exc_info:
-            validate_model_task_assignment("chat_model", vision)
+            validate_model_task_assignment(
+                "chat_model", vision, hf_client_for=lambda: get_services().hf_client
+            )
 
         err = exc_info.value
         assert err.ref == vision
@@ -2435,7 +2619,12 @@ class TestValidateModelTaskAssignment:
         ref = install_fake_model(
             "MaziyarPanahi/Qwen3-1.7B-GGUF", "Qwen3-1.7B.Q4_K_M.gguf", task="chat"
         )
-        assert validate_model_task_assignment("chat_model", ref) == ref
+        assert (
+            validate_model_task_assignment(
+                "chat_model", ref, hf_client_for=lambda: get_services().hf_client
+            )
+            == ref
+        )
 
     def test_bare_non_featured_repo_canonicalizes_to_installed_quant(
         self, _task_validation_enabled
@@ -2445,10 +2634,14 @@ class TestValidateModelTaskAssignment:
         from tests.conftest import install_fake_model
 
         ref = install_fake_model(
-            "bartowski/SmolLM2-360M-Instruct-GGUF", "SmolLM2-360M-Q4_K_M.gguf", task="chat"
+            "bartowski/SmolLM2-360M-Instruct-GGUF",  # pragma: allowlist secret
+            "SmolLM2-360M-Q4_K_M.gguf",
+            task="chat",
         )
         result = validate_model_task_assignment(
-            "chat_model", "bartowski/SmolLM2-360M-Instruct-GGUF"
+            "chat_model",
+            "bartowski/SmolLM2-360M-Instruct-GGUF",
+            hf_client_for=lambda: get_services().hf_client,  # pragma: allowlist secret
         )
         assert result == ref
 
@@ -2457,7 +2650,11 @@ class TestValidateModelTaskAssignment:
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         with pytest.raises(ValueError, match="not installed"):
-            validate_model_task_assignment("chat_model", "org/Never-Pulled-GGUF")
+            validate_model_task_assignment(
+                "chat_model",
+                "org/Never-Pulled-GGUF",
+                hf_client_for=lambda: get_services().hf_client,
+            )
 
     def test_installed_non_featured_wrong_role_rejected(self, _task_validation_enabled):
         """An installed non-featured chat model in the reranker slot raises TaskMismatchError."""
@@ -2469,7 +2666,9 @@ class TestValidateModelTaskAssignment:
             "MaziyarPanahi/Qwen3-1.7B-GGUF", "Qwen3-1.7B.Q4_K_M.gguf", task="chat"
         )
         with pytest.raises(TaskMismatchError) as exc_info:
-            validate_model_task_assignment("reranker_model", ref)
+            validate_model_task_assignment(
+                "reranker_model", ref, hf_client_for=lambda: get_services().hf_client
+            )
         assert exc_info.value.entry_task == ModelTask.CHAT
         assert exc_info.value.expected_task == ModelTask.RERANK
 
@@ -2579,13 +2778,14 @@ class TestABadValueInConfigTomlKeepsTheRest:
     ):
         toml = (
             f"{key} = {bad}\ntop_k = 7\n"
-            f'vision_model = "{_SAMPLE_VISION_REF}"\ngemini_api_key = "sk-kept"\n'
+            f'vision_model = "{_SAMPLE_VISION_REF}"\n'
+            'gemini_api_key = "sk-kept"\n'  # pragma: allowlist secret
         )
         built, warnings = _build_with(tmp_path, toml)
         assert getattr(built, key) == default
         assert built.top_k == 7
         assert built.vision_model == _SAMPLE_VISION_REF
-        assert built.gemini_api_key == "sk-kept"
+        assert built.gemini_api_key == "sk-kept"  # pragma: allowlist secret
         assert [w for w in warnings if w.startswith(f"config.toml: {key} = ")] == list(warnings)
         assert len(warnings) == 1
 
@@ -2785,7 +2985,7 @@ _OPEN_SETTINGS_THAT_REFUSE = {
 }
 
 # No variable sets these: the load warns that the variable is ignored and never stops.
-_SETTINGS_NO_VARIABLE_SETS = {"linked_roots"}
+_SETTINGS_NO_VARIABLE_SETS = {"linked_roots"} | SERVICE_ONLY_FIELDS
 
 
 _TEXT = "text"
@@ -3069,6 +3269,47 @@ class TestEnvValue:
     def test_an_unset_variable_is_none(self, monkeypatch):
         monkeypatch.delenv("LILBEE_TOP_K", raising=False)
         assert env_value("top_k") is None
+
+    def test_a_service_only_field_reads_no_variable(self, monkeypatch):
+        monkeypatch.setenv("LILBEE_SERVER_PRESETS", "[]")
+        assert env_value("server_presets") is None
+
+
+class TestServerPresetFields:
+    """The stored preset list and the flag for its HTTP routes."""
+
+    def test_the_variable_does_not_set_the_list(self, monkeypatch):
+        monkeypatch.setenv("LILBEE_SERVER_PRESETS", '[{"name": "x"}]')
+        assert Config().server_presets is None
+
+    @pytest.mark.parametrize(
+        ("value", "text"),
+        [
+            ("[]", "[]"),
+            (None, None),
+            ([{"api_key": "k"}], '[{"api_key": "k"}]'),
+            (7, "7"),
+        ],
+    )
+    def test_any_toml_type_becomes_text(self, value, text):
+        assert Config(server_presets=value).server_presets == text
+
+    def test_a_toml_date_in_the_list_becomes_text(self):
+        value = [{"name": "x", "since": datetime.date(2026, 1, 2)}]
+        assert (
+            Config(server_presets=value).server_presets == '[{"name": "x", "since": "2026-01-02"}]'
+        )
+
+    def test_no_repr_of_the_config_holds_the_list(self):
+        assert "SENTINEL" not in repr(Config(server_presets="SENTINEL"))
+
+    def test_the_flag_is_off_by_default(self, monkeypatch):
+        monkeypatch.delenv("LILBEE_ALLOW_HTTP_ENGINES", raising=False)
+        assert Config().allow_http_engines is False
+
+    def test_the_variable_turns_the_flag_on(self, monkeypatch):
+        monkeypatch.setenv("LILBEE_ALLOW_HTTP_ENGINES", "1")
+        assert Config().allow_http_engines is True
 
 
 class TestLoadWarningsAreLoggedOncePerProcessTree:
@@ -3354,7 +3595,7 @@ class TestCrawlExclusionsMatchWholeSegments:
             "https://example.com/login",
             "https://example.com/my-account/orders",
             "https://shop.example/cart/items",
-            "http://user:secret@shop.example:8080/orders/7",
+            "http://user:secret@shop.example:8080/orders/7",  # pragma: allowlist secret
             "https://shop.example/account#details",
         ],
     )

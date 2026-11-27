@@ -290,29 +290,35 @@ def test_animation_loop_handles_write_error(_mock_write: object):
 @patch("lilbee.runtime._splash_runner.FRAME_INTERVAL", 0.05)
 @patch("lilbee.runtime._splash_runner.POLL_INTERVAL", 0.001)
 def test_animation_loop_exits_on_sigterm():
-    """animation_loop exits when SIGTERM is received (covers line 140)."""
+    """With the pipe still open, a SIGTERM sent once the handler is installed ends the loop."""
     import signal
-    import threading
 
     from lilbee.runtime._splash_runner import animation_loop
 
     r, w = os.pipe()
+    sent: list[bool] = []
+    written: list[bytes] = []
 
-    def send_sigterm():
-        import time
+    def write_then_signal_once(_fd: int, data: bytes) -> int:
+        # The first write (hide-cursor) runs after the handler is installed, in
+        # the loop's own thread, so the signal cannot arrive early or late.
+        written.append(data)
+        if not sent:
+            sent.append(True)
+            os.kill(os.getpid(), signal.SIGTERM)
+        return len(data)
 
-        time.sleep(0.02)
-        os.kill(os.getpid(), signal.SIGTERM)
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        with patch("os.write", side_effect=write_then_signal_once):
+            animation_loop(r)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        os.close(w)
+        os.close(r)
 
-    t = threading.Thread(target=send_sigterm)
-    t.start()
-
-    with patch("os.write", return_value=0):
-        animation_loop(r)
-
-    t.join()
-    os.close(w)
-    os.close(r)
+    assert sent == [True]
+    assert b"\033[?25h" in written[-1]  # the loop left through its cleanup, not a crash
 
 
 @patch("lilbee.runtime._splash_runner.STARTUP_DELAY", 0.01)
@@ -322,24 +328,19 @@ def test_animation_loop_startup_delay_with_open_pipe():
     from lilbee.runtime._splash_runner import animation_loop
 
     r, w = os.pipe()
+    sleeps: list[float] = []
 
-    # Close pipe after a short delay to let startup delay loop run
-    import threading
+    def close_on_first_sleep(interval: float) -> None:
+        # The loop is inside its startup delay with the pipe open; close it here.
+        sleeps.append(interval)
+        if len(sleeps) == 1:
+            os.close(w)
 
-    def close_later():
-        import time
-
-        time.sleep(0.02)
-        os.close(w)
-
-    t = threading.Thread(target=close_later)
-    t.start()
-
-    with patch("os.write", return_value=0):
+    with patch("time.sleep", side_effect=close_on_first_sleep), patch("os.write", return_value=0):
         animation_loop(r)
 
-    t.join()
     os.close(r)
+    assert sleeps == [0.001]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows poll_pipe path")
@@ -434,3 +435,26 @@ def test_open_pipe_ref_returns_the_fd_on_posix(monkeypatch):
     from lilbee.runtime._splash_runner import _open_pipe_ref
 
     assert _open_pipe_ref(7) == 7
+
+
+def test_animate_frames_clears_each_frame_when_the_wait_runs_its_full_length(monkeypatch):
+    """A frame that is not stopped during its wait is drawn, waited out, then moved over."""
+    from lilbee.runtime import _splash_runner as sr
+
+    polls_per_frame = int(sr.FRAME_INTERVAL / sr.POLL_INTERVAL)
+    checks = {"n": 0}
+
+    def should_stop() -> bool:
+        checks["n"] += 1
+        # Check 1 starts the loop, then one per wait step, one before the clear, one to end.
+        return checks["n"] > 1 + polls_per_frame + 1
+
+    writes: list[bytes] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr(sr.os, "write", lambda _fd, data: writes.append(data))
+    monkeypatch.setattr(sr.time, "sleep", lambda interval: sleeps.append(interval))
+
+    sr._animate_frames(1, [["logo"]], ["bar"], 0, 4, should_stop)
+
+    assert writes == [sr.render_frame(["logo"], "bar", 0), sr.move_up_and_clear(4)]
+    assert sleeps == [sr.POLL_INTERVAL] * polls_per_frame

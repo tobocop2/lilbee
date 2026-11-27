@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import subprocess
@@ -9,12 +10,18 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.fleet.proc import run_bounded
+
+log = logging.getLogger(__name__)
 
 _SMI_TIMEOUT_S = 5.0
 # Bounded wait for a timed-out smi tool to die before abandoning it: a driver-
 # wedged sampler must not hang the util-sampling thread (it holds a lock).
 _SMI_KILL_WAIT_S = 5.0
+# Last non-zero outcome per call (tool and arguments, since xpu-smi runs once per device), so a
+# sampler that polls every second logs a failure once.
+_warned: dict[tuple[str, tuple[str, ...]], tuple[int, bool]] = {}
 
 
 @dataclass(frozen=True)
@@ -33,22 +40,58 @@ class UtilSample:
 class UtilBackend(Protocol):
     """One vendor's live-util probe: given indices, returns per-index samples."""
 
+    @property
+    def pci_vendor(self) -> PCIVendorID | None: ...
+
     def sample(self, indices: frozenset[int]) -> dict[int, UtilSample]: ...
 
 
-def run_smi(tool: str, args: Sequence[str], timeout: float = _SMI_TIMEOUT_S) -> str:
-    """Resolve tool via shutil.which, run it, return stdout on rc==0 else "".
+def run_tool(
+    tool: str, args: Sequence[str], timeout: float, stderr_sink: list[str] | None = None
+) -> tuple[str, int | None]:
+    """Resolve tool via shutil.which and run it: ``(stdout, exit code)``.
 
-    Returns "" when the tool is not found, exits non-zero, or raises.
+    The exit code is ``None`` when the tool cannot start or hits the time limit.
+    *stderr_sink* receives the tool's stderr text; see ``run_bounded``.
     """
     binary = shutil.which(tool) or tool
     try:
-        stdout, returncode = run_bounded(
-            [binary, *args], timeout_s=timeout, kill_wait_s=_SMI_KILL_WAIT_S, label=tool
+        return run_bounded(
+            [binary, *args],
+            timeout_s=timeout,
+            kill_wait_s=_SMI_KILL_WAIT_S,
+            label=tool,
+            stderr_sink=stderr_sink,
         )
     except (OSError, subprocess.SubprocessError):
-        return ""
-    return stdout if returncode == 0 else ""
+        return "", None
+
+
+def run_smi(tool: str, args: Sequence[str], timeout: float = _SMI_TIMEOUT_S) -> str:
+    """Resolve tool via shutil.which, run it, return what it printed.
+
+    A tool that exits non-zero after printing rows (one device failed, the rest
+    answered) keeps its rows; the parser decides whether they are usable. The
+    exit code and stderr go to the log at warning, once per change of outcome.
+    Returns "" when the tool is not found, prints nothing, or raises.
+    """
+    stderr: list[str] = []
+    stdout, returncode = run_tool(tool, args, timeout, stderr)
+    call = (tool, tuple(args))
+    if returncode in (0, None):
+        _warned.pop(call, None)
+        return stdout
+    outcome = (returncode, bool(stdout.strip()))
+    if _warned.get(call) != outcome:
+        _warned[call] = outcome
+        log.warning(
+            "%s exit code %d, %s; stderr: %s",
+            tool,
+            returncode,
+            "keeping the rows it printed" if outcome[1] else "it printed no rows",
+            "".join(stderr).strip() or "(none)",
+        )
+    return stdout
 
 
 def extract_int(obj: object, keys: tuple[str, ...]) -> int | None:

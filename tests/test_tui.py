@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -10,17 +11,22 @@ from textual.binding import Binding
 
 from conftest import (
     TEST_LOCAL_REF,
+    clean_env,
 )
 from conftest import (
     make_test_catalog_model as _make_model,
 )
 from lilbee.catalog import CatalogResult
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, remote_to_row
+from lilbee.cli.tui.task_queue import Task, TaskStatus
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.core.config import cfg
-from lilbee.data.store import Store
+from lilbee.data.store import FailedPage, Store
+from lilbee.data.types import PartialFile, SyncResult
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests._lilbee_app_test_host import ready_services as _ready_services
+from tests._signals import child_preexec
 
 
 @pytest.fixture(autouse=True)
@@ -61,22 +67,155 @@ def _patch_chat_setup():
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=50, offset=0, models=[])
 
+_TERMINATED_TUI_CHILD = """
+import asyncio
+import os
+import signal
+import sys
+import threading
+import time
+from unittest import mock
+
+from lilbee.app.services import install_engine_lifecycle_hooks, mark_interactive_session
+from lilbee.cli.tui import run_tui
+
+
+class _TerminatedApp:
+    return_code = None
+    task_bar = mock.MagicMock()
+
+    def __init__(self, **_kwargs):
+        pass
+
+    def run(self):
+        # As Textual's App.run, which an older run_tui called.
+        asyncio.run(self.run_async())
+
+    async def run_async(self):
+        if sys.argv[1] == "stuck-executor":
+            # A worker of the loop's default executor, as asyncio.to_thread starts one.
+            asyncio.get_running_loop().run_in_executor(None, time.sleep, 120.0)
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.sleep(60.0)  # the handler's SystemExit ends the run here
+
+
+if sys.argv[1] == "stuck-thread":
+    threading.Thread(target=time.sleep, args=(120.0,)).start()
+install_engine_lifecycle_hooks()
+mark_interactive_session()
+with mock.patch("lilbee.cli.tui.app.LilbeeApp", _TerminatedApp):
+    run_tui()
+"""
+
+_HUNG_UP_TUI_CHILD = """
+import asyncio
+import gc
+import logging
+import os
+import signal
+import sys
+
+import lilbee.cli.tui as tui
+from lilbee.app.services import install_engine_lifecycle_hooks, mark_interactive_session
+from lilbee.cli.tui import app as tui_app
+
+
+def _hang_up():
+    logging.getLogger("hung_up_tui").warning("SIGHUP sent from a timer tick")
+    # A signal to this process runs its handler at the next bytecode: inside this tick.
+    os.kill(os.getpid(), signal.SIGHUP)
+
+
+class _HungUpApp(tui_app.LilbeeApp):
+    def on_mount(self):  # Textual runs the mount handler of LilbeeApp as well
+        # A screen's timer ticks in the screen's own task, as the chat screen's pollers do;
+        # an app timer would tick in the run's main task.
+        self.set_timer(0.5, lambda: self.screen.set_timer(0.1, _hang_up))
+
+
+_exit_when_stragglers_would_hang = tui.exit_when_stragglers_would_hang
+
+
+def _report_unread_task_errors(status):
+    # The forced exit skips the collection where asyncio logs a task whose exception
+    # nobody read, so the same test asyncio makes there runs here first.
+    for task in gc.get_objects():
+        if isinstance(task, asyncio.Task) and task._log_traceback:
+            print(f"Task exception was never retrieved: {task.exception()!r}", file=sys.stderr)
+    _exit_when_stragglers_would_hang(status)
+
+
+tui_app.LilbeeApp = _HungUpApp
+tui.exit_when_stragglers_would_hang = _report_unread_task_errors
+install_engine_lifecycle_hooks()
+mark_interactive_session()
+tui.run_tui()
+"""
+
+
+def _run_in_a_terminal(argv: list[str], env: dict[str, str]) -> tuple[int, str]:
+    """Run *argv* on a pseudo terminal; return its status and everything it wrote there."""
+    import fcntl
+    import os
+    import pty
+    import struct
+    import subprocess
+    import termios
+    import threading
+
+    controller, terminal = pty.openpty()
+    fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    written: list[bytes] = []
+
+    def read_terminal() -> None:
+        # The app blocks on a full terminal buffer when nobody reads its output.
+        while True:
+            try:
+                chunk = os.read(controller, 65536)
+            except OSError:  # Linux: the child closed the terminal
+                return
+            if not chunk:
+                return
+            written.append(chunk)
+
+    reader = threading.Thread(target=read_terminal, daemon=True)
+    reader.start()
+    # A worker that ignores SIGHUP would pass the ignore on, and the child would never end.
+    child = subprocess.Popen(
+        argv,
+        env=env,
+        stdin=terminal,
+        stdout=terminal,
+        stderr=terminal,
+        start_new_session=True,
+        preexec_fn=child_preexec(),
+    )
+    os.close(terminal)
+    try:
+        child.wait(timeout=120)
+        reader.join(timeout=5)
+    finally:
+        child.kill()  # a no-op once the child ended
+        os.close(controller)
+    return child.returncode, b"".join(written).decode("utf-8", "replace")
+
 
 class TestRunTui:
-    @mock.patch("lilbee.cli.tui.app.LilbeeApp.run")
-    def test_run_tui_launches_app(self, mock_run: mock.MagicMock) -> None:
+    @mock.patch("lilbee.cli.tui.app.LilbeeApp.run_async")
+    def test_run_tui_launches_app(self, mock_run: mock.AsyncMock) -> None:
         from lilbee.cli.tui import run_tui
 
         run_tui()
         mock_run.assert_called_once()
 
-    @mock.patch("lilbee.cli.tui.app.LilbeeApp.run")
-    def test_run_tui_forwards_initial_view(self, mock_run: mock.MagicMock) -> None:
+    @mock.patch("lilbee.cli.tui.app.LilbeeApp.run_async")
+    def test_run_tui_forwards_initial_view(self, mock_run: mock.AsyncMock) -> None:
         from lilbee.cli.tui import run_tui
 
         with (
             mock.patch("lilbee.cli.tui.app.LilbeeApp.__init__", return_value=None) as init,
             mock.patch("lilbee.cli.tui.app.LilbeeApp.task_bar", create=True),
+            mock.patch("lilbee.cli.tui.app.LilbeeApp.return_code", None),
         ):
             run_tui(initial_view="Catalog")
         init.assert_called_once_with(initial_view="Catalog")
@@ -104,7 +243,7 @@ class TestRunTui:
             app.task_bar.start_task("Sync", TaskType.SYNC, _target)
 
         with (
-            mock.patch.object(LilbeeApp, "run", autospec=True, side_effect=_run),
+            mock.patch.object(LilbeeApp, "run_async", autospec=True, side_effect=_run),
             mock.patch("lilbee.cli.sync.shutdown_executor"),
             mock.patch(
                 "lilbee.cli.tui.reset_services_on_exit",
@@ -151,7 +290,7 @@ class TestRunTui:
             assert waiting.wait(timeout=60)
 
         with (
-            mock.patch.object(LilbeeApp, "run", autospec=True, side_effect=_run),
+            mock.patch.object(LilbeeApp, "run_async", autospec=True, side_effect=_run),
             mock.patch("lilbee.cli.sync.shutdown_executor"),
             mock.patch(
                 "lilbee.cli.tui.reset_services_on_exit",
@@ -163,6 +302,83 @@ class TestRunTui:
         # The quit cancelled the page wait (it did not outlast the exit budget) and flushed first.
         assert wait_ended_by == ["cancel"]
         assert flushed_at_teardown == [True]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
+    @pytest.mark.parametrize("worker", ["stuck-thread", "stuck-executor", "none"])
+    def test_a_terminate_ends_the_tui_with_the_signal_status(self, tmp_path, worker) -> None:
+        """A SIGTERM ends the TUI with 128 + 15, also through the forced exit for a stuck worker.
+
+        The wait is bounded by the test timeout; a stuck worker the exit joins holds it forever.
+        """
+        import signal
+        import subprocess
+
+        script = tmp_path / "terminated_tui.py"
+        script.write_text(_TERMINATED_TUI_CHILD, encoding="utf-8")
+        child = subprocess.Popen(
+            [sys.executable, str(script), worker],
+            env=clean_env(tmp_path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+        )
+        try:
+            _, stderr = child.communicate()
+        finally:
+            child.kill()  # a no-op once the child ended
+        assert child.returncode == 128 + signal.SIGTERM, stderr
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SIGHUP and no pty")
+    def test_a_hangup_during_a_timer_tick_exits_129_with_no_unread_task_error(
+        self, tmp_path
+    ) -> None:
+        """The real TUI in a terminal gets SIGHUP inside a timer callback.
+
+        The exit leaves the run with 128 + 1, and no task keeps the exit as an
+        exception that asyncio logs as never retrieved.
+        """
+        import signal
+
+        script = tmp_path / "hung_up_tui.py"
+        script.write_text(_HUNG_UP_TUI_CHILD, encoding="utf-8")
+        status, terminal = _run_in_a_terminal([sys.executable, str(script)], clean_env(tmp_path))
+
+        log = (tmp_path / "logs" / "tui.log").read_text(encoding="utf-8")
+        assert status == 128 + signal.SIGHUP, terminal + log
+        assert "SIGHUP sent from a timer tick" in log
+        assert "never retrieved" not in log + terminal, terminal + log
+
+    @pytest.mark.parametrize(
+        ("code", "status"), [(None, 0), (3, 3), ("lilbee: bye", 1)], ids=["none", "int", "text"]
+    )
+    def test_an_exit_during_the_run_gives_its_status_to_the_forced_exit(self, code, status) -> None:
+        from lilbee.cli.tui import run_tui
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with (
+            mock.patch.object(LilbeeApp, "run_async", side_effect=SystemExit(code)),
+            mock.patch("lilbee.cli.sync.shutdown_executor"),
+            mock.patch("lilbee.cli.tui.reset_services_on_exit"),
+            mock.patch("lilbee.cli.tui.exit_when_stragglers_would_hang") as straggler,
+            pytest.raises(SystemExit) as raised,
+        ):
+            run_tui()
+        assert raised.value.code == code
+        straggler.assert_called_once_with(status)
+
+    def test_an_app_with_no_return_code_exits_with_zero(self) -> None:
+        from lilbee.cli.tui import run_tui
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with (
+            mock.patch.object(LilbeeApp, "run_async"),
+            mock.patch.object(LilbeeApp, "return_code", None),
+            mock.patch("lilbee.cli.sync.shutdown_executor"),
+            mock.patch("lilbee.cli.tui.reset_services_on_exit"),
+            mock.patch("lilbee.cli.tui.exit_when_stragglers_would_hang") as straggler,
+        ):
+            run_tui()
+        straggler.assert_called_once_with(0)
 
     @pytest.mark.asyncio
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
@@ -760,7 +976,7 @@ class TestStatusScreenAsync:
         finally:
             set_services(None)
         assert first_hint == msg.STATUS_DOCS_MORE.format(count=DOCUMENTS_PAGE_DEFAULT)
-        assert rows == [[f"doc-{n:03d}.txt", str(n + 1)] for n in range(total)]
+        assert rows == [[f"doc-{n:03d}.txt", str(n + 1)] for n in reversed(range(total))]
 
 
 class TestCLIIntegration:
@@ -1430,7 +1646,7 @@ class TestSyncHint:
                 await pilot.press("escape")
                 await pilot.press("S")
                 await pilot.pause()
-                run_sync.assert_called_once()
+                run_sync.assert_called_once_with(retry_skipped=False)
 
     @pytest.mark.asyncio
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
@@ -1457,12 +1673,12 @@ class TestSyncHint:
                 import asyncio
                 import time
 
-                app.action_run_sync()
+                app.action_run_sync(retry_skipped=True)
                 deadline = time.monotonic() + 20
                 while time.monotonic() < deadline and not run_sync.called:
                     await pilot.pause()
                     await asyncio.sleep(0.02)
-                run_sync.assert_called_once()
+                run_sync.assert_called_once_with(retry_skipped=True)
 
     @pytest.mark.asyncio
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
@@ -1498,7 +1714,9 @@ class TestSyncHint:
         observed: list[int] = []
         gate = _threading.Event()
 
-        def _do_sync_target(self_screen, reporter, *, force_rebuild=False, prune_ignored=False):
+        def _do_sync_target(
+            self_screen, reporter, *, force_rebuild=False, prune_ignored=False, retry_skipped=False
+        ):
             observed.append(self_screen.app.task_bar.pending_sync_count)
             gate.set()
 
@@ -1536,7 +1754,11 @@ class TestSyncHint:
 
 
 class TestChatImportWorker:
-    def test_import_failure_exits_with_the_error(self) -> None:
+    @pytest.mark.parametrize(
+        ("error", "reason"),
+        [(ImportError("boom"), "boom"), (ImportError(), "ImportError")],
+    )
+    def test_import_failure_exits_with_the_error(self, error, reason) -> None:
         """An unimportable chat stack must exit loudly, not strand the gate."""
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.app import LilbeeApp
@@ -1544,7 +1766,7 @@ class TestChatImportWorker:
         app = LilbeeApp.__new__(LilbeeApp)
         gate = mock.MagicMock()
         with (
-            mock.patch("lilbee.cli.tui.app._import_chat_stack", side_effect=ImportError("boom")),
+            mock.patch("lilbee.cli.tui.app._import_chat_stack", side_effect=error),
             mock.patch(
                 "lilbee.cli.tui.app.call_from_thread",
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
@@ -1553,7 +1775,7 @@ class TestChatImportWorker:
         ):
             LilbeeApp._chat_import_worker.__wrapped__(app, gate)
         mock_exit.assert_called_once_with(
-            return_code=1, message=msg.CHAT_STACK_FAILED.format(error="boom")
+            return_code=1, message=msg.CHAT_STACK_FAILED.format(error=reason)
         )
 
     def test_successful_import_installs_chat_and_boots(self) -> None:
@@ -1783,3 +2005,143 @@ def test_is_one_action_two_ways(first: str, second: str, one_action: bool) -> No
     """
     assert _is_one_action_two_ways(first, second) is one_action
     assert _is_one_action_two_ways(second, first) is one_action, "must be symmetric"
+
+
+_SCAN_PARTLY_READ = PartialFile(
+    "scan.pdf", [FailedPage(page=3, error="timed out", recovered=False)]
+)
+_PARTLY_READ_SYNC = SyncResult(
+    added=["scan.pdf"],
+    partial=[_SCAN_PARTLY_READ],
+    failed=["bad.pdf"],
+    reasons={"bad.pdf": "the file is encrypted"},
+)
+
+
+async def _tui_sync(
+    result: SyncResult, *, retry: bool = False
+) -> tuple[Task, dict[str, object], list[str]]:
+    """Run one sync in the real app, started as the user starts it.
+
+    Returns its task, the kwargs the sync got, and the text of each toast.
+    """
+    from lilbee.cli.tui.app import LilbeeApp
+
+    seen: dict[str, object] = {}
+
+    async def fake_sync(**kwargs: object) -> SyncResult:
+        seen.update(kwargs)
+        return result
+
+    with (
+        mock.patch("lilbee.data.ingest.detect_pending", return_value=0),
+        mock.patch("lilbee.data.ingest.sync", side_effect=fake_sync),
+    ):
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await await_chat(app, pilot)
+            if retry:
+                app.action_run_sync(retry_skipped=True)
+            else:
+                await pilot.press("escape")
+                await pilot.press("S")
+            finished: list[Task] = []
+            for _ in range(400):
+                finished = [t for t in app.task_bar.queue.history if t.task_type == "sync"]
+                if finished:
+                    break
+                await pilot.pause(delay=0.01)
+            toasts = [notification.message for notification in app._notifications]
+    assert finished, "the sync task did not finish"
+    return finished[0], seen, toasts
+
+
+class TestSyncTaskColour:
+    @pytest.mark.asyncio
+    async def test_failed_files_beside_indexed_ones_fail_the_sync_and_keep_the_report(
+        self,
+    ) -> None:
+        task, seen, _ = await _tui_sync(_PARTLY_READ_SYNC)
+        assert task.status is TaskStatus.FAILED
+        assert task.detail == msg.SYNC_FAILED_FILES.format(files="bad.pdf")
+        assert task.report is not None
+        assert task.report.failed == {"bad.pdf": "the file is encrypted"}
+        assert task.report.is_partial is True
+        assert seen["retry_skipped"] is False
+
+    @pytest.mark.asyncio
+    async def test_failed_files_with_nothing_indexed_fail_the_sync_and_keep_the_report(
+        self,
+    ) -> None:
+        nothing = SyncResult(failed=["bad.pdf"], reasons={"bad.pdf": "the file is encrypted"})
+        task, _, _ = await _tui_sync(nothing)
+        assert task.status is TaskStatus.FAILED
+        assert task.detail == msg.SYNC_FAILED_FILES.format(files="bad.pdf")
+        assert task.report is not None
+        assert task.report.failed == {"bad.pdf": "the file is encrypted"}
+
+    @pytest.mark.asyncio
+    async def test_only_skipped_files_and_nothing_indexed_end_the_sync_done(self) -> None:
+        skipped = SyncResult(skipped=["odd.bin"], reasons={"odd.bin": "unsupported format"})
+        task, _, _ = await _tui_sync(skipped)
+        assert task.status is TaskStatus.DONE
+        assert task.report is not None
+        assert task.report.skipped == {"odd.bin": "unsupported format"}
+
+    @pytest.mark.asyncio
+    async def test_a_partly_read_file_alone_ends_the_sync_partial(self) -> None:
+        task, _, _ = await _tui_sync(SyncResult(added=["scan.pdf"], partial=[_SCAN_PARTLY_READ]))
+        assert task.status is TaskStatus.PARTIAL
+        assert task.report is not None
+        assert task.report.partial == (_SCAN_PARTLY_READ,)
+        assert (task.report.failed, task.report.skipped) == ({}, {})
+
+    @pytest.mark.asyncio
+    async def test_a_partly_read_file_that_was_read_again_ends_the_sync_partial(self) -> None:
+        task, _, _ = await _tui_sync(SyncResult(updated=["scan.pdf"], partial=[_SCAN_PARTLY_READ]))
+        assert task.status is TaskStatus.PARTIAL
+        assert task.report is not None
+        assert task.report.indexed == 1
+
+    @pytest.mark.asyncio
+    async def test_a_skipped_file_beside_a_relocated_one_ends_the_sync_partial(self) -> None:
+        result = SyncResult(
+            relocated=["moved.md"], skipped=["odd.bin"], reasons={"odd.bin": "unsupported format"}
+        )
+        task, _, _ = await _tui_sync(result)
+        assert task.status is TaskStatus.PARTIAL
+        assert task.report is not None
+        assert task.report.indexed == 1
+
+    @pytest.mark.asyncio
+    async def test_a_skipped_file_beside_an_indexed_one_ends_the_sync_partial(self) -> None:
+        result = SyncResult(
+            added=["a.md"], skipped=["odd.bin"], reasons={"odd.bin": "unsupported format"}
+        )
+        task, _, _ = await _tui_sync(result)
+        assert task.status is TaskStatus.PARTIAL
+        assert task.report is not None
+        assert task.report.skipped == {"odd.bin": "unsupported format"}
+        assert (task.report.partial, task.report.failed) == ((), {})
+
+    @pytest.mark.asyncio
+    async def test_a_sync_with_partly_read_files_says_so_in_a_toast(self) -> None:
+        result = SyncResult(added=["scan.pdf"], partial=[_SCAN_PARTLY_READ])
+        _, _, toasts = await _tui_sync(result)
+        assert msg.SYNC_PARTLY_READ.format(count=1) in toasts
+
+    @pytest.mark.asyncio
+    async def test_a_clean_sync_shows_no_partly_read_toast(self) -> None:
+        _, _, toasts = await _tui_sync(SyncResult(added=["a.md"]))
+        assert msg.SYNC_PARTLY_READ.format(count=0) not in toasts
+
+    @pytest.mark.asyncio
+    async def test_a_clean_sync_ends_done_with_no_report(self) -> None:
+        task, _, _ = await _tui_sync(SyncResult(added=["a.md"]))
+        assert (task.status, task.report) == (TaskStatus.DONE, None)
+
+    @pytest.mark.asyncio
+    async def test_a_retry_started_from_the_app_reaches_the_sync(self) -> None:
+        task, seen, _ = await _tui_sync(SyncResult(), retry=True)
+        assert task.status is TaskStatus.DONE
+        assert seen["retry_skipped"] is True

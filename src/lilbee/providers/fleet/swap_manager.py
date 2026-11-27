@@ -17,40 +17,96 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from dataclasses import dataclass, field
 from enum import StrEnum
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 import httpx
 import psutil
 
-from lilbee.core.health_warnings import HealthWarning
+from lilbee.core.health_warnings import HealthWarning, WarningCode
+from lilbee.parent_monitor import boot_identity, linux_age_s, linux_start_stamp, macos_start_stamp
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
+from lilbee.providers.fleet.binary import (
+    ROUTER_GO_INSTALL,
+    engine_pin,
+    resolve_llama_swap,
+    router_release,
+)
+from lilbee.providers.fleet.build_use import BuildHolds, builds_run_by
 from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_child
+from lilbee.providers.fleet.engine_store import engines_root
 from lilbee.providers.fleet.gpu_env import engine_environ
 from lilbee.providers.fleet.groups import SwapGroup
-from lilbee.providers.fleet.launch import role_model_prefix
-from lilbee.providers.fleet.planning import clear_ctx_downshift, log_engine_launch
+from lilbee.providers.fleet.launch import InstanceLaunch, role_model_prefix
+from lilbee.providers.fleet.planning import clear_ctx_downshift, log_role_launches
 from lilbee.providers.fleet.readback import (
     MEMORY_FLAG,
     check_launch,
     check_memory_report,
+    engine_log_of,
     report_missing_log,
 )
-from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
+from lilbee.providers.fleet.swap_config import (
+    CONCURRENCY_LIMIT,
+    PORT_FLAG,
+    ROUTER_FLOOR,
+    build_swap_config,
+    health_check_timeout_s,
+)
 from lilbee.runtime.engine_lock import clear_keep_warm, reaper_running
 
 if TYPE_CHECKING:
-    from lilbee.providers.fleet.launch import InstanceLaunch
+    from lilbee.providers.fleet.engines.base import EngineAdapter, ServerProcess
     from lilbee.providers.roles import WorkerRole
+
+if sys.platform == "win32":  # pragma: windows only - Windows has no resource module
+    resource = None
+else:  # pragma: posix only - Windows takes the branch above
+    import resource
 
 log = logging.getLogger(__name__)
 
+# llama-swap passes its open-file limit to the engines it spawns, and llama-server
+# holds one socket per admitted request. The extra 64 cover the files each process
+# opens for itself. macOS starts a process with a soft limit of 256.
+_OPEN_FILE_FLOOR = CONCURRENCY_LIMIT + 64
+
+
+def _raise_open_file_limit() -> None:
+    """Raise this process's soft open-file limit to the floor, never past the hard limit.
+
+    llama-swap and its engines inherit the limit. A hard limit under the floor is
+    used as it is, with one warning. A platform with no limit to set is left alone.
+    A refused change logs one warning and the start goes on.
+    """
+    if resource is None:
+        return
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft >= _OPEN_FILE_FLOOR:
+        return
+    target = _OPEN_FILE_FLOOR
+    if hard != resource.RLIM_INFINITY:
+        target = min(target, hard)
+    if target < _OPEN_FILE_FLOOR:
+        log.warning(
+            "The open-file limit is capped at %d, under the %d the engine can use at full load.",
+            hard,
+            _OPEN_FILE_FLOOR,
+        )
+    if target > soft:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        except (OSError, ValueError) as exc:
+            log.warning("The open-file limit stays at %d, not the %d wanted: %s", soft, target, exc)
+
+
 _HOST = "127.0.0.1"
+# Where a router older than ROUTER_FLOOR is replaced from, beside ROUTER_GO_INSTALL.
+_ROUTER_RELEASES_URL = "https://github.com/mostlygeek/llama-swap/releases"
 # One llama-swap per swap group: the group name lands in the config filename so
 # each group's processes are identified (and stopped) by their own config path,
 # and a placement change can restart one group without touching the others.
@@ -63,8 +119,8 @@ _CONFIG_FILE_GLOB = "llama-swap-*.json"
 # one lilbee's data root, so the log sits beside the engine it belongs to instead
 # of beside server.log. Capturing it at all, rather than inheriting the parent's
 # fd, is because a TUI or CLI parent owns the terminal and an inherited fd would bleed
-# llama-swap's request log onto the screen and corrupt the render. Per-model
-# upstream logs are unaffected (those go to llama-swap's /logs API).
+# llama-swap's request log onto the screen and corrupt the render. The output of an
+# engine that writes no log file of its own is copied in too (swap_config).
 _LOGS_SUBDIR = "logs"
 _LOG_FILENAME_TEMPLATE = "llama-swap-{group}.log"
 # Each writer's state file records its swap's pid/pgid so a later start can
@@ -76,6 +132,13 @@ _STATE_FILE_GLOB = f"{_STATE_FILENAME_PREFIX}*"
 _STATE_KEY_PID = "pid"
 _STATE_KEY_PGID = "pgid"
 _STATE_KEY_CREATED_AT = "created_at"
+_STATE_KEY_BOOT_ID = "boot_id"
+_STATE_KEY_START_TICKS = "start_ticks"
+# macOS only: {"boot": boot session, "abstime": start on the mach clock}. A new key, so a
+# lilbee from before it reads such a record by its create time.
+_STATE_KEY_MACH_START = "mach_start"
+_MACH_START_BOOT = "boot"
+_MACH_START_ABSTIME = "abstime"
 _STATE_KEY_NAME = "name"
 _STATE_KEY_MEMBER_PORTS = "member_ports"
 _STATE_KEY_PROXY_PORT = "proxy_port"
@@ -83,6 +146,12 @@ _STATE_KEY_LAUNCHES = "launches"
 _STATE_KEY_ENGINE_PIN = "engine_pin"
 _STATE_KEY_CONFIG_ROOT = "config_root"
 _STATE_KEY_FLEET_VIEW = "fleet_view"
+_STATE_KEY_PLANNED_VIEW = "planned_view"
+_STATE_KEY_FOLLOWED_KEYS = "followed_keys"
+_STATE_KEY_READY_AT = "ready_at"
+_STATE_KEY_STARTED_MONO = "started_mono"
+_STATE_KEY_STARTED_BOOT = "started_boot"
+_STATE_KEY_SWAP_BINARY = "swap_binary"
 # Atomic state writes: the dot prefix keeps half-written tmp files out of the
 # reap scan's glob.
 _STATE_TMP_PREFIX = "."
@@ -91,13 +160,16 @@ _STATE_TMP_SUFFIX = ".tmp"
 # from the recorded one by more than this is a different process.
 _CREATE_TIME_TOLERANCE_S = 1.0
 _LLAMA_SWAP_PROCESS_NAME = "llama-swap"
-_LLAMA_SERVER_PROCESS_NAME = "llama-server"
+_EXE_SUFFIX = ".exe"
+# A script server shows the interpreter's name; this prefix finds python and python3.12.
+_INTERPRETER_PREFIX = "python"
 _CONFIG_FLAG = "-config"
 _LISTEN_FLAG = "-listen"
 _HEALTH_PATH = "/health"
-_RUNNING_PATH = "/running"
-# Stops every upstream llama-server; llama-swap itself keeps listening.
-_UNLOAD_PATH = "/api/models/unload"
+RUNNING_PATH = "/running"
+# Stops every upstream llama-server; llama-swap itself keeps listening. A model id
+# after a "/" stops that upstream alone.
+UNLOAD_PATH = "/api/models/unload"
 _HTTP_TIMEOUT_S = 10.0
 # llama-swap's own proxy answers within a second; upstream model loads have their
 # own (longer) budget inside llama-swap, so this only covers the proxy coming up.
@@ -148,12 +220,12 @@ def _probe_client() -> httpx.Client:
     return httpx.Client(trust_env=False)
 
 
-_PROVIDER = "llama-server"
 # /running JSON shape: {"running": [{"model": <id>, "state": "ready", ...}, ...]}.
 _KEY_RUNNING = "running"
 _KEY_MODEL = "model"
 _KEY_STATE = "state"
 _STATE_READY = "ready"
+_STATE_STARTING = "starting"
 
 
 def _platform_const(module: object, name: str, default: int) -> int:
@@ -210,19 +282,44 @@ class SwapState:
     pid: int
     pgid: int | None
     created_at: float | None = None
+    boot_id: str | None = None  # with start_ticks, the Linux identity a clock step cannot move
+    start_ticks: float | None = None
+    mach_start: tuple[str, int] | None = None  # (boot session, mach start), the macOS identity
+    started_mono: float | None = None  # the system monotonic clock at spawn, on every platform
+    started_boot: str | None = None  # the boot that clock reading belongs to
     member_ports: tuple[int, ...] = ()
     proxy_port: int | None = None
     launches: tuple[dict, ...] = ()
     engine_pin: str | None = None
     origin: PlanOrigin | None = None
+    ready_at: float | None = None
+    swap_binary: str = ""  # the llama-swap executable; empty in a record written before the field
 
 
 @dataclass(frozen=True)
 class PlanOrigin:
-    """The config root a fleet was planned for, and what its config.toml set for the plan then."""
+    """The config root of a fleet, the values its plan used, and the keys its builder follows.
+
+    *fleet_view* holds each fleet reload key config.toml set at plan time, with the file's
+    value; every version writes and reads it the same way. *planned_view* holds the same
+    keys with the value the plan used, and *followed* names the reload keys the builder
+    takes from config.toml. A record of an older version has neither. Two origins are
+    equal when their root and their file view are.
+    """
 
     config_root: str
     fleet_view: str | None
+    planned_view: str | None = field(default=None, compare=False)
+    followed: frozenset[str] | None = field(default=None, compare=False)
+
+
+class EngineReadiness(StrEnum):
+    """What an answering engine's /running listing says about binding to it."""
+
+    READY = "ready"  # a member passed its health check
+    LOADING = "loading"  # a member is starting; llama-swap queues requests behind it
+    IDLE = "idle"  # nothing loaded, but a load was proved or the first one may not have begun
+    FAILED = "failed"  # nothing loaded, no load ever proved, and the cold-load window is over
 
 
 class SwapManager:
@@ -238,12 +335,24 @@ class SwapManager:
         self._config_path = data_dir / _config_filename(os.getpid(), group.value)
         self._log_path = data_dir / _LOGS_SUBDIR / _LOG_FILENAME_TEMPLATE.format(group=group.value)
         # Instances whose engine report has already been compared to the estimate,
-        # so the check runs once per start rather than on every readiness poll.
+        # so a readiness poll reads each load once. Guarded by ``_warnings_lock``.
         self._estimate_checked: set[str] = set()
+        # Each instance's load generation, raised by each load the caller saw, each
+        # unload a poll saw and each stop. A read records only under the generation
+        # it began in, so a read that outlived its load writes nothing.
+        # Guarded by ``_warnings_lock``.
+        self._load_generation: dict[str, int] = {}
         self._launch_by_model: dict[str, InstanceLaunch] = {}
+        # The file each member's engine writes its own log to; a member with none has
+        # its output in this group's llama-swap log.
+        self._engine_logs: dict[str, Path] = {}
         # Placement divergences by model id, surfaced on health. Guarded because
         # role_ready probes off the provider lock while health reads anytime.
         self._placement_warnings: dict[str, HealthWarning] = {}
+        # Host spills by model id; a spill and a divergence can both hold for one model.
+        self._spill_warnings: dict[str, HealthWarning] = {}
+        # Set by a start that finds a router too old to copy a member's output.
+        self._router_warning: HealthWarning | None = None
         self._warnings_lock = threading.Lock()
         self._state_path = data_dir / _state_filename(os.getpid(), group.value)
         self._proc: subprocess.Popen[bytes] | None = None
@@ -260,20 +369,32 @@ class SwapManager:
         # The serving contract (per-role model/ctx/slots) persisted in every
         # state write, so a guest lilbee can bind to this live fleet.
         self._launches_payload: list[dict] = []
+        self._swap_binary = ""
         self._origin: PlanOrigin | None = None
         # True when this manager uses an engine another process built: it then
         # never writes state, never reaps, and never signals engine processes.
         self._bound = False
+        # When this builder first saw a member ready; persisted so a binder can
+        # tell an idle-unloaded engine from one whose first load never finished.
+        self._ready_at: float | None = None
+        # The system monotonic clock at spawn. Every process of one boot shares it, so a
+        # binder ages the engine by it and a wall-clock step cannot move the age.
+        self._started_mono: float | None = None
+        self._started_boot: str | None = None
 
     def start(
         self,
         launches: list[InstanceLaunch],
         *,
+        engines: Mapping[WorkerRole, EngineAdapter],
         ttl_seconds: int = 0,
         lifetime: EngineLifetime = EngineLifetime.BUILDER,
         origin: PlanOrigin | None = None,
     ) -> None:
         """Write the config and spawn llama-swap, waiting for its proxy to answer.
+
+        *engines* is the mapping the plan of these launches was made with; the
+        start logs each launch with the engine of its role from it.
 
         The proxy and every member get a freshly allocated free port, which is
         why llama-swap's own startPort is not used: that assigns a fixed
@@ -295,6 +416,10 @@ class SwapManager:
         *origin* goes into the state, so a peer can see a fleet planned before a config write.
         """
         self._origin = origin
+        # Found first, so a missing router fails here, before anything is stopped
+        # or written.
+        router = resolve_llama_swap()
+        self._swap_binary = str(router)
         # Idempotent safety net; the provider reaps before planning so the GPU
         # probe already saw the real free memory.
         self.reap_stale()
@@ -309,9 +434,14 @@ class SwapManager:
         self._member_port_by_model = dict(member_ports)
         self._launches_payload = [launch.to_state() for launch in launches]
         self._launch_by_model = {launch.model_id: launch for launch in launches}
-        self._estimate_checked.clear()
-        with self._warnings_lock:
-            self._placement_warnings.clear()
+        self._engine_logs = {}
+        for launch in launches:
+            log_path = engine_log_of(engines[launch.role], launch, self._log_path.parent)
+            if log_path is not None:
+                self._engine_logs[launch.model_id] = log_path
+        reads_streams = self._router_reads_streams(router, launches)
+        self._ready_at = None
+        self._clear_placement_warnings()
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(
@@ -321,7 +451,8 @@ class SwapManager:
                 member_ports,
                 swap=self._group.swaps,
                 ttl_seconds=ttl_seconds,
-                engine_log_dir=self._log_path.parent,
+                engine_logs=self._engine_logs,
+                router_reads_streams=reads_streams,
             ),
         )
         self._port = ports[0]
@@ -334,25 +465,74 @@ class SwapManager:
         if lifetime is EngineLifetime.USERS and not ensure_engine_reaper(self._data_dir):
             log.warning("The engine at %s stops with this process.", self._data_dir)
             lifetime = EngineLifetime.BUILDER
-        self._proc = spawn_bound_child(
-            [
-                str(resolve_llama_swap()),
-                _CONFIG_FLAG,
-                str(self._config_path),
-                _LISTEN_FLAG,
-                f"{_HOST}:{self._port}",
-            ],
-            bind_lifetime=lifetime is EngineLifetime.BUILDER,
-            env=engine_environ(),
-            stdout=self._log_file,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            creationflags=_CREATE_NEW_PROCESS_GROUP,
+        _raise_open_file_limit()
+        # The router outlives this process under a shared lifetime, and the servers it starts
+        # die with it, so the router holds the in-use file of every store build the fleet runs.
+        from lilbee.core.config import cfg
+
+        holds = BuildHolds(
+            builds_run_by(
+                engines_root(cfg.models_dir),
+                [self._swap_binary, *(launch.server_binary for launch in launches)],
+            )
         )
+        try:
+            self._proc = spawn_bound_child(
+                [
+                    self._swap_binary,
+                    _CONFIG_FLAG,
+                    str(self._config_path),
+                    _LISTEN_FLAG,
+                    f"{_HOST}:{self._port}",
+                ],
+                bind_lifetime=lifetime is EngineLifetime.BUILDER,
+                env=engine_environ(),
+                stdout=self._log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                creationflags=_CREATE_NEW_PROCESS_GROUP,
+                **holds.spawn_kwargs,
+            )
+        finally:
+            holds.close()
+        self._started_mono = time.monotonic()
+        self._started_boot = boot_identity()
         self._write_state()
         self._await_health()
-        for launch in launches:
-            log_engine_launch(launch)
+        log_role_launches(launches, engines=engines)
+
+    def _router_reads_streams(self, router: Path, launches: list[InstanceLaunch]) -> bool:
+        """Whether *router* reads a list of streams; warns when a member's output is lost.
+
+        A release with no number (a source build, or a router that does not answer
+        the probe) counts as current. Call after ``_engine_logs`` is filled. The
+        warning goes to the log and to :meth:`health_warnings`, and each start
+        replaces the one before it.
+        """
+        with self._warnings_lock:
+            self._router_warning = None
+        release = router_release(router)
+        if release is None or release >= ROUTER_FLOOR:
+            return True
+        lost = [launch.model_id for launch in launches if launch.model_id not in self._engine_logs]
+        if lost:
+            warning = HealthWarning(
+                code=WarningCode.ROUTER_OUTDATED,
+                message=(
+                    f"The llama-swap router at {router} is v{release}, so the output of "
+                    f"{', '.join(lost)} is not in {self._log_path}."
+                ),
+                remedy=(
+                    f"Replace the file at {router} with llama-swap v{ROUTER_FLOOR} or later. "
+                    f"Download it from {_ROUTER_RELEASES_URL}, or run '{ROUTER_GO_INSTALL}' "
+                    f"and copy the llama-swap file from your Go bin folder to {router}. "
+                    "Then restart lilbee."
+                ),
+            )
+            log.warning("%s", warning.line)
+            with self._warnings_lock:
+                self._router_warning = warning
+        return False
 
     def reap_stale(self) -> None:
         """Kill every dead or unhealthy recorded engine; see :func:`reap_stale`."""
@@ -382,7 +562,7 @@ class SwapManager:
         if identity is None:
             return
         swap_pid, pgid, created_at = identity
-        state = {
+        state: dict[str, object] = {
             _STATE_KEY_PID: swap_pid,
             _STATE_KEY_PGID: pgid,
             _STATE_KEY_CREATED_AT: created_at,
@@ -391,15 +571,33 @@ class SwapManager:
             _STATE_KEY_PROXY_PORT: self._port,
             _STATE_KEY_LAUNCHES: self._launches_payload,
             _STATE_KEY_ENGINE_PIN: engine_pin(),
+            _STATE_KEY_SWAP_BINARY: self._swap_binary,
         }
+        state.update(_start_stamp_fields(swap_pid))
         if self._origin is not None:
             state[_STATE_KEY_CONFIG_ROOT] = self._origin.config_root
             state[_STATE_KEY_FLEET_VIEW] = self._origin.fleet_view
+            if self._origin.planned_view is not None:
+                state[_STATE_KEY_PLANNED_VIEW] = self._origin.planned_view
+            if self._origin.followed is not None:
+                state[_STATE_KEY_FOLLOWED_KEYS] = sorted(self._origin.followed)
+        if self._ready_at is not None:
+            state[_STATE_KEY_READY_AT] = self._ready_at
+        if self._started_mono is not None and self._started_boot is not None:
+            state[_STATE_KEY_STARTED_MONO] = self._started_mono
+            state[_STATE_KEY_STARTED_BOOT] = self._started_boot
         _atomic_write(self._state_path, json.dumps(state))
 
     def restamp(self, origin: PlanOrigin) -> None:
         """Record *origin* for the running swap: its plan still matches config.toml."""
         self._origin = origin
+        self._write_state()
+
+    def record_ready(self) -> None:
+        """Stamp the state file once when a load first succeeds; a binder writes nothing."""
+        if self._bound or self._ready_at is not None:
+            return
+        self._ready_at = time.time()
         self._write_state()
 
     @property
@@ -412,7 +610,6 @@ class SwapManager:
         if self._port is None:
             raise ProviderError(
                 "The local model engine is not running.",
-                provider=_PROVIDER,
                 kind=ProviderErrorKind.SERVER,
             )
         return f"http://{_HOST}:{self._port}"
@@ -421,51 +618,111 @@ class SwapManager:
         """Whether at least one of *role*'s replica servers is loaded and ready."""
         prefix = role_model_prefix(role)
         ready = self._ready_models()
+        if ready is None:
+            return False  # a failed read says nothing about the engines, so no finding changes
         self._check_estimates(ready)
+        if ready:
+            self.record_ready()
         return any(model.startswith(prefix) for model in ready)
 
     def _check_estimates(self, ready: set[str]) -> None:
         """Compare each newly-ready engine's own report against what it was planned for.
 
         The plan is otherwise open-loop, and a wrong estimate only ever surfaces
-        as a failed request much later. Once per instance per start: readiness is
-        polled, and the answer does not change once the engine has loaded.
+        as a failed request much later. Once per load: readiness is polled, and the
+        answer does not change while the engine stays loaded. An engine the listing
+        does not show has unloaded, so every finding it has goes, whichever read
+        recorded it, and its next load is read afresh.
         """
-        for model_id in ready - self._estimate_checked:
-            launch = self._launch_by_model.get(model_id)
-            self._estimate_checked.add(model_id)
-            if launch is None:
-                continue
-            # Ready means this role's context loaded, so any reduction taken to
-            # get here has done its job and must not follow the role into the
-            # next plan, a freed machine, or a model the user switched to.
-            clear_ctx_downshift(launch.role)
-            # A launch carrying --memory serves its own report on GET /memory
-            # and was given no trace log to read (swap_config), so the log-side
-            # checks would misfire on it by construction.
-            if MEMORY_FLAG in launch.argv:
-                self._check_memory_estimate(model_id, launch)
-                continue
-            # The engine is ready, so a missing log is not "too early" any more.
-            if report_missing_log(self._log_path.parent, model_id, launch.role):
-                continue
-            if launch.est_vram_bytes <= 0:
-                continue
-            warning = check_launch(
-                self._log_path.parent,
-                model_id,
-                launch.role,
-                launch.model,
-                launch.est_vram_bytes,
-                launch.est_vram_by_device,
-                launch.est_unreported_bytes,
-                launch.est_host_bytes,
-            )
-            if warning is not None:
-                with self._warnings_lock:
-                    self._placement_warnings[model_id] = warning
+        with self._warnings_lock:
+            known = self._estimate_checked.union(self._placement_warnings, self._spill_warnings)
+            for model_id in known - ready:
+                self._forget_locked(model_id)
+            generations = self._claim_locked(ready - self._estimate_checked)
+        self._read_estimates(generations)
 
-    def _check_memory_estimate(self, model_id: str, launch: InstanceLaunch) -> None:
+    def claim_loaded(self, model_ids: Iterable[str]) -> Callable[[], None]:
+        """Note that the caller saw *model_ids* load; return the read of their reports.
+
+        Each id starts a new load, so it is read again even when an earlier load
+        was read, and a read begun for an earlier load records nothing. The returned
+        read blocks on the engines: run it off the caller's thread.
+        """
+        loaded = set(model_ids)
+        with self._warnings_lock:
+            for model_id in loaded:
+                self._bump_locked(model_id)
+            generations = self._claim_locked(loaded)
+        return partial(self._read_estimates, generations)
+
+    def _bump_locked(self, model_id: str) -> None:
+        """Start a new load generation for *model_id*; a read of an older one records nothing."""
+        self._load_generation[model_id] = self._load_generation.get(model_id, 0) + 1
+
+    def _forget_locked(self, model_id: str) -> None:
+        """Drop *model_id*'s read and findings, because it unloaded; caller holds the lock."""
+        self._bump_locked(model_id)
+        self._estimate_checked.discard(model_id)
+        self._placement_warnings.pop(model_id, None)
+        self._spill_warnings.pop(model_id, None)
+
+    def _claim_locked(self, model_ids: set[str]) -> dict[str, int]:
+        """Mark *model_ids* read and return the load generation each read records under.
+
+        Ready means the role's context loaded, so any reduction taken to get here
+        has done its job and must not follow the role into the next plan, a freed
+        machine, or a model the user switched to. It is cleared here, at the load,
+        so a read that runs later cannot clear a reduction recorded after the load.
+        The caller holds the lock.
+        """
+        self._estimate_checked |= model_ids
+        for model_id in model_ids:
+            launch = self._launch_by_model.get(model_id)
+            if launch is not None:
+                clear_ctx_downshift(launch.role)
+        return {model_id: self._load_generation.setdefault(model_id, 0) for model_id in model_ids}
+
+    def _read_estimates(self, generations: Mapping[str, int]) -> None:
+        """Read the report of each id in *generations*, recorded under its generation."""
+        for model_id, generation in generations.items():
+            self._read_estimate(model_id, generation)
+
+    def _read_estimate(self, model_id: str, generation: int) -> None:
+        """Compare *model_id*'s own report with its plan; only a result replaces its findings."""
+        launch = self._launch_by_model.get(model_id)
+        if launch is None:
+            return
+        # A launch carrying --memory serves its own report on GET /memory
+        # and writes a log at the default verbosity, with no load report
+        # (swap_config), so the log-side checks would misfire on it by construction.
+        if MEMORY_FLAG in launch.argv:
+            self._check_memory_estimate(model_id, launch, generation)
+            return
+        # An engine that writes no log of its own has no file to read back.
+        if model_id not in self._engine_logs:
+            return
+        # The engine is ready, so a missing log is not "too early" any more.
+        if report_missing_log(self._log_path.parent, model_id, launch.role):
+            return
+        if launch.est_vram_bytes <= 0:
+            return
+        spills: list[HealthWarning] = []
+        warning = check_launch(
+            self._log_path.parent,
+            model_id,
+            launch.role,
+            launch.model,
+            launch.est_vram_bytes,
+            launch.est_vram_by_device,
+            launch.est_unreported_bytes,
+            launch.est_host_bytes,
+            spills,
+        )
+        self._record_findings(model_id, generation, warning, spills)
+
+    def _check_memory_estimate(
+        self, model_id: str, launch: InstanceLaunch, generation: int
+    ) -> None:
         """Run the estimate check off the engine's own ``GET /memory``.
 
         Straight to the member's port rather than through llama-swap: the model
@@ -493,6 +750,7 @@ class SwapManager:
             return
         if launch.est_vram_bytes <= 0:
             return
+        spills: list[HealthWarning] = []
         warning = check_memory_report(
             launch.role,
             launch.model,
@@ -500,15 +758,48 @@ class SwapManager:
             launch.est_vram_by_device,
             payload,
             launch.est_host_bytes,
+            spills,
         )
-        if warning is not None:
-            with self._warnings_lock:
-                self._placement_warnings[model_id] = warning
+        self._record_findings(model_id, generation, warning, spills)
+
+    def _record_findings(
+        self,
+        model_id: str,
+        generation: int,
+        placement: HealthWarning | None,
+        spills: list[HealthWarning],
+    ) -> None:
+        """Replace *model_id*'s findings with what a read of *generation* found.
+
+        A read whose load a newer load, an unload or a stop has passed records
+        nothing: its report describes an engine that is no longer the one loaded.
+        """
+        with self._warnings_lock:
+            if self._load_generation.get(model_id, 0) != generation:
+                return
+            self._placement_warnings.pop(model_id, None)
+            self._spill_warnings.pop(model_id, None)
+            if placement is not None:
+                self._placement_warnings[model_id] = placement
+            if spills:
+                self._spill_warnings[model_id] = spills[-1]
+
+    def _clear_placement_warnings(self) -> None:
+        """Forget every read and finding; the engines they describe are gone or restarting."""
+        with self._warnings_lock:
+            for model_id in self._load_generation:
+                self._bump_locked(model_id)
+            self._estimate_checked.clear()
+            self._placement_warnings.clear()
+            self._spill_warnings.clear()
 
     def health_warnings(self) -> list[HealthWarning]:
-        """Placement divergences recorded from ready engines in this group."""
+        """Placement divergences and host spills of ready engines, and an outdated router."""
         with self._warnings_lock:
-            return list(self._placement_warnings.values())
+            warnings = [*self._placement_warnings.values(), *self._spill_warnings.values()]
+            if self._router_warning is not None:
+                warnings.append(self._router_warning)
+            return warnings
 
     def is_live(self) -> bool:
         """Whether the swap process is up and its proxy answers ``/running``."""
@@ -573,6 +864,7 @@ class SwapManager:
             self._launches_payload = []
             return
         _stop_own_fleet(self._config_path, tuple(self._member_ports))
+        self._clear_placement_warnings()
         # Nothing is coming back to bind these, so the picker can offer them again.
         release_reserved_ports([*self._member_ports, *([self._port] if self._port else [])])
         self._state_path.unlink(missing_ok=True)
@@ -603,25 +895,22 @@ class SwapManager:
             time.sleep(_BOOT_POLL_S)
         self._fail("The local model engine did not start in time.")
 
-    def _ready_models(self) -> set[str]:
+    def _ready_models(self) -> set[str] | None:
         """Model ids whose upstream is loaded and ready, per llama-swap's /running.
 
         A read-only probe: a concurrent shutdown can clear ``_port`` between the
         caller's check and ``endpoint()``, raising ProviderError, so that is
-        suppressed too and the probe reports "nothing ready" rather than throwing.
+        suppressed too and the probe reports None rather than throwing. None means
+        the read failed; an empty set means llama-swap answered with nothing ready.
         """
         with contextlib.suppress(httpx.HTTPError, ValueError, KeyError, TypeError, ProviderError):
             payload = (
                 _probe_client()
-                .get(f"{self.endpoint()}{_RUNNING_PATH}", timeout=_PROBE_TIMEOUT_S)
+                .get(f"{self.endpoint()}{RUNNING_PATH}", timeout=_PROBE_TIMEOUT_S)
                 .json()
             )
-            return {
-                entry[_KEY_MODEL]
-                for entry in payload[_KEY_RUNNING]
-                if entry.get(_KEY_STATE) == _STATE_READY
-            }
-        return set()
+            return ready_model_ids(payload)
+        return None
 
     def _boot_log_tail(self) -> str:
         """The current boot's captured llama-swap output, capped for an error message."""
@@ -639,7 +928,7 @@ class SwapManager:
         tail = self._boot_log_tail()
         if tail:
             message = f"{message} Engine log ({self._log_path}):\n{tail}"
-        raise ProviderError(message, provider=_PROVIDER, kind=ProviderErrorKind.SERVER)
+        raise ProviderError(message, kind=ProviderErrorKind.SERVER)
 
 
 # Linux publishes the range here; every other platform is asked via sysctl.
@@ -864,9 +1153,20 @@ def find_live_state(data_dir: Path, group: SwapGroup) -> SwapState | None:
     return best
 
 
-def _running_endpoint_answers(base_url: str) -> bool:
-    """Whether *base_url* serves llama-swap's ``/running`` endpoint (identity, not
-    just liveness).
+def ready_model_ids(payload: Any) -> set[str]:
+    """The model ids that a decoded ``/running`` body lists as ready.
+
+    Raises KeyError, TypeError or AttributeError for a body of another shape.
+    """
+    return {
+        entry[_KEY_MODEL]
+        for entry in payload[_KEY_RUNNING]
+        if entry.get(_KEY_STATE) == _STATE_READY
+    }
+
+
+def _running_listing(base_url: str) -> list[dict] | None:
+    """The ``running`` entries at *base_url*, or ``None`` when it is not llama-swap.
 
     Proxy ports are ephemeral: after an engine dies, any unrelated local service
     that later binds the recorded port and returns a 2xx/3xx to an unknown path
@@ -876,15 +1176,21 @@ def _running_endpoint_answers(base_url: str) -> bool:
     Total: any transport error or non-conforming body reads as "not our engine".
     """
     try:
-        resp = _probe_client().get(f"{base_url}{_RUNNING_PATH}", timeout=_LIVENESS_TIMEOUT)
+        resp = _probe_client().get(f"{base_url}{RUNNING_PATH}", timeout=_LIVENESS_TIMEOUT)
     except (OSError, httpx.HTTPError):
-        return False
+        return None
     if resp.status_code >= httpx.codes.BAD_REQUEST:
-        return False
+        return None
     try:
-        return isinstance(resp.json().get(_KEY_RUNNING), list)
+        listing = resp.json().get(_KEY_RUNNING)
     except (ValueError, AttributeError):
-        return False
+        return None
+    return listing if isinstance(listing, list) else None
+
+
+def _running_endpoint_answers(base_url: str) -> bool:
+    """Whether *base_url* serves llama-swap's ``/running`` endpoint (identity, not liveness)."""
+    return _running_listing(base_url) is not None
 
 
 def state_is_healthy(state: SwapState) -> bool:
@@ -892,6 +1198,74 @@ def state_is_healthy(state: SwapState) -> bool:
     if state.proxy_port is None:
         return False
     return _running_endpoint_answers(f"http://{_HOST}:{state.proxy_port}")
+
+
+def _bind_deadline_s(state: SwapState) -> float:
+    """Seconds after spawn at which a record that never loaded is called failed.
+
+    The slowest member's cold-load ceiling (llama-swap's own health-check timeout)
+    plus the window the builder gets to bring the proxy up before it warms.
+    """
+    try:
+        launches = [InstanceLaunch.from_state(item) for item in state.launches]
+    except (KeyError, TypeError, ValueError):
+        launches = []
+    return health_check_timeout_s(launches) + _BOOT_TIMEOUT_S
+
+
+def _engine_age_s(state: SwapState, now: float) -> float | None:
+    """Seconds the engine behind *state* has run, or None when the record gives no start.
+
+    A record with the spawn reading of the system monotonic clock and the identity of the
+    boot it was read in is aged by that clock, on every platform, when the identity is the
+    current boot's; a wall-clock step does not move it. A Linux record without them but
+    with the boot id and start ticks is aged by the boot clock. Any other record (a file
+    written before both, or one from another boot) is aged by the wall clock *now* against
+    its recorded create time, so a forward step there can still pass the deadline early.
+    """
+    if (
+        state.started_mono is not None
+        and state.started_boot is not None
+        and state.started_boot == boot_identity()
+    ):
+        return time.monotonic() - state.started_mono
+    if state.boot_id is not None and state.start_ticks is not None:
+        age = linux_age_s(state.boot_id, state.start_ticks)
+        if age is not None:
+            return age
+    return None if state.created_at is None else now - state.created_at
+
+
+def _unloaded_readiness(state: SwapState, now: float) -> EngineReadiness:
+    """IDLE or FAILED for an answering engine with no member loading or ready."""
+    if state.ready_at is not None:
+        return EngineReadiness.IDLE
+    age = _engine_age_s(state, now)
+    if age is None or age < _bind_deadline_s(state):
+        return EngineReadiness.IDLE
+    return EngineReadiness.FAILED
+
+
+def engine_readiness(state: SwapState, *, now: float) -> EngineReadiness | None:
+    """The bind verdict from one ``/running`` read, ``None`` when the engine does not answer.
+
+    *now* is wall-clock time; it ages only a record without the monotonic spawn reading or the
+    Linux boot id and start ticks.
+    """
+    listing = (
+        None if state.proxy_port is None else _running_listing(f"http://{_HOST}:{state.proxy_port}")
+    )
+    if listing is None:
+        return None
+    # /running is an untyped body: a state that is not a string cannot name a member state.
+    members = [entry.get(_KEY_STATE) for entry in listing if isinstance(entry, dict)]
+    if not all(member is None or isinstance(member, str) for member in members):
+        return None
+    if _STATE_READY in members:
+        return EngineReadiness.READY
+    if _STATE_STARTING in members:
+        return EngineReadiness.LOADING
+    return _unloaded_readiness(state, now)
 
 
 def engine_record_exists(data_dir: Path) -> bool:
@@ -921,6 +1295,22 @@ def stop_engine(data_dir: Path) -> list[str]:
     reap_stale: they may be a sibling's in-flight write. Returns the group tokens
     whose engine was actually alive, so a caller reports only real stops.
     """
+    return _stop_recorded_engines(data_dir, _stop_recorded_engine)
+
+
+def kill_engine(data_dir: Path) -> list[str]:
+    """Kill every engine the dir's state files record, with no SIGTERM grace.
+
+    The exit's stop of an engine whose start never finished: it holds no state
+    worth a graceful stop, and a server that traps SIGTERM would hold the exit
+    for the whole grace. Records and the persistence opt-in go as in
+    ``stop_engine``. Returns the group tokens whose engine was alive.
+    """
+    return _stop_recorded_engines(data_dir, _kill_recorded_engine)
+
+
+def _stop_recorded_engines(data_dir: Path, stop: Callable[[SwapState], bool]) -> list[str]:
+    """Run *stop* on each recorded engine and drop its record; the groups *stop* found alive."""
     _clean_stale_configs(data_dir)
     # The persistence opt-in describes the engine instance being stopped, so it
     # dies with it. Cleared here rather than at each call site so no stop path
@@ -931,7 +1321,7 @@ def stop_engine(data_dir: Path) -> list[str]:
         state = _load_state(state_path)
         if state is None:
             continue
-        if _stop_recorded_engine(state):
+        if stop(state):
             group = _state_group(state_path.name)
             if group is not None:
                 stopped.append(group)
@@ -956,7 +1346,7 @@ def engine_answers(data_dir: Path) -> bool:
 
 
 def _unload_models(proxy_port: int) -> bool:
-    url = f"http://{_HOST}:{proxy_port}{_UNLOAD_PATH}"
+    url = f"http://{_HOST}:{proxy_port}{UNLOAD_PATH}"
     try:
         resp = _probe_client().post(url, timeout=_HTTP_TIMEOUT_S)
     except (OSError, httpx.HTTPError) as exc:
@@ -1022,7 +1412,7 @@ def _log_tail_since(path: Path, offset: int) -> str:
     return f"\n{text}" if text else ""
 
 
-def reap_stale(data_dir: Path) -> None:
+def reap_stale(data_dir: Path) -> bool:
     """Kill every dead or unhealthy recorded engine at *data_dir*.
 
     An OOM-killed lilbee leaves llama-swap (and its servers) holding VRAM,
@@ -1038,11 +1428,15 @@ def reap_stale(data_dir: Path) -> None:
     matched by name plus recorded member port and stopped before the file
     is removed.
 
+    Returns whether it stopped any engine, so a caller can drop a device reading
+    taken while that engine held the card.
+
     Module-level (not a method) because it must run before planning decides
     which role groups exist, when no per-group manager has been built yet.
     """
     _clean_stale_tmp_files(data_dir)
     _clean_stale_configs(data_dir)
+    stopped = False
     for state_path in sorted(data_dir.glob(_STATE_FILE_GLOB)):
         state = _load_state(state_path)
         if state is None:
@@ -1051,8 +1445,9 @@ def reap_stale(data_dir: Path) -> None:
             # An answering engine is in use (bind accepts on exactly this
             # test); reaping must never disagree with binding.
             continue
-        _stop_recorded_engine(state)
+        stopped = _stop_recorded_engine(state) or stopped
         state_path.unlink(missing_ok=True)
+    return stopped
 
 
 def _clean_stale_tmp_files(data_dir: Path) -> None:
@@ -1136,34 +1531,81 @@ def _load_state(path: Path) -> SwapState | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
         raw_pgid = payload.get(_STATE_KEY_PGID)
         raw_created = payload.get(_STATE_KEY_CREATED_AT)
+        raw_boot_id = payload.get(_STATE_KEY_BOOT_ID)
+        raw_ticks = payload.get(_STATE_KEY_START_TICKS)
         raw_ports = payload.get(_STATE_KEY_MEMBER_PORTS) or []
         raw_proxy = payload.get(_STATE_KEY_PROXY_PORT)
         raw_root = payload.get(_STATE_KEY_CONFIG_ROOT)
+        raw_followed = payload.get(_STATE_KEY_FOLLOWED_KEYS)
         origin = (
             None
             if raw_root is None
-            else PlanOrigin(str(raw_root), payload.get(_STATE_KEY_FLEET_VIEW))
+            else PlanOrigin(
+                str(raw_root),
+                payload.get(_STATE_KEY_FLEET_VIEW),
+                payload.get(_STATE_KEY_PLANNED_VIEW),
+                None if raw_followed is None else frozenset(str(key) for key in raw_followed),
+            )
         )
+        raw_ready = payload.get(_STATE_KEY_READY_AT)
+        raw_mono = payload.get(_STATE_KEY_STARTED_MONO)
+        raw_started_boot = payload.get(_STATE_KEY_STARTED_BOOT)
+        has_mono = raw_mono is not None and raw_started_boot is not None
         return SwapState(
             pid=int(payload[_STATE_KEY_PID]),
             pgid=int(raw_pgid) if raw_pgid is not None else None,
             created_at=float(raw_created) if raw_created is not None else None,
+            boot_id=str(raw_boot_id) if raw_boot_id and raw_ticks is not None else None,
+            start_ticks=float(raw_ticks) if raw_boot_id and raw_ticks is not None else None,
+            mach_start=_load_mach_start(payload.get(_STATE_KEY_MACH_START)),
+            started_mono=float(raw_mono) if has_mono else None,
+            started_boot=str(raw_started_boot) if has_mono else None,
             member_ports=tuple(int(port) for port in raw_ports),
             proxy_port=int(raw_proxy) if raw_proxy is not None else None,
             launches=tuple(payload.get(_STATE_KEY_LAUNCHES) or ()),
             engine_pin=payload.get(_STATE_KEY_ENGINE_PIN),
             origin=origin,
+            ready_at=float(raw_ready) if raw_ready is not None else None,
+            swap_binary=str(payload.get(_STATE_KEY_SWAP_BINARY) or ""),
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
 
+def _start_stamp_fields(pid: int) -> dict[str, object]:
+    """The record keys that name *pid* across a wall-clock step, for this platform.
+
+    Linux: boot id and start ticks. macOS: the boot session and the mach start, under
+    their own key. Empty on Windows, where the create time is not moved by a step, and
+    when the read fails; the record then names the process by its create time alone.
+    """
+    linux = linux_start_stamp(pid)
+    if linux is not None:
+        return {_STATE_KEY_BOOT_ID: linux[0], _STATE_KEY_START_TICKS: linux[1]}
+    mach = macos_start_stamp(pid)
+    if mach is not None:
+        return {_STATE_KEY_MACH_START: {_MACH_START_BOOT: mach[0], _MACH_START_ABSTIME: mach[1]}}
+    return {}
+
+
+def _load_mach_start(raw: object) -> tuple[str, int] | None:
+    """The (boot session, mach start) of a ``mach_start`` value, or None when it is absent."""
+    if not isinstance(raw, dict):
+        return None
+    return str(raw[_MACH_START_BOOT]), int(raw[_MACH_START_ABSTIME])
+
+
 def _is_live_llama_swap(state: SwapState) -> bool:
     """True when the recorded pid is alive and is the recorded llama-swap.
 
-    A recorded create time that differs from the live process's is pid reuse,
-    even when the recycled pid runs another instance's llama-swap; a legacy
-    state file without one falls back to the cmdline match alone.
+    A recorded identity that differs from the live process's is pid reuse,
+    even when the recycled pid runs another instance's llama-swap. On Linux
+    the identity is the boot id plus start ticks; on macOS it is the boot session
+    plus the start on the mach clock. Both are compared exactly: a wall-clock step
+    moves psutil's create time but not these. A record without either (Windows,
+    or a macOS record from before the mach start) compares the create time within
+    a tolerance. A legacy state file without a create time falls back to the
+    cmdline match alone.
     """
     try:
         proc = psutil.Process(state.pid)
@@ -1171,8 +1613,15 @@ def _is_live_llama_swap(state: SwapState) -> bool:
         create_time = proc.create_time()
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
-    if state.created_at is not None and abs(create_time - state.created_at) > (
-        _CREATE_TIME_TOLERANCE_S
+    if state.boot_id is not None and state.start_ticks is not None:
+        if linux_start_stamp(state.pid) != (state.boot_id, state.start_ticks):
+            return False
+    elif state.mach_start is not None:
+        if macos_start_stamp(state.pid) != state.mach_start:
+            return False
+    elif (
+        state.created_at is not None
+        and abs(create_time - state.created_at) > _CREATE_TIME_TOLERANCE_S
     ):
         return False
     binary = Path(next(iter(cmdline), "")).name
@@ -1226,27 +1675,121 @@ def _stop_recorded_engine(state: SwapState) -> bool:
     return bool(orphans)
 
 
-def _find_orphan_servers(ports: tuple[int, ...]) -> list[psutil.Process]:
-    """Live llama-server processes serving one of *ports*.
+def _kill_recorded_engine(state: SwapState) -> bool:
+    """SIGKILL a live llama-swap's group and its servers at once; whether any was alive.
 
-    Both the binary name and the ``--port`` value must match, so an unrelated
-    process on a recycled port is never killed; a server whose parent is a
-    live llama-swap belongs to a current run on a reused port and is spared.
+    The recorded pid's children are read only once it is still llama-swap, as the
+    graceful stop does: a reused pid's children belong to another program.
+    """
+    servers: list[psutil.Process] = []
+    swaps: list[psutil.Process] = []
+    if _is_live_llama_swap(state):
+        servers = _live_children(state.pid)
+        with contextlib.suppress(psutil.NoSuchProcess):
+            swaps.append(psutil.Process(state.pid))
+        _signal_stale(state, _SIGKILL)
+    servers.extend(_find_orphan_servers(state.member_ports))
+    for server in servers:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            server.kill()
+    _await_killed(swaps + servers)
+    return bool(swaps or servers)
+
+
+def _find_orphan_servers(ports: tuple[int, ...]) -> list[psutil.Process]:
+    """Live servers of any engine that outlived their swap.
+
+    Each engine adapter declares its server's executable name and, for an engine
+    whose command line points into a folder of its own, that folder. A process
+    matches on the name plus a member ``--port`` value or that folder, so an
+    unrelated process of the same name on another port is never killed. A server
+    below a live llama-swap belongs to a current run and is spared.
     """
     if not ports:
         return []
     targets = {str(port) for port in ports}
+    return [proc for server in _server_processes() for proc in _orphans_of(server, targets)]
+
+
+def _server_processes() -> tuple[ServerProcess, ...]:
+    """The distinct server identities that the shipped engine adapters declare."""
+    from lilbee.providers.fleet.engines.choice import ADAPTERS
+
+    return tuple(dict.fromkeys(adapter.server_process for adapter in ADAPTERS.values()))
+
+
+def _orphans_of(server: ServerProcess, targets: set[str]) -> list[psutil.Process]:
+    """Live *server* processes on a *targets* port or in its folder, with no swap above."""
+    root = None if server.folder is None else Path(server.folder())
     orphans: list[psutil.Process] = []
-    for proc in _processes_named(_LLAMA_SERVER_PROCESS_NAME):
+    for proc in _server_candidates(server):
         try:
             cmdline = proc.cmdline()
+            name = proc.name()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-        # Identity is the --port value plus the absence of a live swap parent;
-        # _processes_named already gated on the executable name (comm).
-        if _port_argument(cmdline) in targets and not _has_live_swap_parent(proc):
+        if not _runs_server(name, cmdline, server):
+            continue
+        on_port = _port_argument(cmdline) in targets
+        in_folder = root is not None and any(_is_under(arg, root) for arg in cmdline)
+        if (on_port or in_folder) and not _has_live_swap_ancestor(proc):
             orphans.append(proc)
     return orphans
+
+
+def _server_candidates(server: ServerProcess) -> Iterator[psutil.Process]:
+    """Live processes whose name is *server*'s, or an interpreter's for a script server."""
+    for proc in psutil.process_iter(["name"]):
+        name = proc.info["name"] or ""
+        if _is_server_name(name, server) or (server.interpreted and _is_interpreter(name)):
+            yield proc
+
+
+def _is_server_name(name: str, server: ServerProcess) -> bool:
+    """True when *name* is the executable name of *server*, whole."""
+    return name in (server.name, f"{server.name}{_EXE_SUFFIX}")
+
+
+def _is_interpreter(name: str) -> bool:
+    return name.lower().startswith(_INTERPRETER_PREFIX)
+
+
+def _runs_server(name: str, cmdline: list[str], server: ServerProcess) -> bool:
+    """True when a candidate of *server* called *name* with *cmdline* runs it.
+
+    A candidate is named for the server or, for a script server, an interpreter.
+    """
+    if _is_server_name(name, server):
+        return True
+    script = Path(next((arg for arg in cmdline[1:] if not arg.startswith("-")), "")).name
+    return _is_server_name(script, server) or script in server.scripts
+
+
+def _is_under(arg: str, root: Path) -> bool:
+    """True when *arg* is the folder *root* or a path below it."""
+    path = Path(arg)
+    return path == root or root in path.parents
+
+
+def _has_live_swap_ancestor(proc: psutil.Process) -> bool:
+    """True when a parent above *proc* is a live llama-swap.
+
+    The walk goes one parent at a time and stops at the first llama-swap, so an
+    ancestor that vanishes or cannot be read above it never hides it. A hop that
+    cannot be read before any llama-swap ends the walk as not spared: a server
+    reparented to init is the orphan this sweep exists for.
+    """
+    current = proc
+    while True:
+        try:
+            parent = current.parent()
+            if parent is None:
+                return False
+            if _LLAMA_SWAP_PROCESS_NAME in parent.name():
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return False
+        current = parent
 
 
 def _state_owner_pid(name: str) -> int | None:
@@ -1287,17 +1830,6 @@ def _config_owner_pid(name: str) -> int | None:
         return int(stem.rsplit(".", 1)[-1])
     except ValueError:
         return None
-
-
-def _has_live_swap_parent(proc: psutil.Process) -> bool:
-    """True when *proc*'s parent is a live llama-swap (the server is not orphaned)."""
-    try:
-        parent = proc.parent()
-        if parent is None:
-            return False
-        return _LLAMA_SWAP_PROCESS_NAME in parent.name()
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return False
 
 
 def _port_argument(cmdline: list[str]) -> str | None:

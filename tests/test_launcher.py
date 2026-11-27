@@ -28,7 +28,29 @@ def _patch_app_and_splash(monkeypatch: pytest.MonkeyPatch) -> tuple[Mock, Mock, 
     monkeypatch.setattr("lilbee.cli.app", fake_app)
     monkeypatch.setattr("lilbee.runtime.splash.start", start_spy)
     monkeypatch.setattr("lilbee.runtime.splash.stop", stop_spy)
+    # The real end exits past this process's own threads; the tests keep them.
+    monkeypatch.setattr("lilbee.app.services.end_command", _reraise)
     return fake_app, start_spy, stop_spy
+
+
+def _reraise(stop: SystemExit) -> None:
+    raise stop
+
+
+def test_a_command_exit_ends_through_the_bounded_end(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None
+) -> None:
+    fake_app, _, _ = _patch_app_and_splash(monkeypatch)
+    fake_app.side_effect = SystemExit(3)
+    ended = Mock(side_effect=_reraise)
+    monkeypatch.setattr("lilbee.app.services.end_command", ended)
+    monkeypatch.setattr(sys, "argv", ["lilbee", "sync"])
+
+    with pytest.raises(SystemExit) as exit_info:
+        launcher.main()
+
+    assert exit_info.value.code == 3
+    ended.assert_called_once_with(fake_app.side_effect)
 
 
 def test_bare_invocation_shows_splash(
@@ -166,3 +188,96 @@ class TestForceUtf8Stdio:
         monkeypatch.setattr(sys, "stdout", bad)
         monkeypatch.setattr(sys, "stderr", Mock(spec=io.TextIOWrapper))
         launcher._force_utf8_stdio()
+
+
+@pytest.mark.parametrize("argv", [["lilbee", "--version"], ["lilbee", "chat"]])
+def test_a_config_write_without_its_lock_exits_one_with_a_plain_message(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    _no_completion_env: None,
+    argv: list[str],
+) -> None:
+    from lilbee.core.security import FileLockUnavailableError
+
+    fake_app, _, _ = _patch_app_and_splash(monkeypatch)
+    fake_app.side_effect = FileLockUnavailableError("another lilbee process held the lock")
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(SystemExit) as exit_info:
+        launcher.main()
+
+    assert exit_info.value.code == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error: Could not write config.toml: another lilbee process")
+    assert "Nothing was changed." in err
+    assert "Traceback" not in err
+
+
+def test_another_os_error_still_surfaces_from_the_launcher(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None
+) -> None:
+    fake_app, _, _ = _patch_app_and_splash(monkeypatch)
+    fake_app.side_effect = PermissionError("denied")
+    monkeypatch.setattr(sys, "argv", ["lilbee", "--version"])
+
+    with pytest.raises(PermissionError, match="denied"):
+        launcher.main()
+
+
+class TestMissingVcRuntimeWarning:
+    """A pip install on Windows without msvcp140 fails later with 'DLL load failed'."""
+
+    @staticmethod
+    def _run(monkeypatch, capsys, *, platform: str, loads: bool, frozen: bool) -> str:
+        import ctypes
+
+        def win_dll(_name: str) -> None:
+            if not loads:
+                raise OSError("not found")
+
+        monkeypatch.setattr(sys, "platform", platform)
+        monkeypatch.setattr(ctypes, "WinDLL", win_dll, raising=False)
+        if frozen:
+            monkeypatch.setitem(launcher.__dict__, "__compiled__", object())
+        launcher._warn_missing_vc_runtime()
+        return capsys.readouterr().err
+
+    def test_warns_when_windows_cannot_load_the_runtime(self, monkeypatch, capsys) -> None:
+        err = self._run(monkeypatch, capsys, platform="win32", loads=False, frozen=False)
+        assert "Visual C++ runtime" in err
+        assert "learn.microsoft.com/cpp/windows/latest-supported-vc-redist" in err
+
+    @pytest.mark.parametrize(
+        ("platform", "loads", "frozen"),
+        [
+            ("win32", True, False),
+            ("darwin", False, False),
+            ("win32", False, True),
+        ],
+    )
+    def test_silent_otherwise(self, monkeypatch, capsys, platform, loads, frozen) -> None:
+        assert self._run(monkeypatch, capsys, platform=platform, loads=loads, frozen=frozen) == ""
+
+    def test_no_path_variable_does_not_stop_the_start(self, monkeypatch, capsys) -> None:
+        monkeypatch.delenv("PATH", raising=False)
+        err = self._run(monkeypatch, capsys, platform="win32", loads=True, frozen=False)
+        assert err == ""
+
+    def test_no_stderr_does_not_stop_the_start(self, monkeypatch) -> None:
+        import ctypes
+
+        def fail(_name: str) -> None:
+            raise AssertionError("the runtime must not be probed without a stream")
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(ctypes, "WinDLL", fail, raising=False)
+        monkeypatch.setattr(sys, "stderr", None)
+        launcher._warn_missing_vc_runtime()
+
+    def test_main_runs_the_check(self, monkeypatch) -> None:
+        calls = Mock()
+        monkeypatch.setattr(launcher, "_warn_missing_vc_runtime", calls)
+        monkeypatch.setattr(launcher, "_run_cli", Mock())
+        monkeypatch.setattr(sys, "argv", ["lilbee", "status"])
+        launcher.main()
+        calls.assert_called_once_with()

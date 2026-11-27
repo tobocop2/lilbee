@@ -20,6 +20,9 @@ class _RecordingProvider:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
 
+    def embed_token_cap(self, *, known_only: bool = False) -> int | None:
+        return None
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls.append(list(texts))
         return [[float(len(t))] * cfg.embedding_dim for t in texts]

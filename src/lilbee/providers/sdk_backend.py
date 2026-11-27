@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 from lilbee.providers.backend_names import BackendName
 from lilbee.providers.base import TokenUsage
 from lilbee.providers.local_servers import LocalServerSpec, detect_local_server
+from lilbee.providers.roles import WorkerRole
+from lilbee.providers.server_registry import RerankWire
 
 if TYPE_CHECKING:
     # circular: sdk_backend -> model_ref -> types -> sdk_backend (annotation-only)
@@ -157,7 +159,9 @@ class CompletionRequest:
     to the wire format its SDK expects. ``messages`` is the raw lilbee
     message list (may contain ``images`` bytes); the adapter formats it
     for its SDK. ``api_base`` is populated for local/Ollama deployments
-    and omitted for API-hosted models.
+    and omitted for API-hosted models. ``role`` is the role the call serves:
+    the adapter names it in an error and re-inlines server-extracted reasoning
+    as ``<think>`` text for the chat role only.
     """
 
     ref: ProviderModelRef
@@ -165,6 +169,7 @@ class CompletionRequest:
     options: dict[str, Any] = field(default_factory=dict)
     api_base: str | None = None
     api_key: str | None = None
+    role: WorkerRole = WorkerRole.CHAT
 
 
 @dataclass(frozen=True)
@@ -186,6 +191,7 @@ class RerankRequest:
     candidates: list[str]
     api_base: str | None = None
     api_key: str | None = None
+    rerank_wire: RerankWire = RerankWire.V1
 
 
 @dataclass(frozen=True)
@@ -295,4 +301,15 @@ class LlmSdkBackend(Protocol):
 
     def supports_tools(self, model_ref: str) -> bool:
         """Return True iff the backend can route tool calls for *model_ref*."""
+        ...
+
+    def count_chat_tokens(self, ref: ProviderModelRef, text: str) -> int:
+        """Tokens *text* encodes to under the chat model *ref*'s own tokenizer.
+
+        Raise ``NotImplementedError`` when the SDK has no tokenizer of the model's
+        own, because a count under another model's tokenizer can read low. Raise
+        ``ProviderError`` when the tokenizer cannot load or count. The first call
+        for a model may download its tokenizer, so it can block; after a failed
+        load, the backend raises ``ProviderError`` for that model without a new try.
+        """
         ...

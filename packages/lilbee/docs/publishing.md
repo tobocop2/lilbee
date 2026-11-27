@@ -30,9 +30,11 @@ published to npm. A version with no mapping (`a`, `rc`, `post`) stops the releas
 The release also sets both `version` fields of `server.json`, the MCP Registry
 listing, to the npm version.
 
-The `npm` job checks out the tag and runs `scripts/publish_npm.sh`. The script
-skips a dev build. It stops when `package.json` or `server.json`
-does not carry the npm version of that tag, or when the `server.json` name is
+The `npm` job checks out the tag and runs `scripts/publish_npm.sh`. A run with
+`channels: all` does not request npm for a dev tag, so the job shows as skipped.
+If you request npm for a dev tag by name, the job fails. The script stops when
+`package.json` or `server.json` does not carry the npm version of that tag, or
+when the `server.json` name is
 not the `mcpName` of `package.json`. It publishes with `--tag latest`,
 because npm 11 refuses a prerelease publish without a dist-tag. If the version
 is already on npm, the script skips the publish.
@@ -78,8 +80,10 @@ The job also fails if npm still lacks the version after the attempts.
 
 That is all of it. No tokens, no expiry.
 
-Until the variable is set, the `npm` job runs the tests, logs why it is not
-publishing, and passes. Releases do not break.
+Until the variable is set, the `npm` job fails and says why, so a green Publish
+Packages run always means npm serves the version. To publish the other
+channels before the setup is done, dispatch the workflow with a `channels` list
+that leaves out `npm`.
 
 ## Notes
 

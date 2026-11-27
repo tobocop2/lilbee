@@ -10,7 +10,7 @@ from typing import Annotated
 
 from litestar import delete, get, post, put
 from litestar.exceptions import HTTPException
-from litestar.params import FromPath, FromQuery, QueryParameter
+from litestar.params import FromQuery, Parameter, QueryParameter
 from litestar.response import Stream
 from pydantic import BaseModel
 
@@ -28,6 +28,7 @@ from lilbee.server.models import (
     SetModelRequest,
     SetModelResponse,
 )
+from lilbee.server.routes.engines import NO_LIBRARY_KEY
 
 
 def _task_mismatch_detail(exc: ValueError) -> str:
@@ -45,13 +46,13 @@ class PullRequest(BaseModel):
     allow_unsupported: bool = False
 
 
-@get("/api/models")
+@get("/api/models", opt={NO_LIBRARY_KEY: True})
 async def models_list_route() -> ModelsResponse:
     """Available chat, embedding, vision, and reranker models."""
     return await handlers.list_models()
 
 
-@get("/api/models/external")
+@get("/api/models/external", opt={NO_LIBRARY_KEY: True})
 async def models_external_route() -> ExternalModelsResponse:
     """Discover models available from the configured external provider."""
     return await handlers.list_external_models()
@@ -93,7 +94,7 @@ async def models_set_reranker_route(data: SetModelRequest) -> SetModelResponse:
         raise HTTPException(status_code=422, detail=_task_mismatch_detail(exc)) from exc
 
 
-@get("/api/models/catalog")
+@get("/api/models/catalog", opt={NO_LIBRARY_KEY: True})
 async def models_catalog_route(
     task: FromQuery[str | None] = None,
     search: FromQuery[str] = "",
@@ -129,7 +130,7 @@ async def models_catalog_route(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@get("/api/models/installed")
+@get("/api/models/installed", opt={NO_LIBRARY_KEY: True})
 async def models_installed_route(task: FromQuery[str | None] = None) -> ModelsInstalledResponse:
     """List installed models with source, task, size and display name; ``task`` keeps one role."""
     try:
@@ -165,12 +166,21 @@ async def models_show_route(data: SetModelRequest) -> ModelsShowResponse:
     return await handlers.models_show(model=data.model)
 
 
-@delete("/api/models/{model:str}", status_code=200)
+# OpenAPI writes ``{model:path}`` as ``{model}``, the same as a one-segment param.
+# The format tells a client that the ref can span segments, as ``org/repo/m.gguf`` does.
+ModelRefPath = Annotated[str, Parameter(schema_extra={"format": "path"})]
+
+
+@delete("/api/models/{model:path}", status_code=200)
 async def models_delete_route(
-    model: FromPath[str], source: FromQuery[str] = ModelSource.NATIVE.value
+    model: ModelRefPath, source: FromQuery[str] = ModelSource.NATIVE.value
 ) -> ModelsDeleteResponse:
-    """Delete a model from the specified source."""
+    """Delete a model from the specified source.
+
+    The ref holds slashes (``org/repo/model.gguf``), so the path parameter spans
+    segments; Litestar hands it over with a leading slash, which is dropped here.
+    """
     try:
-        return await handlers.models_delete(model, source=source)
+        return await handlers.models_delete(model.lstrip("/"), source=source)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

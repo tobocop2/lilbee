@@ -195,6 +195,14 @@ class TestCreate:
         listed = client.get("/api/sessions").json()["sessions"]
         assert any(s["id"] == body["meta"]["id"] for s in listed)
 
+    def test_a_gguf_qualified_ref_is_stored_as_the_plain_ref(self, client, store):
+        resp = client.post(
+            "/api/sessions", json={"model_ref": "org/repo/f.gguf#gguf", "scope": "both"}
+        )
+        assert resp.status_code == 201
+        session_id = resp.json()["meta"]["id"]
+        assert store.get(session_id).meta.model_ref == "org/repo/f.gguf"
+
 
 class TestFork:
     def test_fork_without_a_body_copies_the_whole_conversation(self, client, store):
@@ -448,7 +456,7 @@ class TestSessionVanishesMidRequest:
     escape as a 500."""
 
     def test_a_delete_between_the_mutation_and_the_read_is_a_404(self, client, store):
-        session_id = store.create(model_ref=None, scope=None, origin=SessionOrigin.HTTP)
+        session_id = store.create(model_ref="m", scope="both", origin=SessionOrigin.HTTP)
         real_add = store.add_message
 
         def add_then_vanish(*args, **kwargs):

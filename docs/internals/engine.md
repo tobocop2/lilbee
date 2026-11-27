@@ -49,8 +49,8 @@ install or run, and no in-process binding: the engine is 100% llama.cpp, and lil
 adds a placement planner, a process supervisor, and a thin httpx router. All four
 roles run over HTTP: chat and vision use `/v1/chat/completions` (chat with
 `--jinja` for native tool calls; vision adds an `--mmproj` projector), embed and
-rerank use `/v1/embeddings` (rerank with `--pooling rank` and a
-`query</s></s>candidate` pairing, never the template-dependent `/v1/rerank`). A
+rerank use `/v1/embeddings` (rerank with `--pooling rank`; each pair goes as token
+ids in the layout the GGUF's tokenizer facts give, see `providers/fleet/rerank_pair.py`). A
 configured role whose server cannot start surfaces a user-facing `ProviderError`
 rather than degrading silently.
 
@@ -132,8 +132,8 @@ flowchart LR
     fallback are never pinned: they carry raw loader ordinals, so the engine is
     left to select for itself.
   - By environment (`devices.visible_env`): **CUDA** via `CUDA_VISIBLE_DEVICES`
-    with `CUDA_DEVICE_ORDER` (`PCI_BUS_ID` unless the environment presets another
-    order), **ROCm/HIP** via one of `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`
+    with `CUDA_DEVICE_ORDER=PCI_BUS_ID` (a preset order is replaced with a
+    warning), **ROCm/HIP** via one of `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`
     (never both: ROCr filters first and HIP re-indexes within the survivors, so
     writing both double-filters). When the parent environment already restricts a
     visible-devices var (a pod preset like `CUDA_VISIBLE_DEVICES=2,3`), the probe's
@@ -219,9 +219,35 @@ Header math (`model_cache.compute_dynamic_ctx`) is the fallback
   hard-freezes the machine, so refusing is the safe outcome; chat slot count
   (`--parallel`) steps down the same way before refusing.
 
+- **A role that mistral.rs serves**: a host with NVIDIA cards runs the CUDA pack that
+  its weakest card runs (CUDA 12.8 driver or newer). A Metal or CPU build never splits
+  a model over several cards: such a launch is refused with a message that names the
+  model and the llama.cpp engine as the fix.
+- **A role that a tensor-parallel engine splits over several cards**: the launch runs as equal tensor-parallel
+  shards and carries no layer flag. Placement offers such an engine only equal
+  shares, so on cards of different sizes the smallest card must hold its equal share
+  or the role is refused. The card order is the order of
+  `CUDA_VISIBLE_DEVICES`. A launch that is not a split turns the card collectives off: one
+  card, no card pinned, or the CPU target. A split sets `NCCL_P2P_LEVEL=NVL`, so
+  peer-to-peer runs only over NVLink and a PCIe pair does not stall at start. To
+  choose otherwise, set `NCCL_P2P_LEVEL` or `NCCL_P2P_DISABLE` in the environment;
+  the launch then adds neither. The engine drops a layer map when
+  collectives are on, and the map it keeps with collectives off answered wrongly on
+  two cards. So the launch refuses an uneven ratio (every entry must be the same
+  number) and a model whose attention heads do not divide over the card count (the
+  GGUF `head_count` and `head_count_kv`, or `num_attention_heads` and
+  `num_key_value_heads` in `config.json`). The message names the model and the
+  llama.cpp engine as the fix, as it does for a Metal or CPU build. Placement charges
+  each card its layer share of the estimate. For a model folder the estimate is the
+  weights, the cache at the launch context and the runtime allowance. For a GGUF file
+  it is the weights only. Every chat or vision launch, split or not, also passes
+  `--max-model-len` with the context of the launch: the `num_ctx` pin, else
+  `chat_n_ctx_target` within the trained window and `num_ctx_max`. A split passes the
+  largest context that fits each card, never more.
+
 - **Reload and the plan snapshot** (`planning.capture_plan_probe`,
   `provider._reload_pass`): each swap group runs behind its own llama-swap process
-  (one per role, except co-tenant chat and vision which share one), and a reload
+  (one per role, except the co-tenant roles, which share one), and a reload
   re-plans the whole fleet but restarts **only the groups whose launches
   changed**. That diff is sound because launches are a pure function of config,
   hardware capacity, and a **clean-box memory snapshot**: devices, usable VRAM,
@@ -299,6 +325,26 @@ what the auto planner would assign (or what a candidate spec would assign)
 including each card's backend+index label, name, and free/total VRAM, without
 touching the running fleet.
 
+The `GET /api/placement` response lists the engine's devices in `gpus`. On a
+Vulkan build, a machine with GPUs from two vendors hides one vendor's GPU from the
+engine at launch, so `gpus` has no row for it and no pin can name it. The
+`hidden_gpus` field lists the vendor names of that hidden hardware, for example
+`["Intel"]`. The field is an empty list when nothing is hidden, and it stays
+empty when `VK_LOADER_DRIVERS_DISABLE` is set before launch, because the engine
+then lists every GPU. `lilbee placement show` prints the same fact as a note
+under the table.
+
+When a saved spec is not in use, `refusal` holds the reason in words and
+`refusal_kind` names the case: `waiting_for_engine` or `waiting_for_model` when the
+spec applies once an engine or a model is installed, `unreadable` when the saved
+text cannot be parsed, and
+`refused` when an engine refuses roles, the spec places no role on this
+machine, or a saved spec does not fit the hardware: for that last case `refusal`
+holds the planner's sentence and `refusal_kind` is `refused`, and the reply also
+carries `rejected_spec_json`. The field is null when there is no refusal.
+A client reads `refusal_kind`, not the sentence, to decide whether the spec is
+kept or must be corrected.
+
 - **Resident tiers and the elastic ingest pool**: placement charges roles in the
   registry's `placement_rank` order. The pinned tier goes first: one embed server
   (`embed-0`), rerank, and one vision server (`vision-0`). Chat is charged last,
@@ -318,15 +364,32 @@ touching the running fleet.
   other's models in VRAM. Roles that share
   no run **phase** (`RoleInfo.phases`) are never resident together, so when they
   cannot all co-reside a role that does not fit **refunds** the already-charged
-  phase-disjoint roles and retries; the roles that let it in become co-tenants of a
-  single `swap: true` llama-swap group. On a tight card this pulls the query-only
-  rerank and chat into vision's swap group, so ingest's embed + vision fits exactly
-  as it did in-process. Only one member is resident at a time, so the group is
-  charged its largest member and each co-tenant runs a single instance (a
-  `swap: true` group evicts same-group siblings, so a second replica inside it would
-  evict the first). Interleaving a query with an ingest costs a model reload each
-  way. With the VRAM to hold everything at once, no swap group forms and every role
-  pins to its own group. On GPUs the estimate advises but does not gate the load: a
+  phase-disjoint roles and retries; the roles that let it in become co-tenants of
+  one swap process. On a tight card this pulls the query-only rerank and chat into
+  vision's swap process, so ingest's embed + vision fits exactly as it did
+  in-process. The co-tenants split into **residency classes**: roles that share a
+  run phase (chat and rerank both answer one query) stay loaded together, and
+  loading a role of another class evicts them. One router group holds each
+  class (`swap: false`, `exclusive: true`, `persistent: false`), so the router
+  itself does the eviction. Placement first packs the fleet as before, each
+  co-tenant in a class of its own. It then merges chat and rerank into one class only
+  when the class fits in the room left after every role is placed; otherwise they
+  stay apart and evict each other, as every co-tenant did before. A tight role holds what is left
+  of its card and joins no class. The swap process is charged its largest class,
+  the members of that class added up, and each co-tenant runs a single instance
+  (the elastic tier does not replicate a role inside the process). Interleaving a
+  query with an ingest costs a model reload each way. With the VRAM to hold
+  everything at once, no swap group forms and every role
+  pins to its own group. A plan with several engines on discrete cards gives each
+  role a named card or a refusal, and a refused role takes no card. It checks three
+  causes in order: the engine cannot be pinned on several cards (it reports another
+  backend, or takes neither the visible-devices variable nor device names), the role
+  is larger than the largest card and no split holds it, or no card has room beside
+  the other roles. If small roles spread over the cards block a large one, a second
+  pass places the largest role first, and it wins only when it refuses a strict
+  subset of the roles. The warning names the engine and the cause. A plan with
+  several engines on shared memory stays on the shared-memory budget below. With one
+  engine, the estimate advises but does not gate the load on GPUs: a
   role that does not fit even beside the one embedder its own phase needs is still
   **placed tight** (best-effort) on the emptiest card, anchoring the swap group so the load
   starts against as much free VRAM as possible, with a memory-is-tight warning
@@ -384,20 +447,38 @@ touching the running fleet.
   running launches, restarting only the groups whose launches changed; an
   untouched 100GB chat model stays resident while the embedder moves. llama-swap
   answers 429 once a model has `concurrencyLimit` requests in flight and never
-  queues them, so each model's config sets that limit to four times the larger of
-  its slots and the ingest pool: one engine serves every lilbee process, and
-  llama-server queues past its slots by itself. A 429 is then reported to the
+  queues them, so each model's config sets that limit to 1024, whatever the slots,
+  the ingest pool or the other processes: one engine serves every lilbee process,
+  and llama-server queues past its slots by itself. The limit covers 432 requests in
+  flight (an eight-process fanout, a TUI, a server and MCP). llama-swap starts with
+  a soft open-file limit of 1088, or the hard limit when that is lower, because
+  llama-server holds one socket per admitted request. A 429 is then reported to the
   caller as a busy model, not retried; gateway errors (502/503/504) from a
   restarting server are retried with backoff. Each
   server runs in its own process group and claims
   its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
-  the model loads); the cold-load health timeout scales with the heaviest member's
+  the model loads); the cold-load health timeout scales with the slowest member's
   weights at a conservative disk rate (a ten-minute floor, two minutes for the embedder,
   whose small weights load in seconds), so a multi-hundred-GB model
-  on a slow volume isn't killed mid-load. Each owner lilbee writes one state file per swap group
+  on a slow volume isn't killed mid-load. The plan times a short read of each model file
+  (at most 64 MiB or one second). When half the measured rate is below the conservative
+  rate (a sample under 300 MiB/s), the wait scales at that half, floored at 10 MiB/s and
+  capped at one hour; the conservative wait stays the floor. The rate is recorded on the launch in the state file,
+  so the client timeouts and the bind deadline of every lilbee follow the same wait. Each owner lilbee writes one state file per swap group
   (named with the group and its pid, written atomically so a concurrent scan never reads a torn
   file) recording that group's llama-swap pid, process group, and create time, the
-  member servers' ports, plus the owner's pid and create time; before the next build
+  member servers' ports, plus the owner's pid and create time, and `ready_at` once the builder sees a load succeed. A
+  later lilbee binds an answering engine only when `/running` lists a member ready or starting, or the record has
+  `ready_at`, or the record is younger than the slowest member's cold-load ceiling plus 30 s, or another lilbee holds
+  the engine (a holder that never warmed leaves no proof of a load); an older record that never loaded and has no
+  holder is rebuilt. A record holds the system monotonic clock reading at spawn (`started_mono`) and the identity of the boot
+  (`started_boot`: the Linux boot id, the macOS `kern.bootsessionuuid`, or the Windows boot counter), compared by
+  equality. A platform where the read fails stores no identity. When the identity is the current boot's, the record is
+  aged by the clock, so a wall-clock step does not change its age. A record from
+  another boot is never aged by a clock reading, whether that reading is ahead of or behind the clock now. A Linux
+  record without the pair but with the boot id and start ticks is aged by the boot clock. Any other record (a file
+  written before both, or one from another boot) is aged by the wall clock against its create time, so a forward step
+  there can mark a loading engine failed early. Before the next build
   launches the fleet (so the cards are actually free for it and the context sizer
   reads true free VRAM), every state file is
   scanned and each dead owner's surviving llama-swap and its servers are reaped

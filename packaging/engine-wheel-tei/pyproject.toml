@@ -1,0 +1,18 @@
+# A per-platform wheel that holds one embedding-server binary for lilbee. CI fills
+# lilbee_engine_tei/bin/, sets the version, the licence expression and the licence files
+# (tools/wheel-build/stamp_engine_wheel.py) and builds the wheel with a build tag for the backend.
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lilbee-engine-tei"
+version = "0.0.0"
+description = "Embedding and rerank server for lilbee"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = ["lilbee_engine_tei"]
+
+[tool.setuptools.package-data]
+lilbee_engine_tei = ["bin/*"]

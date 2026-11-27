@@ -130,6 +130,30 @@ FleetBody {
         text-style: bold underline;
     }
 
+    /* The Engine column: a one-line pill with the engine mark. Enter, Space or a click
+       opens the engine picker of the role, like the e key. */
+    .engine-pill {
+        width: 18;
+        height: 1;
+        margin: 0 1 0 0;
+        background: $surface;
+        color: $foreground;
+    }
+
+    .engine-pill:hover {
+        background: $boost;
+    }
+
+    .engine-pill:focus {
+        background: $boost;
+        text-style: bold;
+    }
+
+    .engine-hdr {
+        width: 19;
+        color: $text-muted;
+    }
+
     .rep-pill {
         width: 5;
         height: 1;
@@ -237,5 +261,11 @@ FleetBody {
     #placement-hint {
         height: auto;
         color: $text-muted;
+    }
+
+    #placement-engines {
+        height: auto;
+        color: $text-muted;
+        padding: 1 0 0 0;
     }
 }

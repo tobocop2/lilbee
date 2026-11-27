@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.engines import LLAMA
 
 
 class TestTheChatServeBudgetCannotBecomeADiscount:
@@ -47,7 +48,7 @@ class TestANumCtxPinIsClampedToTheModel:
         monkeypatch.setattr(cfg, "num_ctx", 200_000)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
-            ctx = planning_mod._role_ctx(WorkerRole.CHAT, model, meta)
+            ctx = planning_mod._role_ctx(WorkerRole.CHAT, model, meta, engine=LLAMA)
         assert ctx == 8192
         assert "200000" in caplog.text.replace(",", "")
 
@@ -60,7 +61,7 @@ class TestANumCtxPinIsClampedToTheModel:
         monkeypatch.setattr(cfg, "num_ctx", 4096)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         meta = {"architecture": "qwen3", "context_length": "8192"}
-        assert planning_mod._role_ctx(WorkerRole.CHAT, model, meta) == 4096
+        assert planning_mod._role_ctx(WorkerRole.CHAT, model, meta, engine=LLAMA) == 4096
 
     def test_the_placement_estimate_clamps_the_same_way(self, monkeypatch, tmp_path) -> None:
         from lilbee.providers.fleet import planning as planning_mod
@@ -71,7 +72,9 @@ class TestANumCtxPinIsClampedToTheModel:
         monkeypatch.setattr(cfg, "num_ctx", 200_000)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         meta = {"architecture": "qwen3", "context_length": "8192"}
-        assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, model, meta) == 8192
+        assert (
+            planning_mod._placement_estimate_ctx(WorkerRole.CHAT, model, meta, engine=LLAMA) == 8192
+        )
 
 
 class TestANotAvailableUtilKeepsTheMemoryReading:
@@ -84,21 +87,21 @@ class TestANotAvailableUtilKeepsTheMemoryReading:
     def test_the_row_survives_with_no_utilization(self) -> None:
         from lilbee.providers.fleet.gpu_backends.nvidia import _parse_smi_output
 
-        samples = _parse_smi_output("0, [N/A], 1024, 4096")
+        samples = _parse_smi_output("0, [N/A], 61, 1024, 4096")
         assert samples[0].utilization_pct is None
         assert samples[0].total_bytes == 4096 * 1024 * 1024
 
     def test_a_complete_row_is_unchanged(self) -> None:
         from lilbee.providers.fleet.gpu_backends.nvidia import _parse_smi_output
 
-        samples = _parse_smi_output("1, 42, 1024, 4096")
+        samples = _parse_smi_output("1, 42, 61, 1024, 4096")
         assert samples[1].utilization_pct == 42
 
     def test_an_unreadable_index_still_drops_the_row(self) -> None:
         # Without an index there is nothing to attribute the reading to.
         from lilbee.providers.fleet.gpu_backends.nvidia import _parse_smi_output
 
-        assert _parse_smi_output("[N/A], 42, 1024, 4096") == {}
+        assert _parse_smi_output("[N/A], 42, 61, 1024, 4096") == {}
 
     def test_an_unreadable_header_leaves_the_pin_alone(self, monkeypatch, tmp_path) -> None:
         # Some published GGUFs report no usable context length. Contradicting an
@@ -110,7 +113,7 @@ class TestANotAvailableUtilKeepsTheMemoryReading:
         model.write_bytes(b"x")
         monkeypatch.setattr(cfg, "num_ctx", 200_000)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
-        assert planning_mod._role_ctx(WorkerRole.CHAT, model, None) == 200_000
+        assert planning_mod._role_ctx(WorkerRole.CHAT, model, None, engine=LLAMA) == 200_000
 
     def test_num_ctx_max_still_caps_a_pin_without_metadata(self, monkeypatch, tmp_path) -> None:
         from lilbee.providers.fleet import planning as planning_mod
@@ -120,4 +123,4 @@ class TestANotAvailableUtilKeepsTheMemoryReading:
         model.write_bytes(b"x")
         monkeypatch.setattr(cfg, "num_ctx", 200_000)
         monkeypatch.setattr(cfg, "num_ctx_max", 16_384)
-        assert planning_mod._role_ctx(WorkerRole.CHAT, model, None) == 16_384
+        assert planning_mod._role_ctx(WorkerRole.CHAT, model, None, engine=LLAMA) == 16_384

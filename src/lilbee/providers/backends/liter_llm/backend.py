@@ -11,17 +11,25 @@ import httpx
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.providers import availability
 from lilbee.providers.backends.liter_llm.client import _client, _require_sdk
-from lilbee.providers.backends.liter_llm.config import _chat_fields, _route_model, _wire_base_url
+from lilbee.providers.backends.liter_llm.config import (
+    _chat_fields,
+    _route_model,
+    _wire_base_url,
+    rerank_route,
+)
 from lilbee.providers.backends.liter_llm.errors import (
     _CHAT_FAILED,
     _EMBED_FAILED,
     _PROVIDER_NAME,
     _RERANK_FAILED,
+    PresetCall,
+    _preset_call,
     _provider_error,
 )
 from lilbee.providers.backends.liter_llm.events import (
     _finish_reason,
     _next_chunk,
+    _reasoning,
     _text,
     _tool_call,
     _tool_call_delta,
@@ -34,6 +42,9 @@ from lilbee.providers.local_servers import (
     detect_local_server,
     openai_models_url,
 )
+from lilbee.providers.model_ref import ProviderModelRef
+from lilbee.providers.reasoning import ThinkInliner, inline_reasoning
+from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
     CompletionResult,
@@ -54,10 +65,24 @@ _CHAT_MODE = "chat"
 # lilbee provider key -> catalog provider id, where the two differ. The routing key
 # ``gemini`` is the catalog's ``google``. Every other lilbee provider uses the same id.
 _CATALOG_PROVIDER = {"gemini": "google"}
+# The chat models liter-llm counts with their own tokenizer: OpenAI's o200k models, for
+# which it loads Xenova/gpt-4o. A count under another model's tokenizer can read below
+# the real count and make the provider refuse a request it was told fits, so every other
+# model (Claude gets the Claude 2 tokenizer, gemini and llama gated repos, gpt-4 and
+# gpt-3.5 are cl100k) keeps the byte estimate. Matched as name prefixes.
+_OWN_TOKENIZER_PROVIDER = "openai"
+_OWN_TOKENIZER = ("gpt-4o", "chatgpt-4o", "gpt-4.1", "gpt-4.5", "gpt-5", "o1", "o3", "o4")
 
 
 class LiterLlmBackend:
     """``LlmSdkBackend`` adapter backed by the ``liter-llm`` SDK."""
+
+    def __init__(self) -> None:
+        # Model names whose token count raised a liter-llm error, almost always a
+        # tokenizer that did not load. liter-llm keeps no record of a failed load and
+        # holds a process-wide lock while it tries, so a retry on each count could
+        # wait for a network timeout every time.
+        self._failed_tokenizers: set[str] = set()
 
     @property
     def provider_name(self) -> str:
@@ -81,6 +106,19 @@ class LiterLlmBackend:
         """
         return True
 
+    def count_chat_tokens(self, ref: ProviderModelRef, text: str) -> int:
+        """Count *text* with ``liter_llm.count_tokens`` for a model listed in ``_OWN_TOKENIZER``."""
+        if ref.provider != _OWN_TOKENIZER_PROVIDER or not ref.name.startswith(_OWN_TOKENIZER):
+            raise NotImplementedError(f"liter-llm has no tokenizer of {ref.for_display()}'s own")
+        if ref.name in self._failed_tokenizers:
+            raise ProviderError(f"Token count for {ref.for_display()} failed earlier")
+        liter_llm = _require_sdk()
+        try:
+            return int(liter_llm.count_tokens(ref.name, text))
+        except liter_llm.LiterLlmError as exc:
+            self._failed_tokenizers.add(ref.name)
+            raise ProviderError(f"Token count for {ref.for_display()} failed: {exc}") from exc
+
     def configure_logging(self, *, suppress_debug: bool) -> None:
         """Do nothing: liter-llm prints no debug banner, so there is nothing to suppress."""
 
@@ -88,20 +126,27 @@ class LiterLlmBackend:
         """Run a single-shot completion through ``liter_llm.chat``."""
         liter_llm = _require_sdk()
         model = request.ref.for_display()
+        preset = _preset_call(request.ref, request.api_base, request.role)
         try:
             fields = _chat_fields(request, stream=False)
             client = _client(
-                fields["model"], _wire_base_url(fields["model"], request.api_base), request.api_key
+                fields["model"],
+                _wire_base_url(fields["model"], request.api_base),
+                request.api_key,
+                request.ref.is_preset,
             )
             response = asyncio_loop.run(
                 liter_llm.chat(client, liter_llm.ChatCompletionRequest(**fields))
             )
         except Exception as exc:
-            raise _provider_error(_CHAT_FAILED, exc, model) from exc
+            raise _provider_error(_CHAT_FAILED, exc, model, preset=preset) from exc
         choice = response.choices[0] if response.choices else None
         message = choice.message if choice is not None else None
+        content = _text(message.content) if message is not None else ""
+        if message is not None and request.role is WorkerRole.CHAT:
+            content = inline_reasoning(_reasoning(message), content)
         return CompletionResult(
-            content=_text(message.content if message is not None else None),
+            content=content,
             finish_reason=_finish_reason(choice.finish_reason) if choice is not None else None,
             usage=_usage(response.usage),
             model=response.model or None,
@@ -118,19 +163,25 @@ class LiterLlmBackend:
         """
         liter_llm = _require_sdk()
         model = request.ref.for_display()
+        preset = _preset_call(request.ref, request.api_base, request.role)
         try:
             fields = _chat_fields(request, stream=True)
             client = _client(
-                fields["model"], _wire_base_url(fields["model"], request.api_base), request.api_key
+                fields["model"],
+                _wire_base_url(fields["model"], request.api_base),
+                request.api_key,
+                request.ref.is_preset,
             )
             stream = liter_llm.chat_stream(client, liter_llm.ChatCompletionRequest(**fields))
             first = asyncio_loop.run(_next_chunk(stream))
         except Exception as exc:
-            raise _provider_error(_CHAT_FAILED, exc, model) from exc
-        return self._stream_chunks(stream, first, model)
+            raise _provider_error(_CHAT_FAILED, exc, model, preset=preset) from exc
+        return self._stream_chunks(stream, first, model, preset, request.role is WorkerRole.CHAT)
 
     @staticmethod
-    def _stream_chunks(stream: Any, first: Any, model: str) -> Iterator[StreamChunk]:
+    def _stream_chunks(
+        stream: Any, first: Any, model: str, preset: PresetCall | None, inline: bool
+    ) -> Iterator[StreamChunk]:
         """Yield ``StreamChunk`` values from a liter-llm chunk stream.
 
         Exceptions raised mid-iteration are classified into ``ProviderError``
@@ -138,42 +189,55 @@ class LiterLlmBackend:
         where the SDK failed.
         """
         chunk = first
+        inliner = ThinkInliner(enabled=inline)
         try:
             while chunk is not None:
                 choice = chunk.choices[0] if chunk.choices else None
-                content = ""
+                text = ""
                 finish_reason = None
                 tool_call_deltas: tuple[SdkToolCallDelta, ...] = ()
                 if choice is not None:
                     delta = choice.delta
-                    content = delta.content or ""
+                    text = inliner.feed(_reasoning(delta), delta.content or "")
                     finish_reason = _finish_reason(choice.finish_reason)
                     tool_call_deltas = tuple(_tool_call_delta(c) for c in delta.tool_calls or [])
                 usage = _usage(chunk.usage) if chunk.usage is not None else None
-                if content or finish_reason or tool_call_deltas or usage is not None:
+                if finish_reason:
+                    text += inliner.finish()
+                if text or finish_reason or tool_call_deltas or usage is not None:
                     yield StreamChunk(
-                        content=content,
+                        content=text,
                         finish_reason=finish_reason,
                         tool_call_deltas=tool_call_deltas,
                         usage=usage,
                     )
                 chunk = asyncio_loop.run(_next_chunk(stream))
+            if tail := inliner.finish():
+                yield StreamChunk(content=tail)
         except Exception as exc:
-            raise _provider_error(_CHAT_FAILED, exc, model) from exc
+            raise _provider_error(_CHAT_FAILED, exc, model, preset=preset) from exc
 
     def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
         """Embed inputs through ``liter_llm.embed``."""
         liter_llm = _require_sdk()
         model = _route_model(request.ref, request.api_base)
+        preset = _preset_call(request.ref, request.api_base, WorkerRole.EMBED)
         try:
-            client = _client(model, _wire_base_url(model, request.api_base), request.api_key)
+            client = _client(
+                model,
+                _wire_base_url(model, request.api_base),
+                request.api_key,
+                request.ref.is_preset,
+            )
             response = asyncio_loop.run(
                 liter_llm.embed(
                     client, liter_llm.EmbeddingRequest(model=model, input=request.inputs)
                 )
             )
         except Exception as exc:
-            raise _provider_error(_EMBED_FAILED, exc, request.ref.for_display()) from exc
+            raise _provider_error(
+                _EMBED_FAILED, exc, request.ref.for_display(), preset=preset
+            ) from exc
         # Order by the response's ``index`` rather than arrival order: a proxy or
         # gateway may return the batch out of order, and the consumer zips vectors
         # to inputs positionally, so a reorder would silently mis-pair every chunk
@@ -190,7 +254,6 @@ class LiterLlmBackend:
                 f"Embedding response does not match the request: expected {expected} "
                 f"vectors indexed 0-{expected - 1}, got {len(ordered)}. The endpoint "
                 "returned an incomplete or misindexed batch.",
-                provider=_PROVIDER_NAME,
                 kind=ProviderErrorKind.SERVER,
             )
         return EmbeddingResult(
@@ -207,9 +270,10 @@ class LiterLlmBackend:
         if not request.candidates:
             return RerankResult(scores=[])
         liter_llm = _require_sdk()
-        model = _route_model(request.ref, request.api_base)
+        model, base_url = rerank_route(request.ref, request.api_base, request.rerank_wire)
+        preset = _preset_call(request.ref, request.api_base, WorkerRole.RERANK, request.rerank_wire)
         try:
-            client = _client(model, _wire_base_url(model, request.api_base), request.api_key)
+            client = _client(model, base_url, request.api_key, request.ref.is_preset)
             response = asyncio_loop.run(
                 liter_llm.rerank(
                     client,
@@ -219,7 +283,9 @@ class LiterLlmBackend:
                 )
             )
         except Exception as exc:
-            raise _provider_error(_RERANK_FAILED, exc, request.ref.for_display()) from exc
+            raise _provider_error(
+                _RERANK_FAILED, exc, request.ref.for_display(), preset=preset
+            ) from exc
         scores = [0.0] * len(request.candidates)
         for item in response.results:
             scores[item.index] = float(item.relevance_score)
@@ -266,7 +332,7 @@ class LiterLlmBackend:
             data = resp.json()
             return [m["name"] for m in data.get("models", [])]
         except httpx.HTTPError as exc:
-            raise ProviderError(f"Cannot list models: {exc}", provider=_PROVIDER_NAME) from exc
+            raise ProviderError(f"Cannot list models: {exc}") from exc
 
     @staticmethod
     def _list_openai_models(base_url: str, api_key: str) -> list[str]:
@@ -302,7 +368,6 @@ class LiterLlmBackend:
         raise ProviderError(
             f"{server} doesn't download models over the network. "
             f"Add the model in its own app, then pick it here.",
-            provider=_PROVIDER_NAME,
         )
 
     def show_model(self, model: str, *, base_url: str) -> dict[str, Any] | None:

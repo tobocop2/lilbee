@@ -11,6 +11,7 @@ import pytest
 
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import provider as prov_mod
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import WorkerRole
@@ -45,13 +46,15 @@ class _SignalCondition(threading.Condition):
         return super().wait_for(predicate, timeout)
 
 
-def _provider(monkeypatch, *, reloading: bool, owed: frozenset[WorkerRole]) -> FleetProvider:
+def _provider(monkeypatch, *, owed: frozenset[WorkerRole]) -> FleetProvider:
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
     provider = FleetProvider()
     provider._reload_done = _SignalCondition(provider._lock)
-    provider._reloading = reloading
     provider._reload_owed = owed
     monkeypatch.setattr(provider, "_ensure_fleet", lambda: True)
+    # Each adoption and each failed request reads the engine book, which searches PATH;
+    # these tests check the wait for a role's server, not which engine serves it.
+    monkeypatch.setattr(provider, "_engines", lambda: dict.fromkeys(WorkerRole, LLAMA))
     return provider
 
 
@@ -71,7 +74,7 @@ def _run(target) -> threading.Thread:
 
 def test_request_returns_when_its_role_is_adopted_not_when_the_reload_ends(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod, "_RELOAD_GAP_WAIT_S", 5.0)
-    provider = _provider(monkeypatch, reloading=True, owed=frozenset(WorkerRole))
+    provider = _provider(monkeypatch, owed=frozenset(WorkerRole))
     gate: _SignalCondition = provider._reload_done  # type: ignore[assignment]
 
     def adopt_when_request_blocks() -> None:
@@ -82,13 +85,13 @@ def test_request_returns_when_its_role_is_adopted_not_when_the_reload_ends(monke
     clients = provider._require_clients(WorkerRole.EMBED)
     adopter.join(_JOIN_S)
     assert len(clients) == 1
-    assert provider._reloading is True
+    assert provider._reload_owed == frozenset(WorkerRole)
     assert gate.timeouts == 0
 
 
 def test_role_the_reload_does_not_bring_back_fails_at_once(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod, "_RELOAD_GAP_WAIT_S", 30.0)
-    provider = _provider(monkeypatch, reloading=True, owed=frozenset({WorkerRole.EMBED}))
+    provider = _provider(monkeypatch, owed=frozenset({WorkerRole.EMBED}))
     gate: _SignalCondition = provider._reload_done  # type: ignore[assignment]
     with pytest.raises(ProviderError, match="No rerank model server is running"):
         provider._require_clients(WorkerRole.RERANK)
@@ -97,7 +100,7 @@ def test_role_the_reload_does_not_bring_back_fails_at_once(monkeypatch) -> None:
 
 def test_request_waits_while_the_reload_plan_leaves_the_role_open(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod, "_RELOAD_GAP_WAIT_S", 30.0)
-    provider = _provider(monkeypatch, reloading=True, owed=frozenset(WorkerRole))
+    provider = _provider(monkeypatch, owed=frozenset(WorkerRole))
     gate: _SignalCondition = provider._reload_done  # type: ignore[assignment]
 
     def publish_plan_when_request_blocks() -> None:
@@ -115,13 +118,12 @@ def test_request_waits_while_the_reload_plan_leaves_the_role_open(monkeypatch) -
 
 def test_request_raises_when_the_reload_ends_without_a_server_for_the_role(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod, "_RELOAD_GAP_WAIT_S", 30.0)
-    provider = _provider(monkeypatch, reloading=True, owed=frozenset(WorkerRole))
+    provider = _provider(monkeypatch, owed=frozenset(WorkerRole))
     gate: _SignalCondition = provider._reload_done  # type: ignore[assignment]
 
     def end_reload_when_request_blocks() -> None:
         assert gate.entered.wait(_JOIN_S)
         with provider._lock:
-            provider._reloading = False
             provider._reload_owed = frozenset()
             provider._reload_done.notify_all()
 
@@ -133,7 +135,7 @@ def test_request_raises_when_the_reload_ends_without_a_server_for_the_role(monke
 
 def test_timeout_names_the_problem_and_the_fix(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod, "_RELOAD_GAP_WAIT_S", 0.05)
-    provider = _provider(monkeypatch, reloading=True, owed=frozenset(WorkerRole))
+    provider = _provider(monkeypatch, owed=frozenset(WorkerRole))
     with pytest.raises(
         ProviderError,
         match=re.escape(
@@ -146,7 +148,7 @@ def test_timeout_names_the_problem_and_the_fix(monkeypatch) -> None:
 
 def test_timeout_returns_a_server_that_came_up_without_a_wake_up(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod, "_RELOAD_GAP_WAIT_S", 0.2)
-    provider = _provider(monkeypatch, reloading=True, owed=frozenset(WorkerRole))
+    provider = _provider(monkeypatch, owed=frozenset(WorkerRole))
     gate: _SignalCondition = provider._reload_done  # type: ignore[assignment]
     client = _fake_client()
 
@@ -161,7 +163,7 @@ def test_timeout_returns_a_server_that_came_up_without_a_wake_up(monkeypatch) ->
 
 
 def test_request_does_not_wait_when_no_reload_runs(monkeypatch) -> None:
-    provider = _provider(monkeypatch, reloading=False, owed=frozenset())
+    provider = _provider(monkeypatch, owed=frozenset())
     gate: _SignalCondition = provider._reload_done  # type: ignore[assignment]
     with pytest.raises(ProviderError, match="No embed model server is running"):
         provider._require_clients(WorkerRole.EMBED)
@@ -170,7 +172,7 @@ def test_request_does_not_wait_when_no_reload_runs(monkeypatch) -> None:
 
 def _stress_round(monkeypatch) -> None:
     waiters_per_role = 4
-    provider = _provider(monkeypatch, reloading=True, owed=frozenset(WorkerRole))
+    provider = _provider(monkeypatch, owed=frozenset(WorkerRole))
     gate: _SignalCondition = provider._reload_done  # type: ignore[assignment]
     gate.expected = 2 * waiters_per_role
     outcomes: list[tuple[WorkerRole, object]] = []
@@ -191,7 +193,6 @@ def _stress_round(monkeypatch) -> None:
             provider._reload_done.notify_all()
         _adopt_embed(provider)
         with provider._lock:
-            provider._reloading = False
             provider._reload_owed = frozenset()
             provider._reload_done.notify_all()
 
@@ -219,15 +220,24 @@ def test_concurrent_requests_each_end_on_their_own_roles_outcome(monkeypatch) ->
 
 
 def test_a_new_reload_owes_every_role_until_its_plan_is_known(monkeypatch) -> None:
-    provider = _provider(monkeypatch, reloading=False, owed=frozenset({WorkerRole.EMBED}))
+    provider = _provider(monkeypatch, owed=frozenset())
     provider._swaps = {SwapGroup.EMBED: MagicMock()}
-    monkeypatch.setattr(provider, "_reload_blocking", lambda: None)
-    provider._dispatch_reload("test-reload", wait=True)
-    assert provider._reload_owed == frozenset(WorkerRole)
+    provider._writes_wanted = 1
+    owed_at_pass_start: list[frozenset[WorkerRole]] = []
+
+    def pass_that_reads_the_owed_roles(force=frozenset()) -> None:
+        owed_at_pass_start.append(provider._reload_owed)
+
+    monkeypatch.setattr(provider, "_reload_pass", pass_that_reads_the_owed_roles)
+    provider._run_fleet_work()
+    assert owed_at_pass_start == [frozenset(WorkerRole)]
+    assert provider._reload_owed == frozenset()
 
 
 def test_a_rerun_pass_owes_every_role_until_its_plan_is_known(monkeypatch) -> None:
-    provider = _provider(monkeypatch, reloading=True, owed=frozenset(WorkerRole))
+    provider = _provider(monkeypatch, owed=frozenset())
+    provider._swaps = {SwapGroup.EMBED: MagicMock()}
+    provider._writes_wanted = 1
     owed_at_pass_start: list[frozenset[WorkerRole]] = []
 
     def pass_that_queues_a_rerun(force=frozenset()) -> None:
@@ -235,10 +245,41 @@ def test_a_rerun_pass_owes_every_role_until_its_plan_is_known(monkeypatch) -> No
         with provider._lock:
             provider._reload_owed = frozenset({WorkerRole.EMBED})
             if len(owed_at_pass_start) == 1:
-                provider._reload_pending = True
+                provider._writes_wanted += 1
 
     monkeypatch.setattr(provider, "_reload_pass", pass_that_queues_a_rerun)
-    provider._reload_blocking()
+    provider._run_fleet_work()
     assert owed_at_pass_start == [frozenset(WorkerRole), frozenset(WorkerRole)]
     assert provider._reload_owed == frozenset()
-    assert provider._reloading is False
+    assert provider._fleet_work is None
+
+
+def test_a_request_between_a_failed_pass_and_its_rerun_keeps_waiting(monkeypatch) -> None:
+    provider = _provider(monkeypatch, owed=frozenset())
+    provider._swaps = {SwapGroup.EMBED: MagicMock()}
+    provider._writes_wanted = 1
+    passes: list[int] = []
+    owed_at_wake: list[tuple[int, frozenset[WorkerRole]]] = []
+    wake = provider._reload_done.notify_all
+
+    def notify_and_record() -> None:
+        owed_at_wake.append((len(passes), provider._reload_owed))
+        wake()
+
+    monkeypatch.setattr(provider._reload_done, "notify_all", notify_and_record)
+
+    def pass_that_fails_once_then_adopts(force=frozenset()) -> None:
+        passes.append(1)
+        if len(passes) == 1:
+            with provider._lock:
+                provider._writes_wanted += 1
+            raise ProviderError("the first pass fails")
+
+    monkeypatch.setattr(provider, "_reload_pass", pass_that_fails_once_then_adopts)
+    provider._run_fleet_work()
+    assert len(passes) == 2
+    wakes_between_the_passes = [owed for count, owed in owed_at_wake if count == 1]
+    assert wakes_between_the_passes
+    assert all(owed == frozenset(WorkerRole) for owed in wakes_between_the_passes)
+    assert provider._reload_owed == frozenset()
+    assert owed_at_wake[-1] == (2, frozenset())

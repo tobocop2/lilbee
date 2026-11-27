@@ -9,6 +9,7 @@ engine-specific module.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
@@ -52,6 +53,15 @@ class Phase(StrEnum):
 
     INGEST = "ingest"
     QUERY = "query"
+
+
+class RoleTarget(StrEnum):
+    """The kind of device a user names for one role."""
+
+    AUTO = "auto"
+    CPU = "cpu"
+    GPU = "gpu"
+    NPU = "npu"
 
 
 class RerankMode(StrEnum):
@@ -165,6 +175,13 @@ def configured_model_message(role: WorkerRole, configured: str, requested: str) 
     """User-facing rejection for a per-call model that differs from the configured one."""
     return (
         f"This engine serves the configured {role} model ({configured}). "
-        f"To use {requested!r}, set it as the {role} model in lilbee settings "
+        f"To use '{requested}', set it as the {role} model in lilbee settings "
         f"(TUI /settings), then retry; the engine reloads automatically."
     )
+
+
+def unserved_role_message(engine: str, role: WorkerRole, served: Iterable[WorkerRole]) -> str:
+    """User-facing refusal for a role that *engine* does not serve; names the roles it serves."""
+    names = sorted(served)
+    listed = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+    return f"Engine {engine} does not serve {role}. It serves {listed}."

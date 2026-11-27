@@ -12,3 +12,22 @@ A peer's plan view holds exactly these keys, so it waits only for a rebuild that
 This module sits above ``roles`` because ``roles`` must not import the config package,
 which imports ``roles`` back through the model-reference chain.
 """
+
+ENGINE_TUNING_KEYS: frozenset[str] = frozenset(
+    {
+        "num_ctx",
+        "num_ctx_max",
+        "chat_n_ctx_target",
+        "kv_cache_type",
+        "n_gpu_layers",
+        "cpu_moe",
+        "n_cpu_moe",
+        "flash_attention",
+    }
+)
+"""The fleet reload keys that change how a server runs, not what a role answers with.
+
+A one-off command takes only these from config.toml at its retry, so it binds the
+owner's restarted fleet. The other fleet reload keys pick a model, gate a role or
+shape the library, and a one-off keeps them at their start value.
+"""

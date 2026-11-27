@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import pyarrow as pa
 
+from .types import FAILED_PAGES_COLUMN, PARTLY_READ_COLUMN
+
+CANARY_VECTORS_COLUMN = "canary_vectors"
+# JSON of the settings the library's chunks were cut with.
+CHUNK_SETTINGS_COLUMN = "chunk_settings"
+
 
 def _meta_schema() -> pa.Schema:
     return pa.schema(
@@ -12,6 +18,10 @@ def _meta_schema() -> pa.Schema:
             pa.field("embedding_dim", pa.int32()),
             pa.field("schema_version", pa.int32()),
             pa.field("updated_at", pa.utf8()),
+            pa.field(CANARY_VECTORS_COLUMN, pa.list_(pa.list_(pa.float32()))),
+            pa.field("canary_trigger", pa.utf8()),
+            pa.field("canary_verified", pa.bool_()),
+            pa.field(CHUNK_SETTINGS_COLUMN, pa.utf8()),
         ]
     )
 
@@ -45,8 +55,28 @@ def _sources_schema() -> pa.Schema:
             pa.field("held_out", pa.utf8()),
             pa.field("held_hash", pa.utf8()),
             pa.field("held_reason", pa.utf8()),
+            pa.field("held_inputs", pa.utf8()),
+            _sources_failed_pages_field(),
+            _sources_partly_read_field(),
         ]
     )
+
+
+def _sources_failed_pages_field() -> pa.Field:
+    """The ``_sources`` column of the pages whose OCR failed; NULL when none."""
+    failed_page = pa.struct(
+        [
+            pa.field("page", pa.int32()),
+            pa.field("error", pa.utf8()),
+            pa.field("recovered", pa.bool_()),
+        ]
+    )
+    return pa.field(FAILED_PAGES_COLUMN, pa.list_(failed_page))
+
+
+def _sources_partly_read_field() -> pa.Field:
+    """The ``_sources`` column that says whether a row has a page whose OCR failed."""
+    return pa.field(PARTLY_READ_COLUMN, pa.bool_())
 
 
 def _page_texts_schema() -> pa.Schema:

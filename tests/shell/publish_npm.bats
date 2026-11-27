@@ -75,12 +75,46 @@ publish() {  # tag
   ! grep -q '^registry' "${CALLS}"
 }
 
-@test "a dev build is neither published nor listed" {
+@test "a dev build is neither published nor listed, and the request fails" {
   release_files 1.2.3-beta.420.dev.711 v1.2.3b420.dev711
   NPM_TRUSTED_PUBLISHING=enabled run publish v1.2.3b420.dev711
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"is a dev build"* ]]
   [ ! -s "${CALLS}" ]
+}
+
+# The resolve step that decides whether the npm job runs, as the workflow runs it.
+npm_requested() {  # channels tag
+  local wf="${REPO_ROOT}/.github/workflows/publish-packages.yml" out="${BATS_TEST_TMPDIR}/github_output"
+  : > "${out}"
+  step=$(yq -r '.jobs.resolve.steps[] | select(.id == "npm") | .run' "${wf}")
+  [ -n "${step}" ] || return 2
+  # The step's log line goes to the job log; only its output counts here.
+  CHANNELS="$1" TAG="$2" GITHUB_OUTPUT="${out}" bash -c "${step}" > /dev/null || return
+  sed -n 's/^requested=//p' "${out}"
+}
+
+@test "channels all does not request npm for a dev tag, and naming npm still does" {
+  run npm_requested all v1.2.3b420.dev711
+  [ "$output" = false ]
+  run npm_requested all v1.2.3b1000
+  [ "$output" = true ]
+  run npm_requested npm v1.2.3b420.dev711
+  [ "$output" = true ]
+  run npm_requested homebrew,npm v1.2.3b1000
+  [ "$output" = true ]
+  run npm_requested homebrew,nix v1.2.3b1000
+  [ "$output" = false ]
+  # GitHub's contains() and == ignore case, and so does the step.
+  run npm_requested NPM v1.2.3b1000
+  [ "$output" = true ]
+  run npm_requested ALL v1.2.3b1000
+  [ "$output" = true ]
+  # The npm job runs on that decision and on nothing else.
+  run yq -r '.jobs.npm.if' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
+  [ "$output" = "needs.resolve.outputs.npm == 'true'" ]
+  run yq -r '.jobs.resolve.outputs.npm' "${REPO_ROOT}/.github/workflows/publish-packages.yml"
+  [ "$output" = '${{ steps.npm.outputs.requested }}' ]
 }
 
 @test "a version npm already holds is not published again, and the listing still runs" {
@@ -107,13 +141,27 @@ publish() {  # tag
   grep -qx 'npm publish --access public --tag latest' "${CALLS}"
 }
 
-@test "without trusted publishing the job checks the tag, publishes nothing, and says why" {
+@test "without trusted publishing the job publishes nothing, says why, and fails" {
   release_files 1.2.3-beta.1000 v1.2.3b1000
   NPM_TRUSTED_PUBLISHING= run publish v1.2.3b1000
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"NPM_TRUSTED_PUBLISHING is not 'enabled'"* ]]
   ! grep -q '^npm publish' "${CALLS}"
   ! grep -q '^registry' "${CALLS}"
+}
+
+# The npm job's publish step as the workflow runs it, with the repository
+# variable missing: a vars value that does not exist expands to empty.
+@test "the workflow's publish step fails when the repository variable is missing" {
+  release_files 1.2.3-beta.1000 v1.2.3b1000
+  step=$(yq -r '.jobs.npm.steps[] | select(.name == "Publish lilbee and list it in the MCP Registry") | .run' \
+    "${REPO_ROOT}/.github/workflows/publish-packages.yml")
+  [ -n "${step}" ]
+  cd "${PKG}"
+  FAKE_CALLS="${CALLS}" PATH="${BIN}:${PATH}" TAG=v1.2.3b1000 NPM_TRUSTED_PUBLISHING= run bash -c "${step}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"did not publish"* ]]
+  ! grep -q '^npm publish' "${CALLS}"
 }
 
 @test "without trusted publishing a package that is not the tag's release still stops the job" {

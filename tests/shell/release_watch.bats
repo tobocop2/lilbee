@@ -18,6 +18,10 @@ setup() {
   echo 1 > "${FIXTURE}/attempts/900"
   echo success > "${FIXTURE}/conclusions/900"
   rc_jobs "build-binaries (ubuntu):success"
+  # The tag still points at the commit the candidate built.
+  mkdir -p "${FIXTURE}/heads" "${FIXTURE}/commits"
+  echo "${TAG} built" > "${FIXTURE}/heads/900"
+  echo built > "${FIXTURE}/commits/${TAG}"
 
   cp "${BATS_TEST_DIRNAME}/stubs/gh" "${FIXTURE}/bin/gh"
   chmod +x "${FIXTURE}/bin/gh"
@@ -157,6 +161,31 @@ summary() { cat "${FIXTURE}/summary.md"; }
   [[ "$output" == *"release-selfheal owns this"* ]]
 }
 
+@test "a candidate whose tag moved is not deferred to, and is named as stale" {
+  rc_jobs "cell-a:failure" "cell-b:failure"
+  echo moved > "${FIXTURE}/commits/${TAG}"
+  run watch
+  [ "$status" -eq 0 ]
+  [ ! -s "${FIXTURE}/actions.log" ]
+  [[ "$output" == *"candidate 900 is stale"* ]]
+  [[ "$output" == *"built built"* ]]
+  [[ "$output" == *"points at moved"* ]]
+  run summary
+  [[ "$output" != *"release-selfheal owns this"* ]]
+  [[ "$output" == *"| publish.yml | green |"* ]]
+}
+
+@test "a candidate whose tag cannot be read is watched, never reported as every channel published" {
+  rc_jobs "cell-a:failure"
+  rm "${FIXTURE}/commits/${TAG}"
+  run watch
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"cannot tell which commit"* ]]
+  run summary
+  [[ "$output" != *"release-selfheal owns this"* ]]
+  [[ "$output" == *"| (candidate) | unknown |"* ]]
+}
+
 @test "a candidate cell cancelled by its own time limit counts as a failed cell" {
   rc_jobs "build-binaries (compat-windows):cancelled:timeout"
   set_conclusion publish-packages.yml failure
@@ -172,10 +201,12 @@ summary() { cat "${FIXTURE}/summary.md"; }
   rc_jobs "build-binaries (compat-windows):cancelled:timeout"
   touch "${FIXTURE}/fail_annotations"
   run watch
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"could not read candidate"* ]]
   run summary
   [[ "$output" != *"release-selfheal owns this"* ]]
+  [[ "$output" != *"Every channel published"* ]]
+  [[ "$output" == *"| (candidate) | unknown |"* ]]
 }
 
 @test "a candidate already at the attempt bound is watched rather than deferred to" {
@@ -248,12 +279,13 @@ summary() { cat "${FIXTURE}/summary.md"; }
   [[ "$output" == *"unsettled"* ]]
 }
 
-@test "an unreadable candidate is watched, not mistaken for one that is healing" {
+@test "an unreadable candidate is watched, but never reported as every channel published" {
   touch "${FIXTURE}/fail_api"
   run watch
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"could not read candidate"* ]]
   run summary
   [[ "$output" != *"release-selfheal owns this"* ]]
-  [[ "$output" == *"Every channel published"* ]]
+  [[ "$output" != *"Every channel published"* ]]
+  [[ "$output" == *"| (candidate) | unknown |"* ]]
 }

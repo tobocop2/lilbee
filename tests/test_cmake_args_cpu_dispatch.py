@@ -14,13 +14,17 @@ pytestmark = pytest.mark.skipif(
 
 # Every x86_64 cell, split by CPU strategy. The union plus _ARM_CELLS is the
 # script's whole case table; a new cell must join one of these lists.
-_DISPATCH_CELLS = [("cpu", "macOS"), ("cpu", "Linux"), ("cpu", "Windows"), ("vulkan", "Linux")]
+_DISPATCH_CELLS = [
+    ("cpu", "macOS"),
+    ("cpu", "Linux"),
+    ("cpu", "Windows"),
+    ("vulkan", "Linux"),
+    ("openvino", "Linux"),
+]
 _CAPPED_CELLS = [
     ("vulkan", "Windows"),
     *[(f"cu12{n}", os) for n in range(1, 6) for os in ("Linux", "Windows")],
     ("rocm", "Linux"),
-    ("sycl", "Linux"),
-    ("sycl", "Windows"),
 ]
 _ARM_CELLS = [("cpu", "macOS", "arm64"), ("metal", "macOS", "arm64")]
 
@@ -58,6 +62,35 @@ def test_vulkan_linux_dispatch_keeps_the_vulkan_backend() -> None:
     assert "-DGGML_VULKAN=ON" in flags
 
 
+def test_openvino_linux_is_its_own_cell_with_only_the_openvino_backend() -> None:
+    flags = _flags("openvino", "Linux", "x86_64")
+    assert "-DGGML_OPENVINO=ON" in flags
+    assert "-DGGML_VULKAN=OFF" in flags
+    assert "-DGGML_CUDA=OFF" in flags
+    for backend, runner_os in _DISPATCH_CELLS + _CAPPED_CELLS:
+        if backend != "openvino":
+            assert "-DGGML_OPENVINO=ON" not in _flags(backend, runner_os, "x86_64")
+
+
+@pytest.mark.parametrize("runner_os", ["Windows", "macOS"])
+def test_openvino_is_refused_off_linux(runner_os: str) -> None:
+    result = subprocess.run(
+        ["bash", str(_SCRIPT), "--print"],
+        capture_output=True,
+        encoding="utf-8",
+        env={
+            "BACKEND": "openvino",
+            "RUNNER_OS": runner_os,
+            "TARGET_ARCH": "x86_64",
+            "PATH": "/usr/bin:/bin",
+        },
+        check=False,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert f"backend 'openvino' is not supported on {runner_os}" in result.stderr
+
+
 def test_macos_arm64_cpu_stays_single_variant() -> None:
     flags = _flags("cpu", "macOS", "arm64")
     assert "-DGGML_BACKEND_DL=ON" not in flags
@@ -70,6 +103,28 @@ def test_deferred_gpu_cells_keep_the_avx_cap(backend: str, runner_os: str) -> No
     assert "-DGGML_AVX=ON" in flags
     assert "-DGGML_AVX2=OFF" in flags
     assert "-DGGML_CPU_ALL_VARIANTS=ON" not in flags
+
+
+@pytest.mark.parametrize(
+    ("runner_os", "target_arch"),
+    [(o, a) for o in ("Linux", "Windows", "macOS") for a in ("x86_64", "arm64")],
+)
+def test_sycl_is_an_unknown_backend(runner_os: str, target_arch: str) -> None:
+    result = subprocess.run(
+        ["bash", str(_SCRIPT), "--print"],
+        capture_output=True,
+        encoding="utf-8",
+        env={
+            "BACKEND": "sycl",
+            "RUNNER_OS": runner_os,
+            "TARGET_ARCH": target_arch,
+            "PATH": "/usr/bin:/bin",
+        },
+        check=False,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "unknown backend 'sycl'" in result.stderr
 
 
 @pytest.mark.parametrize(

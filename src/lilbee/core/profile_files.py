@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import ProfileScope
+from lilbee.core.config.model import ignore_not_settings
 from lilbee.core.config.resolve import PROFILE_FIELDS, builtin_value
 from lilbee.core.security import write_text_atomically
 from lilbee.core.system import canonical_data_root, default_data_dir
@@ -234,9 +235,6 @@ def _assign(trial: Config, key: str, value: Any) -> Any:
         setattr(trial, key, value)
     except ValidationError as exc:
         raise ProfileFileError(f"Bad value for {key}: {exc.errors()[0]['msg']}") from None
-    # A validator's TypeError is a bad value
-    except TypeError as exc:
-        raise ProfileFileError(f"Bad value for {key}: {exc}") from None
     return getattr(trial, key)
 
 
@@ -277,12 +275,19 @@ def _evidence_problems(values: Mapping[str, Any], evidence: str | None) -> list[
 
 
 def _value_problems(
-    raw: Mapping[str, Any], min_lilbee: str | None, folder: ProfileFolder, evidence: str | None
+    raw: Mapping[str, Any],
+    min_lilbee: str | None,
+    folder: ProfileFolder,
+    evidence: str | None,
+    label: str,
 ) -> list[str]:
     problems: list[str] = []
     normalized: dict[str, Any] = {}
     trial = cfg.model_copy()
+    ignored = ignore_not_settings(label, raw)
     for key, value in raw.items():
+        if key in ignored:
+            continue
         try:
             normalized[key] = _normalized(trial, key, value, min_lilbee)
         except ProfileFileError as exc:
@@ -332,7 +337,7 @@ def profile_problems(data: Mapping[str, Any], stem: str, folder: ProfileFolder) 
         evidence = meta.get("evidence")
         # untyped TOML: a non-text evidence is already a problem and counts as none
         evidence = evidence if isinstance(evidence, str) else None
-        problems += _value_problems(raw, min_lilbee, folder, evidence)
+        problems += _value_problems(raw, min_lilbee, folder, evidence, f"{stem}{PROFILE_SUFFIX}")
     return list(dict.fromkeys(problems))
 
 
@@ -350,7 +355,8 @@ def parse_profile(data: Mapping[str, Any], stem: str, folder: ProfileFolder) -> 
         format=PROFILE_FORMAT,
         min_lilbee=meta.get("min_lilbee"),
         evidence=meta.get("evidence"),
-        values=dict(data[VALUES_TABLE]),
+        # A key that is not a setting passed the checks with a warning and is left out.
+        values={k: v for k, v in data[VALUES_TABLE].items() if k in Config.model_fields},
     )
 
 
@@ -582,22 +588,28 @@ def parse_text(text: str, stem: str, folder: ProfileFolder) -> ProfileFile:
     return parse_profile(_parse_toml(text), stem, folder)
 
 
-def _clash(
-    directory: Path, folder: ProfileFolder, planned: Path, replacing: Path | None
-) -> Path | None:
+def _clash(directory: Path, planned: Path, replacing: Path | None) -> Path | None:
     """A file in *directory*, other than *replacing*, at *planned* or holding the same name."""
     if not directory.is_dir():
         return None
     key = planned.stem.casefold()
     for path in sorted(directory.glob(f"*{PROFILE_SUFFIX}")):
-        if path != replacing and key in _name_keys(read_entry(path, folder)):
+        if path != replacing and key in _name_keys(_file_name(path), path):
             return path
     return None
 
 
-def _name_keys(entry: ProfileEntry) -> tuple[str, str]:
-    """The keys *entry* takes: its name and its file stem, since a file system can fold case."""
-    return profile_key(entry.name), entry.path.stem.casefold()
+def _file_name(path: Path) -> str:
+    """The name the file at *path* shows under, read without validating its values."""
+    try:
+        return _entry_name(_load_toml(path), path.stem)
+    except ProfileFileError:
+        return path.stem
+
+
+def _name_keys(name: str, path: Path) -> tuple[str, str]:
+    """The keys a profile takes: its name and its file stem, since a file system can fold case."""
+    return profile_key(name), path.stem.casefold()
 
 
 def name_problem(name: str, folder: ProfileFolder, catalog: ProfileCatalog) -> NameProblem | None:
@@ -609,7 +621,7 @@ def name_problem(name: str, folder: ProfileFolder, catalog: ProfileCatalog) -> N
     key = profile_key(name)
     if key in RESERVED_NAME_KEYS:
         return NameProblem.RESERVED_WORD
-    taken = {(e.folder, k) for e in catalog.entries for k in _name_keys(e)}
+    taken = {(e.folder, k) for e in catalog.entries for k in _name_keys(e.name, e.path)}
     if (ProfileFolder.BUILTIN, key) in taken:
         return NameProblem.RESERVED
     return NameProblem.TAKEN if (folder, key) in taken else None
@@ -628,7 +640,7 @@ def plan_write(
     if key in builtin_keys():
         raise ProfileFileError(_reserved_reason(profile.name))
     path = directory / f"{key}{PROFILE_SUFFIX}"
-    clash = _clash(directory, folder, path, replacing)
+    clash = _clash(directory, path, replacing)
     if clash is not None:
         raise ProfileNameClashError(f"A profile named {profile.name} already exists: {clash}")
     return PlannedWrite(path, folder, profile, text, replacing)

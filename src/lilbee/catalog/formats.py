@@ -1,0 +1,216 @@
+"""Model formats on the Hugging Face Hub: tags, file selection, listing parameters."""
+
+import json
+import posixpath
+import re
+from collections.abc import Iterable
+
+from lilbee.catalog.refs import rank_gguf_candidates, split_shard_filenames
+from lilbee.catalog.types import ModelFormat
+
+_GGUF_SEARCH_TERM = "GGUF"
+_SAFETENSORS_SUFFIX = ".safetensors"
+SAFETENSORS_INDEX = "model.safetensors.index.json"
+_SHARD_RE = re.compile(r"-\d+-of-\d+\.safetensors$")
+_SHARD_PARTS_RE = re.compile(r"(.*)-(\d+)-of-(\d+)\.safetensors")
+_IR_MODEL = "openvino_model.xml"
+_IR_LANGUAGE_MODEL = "openvino_language_model.xml"
+_IR_PART_RE = re.compile(r"openvino_\w+_model\.xml")
+_IR_TOKENIZER_FILES = (
+    "openvino_tokenizer.xml",
+    "openvino_tokenizer.bin",
+    "openvino_detokenizer.xml",
+    "openvino_detokenizer.bin",
+)
+_IR_COMPANIONS = ("openvino_model.bin", *_IR_TOKENIZER_FILES)
+_PROCESSOR_FILES = ("preprocessor_config.json", "processor_config.json")
+_TOKENIZER_FILES = (
+    "added_tokens.json",
+    "chat_template.jinja",
+    "chat_template.json",
+    "merges.txt",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer.model",
+    "tokenizer_config.json",
+    "vocab.json",
+)
+_POOLING_FILES = ("1_Pooling/config.json", "modules.json")
+_MODULES_FILE = "modules.json"
+# The Sentence Transformers config names that TEI reads for an embedder's input limit.
+_SENTENCE_CONFIG_FILES = (
+    "sentence_bert_config.json",
+    "sentence_roberta_config.json",
+    "sentence_distilbert_config.json",
+    "sentence_camembert_config.json",
+    "sentence_albert_config.json",
+    "sentence_xlm-roberta_config.json",
+    "sentence_xlnet_config.json",
+)
+_MODULE_FILE_RE = re.compile(r"\d+_[^/]+/(?:config\.json|model\.safetensors)")
+
+
+def formats_from_tags(tags: Iterable[str]) -> frozenset[ModelFormat]:
+    """The formats a repo's Hub tags name; an MLX repo is not plain safetensors.
+
+    No tag names XDNA: those models are named by engine tag, not by Hub repo.
+    """
+    found = {fmt for fmt in ModelFormat if fmt is not ModelFormat.XDNA and fmt.value in set(tags)}
+    if ModelFormat.MLX in found:
+        found.discard(ModelFormat.SAFETENSORS)
+    return frozenset(found)
+
+
+def hf_listing_params(fmt: ModelFormat, search: str) -> dict[str, str]:
+    """The Hub ``filter=`` and ``search=`` values for a catalog listing of *fmt*.
+
+    The Hub reads one space-joined ``search`` value; the GGUF listing keeps the
+    word GGUF in front of the user's tokens.
+    """
+    tokens = [p for p in re.split(r"[\s/\-]+", search.strip()) if p]
+    if fmt == ModelFormat.GGUF:
+        tokens.insert(0, _GGUF_SEARCH_TERM)
+    return {"filter": ModelFormat(fmt).value, "search": " ".join(tokens)}
+
+
+def select_files(fmt: ModelFormat, filenames: Iterable[str]) -> list[str]:
+    """The repo files a pull of *fmt* fetches, entry file first; empty when the repo has none.
+
+    Selection reads the listing, never the Hub tags: a tag only says the format
+    exists somewhere in the repo. Only exact names and weight suffixes match, so
+    a hash-named blob or a pickled ``pytorch_model.bin`` is never chosen. An XDNA
+    model has no repo files to select: its engine downloads it.
+    """
+    names = sorted(set(filenames))
+    if fmt == ModelFormat.GGUF:
+        selected = _select_gguf(names)
+    elif fmt == ModelFormat.OPENVINO:
+        selected = _select_openvino(names)
+    elif fmt == ModelFormat.XDNA:
+        selected = []
+    else:
+        selected = _select_safetensors(fmt, names)
+    _refuse_unsafe_names(selected)
+    return selected
+
+
+def _refuse_unsafe_names(selected: Iterable[str]) -> None:
+    """Raise ValueError for a selected name that is absolute or has a ``..`` part."""
+    for name in selected:
+        parts = name.replace("\\", "/").split("/")
+        if name.startswith(("/", "\\")) or ".." in parts:
+            raise ValueError(f"Refusing model file '{name}': its path leaves the model folder")
+
+
+def _require_whole_shard_sets(names: list[str], shards: list[str]) -> None:
+    """Raise ValueError naming the first shard that a ``-NN-of-MM`` set lacks."""
+    for stem, index, total in [m.groups() for m in map(_SHARD_PARTS_RE.fullmatch, shards) if m]:
+        for number in range(1, int(total) + 1):
+            expected = f"{stem}-{number:0{len(index)}d}-of-{total}{_SAFETENSORS_SUFFIX}"
+            if expected not in names:
+                raise ValueError(f"Incomplete model: {expected} is missing from the file list")
+
+
+def require_declared_shards(index_text: str, selected: list[str]) -> None:
+    """Raise ValueError naming the first shard that the index file declares and *selected* lacks."""
+    try:
+        declared = sorted(set(json.loads(index_text)["weight_map"].values()))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise ValueError(f"Unusable model: {SAFETENSORS_INDEX} lists no weight_map") from None
+    for shard in declared:
+        if shard not in selected:
+            raise ValueError(f"Incomplete model: {shard} is missing from the file list")
+
+
+def _present(names: list[str], wanted: Iterable[str]) -> list[str]:
+    return [name for name in wanted if name in names]
+
+
+def _select_gguf(names: list[str]) -> list[str]:
+    ranked = rank_gguf_candidates(names)
+    return split_shard_filenames(ranked[0]) if ranked else []
+
+
+def _select_safetensors(fmt: ModelFormat, names: list[str]) -> list[str]:
+    root = [name for name in names if "/" not in name and name.endswith(_SAFETENSORS_SUFFIX)]
+    shards = [name for name in root if _SHARD_RE.search(name)]
+    weights = shards or [name for name in root if name == "model" + _SAFETENSORS_SUFFIX] or root
+    if not weights:
+        return []
+    _require_whole_shard_sets(names, shards)
+    index = _present(names, [SAFETENSORS_INDEX])
+    extras = _present(names, ["config.json", *_TOKENIZER_FILES])
+    if fmt == ModelFormat.SAFETENSORS:
+        extras += _present(
+            names, ["generation_config.json", *_PROCESSOR_FILES, *_SENTENCE_CONFIG_FILES]
+        )
+        extras += _module_files(names)
+    entry = index + weights if shards else weights + index
+    return [*entry, *sorted(extras)]
+
+
+def _module_files(names: list[str]) -> list[str]:
+    """``modules.json`` plus the config and weight file of each numbered module folder."""
+    if _MODULES_FILE not in names:
+        return []
+    return [_MODULES_FILE, *(name for name in names if _MODULE_FILE_RE.fullmatch(name))]
+
+
+def ir_parts(names: Iterable[str]) -> list[str]:
+    """The ``.xml`` files of the IR in the shallowest IR folder of *names*, entry file first.
+
+    A single-file IR is ``openvino_model.xml``. A vision pipeline IR has no such file: its parts
+    are ``openvino_language_model.xml`` and every other ``openvino_<name>_model.xml`` beside
+    it. A quantized variant such as ``openvino_model_qint8_quantized.xml`` is never a part.
+    The pull picker, the weight count and the cut-off check all read this one rule.
+    """
+    listed = set(names)
+    for entry in (_IR_MODEL, _IR_LANGUAGE_MODEL):
+        folders = sorted(
+            (posixpath.dirname(name) for name in listed if posixpath.basename(name) == entry),
+            key=lambda folder: (folder.count("/"), folder),
+        )
+        if not folders:
+            continue
+        folder = folders[0]
+        first = posixpath.join(folder, entry)
+        if entry == _IR_MODEL:
+            return [first]
+        rest = sorted(
+            name
+            for name in listed
+            if posixpath.dirname(name) == folder
+            and name != first
+            and _IR_PART_RE.fullmatch(posixpath.basename(name))
+        )
+        return [first, *rest]
+    return []
+
+
+def ir_weights_file(part: str) -> str:
+    """The ``.bin`` file that holds the weights of the IR part whose ``.xml`` is *part*."""
+    return part.removesuffix(".xml") + ".bin"
+
+
+def _select_openvino(names: list[str]) -> list[str]:
+    parts = ir_parts(names)
+    if not parts:
+        return []
+    folder = posixpath.dirname(parts[0])
+    extras = ["config.json", "generation_config.json", *_TOKENIZER_FILES, *_POOLING_FILES]
+    if posixpath.basename(parts[0]) == _IR_MODEL:
+        ir = [posixpath.join(folder, name) for name in (_IR_MODEL, *_IR_COMPANIONS)]
+        return [*_present(names, ir), *_present(names, extras)]
+    for part in parts:
+        if ir_weights_file(part) not in names:
+            raise ValueError(
+                f"Incomplete model: {ir_weights_file(part)} is missing from the file list"
+            )
+    pairs = [name for part in parts for name in (part, ir_weights_file(part))]
+    tokenizers = [posixpath.join(folder, name) for name in _IR_TOKENIZER_FILES]
+    config = [posixpath.join(folder, "openvino_config.json")]
+    return [
+        *pairs,
+        *_present(names, [*tokenizers, *config, *_PROCESSOR_FILES]),
+        *_present(names, extras),
+    ]

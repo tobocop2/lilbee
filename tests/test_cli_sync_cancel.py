@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import signal
 import threading
 from unittest import mock
@@ -9,8 +10,9 @@ from unittest import mock
 import pytest
 
 from lilbee.cli.commands import ingest_sync
-from lilbee.runtime.cancellation import TaskCancelledError
+from lilbee.runtime.cancellation import SignalFlag, TaskCancelledError
 from lilbee.runtime.progress import EventType, FileStartEvent
+from tests._signals import press_ctrl_c_in_a_run
 
 
 def test_cancellable_progress_raises_when_event_set() -> None:
@@ -64,7 +66,8 @@ def test_run_sync_with_signal_cancel_passes_cancel_event(monkeypatch) -> None:
     monkeypatch.setattr("lilbee.data.ingest.sync", _fake_sync)
 
     ingest_sync.run_sync_with_signal_cancel(force_rebuild=True, retry_skipped=True)
-    assert isinstance(captured["cancel"], threading.Event)
+    assert isinstance(captured["cancel"], SignalFlag)
+    assert not isinstance(captured["cancel"], threading.Event)
     assert captured["force_rebuild"] is True
     assert captured["retry_skipped"] is True
     assert captured["quiet"] is True  # json_mode -> quiet bar
@@ -160,3 +163,59 @@ def test_run_crawl_with_signal_cancel_returns_its_pages_off_the_main_thread(monk
     t.join(timeout=10)
     assert not exc, f"unexpected exception in thread: {exc}"
     assert result == [[]]
+
+
+def test_ctrl_c_handler_records_without_an_event_or_a_lock(monkeypatch) -> None:
+    def _forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the SIGINT handler took a lock")
+
+    with ingest_sync._ctrl_c_stops(ingest_sync.AddRollback()) as cancel:
+        assert not cancel.is_set()
+        handler = signal.getsignal(signal.SIGINT)
+        monkeypatch.setattr(threading.Event, "set", _forbidden)
+        monkeypatch.setattr(threading.Condition, "__enter__", _forbidden)
+        monkeypatch.setattr(threading, "Lock", _forbidden)
+        monkeypatch.setattr(threading, "RLock", _forbidden)
+        handler(signal.SIGINT, None)
+        monkeypatch.undo()
+        assert cancel.is_set()
+
+
+def test_a_second_ctrl_c_in_a_sync_stops_it_where_it_is(monkeypatch) -> None:
+    """The command stops on the second press while the sync is still stuck in its step."""
+    steps: list[str] = []
+    release = threading.Event()
+    loops: list[asyncio.AbstractEventLoop] = []
+
+    async def _fake_sync(**kwargs):
+        loops.append(asyncio.get_running_loop())
+        press_ctrl_c_in_a_run(kwargs["cancel"])
+        press_ctrl_c_in_a_run()
+        # A step that never awaits: only the main thread's wait can end the command.
+        release.wait(10)
+        steps.append("the step ended")
+        raise asyncio.CancelledError
+
+    def _forget(_rollback: ingest_sync.AddRollback) -> None:
+        steps.append("rollback")
+
+    monkeypatch.setattr(ingest_sync, "cfg", mock.MagicMock(json_mode=True))
+    monkeypatch.setattr(ingest_sync, "json_output", lambda payload: steps.append(payload["error"]))
+    monkeypatch.setattr(ingest_sync.AddRollback, "forget_unfinished", _forget)
+    monkeypatch.setattr("lilbee.app.services.force_quit", lambda: steps.append("force quit"))
+    monkeypatch.setattr("lilbee.data.ingest.sync", _fake_sync)
+
+    try:
+        with pytest.raises(SystemExit) as stopped:
+            ingest_sync.run_sync_with_signal_cancel()
+        assert stopped.value.code == 130
+        # The step is still stuck: a command that waited for it would list its end first.
+        assert steps == ["rollback", "Sync cancelled.", "force quit"]
+    finally:
+        release.set()
+        for thread in threading.enumerate():
+            if thread.name == "lilbee-run":
+                thread.join(timeout=5)
+        # The run is left to the process exit, so its loop is still open here.
+        if loops and not loops[0].is_closed():
+            loops[0].close()

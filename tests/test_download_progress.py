@@ -21,6 +21,7 @@ from lilbee.catalog import (
 )
 from lilbee.catalog.download_progress import _CallbackProgressBar, _ProgressTracker
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.engines import LLAMA
 
 
 def _tracker_tqdm_class(callback):
@@ -279,6 +280,20 @@ class TestInitDefensiveBranches:
         monkeypatch.setattr(builtins, "__import__", fake_import)
         _install_thread_only_tqdm_lock()  # must not raise
 
+    def test_tqdm_lock_install_keeps_an_existing_lock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import threading
+
+        from tqdm.std import tqdm as tqdm_base
+
+        from lilbee import _install_thread_only_tqdm_lock
+
+        existing = threading.RLock()
+        monkeypatch.setattr(tqdm_base, "_lock", existing, raising=False)
+        _install_thread_only_tqdm_lock()
+        assert tqdm_base._lock is existing
+
 
 class TestDownloadModelProgressChain:
     """Verify download_model correctly chains progress through to the user callback."""
@@ -313,7 +328,9 @@ class TestDownloadModelProgressChain:
     ) -> None:
         """download_model passes incremental progress to the user callback."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
         monkeypatch.setattr("huggingface_hub.hf_hub_download", self._fake_download_with_chunks)
 
         entry = _test_entry()
@@ -322,7 +339,7 @@ class TestDownloadModelProgressChain:
         def on_progress(downloaded: int, total: int) -> None:
             calls.append((downloaded, total))
 
-        download_model(entry, on_progress=on_progress)
+        download_model(entry, on_progress=on_progress, engine=LLAMA)
 
         # 5 tqdm updates + 1 final 100% call from download_model
         assert len(calls) == 6
@@ -343,7 +360,7 @@ class TestDownloadModelProgressChain:
         existing.write_bytes(b"fake model data")
 
         calls: list[tuple[int, int]] = []
-        download_model(entry, on_progress=lambda d, t: calls.append((d, t)))
+        download_model(entry, on_progress=lambda d, t: calls.append((d, t)), engine=LLAMA)
 
         assert len(calls) == 1
         assert calls[0][0] == calls[0][1]  # downloaded == total
@@ -360,7 +377,9 @@ class TestDownloadModelProgressChain:
         from lilbee.catalog import download as download_mod
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
         # HF says the file is 1000 bytes; the cached copy is truncated to 10.
         monkeypatch.setattr(
             download_mod,
@@ -387,7 +406,7 @@ class TestDownloadModelProgressChain:
             return str(dest)
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
-        download_model(entry, on_progress=lambda d, t: None)
+        download_model(entry, on_progress=lambda d, t: None, engine=LLAMA)
         assert downloaded["called"]  # truncated cache was rejected and re-fetched
 
     def test_intact_cached_file_is_not_re_downloaded(
@@ -397,7 +416,9 @@ class TestDownloadModelProgressChain:
         from lilbee.catalog import download as download_mod
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
         monkeypatch.setattr(
             download_mod,
             "fetch_remote_file",
@@ -412,7 +433,7 @@ class TestDownloadModelProgressChain:
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fail_download)
         calls: list[tuple[int, int]] = []
-        download_model(entry, on_progress=lambda d, t: calls.append((d, t)))
+        download_model(entry, on_progress=lambda d, t: calls.append((d, t)), engine=LLAMA)
         assert calls and calls[-1][0] == calls[-1][1]
 
     def test_a_model_in_the_hub_cache_layout_is_reused_on_a_full_disk(
@@ -427,7 +448,9 @@ class TestDownloadModelProgressChain:
         from lilbee.catalog import download as download_mod
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
         monkeypatch.setattr(
             download_mod,
             "fetch_remote_file",
@@ -447,7 +470,7 @@ class TestDownloadModelProgressChain:
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fail_download)
         calls: list[tuple[int, int]] = []
-        result = download_model(entry, on_progress=lambda d, t: calls.append((d, t)))
+        result = download_model(entry, on_progress=lambda d, t: calls.append((d, t)), engine=LLAMA)
         assert result == snapshot
         assert calls and calls[-1] == (1000, 1000)
 
@@ -456,7 +479,9 @@ class TestDownloadModelProgressChain:
         import hashlib
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
 
         def fake_cached_download(**kwargs: Any) -> str:
             # Return a file without calling tqdm_class: simulates HF cache hit
@@ -474,7 +499,7 @@ class TestDownloadModelProgressChain:
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_cached_download)
         entry = _test_entry()
         calls: list[tuple[int, int]] = []
-        download_model(entry, on_progress=lambda d, t: calls.append((d, t)))
+        download_model(entry, on_progress=lambda d, t: calls.append((d, t)), engine=LLAMA)
 
         # Should get exactly 1 call with downloaded == total (final 100%)
         assert len(calls) == 1
@@ -490,7 +515,9 @@ class TestDownloadModelErrorPropagation:
         import httpx2
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
 
         def fake_timeout(**kwargs: Any) -> str:
             raise httpx2.TimeoutException("Connection timed out")
@@ -499,7 +526,7 @@ class TestDownloadModelErrorPropagation:
         entry = _test_entry()
 
         with pytest.raises(RuntimeError, match=r"Network error.*Connection timed out"):
-            download_model(entry)
+            download_model(entry, engine=LLAMA)
 
     def test_connect_error_raises_runtime_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -507,7 +534,9 @@ class TestDownloadModelErrorPropagation:
         import httpx2
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
 
         def fake_connect(**kwargs: Any) -> str:
             raise httpx2.ConnectError("Connection refused")
@@ -516,13 +545,15 @@ class TestDownloadModelErrorPropagation:
         entry = _test_entry()
 
         with pytest.raises(RuntimeError, match=r"Network error.*Connection refused"):
-            download_model(entry)
+            download_model(entry, engine=LLAMA)
 
     def test_os_error_raises_runtime_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
 
         def fake_oserror(**kwargs: Any) -> str:
             raise OSError("No space left on device")
@@ -531,13 +562,15 @@ class TestDownloadModelErrorPropagation:
         entry = _test_entry()
 
         with pytest.raises(RuntimeError, match=r"I/O error.*No space left"):
-            download_model(entry)
+            download_model(entry, engine=LLAMA)
 
     def test_unexpected_error_includes_type_and_message(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
 
         def fake_unexpected(**kwargs: Any) -> str:
             raise ValueError("unexpected format")
@@ -546,7 +579,7 @@ class TestDownloadModelErrorPropagation:
         entry = _test_entry()
 
         with pytest.raises(RuntimeError, match=r"ValueError.*unexpected format"):
-            download_model(entry)
+            download_model(entry, engine=LLAMA)
 
     def test_gated_repo_raises_permission_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -554,7 +587,9 @@ class TestDownloadModelErrorPropagation:
         from huggingface_hub.utils import GatedRepoError
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
 
         def fake_gated(**kwargs: Any) -> str:
             raise GatedRepoError("Gated", response=MagicMock())
@@ -563,7 +598,7 @@ class TestDownloadModelErrorPropagation:
         entry = _test_entry()
 
         with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
-            download_model(entry)
+            download_model(entry, engine=LLAMA)
 
     def test_missing_file_raises_clean_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -572,7 +607,9 @@ class TestDownloadModelErrorPropagation:
         from huggingface_hub.errors import RemoteEntryNotFoundError
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
         monkeypatch.setattr(
             "lilbee.catalog.download._hf_file_metadata", lambda *_a, **_kw: (None, None)
         )
@@ -584,7 +621,7 @@ class TestDownloadModelErrorPropagation:
         entry = _test_entry()
 
         with pytest.raises(RuntimeError, match=r"'test-model\.gguf' does not exist in"):
-            download_model(entry)
+            download_model(entry, engine=LLAMA)
 
     def test_repo_not_found_raises_runtime_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -592,7 +629,9 @@ class TestDownloadModelErrorPropagation:
         from huggingface_hub.utils import RepositoryNotFoundError
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(
+            "lilbee.catalog.download.resolve_filename", lambda e, engine, **_kw: e.gguf_filename
+        )
 
         def fake_not_found(**kwargs: Any) -> str:
             raise RepositoryNotFoundError("Not found", response=MagicMock())
@@ -601,7 +640,7 @@ class TestDownloadModelErrorPropagation:
         entry = _test_entry()
 
         with pytest.raises(RuntimeError, match="not found on HuggingFace"):
-            download_model(entry)
+            download_model(entry, engine=LLAMA)
 
 
 class TestMakeDownloadCallback:
@@ -660,22 +699,7 @@ class TestMakeDownloadCallback:
 
 
 class TestProgressTracker:
-    """Tests for _ProgressTracker.was_used detection."""
-
-    def test_was_used_false_when_no_updates(self) -> None:
-        tracker = _ProgressTracker(lambda d, t: None)
-        cls = tracker.make_tqdm_class()
-        bar = cls(total=100)
-        bar.close()
-        assert tracker.was_used is False
-
-    def test_was_used_true_after_update(self) -> None:
-        tracker = _ProgressTracker(lambda d, t: None)
-        cls = tracker.make_tqdm_class()
-        bar = cls(total=100)
-        bar.update(50)
-        bar.close()
-        assert tracker.was_used is True
+    """Tests for the totals _ProgressTracker reports."""
 
     def test_single_file_reports_shard_total(self) -> None:
         # grand_total=0 (single file) falls back to the shard's own total.
@@ -767,41 +791,49 @@ class TestFetchRemoteFile:
         assert download_mod._hf_file_metadata("org/repo", "m.gguf") == (4096, "abc123")
 
 
-class TestDownloadBytes:
-    """The exact bytes a pull fetches, every shard of a split GGUF summed."""
+class TestPlanBytes:
+    """The exact bytes the plan of a GGUF pull charges, every shard of a split GGUF summed."""
 
-    def _patch_sizes(self, monkeypatch: pytest.MonkeyPatch, sizes: dict[str, int]) -> None:
-        from lilbee.catalog.download import RemoteFile
+    def _plan(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sizes: dict[str, int]) -> Any:
+        from lilbee.catalog import download
 
         monkeypatch.setattr(
-            "lilbee.catalog.download.fetch_remote_file",
-            lambda _repo, name: RemoteFile(size=sizes[name], blob=f"blob-{name}"),
+            download,
+            "fetch_remote_file",
+            lambda _repo, name: download.RemoteFile(size=sizes[name], blob=f"blob-{name}"),
         )
+        files = download._gguf_files("org/repo", tmp_path, min(sizes), None)
+        return download.PullPlan("org/repo", files)
 
-    def test_single_file_reports_the_hubs_figure(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.catalog.download import download_bytes
+    def test_single_file_charges_the_hubs_figure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        plan = self._plan(monkeypatch, tmp_path, {"m.gguf": 5_027_783_488})
+        assert [file.size for file in plan.missing] == [5_027_783_488]
 
-        self._patch_sizes(monkeypatch, {"m.gguf": 5_027_783_488})
-        assert download_bytes("org/repo", "m.gguf") == 5_027_783_488
-
-    def test_split_gguf_sums_every_shard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_split_gguf_charges_every_shard(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         """llama.cpp needs the whole set on disk, so the check asks about all of it."""
-        from lilbee.catalog.download import download_bytes
-
-        self._patch_sizes(
-            monkeypatch,
-            {"m-00001-of-00002.gguf": 30, "m-00002-of-00002.gguf": 12},
+        plan = self._plan(
+            monkeypatch, tmp_path, {"m-00001-of-00002.gguf": 30, "m-00002-of-00002.gguf": 12}
         )
-        assert download_bytes("org/repo", "m-00001-of-00002.gguf") == 42
+        assert sum(file.size for file in plan.missing) == 42
 
-    def test_one_unresolvable_shard_makes_the_total_unknown(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_one_unresolvable_shard_makes_the_need_unknown(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """A partial sum would read short and pass a disk check that must fail."""
-        from lilbee.catalog.download import _SIZE_UNKNOWN, download_bytes
+        import shutil
 
-        self._patch_sizes(
+        from lilbee.catalog import download
+
+        plan = self._plan(
             monkeypatch,
-            {"m-00001-of-00002.gguf": 30, "m-00002-of-00002.gguf": _SIZE_UNKNOWN},
+            tmp_path,
+            {"m-00001-of-00002.gguf": 30, "m-00002-of-00002.gguf": download._SIZE_UNKNOWN},
         )
-        assert download_bytes("org/repo", "m-00001-of-00002.gguf") == _SIZE_UNKNOWN
+        monkeypatch.setattr(
+            download.shutil, "disk_usage", lambda _p: shutil._ntuple_diskusage(1, 1, 0)
+        )
+        assert download.preflight(plan, tmp_path) is None

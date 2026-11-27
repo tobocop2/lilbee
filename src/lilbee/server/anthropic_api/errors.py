@@ -18,6 +18,7 @@ _ANTHROPIC_ERROR_TYPES: dict[CompletionsErrorCode, str] = {
     CompletionsErrorCode.INVALID_API_KEY: "authentication_error",
     CompletionsErrorCode.RATE_LIMIT_EXCEEDED: "rate_limit_error",
     CompletionsErrorCode.INTERNAL_ERROR: "api_error",
+    CompletionsErrorCode.ENGINE_MISSING: "api_error",
 }
 
 

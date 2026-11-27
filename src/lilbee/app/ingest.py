@@ -6,7 +6,7 @@ import asyncio
 import fnmatch
 import logging
 from collections import Counter
-from collections.abc import Callable, Collection, Generator, Iterable
+from collections.abc import Callable, Collection, Generator, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +16,7 @@ from lilbee.core import settings
 from lilbee.core.config import Config, active_config
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.system import DiskSpelling, disk_path
+from lilbee.data.extract.chunk import EmbedWindowError
 from lilbee.data.ingest.discovery import (
     excluded_extension_reasons,
     file_hash,
@@ -23,7 +24,7 @@ from lilbee.data.ingest.discovery import (
     walk_reaches,
 )
 from lilbee.data.ingest.ignore import IgnoreRules
-from lilbee.data.store import REMOVED_REASON, HeldOut, HeldRecord
+from lilbee.data.store import INGEST_FAILURES, REMOVED_REASON, HeldOut, HeldRecord
 from lilbee.data.store.locations import SourceLocations, root_location
 from lilbee.data.store.types import RemoveResult
 from lilbee.data.types import is_under
@@ -45,6 +46,9 @@ LIBRARY_REFUSALS = (
     LibraryUnlockableError,
     LockingUnsupportedError,
 )
+# What a sync adds to those: the embed engine cannot take a chunk (its window is
+# smaller, or it cannot finish starting at that size). Each message says what to do.
+SYNC_REFUSALS = (*LIBRARY_REFUSALS, EmbedWindowError)
 
 
 @dataclass
@@ -60,6 +64,8 @@ class RegisterResult:
     """The overlapping paths that contain the documents directory; none is registered."""
     absorbed_into: dict[str, list[str]] = field(default_factory=dict)
     """Each newly registered label that took in registered sources, with their labels."""
+    absorbed_roots: dict[str, str] = field(default_factory=dict)
+    """The folder each taken-in source was registered at, by its label; a cancel restores it."""
     refused: list[str] = field(default_factory=list)
     """Files whose format lilbee does not index, as ``name: reason``."""
     outside_corpus: list[str] = field(default_factory=list)
@@ -89,7 +95,7 @@ class RegisterResult:
 
     @property
     def revocable(self) -> list[str]:
-        """The registered labels a cancelled add un-registers: each that took in no source."""
+        """The registered labels a failed sync un-registers: each that took in no source."""
         return [label for label in self.registered if label not in self.absorbed_into]
 
     @property
@@ -192,16 +198,20 @@ def _classify(
             result.name_taken.append(src.name)
             outside.setdefault(src, src.name)
             continue
+        was = {child: roots[child] for child in reached}
         for child in reached:
             del roots[child]
             by_target.pop(spelled.pop(child), None)
-        taken = sorted(child for child in reached if child in sources)
+        # A path of this call that this one contains passes on what it took in.
+        passed = (kid for child in reached for kid in result.absorbed_into.pop(child, []))
+        taken = sorted({*(child for child in reached if child in sources), *passed})
         roots[label] = str(src)
         spelled[label] = src
         by_target[src] = label
         result.registered = [name for name in result.registered if name not in reached] + [label]
         if taken:
             result.absorbed_into[label] = taken
+            result.absorbed_roots.update((child, was[child]) for child in taken if child in was)
     result.outside_corpus = list(outside.values())
     return result
 
@@ -377,31 +387,34 @@ def _is_glob(name: str) -> bool:
     return any(char in _GLOB_CHARS for char in name)
 
 
-def folder_members(name: str, known: Iterable[str]) -> list[str]:
-    """Known sources under folder *name*, matched on whole path segments.
-
-    ``myrepo`` covers ``myrepo/a.py`` but never ``myrepo-2/x``. Empty when *name*
-    is not a parent directory of any known source.
-    """
-    prefix = name.rstrip("/") + "/"
-    return [source for source in known if source.startswith(prefix)]
-
-
 def held_failures() -> dict[str, HeldRecord]:
-    """The record of each file an ingestion failure holds out, by path, sorted."""
+    """The record of each file whose ingestion failed, by path, sorted."""
     held = get_services().store.held_records()
-    return {name: held[name] for name in sorted(held) if held[name].kind is HeldOut.FAILED}
+    return {name: held[name] for name in sorted(held) if held[name].kind in INGEST_FAILURES}
 
 
-def removable_names(indexed: list[str] | None = None) -> list[str]:
-    """What a remove can name: *indexed* (the store's sources when not given), then failures."""
-    if indexed is None:
-        indexed = [s["filename"] for s in get_services().store.get_sources()]
+def removable_names(indexed: list[str]) -> list[str]:
+    """What a remove can name: the *indexed* names given, then failures."""
     seen = set(indexed)
     return indexed + [name for name in held_failures() if name not in seen]
 
 
-def expand_remove_targets(names: list[str], known: list[str]) -> list[str]:
+def iter_removable_names() -> Iterator[str]:
+    """Every name a remove can name, streamed so no list of the library is held."""
+    failed = held_failures()
+    for head in get_services().store.iter_source_heads():
+        failed.pop(head["filename"], None)
+        yield head["filename"]
+    yield from failed
+
+
+def removable_among(names: list[str]) -> set[str]:
+    """The *names* that are an indexed source or a held-out failure, from one scan of the names."""
+    indexed = set(names) - get_services().store.missing_sources(names)
+    return indexed | (set(names) & held_failures().keys())
+
+
+def expand_remove_targets(names: list[str], known: Iterable[str]) -> list[str]:
     """Expand folder names and glob patterns to the known sources they cover.
 
     An exact source name is kept. A folder name (a parent directory of known
@@ -409,30 +422,29 @@ def expand_remove_targets(names: list[str], known: list[str]) -> list[str]:
     ``* ? [``) expands to every source it fnmatches. A name matching none of
     these is kept unchanged so the caller reports it not-found. Order and
     de-duplication are preserved. *known* is what a remove can name,
-    ``removable_names()``.
+    ``iter_removable_names()``; it is read once and only the matches are kept.
     """
-    known_set = set(known)
+    wanted = set(names)
+    exact: set[str] = set()
+    matches: dict[str, list[str]] = {name: [] for name in names}
+    globs = [name for name in matches if _is_glob(name)]
+    folders = {name: name.rstrip("/") + "/" for name in matches if not _is_glob(name)}
+    for source in known:
+        if source in wanted:
+            exact.add(source)
+        matches_here = [g for g in globs if fnmatch.fnmatchcase(source, g)]
+        matches_here += [f for f, prefix in folders.items() if source.startswith(prefix)]
+        for name in matches_here:
+            matches[name].append(source)
     expanded: list[str] = []
     seen: set[str] = set()
-
-    def _add(candidate: str) -> None:
-        if candidate not in seen:
-            seen.add(candidate)
-            expanded.append(candidate)
-
     for name in names:
-        if name in known_set:
-            _add(name)
-            continue
-        if _is_glob(name):
-            matches = [source for source in known if fnmatch.fnmatchcase(source, name)]
-        else:
-            matches = folder_members(name, known)
-        if matches:
-            for match in matches:
-                _add(match)
-        else:
-            _add(name)  # not-found; reported by the store
+        # An exact name stays; else its folder or glob matches; else it stays for the store to
+        # report not-found.
+        for candidate in [name] if name in exact else matches[name] or [name]:
+            if candidate not in seen:
+                seen.add(candidate)
+                expanded.append(candidate)
     return expanded
 
 
@@ -487,14 +499,13 @@ def remove_documents_durably(
     The removal and the records it holds out are one write of the index.
     """
     store = get_services().store
-    known = removable_names()
     if targets is None:
-        targets = expand_remove_targets(names, known)
+        targets = expand_remove_targets(names, iter_removable_names())
     failed = held_failures()
     settings.refresh_registry(active_config())
     linked = active_config().linked_roots
     going = [label for label in (name.strip("/") for name in names) if label in linked]
-    removable = set(known)
+    removable = removable_among(targets)
     holds = _removal_holds([name for name in targets if name in removable], going, failed)
     result = store.remove_documents(targets, holds)
     held = [name for name in result.not_found if name in failed]
@@ -540,8 +551,8 @@ class AddRollback:
     at_sync: bool = True
     """Whether the add reached its sync."""
     absorbed_into: dict[str, list[str]] = field(default_factory=dict)
-    """Each label the add registered that took in sources, with their labels; it stays."""
-    _roots: list[str] = field(default_factory=list)
+    """Each label the add registered that took in sources, with their labels, while it stays."""
+    _registration: RegisterResult = field(default_factory=RegisterResult)
     _before: dict[str, str] = field(default_factory=dict)
 
     def message(self, nothing_dropped: str) -> str:
@@ -560,11 +571,12 @@ class AddRollback:
         log.warning("A stopped sync also hit an error", exc_info=exc)
         self.error = str(exc) or type(exc).__name__
 
-    def registered(self, labels: list[str], cancel: CancelSignal) -> None:
-        """Take *labels* as the roots the add registered; its sync starts here."""
-        self._roots, self.at_sync = labels, True
+    def registered(self, registration: RegisterResult, cancel: CancelSignal) -> None:
+        """Take *registration* as what the add registered; its sync starts here."""
+        self._registration, self.at_sync = registration, True
+        self.absorbed_into = dict(registration.absorbed_into)
         try:
-            self._before = indexed_stamps(labels)
+            self._before = indexed_stamps(registration.registered)
         except Exception as exc:
             if not cancel.is_set():
                 raise
@@ -585,7 +597,8 @@ class AddRollback:
 
     def _forget_roots(self) -> None:
         """Un-register each root with no file indexed since the sync started."""
-        forget_unfinished_roots(self._roots, self._before)
+        for label in forget_unfinished_roots(self._registration, self._before):
+            self.absorbed_into.pop(label, None)
 
     def _name_missing(self) -> None:
         """Take the name of each given path the corpus does not hold."""
@@ -614,14 +627,57 @@ def indexed_stamps(labels: list[str]) -> dict[str, str]:
     }
 
 
-def forget_unfinished_roots(labels: list[str], before: dict[str, str]) -> list[str]:
-    """Un-register each root in *labels* with no file indexed since *before*; returns them.
+def unfinished_since(labels: list[str], before: dict[str, str]) -> list[str]:
+    """Each of *labels* with no file indexed since the stamps *before* were read.
 
     A file is indexed since *before* when its source is new or its stamp changed.
     """
     finished = [name for name, stamp in indexed_stamps(labels).items() if before.get(name) != stamp]
-    unfinished = [label for label in labels if not any(is_under(name, label) for name in finished)]
-    return forget_roots(unfinished) if unfinished else []
+    return [label for label in labels if not any(is_under(name, label) for name in finished)]
+
+
+def forget_unfinished_roots(registration: RegisterResult, before: dict[str, str]) -> list[str]:
+    """Undo each root *registration* made with no file indexed since *before*; returns them.
+
+    A root that took in registered sources gives each back, registered at its
+    folder again, before it leaves; the rows, records and wiki pages of a
+    source follow its folder, so none is rewritten.
+    """
+    labels = registration.registered
+    unfinished = unfinished_since(labels, before)
+    if not unfinished:
+        return []
+    swapped = [label for label in unfinished if label in registration.absorbed_into.get(label, [])]
+    restore_absorbed(registration, unfinished, swapped)
+    forget_roots([label for label in unfinished if label not in swapped])
+    return unfinished
+
+
+def restore_absorbed(registration: RegisterResult, parents: list[str], swapped: list[str]) -> None:
+    """Register again each source the roots *parents* took in, at the folder it had.
+
+    A source whose label a root still holds stays unregistered, unless that root is in
+    *swapped*: it took the label of its own source, so the source takes the label back.
+    """
+    back = {
+        child: registration.absorbed_roots[child]
+        for parent in parents
+        for child in registration.absorbed_into.get(parent, [])
+    }
+    if not back:
+        return
+
+    def _mutate(persisted: dict[str, str] | None) -> tuple[dict[str, str], None]:
+        roots = dict(persisted or {})
+        roots.update(
+            (child, path) for child, path in back.items() if child not in roots or child in swapped
+        )
+        return roots, None
+
+    config = active_config()
+    settings.mutate_value(config.data_root, "linked_roots", _mutate)
+    settings.sync_from_resolver(config, ["linked_roots"])
+    show_current_paths_in_wiki()
 
 
 @contextmanager
@@ -642,11 +698,14 @@ def leave_as_cancel(
 
 @contextmanager
 def forget_unfinished_on_cancel(
-    paths: list[Path], labels: list[str], cancel: CancelSignal, user_cancelled: Callable[[], bool]
+    paths: list[Path],
+    registration: RegisterResult,
+    cancel: CancelSignal,
+    user_cancelled: Callable[[], bool],
 ) -> Generator[AddRollback, None, None]:
     """Wrap an add of *paths* after registration; a raise under a set *cancel* is a cancel."""
     rollback = AddRollback(paths=paths)
-    rollback.registered(labels, cancel)
+    rollback.registered(registration, cancel)
     with leave_as_cancel(rollback, cancel, user_cancelled):
         yield rollback
 

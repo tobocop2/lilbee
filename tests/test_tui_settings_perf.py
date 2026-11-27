@@ -15,7 +15,7 @@ from tests._lilbee_app_test_host import LilbeeAppHost
 def _make_eager_settings_screen():
     """SettingsScreen subclass that populates every pane on mount.
 
-    Mirrors the fixture in ``test_tui_screens.py`` so this file can drive the
+    Mirrors the fixture in ``_settings_test_app.py`` so this file can drive the
     Generation tab without waiting on lazy tab activation.
     """
     import importlib
@@ -29,8 +29,8 @@ def _make_eager_settings_screen():
     class _EagerSettingsScreen(SettingsScreen):
         CSS_PATH = css_path
 
+        # Textual runs the on_mount of every class in the tree, SettingsScreen's after this one.
         def on_mount(self) -> None:
-            super().on_mount()
             self.populate_all_panes()
 
     return _EagerSettingsScreen

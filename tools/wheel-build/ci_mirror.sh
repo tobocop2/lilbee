@@ -17,19 +17,31 @@
 # Usage:
 #   ci_mirror.sh asset-name <key>          print the asset name for a key
 #   ci_mirror.sh probe      <key>          exit 0 if the mirror carries it
-#   ci_mirror.sh fetch      <key> <dir>    extract it into <dir>, or exit 1
-#   ci_mirror.sh publish    <key> <dir>    upload <dir> under <key>
+#   ci_mirror.sh fetch      <key> <dir>    extract it into <dir>, or exit 1; with
+#                                          MIRROR_REFRESH_DAYS, exit 3 when only
+#                                          the previous age bucket was restored
+#   ci_mirror.sh publish    <key> <dir>    upload <dir> under <key>, or exit 1
+#                                          when the upload did not happen
+#   ci_mirror.sh check                     validate the environment, then exit 0
 #
 # Reads:
 #   GITHUB_REPOSITORY   owner/repo (set by Actions)
 #   GH_TOKEN            token with contents: write; publish only
 #   MIRROR_RELEASE_TAG  mirror release tag (default engine-binaries)
+#   MIRROR_REFRESH_DAYS age bucket in days added to the key (a whole number,
+#                       1 or more; anything else exits 2); unset for a
+#                       content-addressed key that never needs a refresh
 
 set -euo pipefail
 
 readonly DEFAULT_RELEASE_TAG="engine-binaries"
+# fetch exit status: restored from the previous age bucket, not the current one.
+readonly STALE_RESTORE_STATUS=3
 # GitHub rejects release assets over 2 GiB.
 readonly MAX_ASSET_BYTES=$((2 * 1024 * 1024 * 1024))
+# The most assets the GitHub API lists per page, and a stop for the page loop.
+readonly ASSET_PAGE_SIZE=100
+readonly MAX_ASSET_PAGES=100
 release_tag="${MIRROR_RELEASE_TAG:-${DEFAULT_RELEASE_TAG}}"
 repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 
@@ -67,11 +79,21 @@ resolve_release_id() {
         2>/dev/null | first_id || true
 }
 
+# The assets endpoint returns at most ASSET_PAGE_SIZE per page, and the mirror
+# holds several pages, so read pages until the asset turns up or a page comes
+# back short. MAX_ASSET_PAGES stops a response that never comes back short.
 mirror_carries() {
-    local release_id="${1}" asset="${2}"
-    api_get "https://api.github.com/repos/${repo}/releases/${release_id}/assets?per_page=100" 2>/dev/null \
-        | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        | grep -qF "\"${asset}\""
+    local release_id="${1}" asset="${2}" page names count
+    for ((page = 1; page <= MAX_ASSET_PAGES; page++)); do
+        names="$(api_get "https://api.github.com/repos/${repo}/releases/${release_id}/assets?per_page=${ASSET_PAGE_SIZE}&page=${page}" 2>/dev/null \
+            | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' || true)"
+        if printf '%s\n' "${names}" | grep -qF "\"${asset}\""; then
+            return 0
+        fi
+        count="$(printf '%s' "${names}" | grep -c . || true)"
+        [ "${count}" -ge "${ASSET_PAGE_SIZE}" ] || return 1
+    done
+    return 1
 }
 
 cmd_asset_name() {
@@ -83,9 +105,56 @@ cmd_probe() {
     curl -fsI --retry 2 "$(download_url "${key}")" >/dev/null 2>&1
 }
 
+# Keys that carry no content hash of their own (the Nuitka object cache, keyed on
+# the dependency set) set MIRROR_REFRESH_DAYS so the blob cannot freeze. Time is
+# cut into buckets of that many days; a publish writes the current bucket and a
+# restore reads the current bucket, then the one before it. A restore from the
+# previous bucket exits 3, and the workflow publishes whenever the current bucket
+# was not restored, so the first build of a new bucket starts warm and writes the
+# fuller cache under the new bucket. No blob is older than two periods.
+# MIRROR_NOW overrides the clock for tests.
+age_bucket() {
+    printf '%s\n' "$(( ${MIRROR_NOW:-$(date -u +%s)} / (MIRROR_REFRESH_DAYS * 86400) ))"
+}
+
+# Candidate keys for a restore, newest first.
+restore_keys() {
+    local key="${1}" bucket
+    if [ -z "${MIRROR_REFRESH_DAYS:-}" ]; then
+        printf '%s\n' "${key}"
+        return 0
+    fi
+    bucket="$(age_bucket)"
+    printf '%s.b%s\n%s.b%s\n' "${key}" "${bucket}" "${key}" "$((bucket - 1))"
+}
+
+publish_key() {
+    if [ -z "${MIRROR_REFRESH_DAYS:-}" ]; then
+        printf '%s\n' "${1}"
+    else
+        printf '%s.b%s\n' "${1}" "$(age_bucket)"
+    fi
+}
+
 cmd_fetch() {
     local key="${1:?usage: ci_mirror.sh fetch <key> <dir>}"
     local dest="${2:?usage: ci_mirror.sh fetch <key> <dir>}"
+    local candidate rank=0
+    while IFS= read -r candidate; do
+        if fetch_one "${candidate}" "${dest}"; then
+            # The first candidate is the current bucket: exit 0. A later one is a
+            # stale bucket: exit 3, so the caller restores it and still publishes.
+            [ "${rank}" -eq 0 ] || return "${STALE_RESTORE_STATUS}"
+            return 0
+        fi
+        rank=$((rank + 1))
+    done < <(restore_keys "${key}")
+    return 1
+}
+
+fetch_one() {
+    local key="${1}"
+    local dest="${2}"
     local asset tmp
     asset="$(asset_name "${key}")"
     tmp="$(mktemp -d)"
@@ -106,13 +175,16 @@ cmd_fetch() {
     echo "Restored ${asset}"
 }
 
-# Every failure is soft: the mirror is an optimisation with the Actions cache and
-# a source build behind it, so a publish problem must not fail a release build.
+# Exits 1, with the reason, when the asset was not uploaded and the mirror does
+# not carry it. The mirror is an optimisation with the Actions cache and a
+# source build behind it, so every caller runs this step with
+# continue-on-error: the build still passes, and the step shows that the upload
+# did not happen.
 cmd_publish() {
     local key="${1:?usage: ci_mirror.sh publish <key> <dir>}"
     local src="${2:?usage: ci_mirror.sh publish <key> <dir>}"
     local asset release_id tmp
-    asset="$(asset_name "${key}")"
+    asset="$(asset_name "$(publish_key "${key}")")"
 
     if [ ! -d "${src}" ] || [ -z "$(ls -A "${src}" 2>/dev/null)" ]; then
         echo "No engine at ${src}; nothing to mirror." >&2
@@ -122,7 +194,7 @@ cmd_publish() {
     tmp="$(mktemp -d)"
     if ! tar -czf "${tmp}/${asset}" -C "${src}" .; then
         echo "Could not pack ${src}; skipping the mirror upload." >&2
-        return 0
+        return 1
     fi
 
     local size
@@ -130,13 +202,13 @@ cmd_publish() {
     echo "Packed ${asset}: $((size / 1048576)) MB"
     if [ "${size}" -gt "${MAX_ASSET_BYTES}" ]; then
         echo "Packed ${asset} is $((size / 1048576)) MB, over the $((MAX_ASSET_BYTES / 1048576)) MB release-asset limit; skipping the mirror upload." >&2
-        return 0
+        return 1
     fi
 
     release_id="$(resolve_release_id)"
     if [ -z "${release_id}" ]; then
         echo "Could not resolve or create ${release_tag}; skipping the mirror upload." >&2
-        return 0
+        return 1
     fi
 
     if mirror_carries "${release_id}" "${asset}"; then
@@ -144,26 +216,32 @@ cmd_publish() {
         return 0
     fi
 
-    if curl -fsSL -X POST \
+    local err
+    if ! err="$(curl -fsSL -X POST \
         -H "Authorization: Bearer ${GH_TOKEN}" \
         -H "Content-Type: application/gzip" \
         --data-binary @"${tmp}/${asset}" \
-        "https://uploads.github.com/repos/${repo}/releases/${release_id}/assets?name=${asset}" >/dev/null 2>&1; then
-        echo "Mirrored ${asset}."
-        rm -rf "${tmp}"
-    else
-        echo "Mirror upload of ${asset} failed; consumers fall back to rebuilding it." >&2
+        "https://uploads.github.com/repos/${repo}/releases/${release_id}/assets?name=${asset}" 2>&1 >/dev/null)"; then
+        echo "Mirror upload of ${asset} failed: ${err:-no reason given}. Consumers fall back to rebuilding it." >&2
+        return 1
     fi
+    echo "Mirrored ${asset}."
+    rm -rf "${tmp}"
 }
 
 main() {
     local command="${1:?usage: ci_mirror.sh <asset-name|probe|fetch|publish> ...}"
     shift
+    if [ -n "${MIRROR_REFRESH_DAYS:-}" ] && ! [[ "${MIRROR_REFRESH_DAYS}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "MIRROR_REFRESH_DAYS must be a whole number of days, 1 or more; got '${MIRROR_REFRESH_DAYS}'." >&2
+        exit 2
+    fi
     case "${command}" in
         asset-name) cmd_asset_name "$@" ;;
         probe)      cmd_probe "$@" ;;
         fetch)      cmd_fetch "$@" ;;
         publish)    cmd_publish "$@" ;;
+        check)      ;;
         *) echo "unknown command: ${command}" >&2; exit 2 ;;
     esac
 }

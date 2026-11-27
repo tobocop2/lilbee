@@ -125,20 +125,39 @@ class TestProcessImage:
 
     def test_request_context_supplies_timeout(self):
         be, calls = _backend()
-        with ocr_request(timeout=12.5) as token:
-            be.process_image(b"PNG", _cfg(backend_options=backend_options_for(token)))
+        with ocr_request(timeout=12.5) as request:
+            be.process_image(b"PNG", _cfg(backend_options=backend_options_for(request.token)))
         assert calls[0][3] == 12.5
 
     def test_a_set_cancel_stops_the_next_page_before_the_model_call(self):
         cancel = threading.Event()
         be, calls = _backend()
-        with ocr_request(cancel=cancel) as token:
-            options = _cfg(backend_options=backend_options_for(token))
+        with ocr_request(cancel=cancel) as request:
+            options = _cfg(backend_options=backend_options_for(request.token))
             be.process_image(b"PAGE1", options)
+            assert not request.cancel_refused.is_set()
             cancel.set()
             with pytest.raises(TaskCancelledError):
                 be.process_image(b"PAGE2", options)
+            assert request.cancel_refused.is_set()
         assert [(call[0], call[4]) for call in calls] == [(b"PAGE1", cancel)]
+
+    @pytest.mark.parametrize("cancel_set", [True, False])
+    def test_a_cancel_raised_by_the_ocr_function_is_recorded_only_under_a_set_cancel(
+        self, cancel_set
+    ):
+        """The model call's own cancel counts as a refusal only when the cancel is set."""
+        cancel = threading.Event()
+
+        def _cancelling_fn(image_bytes, model, prompt, *, timeout, cancel):
+            if cancel_set:
+                cancel.set()
+            raise TaskCancelledError
+
+        be, _ = _backend(ocr_fn=_cancelling_fn)
+        with ocr_request(cancel=cancel) as request, pytest.raises(TaskCancelledError):
+            be.process_image(b"PNG", _cfg(backend_options=backend_options_for(request.token)))
+        assert request.cancel_refused.is_set() is cancel_set
 
     def test_non_string_token_is_ignored(self):
         be, calls = _backend()
@@ -163,25 +182,26 @@ class TestProcessImage:
         be, calls = _backend()
         cancel = threading.Event()
         cancel.set()
-        with ocr_request(cancel=cancel) as token, pytest.raises(TaskCancelledError):
-            be.process_image(b"PNG", _cfg(backend_options=backend_options_for(token)))
+        with ocr_request(cancel=cancel) as request, pytest.raises(TaskCancelledError):
+            be.process_image(b"PNG", _cfg(backend_options=backend_options_for(request.token)))
         assert calls == []
+        assert request.cancel_refused.is_set()
 
     def test_unset_cancel_signal_calls_the_ocr_function(self):
         be, calls = _backend()
-        with ocr_request(timeout=4.0, cancel=threading.Event()) as token:
-            doc = be.process_image(b"PNG", _cfg(backend_options=backend_options_for(token)))
+        with ocr_request(timeout=4.0, cancel=threading.Event()) as request:
+            doc = be.process_image(b"PNG", _cfg(backend_options=backend_options_for(request.token)))
         assert doc.content == "# extracted"
         assert calls[0][3] == 4.0
 
 
 class TestRegistry:
     def test_token_registered_within_scope_and_cleaned_after(self):
-        with ocr_request(timeout=3.0) as token:
-            ctx = ocr_requests.get(token)
-            assert ctx is not None and ctx.timeout == 3.0
+        with ocr_request(timeout=3.0) as request:
+            ctx = ocr_requests.get(request.token)
+            assert ctx is request and ctx.timeout == 3.0
             assert ctx.cancel is None
-        assert ocr_requests.get(token) is None
+        assert ocr_requests.get(request.token) is None
 
     def test_get_none_token_returns_none(self):
         assert ocr_requests.get(None) is None

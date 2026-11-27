@@ -34,6 +34,7 @@ from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN, REBUILD_HINT
 from lilbee.cli.commands.ingest_sync import run_sync_with_signal_cancel
 from lilbee.cli.helpers import (
     announce_cold_start,
+    announce_degraded,
     announce_ready,
     announce_retrieval_query,
     auto_sync,
@@ -42,11 +43,18 @@ from lilbee.cli.helpers import (
 )
 from lilbee.cli.log_routing import route_diagnostics_to_log_file
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import warnings_payload
 from lilbee.core.text import strip_control_characters
-from lilbee.data.store import EmbeddingModelMismatchError, SearchScope, scope_to_chunk_type
+from lilbee.data.store import (
+    EmbeddingEngineChangedError,
+    EmbeddingModelMismatchError,
+    SearchScope,
+    scope_to_chunk_type,
+)
 from lilbee.providers.base import ProviderError
 from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.query.formatting import FILE_LINK_RE, terminal_sources_text
+from lilbee.retrieval.query.searcher import SEARCH_NEEDS_EMBEDDER
 from lilbee.runtime.console import PlainConsole, styled
 
 # How many top concepts to show inline before truncating with a ``+N more`` tail.
@@ -57,18 +65,22 @@ _MAX_TOP_K = 100
 _EMBED_MISMATCH_ADOPT_HINT = (
     "Run `lilbee use-embedder {model}` to search this index with its embedder."
 )
-_EMBED_MISMATCH_REBUILD_HINT = (
-    "This index needs a {dim}-dim embedder; run `lilbee rebuild` to re-embed it "
-    "under your current model."
-)
+_EMBED_MISMATCH_REBUILD_HINT = "This index needs a {dim}-dim embedder."
 
 
 def _exit_embedding_mismatch(exc: EmbeddingModelMismatchError) -> NoReturn:
     """Print a surface-appropriate mismatch error and exit non-zero.
 
     Headless: never switches embedder silently. Names the index's embedder and,
-    when adoptable (same dim), the one command that makes it searchable.
+    when adoptable (same dim), the one command that makes it searchable. An
+    engine change carries its fix in the message.
     """
+    if isinstance(exc, EmbeddingEngineChangedError):
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+            raise SystemExit(1)
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
+        raise SystemExit(1)
     hint = (
         _EMBED_MISMATCH_ADOPT_HINT.format(model=exc.persisted_model)
         if exc.dims_match
@@ -94,36 +106,22 @@ _scope_option = typer.Option(
 def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
     """Swap a stale chat/embedding ref to an installed model for this run only.
 
-    The persisted config is never rewritten from a one-shot command; durable
-    swaps belong to the TUI's interactive startup canonicalization. An explicit
-    --model override is honored as given, so an unusable value surfaces the
-    engine's not-installed error instead of a silent substitute. The notice
-    prints to stderr in every mode: stdout stays answer-only and JSON stays
-    parseable.
+    Durable swaps belong to the TUI's interactive startup canonicalization. The
+    notice prints to stderr in every mode: stdout stays answer-only and JSON
+    stays parseable.
     """
-    from lilbee.app.settings import apply_ephemeral_model_swap
-    from lilbee.modelhub.model_manager import (
-        ValidationResult,
-        canonicalize_chat_model,
-        canonicalize_embedding_model,
-    )
+    from lilbee.app.settings import use_installed_models_for_this_run
 
-    checks = [(canonicalize_embedding_model(), "embedding_model", "Embedding")]
-    if not chat_overridden:
-        checks.insert(0, (canonicalize_chat_model(), "chat_model", "Chat"))
     err = PlainConsole(stderr=True)
-    for canon, field, label in checks:
-        if canon.status == ValidationResult.OK or canon.effective == canon.original:
-            continue
-        apply_ephemeral_model_swap(field, canon.effective)
-        if canon.original:
-            notice = (
-                f"{label} model {canon.original!r} is unavailable ({canon.reason}); "
-                f"using installed {canon.effective!r} for this run."
-            )
-        else:
-            notice = f"No {label.lower()} model configured; using installed {canon.effective!r}."
+    for notice in use_installed_models_for_this_run(chat_overridden=chat_overridden):
         err.print(notice, style=theme.WARNING, soft_wrap=True)
+
+
+def _announce_notice(notice: Any) -> None:
+    """Print the rewritten query, when there is one, and every failed search step."""
+    if notice.query is not None:
+        announce_retrieval_query(notice.query)
+    announce_degraded(notice.degraded)
 
 
 def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> None:
@@ -148,7 +146,7 @@ def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> Non
     try:
         for token in stream:
             if isinstance(token, RetrievalNotice):
-                announce_retrieval_query(token.query)
+                _announce_notice(token)
                 continue
             if isinstance(token, AnswerSources):
                 text = token.block(answer)
@@ -224,6 +222,7 @@ def _display_score(result: dict[str, Any]) -> float:
 
 
 def search(
+    ctx: typer.Context,
     query: str = typer.Argument(..., help="Search query"),
     top_k: int = typer.Option(None, "--top-k", "-k", min=1, help="Number of results"),
     scope: SearchScope = _scope_option,
@@ -232,13 +231,13 @@ def search(
 ) -> None:
     """Search the knowledge base for relevant chunks."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    route_diagnostics_to_log_file()
+    route_diagnostics_to_log_file(ctx)
 
     _reject_if_empty(query, "query")
 
     err = announce_cold_start(WorkerRole.EMBED, str(cfg.embedding_model))
     try:
-        results = get_services().searcher.search(
+        report = get_services().searcher.search_report(
             query,
             top_k=min(top_k or cfg.top_k, _MAX_TOP_K),
             chunk_type=scope_to_chunk_type(scope),
@@ -252,12 +251,20 @@ def search(
             raise SystemExit(1) from None
         print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
-    cleaned = clean_results(results)
+    cleaned = clean_results(report.rows)
 
     if cfg.json_mode:
-        json_output({"command": "search", "query": query, "results": cleaned})
+        json_output(
+            {
+                "command": "search",
+                "query": query,
+                "results": cleaned,
+                "warnings": warnings_payload(report.degraded),
+            }
+        )
         return
 
+    announce_degraded(report.degraded)
     if not cleaned:
         console.print("No results found.")
         return
@@ -282,7 +289,29 @@ def search(
     console.print(table)
 
 
+def _prepare_ask(*, no_sync: bool) -> None:
+    """Make sure ask has a chat model, a valid embedder and a synced index, or raise."""
+    from lilbee.app.settings import apply_settings_update
+    from lilbee.modelhub.models import ensure_chat_model
+
+    # The settings update below reports the no-engine notice; the pull stays silent on it.
+    pulled = ensure_chat_model(hf_client=get_services().hf_client, report_no_engine=False)
+    if pulled is not None:
+        result = apply_settings_update({"chat_model": pulled})
+        # stderr keeps the JSON document on stdout whole.
+        for warning in result.warnings:
+            print_prefixed(PlainConsole(stderr=True), "Warning: ", warning, style=theme.WARNING)
+    _swap_stale_models_to_installed(chat_overridden=chat_model_overridden())
+    get_services().embedder.validate_model()
+    if cfg.auto_sync and not no_sync:
+        run_sync = functools.partial(run_sync_with_signal_cancel, started_by="lilbee ask")
+        auto_sync(PlainConsole(quiet=True) if cfg.json_mode else console, run_sync)
+    if get_services().searcher.search_unavailable():
+        raise RuntimeError(SEARCH_NEEDS_EMBEDDER)
+
+
 def ask(
+    ctx: typer.Context,
     question: str = typer.Argument(..., help="Question to ask"),
     scope: SearchScope = _scope_option,
     data_dir: Path | None = data_dir_option,
@@ -310,22 +339,11 @@ def ask(
         num_ctx=num_ctx,
         seed=seed,
     )
-    route_diagnostics_to_log_file()
+    route_diagnostics_to_log_file(ctx)
     _reject_if_empty(question, "question")
 
     try:
-        from lilbee.app.settings import apply_settings_update
-        from lilbee.modelhub.models import ensure_chat_model
-
-        pulled = ensure_chat_model()
-        if pulled is not None:
-            apply_settings_update({"chat_model": pulled})
-        _swap_stale_models_to_installed(chat_overridden=chat_model_overridden())
-        get_services().embedder.validate_model()
-        if cfg.auto_sync and not no_sync:
-            run_sync = functools.partial(run_sync_with_signal_cancel, started_by="lilbee ask")
-            auto_sync(PlainConsole(quiet=True) if cfg.json_mode else console, run_sync)
-
+        _prepare_ask(no_sync=no_sync)
         chunk_type = scope_to_chunk_type(scope)
 
         if cfg.json_mode:
@@ -339,6 +357,7 @@ def ask(
                     "cited_sources": clean_results(result.cited_sources, result.sources),
                     "retrieval_query": result.retrieval_query,
                     "dropped_sources": clean_results(result.dropped_sources, result.sources),
+                    "warnings": warnings_payload(result.degraded),
                 }
             )
             return
@@ -376,10 +395,11 @@ def use_embedder(
 
     from lilbee.app.models import adopt_embedder
     from lilbee.catalog.compat import UnsupportedArchError
+    from lilbee.providers.fleet.engines.choice import NoEngineError
 
     try:
         result = adopt_embedder(ref)
-    except (RuntimeError, ValueError, OSError, UnsupportedArchError) as exc:
+    except (RuntimeError, ValueError, OSError, UnsupportedArchError, NoEngineError) as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
@@ -393,12 +413,15 @@ def use_embedder(
                 "model": result.model,
                 "status": result.status.value,
                 "reindex_required": result.reindex_required,
+                "warning": result.warning,
             }
         )
         return
     console.print(
         Text.assemble("Now embedding with ", (result.model, theme.ACCENT), "."), soft_wrap=True
     )
+    if result.warning is not None:
+        print_prefixed(console, "Warning: ", result.warning, style=theme.WARNING)
     if result.reindex_required:
         console.print(Text(REBUILD_HINT, style=theme.WARNING), soft_wrap=True)
 

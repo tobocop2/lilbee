@@ -22,6 +22,7 @@ from textual.app import ComposeResult
 from textual.widgets import Footer
 
 from lilbee.catalog import CatalogModel
+from lilbee.catalog.download import gated_repo_message
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.task_bar_controller import (
     ProgressReporter,
@@ -31,6 +32,8 @@ from lilbee.cli.tui.widgets.task_bar_controller import (
 from lilbee.runtime.cancellation import TaskCancelledError
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, ready_services
+
+_WAIT_S = 10.0
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +45,7 @@ def _stub_repo_listing(monkeypatch: pytest.MonkeyPatch) -> None:
     choose, and the pull carries on and lets the stubbed download decide the
     outcome, which is what each case is actually asserting.
     """
-    monkeypatch.setattr("lilbee.catalog.download._repo_sibling_files", lambda _repo: [])
+    monkeypatch.setattr("lilbee.catalog.download._repo_sibling_files", lambda _repo, **_kw: [])
 
 
 def _make_model(slug: str = "test", display: str = "Test Model") -> CatalogModel:
@@ -115,11 +118,12 @@ async def test_start_task_failure_marks_failed_with_detail() -> None:
             raise RuntimeError("boom")
 
         task_id = controller.start_task("demo", TaskType.SYNC, _target)
-        for _ in range(30):
-            await pilot.pause()
+
+        def _failed() -> bool:
             task = controller.queue.get_task(task_id)
-            if task is not None and task.status == TaskStatus.FAILED:
-                break
+            return task is not None and task.status == TaskStatus.FAILED
+
+        await wait_until(pilot, _failed, timeout=_WAIT_S)
         task = controller.queue.get_task(task_id)
         assert task is not None
         assert task.status == TaskStatus.FAILED
@@ -191,10 +195,7 @@ async def test_on_success_runs_after_target_success() -> None:
         # Worker spawn + finalize marshal back via app.call_from_thread, which
         # blocks the worker until the main thread drains. pilot.pause yields
         # to that loop; loop until the on_success flag flips.
-        for _ in range(30):
-            await pilot.pause()
-            if on_success_ran.is_set():
-                break
+        await wait_until(pilot, on_success_ran.is_set, timeout=_WAIT_S)
         assert on_success_ran.is_set()
 
 
@@ -314,7 +315,9 @@ async def test_start_download_enqueues_under_download_type() -> None:
         controller = TaskBarController(app)
         release = [False]
 
-        def fake_download(model, on_progress=None, on_complete=None, cancel=None):
+        def fake_download(
+            model, engine, on_progress=None, on_complete=None, on_retry=None, cancel=None
+        ):
             while not release[0]:
                 time.sleep(0.01)
 
@@ -325,10 +328,11 @@ async def test_start_download_enqueues_under_download_type() -> None:
             assert task is not None
             assert task.task_type == TaskType.DOWNLOAD.value
             release[0] = True
-            for _ in range(30):
-                await pilot.pause()
-                if controller.queue.get_task(task_id).status == TaskStatus.DONE:
-                    break
+            await wait_until(
+                pilot,
+                lambda: controller.queue.get_task(task_id).status == TaskStatus.DONE,
+                timeout=_WAIT_S,
+            )
             assert controller.queue.get_task(task_id).status == TaskStatus.DONE
 
 
@@ -338,17 +342,20 @@ async def test_start_download_progress_flows_through_queue() -> None:
     async with app.run_test() as pilot:
         controller = TaskBarController(app)
 
-        def fake_download(model, on_progress=None, on_complete=None, cancel=None):
+        def fake_download(
+            model, engine, on_progress=None, on_complete=None, on_retry=None, cancel=None
+        ):
             on_progress(10, 100)
             on_progress(60, 100)
             on_progress(100, 100)
 
         with patch("lilbee.catalog.download_model", side_effect=fake_download):
             task_id = controller.start_download(_make_model())
-            for _ in range(30):
-                await pilot.pause()
-                if controller.queue.get_task(task_id).status == TaskStatus.DONE:
-                    break
+            await wait_until(
+                pilot,
+                lambda: controller.queue.get_task(task_id).status == TaskStatus.DONE,
+                timeout=_WAIT_S,
+            )
         task = controller.queue.get_task(task_id)
         assert task is not None
         assert task.progress == 100
@@ -362,20 +369,22 @@ async def test_start_download_permission_error_gets_gated_repo_message() -> None
     async with app.run_test() as pilot:
         controller = TaskBarController(app)
 
-        def fake_download(model, on_progress=None, on_complete=None, cancel=None):
-            raise PermissionError("401 Unauthorized")
+        def fake_download(
+            model, engine, on_progress=None, on_complete=None, on_retry=None, cancel=None
+        ):
+            raise PermissionError(gated_repo_message("org/gated"))
 
         with patch("lilbee.catalog.download_model", side_effect=fake_download):
             task_id = controller.start_download(_make_model(display="Gated Model"))
-            for _ in range(30):
-                await pilot.pause()
-                if controller.queue.get_task(task_id).status == TaskStatus.FAILED:
-                    break
+            await wait_until(
+                pilot,
+                lambda: controller.queue.get_task(task_id).status == TaskStatus.FAILED,
+                timeout=_WAIT_S,
+            )
         task = controller.queue.get_task(task_id)
         assert task is not None
         assert task.status == TaskStatus.FAILED
-        # Message comes from messages.CATALOG_GATED_REPO; just check the model name is in it.
-        assert "Gated Model" in task.detail
+        assert task.detail == gated_repo_message("org/gated")
 
 
 @pytest.mark.asyncio
@@ -427,7 +436,9 @@ async def test_finished_task_lingers_in_history_until_cleared() -> None:
         controller = TaskBarController(app)
         release = [False]
 
-        def fake_download(model, on_progress=None, on_complete=None, cancel=None):
+        def fake_download(
+            model, engine, on_progress=None, on_complete=None, on_retry=None, cancel=None
+        ):
             while not release[0]:
                 time.sleep(0.01)
 
@@ -466,7 +477,9 @@ async def test_downloads_run_four_at_a_time() -> None:
         controller = TaskBarController(app)
         release = [False]
 
-        def fake_download(model, on_progress=None, on_complete=None, cancel=None):
+        def fake_download(
+            model, engine, on_progress=None, on_complete=None, on_retry=None, cancel=None
+        ):
             while not release[0]:
                 time.sleep(0.01)
 

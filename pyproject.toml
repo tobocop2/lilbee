@@ -40,21 +40,27 @@ dependencies = [
     # and the SoftFileLock fallback; the ceiling is the line verified against it.
     "filelock>=4.2.9,<4.3",
     "tree-sitter-language-pack>=1.8.1,<2.0",
-    "typer>=0.26.0",
+    "typer>=0.26.3",
     "tiktoken>=0.13.0",
     "textual>=8.2.8",
     # Floor is 2.2.0: it bounds StreamableHTTP sessions (CVE-2026-59951); 1.x lacks mcp.server.mcpserver.
     "mcp>=2.2.0,<3",
     "pillow>=13.0.0",
-    "litestar>=2.23.0",
-    "uvicorn>=0.30",
-    "httpx>=0.28.1",
+    # 2.24 caches routing on the router class, so each finished app stays alive
+    # (litestar-org/litestar#4876); 2.25.0 keeps the cache per router.
+    "litestar>=2.25.0",
+    # 0.50.0 is the first release whose startup() exits on a failed lifespan;
+    # older releases return, and the serve loop then reads a server never bound.
+    "uvicorn>=0.50.0",
+    "httpx>=0.28.1,<1.0",
     "httpx2>=2.12.0",
     "diskcache>=5.6.1",
-    "jinja2>=2.11.3",
+    # 2.x imports markupsafe.soft_unicode, which markupsafe 2.1 removed.
+    "jinja2>=3.0.0",
     "typing-extensions>=4.5.0",
     "huggingface_hub>=2.4.0",
-    "psutil>=5.9",
+    # Process.net_connections() arrives in 6.0.0.
+    "psutil>=6.0.0",
     "pydantic-settings>=2.14.2",
     # 2.5 drops the 3.11 floor and ships 3.12-only stubs mypy rejects at the 3.11 target.
     "numpy>=2.4.6,<2.5",
@@ -62,6 +68,8 @@ dependencies = [
     # bound; regex takes a per-match timeout where the stdlib re module cannot.
     # Already present transitively via tiktoken.
     "regex>=2026.7.10",
+    # CPU probe for the hardware report: a pure-Python CPU reader (MIT).
+    "py-cpuinfo>=9.0.0",
     # llama.cpp's own Python package, for the ggml block and type sizes the
     # download-size estimate prices a quant with. It is not a second GGUF
     # reader: gguf-parser is, built from the pin that builds llama-server.
@@ -86,22 +94,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The bundled llama-server and gguf-parser. Not a hard dependency because the
-# distribution is published on lilbee.sh rather than PyPI, and a hard reference
-# to a name PyPI answers 404 for made the documented install command backtrack
-# to a months-old release that predated it. Installing without this leaves a
-# working lilbee that says what to install the moment it needs an engine.
-# The floor is below every published engine wheel (they carry lilbee's own
-# version), so it never excludes a real release; its jobs are to keep the
-# in-repo 0.0.0 stub from satisfying an index install and, because the
-# specifier names a pre-release, to let plain `pip` resolve the beta-versioned
-# wheels without `--pre`.
-engine = ["lilbee-engine>=0.6.90b1"]
-providers = ["liter-llm>=2.4.1,<3"]
+providers = ["liter-llm>=2.5.0,<3"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 # playwright installs the headless Chromium shell that browser-mode crawls launch.
 # ada-url parses a page address with the URL standard the crawler keys pages by.
-crawler = ["crawlberg>=1.12.3", "playwright>=1.61.0", "ada-url>=4.0.0"]
+crawler = ["crawlberg>=1.12.4", "playwright>=1.61.0", "ada-url>=4.0.0"]
 # A fallback source of the CUDA 12 runtime, from NVIDIA's official PyPI wheels;
 # fleet.cuda_runtime adds their lib dirs to the engine's LD_LIBRARY_PATH. The engine
 # wheel now ships cudart/cublas/cublasLt beside llama-server on both Linux and Windows
@@ -140,28 +137,29 @@ packages = ["src/lilbee"]
 
 # Dev resolves the bundled engine from the in-repo wheel package; CI fills its
 # bin/ with the self-contained llama-server + llama-swap + gguf-parser before
-# building. Release installs (`pip install lilbee`) resolve `lilbee-engine` from
-# the index instead -- this source override is workspace metadata, not published deps.
+# building. A release install (`pip install lilbee`) does not depend on the engine wheel:
+# lilbee downloads an engine pack. This source override is workspace metadata.
 [tool.uv.sources]
-lilbee-engine = { path = "packaging/engine-wheel" }
+lilbee-engine-llama-cpp = { path = "packaging/engine-wheel" }
+lancedb = { index = "lilbee-compat", marker = "sys_platform == 'darwin' and platform_machine == 'x86_64'" }
 
-# `uv pip install <checkout>[engine] --extra-index-url ...` applies the source
-# above no matter the specifier (uv drops version bounds on sourced packages),
-# so it silently installed the binariless stub where the deployment wanted the
-# real engine wheel. This turns sources off for the `uv pip` interface only:
-# that command now resolves lilbee-engine from the index, while `uv sync` /
-# `uv lock` (the project interface) keep using the stub.
-[tool.uv.pip]
-no-sources = true
+# The pre-Haswell lancedb builds. explicit = true binds the index to the
+# packages whose source names it, so no other package resolves from it.
+[[tool.uv.index]]
+name = "lilbee-compat"
+url = "https://lilbee.sh/compat/"
+explicit = true
 
 [dependency-groups]
+# Builds the PEP 503 indexes behind lilbee.sh (tools/build_wheel_indexes.py).
+index = ["dumb-pypi==1.15.0"]
 dev = [
-    # The bundled engine is an optional extra for users, because the wheel is
-    # published on lilbee.sh rather than PyPI and a hard reference to a name
-    # PyPI answers 404 for breaks the documented install. Development and CI
-    # still need it: the pin test reads its metadata, and the local source
-    # below makes it a workspace path rather than an index lookup.
-    "lilbee-engine",
+    {include-group = "index"},
+    # The engine wheel is published on lilbee.sh rather than PyPI, so no
+    # runtime dependency names it. Development and CI need it: the pin test
+    # reads its metadata, and the local source above makes it a workspace path
+    # rather than an index lookup.
+    "lilbee-engine-llama-cpp",
     # The saved-page names and their tests parse addresses with ada-url, which
     # otherwise only the crawler and release extras install.
     "ada-url>=4.0.0",
@@ -172,16 +170,36 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
+    # A stalled child run in tests/test_xdist_worker_crash.py dumps the stacks of its processes.
+    "py-spy>=0.4",
     "reportlab>=5.0.0",
     "ruff>=0.15.4",
-    "httpx>=0.27",
+    "httpx>=0.27,<1.0",
     "pytest-httpserver>=1.1.5",
     "types-pyyaml>=6.0.12.20250915",
     "pytest-xdist>=3.8.0",
     "pytest-forked>=1.6.0",
     "pytest-timeout>=2.3",
+    # tools/qa/assert_engine_bundle.py reads the import tables of a Windows bundle.
+    # Its tests and the `uv run --no-sync` bundle checks in CI run in this group.
+    "pefile>=2024.8.26",
     "pre-commit>=4.0",
     "types-cachetools>=7.0.0.20260713",
+]
+# Kept out of dev: only `make lint` runs it, it needs the network, and it
+# supports Python 3.12 and later.
+license-check = ["licensecheck>=2026.0.8; python_full_version >= '3.12'"]
+
+# The licence check reads the locked tree (tools/ci/check_licenses.sh). It fails
+# on any package whose licence is incompatible with lilbee's MIT, which includes
+# every GPL and AGPL package. Each entry below names the proof of its licence.
+[tool.licensecheck]
+ignore_packages = [
+    # CUDA runtime wheels for Linux x86_64. Proprietary but redistributable, not
+    # copyleft: https://docs.nvidia.com/cuda/eula/index.html
+    "nvidia-cublas-cu12",
+    "nvidia-cuda-nvrtc-cu12",
+    "nvidia-cuda-runtime-cu12",
 ]
 
 [tool.pytest.ini_options]
@@ -190,17 +208,25 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--ignore=tests/integration"
 timeout = 60
+# The signal method raises inside whatever callback the loop runs; a Textual task keeps that
+# exception and the test then waits on. The thread method ends the worker with every stack.
+timeout_method = "thread"
 markers = [
     "slow: integration tests that download models or take >10s",
     "real_model_classify: opt out of the global _classify_installed_models mock",
+    "real_cli_teardown: opt out of the stub for the service stop at the end of a CLI command",
     "real_provider_sdk_probe: opt out of the global provider_sdk_available True override",
+    "real_engine_model_lists: opt out of the seal on the model lists that engines publish",
     "real_engine_resolution: opt out of the engine-binary seal (host PATH and LILBEE_LLAMA_SERVER_PATH resolve again)",
     "xdist_group: pin grouped tests to a single xdist worker for serial execution",
     "no_health_default: opt out of the launch tests' default-healthy fixture",
     "no_warm_default: opt out of the launch tests' default chat-warm fixture",
+    "real_host_read: opt out of the fixed session host (the test reads the live host, as detection tests do)",
     "live_picks: opt out of the seeded SAMPLE_PICKS and resolve picks for real",
     "real_hf_client: opt out of the global hf_client.fetch_models stub (tests the client itself)",
     "download_child: opt out of the in-process download stub (drives the real child-process relay)",
+    "real_nvidia_smi: opt out of the nvidia-smi seal (the test drives the tool runner itself)",
+    "real_windows_registry: opt out of the Windows adapter seal (the test injects its own registry)",
     "fleet_warm_up: the test runs a real fleet warm-up thread and joins it itself",
 ]
 
@@ -217,8 +243,12 @@ show_missing = true
 fail_under = 100
 exclude_lines = [
     "pragma: no cover",
+    # Runs on Windows alone; .coveragerc-windows measures it there.
+    "pragma: windows only",
     "if TYPE_CHECKING:",
     "class.*Protocol",
+    # A stub has no body to run: branch data reports its def as a branch that never exits.
+    "@(typing\\.)?overload",
 ]
 
 [tool.ruff]
@@ -296,8 +326,12 @@ extend-immutable-calls = ["litestar.params.Body"]
     "N802", "N806", "N818", "N817",
 ]
 # Invokes the trusted `gh` CLI with controlled args to build the compat index.
-"tools/build_compat_index.py" = ["S603", "S607"]
-# Same for the engine pack index.
+"tools/build_wheel_indexes.py" = ["S603", "S607"]
+# Invokes the trusted `gh` CLI with fixed args to read the release assets.
+"tools/gen_engine_packs.py" = ["S603", "S607"]
+# Runs the trusted `otool` of the macOS toolchain on files of the unpacked archive.
+"tools/wheel-build/repack_llama_archives.py" = ["S603", "S607"]
+# Invokes the trusted `gh` CLI with fixed args to list the engine pack releases.
 "tools/build_pack_index.py" = ["S603", "S607"]
 "conftest.py" = ["S101"]
 

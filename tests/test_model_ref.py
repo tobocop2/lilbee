@@ -10,6 +10,7 @@ from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.providers.base import ChosenSeed, ProviderError, ProviderErrorKind, aux_options
 from lilbee.providers.engine_params import chat_options_to_kwargs
 from lilbee.providers.model_ref import (
+    ProviderModelRef,
     format_remote_ref,
     is_native_gguf_ref,
     parse_model_ref,
@@ -353,6 +354,38 @@ class TestFormatRemoteRef:
         ref = format_remote_ref("deepseek-chat", "DeepSeek")
         assert ref == "deepseek/deepseek-chat"
 
+    @pytest.mark.parametrize(
+        ("name", "provider", "expected"),
+        [
+            pytest.param("gpt-4o", "OpenAI", "openai/gpt-4o", id="api-display-label"),
+            pytest.param("gpt-4o", "openai", "openai/gpt-4o", id="api-routing-key"),
+            pytest.param("qwen3:8b", "ollama", "ollama/qwen3:8b", id="ollama-key"),
+            pytest.param("m", "LM Studio", "lm_studio/m", id="lm-studio-label"),
+            pytest.param("m", "lm_studio", "lm_studio/m", id="lm-studio-key"),
+            pytest.param("chat:latest", "Remote", "chat:latest", id="remote-label-bare-name"),
+            pytest.param(
+                "ollama/remote-chat:latest",
+                "Remote",
+                "ollama/remote-chat:latest",
+                id="remote-label-prefixed-name",
+            ),
+            pytest.param("m", "mypreset", "m", id="preset-name-is-no-discovery-label"),
+        ],
+    )
+    def test_prefix_follows_the_built_in_routing_key(
+        self, name: str, provider: str, expected: str
+    ) -> None:
+        assert format_remote_ref(name, provider) == expected
+
+    def test_remote_label_keeps_the_prefix_the_name_carries(self) -> None:
+        """A prefixed name under the ``Remote`` label routes to its own server, once prefixed."""
+        parsed = parse_model_ref(format_remote_ref("ollama/remote-chat:latest", "Remote"))
+        assert (parsed.provider, parsed.name) == ("ollama", "remote-chat:latest")
+
+    def test_a_preset_ref_keeps_its_preset_prefix(self) -> None:
+        ref = ProviderModelRef(raw="wired/m", provider="wired", name="m")
+        assert ref.for_openai_prefix() == "wired/m"
+
 
 class TestTranslateOptions:
     def test_api_model_strips_local_options(self) -> None:
@@ -438,7 +471,6 @@ class TestTranslateOptions:
         with pytest.raises(ProviderError, match=option) as caught:
             translate_options({"temperature": 0.5, option: value}, ref)
         assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
-        assert caught.value.provider == "remote"
 
     @pytest.mark.parametrize(
         ("option", "value"),
@@ -452,16 +484,27 @@ class TestTranslateOptions:
         ],
         ids=str,
     )
-    def test_anthropic_drops_any_value_with_response_format(
+    def test_anthropic_refuses_any_value_with_response_format(
         self, option: str, value: float
     ) -> None:
-        """With a response_format the three options are dropped and the request goes out."""
+        """A response_format does not excuse the three options: they are refused, not dropped."""
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        with pytest.raises(ProviderError, match=option) as caught:
+            translate_options(
+                {"temperature": 0.5, "response_format": {"type": "json_object"}, option: value},
+                ref,
+            )
+        assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
+
+    def test_anthropic_keeps_response_format_and_drops_a_chosen_seed(self) -> None:
+        """An internal structured call keeps its reply format; lilbee's own seed is dropped."""
         ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
         reply_format = {"type": "json_object"}
-        result = translate_options(
-            {"temperature": 0.5, "response_format": reply_format, option: value}, ref
-        )
-        assert result == {"temperature": 0.5, "response_format": reply_format}
+        options = aux_options(64, seed=ChosenSeed(42), response_format=reply_format)
+        assert translate_options(options, ref) == {
+            "max_tokens": 64,
+            "response_format": reply_format,
+        }
 
     def test_anthropic_drops_the_seed_of_an_internal_call(self) -> None:
         """A search seeds its LLM steps; a provider with no seed still answers them."""
@@ -493,11 +536,10 @@ class TestTranslateOptions:
         with pytest.raises(ProviderError):
             translate_options(aux_options(64, seed=7), ref)
 
-    def test_anthropic_empty_response_format_counts_as_set(self) -> None:
-        """A present response_format key is enough, even when its value is empty."""
+    def test_anthropic_refuses_a_user_seed_beside_an_empty_response_format(self) -> None:
         ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
-        result = translate_options({"temperature": 0.5, "response_format": {}, "seed": 7}, ref)
-        assert result == {"temperature": 0.5, "response_format": {}}
+        with pytest.raises(ProviderError, match="seed"):
+            translate_options({"temperature": 0.5, "response_format": {}, "seed": 7}, ref)
 
     @pytest.mark.parametrize("option", ["seed", "frequency_penalty", "presence_penalty"], ids=str)
     def test_anthropic_sends_an_unset_option_unchanged(self, option: str) -> None:

@@ -15,15 +15,10 @@ from lilbee.providers.fleet.swap_manager import EngineLifetime
 
 @pytest.fixture(autouse=True)
 def _restore_cfg():
-    # max_workers caches a value derived from cfg, so it is invalidated wherever
-    # cfg is restored; otherwise one test's ingest_max_inflight sets the ceiling
-    # every later test reads.
     snapshot = cfg.model_copy()
-    offload.max_workers.cache_clear()
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
-    offload.max_workers.cache_clear()
 
 
 class TestKeepFleetWarm:
@@ -93,9 +88,9 @@ class TestKeepFleetWarm:
         # Emulate an 8-replica fleet: 8 * _EMBED_INFLIGHT_PER_REPLICA (8) = 64.
         # Patch both bound names (pipeline imported the helper by name).
         monkeypatch.setattr(pipeline, "embed_inflight_target", lambda: 64)
-        monkeypatch.setattr(offload, "embed_inflight_target", lambda: 64)
+        monkeypatch.setattr(offload, "fleet_inflight_target", lambda: 64)
         assert pipeline._max_concurrent() == 64  # max(cpu_quota=8, 64)
-        offload.max_workers.cache_clear()  # resolve against the patched fleet probe
+        offload.reset_max_workers()  # resolve against the patched fleet probe
         assert offload.max_workers() == 64  # pool lifts to feed it too
 
     def test_embed_inflight_target_single_card_is_zero(self, monkeypatch):
@@ -104,7 +99,7 @@ class TestKeepFleetWarm:
         monkeypatch.setattr(
             "lilbee.providers.fleet.replicas.resolve_replica_count", lambda *_a, **_k: 1
         )
-        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda: 1)
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda _engine: 1)
         assert offload.embed_inflight_target() == 0  # single card: CPU sizing fits
 
     def test_max_inflight_lifts_the_worker_pool_ceiling(self, monkeypatch):
@@ -115,7 +110,7 @@ class TestKeepFleetWarm:
         cfg.ingest_max_inflight = 0
         assert offload.max_workers() <= 32  # default cap
         cfg.ingest_max_inflight = 96
-        offload.max_workers.cache_clear()  # the ceiling is cached per cfg value
+        offload.reset_max_workers()  # the ceiling is cached per cfg value
         assert offload.max_workers() == 96
 
     def test_signal_propagates_into_a_worker_thread(self, tmp_path):

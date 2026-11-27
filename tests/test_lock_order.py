@@ -17,7 +17,6 @@ import lilbee.app.services as svc_mod
 from lilbee.app import dataset as dataset_mod
 from lilbee.app.ingest import register_sources, remove_documents_durably
 from lilbee.app.settings import apply_settings_update
-from lilbee.cli.tui.widgets import model_bar as model_bar_mod
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.data.ingest.pipeline import sync as pipeline_sync
@@ -177,7 +176,16 @@ class _Builds:
         svc_mod.set_services(None)
         monkeypatch.setattr(svc_mod._state, "singleton", None)
 
-    def _build(self, config, provider=None, registry=None, interactive=False):
+    def _build(
+        self,
+        config,
+        provider=None,
+        registry=None,
+        interactive=False,
+        config_refresh=None,
+        held_writes=None,
+        followed_keys=None,
+    ):
         self.held_at_build.append(self._takes.held())
         self.held_anywhere_at_build.append(self._takes.held_anywhere())
         for callback in self.on_build:
@@ -314,7 +322,7 @@ class TestTheServicesAreBuiltBeforeTheSyncLock:
 
 
 def _reset_from_the_model_bar() -> None:
-    model_bar_mod.reset_services()
+    svc_mod.reset_services()
 
 
 def _reset_from_a_settings_change() -> None:

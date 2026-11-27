@@ -7,26 +7,48 @@ files and ``/api/export`` serializes the whole corpus.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator, Callable
 from typing import Annotated
 
 from litestar import Request, Response, get, post
 from litestar.datastructures import UploadFile
-from litestar.exceptions import ValidationException
+from litestar.exceptions import ClientException, NotFoundException, ValidationException
 from litestar.params import FromQuery, MultipartBody, QueryParameter
 from litestar.response import Stream
+from litestar.status_codes import HTTP_200_OK, HTTP_409_CONFLICT
 from pydantic import BaseModel, Field
 
 from lilbee.core.config import validate_ocr_timeout
 from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, DOCUMENTS_PAGE_MAX
+from lilbee.runtime.add_registry import AddIdRunningError
 from lilbee.server import handlers
 from lilbee.server.content_disposition import CONTENT_DISPOSITION
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import (
+    ADD_ID_MAX_LENGTH,
+    ADD_ID_PATTERN,
+    AddCancelRequest,
+    AddCancelResponse,
     AddRequest,
     DocumentListResponse,
     DocumentRemoveResponse,
     SyncRequest,
 )
+
+
+class AddIdConflictException(ClientException):
+    """An add with the same ``add_id`` already runs."""
+
+    status_code = HTTP_409_CONFLICT
+
+
+def _add_response(open_stream: Callable[[], AsyncGenerator[str, None]]) -> Stream:
+    """The SSE answer of an add; opening the stream reserves its id, or answers 409."""
+    try:
+        stream = open_stream()
+    except AddIdRunningError as exc:
+        raise AddIdConflictException(detail=str(exc)) from exc
+    return Stream(stream, media_type=SSE_MEDIA_TYPE, status_code=201)
 
 
 class RemoveRequest(BaseModel):
@@ -43,7 +65,8 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
     under the current ``cfg.embedding_model``. This is the recovery path after
     a ``PUT /api/models/embedding`` that returned ``reindex_required=true``.
     Pass ``{"retry_skipped": true}`` for the lighter path: retry the files that
-    failed a previous sync without dropping the store.
+    failed a previous sync and read partly read files again, without dropping
+    the store.
     Pass ``{"prune_ignored": true}`` to also drop sources a ``.lilbeeignore``
     now excludes; without it, sync leaves already-indexed sources alone.
     """
@@ -68,25 +91,32 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
     )
 
 
-@post("/api/add", media_type=SSE_MEDIA_TYPE)
+@post("/api/add", media_type=SSE_MEDIA_TYPE, raises=[AddIdConflictException])
 async def add_route(data: AddRequest) -> Stream:
-    """Add files to the knowledge base with streaming SSE progress."""
+    """Add files to the knowledge base with streaming SSE progress.
+
+    An ``add_id`` names the add, so ``POST /api/add/cancel`` can stop it.
+    """
     try:
         paths, force, ocr, ocr_timeout = handlers.validate_add_paths(data.model_dump())
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
-    return Stream(
-        handlers.add_files_stream(paths, force=force, ocr=ocr, ocr_timeout=ocr_timeout),
-        media_type=SSE_MEDIA_TYPE,
-        status_code=201,
+    return _add_response(
+        lambda: handlers.add_files_stream(
+            paths, force=force, ocr=ocr, ocr_timeout=ocr_timeout, add_id=data.add_id
+        )
     )
 
 
-@post("/api/add/upload", media_type=SSE_MEDIA_TYPE)
+@post("/api/add/upload", media_type=SSE_MEDIA_TYPE, raises=[AddIdConflictException])
 async def add_upload_route(
     data: MultipartBody[list[UploadFile]],
     ocr: FromQuery[str | None] = None,
     ocr_timeout: FromQuery[float | None] = None,
+    add_id: Annotated[
+        str | None,
+        QueryParameter(min_length=1, max_length=ADD_ID_MAX_LENGTH, pattern=ADD_ID_PATTERN),
+    ] = None,
 ) -> Stream:
     """Ingest uploaded file content with streaming SSE progress.
 
@@ -94,8 +124,8 @@ async def add_upload_route(
     file bytes. That lets a client whose files the server cannot read by path --
     e.g. the plugin or CLI in external mode against a remote lilbee / GPU box --
     ingest its own local files by uploading them straight to the server.
-    ``ocr`` and ``ocr_timeout`` are query parameters because the request
-    body is the upload's raw multipart file list.
+    ``ocr``, ``ocr_timeout`` and ``add_id`` are query parameters because the
+    request body is the upload's raw multipart file list.
     """
     # Names first, bytes second: reading every part before validating cost a
     # full in-memory copy of a payload that was going to be rejected anyway.
@@ -106,11 +136,26 @@ async def add_upload_route(
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     cleaned = [(name, await upload.read()) for name, upload in zip(names, data, strict=True)]
-    return Stream(
-        handlers.add_uploads_stream(cleaned, ocr=ocr_mode, ocr_timeout=ocr_timeout),
-        media_type=SSE_MEDIA_TYPE,
-        status_code=201,
+    return _add_response(
+        lambda: handlers.add_uploads_stream(
+            cleaned, ocr=ocr_mode, ocr_timeout=ocr_timeout, add_id=add_id
+        )
     )
+
+
+@post("/api/add/cancel", status_code=HTTP_200_OK, raises=[NotFoundException])
+async def add_cancel_route(data: AddCancelRequest) -> AddCancelResponse:
+    """Stop the add or upload that runs under ``add_id``, as the user's cancel.
+
+    The add removes what it did not finish: a source with no file indexed is no
+    longer added, and an uploaded file the server did not index is deleted. The
+    stream of the add still ends with its ``done`` event, which carries
+    ``cancelled`` and ``not_added``. A stream that only closes keeps its sources.
+    Answers 404 when no add runs under ``add_id``.
+    """
+    if not handlers.cancel_add(data.add_id):
+        raise NotFoundException(detail=f"No add is running with the add_id '{data.add_id}'")
+    return AddCancelResponse(add_id=data.add_id, cancelling=True)
 
 
 @get("/api/documents")

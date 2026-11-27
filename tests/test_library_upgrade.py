@@ -11,7 +11,7 @@ import sys
 import textwrap
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from unittest import mock
 
 import lancedb
@@ -32,6 +32,7 @@ from lilbee.runtime.progress import (
     LibraryUpgradeEvent,
     TableWork,
     UpgradePhase,
+    UpgradeTable,
 )
 from lilbee.server import auth as auth_mod
 from tests._toasts import posted_toasts
@@ -39,29 +40,43 @@ from tests.test_store import _meta_rows, _path_keyed_tables
 
 # The tables of ``_path_keyed_tables`` an upgrade visits, in order, with their rows.
 _STEPS = [
-    ("source list", 2),
-    ("search chunks", 3),
-    ("page text", 1),
-    ("concept links", 1),
-    ("citations", 2),
-    ("wiki mentions", 1),
+    (UpgradeTable.SOURCES, 2),
+    (UpgradeTable.CHUNKS, 3),
+    (UpgradeTable.PAGE_TEXTS, 1),
+    (UpgradeTable.CHUNK_CONCEPTS, 1),
+    (UpgradeTable.CITATIONS, 2),
+    (UpgradeTable.WIKI_MENTIONS, 1),
 ]
 # What each progress event names while the opener works: (tables done, work, table).
 # Each table is first checked, then the opener waits while its ids are added; the
 # source list has no id column to wait on and is done once it is updated.
 _PROGRESS = [
-    (0, TableWork.UPDATING, "source list"),
-    (1, TableWork.CHECKING, "search chunks"),
-    (1, TableWork.CHECKING, "page text"),
-    (1, TableWork.CHECKING, "concept links"),
-    (1, TableWork.CHECKING, "citations"),
-    (1, TableWork.CHECKING, "wiki mentions"),
-    (1, TableWork.ADDING_IDS, "search chunks"),
-    (2, TableWork.ADDING_IDS, "page text"),
-    (3, TableWork.ADDING_IDS, "concept links"),
-    (4, TableWork.ADDING_IDS, "citations"),
-    (5, TableWork.ADDING_IDS, "wiki mentions"),
+    (0, TableWork.UPDATING, UpgradeTable.SOURCES),
+    (1, TableWork.CHECKING, UpgradeTable.CHUNKS),
+    (1, TableWork.CHECKING, UpgradeTable.PAGE_TEXTS),
+    (1, TableWork.CHECKING, UpgradeTable.CHUNK_CONCEPTS),
+    (1, TableWork.CHECKING, UpgradeTable.CITATIONS),
+    (1, TableWork.CHECKING, UpgradeTable.WIKI_MENTIONS),
+    (1, TableWork.ADDING_IDS, UpgradeTable.CHUNKS),
+    (2, TableWork.ADDING_IDS, UpgradeTable.PAGE_TEXTS),
+    (3, TableWork.ADDING_IDS, UpgradeTable.CHUNK_CONCEPTS),
+    (4, TableWork.ADDING_IDS, UpgradeTable.CITATIONS),
+    (5, TableWork.ADDING_IDS, UpgradeTable.WIKI_MENTIONS),
 ]
+# The words of the display line for each work and table.
+_WORK_LINE = {
+    TableWork.UPDATING: "updating",
+    TableWork.CHECKING: "checking",
+    TableWork.ADDING_IDS: "adding ids to",
+}
+_TABLE_LINE = {
+    UpgradeTable.SOURCES: "source list",
+    UpgradeTable.CHUNKS: "search chunks",
+    UpgradeTable.PAGE_TEXTS: "page text",
+    UpgradeTable.CHUNK_CONCEPTS: "concept links",
+    UpgradeTable.CITATIONS: "citations",
+    UpgradeTable.WIKI_MENTIONS: "wiki mentions",
+}
 # The lock timeout every test here stands in for the real 30 s one with.
 _SHORT_LOCK_S = 1.0
 # How long a slowed upgrade runs: past the short lock timeout.
@@ -113,7 +128,7 @@ def _table(done: int) -> LibraryUpgradeEvent:
     return LibraryUpgradeEvent(
         phase=UpgradePhase.TABLE,
         work=TableWork.ADDING_IDS,
-        table="search chunks",
+        table=UpgradeTable.CHUNKS,
         tables_done=done,
         tables_total=2,
         rows=9,
@@ -129,6 +144,12 @@ def _stays(out) -> bool:
     written = out.getvalue()
     time.sleep(0.3)
     return out.getvalue() == written
+
+
+def _table_reported(store: Store) -> bool:
+    """Whether the upgrade has reported its first table, so the count of tables is known."""
+    progress = store.upgrade_progress()
+    return progress is not None and progress.tables_total > 0
 
 
 def _poll(predicate, timeout: float = 5.0) -> bool:
@@ -163,6 +184,21 @@ def _upgrade_held(release: threading.Event):
         real(table)
 
     with mock.patch.object(core_mod, "_migrate_sources_table", _held):
+        yield
+
+
+@contextmanager
+def _event_free_upgrade_held(entered: threading.Event, release: threading.Event):
+    """Hold an upgrade inside a step that reports no event, such as the held-record import."""
+
+    def _held(self, db):
+        entered.set()
+        release.wait(timeout=30)
+
+    with (
+        mock.patch.object(Store, "_upgrade_needed", return_value=True),
+        mock.patch.object(Store, "_upgrade_unlocked", _held),
+    ):
         yield
 
 
@@ -255,7 +291,7 @@ class TestStoreReportsTheUpgrade:
             0,
             6,
         )
-        assert (progress.table, progress.rows) == ("source list", 2)
+        assert (progress.table, progress.rows) == (UpgradeTable.SOURCES, 2)
         assert progress.elapsed_s >= 0.3
         assert is_open is False
 
@@ -280,6 +316,104 @@ class TestStoreReportsTheUpgrade:
         assert store.health_warnings() == []
         assert store.upgrade_progress() is None
         assert store.is_open is False
+
+    def test_an_upgrade_in_a_step_with_no_event_is_reported_until_it_ends(self, library):
+        store = Store(library)
+        entered, release = threading.Event(), threading.Event()
+
+        with _event_free_upgrade_held(entered, release):
+            store.open_in_background()
+            assert entered.wait(timeout=10)
+            progress = store.upgrade_progress()
+            warnings = store.health_warnings()
+            release.set()
+            assert store.wait_for_open(30) is True
+
+        assert progress is not None
+        assert (progress.phase, progress.table) == (UpgradePhase.TABLE, None)
+        assert [w.code for w in warnings] == [WarningCode.LIBRARY_UPGRADING]
+        assert store.upgrade_progress() is None
+        assert store.health_warnings() == []
+
+    def test_an_upgrade_that_took_the_lock_after_a_wait_no_longer_says_waiting(self, library):
+        events, record = _recorder()
+        store = Store(library, on_upgrade=record)
+        entered, release = threading.Event(), threading.Event()
+
+        def _lock(lancedb_dir=None, timeout=None):
+            if timeout == 0.0:
+                raise LockTimeoutError("busy")
+            return nullcontext()
+
+        with (
+            _event_free_upgrade_held(entered, release),
+            mock.patch.object(core_mod, "write_lock", _lock),
+        ):
+            store.open_in_background()
+            assert entered.wait(timeout=10)
+            progress = store.upgrade_progress()
+            warnings = store.health_warnings()
+            release.set()
+            assert store.wait_for_open(30) is True
+
+        assert progress is not None
+        assert "Waiting for another lilbee process" not in progress.text
+        assert "Waiting for another lilbee process" not in warnings[0].message
+        assert [e.phase for e in events] == [
+            UpgradePhase.WAITING,
+            UpgradePhase.TABLE,
+            UpgradePhase.DONE,
+        ]
+
+    def test_an_upgrade_another_process_finished_during_the_wait_ends_with_no_upgrade_left(
+        self, library
+    ):
+        events, record = _recorder()
+        store = Store(library, on_upgrade=record)
+
+        def _lock(lancedb_dir=None, timeout=None):
+            if timeout == 0.0:
+                raise LockTimeoutError("busy")
+            return nullcontext()
+
+        with (
+            mock.patch.object(Store, "_upgrade_needed", side_effect=[True, False]),
+            mock.patch.object(core_mod, "write_lock", _lock),
+        ):
+            store.get_db()
+
+        assert [e.phase for e in events] == [
+            UpgradePhase.WAITING,
+            UpgradePhase.TABLE,
+            UpgradePhase.DONE,
+        ]
+        assert store.upgrade_progress() is None
+        assert store.is_open is True
+
+    def test_an_upgrade_past_its_last_table_no_longer_names_a_table(self, library):
+        store = Store(library)
+        entered, release = threading.Event(), threading.Event()
+
+        def _migrate(self, db):
+            step = core_mod._TableStep(TableWork.ADDING_IDS, UpgradeTable.CITATIONS, 2, 5, 6)
+            self._report_upgrade(UpgradePhase.TABLE, step)
+
+        def _held(db, locations):
+            entered.set()
+            release.wait(timeout=30)
+
+        with (
+            mock.patch.object(Store, "_migrate_unlocked", _migrate),
+            mock.patch.object(core_mod, "_fill_locations", _held),
+        ):
+            store.open_in_background()
+            assert entered.wait(timeout=10)
+            progress = store.upgrade_progress()
+            release.set()
+            assert store.wait_for_open(30) is True
+
+        assert progress is not None
+        assert (progress.phase, progress.table) == (UpgradePhase.TABLE, None)
 
 
 class TestOthersWaitForTheUpgrade:
@@ -355,7 +489,11 @@ class TestOthersWaitForTheUpgrade:
         finally:
             assert other.wait(30) == 0
         assert waited > _SHORT_LOCK_S
-        assert [e.phase for e in events] == [UpgradePhase.WAITING, UpgradePhase.DONE]
+        assert [e.phase for e in events] == [
+            UpgradePhase.WAITING,
+            UpgradePhase.TABLE,
+            UpgradePhase.DONE,
+        ]
         assert (
             events[0].text == "Waiting for another lilbee process to finish with the library · 0 s"
         )
@@ -457,7 +595,7 @@ class TestUpgradeText:
                 LibraryUpgradeEvent(
                     phase=UpgradePhase.TABLE,
                     work=TableWork.ADDING_IDS,
-                    table="search chunks",
+                    table=UpgradeTable.CHUNKS,
                     tables_done=3,
                     tables_total=7,
                     rows=8841823,
@@ -478,6 +616,45 @@ class TestUpgradeText:
     def test_each_phase_has_its_line(self, event, text):
         assert event.text == text
 
+    def test_the_machine_values_a_client_reads_are_pinned(self):
+        assert {w.name: w.value for w in TableWork} == {
+            "UPDATING": "updating",
+            "CHECKING": "checking",
+            "ADDING_IDS": "adding_ids",
+        }
+        assert {t.name: t.value for t in UpgradeTable} == {
+            "SOURCES": "sources",
+            "CHUNKS": "chunks",
+            "PAGE_TEXTS": "page_texts",
+            "CHUNK_CONCEPTS": "chunk_concepts",
+            "ENTITIES": "entities",
+            "CITATIONS": "citations",
+            "WIKI_MENTIONS": "wiki_mentions",
+        }
+
+    def test_the_json_carries_the_machine_values_and_the_display_line(self):
+        event = LibraryUpgradeEvent(
+            phase=UpgradePhase.TABLE,
+            work=TableWork.ADDING_IDS,
+            table=UpgradeTable.CHUNKS,
+            tables_done=3,
+            tables_total=7,
+            elapsed_s=12.2,
+        )
+
+        body = event.model_dump(mode="json")
+
+        assert (body["work"], body["table"]) == ("adding_ids", "chunks")
+        assert body["text"] == "Tables done: 3 of 7 · adding ids to search chunks · 12 s"
+
+    def test_every_table_has_a_display_word(self):
+        assert set(_TABLE_LINE) | {UpgradeTable.ENTITIES} == set(UpgradeTable)
+        for table in UpgradeTable:
+            event = LibraryUpgradeEvent(
+                phase=UpgradePhase.TABLE, work=TableWork.CHECKING, table=table
+            )
+            assert event.text.startswith("Tables done: 0 of 0 · checking ")
+
     def test_the_headline_says_it_runs_once_and_how_long_it_takes(self):
         assert UPGRADE_HEADLINE == (
             "Upgrading your library (one time). "
@@ -488,7 +665,7 @@ class TestUpgradeText:
         event = LibraryUpgradeEvent(
             phase=UpgradePhase.TABLE,
             work=TableWork.CHECKING,
-            table="page text",
+            table=UpgradeTable.PAGE_TEXTS,
             tables_done=1,
             tables_total=2,
             rows=5,
@@ -507,6 +684,31 @@ class TestUpgradeText:
     )
     def test_only_the_wait_and_a_table_are_running(self, phase, running):
         assert LibraryUpgradeEvent(phase=phase).running is running
+
+    def test_the_phases_the_wire_pin_covers_are_not_empty(self):
+        assert len(list(UpgradePhase)) == 4
+
+    @pytest.mark.parametrize("phase", list(UpgradePhase))
+    def test_the_wire_phase_stays_inside_the_set_clients_read(self, phase):
+        released = {"waiting", "table", "done", "failed"}
+
+        assert LibraryUpgradeEvent(phase=phase).model_dump(mode="json")["phase"] in released
+
+    def test_the_published_schema_lists_only_the_phases_clients_read(self):
+        schema = LibraryUpgradeEvent.model_json_schema()
+
+        assert set(schema["$defs"]["UpgradePhase"]["enum"]) == {
+            "waiting",
+            "table",
+            "done",
+            "failed",
+        }
+
+    def test_a_table_event_that_names_no_table_says_the_upgrade_started(self):
+        event = LibraryUpgradeEvent(phase=UpgradePhase.TABLE, elapsed_s=2.4)
+
+        assert event.text == "Upgrading the library · 2 s"
+        assert event.running is True
 
 
 class TestServicesForwardTheUpgrade:
@@ -600,6 +802,20 @@ class TestCliShowsTheUpgrade:
         assert out.getvalue().rstrip().endswith("Library upgrade finished in 3.0 s.")
         assert _stays(out)
 
+    def test_a_second_running_event_keeps_the_same_live_line(self):
+        console, out = _console(terminal=True)
+        line = UpgradeLine(console)
+
+        line(EventType.LIBRARY_UPGRADE, _table(0))
+        first = line._status
+        line(EventType.LIBRARY_UPGRADE, _table(1))
+
+        assert first is not None
+        assert line._status is first
+        assert out.getvalue().count(UPGRADE_HEADLINE) == 1
+        line(EventType.LIBRARY_UPGRADE, _done())
+        assert line._status is None
+
     def test_a_failed_upgrade_stops_the_live_line(self):
         console, out = _console(terminal=True)
         line = UpgradeLine(console)
@@ -639,7 +855,8 @@ class TestCliShowsTheUpgrade:
         assert lines[0] == UPGRADE_HEADLINE
         shown = [re.sub(r" · \d+ s$", "", text) for text in lines[1:12]]
         assert shown == [
-            f"Tables done: {done} of 6 · {work} {table}" for done, work, table in _PROGRESS
+            f"Tables done: {done} of 6 · {_WORK_LINE[work]} {_TABLE_LINE[table]}"
+            for done, work, table in _PROGRESS
         ]
         assert lines[12].startswith(_FINISHED)
         assert len(lines) == 13
@@ -841,7 +1058,7 @@ class TestTuiShowsTheUpgrade:
         event = LibraryUpgradeEvent(
             phase=UpgradePhase.TABLE,
             work=TableWork.ADDING_IDS,
-            table="search chunks",
+            table=UpgradeTable.CHUNKS,
             tables_done=3,
             tables_total=7,
             rows=8841823,
@@ -899,7 +1116,7 @@ class TestServerShowsTheUpgrade:
                 health: dict = {}
                 for _ in range(200):
                     health = (await client.get("/api/health", headers=_headers())).json()
-                    if health["warnings"]:
+                    if health["upgrade"] and health["upgrade"]["tables_total"]:
                         break
                     await asyncio.sleep(0.05)
                 threading.Timer(0.5, release.set).start()
@@ -913,11 +1130,13 @@ class TestServerShowsTheUpgrade:
         assert {key: upgrade[key] for key in upgrade if key != "elapsed_s"} == {
             "phase": "table",
             "work": "updating",
-            "table": "source list",
+            "table": "sources",
             "rows": 2,
             "tables_done": 0,
             "tables_total": 6,
+            "text": upgrade["text"],
         }
+        assert re.fullmatch(r"Tables done: 0 of 6 · updating source list · \d+ s", upgrade["text"])
         assert upgrade["elapsed_s"] >= 0
         assert after["upgrade"] is None
         assert status.status_code == 200
@@ -993,7 +1212,68 @@ class TestServerShowsTheUpgrade:
         assert start["status"] == 503
         assert dict(start["headers"])[b"retry-after"] == b"10"
         assert b"upgrading the library" in sent[1]["body"]
-        assert json.loads(sent[1]["body"])["upgrade"] == _table(1).model_dump(mode="json")
+        upgrade = json.loads(sent[1]["body"])["upgrade"]
+        assert upgrade == _table(1).model_dump(mode="json")
+        assert (upgrade["work"], upgrade["table"]) == ("adding_ids", "chunks")
+        assert upgrade["text"] == "Tables done: 1 of 2 · adding ids to search chunks · 0 s"
+
+    @pytest.mark.parametrize(
+        ("path", "message_of"),
+        [
+            ("/api/status", lambda body: body["detail"]),
+            ("/v1/chat/completions", lambda body: body["error"]["message"]),
+            ("/v1/messages/count_tokens", lambda body: body["error"]["message"]),
+        ],
+        ids=["plugin", "openai", "anthropic"],
+    )
+    async def test_a_slow_open_with_no_upgrade_says_opening_not_upgrading(self, path, message_of):
+        from lilbee.server import app as app_mod
+        from tests.conftest import make_mock_services
+
+        store = mock.MagicMock(is_open=False)
+        store.wait_for_open.return_value = False
+        store.upgrade_progress.return_value = None
+        services_mod.set_services(make_mock_services(store=store))
+        sent: list[dict] = []
+
+        async def _send(message):
+            sent.append(message)
+
+        async def _next_app(scope, receive, send):
+            raise AssertionError("the request must not reach the route")
+
+        scope = {"type": "http", "path": path, "headers": []}
+        await app_mod._LibraryOpenWait().handle(scope, None, _send, _next_app)
+
+        body = json.loads(sent[1]["body"])
+        assert sent[0]["status"] == 503
+        assert message_of(body) == "lilbee is opening the library. Try again in a few seconds."
+        assert body["upgrade"] is None
+
+    async def test_a_request_held_in_a_step_with_no_event_says_upgrading(
+        self, library, monkeypatch
+    ):
+        from lilbee.server import app as app_mod
+        from lilbee.server.app import create_app
+        from tests.conftest import make_mock_services
+
+        monkeypatch.setattr(app_mod, "_UPGRADE_WAIT_SECONDS", 0.2)
+        store = Store(library)
+        services_mod.set_services(make_mock_services(store=store))
+        entered, release = threading.Event(), threading.Event()
+        with _event_free_upgrade_held(entered, release):
+            async with AsyncTestClient(create_app()) as client:
+                assert await asyncio.to_thread(entered.wait, 10)
+                held = await client.get("/api/status", headers=_headers())
+                health = await client.get("/api/health", headers=_headers())
+                release.set()
+                store.wait_for_open(30)
+
+        assert held.status_code == 503
+        assert "upgrading the library" in held.json()["detail"]
+        assert held.json()["upgrade"]["phase"] == "table"
+        assert health.json()["upgrade"]["phase"] == "table"
+        assert [w["code"] for w in health.json()["warnings"]] == ["library_upgrading"]
 
     async def test_a_request_past_the_limit_is_answered_in_the_error_shape_of_its_api(
         self, library, monkeypatch
@@ -1009,11 +1289,16 @@ class TestServerShowsTheUpgrade:
         with _upgrade_held(release):
             async with AsyncTestClient(create_app()) as client:
                 for _ in range(200):
-                    if (await client.get("/api/health", headers=_headers())).json()["warnings"]:
+                    health = (await client.get("/api/health", headers=_headers())).json()
+                    if health["upgrade"] and health["upgrade"]["tables_total"]:
                         break
                     await asyncio.sleep(0.05)
                 plugin = await client.get("/api/status", headers=_headers())
-                openai = await client.get("/v1/models", headers=_headers())
+                openai = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "m", "messages": []},
+                    headers=_headers(),
+                )
                 anthropic = await client.post(
                     "/v1/messages/count_tokens",
                     json={"model": "m", "messages": []},
@@ -1027,7 +1312,12 @@ class TestServerShowsTheUpgrade:
         for response in (plugin, openai, anthropic):
             assert response.status_code == 503
             assert response.headers["retry-after"] == "10"
-            assert response.json()["upgrade"]["tables_total"] == 6
+            upgrade = response.json()["upgrade"]
+            assert upgrade["tables_total"] == 6
+            assert (upgrade["work"], upgrade["table"]) == ("updating", "sources")
+            assert re.fullmatch(
+                r"Tables done: 0 of 6 · updating source list · \d+ s", upgrade["text"]
+            )
         assert "upgrading the library" in plugin.json()["detail"]
         assert "upgrading the library" in openai.json()["error"]["message"]
         assert anthropic.json()["type"] == "error"
@@ -1042,8 +1332,10 @@ class TestServerShowsTheUpgrade:
             ("GET", "/api/warm/stream", 200, "event:done"),
             ("POST", "/api/shutdown", 202, "shutting_down"),
             ("POST", "/mcp", 200, '"jsonrpc":"2.0"'),
+            ("GET", "/api/engines", 200, '"builds"'),
+            ("GET", "/api/engines/roles", 200, '"roles"'),
         ],
-        ids=["health", "warm-stream", "shutdown", "mcp"],
+        ids=["health", "warm-stream", "shutdown", "mcp", "engine-list", "engine-roles"],
     )
     async def test_these_routes_are_not_held_while_a_normal_route_answers_503(
         self, library, monkeypatch, method, path, status, marker
@@ -1090,6 +1382,96 @@ class TestServerShowsTheUpgrade:
         assert response.status_code == status
         assert marker in response.text.replace(" ", "")
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/presets",
+            "/api/config",
+            "/api/config/defaults",
+            "/api/config/schema",
+            "/api/config/sources",
+            "/api/models",
+            "/api/models/external",
+            "/api/models/catalog",
+            "/api/models/installed",
+            "/api/profiles",
+            "/api/profiles/active",
+            "/api/profiles/default",
+            "/api/profiles/default/diff",
+            "/api/profiles/default/export",
+            "/api/agent-config",
+            "/api/agent-config/claude",
+            "/api/placement",
+            "/api/gpus",
+            "/api/gpus/stream",
+            "/setup/crawler/status",
+            "/api/analyze/state",
+            "/api/sessions",
+            "/api/sessions/none",
+            "/api/sessions/none/markdown",
+            "/v1/models",
+            "/api/engines",
+            "/api/engines/roles",
+            "/api/wiki",
+            "/api/wiki/drafts",
+        ],
+    )
+    async def test_a_route_that_never_reads_the_library_is_not_held_by_a_slow_open(
+        self, library, monkeypatch, path
+    ):
+        from lilbee.server import app as app_mod
+        from lilbee.server.app import create_app
+        from tests.conftest import make_mock_services
+
+        monkeypatch.setattr(app_mod, "_UPGRADE_WAIT_SECONDS", 0.2)
+        store = Store(library)
+        services_mod.set_services(make_mock_services(store=store))
+        release = threading.Event()
+        with _upgrade_held(release):
+            async with AsyncTestClient(create_app(), raise_server_exceptions=False) as client:
+                for _ in range(200):
+                    if (await client.get("/api/health", headers=_headers())).json()["warnings"]:
+                        break
+                    await asyncio.sleep(0.05)
+                response = await client.get(path, headers=_headers())
+                release.set()
+                store.wait_for_open(30)
+
+        assert app_mod._OPENING_MESSAGE not in response.text
+        assert app_mod._UPGRADING_MESSAGE not in response.text
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/status",
+            "/api/documents",
+            "/api/search?q=x",
+            "/api/memories",
+            "/api/wiki/citations",
+        ],
+    )
+    async def test_a_route_that_reads_the_library_keeps_the_wait(self, library, monkeypatch, path):
+        from lilbee.server import app as app_mod
+        from lilbee.server.app import create_app
+        from tests.conftest import make_mock_services
+
+        monkeypatch.setattr(app_mod, "_UPGRADE_WAIT_SECONDS", 0.2)
+        store = Store(library)
+        services_mod.set_services(make_mock_services(store=store))
+        release = threading.Event()
+        with _upgrade_held(release):
+            async with AsyncTestClient(create_app(), raise_server_exceptions=False) as client:
+                for _ in range(200):
+                    if (await client.get("/api/health", headers=_headers())).json()["warnings"]:
+                        break
+                    await asyncio.sleep(0.05)
+                response = await client.get(path, headers=_headers())
+                release.set()
+                store.wait_for_open(30)
+
+        assert response.status_code == 503
+        assert "upgrading the library" in response.json()["detail"]
+
     async def test_an_open_library_passes_a_request_straight_on(self):
         from lilbee.server.app import _LibraryOpenWait
         from tests.conftest import make_mock_services
@@ -1131,7 +1513,7 @@ class TestMcpWaitsForTheUpgrade:
         release = threading.Event()
         with _upgrade_held(release):
             store.open_in_background()
-            assert _poll(lambda: store.upgrade_progress() is not None)
+            assert _poll(lambda: _table_reported(store))
             during = mcp_server.status()
             release.set()
             store.wait_for_open(30)
@@ -1140,7 +1522,25 @@ class TestMcpWaitsForTheUpgrade:
         assert during["detail"] == UPGRADE_HEADLINE
         assert during["upgrade"]["phase"] == "table"
         assert (during["upgrade"]["tables_done"], during["upgrade"]["tables_total"]) == (0, 6)
-        assert during["upgrade"]["table"] == "source list"
+        assert (during["upgrade"]["work"], during["upgrade"]["table"]) == ("updating", "sources")
         assert "document_count" not in during
         assert after["document_count"] == 2
         assert "upgrade" not in after
+
+    def test_the_status_tool_answers_with_the_upgrade_in_a_step_with_no_event(self, library):
+        from lilbee import mcp_server
+        from tests.conftest import make_mock_services
+
+        store = Store(library)
+        services_mod.set_services(make_mock_services(store=store))
+        entered, release = threading.Event(), threading.Event()
+        with _event_free_upgrade_held(entered, release):
+            store.open_in_background()
+            assert entered.wait(timeout=10)
+            during = mcp_server.status()
+            release.set()
+            store.wait_for_open(30)
+
+        assert during["detail"] == UPGRADE_HEADLINE
+        assert during["upgrade"]["phase"] == "table"
+        assert "document_count" not in during

@@ -3,17 +3,20 @@
 import logging
 import os
 import sys
+from collections.abc import Callable
 from typing import cast
 
 from lilbee.catalog import CatalogModel, find_pick
-from lilbee.catalog.query import reclassify_by_name
-from lilbee.catalog.refs import is_bare_hf_repo
+from lilbee.catalog.hf_client import HfClient
+from lilbee.catalog.refs import canonical_ref, is_bare_hf_repo
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import Config, cfg
+from lilbee.core.config.model import mlx_role_refusal
 from lilbee.modelhub.install_state import InstallState, install_state
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.model_ref import PROVIDER_PREFIXES, is_native_gguf_ref
+from lilbee.providers.model_ref import is_native_gguf_ref
 from lilbee.providers.roles import MODEL_ROLE_FIELDS
+from lilbee.providers.server_registry import BUILTIN_PREFIXES, route_for
 
 log = logging.getLogger(__name__)
 
@@ -51,18 +54,28 @@ def _model_task_validation_bypassed() -> bool:
 
 
 def _resolve_installed_task(registry: ModelRegistry, ref: str) -> ModelTask | None:
-    """Return the manifest's ``ModelTask`` for *ref*, name-reclassified, or ``None``."""
+    """Return the manifest's ``ModelTask`` for *ref*, or ``None``.
+
+    Raises ``ValueError`` when the manifest names a task this lilbee does not know.
+    """
     manifest = registry.get_manifest(ref)
     if manifest is None:
         return None
-    return ModelTask(reclassify_by_name(ref, manifest.task))
+    if manifest.task not in tuple(ModelTask):
+        raise ValueError(
+            f"Model '{ref}' has an unknown task '{manifest.task}', so it cannot be "
+            "assigned to a role. Update lilbee, or remove the model with "
+            "'lilbee model rm <ref>'."
+        )
+    return ModelTask(manifest.task)
 
 
 def _is_registry_ref(ref: str) -> bool:
     """Whether *ref* names something the model registry can hold."""
     if not ref or not ref.strip():
         return False
-    return ref.split("/", 1)[0] not in PROVIDER_PREFIXES
+    prefix, slash, _ = ref.partition("/")
+    return prefix not in BUILTIN_PREFIXES and not (slash and route_for(prefix))
 
 
 def _skips_catalog_check(ref: str, *, allow_bypass: bool) -> bool:
@@ -110,17 +123,27 @@ def _not_installed(ref: str) -> ValueError:
     )
 
 
-def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
+def validate_model_task_assignment(
+    field_name: str, ref: str, *, hf_client_for: Callable[[], HfClient], allow_bypass: bool = True
+) -> str:
     """Check *ref* is assignable to *field_name*; return the canonical ref.
+
+    *hf_client_for* gives the HF client. It runs only when the ref needs a remote
+    lookup, so an installed or bypass ref never builds the client's owner.
 
     A current pick carries its own task, so it can be role-checked before it is
     installed, which is what the catalog UI offers. Anything else is checked
     against the installed manifest, the only other thing that can vouch for a
     model's role. Raises ``TaskMismatchError`` on role mismatch and
-    ``ValueError`` when the model is neither a pick nor installed.
+    ``ValueError`` when the model is neither a pick nor installed, or when the mlx
+    engine cannot run it for that role.
     """
+    refusal = mlx_role_refusal(field_name, ref)
+    if refusal is not None:
+        raise ValueError(refusal)
     if _skips_catalog_check(ref, allow_bypass=allow_bypass):
         return ref
+    ref = canonical_ref(ref)
     want = ModelTask(MODEL_FIELD_TO_TASK[field_name])
     # The manifest is consulted first because it answers without touching the
     # network. This runs on the TUI main thread from /model and the model-bar
@@ -130,7 +153,7 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
         if installed_task != want:
             raise TaskMismatchError(installed_ref, ModelTask(installed_task), want)
         return installed_ref
-    entry = find_pick(ref)
+    entry = find_pick(ref, hf_client=hf_client_for())
     if entry is not None:
         return _canonical_pick_ref(ref, entry, want)
     raise _not_installed(installed_ref)

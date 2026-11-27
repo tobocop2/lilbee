@@ -22,11 +22,15 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.providers.fleet.gpu_stats import GpuStat, intel_util_hint, probe_gpu_stats
 
 if TYPE_CHECKING:
+    from lilbee.providers.fleet.gpu_backends import IntelUtilHint
     from lilbee.providers.fleet.gpu_stats import DeviceLike
 
 log = logging.getLogger(__name__)
 
 _CSS_FILE = Path(__file__).parent / "gpu_fleet_panel.tcss"
+
+# A role badge is text, or content a caller styled itself (for example with an engine mark).
+Badge = str | Content
 
 # Bar render constants. Fill/track glyphs come from msg.progress_bar_glyphs()
 # at render time: block elements where the terminal tiles them, box-drawing
@@ -93,7 +97,7 @@ def _badge_content(badge: str, secondary: str, muted: str) -> Content:
 def _render_row(
     s: GpuStat,
     label: str,
-    badge: str,
+    badge: Badge,
     theme: dict[str, str],
 ) -> Content:
     """Render one GPU as a single table row: bullet, label, util bar, vram bar, badge."""
@@ -128,13 +132,15 @@ def _render_row(
     )
     if not badge:
         return row
+    if isinstance(badge, Content):
+        return Content.assemble(row, "  ", badge)
     return Content.assemble(row, "  ", _badge_content(badge, secondary, muted))
 
 
 def _render_stats(
     stats: dict[int, GpuStat],
     labels: dict[int, str],
-    roles: dict[int, str],
+    roles: dict[int, Badge],
     theme: dict[str, str],
     *,
     probed: bool,
@@ -170,7 +176,7 @@ class GpuFleetPanel(Static):
         super().__init__(f"  {msg.FLEET_GPU_PROBING}", id="gpu-fleet-panel")
         self._devices: Sequence[DeviceLike] = []
         self._labels: dict[int, str] = {}
-        self._roles: dict[int, str] = {}
+        self._roles: dict[int, Badge] = {}
         self._timer: Timer | None = None
         # Single-flight: True while a probe worker is running, so a probe
         # slower than the tick interval skips ticks instead of stacking
@@ -188,7 +194,7 @@ class GpuFleetPanel(Static):
         devices: Sequence[DeviceLike],
         *,
         labels: dict[int, str],
-        roles: dict[int, str] | None = None,
+        roles: dict[int, Badge] | None = None,
     ) -> None:
         """Register the GPU devices the panel probes on each tick.
 
@@ -200,6 +206,8 @@ class GpuFleetPanel(Static):
         self._roles = dict(roles) if roles is not None else {}
         self._probed = True
         self._probe_error = None
+        if not self._devices:
+            self.update(_render_stats({}, {}, {}, self._resolve_theme(), probed=True))
 
     def set_probe_failed(self, reason: str) -> None:
         """Render the device probe's failure instead of the probing placeholder."""
@@ -243,32 +251,41 @@ class GpuFleetPanel(Static):
         self,
         devices: list[DeviceLike],
         labels: dict[int, str],
-        roles: dict[int, str],
+        roles: dict[int, Badge],
     ) -> None:
-        """Probe GPU stats off the UI thread and push the result back."""
+        """Probe GPU stats and the Intel util hint off the UI thread and push the result back."""
         try:
             stats = probe_gpu_stats(devices)
+            # The hint is an extra line: a failing hint probe loses the hint, never the stats.
+            try:
+                hint = intel_util_hint(devices, stats)
+            except Exception:
+                log.debug("gpu_fleet_panel: intel hint probe failed", exc_info=True)
+                hint = None
         except Exception:
             log.debug("gpu_fleet_panel: probe failed", exc_info=True)
             return
         finally:
             call_from_thread(self, setattr, self, "_probing", False)
-        call_from_thread(self, self._apply_stats, stats, labels, roles)
+        call_from_thread(self, self._apply_stats, stats, labels, roles, hint)
 
     def _apply_stats(
         self,
         stats: dict[int, GpuStat],
         labels: dict[int, str],
-        roles: dict[int, str],
+        roles: dict[int, Badge],
+        hint: IntelUtilHint | None,
     ) -> None:
         """Update the rendered content with fresh stat data (main thread)."""
+        if not self.is_attached:
+            # The panel was removed after the worker queued this callback.
+            return
         if self._probe_error is not None:
             # A stats worker already in flight when the probe failure landed
             # must not repaint the empty state over the failure message.
             return
         theme = self._resolve_theme()
         content = _render_stats(stats, labels, roles, theme, probed=self._probed)
-        hint = intel_util_hint(self._devices, stats)
         if hint:
             muted = _theme_color(theme, "text-muted")
             hint_line = Content.styled(f"  {msg.intel_util_hint_text(hint)}", muted)

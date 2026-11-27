@@ -266,7 +266,7 @@ class TestThePlanScriptStaysInSyncWithLilbee:
     def test_the_plan_fields_it_reads_exist(self) -> None:
         from lilbee.providers.fleet.planning import FleetPlan
 
-        assert {"launches", "skipped_unusable_ctx"} <= set(FleetPlan.__dataclass_fields__)
+        assert {"launches", "refused_roles"} <= set(FleetPlan.__dataclass_fields__)
 
 
 class TestTheHarnessCannotReportGreenOnNothing:
@@ -447,13 +447,14 @@ class TestTheEngineIsAskedToReportWhatItAllocated:
             ENV_LOG_VERBOSITY,
             LOAD_REPORT_VERBOSITY,
             engine_log_env,
+            engine_log_path,
         )
 
-        env = engine_log_env(Path("/tmp/matrix"), "cell")
+        env = engine_log_env(engine_log_path(Path("/tmp/matrix"), "cell"))
         assert env[ENV_LOG_VERBOSITY] == LOAD_REPORT_VERBOSITY
         assert env[ENV_ARG_LOG_VERBOSITY] == LOAD_REPORT_VERBOSITY
         source = Path(observe.__file__).read_text()
-        assert "engine_log_env(log_dir, model_id)" in source
+        assert "engine_log_env(report_path)" in source
         assert "engine_log_path(log_dir, model_id)" in source
 
     def test_host_buffers_are_excluded_by_lilbees_own_predicate(self) -> None:

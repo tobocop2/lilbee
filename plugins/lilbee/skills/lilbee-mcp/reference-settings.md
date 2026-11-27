@@ -7,8 +7,8 @@ The full list of settings, with defaults and which surfaces can set each one, is
 
 ## A setting that changes the tool list needs a reconnect
 
-`wiki`, `memory_enabled`, `mcp_sessions_enabled` and `mcp_profiles_enabled` decide which
-tools register. The
+`wiki`, `memory_enabled`, `mcp_sessions_enabled`, `mcp_profiles_enabled`,
+`mcp_presets_enabled` and `mcp_engines_enabled` decide which tools register. The
 server decides once, at start. `lilbee_settings_set({"wiki": true})` succeeds and persists,
 and the other `lilbee_wiki_*` tools are still absent. Ask the user to restart the lilbee MCP
 server. Do not report the feature as broken. `lilbee_wiki_status` and `lilbee_wiki_wipe`
@@ -94,3 +94,35 @@ model not installed). Show the error to the user verbatim.
 Preview first, then set, and only when the user asks. On the shared HTTP daemon, set and
 clear are refused unless the host enables `allow_http_placement`. The CLI equivalent is
 `lilbee placement`.
+
+## Server presets
+
+These tools register only when the user turns on `mcp_presets_enabled` (off by default).
+
+| Tool | Use |
+|---|---|
+| `lilbee_preset_list()` | The stored server presets: name, URL, roles, rerank wire, memory reserve, a `reserve_note` when a remote preset has a reserve, and `has_key`. A key is never returned. |
+| `lilbee_preset_add(name, url, roles, api_key, rerank_wire, memory_reserve_gb)` | Add a preset for the roles `embed`, `rerank`, `chat` or `vision`. `rerank_wire` is `v1` or `tei`. |
+| `lilbee_preset_edit(name, url, roles, api_key, rerank_wire, memory_reserve_gb, clear_reserve, clear_key)` | Change a preset. Give only what changes. `clear_reserve` unsets the memory reserve. `clear_key` removes the stored key and stands alone. |
+| `lilbee_preset_remove(name)` | Remove a preset. |
+
+On the shared HTTP daemon, add, edit and remove are refused unless the host enables
+`allow_http_engines` (a preset sets where requests and API keys go). List always works.
+Change presets only when the user asks.
+
+## Engine choice
+
+These tools register only when the user turns on `mcp_engines_enabled` (off by default).
+
+| Tool | Use |
+|---|---|
+| `lilbee_engine_list()` | The engine builds installed beside the models (name, version, backend, `not_run_on`: the devices the engine has not run on, and `differs_from_pin`: true for a build that is not the build the pin names, which lilbee does not run), `damaged`, each engine folder that lilbee cannot use (`folder` and an `error` that names the fix), `not_installed`, the engines with no installed build, `experimental`, each engine with devices that have no record and those devices, and `engines_folder`, the folder that holds the builds. |
+| `lilbee_engine_remove(engine, version, backend)` | Remove one installed build, as `list` shows it. Refused for the bundled engine and a build in use. |
+| `lilbee_engine_roles()` | The engine of each role: model, format, engine and the notice when the role fell back or has no engine. |
+| `lilbee_engine_use(role, model, engine)` | Choose the engine for the model of a role. `engine` `auto` removes the choice. |
+| `lilbee_engine_prefer(engine)` | Set the engine for every model with no choice of its own. `auto` picks by model format. |
+| `lilbee_engine_install(engine)` | Install an engine that is not bundled, from its pack in the packs folder. The host must pass the engine's gate. The result carries `engines_folder`, the folder that holds the builds. |
+
+On the shared HTTP daemon, remove, use, prefer and install are refused unless the host
+enables `allow_http_engines`. List and roles always work. Change the engine only when the
+user asks.

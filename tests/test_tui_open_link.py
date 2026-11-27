@@ -3,6 +3,7 @@ the source file with the OS opener instead of a browser."""
 
 from __future__ import annotations
 
+import asyncio
 import ctypes
 import errno
 import os
@@ -10,7 +11,6 @@ import socket
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 from unittest import mock
 from urllib.parse import urlparse
@@ -670,11 +670,12 @@ class TestOpenerKeepsTheScreenResponsive:
         set_services(None)
 
     async def test_a_slow_opener_does_not_block_the_event_loop(self, monkeypatch):
-        started, release = threading.Event(), threading.Event()
+        started, release, returned = threading.Event(), threading.Event(), threading.Event()
 
         def slow_opener(href: str) -> LinkOpenResult:
             started.set()
-            release.wait(timeout=15)
+            release.wait(timeout=45)  # under the 60 s test timeout
+            returned.set()
             return LinkOpenResult.NOT_A_DOCUMENT
 
         monkeypatch.setattr(chat_screen, "open_local_file", slow_opener)
@@ -682,13 +683,21 @@ class TestOpenerKeepsTheScreenResponsive:
         async with app.run_test(size=(120, 40)) as pilot:
             chat = await await_chat(app, pilot)
             chat.post_message(Markdown.LinkClicked(mock.Mock(spec=Markdown), "file:///tmp/a.md"))
-            began = time.monotonic()
-            assert await wait_until(pilot, started.is_set, timeout=5)
-            await pilot.pause()
-            assert time.monotonic() - began < 5, "the opener held the event loop"
+            assert await asyncio.to_thread(started.wait, 60), "the opener never started"
+            # The loop turns while the opener is still inside its call. A loop the opener
+            # held could not finish a pause until the opener returned.
+            for _ in range(5):
+                await pilot.pause()
+            assert not returned.is_set(), "the opener held the event loop"
             release.set()
             assert await wait_until(
                 pilot,
                 lambda: any("not a document" in n.message for n in app._notifications),
                 timeout=5,
             )
+
+
+def test_a_test_cannot_open_a_real_browser():
+    import webbrowser
+
+    assert isinstance(webbrowser.open, mock.MagicMock)

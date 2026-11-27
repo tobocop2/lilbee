@@ -646,6 +646,89 @@ class TestSupportsTools:
         assert backend.supports_tools("ollama/m") is True
 
 
+# OpenAI chat models whose own tokenizer (o200k) is the one liter-llm loads for them.
+_OWN_TOKENIZER_REFS = [
+    "openai/gpt-4o",
+    "openai/gpt-4o-mini",
+    "openai/chatgpt-4o-latest",
+    "openai/gpt-4.1",
+    "openai/gpt-4.1-nano",
+    "openai/gpt-4.5-preview",
+    "openai/gpt-5",
+    "openai/gpt-5-mini",
+    "openai/o1",
+    "openai/o3-mini",
+    "openai/o4-mini",
+]
+
+# Models liter-llm counts with a tokenizer that is not their own, so a count can read low.
+_FOREIGN_TOKENIZER_REFS = [
+    pytest.param("anthropic/claude-sonnet-4-5", id="claude-reads-the-claude-2-tokenizer"),
+    pytest.param("gemini/gemini-2.5-flash", id="gemini-reads-a-gated-gemma-tokenizer"),
+    pytest.param("ollama/llama3.3:70b", id="llama-reads-the-gpt-4o-or-gated-llama-tokenizer"),
+    pytest.param("mistral/mistral-large-latest", id="mistral-reads-the-mistral-7b-tokenizer"),
+    pytest.param("deepseek/deepseek-chat", id="deepseek-reads-the-gpt-4o-tokenizer"),
+    pytest.param("openrouter/openai/gpt-4o", id="openrouter-may-serve-any-model"),
+    pytest.param("openai/gpt-4", id="gpt-4-is-cl100k"),
+    pytest.param("openai/gpt-4-turbo", id="gpt-4-turbo-is-cl100k"),
+    pytest.param("openai/gpt-3.5-turbo", id="gpt-3.5-is-cl100k"),
+    pytest.param("lm_studio/gpt-4o", id="a-local-server-names-its-own-models"),
+]
+
+
+class TestCountChatTokens:
+    @pytest.mark.parametrize("ref", _OWN_TOKENIZER_REFS)
+    def test_counts_a_model_with_its_own_tokenizer(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk, ref: str
+    ) -> None:
+        sdk.count_result = 5
+        model_ref = parse_model_ref(ref)
+        assert backend.count_chat_tokens(model_ref, "hello there") == 5
+        assert sdk.last("count_tokens") == {"model": model_ref.name, "text": "hello there"}
+
+    @pytest.mark.parametrize("ref", _FOREIGN_TOKENIZER_REFS)
+    def test_refuses_a_model_without_its_own_tokenizer(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk, ref: str
+    ) -> None:
+        with pytest.raises(NotImplementedError):
+            backend.count_chat_tokens(parse_model_ref(ref), "hello there")
+        assert not [name for name, _ in sdk.calls if name == "count_tokens"]
+
+    def test_a_tokenizer_that_does_not_load_is_a_provider_error(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.count_error = sdk.error("BadRequestError", "failed to load tokenizer")
+        with pytest.raises(ProviderError):
+            backend.count_chat_tokens(parse_model_ref("openai/gpt-4o"), "hello there")
+
+    def test_a_tokenizer_that_did_not_load_is_not_loaded_again(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        """A failed load can wait for a network timeout, so each model tries it once."""
+        sdk.count_error = sdk.error("BadRequestError", "failed to load tokenizer")
+        ref = parse_model_ref("openai/gpt-4o")
+        for _ in range(2):
+            with pytest.raises(ProviderError):
+                backend.count_chat_tokens(ref, "hello there")
+        assert len([name for name, _ in sdk.calls if name == "count_tokens"]) == 1
+
+    def test_a_failed_load_does_not_stop_another_model_from_loading(
+        self, backend: LlmSdkBackend, sdk: fakes.FakeSdk
+    ) -> None:
+        sdk.count_error = sdk.error("BadRequestError", "failed to load tokenizer")
+        with pytest.raises(ProviderError):
+            backend.count_chat_tokens(parse_model_ref("openai/gpt-4o"), "hello there")
+        sdk.count_error = None
+        sdk.count_result = 5
+        assert backend.count_chat_tokens(parse_model_ref("openai/o3-mini"), "hello there") == 5
+
+    def test_a_missing_sdk_is_a_provider_error(self, backend: LlmSdkBackend) -> None:
+        from tests._sys_modules import inject_modules
+
+        with inject_modules({fakes.SDK_MODULE: None}), pytest.raises(ProviderError):
+            backend.count_chat_tokens(parse_model_ref("openai/gpt-4o"), "hello there")
+
+
 class TestListModels:
     def test_ollama_url_hits_api_tags(self, backend: LlmSdkBackend) -> None:
         resp = mock.MagicMock()

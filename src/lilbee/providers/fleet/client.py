@@ -8,12 +8,15 @@ import contextlib
 import json
 import logging
 import math
+import re
 import socket
 import ssl
+import sys
 import threading
 import time
-from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
+from collections.abc import AsyncIterator, Callable, Generator, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal, TypedDict, TypeVar, overload
 
@@ -24,10 +27,9 @@ import numpy.typing as npt
 from lilbee.core.config import cfg
 from lilbee.core.vectors import Vector
 from lilbee.providers.base import (
-    THINK_CLOSE_TAG,
-    THINK_OPEN_TAG,
     ChatResult,
     ChatToolResult,
+    ChosenSeed,
     ClosableIterator,
     FinishReason,
     ProviderError,
@@ -36,17 +38,28 @@ from lilbee.providers.base import (
     TokenUsage,
     ToolCall,
     ToolCallDelta,
+    WarmTimeoutError,
+    is_prompt_length_overflow,
 )
 from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
+from lilbee.providers.fleet.engine_install import engine_install_hint
+from lilbee.providers.fleet.engines.base import RequestProfile, UpstreamCheck
 from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
+from lilbee.providers.fleet.rerank_pair import RerankPair
+from lilbee.providers.fleet.swap_manager import RUNNING_PATH, UNLOAD_PATH, ready_model_ids
+from lilbee.providers.reasoning import ThinkInliner, inline_reasoning
 from lilbee.providers.roles import RerankMode
+from lilbee.providers.truncation import note_cut_to_limit, note_truncated
+from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
+from lilbee.runtime.vc_runtime import VC_REDIST_URL, dll_not_found_status
 
-_PROVIDER_NAME = "llama-server"
 # Shown when a stream breaks after its first frame. The client cannot know why.
 _STREAM_INTERRUPTED_MESSAGE = (
     "The model server stopped answering and the answer is cut. Send your message again."
 )
+# Shown when a stream sends its headers and then no frame within the idle bound.
+_STREAM_SILENT_MESSAGE = "The model server sent no answer for {wait:g} s, so the request stopped."
 
 # Fleet clients only ever talk to a loopback llama-server over plain HTTP, so TLS is
 # never negotiated. httpx still builds a default SSL context per client (loads the
@@ -56,9 +69,8 @@ _STREAM_INTERRUPTED_MESSAGE = (
 _LOOPBACK_SSL_CONTEXT = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 _LOOPBACK_SSL_CONTEXT.check_hostname = False
 _LOOPBACK_SSL_CONTEXT.verify_mode = ssl.CERT_NONE
-# Reranker pair format: query and candidate are joined with this separator into
-# one document so a cross-encoder GGUF scores the pair as a single sequence.
-_RERANK_PAIR_SEPARATOR = "</s></s>"
+# Only on Windows does a stream abort close the socket after its shutdown (see abort_streams).
+_CLOSE_AFTER_SHUTDOWN = sys.platform == "win32"
 # LLM reranker: score each candidate by the yes/no first-token logprob.
 _LLM_RERANK_PROMPT = (
     "Judge whether the document is relevant to the query. "
@@ -74,29 +86,34 @@ _LLM_RERANK_NO_VERDICT_ERROR = (
     "reranker_prompt to the model's expected format."
 )
 # Max sequences per /v1/embeddings request. Like the in-process backstop, a
-# batch is bounded by BOTH the token budget (the server's n_batch, == token_cap)
-# and this sequence count: a corpus of many tiny chunks would otherwise pack one
+# batch is bounded by BOTH the request token budget (the engine's ``request_tokens``,
+# else token_cap) and this sequence count: a corpus of many tiny chunks would otherwise pack one
 # request past the server's batch/sequence limit and trip a 500.
 _EMBED_N_SEQ_MAX = 64
 # Estimate a chunk's token count from its character length so the bulk embed
 # path packs sub-batches without a /tokenize round-trip per input. The factor is
 # held below the corpus average (data.extract.chunk.CHARS_PER_TOKEN, 4 for Latin text)
 # so the estimate over-counts tokens and a sub-batch never packs past the
-# server's n_batch (== token_cap). Rerank pairs are token-dense (the separator
-# is several tokens in a few chars), so an under-count can slip an over-cap
-# pair through; the rerank path re-truncates exactly on the server's overflow
-# error instead of paying a /tokenize round trip per pair up front.
+# server's n_batch (== token_cap).
 _EMBED_EST_CHARS_PER_TOKEN = 3
+# TEI 1.9.4 refuses a request body past its --payload-limit (default 2,000,000 bytes) with 413.
+# For an engine that cuts inputs by its own tokens, the client packs each embed request so that
+# its encoded body stays within the limit less the margin, and cuts a single longer input.
+_EMBED_PAYLOAD_LIMIT = 2_000_000
+_EMBED_BODY_MARGIN = 4096
 # llama-swap's error body when the spawned llama-server exited before serving.
 _UPSTREAM_DIED_MARKER = "exited prematurely"
+# llama-swap's error body when a launch did not pass its health wait, and the wait in
+# Go's duration form ("2m0s").
+_WARM_TIMEOUT_MARKER = "health check timed out"
+_WARM_WAIT_PATTERN = re.compile(r"health check timed out after (?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?")
+_WARM_TIMEOUT_MESSAGE = "The engine for {model} did not finish starting in time."
 # llama-server's exit line when the port lilbee picked was taken by the time
 # the server bound it (the pick-then-bind gap spans the whole lazy-spawn wait,
 # so a passing ephemeral connection can occupy it). The occupation is
 # transient: llama-swap re-spawns on the next request against the same port
 # and normally binds.
 _BIND_FAILURE_MARKER = "couldn't bind HTTP server socket"
-# llama-server's 500 body when one input exceeds the physical batch (n_batch).
-_BATCH_OVERFLOW_MARKER = "too large to process"
 
 
 class _ChatToolSpecFunction(TypedDict, total=False):
@@ -183,17 +200,72 @@ _UPSTREAM_LOG_MAX_CHUNKS = 8
 
 log = logging.getLogger(__name__)
 
+# What a bad answer from the limit or count route raises; the embed itself already succeeded.
+_TRUNCATION_CHECK_FAILURES = (httpx.HTTPError, ProviderError, KeyError, TypeError, ValueError)
+# The longest the advisory limit or count request may hold an embed, in seconds.
+_TRUNCATION_CHECK_TIMEOUT_S = 5.0
+# The longest a read of a device or load-failure route may take, in seconds; the model is loaded.
+_UPSTREAM_CHECK_TIMEOUT_S = 10.0
+
 
 def _estimate_tokens(text: str) -> int:
     """Conservative (over-counting) token estimate from character length."""
     return max(1, -(-len(text) // _EMBED_EST_CHARS_PER_TOKEN))
 
 
+def _message_text(message: Mapping[str, Any]) -> str:
+    """The text of one chat message: its content, text parts, and the tool calls it holds."""
+    content = message.get("content")
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(
+            part["text"] for part in content if isinstance(part, Mapping) and "text" in part
+        )
+    else:
+        text = ""
+    calls = message.get("tool_calls")
+    return f"{text}\n{json.dumps(calls, ensure_ascii=False)}" if calls else text
+
+
+def _wire_bytes(value: Any) -> int:
+    """The bytes *value* takes in a request body: httpx encodes ``json=`` with these options."""
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return len(encoded.encode())
+
+
+def _cut_to_wire_bytes(text: str, budget: int) -> str:
+    """The longest head of *text*, on a character boundary, that takes at most *budget* bytes."""
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if _wire_bytes(text[:mid]) <= budget:
+            low = mid
+        else:
+            high = mid - 1
+    return text[:low]
+
+
 _UPSTREAM_DEATH_MESSAGES: dict[ProviderErrorKind, str] = {
     ProviderErrorKind.CAPACITY: "The engine ran out of memory while loading {model}",
     ProviderErrorKind.PORT_CONFLICT: "The engine could not start {model}: its port was taken",
+    ProviderErrorKind.CPU_UNSUPPORTED: (
+        "The engine for {model} stopped on an instruction this CPU does not have"
+    ),
 }
 _UPSTREAM_DEATH_DEFAULT = "The engine for {model} stopped before it could answer"
+_MISSING_ENGINE_MESSAGE = "The engine program for {model} is missing. {hint}"
+# What a launch prints when the engine program is not on disk. Go's exec errors come
+# from llama-swap, which cannot start the command (a JSON body escapes the quotes);
+# "file does not exist" is the Windows form. The shell lines come from a launch that
+# runs through a shell. A missing model file is not here: the engine ran to open it.
+_MISSING_ENGINE_PATTERN = re.compile(
+    r"fork/exec \S+: no such file or directory"
+    r'|exec: \\?".+?\\?": (?:executable file not found|file does not exist)'
+    r"|^(?:\S*/)?(?:ba|da|z)?sh: (?:line \d+: |\d+: )?\S+: "
+    r"(?:command not found|not found|no such file or directory)",
+    re.IGNORECASE | re.MULTILINE,
+)
 _BROKEN_MODEL_FILE_MESSAGE = (
     "The model file for {model} is incomplete or damaged. "
     "Run 'lilbee model rm {model}', then 'lilbee model pull {model}'."
@@ -209,16 +281,82 @@ _BROKEN_FILE_MARKERS: tuple[str, ...] = (
 )
 
 
+# Packages that hold a shared library the engine packs leave out, by library name.
+_LIBRARY_INSTALL_HINTS: dict[str, str] = {
+    "libgomp.so.1": "Install libgomp1 (Debian, Ubuntu) or libgomp (Fedora).",
+}
+# The dynamic loader's line when a shared library is absent at process start.
+_MISSING_LIBRARY_PATTERN = re.compile(
+    r"error while loading shared libraries: (\S+): cannot open shared object file"
+)
+
+
+def missing_library(tail: str) -> str | None:
+    """The shared library the dynamic loader could not find, from an engine's output."""
+    found = _MISSING_LIBRARY_PATTERN.search(tail)
+    return found.group(1) if found else None
+
+
+_WINDOWS_RUNTIME_MISSING_MESSAGE = (
+    "The engine could not start because a DLL it needs is missing. The usual cause "
+    f"is a missing Microsoft Visual C++ runtime. Install it from {VC_REDIST_URL}."
+)
+
+
+def missing_engine(text: str) -> bool:
+    """Whether *text*, an engine's output or a llama-swap body, says the engine is absent."""
+    return _MISSING_ENGINE_PATTERN.search(text) is not None
+
+
+def _model_subject(model: str | None) -> str:
+    """The name a message gives the model: its reference, or "the model" without one."""
+    return model if model is not None else "the model"
+
+
+def _missing_engine_message(model: str | None) -> str:
+    """The plain line for an engine program that is not on disk, with how to install one."""
+    return _MISSING_ENGINE_MESSAGE.format(model=_model_subject(model), hint=engine_install_hint())
+
+
+def _fixed_death_message(kind: ProviderErrorKind, model: str | None) -> str | None:
+    """The line for a death no HTTP status or log path adds to, or ``None``."""
+    if kind is ProviderErrorKind.ENGINE_MISSING:
+        return _missing_engine_message(model)
+    if kind is not ProviderErrorKind.MODEL_FILE_BROKEN:
+        return None
+    if model is None:
+        return _BROKEN_UNNAMED_MODEL_FILE_MESSAGE
+    return _BROKEN_MODEL_FILE_MESSAGE.format(model=model)
+
+
+def _missing_library_message(library: str) -> str:
+    """The plain line that names a missing library and, when known, the package."""
+    message = f"The engine needs the library {library}."
+    hint = _LIBRARY_INSTALL_HINTS.get(library)
+    return message if hint is None else f"{message} {hint}"
+
+
 def _upstream_death_message(
-    kind: ProviderErrorKind, status_code: int, model: str | None, engine_log: Path | None
+    kind: ProviderErrorKind,
+    status_code: int,
+    model: str | None,
+    engine_log: Path | None,
+    tail: str = "",
 ) -> str:
     """One plain line for a model server that exited, built from what lilbee knows."""
-    subject = model if model is not None else "the model"
-    if kind is ProviderErrorKind.MODEL_FILE_BROKEN:
-        if model is None:
-            return _BROKEN_UNNAMED_MODEL_FILE_MESSAGE
-        return _BROKEN_MODEL_FILE_MESSAGE.format(model=model)
-    cause = _UPSTREAM_DEATH_MESSAGES.get(kind, _UPSTREAM_DEATH_DEFAULT).format(model=subject)
+    library = missing_library(tail)
+    if kind is ProviderErrorKind.MISSING_LIBRARY and library is not None:
+        # No log path: the loader line reaches only llama-swap's per-model
+        # stream, and lilbee keeps no file that holds it.
+        return _missing_library_message(library)
+    if kind is ProviderErrorKind.MISSING_LIBRARY and dll_not_found_status(tail):
+        return _WINDOWS_RUNTIME_MISSING_MESSAGE
+    fixed = _fixed_death_message(kind, model)
+    if fixed is not None:
+        return fixed
+    cause = _UPSTREAM_DEATH_MESSAGES.get(kind, _UPSTREAM_DEATH_DEFAULT).format(
+        model=_model_subject(model)
+    )
     message = f"{cause} (HTTP {status_code})."
     if engine_log is None:
         return message
@@ -255,30 +393,52 @@ _OOM_MARKERS: tuple[str, ...] = (
 # would be read as a memory shortfall and answered with a context reduction.
 _SURVIVABLE_LINE_MARKERS: tuple[str, ...] = ("warning:", "warn:")
 
+# What an engine prints about an illegal instruction in its own output. A process
+# that SIGILL kills without printing leaves no text here and keeps the generic error.
+_ILLEGAL_INSTRUCTION_MARKER = "illegal instruction"
+
 
 def classify_upstream_death(tail: str) -> ProviderErrorKind | None:
     """The kind of failure an engine's dying output describes, or ``None``.
 
-    ``CAPACITY`` for a load that ran out of device memory: retrying the identical
-    launch respawns it into a crash loop, while a smaller context might fit.
-    ``PORT_CONFLICT`` for losing the port-bind race, which is worth retrying
-    because the retry re-drives llama-swap's spawn, and worth naming because a
-    port held for good needs a different port rather than another attempt at the
-    same one. ``None`` leaves the existing classification alone rather than
-    guessing at an unfamiliar death.
+    Return what the engine's own output says first. Return ``ENGINE_MISSING``
+    only when that names no cause and the output says the engine program is
+    not on disk.
+    """
+    # A tail can span an earlier failed attempt and a later engine that ran, so
+    # a cause the engine printed wins over an exec error.
+    kind = _classify_engine_output(tail)
+    if kind is None and missing_engine(tail):
+        return ProviderErrorKind.ENGINE_MISSING
+    return kind
+
+
+def _classify_engine_output(tail: str) -> ProviderErrorKind | None:
+    """The kind of failure the output of an engine that ran describes, or ``None``.
+
+    Return ``MODEL_FILE_BROKEN`` for a weights file the engine cannot read.
+    Return ``CAPACITY`` for a load that ran out of device memory.
+    Return ``PORT_CONFLICT`` for a lost port-bind race.
+    Return ``CPU_UNSUPPORTED`` for an engine the CPU cannot run.
+    Return ``MISSING_LIBRARY`` for a shared library the host lacks.
+    Return ``None`` for any other death, so the existing classification stays.
     """
     fatal = [
         line
         for line in tail.lower().splitlines()
         if not any(marker in line for marker in _SURVIVABLE_LINE_MARKERS)
     ]
-    # A damaged file is checked first: no memory or port change makes it load.
+    # A damaged file is checked next: no memory or port change makes it load.
     if any(marker in line for line in fatal for marker in _BROKEN_FILE_MARKERS):
         return ProviderErrorKind.MODEL_FILE_BROKEN
     if any(marker in line for line in fatal for marker in _OOM_MARKERS):
         return ProviderErrorKind.CAPACITY
     if _BIND_FAILURE_MARKER in tail:
         return ProviderErrorKind.PORT_CONFLICT
+    if any(_ILLEGAL_INSTRUCTION_MARKER in line for line in fatal):
+        return ProviderErrorKind.CPU_UNSUPPORTED
+    if missing_library(tail) is not None or dll_not_found_status(tail):
+        return ProviderErrorKind.MISSING_LIBRARY
     return None
 
 
@@ -298,7 +458,7 @@ def is_rebuildable_failure(exc: BaseException) -> bool:
     return isinstance(exc, ProviderError) and exc.kind in _REBUILDABLE_KINDS
 
 
-def _classify_error(status_code: int, body: str) -> ProviderErrorKind:
+def _classify_error(status_code: int, body: str, profile: RequestProfile) -> ProviderErrorKind:
     """Error kind from a llama-server/llama-swap error status and body.
 
     An input past the server's n_batch is a 500 whose body says "too large to
@@ -310,15 +470,28 @@ def _classify_error(status_code: int, body: str) -> ProviderErrorKind:
     ``_raise_for_status`` upgrades to SERVER once the upstream tail proves it).
     A bare gateway error (502/503/504) is a
     momentarily-unreachable upstream -- restarting, OOM-killed, mid-swap -- so
-    it is SERVER, which the gateway retry treats as transient.
+    it is SERVER, which the gateway retry treats as transient. A launch that did not
+    pass llama-swap's health wait is WARM_TIMEOUT: another request only starts the
+    same slow launch again, so nothing retries or rebuilds it.
     """
-    if _BATCH_OVERFLOW_MARKER in body:
+    if profile.batch_overflow is not None and profile.batch_overflow.search(body):
         return ProviderErrorKind.CONTEXT_OVERFLOW
+    if _WARM_TIMEOUT_MARKER in body:
+        return ProviderErrorKind.WARM_TIMEOUT
     if _UPSTREAM_DIED_MARKER in body:
         return ProviderErrorKind.CONNECTION
     if status_code in _TRANSIENT_GATEWAY_STATUSES:
         return ProviderErrorKind.SERVER
     return ProviderErrorKind.UNKNOWN
+
+
+def _health_wait_s(body: str) -> float | None:
+    """The health wait a llama-swap warm-timeout body names, in seconds, or None."""
+    found = _WARM_WAIT_PATTERN.search(body)
+    if found is None or not any(found.groups()):
+        return None
+    hours, minutes, seconds = (int(part or 0) for part in found.groups())
+    return float(hours * 3600 + minutes * 60 + seconds)
 
 
 def is_connection_failure(exc: Exception) -> bool:
@@ -377,12 +550,6 @@ def _fetch_log_tail(url: str) -> str:
     return "".join(chunks)[-_UPSTREAM_LOG_TAIL_CHARS:]
 
 
-# llama-server L2-normalizes pooled embeddings by default (embd_normalize=2);
-# every embeddings request sends embd_normalize=-1 so the engine returns raw
-# vectors, and so a rank-pooling rerank score (a single value per pair) is not
-# collapsed to +-1 by normalization. The server only exposes this per request
-# body, not as a startup flag.
-_EMBD_NORMALIZE_NONE = -1
 # Vectors come back as a base64 float32 buffer: parsing thousands of JSON float
 # literals per batch is CPU-bound and holds the GIL, which caps embedding
 # throughput below what the GPUs can feed regardless of how many are dispatching.
@@ -393,18 +560,22 @@ _EMBED_VECTOR_DTYPE = "<f4"
 # Rank pooling puts the pair's relevance score in the vector's first slot.
 _RANK_SCORE_INDEX = 0
 _UNREADABLE_EMBEDDING_ERROR = (
-    "The embedding server returned vectors lilbee could not read. Update the "
-    "inference engine: base64 embedding responses need llama-server b4391 or newer."
+    "The embedding server returned vectors lilbee could not read. Update the inference engine: "
 )
 _NO_RERANK_SCORE_ERROR = "The reranker returned no relevance score for a candidate."
+_NO_RERANK_PAIR_ERROR = (
+    "The reranker's model file names no start or end token, so its query and "
+    "candidate pairs cannot be built. Choose another reranker GGUF."
+)
 _HEALTH_PATH = "/health"
 _CHAT_PATH = "/v1/chat/completions"
+_CONTEXT_OVERFLOW_TEXT = (
+    "The conversation exceeds this model's context window. "
+    "Start a new conversation or shorten the input."
+)
 _EMBED_PATH = "/v1/embeddings"
-_TOKENIZE_PATH = "/tokenize"
-_DETOKENIZE_PATH = "/detokenize"
-_APPLY_TEMPLATE_PATH = "/apply-template"
-# llama-swap proxies native (non-OpenAI) llama.cpp routes only under
-# /upstream/<model>/...; the bare /tokenize path 404s (it routes /v1/* by the
+# llama-swap proxies native (non-OpenAI) engine routes only under
+# /upstream/<model>/...; the bare tokenize path 404s (it routes /v1/* by the
 # body's model field, but a native route carries no such field).
 _UPSTREAM_PREFIX = "/upstream"
 # Match the in-process tokenizer call (llm.tokenize(text, add_bos=True, special=False)):
@@ -414,10 +585,13 @@ _UPSTREAM_PREFIX = "/upstream"
 _TOKENIZE_ADD_SPECIAL = True
 _TOKENIZE_PARSE_SPECIAL = False
 _HTTP_OK = 200
-_HTTP_BAD_REQUEST = 400
 _HTTP_NOT_FOUND = 404
 _HTTP_METHOD_NOT_ALLOWED = 405
 _HTTP_TOO_MANY_REQUESTS = 429
+# Statuses that refuse one request and say nothing of the route: a malformed, oversize or
+# unprocessable request, and one past the concurrency limit. Any other error status, such
+# as a missing key, a missing route or a failed backend, is true of every request.
+_ONE_REQUEST_REFUSALS = frozenset({400, 413, 422, _HTTP_TOO_MANY_REQUESTS})
 # Gateway statuses llama-swap returns while an upstream is unreachable
 # (502 crashing/restarting, 503 unavailable, 504 gateway timeout). The request
 # succeeds once the upstream is back, so these must never terminalize a call.
@@ -433,6 +607,11 @@ _TRANSIENT_KINDS = _RETRY_KINDS | {ProviderErrorKind.RATE_LIMIT}
 _DONE_SENTINEL = "[DONE]"
 _DATA_PREFIX = "data:"
 _DEFAULT_TIMEOUT_S = 300.0
+# The longest silence, in seconds, between two reads of a chat stream's body. The client
+# timeout stays the wait for the headers: llama-swap sends no byte while it loads a model,
+# and llama-server sends a ":" comment every 30 s once the headers are out. An engine whose
+# profile has silent_prefill (Lemonade) starts this bound at its first frame instead.
+_STREAM_IDLE_TIMEOUT_S = 120.0
 # How often an abortable chat checks its cancel signal.
 _CANCEL_POLL_S = 0.1
 # Short, separate timeout for /health: a server can wedge under heavy prompt
@@ -449,6 +628,8 @@ _GATEWAY_BACKOFF_MAX_S = 8.0
 # caller sees it routable once cooled down (a success restores it, another
 # connection failure re-stamps the cool-down).
 _UNHEALTHY_RETRY_S = 30.0
+# A truncation check that failed on a dead or busy router waits this long before it asks again.
+_TRUNCATION_CHECK_RETRY_S = _UNHEALTHY_RETRY_S
 _T = TypeVar("_T")
 
 
@@ -485,7 +666,34 @@ class StreamInterruptedError(ProviderError):
     """A chat stream broke after it had sent frames, so its answer is cut."""
 
     def __init__(self) -> None:
-        super().__init__(_STREAM_INTERRUPTED_MESSAGE, provider=_PROVIDER_NAME)
+        super().__init__(_STREAM_INTERRUPTED_MESSAGE)
+
+
+class StreamSilentError(httpx.ReadTimeout):
+    """A chat stream sent its headers and then no frame within the idle bound.
+
+    It is a read timeout, so the fleet's retry and restart rules for a timeout apply
+    unchanged; only the message is lilbee's own.
+    """
+
+    def __init__(self, wait: float, *, request: httpx.Request) -> None:
+        super().__init__(_STREAM_SILENT_MESSAGE.format(wait=wait), request=request)
+
+
+class _SideRouteRefusalError(ProviderError):
+    """A side route that is up refused one request, with a status that blames the request."""
+
+
+class DeviceRefusedError(ProviderError):
+    """The engine reports the model on a device other than the one the role was placed on."""
+
+
+def is_replica_failure(exc: Exception) -> bool:
+    """Whether *exc* means this replica cannot serve the request but a sibling might.
+
+    A dead replica, or one whose device check refused it before any request was sent.
+    """
+    return is_connection_failure(exc) or isinstance(exc, DeviceRefusedError)
 
 
 def retry_on_gateway_error(
@@ -529,13 +737,19 @@ class LlamaServerClient:
         http: httpx.Client | None = None,
         async_transport: httpx.AsyncBaseTransport | None = None,
         token_cap: int | None = None,
+        chat_ctx: int | None = None,
         timeout: float = _DEFAULT_TIMEOUT_S,
         rerank_mode: RerankMode | None = None,
+        rerank_pair: RerankPair | None = None,
         inline_reasoning: bool = False,
         on_prefill: Callable[[tuple[int, int] | None], None] | None = None,
         engine_log: Path | None = None,
         model_ref: str | None = None,
+        profile: RequestProfile,
+        load: Callable[[LlamaServerClient], None] | None = None,
     ) -> None:
+        # The request fields and native paths of this server's engine.
+        self._profile = profile
         self._base = base_url.rstrip("/")
         # The file this server's own engine writes its output to; None when the
         # launch writes none or no swap manager fronts the client (the self-check).
@@ -552,8 +766,23 @@ class LlamaServerClient:
             base_url=self._base, timeout=timeout, verify=_LOOPBACK_SSL_CONTEXT
         )
         self._timeout = timeout
+        # Set by close: an abortable chat ends once its client closes.
+        self._closing = threading.Event()
         self._async_transport = async_transport
         self._owns_http = http is None
+        # The device gate (see ensure_device). *load* sends the cheapest request that
+        # loads the model; the gate runs it before it reads the device. The state stays
+        # on this client only: a bind, a replan or a rediscover builds a new client,
+        # which checks again.
+        self._load = load
+        self._device_ok = False
+        self._device_refusal: str | None = None
+        # The condition guards the state below and is never held across the load: a
+        # request that waits for the check waits on the condition, with its lock free.
+        self._device_cond = threading.Condition()
+        self._device_checking = False
+        # The thread that runs the check; its own load request passes the gate.
+        self._device_checker: int | None = None
         # Chat-role clients re-inline server-extracted reasoning as <think> text;
         # the other roles (vision OCR) keep dropping it, as their servers already did.
         self._inline_reasoning = inline_reasoning
@@ -561,10 +790,32 @@ class LlamaServerClient:
         # token-truncated (via the server's tokenizer) before embedding, mirroring
         # the in-process backstop. None for chat/vision, which don't truncate inputs.
         self._token_cap = token_cap
+        # Per-slot context of a chat server whose engine does not bound a prompt itself: the
+        # client refuses a longer prompt before it sends it. None for every other client.
+        self._chat_ctx = chat_ctx
         # LLM => score candidates by yes/no logprob; None/cross-encoder => rank pooling.
         self._rerank_mode = rerank_mode
+        # The special tokens a cross-encoder reads around each query and candidate;
+        # None for every other client, and for a GGUF that names no such tokens.
+        self._rerank_pair = rerank_pair
         self.in_flight = 0
+        # The server's input limit; None until read.
+        self._max_input: int | None = None
+        # Monotonic time before which the truncation check does not run: a failure sets a
+        # cool-down, a route that is absent sets infinity.
+        self._check_resume_at = 0.0
+        # Whether the check has warned of an unexpected answer; it warns once per client.
+        self._check_warned = False
+        # The truncation-check requests in flight, one future for each distinct request.
+        self._flights_lock = threading.Lock()
+        self._flights: dict[tuple[Any, ...], Future[Any]] = {}
+        # Whether the count route has answered once; until then one probe runs for the route.
+        self._count_route_answered = False
+        # Whether an embed or a token count has answered once on this launch.
+        self._answered = False
         self._in_flight_lock = threading.Lock()
+        # Signalled under the count lock each time a request takes in_flight to zero.
+        self._idle = threading.Condition(self._in_flight_lock)
         # Called each time a request takes in_flight to zero; see notify_when_idle.
         self._on_idle: Callable[[], None] | None = None
         # Live SSE responses, so a cancel can sever the transport from another
@@ -582,14 +833,43 @@ class LlamaServerClient:
         self._healthy = True
         # Monotonic stamp of the last mark_unhealthy; consulted only while unhealthy.
         self._unhealthy_since = 0.0
+        # The error line for a request that breaks because the fleet restarts this
+        # server, for a settings change or after it stopped answering; None while
+        # no such restart runs.
+        self.restart_message: str | None = None
+
+    @property
+    def model_id(self) -> str:
+        """The replica id this client's requests name; the swap manager keys its findings by it."""
+        return self._model
+
+    @property
+    def profile(self) -> RequestProfile:
+        """The request profile of this server's engine."""
+        return self._profile
+
+    def sent(self, request: httpx.Request) -> bool:
+        """Whether *request* went to this client's server."""
+        return str(request.url).startswith(f"{self._base}/")
 
     @property
     def healthy(self) -> bool:
-        """Routable: healthy, or unhealthy past the ``_UNHEALTHY_RETRY_S`` cool-down."""
+        """Routable: healthy, or unhealthy past the ``_UNHEALTHY_RETRY_S`` cool-down.
+
+        A client whose engine reported the model on another device is never routable.
+        """
+        if self._device_refusal is not None:
+            return False
         with self._in_flight_lock:
             if self._healthy:
                 return True
             return time.monotonic() - self._unhealthy_since >= _UNHEALTHY_RETRY_S
+
+    def _is_context_overflow(self, resp: httpx.Response) -> bool:
+        """True when *resp* is the server's answer to an input past its limit."""
+        return resp.status_code == self._profile.context_overflow_status and bool(
+            self._profile.context_overflow.search(resp.text)
+        )
 
     def _raise_for_status(self, resp: httpx.Response) -> None:
         """Raise the plain error for a failed *resp*, naming this client's model and log.
@@ -608,13 +888,11 @@ class LlamaServerClient:
         # user-facing message so the chat route returns a clean context_length_exceeded
         # (400) instead of a generic internal_error -- a long conversation that fills
         # the window then reads as "too long", not "Internal server error".
-        if resp.status_code == _HTTP_BAD_REQUEST and (
-            "exceed_context_size" in body.lower() or "context size" in body.lower()
+        if resp.status_code == self._profile.context_overflow_status and (
+            self._profile.context_overflow.search(body) or is_prompt_length_overflow(body)
         ):
             raise ProviderError(
-                "The conversation exceeds this model's context window. "
-                "Start a new conversation or shorten the input.",
-                provider=_PROVIDER_NAME,
+                _CONTEXT_OVERFLOW_TEXT,
                 kind=ProviderErrorKind.CONTEXT_OVERFLOW,
             )
         # llama-swap answers 429 once its concurrency limit for the model is reached.
@@ -623,28 +901,64 @@ class LlamaServerClient:
         if resp.status_code == _HTTP_TOO_MANY_REQUESTS:
             raise ProviderError(
                 "The model is busy with too many requests. Try again in a moment.",
-                provider=_PROVIDER_NAME,
                 kind=ProviderErrorKind.RATE_LIMIT,
             )
-        kind = _classify_error(resp.status_code, body)
+        refusal = self._profile.batch_count_refusal
+        if refusal is not None and refusal.search(body):
+            raise ProviderError(
+                f"{self._profile.label} refused the request for holding too many inputs. "
+                "Send fewer inputs in one request.",
+                kind=ProviderErrorKind.BAD_REQUEST,
+            )
+        kind = _classify_error(resp.status_code, body, self._profile)
+        if kind is ProviderErrorKind.WARM_TIMEOUT:
+            raise self._warm_timeout_error(_health_wait_s(body))
+        # llama-swap could not start the command, and its body carries the exec error.
+        if missing_engine(body):
+            raise ProviderError(
+                _missing_engine_message(self.model_ref), kind=ProviderErrorKind.ENGINE_MISSING
+            )
         # llama-swap masks a dead server as "exited prematurely". The server's own
         # captured output goes to the log (in _upstream_failure_tail) and decides the
         # kind; the message the user sees stays one plain line.
         if _UPSTREAM_DIED_MARKER in body:
-            classified = classify_upstream_death(_upstream_failure_tail(resp))
+            tail = _upstream_failure_tail(resp)
+            classified = classify_upstream_death(tail)
             if classified is not None:
                 kind = classified
             raise ProviderError(
-                _upstream_death_message(kind, resp.status_code, self.model_ref, self.engine_log),
-                provider=_PROVIDER_NAME,
+                _upstream_death_message(
+                    kind, resp.status_code, self.model_ref, self.engine_log, tail
+                ),
                 kind=kind,
             )
         detail = f": {body[:600]}" if body else ""
         raise ProviderError(
-            f"llama-server returned HTTP {resp.status_code}{detail}",
-            provider=_PROVIDER_NAME,
+            f"{self._profile.label} returned HTTP {resp.status_code}{detail}",
             kind=kind,
         )
+
+    def _warm_timeout_error(self, wait_s: float | None) -> WarmTimeoutError:
+        """The error for a launch that did not finish starting within *wait_s* seconds."""
+        return WarmTimeoutError(
+            _WARM_TIMEOUT_MESSAGE.format(model=_model_subject(self.model_ref)),
+            wait_s=wait_s,
+        )
+
+    def _first_answer(self, call: Callable[[], _T]) -> _T:
+        """Run *call*; a timeout before this launch's first answer is a warm timeout.
+
+        The first request of a launch waits for the engine to start, so a request
+        that passes the client budget there means the engine did not finish starting.
+        """
+        if self._answered:
+            return call()
+        try:
+            result = call()
+        except httpx.TimeoutException as exc:
+            raise self._warm_timeout_error(self._timeout) from exc
+        self._answered = True
+        return result
 
     def mark_unhealthy(self) -> None:
         """Record a connection-level failure so the router skips this replica."""
@@ -674,21 +988,29 @@ class LlamaServerClient:
         """Release a reservation taken by :meth:`reserve`."""
         self._leave()
 
-    def notify_when_idle(self, callback: Callable[[], None]) -> None:
+    def notify_when_idle(self, callback: Callable[[], None] | None) -> None:
         """Call *callback* each time a request ends and leaves ``in_flight`` at zero.
 
         The callback runs on the thread that ended the request, after the count
         lock is released. That thread can hold any lock of its caller, so the
-        callback must not block on one.
+        callback must not block on one. None stops the calls.
         """
         with self._in_flight_lock:
             self._on_idle = callback
+
+    def wait_idle(self, timeout: float) -> bool:
+        """Wait up to *timeout* seconds for ``in_flight`` to reach zero; whether it did."""
+        with self._idle:
+            return self._idle.wait_for(lambda: self.in_flight == 0, timeout)
 
     def _leave(self) -> None:
         """End one request; call the idle callback when it was the last one."""
         with self._in_flight_lock:
             self.in_flight -= 1
-            callback = self._on_idle if self.in_flight == 0 else None
+            callback = None
+            if self.in_flight == 0:
+                self._idle.notify_all()
+                callback = self._on_idle
         if callback is not None:
             callback()
 
@@ -745,7 +1067,12 @@ class LlamaServerClient:
         ``timeout`` overrides the client default for either path, so a
         caller-enforced deadline (vision OCR) ends the request itself.
         """
-        payload: dict[str, Any] = {"model": self._model, "messages": messages, **(options or {})}
+        self._refuse_past_window(messages, None)
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            **self._wire_options(options),
+        }
         request_timeout = timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT
         if stream:
             return self._chat_stream(payload, request_timeout)
@@ -757,28 +1084,52 @@ class LlamaServerClient:
             # content is null for a refusal / content-filter stop / empty completion;
             # coerce to "" (like chat_result/chat_tools) so callers never see "None".
             return _inline_message_reasoning(
-                resp.json()["choices"][0]["message"], enabled=self._inline_reasoning
+                resp.json()["choices"][0]["message"],
+                enabled=self._inline_reasoning,
+                reasoning_field=self._profile.reasoning_field,
             )
+
+    def _bound_body(self, resp: httpx.Response) -> httpx.Request | None:
+        """Bound the body reads of *resp* from the headers on, or from the first frame.
+
+        An engine with a silent prefill sends no byte between its headers and its first
+        frame, so its bound starts at the frame and this returns no bounded request.
+        """
+        return None if self._profile.silent_prefill else _bound_body_reads(resp)
+
+    def _body_lines(self, resp: httpx.Response) -> Iterator[str]:
+        """The lines of the body of *resp*, bound as ``_bound_body`` says."""
+        if self._profile.silent_prefill:
+            return _lines_bound_from_first_frame(resp)
+        return resp.iter_lines()
 
     def _chat_stream(
         self, payload: dict[str, Any], timeout: Any = httpx.USE_CLIENT_DEFAULT
     ) -> Iterator[str]:
-        inliner = _ThinkInliner(enabled=self._inline_reasoning)
-        with (
-            self._track(),
-            self._http.stream(
-                "POST", _CHAT_PATH, json={**payload, "stream": True}, timeout=timeout
-            ) as resp,
-        ):
-            self._raise_for_status(resp)
-            self._abortable(resp)
-            for line in resp.iter_lines():
-                delta = inliner.feed(*_parse_sse_deltas(line))
-                if delta:
-                    yield delta
-            tail = inliner.finish()
-            if tail:
-                yield tail
+        inliner = ThinkInliner(enabled=self._inline_reasoning)
+        started = False
+        bounded: httpx.Request | None = None
+        try:
+            with (
+                self._track(),
+                self._http.stream(
+                    "POST", _CHAT_PATH, json={**payload, "stream": True}, timeout=timeout
+                ) as resp,
+            ):
+                self._raise_for_status(resp)
+                bounded = self._bound_body(resp)
+                self._abortable(resp)
+                for line in self._body_lines(resp):
+                    delta = inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
+                    if delta:
+                        started = True
+                        yield delta
+                tail = inliner.finish()
+                if tail:
+                    yield tail
+        except httpx.TransportError as exc:
+            _raise_stream_failure(exc, started=started, bounded=bounded)
+            raise
 
     def chat_abortable(
         self,
@@ -794,11 +1145,17 @@ class LlamaServerClient:
         closes the connection whether or not response headers have arrived, and
         llama-server stops generating for a closed stream. A passed *deadline_s*
         (total seconds, ``None`` for no limit) raises :class:`ChatDeadlineError`;
-        a set *cancel* raises ``TaskCancelledError``.
+        a set *cancel*, or a close of this client, raises ``TaskCancelledError``.
         """
-        payload = {"model": self._model, "messages": messages, **(options or {}), "stream": True}
-        with self._track():
-            return asyncio.run(self._chat_until_stopped(payload, deadline_s, cancel))
+        self._refuse_past_window(messages, None)
+        payload = {
+            "model": self._model,
+            "messages": messages,
+            **self._wire_options(options),
+            "stream": True,
+        }
+        with self._track(cancel):
+            return run_main(self._chat_until_stopped(payload, deadline_s, cancel))
 
     async def _chat_until_stopped(
         self, payload: dict[str, Any], deadline_s: float | None, cancel: CancelSignal | None
@@ -813,13 +1170,12 @@ class LlamaServerClient:
             try:
                 async with asyncio.timeout(deadline_s):
                     while not chat.done():
-                        if cancel is not None and cancel.is_set():
+                        if self._closing.is_set() or (cancel is not None and cancel.is_set()):
                             raise TaskCancelledError
                         await asyncio.wait({chat}, timeout=_CANCEL_POLL_S)
             except TimeoutError:
                 raise ChatDeadlineError(
-                    f"llama-server chat exceeded its {deadline_s:g}s deadline.",
-                    provider=_PROVIDER_NAME,
+                    f"{self._profile.label} chat exceeded its {deadline_s:g}s deadline.",
                 ) from None
             finally:
                 chat.cancel()
@@ -827,14 +1183,27 @@ class LlamaServerClient:
             return chat.result()
 
     async def _stream_text(self, http: httpx.AsyncClient, payload: dict[str, Any]) -> str:
-        inliner = _ThinkInliner(enabled=self._inline_reasoning)
+        inliner = ThinkInliner(enabled=self._inline_reasoning)
         parts: list[str] = []
-        async with http.stream("POST", _CHAT_PATH, json=payload) as resp:
-            if not resp.is_success:
-                await resp.aread()
-            self._raise_for_status(resp)
-            async for line in resp.aiter_lines():
-                parts.append(inliner.feed(*_parse_sse_deltas(line)))
+        bounded: httpx.Request | None = None
+        try:
+            async with http.stream("POST", _CHAT_PATH, json=payload) as resp:
+                if not resp.is_success:
+                    await resp.aread()
+                self._raise_for_status(resp)
+                bounded = self._bound_body(resp)
+                lines = (
+                    _alines_bound_from_first_frame(resp)
+                    if self._profile.silent_prefill
+                    else resp.aiter_lines()
+                )
+                async for line in lines:
+                    parts.append(
+                        inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
+                    )
+        except httpx.TransportError as exc:
+            _raise_stream_failure(exc, started=any(parts), bounded=bounded)
+            raise
         parts.append(inliner.finish())
         return "".join(parts)
 
@@ -852,12 +1221,13 @@ class LlamaServerClient:
         tool-call syntax into structured ``message.tool_calls``. When a model
         instead emits a bare-JSON call as content (a native miss), recover it.
         """
+        self._refuse_past_window(messages, tools)
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": self._prepare_chat_messages(messages),
             "tools": tools,
             "stream": False,
-            **(options or {}),
+            **self._wire_options(options),
         }
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
@@ -865,7 +1235,9 @@ class LlamaServerClient:
             resp = self._http.post(_CHAT_PATH, json=payload)
             self._raise_for_status(resp)
             message = resp.json()["choices"][0]["message"]
-        content = _inline_message_reasoning(message, enabled=self._inline_reasoning)
+        content = _inline_message_reasoning(
+            message, enabled=self._inline_reasoning, reasoning_field=self._profile.reasoning_field
+        )
         native = _parse_native_tool_calls(message.get("tool_calls"))
         if native:
             return ChatToolResult(content=content, tool_calls=native)
@@ -899,7 +1271,9 @@ class LlamaServerClient:
         choice = body["choices"][0]
         usage = _usage_from_body(body) or TokenUsage()
         message = choice["message"]
-        content = _inline_message_reasoning(message, enabled=self._inline_reasoning)
+        content = _inline_message_reasoning(
+            message, enabled=self._inline_reasoning, reasoning_field=self._profile.reasoning_field
+        )
         finish_reason = _coerce_finish_reason(choice.get("finish_reason"))
         native = _parse_native_tool_calls(message.get("tool_calls"))
         if native:
@@ -959,25 +1333,29 @@ class LlamaServerClient:
     ) -> Generator[str | ToolCallDelta | TokenUsage | StreamFinish]:
         """Open one SSE chat stream and yield its frames; raises before the first frame."""
         payload = self._chat_payload(messages, tools, tool_choice, options, stream=True)
-        inliner = _ThinkInliner(enabled=self._inline_reasoning)
+        inliner = ThinkInliner(enabled=self._inline_reasoning)
         on_prefill = self._on_prefill
         prefilling = False
         started = False
         ended = False
+        bounded: httpx.Request | None = None
         try:
             with (
                 self._track(),
                 self._http.stream("POST", _CHAT_PATH, json=payload) as resp,
             ):
                 self._raise_for_status(resp)
+                bounded = self._bound_body(resp)
                 self._abortable(resp)
-                for line in resp.iter_lines():
+                for line in self._body_lines(resp):
                     if on_prefill is not None:
                         progress = _prefill_progress(line)
                         if progress is not None:
                             prefilling = True
                             on_prefill(progress)
-                    for item in _parse_sse_stream_items(line, inliner):
+                    for item in _parse_sse_stream_items(
+                        line, inliner, self._profile.reasoning_field
+                    ):
                         if prefilling and on_prefill is not None:
                             # The first real frame proves prefill is over.
                             prefilling = False
@@ -991,9 +1369,8 @@ class LlamaServerClient:
                     yield tail
                 _raise_if_cut(started=started, ended=ended)
         except httpx.TransportError as exc:
-            if not started:
-                raise
-            raise StreamInterruptedError from exc
+            _raise_stream_failure(exc, started=started, bounded=bounded)
+            raise
         finally:
             # A stream that dies or is closed mid-prefill must not leave a
             # stale in-progress reading on the status surface.
@@ -1010,20 +1387,114 @@ class LlamaServerClient:
         stream: bool,
     ) -> dict[str, Any]:
         """Build the chat-completions request body shared by the stream and non-stream paths."""
+        self._refuse_past_window(messages, tools)
         payload: dict[str, Any] = {"model": self._model, "messages": messages, "stream": stream}
         if stream:
             # include_usage makes llama-server emit a final SSE chunk carrying the
             # token usage (with an empty choices list) just before [DONE].
             payload["stream_options"] = {"include_usage": True}
-            # return_progress makes llama-server stream prompt_progress frames
-            # during prefill, so a long first turn is observable server-side.
-            payload["return_progress"] = True
+            payload.update(self._profile.stream_fields)
         if tools is not None:
             payload["tools"] = tools
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
-        payload.update(options or {})
+        payload.update(self._wire_options(options))
         return payload
+
+    def _refuse_past_window(
+        self, messages: Sequence[Mapping[str, Any]], tools: Sequence[Mapping[str, Any]] | None
+    ) -> None:
+        """Raise the context-overflow error for a prompt past the served window, before it is sent.
+
+        Only an engine that names a count route is checked: it accepts any prompt up to the
+        model's own length, so the client holds the window. A token is at least one byte, so a
+        prompt with no more bytes than the window needs no count; a longer one is counted by the
+        engine's tokenizer over the message text and the tool definitions, which leaves out the
+        chat template. A count that fails refuses the prompt with an error that says so. The
+        count runs before the abortable chat starts, so a cancel waits for it, bounded by the
+        client timeout.
+        """
+        path = self._profile.window_tokenize_path
+        if path is None or not self._chat_ctx:
+            return
+        text = "\n".join(_message_text(message) for message in messages)
+        if tools:
+            text += "\n" + json.dumps(tools, ensure_ascii=False)
+        if len(text.encode("utf-8")) <= self._chat_ctx:
+            return
+        count = len(self._count_window_tokens(path, text))
+        if count > self._chat_ctx:
+            raise ProviderError(
+                _CONTEXT_OVERFLOW_TEXT,
+                kind=ProviderErrorKind.CONTEXT_OVERFLOW,
+            )
+
+    def _count_window_tokens(self, path: str, text: str) -> list[int]:
+        """Token ids of *text* from the engine's count route; a gateway error is retried.
+
+        A failed count raises a ProviderError that says the prompt was not sent, because a
+        prompt that cannot be counted cannot be held to the window.
+        """
+
+        def _call() -> list[int]:
+            resp = self._http.post(
+                self._native_route(path),
+                json={"model": self._profile.window_tokenize_model, "text": text},
+            )
+            self._raise_for_status(resp)
+            return list(resp.json()["tokens"])
+
+        try:
+            with self._track():
+                return retry_on_gateway_error(_call)
+        except (ProviderError, httpx.HTTPError, KeyError, ValueError) as exc:
+            if isinstance(exc, ProviderError):
+                kind = exc.kind
+            elif isinstance(exc, httpx.HTTPError):
+                kind = ProviderErrorKind.CONNECTION
+            else:
+                kind = ProviderErrorKind.SERVER
+            raise ProviderError(
+                f"{self._profile.label} could not count the tokens of the prompt, so the "
+                f"prompt was not sent: {exc}",
+                kind=kind,
+            ) from exc
+
+    def _wire_options(self, options: dict[str, Any] | None) -> dict[str, Any]:
+        """*options* without the fields this server's engine does not read or enforce.
+
+        A ``json_schema`` request is a promise that the reply fits the schema, so it is
+        refused. A ``json_object`` request is advice, so it is dropped. A ``text`` request
+        asks for nothing and goes through. Any other format is refused, because the server
+        ignores it.
+        """
+        wire = {self._profile.option_names.get(k, k): v for k, v in (options or {}).items()}
+        if not self._profile.takes_cache_prompt:
+            wire.pop("cache_prompt", None)
+        if not self._profile.takes_seed and isinstance(wire.get("seed"), ChosenSeed):
+            wire.pop("seed")
+        if self._profile.structured_output or "response_format" not in wire:
+            return wire
+        reply_format = wire["response_format"]
+        # The caller's value is untyped: a non-mapping has no type.
+        reply_type = reply_format.get("type") if isinstance(reply_format, Mapping) else None
+        if reply_type == "json_object":
+            del wire["response_format"]
+        elif reply_type != "text":
+            raise self._refused_reply_format(reply_format, reply_type)
+        return wire
+
+    def _refused_reply_format(self, reply_format: object, reply_type: object) -> ProviderError:
+        """The 400 for a ``response_format`` this server's engine ignores."""
+        label = self._profile.label
+        if reply_type == "json_schema":
+            message = (
+                f"{label} does not enforce a JSON schema. "
+                "Use a llama.cpp model for structured output."
+            )
+        else:
+            message = f"{label} does not support response_format {reply_format!r}. Use type text."
+        return ProviderError(message, kind=ProviderErrorKind.BAD_REQUEST)
 
     def _prepare_chat_messages(
         self, messages: Sequence[Mapping[str, Any]]
@@ -1101,11 +1572,225 @@ class LlamaServerClient:
         if not texts:
             # Match the in-process embedder; the server rejects an empty input.
             return []
+        return self._first_answer(lambda: self._embed_texts(texts))
+
+    def _embed_texts(self, texts: list[str]) -> list[Vector]:
         vectors: list[Vector] = []
-        for sub_batch in self._truncate_and_subbatch(texts, estimate=True):
+        sub_batches = self._truncate_and_subbatch(texts, estimate=True)
+        for sub_batch in sub_batches:
             data = self._embed_subbatch(sub_batch)
-            vectors.extend(_embedding_vector(item) for item in data)
+            vectors.extend(_embedding_vector(item, self._profile) for item in data)
+        self._note_cut_inputs([text for batch in sub_batches for text in batch])
         return vectors
+
+    def _note_cut_inputs(self, sent: list[str]) -> None:
+        """Record an embed's input count and the server's cuts; a failure never raises."""
+        cut, limit = 0, None
+        if time.monotonic() >= self._check_resume_at:
+            try:
+                limit = self._input_limit()
+                path = self._profile.input_count_path
+                if limit is not None and path is not None:
+                    for past in self._counts_past_limit(sent, limit, path):
+                        cut += past
+            except _TRUNCATION_CHECK_FAILURES:
+                # The thread that sent the failed request paused the check before it let go
+                # of the request, so every thread that reaches here finds the pause set.
+                pass
+        note_truncated(cut, len(sent), limit)
+
+    def _counts_past_limit(self, sent: list[str], limit: int, path: str) -> Iterator[int]:
+        """Yield how many of *sent* are past *limit*, in parts, so a failure keeps earlier parts.
+
+        Each distinct input is counted once, in parts of the batch limit, and tallied each time
+        it was sent.
+        """
+        times = Counter(sent)
+        distinct = list(times)
+        step = self._batch_limit or _EMBED_N_SEQ_MAX
+        for start in range(0, len(distinct), step):
+            part = distinct[start : start + step]
+            tokens = self._route_token_counts(path, part)
+            yield sum(
+                times[text] for text, count in zip(part, tokens, strict=True) if count > limit
+            )
+
+    def _pause_truncation_check(self, exc: Exception, route: str | None) -> None:
+        """Pause the check after *exc* from *route*, and warn once of an unexpected answer.
+
+        A dead or busy router costs one debug line. An answer the check cannot use is
+        a warning, because the inputs the router cuts go unreported. Both pause the
+        check for a cool-down; a route the router does not have pauses it for good.
+        """
+        absent = isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.NOT_FOUND
+        pause = math.inf if absent else _TRUNCATION_CHECK_RETRY_S
+        self._check_resume_at = time.monotonic() + pause
+        if _is_transient_probe_failure(exc):
+            log.debug("Embed truncation check skipped: %s", exc)
+        elif not self._check_warned:
+            self._check_warned = True
+            log.warning(
+                "Embed truncation check skipped: the router's %s route gave an unexpected "
+                "answer (%s). Embed inputs the router cuts are not reported.",
+                route,
+                exc,
+            )
+
+    def _raise_for_side_route(self, resp: httpx.Response) -> None:
+        """Raise for a failed side-route answer; a 404 says the router has no such route."""
+        if resp.status_code == httpx.codes.NOT_FOUND:
+            raise ProviderError(
+                f"{self._profile.label} has no such route (HTTP 404): {resp.text.strip()[:200]}",
+                kind=ProviderErrorKind.NOT_FOUND,
+            )
+        try:
+            self._raise_for_status(resp)
+        except ProviderError as exc:
+            if resp.status_code not in _ONE_REQUEST_REFUSALS:
+                raise
+            raise _SideRouteRefusalError(str(exc), kind=exc.kind) from exc
+
+    def _pausing(self, route: str) -> Callable[[BaseException], None]:
+        """A failure hook for ``_single_flight`` that pauses the check when *route* fails."""
+
+        def pause(exc: BaseException) -> None:
+            if isinstance(exc, _TRUNCATION_CHECK_FAILURES):
+                self._pause_truncation_check(exc, route)
+
+        return pause
+
+    def _single_flight(
+        self,
+        key: tuple[Any, ...],
+        request: Callable[[], _T],
+        *,
+        on_failure: Callable[[BaseException], None] | None = None,
+    ) -> _T:
+        """The answer of *request*, sent once for all the threads that ask for *key* together.
+
+        The first thread to ask sends it. A thread that asks while it runs waits for that
+        answer, or its failure, so a hung route holds each caller once and takes one
+        request, not one for each thread. The slot clears when the request ends, whatever
+        way it ends, so a later caller sends a new one. *on_failure* runs before the slot
+        clears, so a caller that asks after the clear already finds what it set.
+        """
+        with self._flights_lock:
+            flight = self._flights.get(key)
+            leader = flight is None
+            if flight is None:
+                flight = self._flights[key] = Future()
+        if not leader:
+            waited: _T = flight.result()
+            return waited
+        try:
+            answer = request()
+        except BaseException as exc:
+            if on_failure is not None:
+                on_failure(exc)
+            flight.set_exception(exc)
+            raise
+        else:
+            flight.set_result(answer)
+            return answer
+        finally:
+            with self._flights_lock:
+                del self._flights[key]
+
+    def input_limit(self) -> int | None:
+        """The server's ``max_input_length``, or None when it reports none or the read fails.
+
+        A failed read pauses the next one for the truncation check's cool-down, so a router
+        without the route is not asked again on every call.
+        """
+        if self._max_input is None and time.monotonic() < self._check_resume_at:
+            return None
+        try:
+            return self._input_limit()
+        except _TRUNCATION_CHECK_FAILURES:
+            return None
+
+    @property
+    def known_input_limit(self) -> int | None:
+        """The ``max_input_length`` this client has already read; it never sends a request.
+
+        After a launch did not finish starting, any request starts that launch again, so
+        a window read then uses only this.
+        """
+        return self._max_input
+
+    def _input_limit(self) -> int | None:
+        """The server's ``max_input_length``, read once per client."""
+        path = self._profile.input_limit_path
+        if path is None:
+            return self._max_input
+        return self._single_flight(
+            ("limit",), lambda: self._read_input_limit(path), on_failure=self._pausing(path)
+        )
+
+    def _read_input_limit(self, path: str) -> int:
+        if self._max_input is None:
+            resp = self._http.get(self._native_route(path), timeout=_TRUNCATION_CHECK_TIMEOUT_S)
+            self._raise_for_side_route(resp)
+            self._max_input = int(resp.json()["max_input_length"])
+        return self._max_input
+
+    def _count_route_tokens(
+        self, path: str, inputs: list[str], *, timeout: float | None = None
+    ) -> list[list[dict[str, Any]]]:
+        """The token lists the route *path* answers for *inputs*, one list for each input.
+
+        Without a *timeout* the request waits as long as the client's own timeout.
+        """
+        extra: dict[str, Any] = {} if timeout is None else {"timeout": timeout}
+        resp = self._http.post(self._native_route(path), json={"inputs": inputs}, **extra)
+        self._raise_for_side_route(resp)
+        counts = resp.json()
+        if not isinstance(counts, list) or not all(isinstance(tokens, list) for tokens in counts):
+            raise ValueError(f"the body is not a list of token lists: {resp.text.strip()[:200]}")
+        return counts
+
+    def _route_token_counts(self, path: str, texts: list[str]) -> list[int]:
+        """The token count of each of *texts* on the route *path*.
+
+        Threads that count the same texts together share one request. A thread that waits
+        for the first probe of other texts sends its own request after it. A failure pauses
+        the check before any thread sees it.
+        """
+        led = False
+
+        def count() -> list[int]:
+            answer = self._count_route_tokens(path, texts, timeout=_TRUNCATION_CHECK_TIMEOUT_S)
+            if len(answer) != len(texts):
+                raise ValueError(f"{len(answer)} token lists for {len(texts)} inputs")
+            self._count_route_answered = True
+            return [len(tokens) for tokens in answer]
+
+        pausing = self._pausing(path)
+        if self._count_route_answered:
+            return self._single_flight(("count", tuple(texts)), count, on_failure=pausing)
+
+        def first_probe() -> tuple[tuple[str, ...], list[int]]:
+            nonlocal led
+            led = True
+            return tuple(texts), count()
+
+        # Until the route has answered once, one thread probes it, whatever it counts. The
+        # other threads wait for that probe: a failure reaches them. A success serves the
+        # threads that count the same texts, and each other thread counts its own.
+        # One request at a time goes to a route that has not answered: a slow route gets no
+        # parallel counts from the first embeds, and a hung route gets one. A refusal of the
+        # probe's request is an answer of a live route, so each waiting thread counts its own.
+        try:
+            probed_texts, probed = self._single_flight(
+                ("first-probe", path), first_probe, on_failure=pausing
+            )
+        except _SideRouteRefusalError:
+            if led:
+                raise
+        else:
+            if probed_texts == tuple(texts):
+                return probed
+        return self._single_flight(("count", tuple(texts)), count, on_failure=pausing)
 
     def _embed_subbatch(self, sub_batch: list[str]) -> list[dict[str, Any]]:
         """Embed one estimate-budgeted sub-batch, re-truncating exactly on overflow.
@@ -1114,11 +1799,15 @@ class LlamaServerClient:
         (XML, code), so an estimate-trusted input may still exceed the server's
         context. On that error -- and only that -- redo the batch with exact
         server-side tokenization, which truncates the oversize input to the cap.
+        An engine with no tokenize route cannot truncate more exactly than the
+        estimate did, so it raises the overflow with no resend.
         """
         try:
             return self._embeddings_call(sub_batch)
         except ProviderError as exc:
             if exc.kind is not ProviderErrorKind.CONTEXT_OVERFLOW:
+                raise
+            if self._profile.tokenize_path is None:
                 raise
             data: list[dict[str, Any]] = []
             for exact in self._truncate_and_subbatch(sub_batch, estimate=False):
@@ -1126,52 +1815,100 @@ class LlamaServerClient:
             return data
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
-        """Relevance scores via rank-pooling embeddings.
+        """Relevance scores, in candidate order.
 
-        The server runs with ``--pooling rank``; we send ``query</s></s>candidate``
-        pairs to ``/v1/embeddings`` and read each item's first embedding value as the
-        score, so the ``/v1/rerank`` template-dependency (and its zero-output failure
-        modes) is moot.
-
-        All pairs go out in one request per ``_EMBED_N_SEQ_MAX`` sequences: the
-        server queues one task per input, so splitting a query-time pool into
-        per-pair requests only adds HTTP round trips.
+        The order of the paths is fixed. An engine with a rerank route scores the
+        pairs itself, whatever the mode. An LLM reranker scores by its yes/no verdict
+        and builds no pair. A cross-encoder (``--pooling rank``) gets each pair as
+        token ids in the model's own layout (:class:`RerankPair`), cut to the
+        token cap, through ``/v1/embeddings``; the first value of each item is the
+        score. All pairs go out in one request per ``_EMBED_N_SEQ_MAX`` sequences.
         """
         if not candidates:
             return []
+        if self._profile.rerank_path is not None:
+            return self._rerank_route(self._profile.rerank_path, query, candidates)
         if self._rerank_mode is RerankMode.LLM:
             return self._rerank_llm(query, candidates)
+        pair = self._rerank_pair
+        if pair is None:
+            raise ProviderError(_NO_RERANK_PAIR_ERROR)
+        query_ids = self._text_ids(query)
         pairs = [
-            self._fit_estimated(f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}")
+            pair.ids(query_ids, self._text_ids(candidate), self._token_cap)
             for candidate in candidates
         ]
         scores: list[float] = []
-        for start in range(0, len(pairs), _EMBED_N_SEQ_MAX):
-            data = self._rerank_batch(pairs[start : start + _EMBED_N_SEQ_MAX])
-            scores.extend(_rerank_score(item) for item in data)
+        step = self._batch_limit or _EMBED_N_SEQ_MAX
+        for start in range(0, len(pairs), step):
+            data = self._embeddings_call(pairs[start : start + step])
+            scores.extend(_rerank_score(item, self._profile) for item in data)
         return scores
 
-    def _fit_estimated(self, text: str) -> str:
-        """Truncate *text* to the token cap only when its char estimate exceeds it."""
-        if self._token_cap is None:
-            return text
-        return self._fit_input(text, self._token_cap, estimate=True)[0]
+    def _text_ids(self, text: str) -> list[int]:
+        """The token ids of *text* alone: no special tokens added, none parsed from it."""
+        return self._tokenize(text, add_special=False)
 
-    def _rerank_batch(self, batch: list[str]) -> list[dict[str, Any]]:
-        """Score one rerank batch, redoing it with exact truncation on overflow.
+    def _rerank_route(self, path: str, query: str, candidates: list[str]) -> list[float]:
+        """Scores from the engine's rerank route, in candidate order.
 
-        The char estimate under-counts token-dense pairs, so an over-cap pair
-        can slip through untruncated; the server rejects it as CONTEXT_OVERFLOW
-        and the batch is redone with exact server-side tokenization.
+        The route goes through the native path of llama-swap, which finds the model
+        there. Candidates go out in requests of at most the profile's ``batch_limit``.
         """
-        try:
-            return self._embeddings_call(batch)
-        except ProviderError as exc:
-            if exc.kind is not ProviderErrorKind.CONTEXT_OVERFLOW or self._token_cap is None:
-                raise
-            cap = self._token_cap
-            exact = [self._fit_input(text, cap, estimate=False)[0] for text in batch]
-            return self._embeddings_call(exact)
+        step = self._batch_limit or len(candidates)
+        scores: list[float] = []
+        overflows: list[str] = []
+        batches = 0
+        for start in range(0, len(candidates), step):
+            batches += 1
+            batch_scores, overflow = self._rerank_route_batch(
+                path, query, candidates[start : start + step]
+            )
+            scores.extend(batch_scores)
+            if overflow is not None:
+                overflows.append(overflow)
+        if overflows:
+            log.warning(
+                "Rerank query and candidate exceed the reranker's token limit in %d of %d "
+                "batches; the server truncates the input (%s)",
+                len(overflows),
+                batches,
+                overflows[0],
+            )
+        return scores
+
+    def _rerank_route_batch(
+        self, path: str, query: str, texts: list[str]
+    ) -> tuple[list[float], str | None]:
+        """Scores for one batch, and the server's overflow answer when it had to truncate."""
+
+        def _post(extra: Mapping[str, Any]) -> httpx.Response:
+            return self._http.post(
+                self._native_route(path), json=self._profile.rerank_body(query, texts, extra)
+            )
+
+        def _call() -> tuple[Any, str | None]:
+            with self._track():
+                resp = _post(self._profile.rerank_fields)
+                overflow = None
+                if self._profile.rerank_fields and self._is_context_overflow(resp):
+                    overflow = resp.text.strip()
+                    resp = _post({})
+                self._raise_for_status(resp)
+                return resp.json(), overflow
+
+        payload, overflow = retry_on_gateway_error(_call)
+        by_index = self._profile.rerank_scores(payload)
+        if sorted(by_index) != list(range(len(texts))):
+            raise ProviderError(
+                f"The reranker did not return one score for each of the {len(texts)} candidates.",
+            )
+        return [by_index[i] for i in range(len(texts))], overflow
+
+    @property
+    def _batch_limit(self) -> int | None:
+        """The most inputs one embed or rerank request holds, from the engine's profile."""
+        return self._profile.batch_limit
 
     def _rerank_llm(self, query: str, candidates: list[str]) -> list[float]:
         """Score each candidate by an LLM's yes/no first-token logprob.
@@ -1183,7 +1920,7 @@ class LlamaServerClient:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             scores = list(pool.map(lambda c: self._llm_rerank_one(template, query, c), candidates))
         if all(score is None for score in scores):
-            raise ProviderError(_LLM_RERANK_NO_VERDICT_ERROR, provider=_PROVIDER_NAME)
+            raise ProviderError(_LLM_RERANK_NO_VERDICT_ERROR)
         return [0.0 if score is None else score for score in scores]
 
     def _llm_rerank_one(self, template: str, query: str, candidate: str) -> float | None:
@@ -1210,26 +1947,31 @@ class LlamaServerClient:
 
         return _llm_rerank_score(_first_token_top_logprobs(retry_on_gateway_error(_call)))
 
-    def _embeddings_call(self, inputs: list[str]) -> list[dict[str, Any]]:
-        """POST one already-budgeted sub-batch to ``/v1/embeddings``; return its data."""
+    def _embed_request(self, inputs: list[str] | list[list[int]]) -> dict[str, Any]:
+        """The body of one ``/v1/embeddings`` request for *inputs*."""
+        return {
+            "model": self._model,
+            "input": inputs,
+            **self._profile.embed_fields,
+            "encoding_format": _EMBED_ENCODING_FORMAT,
+        }
+
+    def _input_bytes_budget(self) -> int:
+        """The body bytes the inputs of one embed request may take, a comma each included."""
+        envelope = _wire_bytes(self._embed_request([]))
+        return _EMBED_PAYLOAD_LIMIT - _EMBED_BODY_MARGIN - envelope
+
+    def _embeddings_call(self, inputs: list[str] | list[list[int]]) -> list[dict[str, Any]]:
+        """POST one already-budgeted sub-batch (texts or token ids) to ``/v1/embeddings``."""
 
         def _call() -> list[dict[str, Any]]:
             with self._track():
-                resp = self._http.post(
-                    _EMBED_PATH,
-                    json={
-                        "model": self._model,
-                        "input": inputs,
-                        "embd_normalize": _EMBD_NORMALIZE_NONE,
-                        "encoding_format": _EMBED_ENCODING_FORMAT,
-                    },
-                )
+                resp = self._http.post(_EMBED_PATH, json=self._embed_request(inputs))
                 self._raise_for_status(resp)
                 data = resp.json()["data"]
             if len(data) != len(inputs):
                 raise ProviderError(
                     f"Embedder returned {len(data)} vectors for {len(inputs)} inputs",
-                    provider=_PROVIDER_NAME,
                 )
             return list(data)
 
@@ -1241,9 +1983,13 @@ class LlamaServerClient:
         An input longer than ``token_cap`` (the server's per-slot context /
         n_batch) is truncated to it via the server's tokenizer, since the server
         cannot split a pooled embedding sequence. Inputs are then grouped so each
-        request stays within both the token budget and ``_EMBED_N_SEQ_MAX``
-        sequences, bounding per-request size and the gateway-retry window. No cap
-        (chat/vision) sends a single batch untouched.
+        request stays within both the request token budget (the profile's
+        ``request_tokens``, never below ``token_cap``) and the sequence limit (the
+        profile's ``batch_limit``, else ``_EMBED_N_SEQ_MAX``), bounding per-request
+        size and the gateway-retry window. An engine that cuts inputs itself also
+        gets requests whose encoded body stays within its payload limit. No cap
+        (chat/vision) sends a single batch untouched, unless the profile sets a
+        ``batch_limit``.
 
         When ``estimate`` is set the per-input token count comes from
         :func:`_estimate_tokens`, and ``/tokenize`` is consulted only for the
@@ -1251,20 +1997,33 @@ class LlamaServerClient:
         chunk during bulk ingest. ``estimate=False`` (the overflow redo) tokenizes
         every input exactly.
         """
+        limit = self._batch_limit
         if self._token_cap is None:
-            return [texts]
+            if limit is None:
+                return [texts]
+            return [texts[start : start + limit] for start in range(0, len(texts), limit)]
         cap = self._token_cap
+        budget = max(cap, self._profile.request_tokens or 0)
+        limit = limit or _EMBED_N_SEQ_MAX
+        whole = self._profile.input_limit_path is not None
+        byte_budget = self._input_bytes_budget()
         batches: list[list[str]] = []
         current: list[str] = []
-        current_tokens = 0
+        current_tokens = current_bytes = 0
         for text in texts:
             item, item_tokens = self._fit_input(text, cap, estimate=estimate)
-            if current and (current_tokens + item_tokens > cap or len(current) >= _EMBED_N_SEQ_MAX):
+            item_bytes = _wire_bytes(item) + 1 if whole else 0
+            if current and (
+                current_tokens + item_tokens > budget
+                or len(current) >= limit
+                or current_bytes + item_bytes > byte_budget
+            ):
                 batches.append(current)
                 current = []
-                current_tokens = 0
+                current_tokens = current_bytes = 0
             current.append(item)
             current_tokens += item_tokens
+            current_bytes += item_bytes
         if current:
             batches.append(current)
         return batches
@@ -1274,15 +2033,25 @@ class LlamaServerClient:
 
         Estimation short-circuits the common case: an estimate within the cap is
         trusted (no ``/tokenize``); only an over-cap estimate is confirmed against
-        the server tokenizer and truncated if it really exceeds the cap.
+        the server tokenizer and truncated if it really exceeds the cap. An engine
+        that reports its input limit cuts a longer input by its own tokens, so the
+        input goes whole, within the payload bound; another engine gets the estimate cut.
         """
-        if estimate:
+        if estimate or self._profile.tokenize_path is None:
             est = _estimate_tokens(text)
             if est <= cap:
                 return text, est
+            if self._profile.tokenize_path is None:
+                if self._profile.input_limit_path is not None:
+                    room = self._input_bytes_budget() - 1
+                    if _wire_bytes(text) > room:
+                        text = _cut_to_wire_bytes(text, room)
+                    return text, cap
+                note_cut_to_limit(f"~{est}", cap)
+                return text[: cap * _EMBED_EST_CHARS_PER_TOKEN], cap
         tokens = self._tokenize(text)
         if len(tokens) > cap:
-            log.warning("Truncating oversize embed input: %d tokens > cap %d", len(tokens), cap)
+            note_cut_to_limit(str(len(tokens)), cap)
             return self._detokenize(tokens[:cap]), cap
         return text, max(1, len(tokens))
 
@@ -1294,15 +2063,165 @@ class LlamaServerClient:
         """
         return f"{_UPSTREAM_PREFIX}/{self._model}{suffix}"
 
-    def _tokenize(self, text: str, *, parse_special: bool = _TOKENIZE_PARSE_SPECIAL) -> list[int]:
+    def _ready_upstreams(self) -> set[str]:
+        """The model ids that llama-swap lists as running and ready."""
+        resp = self._http.get(RUNNING_PATH, timeout=_UPSTREAM_CHECK_TIMEOUT_S)
+        self._raise_for_side_route(resp)
+        try:
+            return ready_model_ids(resp.json())
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise ValueError(f"llama-swap sent a running list of another shape: {exc}") from exc
+
+    def _read_check(self, check: UpstreamCheck) -> str | None:
+        """The error that the engine's reply on the route of *check* shows, or None.
+
+        Read the route only while llama-swap lists the model as running. A reply that
+        cannot be read raises a SERVER-kind error, which the gateway retry reads again.
+        """
+        label = self._profile.label
+        try:
+            if self._model not in self._ready_upstreams():
+                raise ProviderError(
+                    f"{label} is not running the model.",
+                    kind=ProviderErrorKind.SERVER,
+                )
+            route = self._native_route(check.path)
+            resp = self._http.get(route, timeout=_UPSTREAM_CHECK_TIMEOUT_S)
+            self._raise_for_side_route(resp)
+            body = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise ProviderError(
+                str(exc) or type(exc).__name__, kind=ProviderErrorKind.SERVER
+            ) from exc
+        return check.refusal(body)
+
+    def _confirm_device(self, check: UpstreamCheck) -> None:
+        """Raise when the engine's reply on the route of *check* names another device.
+
+        A reply that cannot be read is read again within the gateway retry budget, and
+        raises when it stays unreadable: the claim stands only on the engine's own
+        report. A reply that names another device raises :class:`DeviceRefusedError`.
+        """
+        label = self._profile.label
+        try:
+            refusal = retry_on_gateway_error(lambda: self._read_check(check))
+        except ProviderError as exc:
+            reason = str(exc).rstrip(".")
+            raise ProviderError(
+                f"{label} did not report the device of the model: {reason}. Check that the "
+                f"{label} server is running, then restart lilbee.",
+            ) from exc
+        if refusal is not None:
+            raise DeviceRefusedError(refusal, kind=ProviderErrorKind.BAD_REQUEST)
+
+    def ensure_device(self, cancel: CancelSignal | None = None) -> None:
+        """Raise unless the engine reports the model on the device it was placed on.
+
+        Every request counted in flight runs this first (see :meth:`_track`), so the
+        check holds wherever a client is built. The token routes are not counted; no
+        engine with a device route serves them. The first request of a client whose
+        profile names a device route loads the model, reads the device, and only then
+        goes on. A refusal stops the upstream and stays on this client: every later
+        request raises it and none reaches the upstream. An unreadable reply raises,
+        and the next request reads again.
+
+        A request that waits for another request's check ends with
+        ``TaskCancelledError`` once *cancel* is set or this client closes.
+        """
+        check = self._profile.device_check
+        if check is None or self._device_ok or self._device_checker == threading.get_ident():
+            return
+        self._raise_device_refusal()
+        with self._device_cond:
+            while self._device_checking:
+                if self._closing.is_set() or (cancel is not None and cancel.is_set()):
+                    raise TaskCancelledError
+                self._device_cond.wait(_CANCEL_POLL_S)
+            self._raise_device_refusal()
+            if self._device_ok:
+                return
+            # The reservation keeps a reload on another thread from closing this
+            # client between the requests of the check.
+            self.reserve()
+            self._device_checking = True
+            self._device_checker = threading.get_ident()
+        try:
+            if self._load is not None:
+                self._load(self)
+            self._confirm_device(check)
+            self._device_ok = True
+        except DeviceRefusedError as exc:
+            self._device_refusal = str(exc)
+            self.unload_upstream()
+            raise
+        finally:
+            with self._device_cond:
+                self._device_checking = False
+                self._device_checker = None
+                self._device_cond.notify_all()
+            self.release()
+
+    @property
+    def needs_device_check(self) -> bool:
+        """Whether a request must pass the device gate before it is sent."""
+        return self._profile.device_check is not None and not self._device_ok
+
+    def _raise_device_refusal(self) -> None:
+        """Raise the stored device refusal of this client, when it has one."""
+        if self._device_refusal is not None:
+            raise DeviceRefusedError(
+                self._device_refusal,
+                kind=ProviderErrorKind.BAD_REQUEST,
+            )
+
+    def explain_load_failure(self, failure: ProviderError) -> None:
+        """Raise the reason the engine reports for the failed load *failure*, when it has one.
+
+        The raised text ends with the engine's own text of *failure*. Returns when the
+        profile names no route for it, the reply shows no reason, or the read fails; the
+        caller then raises *failure* as it is.
+        """
+        check = self._profile.load_failure_check
+        if check is None:
+            return
+        try:
+            refusal = self._read_check(check)
+        except ProviderError as exc:
+            log.debug("The reason of the failed load is unreadable: %s", exc)
+            return
+        if refusal is not None:
+            raise ProviderError(
+                f"{refusal} {self._profile.label} said: {failure}",
+                kind=failure.kind,
+            ) from failure
+
+    def unload_upstream(self) -> None:
+        """Stop this model's upstream through llama-swap, so it is no longer listed as loaded."""
+        try:
+            resp = self._http.post(
+                f"{UNLOAD_PATH}/{self._model}", timeout=_UPSTREAM_CHECK_TIMEOUT_S
+            )
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            log.warning("Could not stop the upstream of %s: %s", self._model, exc)
+
+    def _tokenize(
+        self,
+        text: str,
+        *,
+        parse_special: bool = _TOKENIZE_PARSE_SPECIAL,
+        add_special: bool = _TOKENIZE_ADD_SPECIAL,
+    ) -> list[int]:
         """Token ids for *text*; a gateway error is retried like an embedding."""
+
+        path = self._require_route(self._profile.tokenize_path, "tokenize")
 
         def _call() -> list[int]:
             resp = self._http.post(
-                self._native_route(_TOKENIZE_PATH),
+                self._native_route(path),
                 json={
                     "content": text,
-                    "add_special": _TOKENIZE_ADD_SPECIAL,
+                    "add_special": add_special,
                     "parse_special": parse_special,
                 },
             )
@@ -1312,8 +2231,25 @@ class LlamaServerClient:
         return retry_on_gateway_error(_call)
 
     def count_tokens(self, text: str) -> int:
-        """Number of tokens *text* encodes to under the server's tokenizer."""
-        return len(self._tokenize(text))
+        """Tokens in *text* under the server's tokenizer, or a character estimate with no route."""
+        tokens = self._first_answer(lambda: self.count_text_tokens(text))
+        return _estimate_tokens(text) if tokens is None else tokens
+
+    def count_text_tokens(self, text: str) -> int | None:
+        """Tokens in *text* under the server's tokenizer, or None when the engine has no route."""
+        if self._profile.tokenize_path is not None:
+            return len(self._tokenize(text))
+        path = self._profile.input_count_path
+        if path is None:
+            return None
+        return len(retry_on_gateway_error(lambda: self._count_route_tokens(path, [text]))[0])
+
+    @staticmethod
+    def _require_route(path: str | None, route: str) -> str:
+        """*path*, or ``NotImplementedError`` when the engine has no such route."""
+        if path is None:
+            raise NotImplementedError(f"This inference engine has no {route} route.")
+        return path
 
     def count_chat_prompt_tokens(
         self,
@@ -1330,6 +2266,7 @@ class LlamaServerClient:
         Special-token strings in the rendered text are parsed, matching how the
         server tokenizes its own prompt.
         """
+        self._require_route(self._profile.tokenize_path, "tokenize")
         rendered = self._render_chat_prompt(messages, tools, tool_choice, options)
         return len(self._tokenize(rendered, parse_special=True))
 
@@ -1354,10 +2291,12 @@ class LlamaServerClient:
         )
 
         def _call() -> str:
-            resp = self._http.post(self._native_route(_APPLY_TEMPLATE_PATH), json=payload)
+            resp = self._http.post(
+                self._native_route(self._profile.apply_template_path), json=payload
+            )
             if _route_is_absent(resp):
                 raise NotImplementedError(
-                    f"This inference engine has no {_APPLY_TEMPLATE_PATH} route."
+                    f"This inference engine has no {self._profile.apply_template_path} route."
                 )
             self._raise_for_status(resp)
             return str(resp.json()["prompt"])
@@ -1365,9 +2304,15 @@ class LlamaServerClient:
         return retry_on_gateway_error(_call)
 
     def _detokenize(self, tokens: list[int]) -> str:
-        resp = self._http.post(self._native_route(_DETOKENIZE_PATH), json={"tokens": tokens})
-        self._raise_for_status(resp)
-        return str(resp.json()["content"])
+        """Text for *tokens*; a gateway error is retried like a tokenize call."""
+        path = self._require_route(self._profile.detokenize_path, "detokenize")
+
+        def _call() -> str:
+            resp = self._http.post(self._native_route(path), json={"tokens": tokens})
+            self._raise_for_status(resp)
+            return str(resp.json()["content"])
+
+        return retry_on_gateway_error(_call)
 
     def _abortable(self, resp: httpx.Response) -> None:
         """Expose *resp* to ``abort_streams`` until the response closes."""
@@ -1382,17 +2327,21 @@ class LlamaServerClient:
     def abort_streams(self) -> None:
         """Sever every in-flight SSE response on this replica.
 
-        A socket shutdown sends the server a FIN and makes a reader blocked in
-        ``iter_lines`` read end-of-stream at once, so it raises a stream error
-        and closes its own response; llama-server stops generating when the
-        connection drops. Closing the socket from another thread does neither.
-        A response with no socket (a mock transport), or whose shutdown fails
-        because the peer is gone, is closed instead.
+        Each socket is shut down. The shutdown sends the server a FIN, and
+        llama-server stops generating when the connection drops. On Linux and
+        macOS the shutdown also ends a read that waits in ``iter_lines``. On
+        Windows it ends no read that waits, in this thread or another, so the
+        socket is closed after it there; the close ends the read at once.
+        Elsewhere the socket stays open: on macOS a close right after the
+        shutdown can drop the wake-up of a read that waits in another thread.
+        A reader whose read ends raises a stream error and closes its own
+        response. A response with no socket (a mock transport), or whose
+        shutdown fails because the peer is gone, is closed instead.
 
-        The shutdowns run under the registry lock, and a response leaves the
-        registry under that lock before its close returns the connection to
-        the pool, so a shutdown never reaches a pooled socket. The fallback
-        closes run after the lock is released, because a close takes it.
+        The socket calls run under the registry lock, and a response leaves
+        the registry under that lock before its close returns the connection
+        to the pool, so they never reach a pooled socket. The fallback closes
+        run after the lock is released, because a close takes it.
         """
         unsevered: list[httpx.Response] = []
         with self._in_flight_lock:
@@ -1405,11 +2354,14 @@ class LlamaServerClient:
                 resp.close()
 
     def close(self) -> None:
-        """Close the underlying client if this instance created it."""
+        """End any abortable chat, and close the underlying client if this instance created it."""
+        self._closing.set()
         if self._owns_http:
             self._http.close()
 
-    def _track(self) -> _InFlight:
+    def _track(self, cancel: CancelSignal | None = None) -> _InFlight:
+        """Count one request in flight; the device gate runs first and honours *cancel*."""
+        self.ensure_device(cancel)
         return _InFlight(self)
 
 
@@ -1471,7 +2423,7 @@ class _AbortableStream(httpx.SyncByteStream):
 
 
 def _shut_down_socket(resp: httpx.Response) -> bool:
-    """Shut down *resp*'s socket; False when it has no socket or the shutdown fails."""
+    """Shut down *resp*'s socket, and close it on Windows; False when no socket or no shutdown."""
     network_stream = resp.extensions.get("network_stream")
     sock = network_stream.get_extra_info("socket") if network_stream else None
     if sock is None:
@@ -1480,26 +2432,30 @@ def _shut_down_socket(resp: httpx.Response) -> bool:
         sock.shutdown(socket.SHUT_RDWR)
     except OSError:
         return False
+    if _CLOSE_AFTER_SHUTDOWN:
+        sock.close()
     return True
 
 
-def _embedding_vector(item: dict[str, Any]) -> npt.NDArray[np.float32]:
+def _embedding_vector(item: dict[str, Any], profile: RequestProfile) -> npt.NDArray[np.float32]:
     """Decode one ``/v1/embeddings`` item's vector from its base64 float buffer."""
     embedding = item.get("embedding")
     # Untyped server JSON: a non-string means the encoding format was not honored.
     if not isinstance(embedding, str):
-        raise ProviderError(_UNREADABLE_EMBEDDING_ERROR, provider=_PROVIDER_NAME)
+        raise ProviderError(_UNREADABLE_EMBEDDING_ERROR + profile.unreadable_embedding_hint)
     try:
         return np.frombuffer(base64.b64decode(embedding), dtype=_EMBED_VECTOR_DTYPE)
     except ValueError as exc:
-        raise ProviderError(_UNREADABLE_EMBEDDING_ERROR, provider=_PROVIDER_NAME) from exc
+        raise ProviderError(
+            _UNREADABLE_EMBEDDING_ERROR + profile.unreadable_embedding_hint
+        ) from exc
 
 
-def _rerank_score(item: dict[str, Any]) -> float:
+def _rerank_score(item: dict[str, Any], profile: RequestProfile) -> float:
     """Pull one relevance score from a rank-pooling ``/v1/embeddings`` item."""
-    vector = _embedding_vector(item)
+    vector = _embedding_vector(item, profile)
     if not vector.size:
-        raise ProviderError(_NO_RERANK_SCORE_ERROR, provider=_PROVIDER_NAME)
+        raise ProviderError(_NO_RERANK_SCORE_ERROR)
     return float(vector[_RANK_SCORE_INDEX])
 
 
@@ -1536,7 +2492,7 @@ def _llm_rerank_score(top_logprobs: list[dict[str, Any]]) -> float | None:
     return yes_e / (yes_e + no_e)
 
 
-def _parse_sse_deltas(line: str) -> tuple[str, str]:
+def _parse_sse_deltas(line: str, reasoning_field: str) -> tuple[str, str]:
     """Extract the (reasoning, content) deltas from one OpenAI SSE line."""
     if not line.startswith(_DATA_PREFIX):
         return "", ""
@@ -1551,55 +2507,15 @@ def _parse_sse_deltas(line: str) -> tuple[str, str]:
     if not choices:
         return "", ""
     delta = choices[0].get("delta") or {}
-    return str(delta.get("reasoning_content") or ""), str(delta.get("content") or "")
+    return str(delta.get(reasoning_field) or ""), str(delta.get("content") or "")
 
 
-class _ThinkInliner:
-    """Re-inlines server-extracted reasoning deltas as inline ``<think>`` text.
-
-    The server parses each model's reasoning format natively (``--reasoning-format``)
-    and streams it as ``reasoning_content``; lilbee's pipeline speaks inline
-    ``<think>`` text, so the chat boundary opens the tag on the first reasoning
-    delta and closes it when the answer starts (or at end of stream). Disabled
-    (the non-chat roles), reasoning is dropped and content passes through, matching
-    the server-extracted default those roles already ran with.
-    """
-
-    def __init__(self, *, enabled: bool) -> None:
-        self._enabled = enabled
-        self._in_think = False
-
-    def feed(self, reasoning: str, content: str) -> str:
-        if not self._enabled:
-            return content
-        parts: list[str] = []
-        if reasoning:
-            if not self._in_think:
-                self._in_think = True
-                parts.append(THINK_OPEN_TAG)
-            parts.append(reasoning)
-        if content:
-            if self._in_think:
-                self._in_think = False
-                parts.append(THINK_CLOSE_TAG)
-            parts.append(content)
-        return "".join(parts)
-
-    def finish(self) -> str:
-        """Close an unterminated think block at end of stream."""
-        if self._in_think:
-            self._in_think = False
-            return THINK_CLOSE_TAG
-        return ""
-
-
-def _inline_message_reasoning(message: Mapping[str, Any], *, enabled: bool) -> str:
+def _inline_message_reasoning(
+    message: Mapping[str, Any], *, enabled: bool, reasoning_field: str
+) -> str:
     """A non-streaming message's text with any extracted reasoning re-inlined."""
-    content = str(message.get("content") or "")
-    reasoning = str(message.get("reasoning_content") or "") if enabled else ""
-    if reasoning:
-        return f"{THINK_OPEN_TAG}{reasoning}{THINK_CLOSE_TAG}{content}"
-    return content
+    reasoning = str(message.get(reasoning_field) or "") if enabled else ""
+    return inline_reasoning(reasoning, str(message.get("content") or ""))
 
 
 def _cached_prompt_tokens(usage: Mapping[str, Any]) -> int:
@@ -1682,6 +2598,140 @@ def _prefill_progress(line: str) -> tuple[int, int] | None:
         return None
 
 
+def _bound_body_reads(resp: httpx.Response) -> httpx.Request:
+    """Lower the body read timeout of the stream *resp* to the idle bound; its request.
+
+    httpx builds the request's ``timeout`` extension for this one request, and httpcore
+    reads the body's read timeout from it at the first body read. The change therefore
+    covers this response only and never reaches the pooled connection. A shorter read
+    timeout stays as it is.
+    """
+    timeouts = resp.request.extensions["timeout"]
+    read = timeouts["read"]
+    timeouts["read"] = _STREAM_IDLE_TIMEOUT_S if read is None else min(read, _STREAM_IDLE_TIMEOUT_S)
+    return resp.request
+
+
+def _lines_bound_from_first_frame(resp: httpx.Response) -> Iterator[str]:
+    """The lines of *resp*, with the idle bound running from the first ``data:`` line.
+
+    httpcore reads the body's read timeout once, when the body starts, so no read timeout can
+    change after a frame. One watchdog thread serves the whole stream. The reader arms it
+    while it waits for a line, once a frame has come, and disarms it when the line is in
+    hand, so a slow caller is never cut. Before the first frame, the wait is the client
+    timeout.
+    """
+    dog = _SilenceWatchdog(resp)
+    lines = resp.iter_lines()
+    seen = False
+    try:
+        while True:
+            if seen:
+                dog.arm()
+            try:
+                line = next(lines, None)
+            except httpx.TransportError as exc:
+                if dog.cut:
+                    raise StreamSilentError(_STREAM_IDLE_TIMEOUT_S, request=resp.request) from exc
+                raise
+            finally:
+                dog.disarm()
+            if line is None:
+                return
+            seen = seen or line.startswith(_DATA_PREFIX)
+            yield line
+    finally:
+        dog.stop()
+
+
+class _SilenceWatchdog:
+    """One thread that shuts the socket of a stream when the reader waits too long for a line.
+
+    The reader moves a deadline with ``arm`` and ``disarm``; each is one lock round, with no
+    thread start per line. The thread shuts the socket down only while the deadline is armed
+    and has passed, and it does so with the lock held. A reader waits for a line only while
+    its response is open, and ``disarm`` returns only after any shutdown has finished, so a
+    shutdown never reaches a connection that a later request reuses.
+    """
+
+    def __init__(self, resp: httpx.Response) -> None:
+        self._resp = resp
+        self._cond = threading.Condition()
+        self._deadline: float | None = None
+        self._stopped = False
+        self._thread: threading.Thread | None = None
+        self.cut = False
+        """Whether the watchdog shut the socket down."""
+
+    def arm(self) -> None:
+        """Start the clock: the socket is shut down if ``disarm`` does not follow in time."""
+        with self._cond:
+            self._deadline = time.monotonic() + _STREAM_IDLE_TIMEOUT_S
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, daemon=True)
+                self._thread.start()
+
+    def disarm(self) -> None:
+        """Stop the clock."""
+        with self._cond:
+            self._deadline = None
+
+    def stop(self) -> None:
+        """End the thread."""
+        with self._cond:
+            self._stopped = True
+            self._deadline = None
+            self._cond.notify_all()
+        if self._thread is not None:
+            self._thread.join()
+
+    def _run(self) -> None:
+        with self._cond:
+            while not self._stopped:
+                if self._deadline is None:
+                    self._cond.wait(_STREAM_IDLE_TIMEOUT_S)
+                    continue
+                left = self._deadline - time.monotonic()
+                if left > 0:
+                    self._cond.wait(left)
+                    continue
+                self.cut = True
+                self._deadline = None
+                _shut_down_socket(self._resp)
+
+
+async def _alines_bound_from_first_frame(resp: httpx.Response) -> AsyncIterator[str]:
+    """The async form of ``_lines_bound_from_first_frame``: the wait for a line is timed."""
+    lines = resp.aiter_lines()
+    seen = False
+    while True:
+        try:
+            async with asyncio.timeout(_STREAM_IDLE_TIMEOUT_S if seen else None):
+                line = await anext(lines)
+        except StopAsyncIteration:
+            return
+        except TimeoutError as exc:
+            raise StreamSilentError(_STREAM_IDLE_TIMEOUT_S, request=resp.request) from exc
+        seen = seen or line.startswith(_DATA_PREFIX)
+        yield line
+
+
+def _raise_stream_failure(
+    exc: httpx.TransportError, *, started: bool, bounded: httpx.Request | None
+) -> None:
+    """Raise the error a chat stream that broke with *exc* ends with, if it has one.
+
+    After a frame the answer is cut. A read timeout of the *bounded* request before a
+    frame is the server's silence after the headers. Any other failure is left to the
+    caller.
+    """
+    if started:
+        raise StreamInterruptedError() from exc
+    if bounded is not None and isinstance(exc, httpx.ReadTimeout):
+        wait = bounded.extensions["timeout"]["read"]
+        raise StreamSilentError(wait, request=bounded) from exc
+
+
 def _raise_if_cut(*, started: bool, ended: bool) -> None:
     """Raise when a started stream's body ended with neither a finish frame nor ``[DONE]``.
 
@@ -1689,7 +2739,7 @@ def _raise_if_cut(*, started: bool, ended: bool) -> None:
     was raised. A stream with no frame at all is left to the caller's retry path.
     """
     if started and not ended:
-        raise StreamInterruptedError
+        raise StreamInterruptedError()
 
 
 def _is_done_line(line: str) -> bool:
@@ -1705,7 +2755,7 @@ def _sse_data_body(line: str) -> str | None:
 
 
 def _parse_sse_stream_items(
-    line: str, inliner: _ThinkInliner
+    line: str, inliner: ThinkInliner, reasoning_field: str
 ) -> Iterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
     """Yield text tokens, tool-call deltas, and the finish frame from one SSE line.
 
@@ -1732,7 +2782,7 @@ def _parse_sse_stream_items(
             yield usage
         return
     delta = choices[0].get("delta") or {}
-    text = inliner.feed(str(delta.get("reasoning_content") or ""), str(delta.get("content") or ""))
+    text = inliner.feed(str(delta.get(reasoning_field) or ""), str(delta.get("content") or ""))
     if text:
         yield text
     raw_calls = delta.get("tool_calls") or []

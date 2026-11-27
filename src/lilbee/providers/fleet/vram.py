@@ -6,12 +6,14 @@ See docs/internals/engine.md (VRAM estimation).
 from __future__ import annotations
 
 import json
+import math
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from lilbee.core.config.enums import KvCacheType
+from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.adapters import FLAG_BATCH_SIZE, FLAG_UBATCH_SIZE
 from lilbee.providers.fleet.binary import resolve_gguf_parser
@@ -22,6 +24,9 @@ _FLAG_PATH = "--path"
 _FLAG_CTX = "--ctx-size"
 _FLAG_PARALLEL = "--parallel"
 _FLAG_GPU_LAYERS = "--gpu-layers"
+# The parser refuses llama.cpp's auto layer count (-1) and every value below -2;
+# its value for a full offload is -2. Every negative setting maps to it.
+_PARSER_GPU_LAYERS_ALL = -2
 _FLAG_CACHE_K = "--cache-type-k"
 _FLAG_CACHE_V = "--cache-type-v"
 _FLAG_MMPROJ = "--mmproj-path"
@@ -33,6 +38,29 @@ _SPLIT_MODE_LAYER = "layer"
 _FLAG_JSON = "--json"
 _FLAG_OVERRIDE_TENSOR = "--override-tensor"
 _BUFFER_TYPE_CPU = "CPU"
+_FLAG_RAW = "--raw"
+
+# The raw header lists each tensor with its ggml type id and shape. The llama.cpp CPU
+# build repacks two-dimensional Q4_0, Q4_K and IQ4_NL tensors into an anonymous copy
+# (measured on an AVX2 host; other quant types stay in the mapped file).
+_KEY_TENSOR_INFOS = "tensorInfos"
+_KEY_TENSOR_TYPE = "type"
+_KEY_TENSOR_DIMS = "nDimensions"
+_KEY_TENSOR_SHAPE = "dimensions"
+_REPACKED_TYPES = frozenset({2, 12, 20})
+_MATRIX_DIMS = 2
+
+# The raw header's metadata list; an array value reports its length under "len".
+_KEY_HEADER = "header"
+_KEY_HEADER_KV = "metadataKV"
+_KEY_HEADER_KEY = "key"
+_KEY_HEADER_VALUE = "value"
+_KEY_ARRAY_LEN = "len"
+_KEY_ARRAY_ITEMS = "array"
+_GGUF_ARCH = "general.architecture"
+_GGUF_HEADS = "attention.head_count"
+_GGUF_KV_HEADS = "attention.head_count_kv"
+_GGUF_TOKENS = "tokenizer.ggml.tokens"
 
 # gguf-parser JSON keys: the per-instance footprint lives under estimate.items
 # (v0.24.x) or estimate.memory (upstream's post-v0.24.1 rename of the same list).
@@ -43,8 +71,28 @@ _KEY_RAM = "ram"
 _KEY_VRAMS = "vrams"
 _KEY_UMA = "uma"
 _KEY_NONUMA = "nonuma"
+_KEY_METADATA = "metadata"
+_KEY_FILE_SIZE = "fileSize"
 
-_PROVIDER = "llama-server"
+# gguf-parser JSON keys under "architecture" that size one context checkpoint: the
+# sliding-window part of one sequence's KV cache, and the state of a recurrent layer.
+_KEY_ARCHITECTURE = "architecture"
+_ARCH_BLOCKS = "blockCount"
+_ARCH_HEADS = "attentionHeadCount"
+_ARCH_KV_HEADS = "attentionHeadCountKV"
+_ARCH_KEY_LENGTH = "attentionKeyLength"
+_ARCH_VALUE_LENGTH = "attentionValueLength"
+_ARCH_WINDOW = "attentionSlidingWindow"
+_ARCH_WINDOW_LAYERS = "attentionSlidingWindowLayers"
+_ARCH_RECURRENT = "attentionRecurrent"
+_ARCH_HYBRID = "attentionHybrid"
+_ARCH_SSM_CONV = "ssmConvolutionKernel"
+_ARCH_SSM_INNER = "ssmInnerSize"
+_ARCH_SSM_STATE = "ssmStateSize"
+_ARCH_SSM_GROUPS = "ssmGroupCount"
+_RECURRENT_STATE_ELEMENT_BYTES = 4
+"""llama.cpp holds the recurrent state in f32."""
+
 _PARSE_TIMEOUT_S = 60
 # Bounded wait for a timed-out parser to die before abandoning it (matches the
 # device probe): a parser wedged in driver I/O must not hang the warm-up thread.
@@ -88,11 +136,15 @@ class GgufVramEstimate:
     ram_bytes: int
     """Discrete-GPU model: host RAM bytes (mmap pages, compute buffers)."""
     unified_bytes: int
-    """Unified-memory model: total resident footprint (RAM + would-be VRAM)."""
+    """Unified-memory model: the footprint without the mapped weights."""
+    mapped_weights_bytes: int = 0
+    """Weight file bytes (the parser's file size) that ``unified_bytes`` leaves out."""
     per_device_vram: tuple[int, ...] = ()
     """Discrete-GPU VRAM per device (gguf-parser ``vrams[].nonuma``)."""
     per_device_unified: tuple[int, ...] = ()
     """Unified-memory footprint per device (``vrams[].uma``)."""
+    checkpoint_bytes: int | None = 0
+    """Host bytes of one context checkpoint of one sequence (:func:`checkpoint_bytes`)."""
 
     def footprint(self, *, unified: bool) -> int:
         """Total bytes to charge against a shared budget for this memory model."""
@@ -176,8 +228,10 @@ def _corrected_projector_estimate(
         vram_bytes=base.vram_bytes + projector,
         ram_bytes=with_projector.ram_bytes,
         unified_bytes=with_projector.unified_bytes,
+        mapped_weights_bytes=base.mapped_weights_bytes + mmproj_bytes,
         per_device_vram=per_device_vram,
         per_device_unified=with_projector.per_device_unified,
+        checkpoint_bytes=base.checkpoint_bytes,
     )
 
 
@@ -228,7 +282,11 @@ def _cached_footprint(
         batch_size=batch_size,
         expert_offload=expert_offload,
     )
-    return _parse_estimate(_run_parser(argv, path_str), path_str)
+    return _parse_estimate(
+        _run_parser(argv, path_str),
+        path_str,
+        kv_element_bytes=KV_CACHE_TYPE_BYTES[KvCacheType(kv_cache_type)],
+    )
 
 
 def estimator_argv(
@@ -267,7 +325,7 @@ def estimator_argv(
         _FLAG_PARALLEL,
         str(slots),
         _FLAG_GPU_LAYERS,
-        str(gpu_layers),
+        str(_PARSER_GPU_LAYERS_ALL if gpu_layers < 0 else gpu_layers),
         _FLAG_CACHE_K,
         kv_cache_type,
         _FLAG_CACHE_V,
@@ -304,8 +362,7 @@ def estimator_argv(
 def _run_parser(argv: list[str], path_str: str) -> str:
     """Run gguf-parser, returning its JSON stdout or a user-facing error."""
     failed = ProviderError(
-        f"Could not size the model {path_str!r}: the memory estimator failed to run.",
-        provider=_PROVIDER,
+        f"Could not size the model '{path_str}': the memory estimator failed to run.",
         kind=ProviderErrorKind.SERVER,
     )
     try:
@@ -319,15 +376,160 @@ def _run_parser(argv: list[str], path_str: str) -> str:
     return stdout
 
 
-def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:
+def repacked_weight_bytes(model_path: Path) -> int:
+    """Bytes of the weights the llama.cpp CPU build copies into its repacked layout."""
+    return _cached_repacked_bytes(
+        engine_build_identity(), str(model_path), model_path.stat().st_mtime_ns
+    )
+
+
+@lru_cache(maxsize=_CACHE_SIZE)
+def _cached_repacked_bytes(_engine_id: str, path_str: str, _mtime_ns: int) -> int:
+    """Memoised sum of the matrix tensors that have a repacked CPU layout."""
+    from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
+    argv = [str(resolve_gguf_parser()), _FLAG_PATH, path_str, _FLAG_RAW]
+    try:
+        tensors = json.loads(_run_parser(argv, path_str))[_KEY_TENSOR_INFOS]
+        total = 0
+        for tensor in tensors:
+            if (
+                tensor[_KEY_TENSOR_TYPE] not in _REPACKED_TYPES
+                or tensor[_KEY_TENSOR_DIMS] != _MATRIX_DIMS
+            ):
+                continue
+            block, type_size = GGML_QUANT_SIZES[GGMLQuantizationType(tensor[_KEY_TENSOR_TYPE])]
+            total += math.prod(tensor[_KEY_TENSOR_SHAPE]) // block * type_size
+        return total
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ProviderError(
+            f"Could not size the model '{path_str}': the estimator returned unreadable output.",
+            kind=ProviderErrorKind.SERVER,
+        ) from exc
+
+
+@dataclass(frozen=True)
+class AttentionShape:
+    """The header fields the CPU score and logits terms read.
+
+    A per-layer header (a hybrid recurrent model) gives the largest count of any layer, which is
+    what one layer's score matrix needs, and sets ``per_layer``.
+    """
+
+    heads: int
+    kv_heads: int
+    vocab: int
+    per_layer: bool = False
+
+
+def attention_shape(model_path: Path) -> AttentionShape | None:
+    """Head counts and vocabulary size of a GGUF file; None when the header lacks either."""
+    return _cached_attention_shape(
+        engine_build_identity(), str(model_path), model_path.stat().st_mtime_ns
+    )
+
+
+def _shape_from_entries(entries: dict[str, object]) -> AttentionShape | None:
+    """The shape, or None when a head count or the vocabulary is absent or unreadable."""
+    arch = entries.get(_GGUF_ARCH)
+    heads = _layer_maximum(entries.get(f"{arch}.{_GGUF_HEADS}"))
+    kv_heads = _layer_maximum(entries.get(f"{arch}.{_GGUF_KV_HEADS}"))
+    tokens = entries.get(_GGUF_TOKENS)
+    if heads is None or kv_heads is None or not isinstance(tokens, dict):
+        return None
+    return AttentionShape(
+        heads=heads[0],
+        kv_heads=kv_heads[0],
+        vocab=int(tokens[_KEY_ARRAY_LEN]),
+        per_layer=heads[1] or kv_heads[1],
+    )
+
+
+def _layer_maximum(value: object) -> tuple[int, bool] | None:
+    """A head count and whether it was per layer; None when it is absent or unreadable.
+
+    The raw header is untyped JSON: a scalar count is a number, a per-layer count is an array
+    object that lists one count per layer (zero on a layer without attention).
+    """
+    if isinstance(value, int):
+        return value, False
+    layers = value.get(_KEY_ARRAY_ITEMS) if isinstance(value, dict) else None
+    if not (isinstance(layers, list) and layers and all(isinstance(n, int) for n in layers)):
+        return None
+    return max(layers), True
+
+
+@lru_cache(maxsize=_CACHE_SIZE)
+def _cached_attention_shape(
+    _engine_id: str, path_str: str, _mtime_ns: int
+) -> AttentionShape | None:
+    """Memoised head counts and vocabulary length from the raw header."""
+    argv = [str(resolve_gguf_parser()), _FLAG_PATH, path_str, _FLAG_RAW]
+    try:
+        entries = {
+            entry[_KEY_HEADER_KEY]: entry[_KEY_HEADER_VALUE]
+            for entry in json.loads(_run_parser(argv, path_str))[_KEY_HEADER][_KEY_HEADER_KV]
+        }
+        return _shape_from_entries(entries)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ProviderError(
+            f"Could not size the model '{path_str}': the estimator returned unreadable output.",
+            kind=ProviderErrorKind.SERVER,
+        ) from exc
+
+
+def _count(value: object) -> int:
+    """A whole, non-negative header count; 0 when absent or not a number."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def checkpoint_bytes(architecture: Mapping[str, object], kv_element_bytes: float) -> int | None:
+    """Host bytes of one context checkpoint of one sequence, from the parser's architecture.
+
+    llama-server copies the sliding-window part of a sequence's KV cache, and the state of
+    each recurrent layer, into host memory at each checkpoint. The window part is the
+    windowed layers x KV heads x (key + value length) x *kv_element_bytes* x the window.
+    The recurrent part is llama.cpp's f32 conv and SSM state, charged on every block: a
+    hybrid model's split is not in the header, so this over-counts. 0 for a model with
+    neither. ``None`` when the model has either but the header lacks a field to size it.
+    """
+    blocks = _count(architecture.get(_ARCH_BLOCKS))
+    window = _count(architecture.get(_ARCH_WINDOW))
+    total = 0
+    if window:
+        layers = architecture.get(_ARCH_WINDOW_LAYERS)
+        windowed = sum(1 for on in layers if on) if isinstance(layers, list) else blocks
+        kv_heads = _count(architecture.get(_ARCH_KV_HEADS)) or _count(architecture.get(_ARCH_HEADS))
+        key = _count(architecture.get(_ARCH_KEY_LENGTH))
+        value = _count(architecture.get(_ARCH_VALUE_LENGTH))
+        if not (windowed and kv_heads and key and value):
+            return None
+        total += int(windowed * kv_heads * (key + value) * window * kv_element_bytes)
+    if architecture.get(_ARCH_RECURRENT) or architecture.get(_ARCH_HYBRID):
+        conv = _count(architecture.get(_ARCH_SSM_CONV))
+        inner = _count(architecture.get(_ARCH_SSM_INNER))
+        state = _count(architecture.get(_ARCH_SSM_STATE))
+        groups = _count(architecture.get(_ARCH_SSM_GROUPS))
+        if not (blocks and conv and inner and state):
+            return None
+        per_layer = (conv - 1) * (inner + 2 * groups * state) + state * inner
+        total += blocks * per_layer * _RECURRENT_STATE_ELEMENT_BYTES
+    return total
+
+
+def _parse_estimate(
+    stdout: str, path_str: str, *, kv_element_bytes: float = KV_CACHE_TYPE_BYTES[KvCacheType.F16]
+) -> GgufVramEstimate:
     """Parse gguf-parser JSON into a UMA-aware footprint.
 
     Accepts both estimate payload keys: ``items`` (the pinned v0.24.x releases)
     and ``memory`` (upstream renamed the key after v0.24.1), so an engine built
     past the pin still sizes instead of failing every launch plan.
+    *kv_element_bytes* is the KV cache type the estimate ran with, for the checkpoint size.
     """
     try:
-        estimate = json.loads(stdout)[_KEY_ESTIMATE]
+        report = json.loads(stdout)
+        estimate = report[_KEY_ESTIMATE]
         item = (estimate.get(_KEY_ITEMS) or estimate[_KEY_MEMORY])[0]
         ram = item[_KEY_RAM]
         vrams = item[_KEY_VRAMS]
@@ -337,13 +539,16 @@ def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:
             vram_bytes=sum(per_device_vram),
             ram_bytes=int(ram[_KEY_NONUMA]),
             unified_bytes=int(ram[_KEY_UMA]) + sum(per_device_unified),
+            mapped_weights_bytes=int((report.get(_KEY_METADATA) or {}).get(_KEY_FILE_SIZE, 0)),
             per_device_vram=per_device_vram,
             per_device_unified=per_device_unified,
+            checkpoint_bytes=checkpoint_bytes(
+                report.get(_KEY_ARCHITECTURE) or {}, kv_element_bytes
+            ),
         )
-    except (ValueError, KeyError, IndexError, TypeError) as exc:
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
         raise ProviderError(
-            f"Could not size the model {path_str!r}: unexpected estimator output "
+            f"Could not size the model '{path_str}': unexpected estimator output "
             f"({type(exc).__name__}: {exc}).",
-            provider=_PROVIDER,
             kind=ProviderErrorKind.SERVER,
         ) from exc

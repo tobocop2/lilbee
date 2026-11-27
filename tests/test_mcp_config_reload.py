@@ -13,6 +13,7 @@ from lilbee.app.config_follow import ConfigFileFollower
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import CONFIG_FILE_NAME, cfg
 from lilbee.core.config.enums import LlmProvider
+from lilbee.core.config.keys import PROVIDER_SWITCHING_KEYS
 from lilbee.mcp_server import LilbeeMCP, build_mcp_server, main
 from tests import _mcp_client
 from tests._mcp_client import mcp_client
@@ -120,13 +121,13 @@ async def test_no_config_file_takes_no_lock_and_creates_no_file(tmp_path, monkey
     cfg.data_root = tmp_path / "never-made"
     cfg.data_dir = cfg.data_root / "data"
     locks: list[Any] = []
-    real_lock = persistent_settings._config_write_lock
+    real_lock = persistent_settings._config_read_lock
 
     def spy(root: Any) -> Any:
         locks.append(root)
         return real_lock(root)
 
-    monkeypatch.setattr(persistent_settings, "_config_write_lock", spy)
+    monkeypatch.setattr(persistent_settings, "_config_read_lock", spy)
     server = _stdio_server()
     start = cfg.top_k
     assert await _top_k_seen_by_the_tool(server) == start
@@ -216,7 +217,16 @@ def test_the_stdio_entry_point_serves_a_server_that_follows_the_file(monkeypatch
     main()
     assert served == [built]
     assert isinstance(built._config_follower, ConfigFileFollower)
-    assert svc_mod._state.config_refresh == built._config_follower.take_now
+    # The engine's retry runs the same follower, which holds only the provider switch.
+    assert built._config_follower is svc_mod._state.follower
+    assert built._config_follower.hold == PROVIDER_SWITCHING_KEYS
+    # The retry runs refresh_now, which also moves the caller's request pin.
+    refreshed: list[str] = []
+    monkeypatch.setattr(
+        built._config_follower, "refresh_now", lambda: refreshed.append("refresh_now")
+    )
+    svc_mod._take_through_the_process_follower()
+    assert refreshed == ["refresh_now"]
 
 
 def test_the_http_mount_builds_a_server_that_does_not_follow_the_file():

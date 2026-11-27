@@ -870,7 +870,7 @@ class TestAResolverInALongRunningProcess:
         self._another_process_registers(server, "notes", tmp_path / "elsewhere")
         with (
             mock.patch.object(ingest, "get_services"),
-            mock.patch.object(ingest, "removable_names", return_value=[]),
+            mock.patch.object(ingest, "removable_among", return_value=set()),
             mock.patch.object(ingest, "held_failures", return_value={}),
             mock.patch.object(ingest, "forget_roots", return_value=[]),
             mock.patch.object(ingest, "forget_removed_from_wiki_index"),

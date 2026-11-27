@@ -2,20 +2,41 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import ExitStack
 from time import monotonic
+from typing import cast
 
+from rich.progress import ProgressColumn, SpinnerColumn, Task
 from rich.text import Text
 
 from lilbee.core.config import cfg
-from lilbee.runtime.console import PlainConsole
+from lilbee.runtime.console import PlainConsole, live_progress
 from lilbee.runtime.progress import UPGRADE_HEADLINE, EventType, LibraryUpgradeEvent, ProgressEvent
+
+
+class _LineColumn(ProgressColumn):
+    """One column that shows the spinner and then *line* at each redraw, as literal text.
+
+    The spinner and the line share one cell, so a line longer than the terminal wraps flush
+    left under the spinner, as Rich's own status does.
+    """
+
+    def __init__(self, line: Callable[[], Text]) -> None:
+        super().__init__()
+        self._line = line
+        self._spinner = SpinnerColumn("dots", style="status.spinner")
+
+    def render(self, task: Task) -> Text:
+        # A SpinnerColumn without text renders its frame as a Text.
+        frame = cast("Text", self._spinner.render(task))
+        return Text.assemble(frame, " ", self._line())
 
 
 class UpgradeLine:
     """Shows library upgrade events on *console*: a live line on a terminal, else plain lines.
 
-    The live line is Rich's status spinner, whose own refresh reads the elapsed time
+    The live line is a spinner and the latest line, which Rich's own refresh reads
     again at each redraw. With *live* off, under ``--json`` or piped, each event is a line.
     """
 
@@ -24,7 +45,7 @@ class UpgradeLine:
         self.live = live
         self._event: LibraryUpgradeEvent | None = None
         self._started = 0.0
-        # Holds Rich's status spinner while a live line shows.
+        # Holds the live progress display while a live line shows.
         self._status: ExitStack | None = None
 
     def __call__(self, _event_type: EventType, event: ProgressEvent) -> None:
@@ -49,8 +70,15 @@ class UpgradeLine:
         if not (self.live and self._console.is_terminal and not cfg.json_mode):
             self._write(event.text)
         elif self._status is None:
+            progress = live_progress(
+                _LineColumn(self.__rich__),
+                console=self._console,
+                transient=True,
+                refresh_per_second=12.5,
+            )
             self._status = ExitStack()
-            self._status.enter_context(self._console.status(self))
+            self._status.enter_context(progress)
+            progress.add_task("", total=None)
 
     def _show_end(self, event: LibraryUpgradeEvent) -> None:
         if self._status is not None:

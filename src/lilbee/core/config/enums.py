@@ -21,6 +21,20 @@ class ReasoningMode(StrEnum):
     OFF = "off"
 
 
+class EngineSetting(StrEnum):
+    """The global engine preference: ``auto`` or the name of one engine."""
+
+    AUTO = "auto"
+    LLAMA = "llama.cpp"
+    IK_LLAMA = "ik_llama.cpp"
+    MISTRAL = "mistral.rs"
+    TEI = "tei"
+    MLX = "mlx"
+    OPENVINO = "openvino"
+    LEMONADE = "lemonade"
+    OVMS = "ovms"
+
+
 class FtsLanguage(StrEnum):
     """Snowball stemmer languages LanceDB's FTS accepts (lancedb.index.lang_mapping).
 

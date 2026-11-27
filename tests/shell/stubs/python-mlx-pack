@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Stand-in for the Python 3.12 of the mlx pack build. The build venv holds this stub again, with stand-ins for uv and
+# delocate-wheel, and its pip installs nothing. Every other call runs the real python3.
+#
+# Reads:
+#   REAL_PYTHON      the interpreter for the other calls (required)
+#   PYTHON_LOG       a file that receives one line per pip call of the build venv (required)
+#   PYTHON_VERSION   the version the stub reports (default: 3.12)
+
+set -euo pipefail
+
+case "${1-} ${2-} ${3-}" in
+  "-c "*version_info*)
+    echo "${PYTHON_VERSION:-3.12}" ;;
+  "-m venv "*)
+    mkdir -p "$3/bin"
+    cp "$0" "$3/bin/python"
+    printf '%s\n' '#!/bin/sh' 'echo uv 0.13.7' > "$3/bin/uv"
+    printf '%s\n' '#!/bin/sh' 'echo 0.13.0' > "$3/bin/delocate-wheel"
+    chmod +x "$3/bin/uv" "$3/bin/delocate-wheel" ;;
+  "-m pip "*)
+    echo "$* | exe=$0" >> "${PYTHON_LOG:?}"
+    [ "${3-} ${4-} ${5-}" = "install --require-hashes --force-reinstall" ] ||
+      { echo "stub python: the build pip installs only with --require-hashes, not: $*" >&2; exit 1; } ;;
+  *)
+    exec "${REAL_PYTHON:?}" "$@" ;;
+esac

@@ -7,15 +7,19 @@ on:
     # chore/engine-pin-sync is the rolling engine bump branch. The bot opens its
     # pull request, so GitHub holds that pull_request run for approval, and the
     # suite never ran on a bump. The push from the sync workflow's deploy key
-    # starts this run without approval, the same way it starts the engine build.
+    # starts this run without approval, with the engine build that gates the bump.
     branches: [main, chore/engine-pin-sync]
   pull_request:
   workflow_call:
   workflow_dispatch:
 
+# A newer run on the same branch or pull request cancels the older one. Runs on
+# main and on the integration branch never cancel and are never cancelled: their
+# group holds the run id, so each run has its own group. A shared group would
+# also drop a pending run when a newer one queues.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/integration/engine-foundations') && format('ci-{0}-{1}', github.ref, github.run_id) || format('ci-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/integration/engine-foundations' }}
 
 jobs:
   changes:
@@ -28,6 +32,7 @@ jobs:
       # A run with no diff to read (dispatch, workflow_call) runs every job.
       code: ${{ steps.filter.outputs.code || 'true' }}
       flake: ${{ steps.filter.outputs.flake || 'true' }}
+      engine: ${{ steps.filter.outputs.engine || 'true' }}
     steps:
       - uses: actions/checkout@v7
         if: github.event_name == 'push'
@@ -43,6 +48,7 @@ jobs:
               - 'uv.lock'
               - 'Makefile'
               - '.coveragerc-windows'
+              - '.coveragerc-lineonly'
               - 'engine-versions.env'
               - 'scripts/check_style_rules.py'
               - 'tools/qa/**'
@@ -65,6 +71,15 @@ jobs:
               - 'sources-compat.json'
               - 'sources-compat-cuda.json'
               - '.github/workflows/ci.yml'
+            # The files the engine key hashes, and the workflow that builds it.
+            engine:
+              - 'engine-versions.env'
+              - 'tools/wheel-build/build_llama_server.sh'
+              - 'tools/wheel-build/bundle_rocm_runtime.sh'
+              - 'tools/wheel-build/bundle_windows_runtime.sh'
+              - 'tools/wheel-build/cmake_args.sh'
+              - 'tools/wheel-build/install_gpu_toolkit.sh'
+              - '.github/workflows/build-multigpu.yml'
 
   lint:
     needs: [changes]
@@ -91,6 +106,9 @@ jobs:
 
       - name: Lint
         run: make lint
+
+      - name: Licence check
+        run: make license-check
 
       - name: Format check
         run: make format-check
@@ -122,6 +140,16 @@ jobs:
         with:
           node-version: '22'
 
+      # The licence check tests run the real checker through uv.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
       - name: Install actionlint and bats
         env:
           ACTIONLINT_VERSION: "1.7.12"
@@ -141,7 +169,7 @@ jobs:
       # make lint-shell skips a missing tool. Assert them here so a runner image
       # that drops one fails loudly.
       - name: Every tool the shell gate needs is present
-        run: shellcheck --version && actionlint --version && bats --version && yq --version && pwsh --version
+        run: shellcheck --version && actionlint --version && bats --version && uv --version && yq --version && pwsh --version && cc --version && objcopy --version
 
       - run: make lint-shell
       - run: make test-shell
@@ -265,6 +293,8 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
+      - uses: ./.github/actions/checkout-engine-packs
+
       - name: Install make (Windows)
         if: runner.os == 'Windows'
         shell: bash
@@ -288,7 +318,7 @@ jobs:
           if [ "${{ matrix.python-version }}" = "3.11" ]; then
             make test-ci-forked
           elif [ "${{ runner.os }}" = "Windows" ]; then
-            make test-ci COV_FLAGS="--cov-config=.coveragerc-windows"
+            make test-ci COV_FLAGS="--cov-config=.coveragerc-windows" BRANCH_CHECK=true
           elif [ "${{ runner.os }}" = "macOS" ]; then
             make test-ci-split
           else
@@ -306,8 +336,12 @@ jobs:
           # instead of hanging to timeout-minutes. A Python timer at 75% of each
           # test's timeout also prints every stack to this log before
           # pytest-timeout ends a stuck test. See tests/_hang_watchdog.py.
-          LILBEE_TEST_HANG_DUMP_S: "90"
+          # The Makefile sets LILBEE_TEST_HANG_DUMP_S (90); CI sets only the folder.
           LILBEE_TEST_HANG_DUMP_DIR: ${{ runner.temp }}/hang-dumps
+          # When py-spy is installed, a stalled child run in a test attaches it to each
+          # descendant; Ubuntu's ptrace scope allows that for root only. The runner has
+          # passwordless sudo. Without py-spy the variable has no effect.
+          LILBEE_TEST_STALL_SUDO: ${{ runner.os == 'Linux' && '1' || '' }}
 
       - name: Surface hang-watchdog stack dumps
         # Runs even when the test step failed/was killed: the wedged worker
@@ -337,7 +371,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-22.04, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
         # Browser-mode and TUI crawl tests run in one cell per OS.
         include:
@@ -379,38 +413,9 @@ jobs:
           bash scripts/ci_retry.sh 3 choco install tesseract -y
           echo 'C:\Program Files\Tesseract-OCR' >> "${GITHUB_PATH}"
 
-      # Integration tests run real local inference, which now means a real
-      # llama-server. The lilbee-engine wheel ships empty bin/ in this lane
-      # (CI fills it only in the release wheel build), so download a prebuilt
-      # llama.cpp release binary; resolve_llama_server() finds it on PATH.
-      - name: Install llama-server (engine)
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          # Pinned: releases/latest can ship partial asset sets (b9352 dropped
-          # the x64/windows builds). Bump to a tag carrying all three platforms.
-          LLAMA_CPP_TAG: b9351
-        run: |
-          set -euo pipefail
-          bindir=$(bash scripts/install_engine.sh \
-            "${LLAMA_CPP_TAG}" "${RUNNER_OS}" "${HOME}/llama-engine")
-          # On Windows, GITHUB_PATH needs a native path (C:\...), not the git-bash
-          # /c/... form, or Python's shutil.which won't find the binary. cygpath
-          # is a no-op fallback on Linux/macOS. Co-located DLLs are found via PATH.
-          #
-          # PATH only, deliberately no loader variable: llama-server and every
-          # library it pulls in carry RUNPATH $ORIGIN on Linux and LC_RPATH
-          # @loader_path on macOS, so the engine resolves its own libraries. A
-          # GITHUB_ENV export would apply to every later step in the job.
-          if command -v cygpath >/dev/null 2>&1; then
-            cygpath -w "${bindir}" >> "${GITHUB_PATH}"
-          else
-            echo "${bindir}" >> "${GITHUB_PATH}"
-          fi
-
       # The engine also needs llama-swap (process supervisor / OpenAI proxy) and
       # gguf-parser (footprint estimator), introduced with the llama-swap engine.
-      # The lilbee-engine wheel ships these only in the release build, so build the
+      # The lilbee-engine-llama-cpp wheel ships these only in the release build, so build the
       # pinned versions from source here; resolve_llama_swap()/resolve_gguf_parser()
       # then find them on PATH. Same Go toolchain the release wheel uses.
       - name: Read the pinned Go toolchain
@@ -457,6 +462,20 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --locked --all-extras
+
+      # The product ships the tobocop2 llama.cpp fork because only it serves GET /memory;
+      # upstream llama-server does not, so the lane would run the log fallback alone. The
+      # action restores the engine the warm run mirrored, or builds it, and installs the
+      # engine wheel into the venv, where resolve_llama_server() finds it first. After
+      # the sync, which would not keep a wheel installed before it. Keyed as the warm run keys
+      # its CPU cells, so a mirrored engine is a hit. The Linux cell runs on the pinned
+      # runner the warm run builds on, so its key names the glibc the engine is built against.
+      - name: Install the llama.cpp fork engine
+        timeout-minutes: 75
+        uses: ./.github/actions/bundle-llama-server
+        with:
+          backend: cpu
+          cache-env: ${{ matrix.os }}
 
       - name: Install spacy model
         # `uv pip install` retries 3 times internally; a 502 from GitHub
@@ -534,14 +553,45 @@ jobs:
           fi
           uv run python -c "import socket; assert {socket.gethostbyname(n) for n in ('site.test', 'docs.site.test')} == {'127.0.0.1'}"
 
+      # pytest makes pytest-of-<user> under PYTEST_DEBUG_TEMPROOT without parents, so
+      # the root must exist before the tests start.
+      - name: Make the pytest temp root
+        shell: bash
+        run: mkdir -p "${RUNNER_TEMP}/pytest-tmp"
+
+      # A step limit below the job limit: a stuck run fails this step while the job is
+      # alive, so the upload step below runs with a clean job budget left.
       - name: Run integration tests
         run: make test-integration
+        timeout-minutes: 100
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
+          # The fleet writes the llama-swap and engine logs to this folder. A fixed
+          # path lets the upload step below find them on every OS.
+          LILBEE_ENGINE_DIR: ${{ runner.temp }}/lilbee-engine
           LILBEE_LLM_PROVIDER: auto
+          # The estimator and metadata tests run the gguf-parser built at the pin
+          # above: a missing parser fails this job instead of skipping them.
+          LILBEE_REQUIRE_GGUF_PARSER: "1"
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
           LILBEE_TEST_FULL_CRAWL: ${{ matrix.full-crawl && '1' || '' }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # The tests make their data folders under the pytest temp root. A fixed
+          # root lets the upload step below find the engine logs they write.
+          PYTEST_DEBUG_TEMPROOT: ${{ runner.temp }}/pytest-tmp
+
+      # GitHub deletes the log of a cancelled job. These files stay as an artifact.
+      - name: Upload the engine logs
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-engine-logs-${{ matrix.os }}-${{ matrix.python-version }}
+          path: |
+            ${{ runner.temp }}/lilbee-engine/logs/*.log
+            ${{ runner.temp }}/lilbee/logs/*.log
+            ${{ runner.temp }}/pytest-tmp/**/logs/*.log
+          if-no-files-found: ignore
+          retention-days: 14
 
   # A pin that does not parse or a malformed hash fails here. The download
   # itself is checked by Flake Check.
@@ -561,10 +611,31 @@ jobs:
         run: |
           nix eval --json .#packages --apply 'builtins.mapAttrs (_: builtins.mapAttrs (_: p: p.drvPath))'
 
+  # Compiles every engine backend, CUDA included, when an engine pin or build
+  # script changes. It runs here because ci-result is the only check that
+  # blocks a merge: a red CUDA cell in a separate workflow did not stop a pin
+  # that could not compile for sm_70. `required: true` makes a failed cell fail
+  # this job. A backend whose engine the mirror already holds is not rebuilt.
+  # A pull request run does not upload to the mirror, so the main push after
+  # a merged engine change compiles the changed backends again.
+  engine:
+    needs: [changes]
+    if: needs.changes.outputs.engine == 'true'
+    # Write for the push run, which mirrors. A pull request run skips the
+    # upload, and on a fork or Dependabot pull request GitHub lowers this grant
+    # to read; build-multigpu asks for nothing, so it starts either way.
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build-multigpu.yml
+    with:
+      required: true
+      mirror: true
+    secrets: inherit
+
   # The one check branch protection requires.
   ci-result:
     if: always()
-    needs: [changes, lint, shell, npm-launcher, claude-plugin, fuzz-smoke, test, integration, flake]
+    needs: [changes, lint, shell, npm-launcher, claude-plugin, fuzz-smoke, test, integration, flake, engine]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

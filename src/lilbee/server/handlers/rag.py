@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import threading
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
-from lilbee.app.memory import auto_extract, auto_extract_enabled
-from lilbee.app.search import clean_results, source_labels
+from lilbee.app.memory import SavedMemory, auto_extract, auto_extract_enabled
+from lilbee.app.search import clean_results, resolve_vault_path, source_labels
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import HealthWarning, warnings_payload
 from lilbee.core.results import DocumentResult, group
-from lilbee.data.store import ChunkType, EmbeddingModelMismatchError
+from lilbee.data.store import ChunkType, EmbeddingEngineChangedError, EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.query.compaction import (
@@ -31,6 +34,7 @@ from lilbee.retrieval.query.formatting import (
 from lilbee.retrieval.query.searcher import (
     GROUNDED_REFUSAL,
     SEARCH_NEEDS_EMBEDDER,
+    AskResult,
     RagContext,
 )
 from lilbee.retrieval.reasoning import (
@@ -96,6 +100,7 @@ log = logging.getLogger(__name__)
 _STREAM_KIND_CODES: dict[ProviderErrorKind, CompletionsErrorCode] = {
     ProviderErrorKind.CONTEXT_OVERFLOW: CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED,
     ProviderErrorKind.NOT_FOUND: CompletionsErrorCode.MODEL_NOT_FOUND,
+    ProviderErrorKind.ENGINE_MISSING: CompletionsErrorCode.ENGINE_MISSING,
 }
 
 
@@ -121,10 +126,23 @@ def _classify_stream_error(exc: BaseException) -> tuple[SseErrorCodeValue | None
     return classify_load_error(str(exc))
 
 
+class SearchResponse(NamedTuple):
+    """Grouped documents for one search and the steps that failed while finding them."""
+
+    documents: list[DocumentResult]
+    warnings: tuple[HealthWarning, ...]
+
+
+def _degraded_frames(warnings: Iterable[HealthWarning]) -> list[str]:
+    """One ``search_degraded`` SSE frame carrying *warnings*, or nothing when none failed."""
+    payload = warnings_payload(warnings)
+    return [sse_event(SseEvent.SEARCH_DEGRADED, {"warnings": payload})] if payload else []
+
+
 async def search(
     q: str, top_k: int | None = None, chunk_type: ChunkType | None = None
-) -> list[DocumentResult]:
-    """Search and return grouped DocumentResults.
+) -> SearchResponse:
+    """Search and return grouped DocumentResults with the failed search steps.
 
     An omitted ``top_k`` resolves to ``cfg.top_k``, read live at call time.
     """
@@ -133,11 +151,15 @@ async def search(
     resolved_top_k = top_k if top_k is not None else cfg.top_k
     # search() blocks on retrieval; run it off the event loop so other admitted
     # requests stay responsive, matching the sibling ask() handler.
-    results = await asyncio.to_thread(
-        get_services().searcher.search, q, top_k=resolved_top_k, chunk_type=chunk_type
+    report = await asyncio.to_thread(
+        get_services().searcher.search_report, q, top_k=resolved_top_k, chunk_type=chunk_type
     )
-    labels = source_labels(results)
-    return [r.model_copy(update={"label": labels[r.source]}) for r in group(results)]
+    labels = source_labels(report.rows)
+    documents = [
+        r.model_copy(update={"label": labels[r.source]})
+        for r in group(report.rows, resolve_vault_path)
+    ]
+    return SearchResponse(documents, report.degraded)
 
 
 async def ask(
@@ -162,14 +184,21 @@ async def ask(
     )
     # Mirror the streaming ask path: auto-extract memories from a real answer,
     # but never from the search-needs-embedder refusal ask_raw returns.
-    if not searcher.search_unavailable():
+    if not await asyncio.to_thread(searcher.search_unavailable):
         await _store_extracted_memories(question, result.answer)
+    # Cleaning reads the stored web titles, so it runs on a worker too.
+    return await asyncio.to_thread(_ask_response, result)
+
+
+def _ask_response(result: AskResult) -> AskResponse:
+    """The one-shot ask response for *result*; reads the store, so call it off the loop."""
     return AskResponse(
         answer=result.answer,
         sources=_cleaned_chunks(result.sources, result.sources),
         cited_sources=_cleaned_chunks(result.cited_sources, result.sources),
         retrieval_query=result.retrieval_query,
         dropped_sources=_cleaned_chunks(result.dropped_sources, result.sources),
+        warnings=result.degraded,
     )
 
 
@@ -190,6 +219,14 @@ def _chat_warming_events() -> list[str]:
         return []
     log.info("Chat engine cold; streaming a warming notice before the first token.")
     return [sse_event(SseEvent.WARMING, {"role": WorkerRole.CHAT.value})]
+
+
+async def _warming_frames() -> list[str]:
+    """The warming notice for a cold chat engine, probed on a worker.
+
+    The chat stream yields it before retrieval, which can wait on the cold engine.
+    """
+    return await asyncio.to_thread(_chat_warming_events)
 
 
 def _put_answer_token(
@@ -258,9 +295,8 @@ def _run_llm_stream(
                     )
                 )
             elif event.is_reasoning:
-                if event.content:
-                    put(sse_event(SseEvent.REASONING, {"token": event.content}))
-            elif event.content:
+                put(sse_event(SseEvent.REASONING, {"token": event.content}))
+            else:
                 _put_answer_token(event.content, put, cite_filter, answer_parts)
     except Exception as exc:
         error_holder.append(exc)
@@ -269,7 +305,7 @@ def _run_llm_stream(
         put(None)
 
 
-async def _store_extracted_memories(question: str, answer: str) -> list[Any]:
+async def _store_extracted_memories(question: str, answer: str) -> list[SavedMemory]:
     """Run the auto-extraction LLM pass off the event loop and return stored memories.
 
     The pass is best effort and never raises: an empty list comes back when the
@@ -285,20 +321,55 @@ async def _store_extracted_memories(question: str, answer: str) -> list[Any]:
         return []
 
 
-async def _emit_extracted_memories(question: str, answer: str) -> AsyncGenerator[str, None]:
-    """Yield a ``memory_extracted`` SSE event if the turn auto-saved any memories.
+@dataclass(frozen=True)
+class _AnsweredTurn:
+    """The turn a trailer stage reads: the question and the full answer the client has."""
 
-    Silent (yields nothing) when the answer is empty, auto-extraction is off, or
-    nothing was extracted, so existing consumers are unaffected.
-    """
-    stored = await _store_extracted_memories(question, answer)
+    question: str
+    answer: str
+
+
+@dataclass
+class _TurnRecord:
+    """Filled by an answer stream just before it sends done; empty for a refusal."""
+
+    answered: _AnsweredTurn | None = None
+
+
+async def _memory_trailer(turn: _AnsweredTurn) -> list[str]:
+    """The ``memory_extracted`` frame when the turn auto-saved a memory, else nothing."""
+    stored = await _store_extracted_memories(turn.question, turn.answer)
     if not stored:
-        return
+        return []
     event = MemoryExtractedEvent(
         count=len(stored),
         items=[MemoryExtractedItem(id=m.id, kind=m.kind, text=m.text) for m in stored],
     )
-    yield sse_event(SseEvent.MEMORY_EXTRACTED, event.model_dump(mode="json"))
+    return [sse_event(SseEvent.MEMORY_EXTRACTED, event.model_dump(mode="json"))]
+
+
+async def _then_trailer(
+    answer_stream: Callable[[_TurnRecord], AsyncGenerator[str, None]],
+) -> AsyncGenerator[str, None]:
+    """Run an answer stream to its done frame, then the trailer stage after it.
+
+    The answer stream ends at done, so done goes out before the trailer starts.
+    The trailer runs only on an answered turn, on the same response. A trailer
+    that raises is logged and dropped here, so it never becomes an error frame
+    that would replace an answer the client already has.
+    """
+    record = _TurnRecord()
+    async for frame in answer_stream(record):
+        yield frame
+    if record.answered is None:
+        return
+    try:
+        frames = await _memory_trailer(record.answered)
+    except Exception:
+        log.exception("a stream trailer failed after done; the answer is unaffected")
+        return
+    for frame in frames:
+        yield frame
 
 
 def _mismatch_detail(exc: EmbeddingModelMismatchError) -> str | None:
@@ -307,19 +378,19 @@ def _mismatch_detail(exc: EmbeddingModelMismatchError) -> str | None:
     return exc.persisted_model if exc.dims_match else None
 
 
-async def _emit_sources_and_memories(
+async def _emit_sources_and_done(
     question: str,
     answer_parts: list[str],
     sources: list[SearchChunk],
+    record: _TurnRecord,
 ) -> AsyncGenerator[str, None]:
-    """Emit the trailing SOURCES event, ``done``, and any memory-extracted event.
+    """Emit the trailing SOURCES event and ``done``, and record the answered turn.
 
     SOURCES carries the cited subset (what the answer referenced), falling back to
     the full retrieved set when the answer cited nothing, mirroring
     ``Searcher.ask_stream``. Recalled memories always ride along: they were in the
-    prompt whether the answer cited a document or not. Auto-extraction trails
-    ``done``; it cannot fail the stream, so a client that drains past ``done``
-    still keeps the answer.
+    prompt whether the answer cited a document or not. ``done`` is the last
+    frame; the trailer stage reads *record* after it.
     """
     answer = "".join(answer_parts)
     cited = cited_subset(answer, sources)
@@ -329,13 +400,14 @@ async def _emit_sources_and_memories(
         source_list = [*cited, *memories]
     else:
         source_list = sources
-    yield sse_event(SseEvent.SOURCES, clean_results(source_list, sources))
+    # clean_results reads the stored web titles, so it runs on a worker.
+    yield sse_event(SseEvent.SOURCES, await asyncio.to_thread(clean_results, source_list, sources))
+    record.answered = _AnsweredTurn(question, answer)
     yield sse_done({})
-    async for event in _emit_extracted_memories(question, answer):
-        yield event
 
 
 async def _stream_rag_response(
+    record: _TurnRecord,
     question: str,
     history: list[ChatMessage] | None = None,
     top_k: int = 0,
@@ -350,11 +422,11 @@ async def _stream_rag_response(
     """
     yield ""  # force generator
 
-    for warming in _chat_warming_events():
+    for warming in await _warming_frames():
         yield warming
 
     searcher = get_services().searcher
-    if searcher.search_unavailable():
+    if await asyncio.to_thread(searcher.search_unavailable):
         # Search needs an embedder to ground. Mirror Searcher.ask_stream by
         # returning the refusal as a normal answer token (not an SSE error) so the
         # streaming, one-shot, and CLI ask paths all surface it the same way.
@@ -365,6 +437,7 @@ async def _stream_rag_response(
     # Retrieval embeds, searches, reranks, and can spend an LLM call expanding
     # the query. On the loop it stalls every other admitted request for the whole
     # turn; the non-streaming siblings already thread the same work.
+    retrieval_off = await asyncio.to_thread(searcher.skip_retrieval)
     results, messages, preempt = await asyncio.to_thread(
         _resolve_stream_context,
         searcher,
@@ -372,7 +445,7 @@ async def _stream_rag_response(
         history,
         top_k,
         chunk_type,
-        retrieval_off=searcher.skip_retrieval(),
+        retrieval_off=retrieval_off,
     )
     for frame in preempt:
         yield frame
@@ -388,8 +461,10 @@ async def _stream_rag_response(
     # need a model-generated Sources block suppressed.
     cite_filter = StreamingCitationFilter() if results else None
 
+    # The copied context keeps the request's config pin on the stream's thread.
     executor_fut = sse.loop.run_in_executor(
         None,
+        contextvars.copy_context().run,
         _run_llm_stream,
         messages,
         opts,
@@ -415,7 +490,7 @@ async def _stream_rag_response(
     # Ensure executor thread has finished before yielding final events
     await executor_fut
 
-    async for event in _emit_sources_and_memories(question, answer_parts, results):
+    async for event in _emit_sources_and_done(question, answer_parts, results, record):
         yield event
 
 
@@ -425,8 +500,12 @@ def ask_stream(
     options: dict[str, Any] | None = None,
     chunk_type: ChunkType | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Yield SSE events: token, sources, done."""
-    return _stream_rag_response(question, top_k=top_k, options=options, chunk_type=chunk_type)
+    """Yield SSE events: token, sources, done, then any trailer such as memory_extracted."""
+    return _then_trailer(
+        lambda record: _stream_rag_response(
+            record, question, top_k=top_k, options=options, chunk_type=chunk_type
+        )
+    )
 
 
 def _compaction_pending(history: list[ChatMessage], summary: str) -> bool:
@@ -501,7 +580,7 @@ async def _context_management_frames(
         yield (prompt_history(history, summary, max_tokens=budget), None)
         return
     if compaction is not None:
-        _persist_summary(session_id, compaction)
+        await asyncio.to_thread(_persist_summary, session_id, compaction)
         yield sse_event(SseEvent.COMPACTION, compaction.model_dump())
     yield (managed_history, compaction)
 
@@ -514,6 +593,84 @@ def _persist_summary(session_id: str | None, info: CompactionInfo | None) -> Non
         get_services().session_store.set_summary(session_id, info.summary)
 
 
+class _ChatGrounding(NamedTuple):
+    """Retrieval outcome for a one-shot chat turn.
+
+    A set ``early`` is the finished response (a refusal or a canned answer);
+    otherwise ``messages`` lead the model call and ``sources`` ground it.
+    """
+
+    early: AskResponse | None
+    sources: list[SearchChunk]
+    messages: list[ChatMessage]
+    retrieval_query: str | None
+    dropped: list[SearchChunk]
+    degraded: list[HealthWarning]
+    compaction: CompactionInfo | None
+
+
+def _prepare_chat_turn(
+    searcher: Searcher,
+    question: str,
+    history: list[ChatMessage],
+    summary: str,
+    session_id: str | None,
+    top_k: int | None,
+    chunk_type: ChunkType | None,
+) -> _ChatGrounding:
+    """Run every blocking step before the model call; run it on a worker."""
+    if top_k != 0 and searcher.search_unavailable():
+        # No embedder, so search can't ground; an explicit top_k 0 needs none.
+        early = AskResponse(answer=SEARCH_NEEDS_EMBEDDER, sources=[], cited_sources=[])
+        return _ChatGrounding(early, [], [], None, [], [], None)
+    history, compaction = _manage_history(history, summary)
+    _persist_summary(session_id, compaction)
+    if _retrieval_off(searcher, top_k):
+        # Chat-only mode or an explicit top_k:0 pure-LLM call.
+        messages = searcher.direct_messages(question, history)
+        return _ChatGrounding(None, [], messages, None, [], [], compaction)
+    # The searcher's own pre-retrieval ladder, so surfaces cannot drift.
+    pre_answer = searcher.pre_retrieval_answer(question)
+    if pre_answer is not None:
+        early = AskResponse(answer=pre_answer, sources=[], cited_sources=[], compaction=compaction)
+        return _ChatGrounding(early, [], [], None, [], [], compaction)
+    rag = searcher.build_rag_context(
+        question, top_k=top_k or 0, history=history, chunk_type=chunk_type
+    )
+    if rag.refused:
+        early = AskResponse(
+            answer=GROUNDED_REFUSAL,
+            sources=[],
+            cited_sources=[],
+            compaction=compaction,
+            warnings=list(rag.degraded),
+        )
+        return _ChatGrounding(early, [], [], None, [], [], compaction)
+    return _ChatGrounding(
+        None,
+        rag.results,
+        rag.messages,
+        rag.retrieval_query,
+        rag.dropped or [],
+        list(rag.degraded),
+        compaction,
+    )
+
+
+def _chat_response(answer: str, turn: _ChatGrounding) -> AskResponse:
+    """Build the chat response; labelling sources reads the store, so run it on a worker."""
+    sources = turn.sources
+    return AskResponse(
+        answer=answer,
+        sources=_cleaned_chunks(sources, sources),
+        cited_sources=_cleaned_chunks(cited_subset(strip_llm_citations(answer), sources), sources),
+        compaction=turn.compaction,
+        retrieval_query=turn.retrieval_query,
+        dropped_sources=_cleaned_chunks(turn.dropped, sources),
+        warnings=turn.degraded,
+    )
+
+
 async def chat(
     question: str,
     history: list[ChatMessage],
@@ -524,40 +681,20 @@ async def chat(
     session_id: str | None = None,
 ) -> AskResponse:
     """Chat with history. Returns answer and sources via canonical dispatch."""
-    searcher = get_services().searcher
-    if searcher.search_unavailable():
-        # Search mode with no embedder can't ground; refuse cleanly with the same
-        # message ask returns instead of silently answering off-corpus.
-        return AskResponse(answer=SEARCH_NEEDS_EMBEDDER, sources=[], cited_sources=[])
-    history, compaction = await asyncio.to_thread(_manage_history, history, summary)
-    _persist_summary(session_id, compaction)
-    retrieval_query: str | None = None
-    dropped: list[SearchChunk] = []
-    if _retrieval_off(searcher, top_k):
-        # Chat-only mode or an explicit top_k:0 pure-LLM call.
-        sources: list[SearchChunk] = []
-        messages = searcher.direct_messages(question, history)
-    else:
-        # Grounded turn: the searcher's own pre-retrieval ladder (empty
-        # library, count routing, memory-awareness) so surfaces cannot drift.
-        pre_answer = searcher.pre_retrieval_answer(question)
-        if pre_answer is not None:
-            return AskResponse(
-                answer=pre_answer, sources=[], cited_sources=[], compaction=compaction
-            )
-        rag = searcher.build_rag_context(
-            question, top_k=top_k or 0, history=history, chunk_type=chunk_type
-        )
-        if rag is None:
-            # Refuse like every sibling surface; the old fallback silently
-            # answered off-corpus with nothing telling the caller so.
-            return AskResponse(
-                answer=GROUNDED_REFUSAL, sources=[], cited_sources=[], compaction=compaction
-            )
-        sources, messages = rag.results, rag.messages
-        retrieval_query = rag.retrieval_query
-        dropped = rag.dropped or []
-    req = _build_canonical_request(messages, options)
+    # Embedder, store and provider reads block, so they run on one worker.
+    turn = await asyncio.to_thread(
+        _prepare_chat_turn,
+        get_services().searcher,
+        question,
+        history,
+        summary,
+        session_id,
+        top_k,
+        chunk_type,
+    )
+    if turn.early is not None:
+        return turn.early
+    req = _build_canonical_request(turn.messages, options)
     response = await asyncio.to_thread(dispatch_chat, req)
     text = _join_text_blocks(response.content)
     answer = text if cfg.show_reasoning else strip_reasoning(text)
@@ -570,14 +707,7 @@ async def chat(
         answer = REASONING_EXHAUSTED_NOTICE
     else:
         await _store_extracted_memories(question, answer)
-    return AskResponse(
-        answer=answer,
-        sources=_cleaned_chunks(sources, sources),
-        cited_sources=_cleaned_chunks(cited_subset(strip_llm_citations(answer), sources), sources),
-        compaction=compaction,
-        retrieval_query=retrieval_query,
-        dropped_sources=_cleaned_chunks(dropped, sources),
-    )
+    return await asyncio.to_thread(_chat_response, answer, turn)
 
 
 def chat_stream(
@@ -589,15 +719,21 @@ def chat_stream(
     summary: str = "",
     session_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Stream RAG chat tokens through canonical dispatch as token/sources/done events."""
-    return _stream_chat_response(
-        question,
-        history=history,
-        top_k=top_k,
-        options=options,
-        chunk_type=chunk_type,
-        summary=summary,
-        session_id=session_id,
+    """Stream RAG chat tokens through canonical dispatch as token/sources/done events.
+
+    Any trailer, such as memory_extracted, follows done.
+    """
+    return _then_trailer(
+        lambda record: _stream_chat_response(
+            record,
+            question,
+            history=history,
+            top_k=top_k,
+            options=options,
+            chunk_type=chunk_type,
+            summary=summary,
+            session_id=session_id,
+        )
     )
 
 
@@ -632,10 +768,11 @@ def _resolve_chat_stream_context(
     top_k: int | None,
     chunk_type: ChunkType | None,
 ) -> _ChatStreamPlan:
-    frames = list(_chat_warming_events())
-    if searcher.search_unavailable():
+    frames: list[str] = []
+    if top_k != 0 and searcher.search_unavailable():
         # Search mode with no embedder can't ground; refuse cleanly with the same
         # token the ask stream emits instead of silently answering off-corpus.
+        # An explicit top_k 0 runs no search, so it needs no embedder.
         frames += [
             sse_event(SseEvent.TOKEN, {"token": SEARCH_NEEDS_EMBEDDER}),
             sse_event(SseEvent.SOURCES, []),
@@ -659,6 +796,7 @@ def _resolve_chat_stream_context(
 
 
 async def _stream_chat_response(
+    record: _TurnRecord,
     question: str,
     history: list[ChatMessage],
     top_k: int | None,
@@ -673,6 +811,8 @@ async def _stream_chat_response(
             yield item
             continue
         history, _compaction = item
+    for warming in await _warming_frames():
+        yield warming
     frames, ctx = await asyncio.to_thread(
         _resolve_chat_stream_context, get_services().searcher, question, history, top_k, chunk_type
     )
@@ -680,9 +820,16 @@ async def _stream_chat_response(
         yield frame
     if ctx is None:
         return
-    sources, messages = ctx.results, ctx.messages
+    async for frame in _chat_answer_frames(
+        record, question, _build_canonical_request(ctx.messages, options), ctx.results
+    ):
+        yield frame
 
-    req = _build_canonical_request(messages, options)
+
+async def _chat_answer_frames(
+    record: _TurnRecord, question: str, req: CanonicalChatRequest, sources: list[SearchChunk]
+) -> AsyncGenerator[str, None]:
+    """Stream the model's answer as SSE frames, then the sources and done."""
     answer_parts: list[str] = []
     # Only grounded turns append an authoritative SOURCES event, so only they
     # need a model-generated Sources block suppressed.
@@ -703,7 +850,7 @@ async def _stream_chat_response(
     if tail_frame:
         yield tail_frame
 
-    async for frame in _emit_sources_and_memories(question, answer_parts, sources):
+    async for frame in _emit_sources_and_done(question, answer_parts, sources, record):
         yield frame
 
 
@@ -756,8 +903,7 @@ async def _drive_stream(
             if not text:
                 continue
             for tok in parser.feed(text):
-                if tok.content:
-                    yield tok
+                yield tok
             if cap_chars > 0 and parser.reasoning_chars > cap_chars:
                 cap_fired = True
                 break
@@ -882,21 +1028,23 @@ def _resolve_stream_context(
         )
     except EmbeddingModelMismatchError as mismatch:
         # detail carries the index's embedder so the client can offer to adopt it.
+        engine_changed = isinstance(mismatch, EmbeddingEngineChangedError)
         frame = sse_error(
             str(mismatch),
-            code=SseErrorCode.INDEX_EMBEDDER_MISMATCH,
+            code=(
+                SseErrorCode.EMBEDDING_MISMATCH
+                if engine_changed
+                else SseErrorCode.INDEX_EMBEDDER_MISMATCH
+            ),
             detail=_mismatch_detail(mismatch),
         )
         return _StreamResolution([], None, [frame])
-    if rag is None:
-        return _StreamResolution([], None, [sse_error("No relevant documents found.")])
-    results, messages = rag.results, rag.messages
-    announce = (
-        [sse_event(SseEvent.RETRIEVAL_QUERY, {"query": rag.retrieval_query})]
-        if rag.retrieval_query
-        else []
-    )
-    return _StreamResolution(results, messages, announce)
+    announce = _degraded_frames(rag.degraded)
+    if rag.refused:
+        return _StreamResolution([], None, [*announce, sse_error("No relevant documents found.")])
+    if rag.retrieval_query:
+        announce.append(sse_event(SseEvent.RETRIEVAL_QUERY, {"query": rag.retrieval_query}))
+    return _StreamResolution(rag.results, rag.messages, announce)
 
 
 _CANONICAL_ROLE_BY_WIRE: dict[str, Literal["user", "assistant", "tool"]] = {

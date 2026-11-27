@@ -127,7 +127,7 @@ def test_spawn_server_applies_env_overrides_over_inherited_env(monkeypatch) -> N
     monkeypatch.setenv("LILBEE_LAUNCHER_SERVE_QUIET", "1")  # route output to DEVNULL
     captured: dict = {}
 
-    def fake_popen(cmd, *, stdout, stderr, env):
+    def fake_popen(cmd, *, stdout, stderr, env, **_popen_kwargs):
         captured["env"] = env
         return MagicMock()
 
@@ -149,7 +149,7 @@ def test_spawn_server_without_overrides_still_arms_the_parent_watcher(monkeypatc
     monkeypatch.setenv("LILBEE_LAUNCHER_SERVE_QUIET", "1")
     captured: dict = {}
 
-    def fake_popen(cmd, *, stdout, stderr, env):
+    def fake_popen(cmd, *, stdout, stderr, env, **_popen_kwargs):
         captured["env"] = env
         return MagicMock()
 

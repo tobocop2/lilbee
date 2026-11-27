@@ -1,0 +1,261 @@
+{
+ "server": "llama.cpp-cpu-inline",
+ "version": "1.12032.1",
+ "roles": [
+  "chat"
+ ],
+ "models": {
+  "chat": "Qwen3-0.6B"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "strict": true,
+ "results": {
+  "template": {
+   "ok": true,
+   "detail": "finish=stop"
+  },
+  "tool": {
+   "ok": true,
+   "detail": "tool_calls=['get_weather']"
+  },
+  "overflow": {
+   "ok": true,
+   "detail": "kind=context_overflow"
+  },
+  "json_object": {
+   "ok": true,
+   "detail": "finish=stop"
+  },
+  "json_schema": {
+   "ok": true,
+   "detail": "finish=stop"
+  },
+  "reasoning": {
+   "ok": true,
+   "detail": "finish=stop"
+  },
+  "named": {
+   "ok": true,
+   "detail": "log=['served by engine=llama-cpp-cpu-inline version=preset build=none role=chat model=llama-cpp-cpu-inline/Qwen3-0.6B'] status={<WorkerRole.CHAT: 'chat'>: 'llama-cpp-cpu-inline'}"
+  }
+ },
+ "error_answers": [
+  [
+   400,
+   "{\"error\":{\"code\":400,\"message\":\"request (60009 tokens) exceeds the available context size (4096 tokens), try increasing it\",\"type\":\"exceed_context_size_error\",\"n_prompt_tokens\":60009,\"n_ctx\":4096}}"
+  ]
+ ],
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "max_tokens": 1024,
+    "messages": [
+     {
+      "content": "You answer in one short sentence.",
+      "role": "system"
+     },
+     {
+      "content": "What is the capital of France?",
+      "role": "user"
+     },
+     {
+      "content": "Paris.",
+      "role": "assistant"
+     },
+     {
+      "content": "And of Italy?",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen3-0.6B",
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"<think>\\nOkay, the user first asked about the capital of France, and I correctly answered Paris. Now they're asking about Italy. I need to make sure I provide the correct information. Italy's capital is Rome, right? Let me confirm that. Yes, Rome is the capital. I should state that clearly in one sentence. No need for extra details, just the answer. Let me check if there's any other capital mentioned, but I think Rome is the correct one. Alright, time to put it together.\\n</think>\\n\\nRome.\"}}],\"created\":1795596131,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-dde879b\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":111,\"prompt_tokens\":43,\"total_tokens\":154,\"prompt_tokens_details\":{\"cached_tokens\":0}},\"id\":\"chatcmpl-dfND3ZCodr6IaW6v7yabqjV77RBVocpQ\",\"timings\":{\"cache_n\":0,\"prompt_n\":43,\"prompt_ms\":3451.5,\"prompt_per_token_ms\":80.26744186046511,\"prompt_per_second\":12.45835144140229,\"predicted_n\":111,\"predicted_ms\":104127.001,\"predicted_per_token_ms\":946.6091,\"predicted_per_second\":1.0564022678421323}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "max_tokens": 1024,
+    "messages": [
+     {
+      "content": "What is the weather in Paris? Use the tool.",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen3-0.6B",
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "function": {
+       "description": "Get the weather for a city.",
+       "name": "get_weather",
+       "parameters": {
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ],
+        "type": "object"
+       }
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"<think>\\nOkay, the user is asking for the weather in Paris. I need to use the get_weather function. The function requires the city parameter, so I'll set the city to Paris. Let me make sure the arguments are correctly formatted as JSON. Alright, that should do it.\\n</think>\\n\\n\",\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"Paris\\\"}\"},\"id\":\"r4TiEqLMZvRWqsyA4CLhgaXGVwX4bvqf\"}]}}],\"created\":1795596268,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-dde879b\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":80,\"prompt_tokens\":157,\"total_tokens\":237,\"prompt_tokens_details\":{\"cached_tokens\":3}},\"id\":\"chatcmpl-4IiC5Zj7gJWH8p85uzNYQane41xTzRBz\",\"timings\":{\"cache_n\":3,\"prompt_n\":154,\"prompt_ms\":3224.35,\"prompt_per_token_ms\":20.93733766233766,\"prompt_per_second\":47.76156434630236,\"predicted_n\":80,\"predicted_ms\":133244.022,\"predicted_per_token_ms\":1686.6331898734177,\"predicted_per_second\":0.5928971432579542}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "max_tokens": 16,
+    "messages": [
+     {
+      "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen3-0.6B",
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
+   },
+   "status": 400,
+   "content_type": "application/json",
+   "body": "{\"error\":{\"code\":400,\"message\":\"request (60009 tokens) exceeds the available context size (4096 tokens), try increasing it\",\"type\":\"exceed_context_size_error\",\"n_prompt_tokens\":60009,\"n_ctx\":4096}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "max_tokens": 256,
+    "messages": [
+     {
+      "content": "Reply with a JSON object for Paris: city is the name and pop is the population.",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen3-0.6B",
+    "response_format": {
+     "type": "json_object"
+    },
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"{}\"}}],\"created\":1795596278,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-dde879b\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":4,\"prompt_tokens\":26,\"total_tokens\":30,\"prompt_tokens_details\":{\"cached_tokens\":1}},\"id\":\"chatcmpl-NusqWXdUbJNXYGN0bdDe2wALI8HXOYPJ\",\"timings\":{\"cache_n\":1,\"prompt_n\":25,\"prompt_ms\":2982.722,\"prompt_per_token_ms\":119.30888,\"prompt_per_second\":8.381605794975194,\"predicted_n\":4,\"predicted_ms\":6536.611,\"predicted_per_token_ms\":2178.8703333333333,\"predicted_per_second\":0.4589534240296692}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "max_tokens": 256,
+    "messages": [
+     {
+      "content": "Reply with a JSON object for Paris: city is the name and pop is the population.",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen3-0.6B",
+    "response_format": {
+     "json_schema": {
+      "name": "city",
+      "schema": {
+       "additionalProperties": false,
+       "properties": {
+        "city": {
+         "type": "string"
+        },
+        "pop": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "city",
+        "pop"
+       ],
+       "type": "object"
+      },
+      "strict": true
+     },
+     "type": "json_schema"
+    },
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"{\\n            \\\"city\\\": \\\"Paris\\\",\\n            \\\"pop\\\": 2100000\\n        }\"}}],\"created\":1795596297,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-dde879b\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":26,\"prompt_tokens\":26,\"total_tokens\":52,\"prompt_tokens_details\":{\"cached_tokens\":25}},\"id\":\"chatcmpl-B1edrjmS0tu9RMFw0Zvi1ZR7x7xLK6mq\",\"timings\":{\"cache_n\":25,\"prompt_n\":1,\"prompt_ms\":1042.137,\"prompt_per_token_ms\":1042.137,\"prompt_per_second\":0.9595667364271685,\"predicted_n\":26,\"predicted_ms\":18515.592,\"predicted_per_token_ms\":740.62368,\"predicted_per_second\":1.3502133769203815}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "role": "user",
+      "content": "Think it through, then answer: what is 17 plus 25?"
+     }
+    ],
+    "model": "Qwen3-0.6B",
+    "stream": false,
+    "temperature": 0,
+    "seed": 7
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"<think>\\nOkay, so I need to figure out what 17 plus 25 is. Let me start by recalling how to add numbers. I think when you add two numbers, you just add their digits one by one. Let me check that.\\n\\nFirst, I should break down the numbers to make it easier. 17 is the same as 10 + 7, and 25 is 20 + 5. Adding those together would be 10 + 20 and 7 + 5. That gives me 30 + 12, which is 42. Wait, is that right? Let me add them again. 17 + 25. Let's do it vertically to make sure.\\n\\nStarting with the ones place: 7 + 5 equals 12. Write down 2 and carry over 1. Then the tens place: 1 + 2 is 3, plus the carried 1 makes 4. So the total is 42. Yeah, that seems correct.\\n\\nAlternatively, I can think of 17 + 25 as 17 + 20 + 5. 17 + 20 is 37, plus 5 is 42. Same result. So both methods give me 42. I don't think I made any mistakes here. The answer should be 42.\\n</think>\\n\\n17 plus 25 equals 42. \\n\\n**Step-by-Step Explanation:**  \\n1. Break down the numbers:  \\n   - 17 = 10 + 7  \\n   - 25 = 20 + 5  \\n\\n2. Add the parts separately:  \\n   - 10 + 20 = 30  \\n   - 7 + 5 = 12  \\n\\n3. Combine the results:  \\n   - 30 + 12 = 42  \\n\\n**Answer:** 42\"}}],\"created\":1795596359,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-dde879b\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":412,\"prompt_tokens\":25,\"total_tokens\":437,\"prompt_tokens_details\":{\"cached_tokens\":3}},\"id\":\"chatcmpl-kADn8WH5Xb5TGYpAyWY1sCgUPT2ZW6wx\",\"timings\":{\"cache_n\":3,\"prompt_n\":22,\"prompt_ms\":1168.373,\"prompt_per_token_ms\":53.10786363636364,\"prompt_per_second\":18.829603217465653,\"predicted_n\":412,\"predicted_ms\":60847.769,\"predicted_per_token_ms\":148.048099756691,\"predicted_per_second\":6.754561535362127}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "max_tokens": 1024,
+    "messages": [
+     {
+      "content": "You answer in one short sentence.",
+      "role": "system"
+     },
+     {
+      "content": "What is the capital of France?",
+      "role": "user"
+     },
+     {
+      "content": "Paris.",
+      "role": "assistant"
+     },
+     {
+      "content": "And of Italy?",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen3-0.6B",
+    "seed": 7,
+    "stream": false,
+    "temperature": 0.0
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"<think>\\nOkay, the user first asked about the capital of France, and I correctly answered Paris. Now they're asking about Italy. I need to make sure I provide the correct information. Italy's capital is Rome, right? Let me confirm that. Yes, Rome is the capital. I should state that clearly in one sentence. No need for extra details, just the answer. Let me check if there's any other capital mentioned, but I think Rome is the correct one. Alright, time to put it together.\\n</think>\\n\\nRome.\"}}],\"created\":1795596366,\"model\":\"Qwen3-0.6B\",\"system_fingerprint\":\"b1-dde879b\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":111,\"prompt_tokens\":43,\"total_tokens\":154,\"prompt_tokens_details\":{\"cached_tokens\":42}},\"id\":\"chatcmpl-jJoDm22hfv22hNKIHblW0LxUq4Nmrx9Q\",\"timings\":{\"cache_n\":42,\"prompt_n\":1,\"prompt_ms\":29.746,\"prompt_per_token_ms\":29.746,\"prompt_per_second\":33.61796544073153,\"predicted_n\":111,\"predicted_ms\":6509.969,\"predicted_per_token_ms\":59.18153636363636,\"predicted_per_second\":16.897161875886045}}"
+  }
+ ]
+}

@@ -311,6 +311,23 @@ class TestGetNlp:
         mock_ensure.assert_called_once()
         assert nlp1 is nlp2
 
+    @patch("lilbee.retrieval.concepts.graph._ensure_spacy_model")
+    def test_model_loaded_by_another_thread_is_not_reloaded(self, mock_ensure, cg):
+        """A first-caller that waited on the lock finds the model already loaded."""
+        loaded = MagicMock()
+
+        class _LoadsWhileWaiting:
+            def __enter__(self):
+                cg._nlp = loaded
+
+            def __exit__(self, *exc):
+                return False
+
+        cg.reset_nlp_cache()
+        cg._nlp_lock = _LoadsWhileWaiting()
+        assert cg._ensure_nlp() is loaded
+        mock_ensure.assert_not_called()
+
 
 class TestEnsureSpacyModel:
     def test_loads_existing(self):
@@ -673,6 +690,17 @@ class TestExpandQuery:
         mock_spacy.return_value = _make_mock_nlp({"???": []})
         assert cg.expand_query("???") == []
 
+    @patch("lilbee.retrieval.concepts.graph._ensure_spacy_model")
+    def test_expand_query_skips_neighbors_already_seen(self, mock_spacy, cg):
+        """A neighbor shared by two concepts, or equal to a query concept, appears once."""
+        mock_spacy.return_value = _make_mock_nlp({"python flask": ["python", "flask"]})
+        neighbors = {
+            "python": ["flask", "django"],
+            "flask": ["django", "jinja"],
+        }
+        with patch.object(cg, "get_related_concepts", side_effect=lambda c: neighbors[c]):
+            assert cg.expand_query("python flask") == ["django", "jinja"]
+
 
 class TestGetRelatedConcepts:
     def test_get_related_concepts(self, cg, mock_svc):
@@ -1009,17 +1037,23 @@ class TestRebuildClusters:
         mock_svc.store.open_table.side_effect = side
         mock_leiden.return_value = ({"a": 0}, {"a": 1})
 
-        cg.rebuild_clusters()
+        with patch("lilbee.retrieval.concepts.graph.data_store.prune_old_versions") as prune:
+            cg.rebuild_clusters()
         # compact_tables opens each concept table by name; chunk_concepts resolves to
-        # its mock (the others to fresh mocks) -> optimize fires once on it.
-        assert cc_tbl.optimize.call_count == 1
+        # its mock (the others to fresh mocks) -> the prune fires once on it.
+        tables = [call.args[0] for call in prune.call_args_list]
+        assert tables.count(cc_tbl) == 1
+        assert prune.call_count == 3
 
     def test_compact_tables_survives_optimize_failure(self, cg, mock_svc):
         mock_table = MagicMock()
-        mock_table.optimize.side_effect = RuntimeError("compaction failed")
         mock_svc.store.open_table.return_value = mock_table
-        cg.compact_tables()
-        assert mock_table.optimize.call_count == 3
+        with patch(
+            "lilbee.retrieval.concepts.graph.data_store.prune_old_versions",
+            side_effect=RuntimeError("compaction failed"),
+        ) as prune:
+            cg.compact_tables()
+        assert prune.call_count == 3
 
     def test_compact_tables_skips_missing_tables(self, cg, mock_svc):
         mock_svc.store.open_table.return_value = None

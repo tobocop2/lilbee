@@ -2,23 +2,45 @@
 
 from __future__ import annotations
 
+import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
+from enum import StrEnum
 
-from lilbee.app.services import peek_services
+from lilbee.app.engine_choice import BookReading, EngineBook
+from lilbee.app.services import Services, peek_services
 from lilbee.core import settings
 from lilbee.core.config import cfg
-from lilbee.providers.fleet.placement_spec import PlacementSpec
+from lilbee.core.security import FileLockUnavailableError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.fleet.engines.base import EngineAdapter
+from lilbee.providers.fleet.groups import class_roles
+from lilbee.providers.fleet.model_memory import tight_memory_text, unknown_size_text
+from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 from lilbee.providers.fleet.planning import (
     ResolvedPlacement,
     clear_read_device_cache,
     resolve_placement_plan,
 )
-from lilbee.providers.roles import EngineBackend, WorkerRole
+from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.roles import ROLE_REGISTRY, EngineBackend, RoleTarget, WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress, is_active_warm
 
+log = logging.getLogger(__name__)
+
+PLACEMENT_READ_ERRORS = (PlacementError, ProviderError, OSError)
+"""What reading the placement raises: a bad spec, an engine probe that fails, an unreadable file."""
+
 _PLACEMENT_KEY = "placement"
+
+CLEAR_INSTRUCTION = "run 'lilbee placement clear' or set a new one"
+"""The next step shown after a refusal of a saved spec; the CLI and the TUI drawer share it."""
+
+
+class PlacementConfigWriteError(OSError):
+    """Saving the placement to config.toml failed; the device probe is not at fault."""
+
 
 # Ceiling and cadence for waiting out the post-reload chat warm: a cold
 # tensor-split giant off a slow filesystem takes minutes, and the wait stops
@@ -27,6 +49,20 @@ _PLACEMENT_KEY = "placement"
 _CHAT_READY_TIMEOUT_S = 1800.0
 _CHAT_READY_POLL_S = 0.5
 _CHAT_READY_GRACE_S = 3.0
+
+
+class PlacementRefusal(StrEnum):
+    """Why a placement reads as refused: the spec waits, cannot be read, or is refused."""
+
+    WAITING_FOR_ENGINE = "waiting_for_engine"
+    WAITING_FOR_MODEL = "waiting_for_model"
+    UNREADABLE = "unreadable"
+    REFUSED = "refused"
+
+    @property
+    def is_waiting(self) -> bool:
+        """Whether the saved spec is kept and applies once an engine or a model is installed."""
+        return self in (PlacementRefusal.WAITING_FOR_ENGINE, PlacementRefusal.WAITING_FOR_MODEL)
 
 
 @dataclass(frozen=True)
@@ -50,6 +86,11 @@ class RolePlacementView:
     devices: tuple[int, ...]
     tensor_split: tuple[int, ...] | None
     replicas: int
+    engine: str
+    # Where the role runs. ``devices`` is empty for a CPU role, which holds no card.
+    target: RoleTarget = RoleTarget.GPU
+    # What the planner charged one instance of the role, in bytes; None when it charged none.
+    charge_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -61,11 +102,31 @@ class SkippedRole:
 
 
 @dataclass(frozen=True)
+class SkippedNoEngine:
+    """A configured role left unplaced because no installed engine loads its model."""
+
+    role: WorkerRole
+    model: str
+    notice: str
+
+
+@dataclass(frozen=True)
+class SizeUnknownRole:
+    """A placed role whose model has no known size, with the sentence that says so."""
+
+    role: WorkerRole
+    model: str
+    notice: str
+
+
+@dataclass(frozen=True)
 class TightRole:
     """A placed role whose estimate exceeds the memory on the card it landed on."""
 
     role: WorkerRole
+    model: str
     shortfall_bytes: int
+    notice: str
 
 
 @dataclass(frozen=True)
@@ -80,10 +141,15 @@ class PlacementView:
     # Configured roles absent from the plan because their model isn't installed,
     # so a surface can show "not downloaded" instead of an unexplained empty table.
     skipped_not_installed: tuple[SkippedRole, ...] = ()
-    # Roles sharing one swap group: each is placed, but only one is resident at a
-    # time, so their footprints do not sum against the card they name.
-    co_tenants: tuple[WorkerRole, ...] = ()
-    # A saved spec this hardware no longer satisfies. The auto plan is what runs,
+    # Configured roles left out because no installed engine loads their model, each
+    # with the notice that says why, so a surface can say it and name the fix.
+    skipped_no_engine: tuple[SkippedNoEngine, ...] = ()
+    # Roles sharing one swap process: each is placed, and the roles of one class stay
+    # resident together while the other classes are evicted, so only the largest class
+    # sums against the card they name.
+    swap_classes: tuple[frozenset[WorkerRole], ...] = ()
+    # A saved spec that is not in use: this hardware does not satisfy it, no engine
+    # or model is installed for it, or it places no role. The auto plan is what runs,
     # but the spec stays in config.toml and reapplies once it fits again, so a
     # surface has to say it is there rather than report placement as plain auto.
     rejected_spec_json: str | None = None
@@ -95,6 +161,33 @@ class PlacementView:
     # it off ``gpus``: an empty device list is a CPU host and a failed probe
     # alike, and only UNKNOWN says which one this is.
     engine_backend: EngineBackend = EngineBackend.UNKNOWN
+    # Why the saved spec is not in use here, in words a user can act on: refused by
+    # the planner, or waiting for an engine or a model. The spec itself is in
+    # ``rejected_spec_json`` so it can be corrected.
+    refusal: str | None = None
+    # Which case ``refusal`` is, so a client never reads the sentence to tell them apart.
+    refusal_kind: PlacementRefusal | None = None
+    # Where each pinned role runs once the auto plan replaced the saved spec; empty
+    # when the spec applies or none of its roles is pinned to a card.
+    pins_dropped: str = ""
+    # Vendors whose hardware is in this machine but hidden from the engine by the
+    # launch, so no row in ``gpus`` is a pin target for them, and the line that
+    # says how to get them back.
+    hidden_gpus: tuple[str, ...] = ()
+    hidden_note: str | None = None
+    # Roles placed on the unknown-size reserve, so a surface can say the figure is a guess.
+    size_unknown: tuple[SizeUnknownRole, ...] = ()
+
+    @property
+    def co_tenants(self) -> tuple[WorkerRole, ...]:
+        """Every role in the shared swap process, in role name order."""
+        return tuple(sorted(class_roles(self.swap_classes), key=lambda role: role.value))
+
+    @property
+    def clear_instruction(self) -> str:
+        """The next step for a saved spec that is not in use; empty when the spec is kept."""
+        waiting = self.refusal_kind is not None and self.refusal_kind.is_waiting
+        return CLEAR_INSTRUCTION if self.rejected_spec_json and not waiting else ""
 
 
 def _active_spec() -> PlacementSpec | None:
@@ -102,13 +195,31 @@ def _active_spec() -> PlacementSpec | None:
     return PlacementSpec.from_json(raw) if raw else None
 
 
+def _tight_role(role: WorkerRole, model: str, shortfall_bytes: int) -> TightRole:
+    """A tight role with the sentence that says how much memory it lacks and what to do."""
+    subject = f"the {role.value} model {model}" if model else f"the {role.value} model"
+    return TightRole(
+        role=role,
+        model=model,
+        shortfall_bytes=shortfall_bytes,
+        notice=tight_memory_text(subject, shortfall_bytes),
+    )
+
+
 def _view(
     resolved: ResolvedPlacement,
+    engines: Mapping[WorkerRole, EngineAdapter],
     *,
     manual: bool,
     spec_json: str | None,
     rejected_spec_json: str | None = None,
+    refusal: str | None = None,
+    refusal_kind: PlacementRefusal | None = None,
+    pins_dropped: str = "",
 ) -> PlacementView:
+    refused_roles = resolved.unlaunched_roles or resolved.unplaceable_reasons
+    if refused_roles and (refusal_kind is None or refusal_kind.is_waiting):
+        refusal_kind = PlacementRefusal.REFUSED
     gpus = tuple(
         GpuInfo(
             index=d.index,
@@ -133,6 +244,9 @@ def _view(
                 devices=plan.devices,
                 tensor_split=plan.tensor_split or None,
                 replicas=1,
+                engine=str(engines[plan.role].name),
+                target=plan.target,
+                charge_bytes=resolved.charged_bytes.get(plan.role),
             )
     return PlacementView(
         gpus=gpus,
@@ -141,17 +255,80 @@ def _view(
         manual=manual,
         spec_json=spec_json,
         tight=tuple(
-            TightRole(role=role, shortfall_bytes=shortfall)
+            _tight_role(role, resolved.model_refs.get(role, ""), shortfall)
             for role, shortfall in sorted(resolved.tight_roles.items(), key=lambda kv: kv[0].value)
         ),
         skipped_not_installed=tuple(
             SkippedRole(role=role, model=ref)
             for role, ref in resolved.skipped_not_installed.items()
         ),
-        co_tenants=tuple(sorted(resolved.co_tenants, key=lambda role: role.value)),
+        skipped_no_engine=tuple(
+            SkippedNoEngine(role=role, model=skip.model, notice=skip.notice)
+            for role, skip in resolved.skipped_no_engine.items()
+        ),
+        swap_classes=resolved.swap_classes,
         rejected_spec_json=rejected_spec_json,
         engine_backend=resolved.engine_backend,
+        refusal=" ".join(
+            filter(
+                None,
+                (
+                    refusal,
+                    *resolved.unlaunched_roles.values(),
+                    *resolved.unplaceable_reasons.values(),
+                ),
+            )
+        )
+        or None,
+        refusal_kind=refusal_kind,
+        pins_dropped=pins_dropped,
+        hidden_gpus=tuple(v.label for v in resolved.hidden.hidden) if resolved.hidden else (),
+        hidden_note=resolved.hidden.note() if resolved.hidden else None,
+        size_unknown=tuple(
+            SizeUnknownRole(
+                role=role,
+                model=resolved.model_refs[role],
+                notice=unknown_size_text(f"the {role.value} model {resolved.model_refs[role]}"),
+            )
+            for role in sorted(resolved.size_unknown_roles, key=lambda r: r.value)
+        ),
     )
+
+
+def _planning_engines() -> BookReading:
+    """The engine of each role now, read from the engine book at this call."""
+    return EngineBook(cfg).read()
+
+
+def _resolve(
+    spec: PlacementSpec | None, reading: BookReading, *, fall_back_to_auto: bool = False
+) -> ResolvedPlacement:
+    """Plan *spec* with the engines of one book reading, carrying its no-engine notices."""
+    return resolve_placement_plan(
+        spec,
+        engines=reading.adapters,
+        no_engine_notices=reading.notices,
+        fall_back_to_auto=fall_back_to_auto,
+    )
+
+
+def _log_size_unknown(notices: Iterable[str]) -> None:
+    """Record each sentence that says a model has no known size."""
+    for notice in notices:
+        log.warning("%s", notice)
+
+
+SAVED_PLACEMENT_WAITS_FOR_ENGINE = (
+    "The saved placement is kept but not used: no installed engine can run the models. "
+    "It applies once an engine is installed."
+)
+SAVED_PLACEMENT_WAITS_FOR_A_MODEL = (
+    "The saved placement is kept but not used: no model is installed for any role it names. "
+    "It applies once a model is installed."
+)
+SAVED_PLACEMENT_PLACES_NO_ROLE = (
+    "The saved placement is kept but not used: it places no role on this machine."
+)
 
 
 def get_placement() -> PlacementView:
@@ -159,21 +336,119 @@ def get_placement() -> PlacementView:
 
     A saved spec that no longer fits the hardware is not the effective placement:
     the fleet runs the auto plan, and this reports that rather than a manual layout
-    nothing is using.
+    nothing is using. A spec that drops a role (a target its engine cannot run, a
+    card the machine lacks) reports the roles that run and the reason for the rest.
+    Each model of unknown size is logged once per read. With no engine installed
+    nothing can be planned: this reports each missing engine, and a saved spec as
+    kept but not in use.
     """
-    spec = _active_spec()
-    resolved = resolve_placement_plan(spec, fall_back_to_auto=True)
+    reading = _planning_engines()
+    if not reading.adapters:
+        return _no_engine_view(reading)
+    return _logged_placement(reading)
+
+
+def get_planned_placement() -> PlacementView:
+    """The placement of :func:`get_placement` for a reader that needs the devices.
+
+    Raises the planner's no-engine error when no engine is installed.
+    """
+    return _logged_placement(_planning_engines())
+
+
+def _logged_placement(reading: BookReading) -> PlacementView:
+    """The placement planned with *reading*, with each unknown size logged."""
+    view = _read_placement(reading)
+    _log_size_unknown(unknown.notice for unknown in view.size_unknown)
+    return view
+
+
+def _read_placement(reading: BookReading) -> PlacementView:
+    """The placement planned with *reading*, without the size log."""
+    try:
+        spec = _active_spec()
+        resolved = _resolve(spec, reading, fall_back_to_auto=True)
+    except PlacementError as exc:
+        return _view(
+            _resolve(None, reading),
+            reading.adapters,
+            manual=False,
+            spec_json=None,
+            rejected_spec_json=cfg.placement,
+            refusal=str(exc),
+            refusal_kind=PlacementRefusal.UNREADABLE,
+        )
+    engines = reading.adapters
     if spec is None:
-        return _view(resolved, manual=False, spec_json=None)
+        return _view(resolved, engines, manual=False, spec_json=None)
     if not resolved.spec_applied:
-        return _view(resolved, manual=False, spec_json=None, rejected_spec_json=spec.to_json())
-    return _view(resolved, manual=True, spec_json=spec.to_json())
+        return _view(
+            resolved,
+            engines,
+            manual=False,
+            spec_json=None,
+            rejected_spec_json=spec.to_json(),
+            refusal=resolved.spec_replaced_reason,
+            refusal_kind=PlacementRefusal.REFUSED,
+            pins_dropped=resolved.pins_dropped,
+        )
+    if resolved.refused_roles:
+        return _view(
+            resolved,
+            engines,
+            manual=False,
+            spec_json=None,
+            rejected_spec_json=spec.to_json(),
+            refusal=" ".join(resolved.refused_roles.values()),
+            refusal_kind=PlacementRefusal.REFUSED,
+        )
+    return _spec_view(resolved, engines, spec)
+
+
+def _spec_view(
+    resolved: ResolvedPlacement, engines: Mapping[WorkerRole, EngineAdapter], spec: PlacementSpec
+) -> PlacementView:
+    """The view of an applied *spec*: manual when it places a role, else kept with its reason."""
+    if resolved.instances:
+        return _view(resolved, engines, manual=True, spec_json=spec.to_json())
+    if spec.roles.keys() & resolved.skipped_not_installed.keys():
+        refusal, kind = SAVED_PLACEMENT_WAITS_FOR_A_MODEL, PlacementRefusal.WAITING_FOR_MODEL
+    else:
+        refusal, kind = SAVED_PLACEMENT_PLACES_NO_ROLE, PlacementRefusal.REFUSED
+    return _view(
+        resolved,
+        engines,
+        manual=False,
+        spec_json=None,
+        rejected_spec_json=spec.to_json(),
+        refusal=refusal,
+        refusal_kind=kind,
+    )
+
+
+def size_unknown_notices(role: WorkerRole) -> list[str]:
+    """The sentences that say the model of *role* has no known size; none if unreadable.
+
+    Each sentence is logged once per call, so a surface that asks for the role it
+    just started logs the fact once.
+    """
+    try:
+        view = _read_placement(_planning_engines())
+    except PLACEMENT_READ_ERRORS as exc:
+        log.debug("No size notice for the %s model: the placement could not be read: %s", role, exc)
+        return []
+    notices = [unknown.notice for unknown in view.size_unknown if unknown.role is role]
+    _log_size_unknown(notices)
+    return notices
 
 
 def preview_placement(spec: PlacementSpec | None = None) -> PlacementView:
     """Dry-run: what spec (or auto, when None) would place. No persistence or reload."""
-    resolved = resolve_placement_plan(spec)
-    return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
+    reading = _planning_engines()
+    resolved = _resolve(spec, reading)
+    if spec is None:
+        return _view(resolved, reading.adapters, manual=False, spec_json=None)
+    return _spec_view(resolved, reading.adapters, spec)
 
 
 def placement_refused_message() -> str:
@@ -190,6 +465,19 @@ def placement_refused_message() -> str:
     )
 
 
+def _apply_to_running(services: Services) -> None:
+    """Apply a saved placement to the fleet; a failure says that the placement is saved."""
+    try:
+        services.provider.replan_fleet(wait=True)
+    except (ProviderError, OSError) as exc:
+        log.warning("The running server did not apply the placement: %s", exc)
+        raise ProviderError(
+            "The placement is saved, but the running server could not apply it: "
+            f"{str(exc).rstrip('.')}. Restart lilbee to use the placement.",
+            kind=exc.kind if isinstance(exc, ProviderError) else ProviderErrorKind.UNKNOWN,
+        ) from exc
+
+
 def set_placement(spec: PlacementSpec | None) -> PlacementView:
     """Validate, persist to config.toml, apply to the live fleet, and return the new view.
 
@@ -202,21 +490,101 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     fleet would report our own residency as unavailable and poison the chat
     context sizing, while charging stays against total capacity (bb-a8f).
     """
-    resolved = resolve_placement_plan(spec)
+    reading = _planning_engines()
     spec_json = None if spec is None else spec.to_json()
-    if spec_json is None:
-        settings.delete_values(cfg.data_root, [_PLACEMENT_KEY])
-    else:
-        settings.update_values(cfg.data_root, {_PLACEMENT_KEY: spec_json})
+    resolved = _plan_for_write(spec, reading)
+    _persist(spec_json)
     settings.sync_from_resolver(cfg, [_PLACEMENT_KEY])
     services = peek_services()
-    if services is None:
-        clear_read_device_cache()  # nothing running; let the next boot probe fresh
+    if resolved is None or services is None:
+        clear_read_device_cache()  # nothing can run; let the next boot probe fresh
     else:
-        services.provider.replan_fleet(wait=True)
+        _apply_to_running(services)
+    if resolved is None:
+        running = {} if services is None else _running_notices(services)
+        return _no_engine_view(reading, running)
     if cfg.placement != spec_json:
         return get_placement()  # LILBEE_PLACEMENT outranks the saved spec; report what runs
-    return _view(resolved, manual=spec is not None, spec_json=spec_json)
+    if spec is None:
+        return _view(resolved, reading.adapters, manual=False, spec_json=None)
+    return _spec_view(resolved, reading.adapters, spec)
+
+
+def _persist(spec_json: str | None) -> None:
+    """Write the spec to config.toml, or remove it when *spec_json* is None."""
+    try:
+        if spec_json is None:
+            settings.delete_values(cfg.data_root, [_PLACEMENT_KEY])
+        else:
+            settings.update_values(cfg.data_root, {_PLACEMENT_KEY: spec_json})
+    except (FileLockUnavailableError, settings.ReadOnlyConfigError, settings.ConfigReadFailedError):
+        raise  # each has its own answer on every surface
+    except OSError as exc:
+        raise PlacementConfigWriteError(exc.errno, exc.strerror or str(exc), exc.filename) from exc
+
+
+def _plan_for_write(spec: PlacementSpec | None, reading: BookReading) -> ResolvedPlacement | None:
+    """The plan for *spec*; None for a clear on a host that cannot plan (a clear needs none)."""
+    try:
+        return _resolve(spec, reading)
+    except (ProviderError, OSError) as exc:
+        if spec is not None:
+            raise
+        log.debug("A placement clear goes ahead without a plan: %s", exc)
+        return None
+
+
+def _running_notices(services: Services) -> dict[WorkerRole, str]:
+    """The sentence that says a local model still runs, for each role whose server is up."""
+    notices: dict[WorkerRole, str] = {}
+    for role, entry in ROLE_REGISTRY.items():
+        ref = str(getattr(cfg, entry.config_field))
+        if ref and not parse_model_ref(ref).is_remote and services.provider.role_ready(role):
+            notices[role] = (
+                f"The {role.value} model {ref} is still running: the placement could not be "
+                "read, so the clear is saved but not applied. Restart lilbee to apply it."
+            )
+    return notices
+
+
+def _no_engine_view(
+    reading: BookReading, running: dict[WorkerRole, str] | None = None
+) -> PlacementView:
+    """The view of a host whose engine cannot plan: nothing is placed, the saved spec is kept.
+
+    *running* maps each role whose server is up to its notice; the engine book's notice wins.
+    """
+    notices = {**(running or {}), **reading.notices}
+    rejected_spec_json: str | None = None
+    refusal: str | None = None
+    refusal_kind: PlacementRefusal | None = None
+    try:
+        spec = _active_spec()
+    except PlacementError as exc:
+        rejected_spec_json, refusal = cfg.placement, str(exc)
+        refusal_kind = PlacementRefusal.UNREADABLE
+    else:
+        if spec is not None:
+            rejected_spec_json, refusal = spec.to_json(), SAVED_PLACEMENT_WAITS_FOR_ENGINE
+            refusal_kind = PlacementRefusal.WAITING_FOR_ENGINE
+    return PlacementView(
+        gpus=(),
+        roles=(),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+        rejected_spec_json=rejected_spec_json,
+        refusal=refusal,
+        refusal_kind=refusal_kind,
+        skipped_no_engine=tuple(
+            SkippedNoEngine(
+                role=role,
+                model=str(getattr(cfg, ROLE_REGISTRY[role].config_field)),
+                notice=notice,
+            )
+            for role, notice in notices.items()
+        ),
+    )
 
 
 def wait_chat_ready(

@@ -6,13 +6,12 @@ import contextlib
 import logging
 import os
 import sys
-import threading
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from rich.console import Console
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.await_complete import AwaitComplete
 from textual.binding import Binding, BindingType
@@ -23,18 +22,21 @@ from textual.notifications import SeverityLevel
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.signal import Signal
+from textual.timer import Timer
 from textual.widgets import Input, TextArea
 
-from lilbee.app.services import get_services, peek_services, set_config_refresh
+from lilbee.app.services import (
+    follow_config_long_running,
+    get_services,
+    peek_services,
+    watch_pool,
+)
 from lilbee.app.settings import (
     SettingsUpdateResult,
-    adopt_external_changes,
     apply_settings_update,
     config_write_failure_message,
-    reset_for_provider_switch,
     reset_settings,
     setting_sources,
-    start_config_reading,
 )
 from lilbee.app.setup_state import chat_ready, embedding_ready
 from lilbee.app.themes import DARK_THEMES
@@ -48,6 +50,8 @@ from lilbee.cli.tui.color_compat import (
     resolve_term_program,
 )
 from lilbee.cli.tui.commands import LilbeeCommandProvider
+from lilbee.cli.tui.engine_mark import engine_variables
+from lilbee.cli.tui.pick_order import PickOrder
 from lilbee.cli.tui.screens.analyze_report import start_analysis
 from lilbee.cli.tui.screens.command_palette import LilbeeCommandPalette
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -58,10 +62,11 @@ from lilbee.config_meta import MODEL_ROLE_FIELDS
 from lilbee.core.config import cfg, load_warnings
 from lilbee.core.config.defaults import env_var_name
 from lilbee.core.config.enums import SettingSource
+from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.roles import WorkerRole
+from lilbee.providers.server_registry import ConfigReadError
 
 if TYPE_CHECKING:
-    from lilbee.app.services import Services
     from lilbee.cli.tui.screens.analyze_report import FinishedAnalysis
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.cli.tui.screens.settings import SettingsScreen
@@ -265,16 +270,19 @@ class LilbeeApp(App[None]):
         # so Footer / signal / worker wiring runs once per session.
         self._installed_screen_names: set[str] = set()
         self.settings_changed_signal: Signal[tuple[str, object]] = Signal(self, "settings_changed")
-        self._config_reading = start_config_reading()
-        # The app thread and the engine's retry thread both take config.toml changes.
-        self._config_lock = threading.Lock()
-        set_config_refresh(self.take_external_settings_now)
+        # The TUI runs until the user closes it and takes every key, a provider switch too.
+        self._config_follower = follow_config_long_running(frozenset(), keeper="the TUI")
+        self._config_follower.report_to(self._show_taken_settings_from_thread)
+        # The one check scheduled after a skipped in-place write; see _recheck_a_skipped_file.
+        self._settle_recheck: Timer | None = None
         self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
             self, "provider_availability_changed"
         )
         from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         self.task_bar = TaskBarController(self)
+        # One order for the model bar and Settings: both pick models for the same roles.
+        self.model_picks = PickOrder()
         self.last_analysis: FinishedAnalysis | None = None
 
     def notify(
@@ -304,6 +312,7 @@ class LilbeeApp(App[None]):
         variables = super().get_css_variables()
         variables["rail"] = "solid" if self._plain_glyphs else "tall"
         variables["rail-heavy"] = "heavy" if self._plain_glyphs else "thick"
+        variables.update(engine_variables(variables))
         return variables
 
     def get_line_filters(self) -> Sequence[LineFilter]:
@@ -328,8 +337,42 @@ class LilbeeApp(App[None]):
     # Production never sets it. See tests/_lilbee_app_test_host.py.
     _test_skip_auto_init: ClassVar[bool] = False
 
-    # Keys pressed while the startup gate showed; the chat prompt takes them on show.
-    type_ahead: str = ""
+    # Text typed while chat starts, kept for the chat prompt. None when nothing
+    # is kept: before the gate shows, and after the prompt took the text.
+    _type_ahead: list[str] | None = None
+
+    async def on_event(self, event: events.Event) -> None:
+        if not self._keep_for_the_prompt(event):
+            await super().on_event(event)
+
+    def _keep_for_the_prompt(self, event: events.Event) -> bool:
+        """Keep a typed key or a paste for the chat prompt while chat starts.
+
+        The app keeps the text as it reads the event, before it routes the
+        event to a screen. Chat replaces the gate in one step but focuses its
+        prompt some steps later, and a key routed in that gap reaches no input.
+        """
+        if self._type_ahead is None or event.is_forwarded:
+            return False
+        if isinstance(event, events.Key) and event.is_printable and event.character:
+            text = event.character
+        elif isinstance(event, events.Paste):
+            text = event.text
+        else:
+            return False
+        from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+        # The stack is empty while the app starts and after it stops.
+        top = self.screen_stack[-1] if self.screen_stack else None
+        if top is None or not (isinstance(top, StartupGate) or top is self.chat_screen()):
+            return False
+        self._type_ahead.append(text)
+        return True
+
+    def take_type_ahead(self) -> str:
+        """Return the text typed while chat started, and stop keeping more."""
+        typed, self._type_ahead = self._type_ahead or [], None
+        return "".join(typed)
 
     async def on_mount(self) -> None:
         # The app's own signal graph is part of being a working app, not
@@ -348,6 +391,7 @@ class LilbeeApp(App[None]):
         from lilbee.cli.tui.screens.startup_gate import StartupGate
 
         gate = StartupGate()
+        self._type_ahead = []
         # Awaited: the gate's boot worker treats an unmounted gate as "torn down",
         # so it must be mounted before start_boot can hand over.
         await self.push_screen(gate)
@@ -385,20 +429,27 @@ class LilbeeApp(App[None]):
             # Without chat the app has no home screen; exit loudly like the old
             # inline import did rather than stranding the user on the gate.
             log.exception("the chat screen failed to import")
-            call_from_thread(self, self._exit_on_chat_import_failure, str(exc))
+            call_from_thread(self, self._exit_without_chat, exc)
             return
         call_from_thread(self, self._install_chat_screen, gate)
 
-    def _exit_on_chat_import_failure(self, error: str) -> None:
-        """Leave the TUI with the import error where the user can read it."""
+    def _exit_without_chat(self, exc: Exception) -> None:
+        """Leave the TUI with the chat error where the user can read it."""
+        error = str(exc) or type(exc).__name__
         self.exit(return_code=1, message=msg.CHAT_STACK_FAILED.format(error=error))
 
     def _install_chat_screen(self, gate: StartupGate) -> None:
         """Install chat and start the gate's boot; runs once chat's modules exist."""
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        chat = ChatScreen()
-        self.install_screen(chat, name=_CHAT_SCREEN_NAME)
+        try:
+            self.install_screen(ChatScreen(), name=_CHAT_SCREEN_NAME)
+        except Exception as exc:
+            # The gate opens no view without chat, and the import worker's hop to
+            # this thread drops or hides an error raised here.
+            log.exception("the chat screen failed to install")
+            self._exit_without_chat(exc)
+            return
         gate.start_boot()
 
     def reveal_landing(self) -> None:
@@ -412,7 +463,7 @@ class LilbeeApp(App[None]):
             if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
                 self.switch_view(self._initial_view)
         else:
-            self.type_ahead = ""
+            self._type_ahead = None
             self.switch_view(msg.CATALOG_VIEW)
         # Cheap detection only: filesystem walk + hash compare. The user
         # initiates sync explicitly via S or the command palette.
@@ -442,9 +493,10 @@ class LilbeeApp(App[None]):
 
         Never call from the UI thread: building spawns the role servers. Two
         workers can reach here at once during boot; the listeners only add to
-        and discard from a set, so a double subscription changes nothing.
+        and discard from a set, and a second subscription is ignored.
         """
-        self._wire_worker_pool_notifications(get_services())
+        get_services()
+        self._wire_worker_pool_notifications()
 
     def _apply_readiness(self, chat: bool, embedding: bool) -> None:
         """Record the per-role readiness answers."""
@@ -461,7 +513,7 @@ class LilbeeApp(App[None]):
         if key in MODEL_ROLE_FIELDS:
             self.refresh_readiness()
 
-    def _wire_worker_pool_notifications(self, services: Services) -> None:
+    def _wire_worker_pool_notifications(self) -> None:
         """Surface worker spawn lifecycle in the bottom TaskBar.
 
         Worker spawns happen on the pool runtime thread, not the TUI's main
@@ -470,17 +522,15 @@ class LilbeeApp(App[None]):
         in-flight roles instead of one toast per role; the chat surface is
         for user content, not implementation detail.
 
-        Takes the container instead of reaching for one: reaching for it builds
-        it, which is ``adopt_services``' job and never the UI thread's.
+        The watch outlives a services reset, which builds a new provider.
         """
+        watch_pool(on_spawning=self._on_worker_spawning, on_spawned=self._on_worker_spawned)
 
-        def _on_spawning(role: WorkerRole) -> None:
-            self.call_from_thread(self.task_bar.mark_role_spawning, role.value)
+    def _on_worker_spawning(self, role: WorkerRole) -> None:
+        self.call_from_thread(self.task_bar.mark_role_spawning, role.value)
 
-        def _on_spawned(role: WorkerRole) -> None:
-            self.call_from_thread(self.task_bar.mark_role_spawned, role.value)
-
-        services.add_pool_listener(on_spawning=_on_spawning, on_spawned=_on_spawned)
+    def _on_worker_spawned(self, role: WorkerRole) -> None:
+        self.call_from_thread(self.task_bar.mark_role_spawned, role.value)
 
     def canonicalize_persisted_models(self) -> None:
         """Swap stale persisted refs to a working fallback, persist, and log once.
@@ -546,8 +596,8 @@ class LilbeeApp(App[None]):
 
             # A rejected swap (validation or disk error) must not be fatal at startup.
             try:
-                apply_settings_update({field: canon.effective})
-            except (ValueError, OSError):
+                result = apply_settings_update({field: canon.effective})
+            except (ValueError, OSError, ConfigReadError):
                 log.warning(
                     msg.MODEL_FALLBACK_FAILED.format(
                         label=label,
@@ -558,6 +608,8 @@ class LilbeeApp(App[None]):
                     exc_info=True,
                 )
                 continue
+            for warning in result.warnings:
+                self._warn_with_toast(warning)
             if not canon.original:
                 # Adopting an installed model into an unconfigured role is the
                 # expected path (models pulled before the TUI ever ran), not a
@@ -643,11 +695,15 @@ class LilbeeApp(App[None]):
             return None
         try:
             result = apply_settings_update({key: value})
-        except (ValueError, OSError, RuntimeError) as exc:  # RuntimeError: a store error
+        except FileLockUnavailableError as exc:
+            self.notify(config_write_failure_message(exc), severity="error")
+            return None
+        # RuntimeError: a store error
+        except (ValueError, OSError, RuntimeError, ConfigReadError) as exc:
             self.notify(msg.MODEL_ASSIGN_REJECTED.format(error=exc), severity="error")
             return None
         self.notify_warnings(result.warnings)
-        self.settings_changed_signal.publish((key, getattr(cfg, key)))
+        self.publish_settings([key])
         return result
 
     def notify_warnings(self, warnings: Sequence[str]) -> None:
@@ -659,9 +715,10 @@ class LilbeeApp(App[None]):
         """Apply a writable / model-role setting through the boundary, then fan out to the UI.
 
         Returns whether the value was saved. A failed config write (a read-only file, a full
-        disk) toasts here, once, with the text the CLI, HTTP and MCP surfaces show, and
-        returns False so the caller does not record the value as saved. With *ask_rebuild*
-        False the caller asks about a rebuild itself; the wiki wipe question still comes.
+        disk, a config lock that cannot be taken) toasts here, once, with the text the CLI,
+        HTTP and MCP surfaces show, and returns False so the caller does not record the value
+        as saved. With *ask_rebuild* False the caller asks about a rebuild itself; the wiki
+        wipe question still comes.
 
         Raises ``ValueError`` for keys outside ``WRITABLE_CONFIG_FIELDS | MODEL_ROLE_FIELDS``
         or values rejected by pydantic validation. Callers either catch and toast or let it
@@ -675,6 +732,9 @@ class LilbeeApp(App[None]):
             result = apply_settings_update({key: value})
         except OSError as exc:
             self.notify(config_write_failure_message(exc), severity="error")
+            return False
+        except ConfigReadError as exc:
+            self.notify(str(exc), severity="error")
             return False
         self.notify_warnings(result.warnings)
         self.publish_settings([key])
@@ -706,37 +766,35 @@ class LilbeeApp(App[None]):
         state that lives outside cfg, such as the profile name. An editor the user is
         typing in keeps its text; saving it writes that value over the other process's.
         """
-        changed, result = self._take_external_changes()
+        changed, result = self._config_follower.check()
         if result is not None:
             self._show_taken_settings(result)
+        self._recheck_a_skipped_file()
         return changed
 
-    def take_external_settings_now(self) -> None:
-        """Take config.toml changes from the thread the engine retries on.
+    def _recheck_a_skipped_file(self) -> None:
+        """Check once more after the quiet window when the check skipped a young in-place write.
 
-        The settings land on cfg in the calling thread. The app thread shows them;
-        on the app thread itself the take already happened and nothing is shown.
+        The TUI checks only on events, so without this a whole save made just before an
+        event stays unseen until the next event. Every event reader calls
+        ``adopt_external_settings``, so this is the one place that makes a skipped check
+        always retried.
         """
-        try:
-            _changed, result = self._take_external_changes()
-        except Exception:
-            log.exception("Could not take the changes in config.toml; the retry runs as before.")
-            return
-        if result is not None:
-            call_from_thread(self, self._show_taken_settings, result)
+        delay = self._config_follower.recheck_delay_s()
+        if delay > 0 and self._settle_recheck is None:
+            self._settle_recheck = self.set_timer(delay, self._take_after_the_quiet_window)
 
-    def _take_external_changes(self) -> tuple[bool, SettingsUpdateResult | None]:
-        """Take the outside changes under the lock every take shares; stop the fleet after it.
+    def _take_after_the_quiet_window(self) -> None:
+        from lilbee.cli.tui.screens.settings import SettingsScreen
 
-        The reading moves with the values under the lock, so a take that waited finds the
-        file taken. A provider switch stops the fleet, seconds long, once the lock is free.
-        """
-        with self._config_lock:
-            before = self._config_reading
-            self._config_reading, result = adopt_external_changes(before, reset_providers=False)
-            changed = self._config_reading is not before
-        reset_for_provider_switch(result)
-        return changed, result
+        self._settle_recheck = None
+        changed = self.adopt_external_settings()
+        if changed and isinstance(self.screen, SettingsScreen):
+            self.screen.reload_profile()
+
+    def _show_taken_settings_from_thread(self, result: SettingsUpdateResult) -> None:
+        """Show what the engine's retry took; the settings already landed on cfg in its thread."""
+        call_from_thread(self, self._show_taken_settings, result)
 
     def _show_taken_settings(self, result: SettingsUpdateResult) -> None:
         self.notify_warnings(result.warnings)
@@ -747,9 +805,15 @@ class LilbeeApp(App[None]):
         self.adopt_external_settings()
 
     def publish_settings(self, keys: Iterable[str]) -> None:
-        """Apply a changed theme and tell subscribers each of *keys* now holds its cfg value."""
+        """Apply a changed theme and tell subscribers each of *keys* now holds its cfg value.
+
+        Every change of a role's model comes through here, so it takes the next pick
+        number of the role: a pick that still waits on its engine loses to it.
+        """
         for key in keys:
             normalized = getattr(cfg, key)
+            if key in MODEL_ROLE_FIELDS:
+                self.model_picks.take(key, normalized or "")
             if (
                 key == "theme"
                 and isinstance(normalized, str)
@@ -784,6 +848,15 @@ class LilbeeApp(App[None]):
         except ValueError:
             self._theme_index = 0
 
+    async def on_unmount(self) -> None:
+        """Wait for the task-bar workers to return before the app is gone.
+
+        A worker past its task has left the worker map, so ``stop_all`` does not join it, and
+        a worker inside its task may be about to leave. The wait keeps this loop running, so
+        each worker's calls into the app complete and its thread returns.
+        """
+        await self.task_bar.wait_for_exit()
+
     async def action_quit(self) -> None:
         """Context-aware Ctrl+C: cancel the foreground operation, else quit.
 
@@ -806,12 +879,22 @@ class LilbeeApp(App[None]):
 
     def _view_is_refused(self, view_name: str) -> bool:
         """True when *view_name* cannot be entered now, having handled the refusal."""
+        if self._chat_is_loading():
+            return True
         if view_name == msg.SESSIONS_VIEW and not cfg.sessions_enabled:
             # The tab stays visible so the feature is discoverable, but opening it
             # while off shows why rather than an empty list.
             self.notify_sessions_disabled()
             return True
         return view_name != msg.DEFAULT_VIEW and get_views().get(view_name) is None
+
+    def _chat_is_loading(self) -> bool:
+        """True while the startup gate waits for chat, the view every other one returns to."""
+        from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+        return not self.is_screen_installed(_CHAT_SCREEN_NAME) and any(
+            isinstance(screen, StartupGate) for screen in self.screen_stack
+        )
 
     def switch_view(self, view_name: str) -> None:
         """Switch to a named view, installing each screen at most once.
@@ -929,8 +1012,9 @@ class LilbeeApp(App[None]):
         # priority bindings too), so `t`/`m` type literals there and the guard
         # exists purely to keep the footer honest.
         # run_sync (S) is a priority binding. Live at the gate, it swaps chat in
-        # under the gate, which then skips its handover. Off, the gate keeps the
-        # key as typed text.
+        # under the gate, which then skips its handover. A key typed at the gate
+        # is kept for the prompt before any binding sees it, so this guard stops
+        # the other ways to run the action there.
         if (action == "run_sync" and self._gate_is_showing()) or (
             action in ("open_tasks", "open_catalog", "open_chat")
             and isinstance(self.focused, (Input, TextArea))
@@ -938,9 +1022,10 @@ class LilbeeApp(App[None]):
             return False
         # Nothing to jump to when Chat is already the active view. [ and ] are
         # priority bindings, which run before a modal screen's own handling, so
-        # over a dialog they would switch views and close it with no answer.
+        # over a dialog they would switch views and close it with no answer. While
+        # chat loads no view opens.
         if (action == "open_chat" and self.active_view == msg.DEFAULT_VIEW) or (
-            action in ("nav_prev", "nav_next") and self.screen.is_modal
+            action in ("nav_prev", "nav_next") and (self.screen.is_modal or self._chat_is_loading())
         ):
             return False
         # False, not None: Textual drops a False binding from the row entirely
@@ -1118,8 +1203,11 @@ class LilbeeApp(App[None]):
         except KeyError:
             return None
 
-    def action_run_sync(self) -> None:
+    def action_run_sync(self, retry_skipped: bool = False) -> None:
         """Trigger an explicit document sync from any screen (S key).
+
+        With *retry_skipped*, the sync also retries failed files and reads
+        partly read files again.
 
         The TaskBar hint is rendered globally, so the trigger must work
         everywhere. Routes to the registered ChatScreen which owns the
@@ -1129,7 +1217,7 @@ class LilbeeApp(App[None]):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         if isinstance(self.screen, ChatScreen):
-            self.screen.run_sync()
+            self.screen.run_sync(retry_skipped=retry_skipped)
             return
         chat = self.chat_screen()
         if chat is None:
@@ -1142,7 +1230,7 @@ class LilbeeApp(App[None]):
             if not self.screen_stack:
                 return  # the app is tearing down; nothing left to sync
             if isinstance(self.screen, ChatScreen):
-                chat.run_sync()
+                chat.run_sync(retry_skipped=retry_skipped)
                 return
             if attempts > 0:
                 self.switch_view(msg.DEFAULT_VIEW)
@@ -1158,7 +1246,7 @@ class LilbeeApp(App[None]):
         screen = self.screen
         # switch_view drops the request while an earlier switch is still settling
         if isinstance(screen, SettingsScreen):
-            screen.call_after_refresh(screen.show_profile_tab)
+            screen.request_profile_tab()
 
     def start_analyze(self) -> None:
         """Queue analyze of the indexed documents; its report opens when it finishes."""

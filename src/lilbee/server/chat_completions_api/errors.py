@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.server_registry import ConfigReadError
 from lilbee.server.chat_dispatch.dispatch import (
     ModelDoesNotSupportToolsError,
     ModelNotFoundError,
 )
+from lilbee.server.provider_status import retry_after_headers
+from lilbee.server.route_names import name_routes
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +29,7 @@ class CompletionsErrorCode(StrEnum):
     INVALID_API_KEY = "invalid_api_key"
     RATE_LIMIT_EXCEEDED = "rate_limit_exceeded"
     INTERNAL_ERROR = "internal_error"
+    ENGINE_MISSING = "engine_missing"
 
 
 _FALLBACK_ERROR_TYPE = "invalid_request_error"
@@ -38,6 +42,7 @@ COMPLETIONS_ERROR_TYPES: dict[CompletionsErrorCode, str] = {
     CompletionsErrorCode.INVALID_API_KEY: "authentication_error",
     CompletionsErrorCode.RATE_LIMIT_EXCEEDED: "rate_limit_error",
     CompletionsErrorCode.INTERNAL_ERROR: "api_error",
+    CompletionsErrorCode.ENGINE_MISSING: "api_error",
 }
 
 
@@ -61,6 +66,7 @@ class ClassifiedError:
     http_status: int
     code: CompletionsErrorCode
     message: str
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 # UNKNOWN stays unmapped on purpose: an unclassified failure keeps the callers'
@@ -77,6 +83,14 @@ _PROVIDER_KIND_CLASSIFICATIONS: dict[ProviderErrorKind, tuple[int, CompletionsEr
     ProviderErrorKind.PORT_CONFLICT: (503, CompletionsErrorCode.INTERNAL_ERROR),
     # Passes through: the text names the model and the fix, and holds no engine path.
     ProviderErrorKind.MODEL_FILE_BROKEN: (503, CompletionsErrorCode.INTERNAL_ERROR),
+    ProviderErrorKind.CPU_UNSUPPORTED: (503, CompletionsErrorCode.INTERNAL_ERROR),
+    ProviderErrorKind.MISSING_LIBRARY: (503, CompletionsErrorCode.INTERNAL_ERROR),
+    ProviderErrorKind.STARTING: (503, CompletionsErrorCode.INTERNAL_ERROR),
+    # Passes through: the text names the model and says it did not finish starting.
+    ProviderErrorKind.WARM_TIMEOUT: (503, CompletionsErrorCode.INTERNAL_ERROR),
+    # The text names the missing engine and how to install it. No retry hint: the
+    # user has to install it.
+    ProviderErrorKind.ENGINE_MISSING: (503, CompletionsErrorCode.ENGINE_MISSING),
 }
 
 
@@ -90,6 +104,8 @@ _INFRASTRUCTURE_KINDS = frozenset(
         ProviderErrorKind.SERVER,
         ProviderErrorKind.CAPACITY,
         ProviderErrorKind.PORT_CONFLICT,
+        ProviderErrorKind.CPU_UNSUPPORTED,
+        ProviderErrorKind.MISSING_LIBRARY,
     }
 )
 
@@ -104,15 +120,19 @@ def classify_provider_error(exc: BaseException) -> ClassifiedError | None:
     generic fallback (internal_error 500 / service-unavailable 503).
     """
     if isinstance(exc, ModelNotFoundError):
-        return ClassifiedError(404, CompletionsErrorCode.MODEL_NOT_FOUND, str(exc))
+        return ClassifiedError(404, CompletionsErrorCode.MODEL_NOT_FOUND, name_routes(str(exc)))
     if isinstance(exc, ModelDoesNotSupportToolsError):
         return ClassifiedError(400, CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc))
+    if isinstance(exc, ConfigReadError):
+        return ClassifiedError(503, CompletionsErrorCode.INTERNAL_ERROR, str(exc))
     if isinstance(exc, ProviderError):
         mapped = _PROVIDER_KIND_CLASSIFICATIONS.get(exc.kind)
         if mapped is not None:
             status, code = mapped
             if exc.kind in _INFRASTRUCTURE_KINDS:
                 log.warning("Chat backend failure (%s)", exc.kind, exc_info=exc)
-                return ClassifiedError(status, code, _BACKEND_FAILURE_MESSAGE)
-            return ClassifiedError(status, code, str(exc))
+                message = _BACKEND_FAILURE_MESSAGE
+            else:
+                message = name_routes(str(exc))
+            return ClassifiedError(status, code, message, retry_after_headers(exc.kind))
     return None

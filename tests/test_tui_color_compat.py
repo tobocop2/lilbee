@@ -364,6 +364,7 @@ def _screen_kwargs(cls_name: str) -> dict:
         "ModelPickerModal": {
             "scope": "chat",
             "options": [ModelOption("Qwen3 0.6B", "Qwen/Qwen3-0.6B-GGUF")],
+            "pick_later": lambda _ref: None,
         },
     }.get(cls_name, {})
 
@@ -445,6 +446,8 @@ class TestNoPartialBlockBorders:
 
         from textual.widgets import TabbedContent, TabPane
 
+        from lilbee.cli.tui.screens.settings import _LazyGroupBody
+        from tests._async_wait import subtree_mounted, wait_until
         from tests._lilbee_app_test_host import LilbeeAppHost, ready_services
 
         offenders: list[str] = []
@@ -457,9 +460,13 @@ class TestNoPartialBlockBorders:
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
                     cls = getattr(importlib.import_module(module), cls_name)
-                    app.push_screen(cls(**_screen_kwargs(cls_name)))
-                    for _ in range(4):
-                        await pilot.pause()
+                    screen = cls(**_screen_kwargs(cls_name))
+                    app.push_screen(screen)
+                    assert await wait_until(
+                        pilot,
+                        lambda: app.screen is screen and subtree_mounted(screen),
+                        timeout=30.0,
+                    ), f"{cls_name} never finished mounting"
 
                     assert list(app.screen.query("*")), f"{cls_name} mounted no widgets to audit"
 
@@ -467,8 +474,18 @@ class TestNoPartialBlockBorders:
                     panes = [pane.id for pane in app.screen.query(TabPane)]
                     for pane_id in panes:
                         tabbed[0].active = pane_id
-                        for _ in range(3):
-                            await pilot.pause()
+                        pane = app.screen.query_one(f"#{pane_id}", TabPane)
+
+                        def _pane_filled(pane: TabPane = pane, pane_id: str = pane_id) -> bool:
+                            return (
+                                tabbed[0].active == pane_id
+                                and all(body.populated for body in pane.query(_LazyGroupBody))
+                                and subtree_mounted(pane)
+                            )
+
+                        assert await wait_until(pilot, _pane_filled, timeout=30.0), (
+                            f"{pane_id} never filled"
+                        )
                         offenders += self._offenders(app.screen)
                     if not panes:
                         offenders = self._offenders(app.screen)
@@ -612,3 +629,30 @@ class TestNoEmoji:
                 icons = list(app.screen.query(SearchIcon))
                 assert icons, "the palette no longer mounts a SearchIcon"
                 assert [icon.icon for icon in icons] == [msg.COMMAND_PALETTE_ICON]
+
+
+@pytest.mark.xdist_group("block_bar_leak")
+class TestBlockBarAnswerDoesNotLeak:
+    """The block bar answer is cached for the process; a fake terminal must not outlive its test.
+
+    The two tests run in this order in one worker: the first caches the answer
+    of a fake terminal, the second reads it back. The group mark keeps both in
+    one xdist worker.
+    """
+
+    def test_first_test_fakes_a_terminal(self):
+        from lilbee.cli.tui import color_compat
+
+        real = color_compat.draws_block_bars.__wrapped__()
+        fake_system = "standard" if real else "truecolor"
+        with (
+            mock.patch("rich.console.Console") as console,
+            mock.patch.object(color_compat, "resolve_term_program", return_value=None),
+        ):
+            console.return_value.color_system = fake_system
+            assert color_compat.draws_block_bars() is (not real)
+
+    def test_second_test_sees_the_real_terminal(self):
+        from lilbee.cli.tui import color_compat
+
+        assert color_compat.draws_block_bars() is color_compat.draws_block_bars.__wrapped__()

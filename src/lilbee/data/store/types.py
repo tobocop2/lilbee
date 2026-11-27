@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
-from typing import NamedTuple, NotRequired, TypedDict
+from typing import Final, NamedTuple, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -48,23 +48,31 @@ class SourceType(StrEnum):
 
 
 class HeldOut(StrEnum):
-    """Why a ``_sources`` row holds its path out of later syncs.
+    """Why a ``_sources`` row records that its path is not indexed at its content.
 
     ``REMOVED``: the user removed it; the row also keeps the path a citation names.
     ``FAILED``: ingestion produced nothing at that content; a row that holds a
     document keeps it listed.
+    ``RETRY``: the model engine or the index write failed on it; the next sync
+    tries it again, and a row that holds a document keeps it listed.
     """
 
     FAILED = "failed"
     REMOVED = "removed"
+    RETRY = "retry"
+
+
+# The records whose row keeps the document it holds, and that count as a failed ingest.
+INGEST_FAILURES = frozenset({HeldOut.FAILED, HeldOut.RETRY})
 
 
 class HeldRecord(NamedTuple):
-    """Why a sync holds a path out, and the content hash it holds it out at."""
+    """Why a sync holds a path out, the content hash and the settings it holds it out at."""
 
     kind: HeldOut
     file_hash: str
     reason: str
+    inputs: str = ""
 
 
 # The reason a removal records, shown with the held-out file.
@@ -82,6 +90,23 @@ class SourceMeta(NamedTuple):
     title: str = ""
     authors: str = ""
     created_at: str = ""
+
+
+@dataclass(frozen=True)
+class FailedPage:
+    """One page whose OCR failed; ``recovered`` when the page still has other content."""
+
+    page: int
+    error: str
+    recovered: bool
+
+
+class FailedPageRow(TypedDict):
+    """A ``FailedPage`` as the ``_sources`` table stores it."""
+
+    page: int
+    error: str
+    recovered: bool
 
 
 class ChunkWrite(NamedTuple):
@@ -102,6 +127,8 @@ class ChunkWrite(NamedTuple):
     page_texts: list[dict] | None = None
     source_type: SourceType = SourceType.DOCUMENT
     meta: SourceMeta | None = None
+    # The pages whose OCR failed; empty when every page was read.
+    ocr_page_failures: list[FailedPage] | None = None
 
 
 class ChunkType(StrEnum):
@@ -123,15 +150,10 @@ class ChunkType(StrEnum):
 # 2: nomic-embed document prefixes are stamped at ingest (see
 # lilbee.retrieval.embedding_profiles doc_prefix_since).
 # 3: every table keys a source by ``source_id``; ``_sources`` alone holds its path.
-META_SCHEMA_VERSION = 3
-
-# Always-true predicate used to clear the single-row ``_meta`` table before re-insert.
-# Lance's ``Table.delete`` requires a SQL where clause; this matches every row without
-# coupling the deletion to any specific column's value domain.
-META_DELETE_ALL_PREDICATE = "schema_version IS NOT NULL"
-
-# Same, for the single-row ``_entity_schema`` table.
-ENTITY_SCHEMA_DELETE_ALL_PREDICATE = "updated_at IS NOT NULL"
+# 4: the meta row holds canary vectors (see lilbee.data.store.canary).
+# 5: the meta row holds the chunk settings the library's chunks were cut with.
+KEYED_SCHEMA_VERSION = 3
+META_SCHEMA_VERSION = 5
 
 
 class EntitySchemaState(TypedDict):
@@ -252,6 +274,11 @@ class SourceRecord(TypedDict):
     title: NotRequired[str | None]
     authors: NotRequired[str | None]
     created_at: NotRequired[str | None]
+    # The pages whose OCR failed, read through ``failed_pages``; absent or None
+    # when every page was read.
+    ocr_page_failures: NotRequired[list[FailedPageRow] | None]
+    # Whether ``ocr_page_failures`` holds a page; an index serves the status query.
+    partly_read: NotRequired[bool]
 
 
 class SourceHead(TypedDict):
@@ -271,7 +298,15 @@ class SourceSummary:
     total_chunks: int
     kinds: dict[str, int]
     newest: list[SourceHead]
+    partly_read: int = 0
+    """How many of the sources have a page whose OCR failed."""
 
+
+FAILED_PAGES_COLUMN: Final = "ocr_page_failures"
+"""The ``_sources`` column of the pages whose OCR failed."""
+
+PARTLY_READ_COLUMN: Final = "partly_read"
+"""The ``_sources`` column that says whether a row has a page whose OCR failed."""
 
 DOCUMENTS_PAGE_DEFAULT = 50
 """Rows in one page of the document listing when the caller names no limit."""
@@ -295,6 +330,11 @@ class SourceStat(NamedTuple):
     size_bytes: int
     mtime_ns: int
     captured_ns: int = SOURCE_STAT_UNKNOWN
+
+
+def failed_pages(record: SourceRecord) -> list[FailedPage]:
+    """The pages of *record* whose OCR failed; empty when the column is absent or NULL."""
+    return [FailedPage(**row) for row in record.get(FAILED_PAGES_COLUMN) or []]
 
 
 def source_stat(record: SourceRecord) -> SourceStat | None:
@@ -526,15 +566,44 @@ class EmbeddingModelMismatchError(RuntimeError):
             return (
                 f"This index was built with embedding model '{self.persisted_model}', "
                 f"but lilbee is configured to use '{self.current_model}'. Configure lilbee "
-                f"to use '{self.persisted_model}' to search this index, or rebuild it under "
-                f"'{self.current_model}'."
+                f"to use '{self.persisted_model}' to search this index, or run `lilbee "
+                f"rebuild` to rebuild it under '{self.current_model}'."
             )
         return (
             f"This index was built with embedding model '{self.persisted_model}' "
             f"(dim {self.persisted_dim}), which differs from the current "
-            f"'{self.current_model}' (dim {self.current_dim}). The dimensions differ, "
-            f"so rebuild the index under '{self.current_model}' to use it."
+            f"'{self.current_model}' (dim {self.current_dim}). The dimensions differ. "
+            f"Run `lilbee rebuild` to rebuild the index under '{self.current_model}'."
         )
+
+
+class EmbeddingEngineChangedError(EmbeddingModelMismatchError):
+    """Raised when the configured embedder gives vectors that differ from the stored ones."""
+
+    def __init__(self, *, model: str, dim: int, distance: float, verified: bool) -> None:
+        self.distance = distance
+        self.verified = verified
+        super().__init__(
+            persisted_model=model, persisted_dim=dim, current_model=model, current_dim=dim
+        )
+
+    @property
+    def dims_match(self) -> bool:
+        """An engine change is never fixed by switching the embedder name."""
+        return False
+
+    def _build_message(self) -> str:
+        message = (
+            "The embedding engine now gives different vectors than the ones stored in this "
+            f"index (distance {self.distance:.3f}), so search and ingest stop. Rebuild the "
+            "index with `lilbee rebuild`, or switch back to the earlier engine."
+        )
+        if not self.verified:
+            message += (
+                " This index has no verified baseline: it was made before this check "
+                "existed, so the engine that made it is not known."
+            )
+        return message
 
 
 @dataclass

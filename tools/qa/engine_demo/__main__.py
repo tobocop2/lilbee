@@ -1,0 +1,225 @@
+"""Run engines through the lilbee CLI, or judge a transcript a run wrote.
+
+    python -m tools.qa.engine_demo run --engine mistral.rs --backend cpu --out mistral-rs-cpu.json
+    python -m tools.qa.engine_demo run --engine llama.cpp --role-engine embed=tei \\
+        --backend cpu --out mixed.json
+    python -m tools.qa.engine_demo report mistral-rs-cpu.json
+
+``run`` records and exits 0 when it wrote a transcript, whatever the engine did;
+``report`` judges it and exits 1 on any failure.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shlex
+import socket
+import sys
+import tempfile
+from collections.abc import Mapping
+from pathlib import Path
+
+from tools.qa.engine_demo.observe import DEFAULT_QUESTION, RunPlan, observe
+from tools.qa.engine_demo.oracles import Transcript, judge
+from tools.qa.engine_demo.scrub import scrub_recording
+
+from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.fleet.engines.choice import ADAPTERS
+from lilbee.providers.roles import WorkerRole
+
+# The model each role runs when --model does not name one.
+DEFAULT_MODELS = {
+    WorkerRole.CHAT: "Qwen/Qwen3-4B-GGUF",
+    WorkerRole.EMBED: "Qwen/Qwen3-Embedding-0.6B-GGUF",
+    WorkerRole.RERANK: "gpustack/bge-reranker-v2-m3-GGUF",
+    WorkerRole.VISION: "ggml-org/SmolVLM-256M-Instruct-GGUF",
+}
+# An engine that loads a format other than GGUF runs that form of its models; the
+# "#<format>" suffix is how a pull picks it. Every repo is public.
+ENGINE_MODELS: dict[str, dict[WorkerRole, str]] = {
+    EngineName.TEI: {
+        WorkerRole.EMBED: "Qwen/Qwen3-Embedding-0.6B#safetensors",
+        WorkerRole.RERANK: "BAAI/bge-reranker-v2-m3#safetensors",
+    },
+    EngineName.MISTRAL: {
+        WorkerRole.EMBED: "Qwen/Qwen3-Embedding-0.6B#safetensors",
+        WorkerRole.VISION: "HuggingFaceTB/SmolVLM-256M-Instruct#safetensors",
+    },
+    EngineName.MLX: {
+        # 4B, the size the GGUF default uses: the 0.6B model drops the [1] marker on some runs.
+        # A runner with about 7 GB refuses 4B at the default context: set LILBEE_NUM_CTX=4096.
+        WorkerRole.CHAT: "mlx-community/Qwen3-4B-4bit#mlx",
+        WorkerRole.EMBED: "mlx-community/Qwen3-Embedding-0.6B-8bit#mlx",
+        WorkerRole.RERANK: "mlx-community/Qwen3-Reranker-0.6B-4bit#mlx",
+    },
+    EngineName.OVMS: {
+        WorkerRole.CHAT: "OpenVINO/Qwen3-0.6B-int4-ov#openvino",
+        WorkerRole.EMBED: "OpenVINO/bge-base-en-v1.5-int8-ov#openvino",
+        WorkerRole.RERANK: "OpenVINO/bge-reranker-base-int8-ov#openvino",
+        WorkerRole.VISION: "OpenVINO/InternVL2-1B-int4-ov#openvino",
+    },
+    EngineName.LEMONADE: {
+        WorkerRole.CHAT: "qwen3:0.6b#xdna",
+        WorkerRole.EMBED: "embed-gemma:300m#xdna",
+    },
+}
+# Vision is left out: it needs --image-pdf, so a run names it.
+_DEFAULT_ROLES = (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK)
+
+
+def default_models(engines: Mapping[WorkerRole, str]) -> dict[WorkerRole, str]:
+    """The model of each role for its engine: the format it loads where that is not GGUF."""
+    return {
+        role: ENGINE_MODELS.get(engine, {}).get(role, DEFAULT_MODELS[role])
+        for role, engine in engines.items()
+    }
+
+
+def served_roles(engine: str) -> frozenset[WorkerRole] | None:
+    """The roles the adapter of *engine* serves, or None when no adapter has that name."""
+    adapter = next((a for name, a in ADAPTERS.items() if name == engine), None)
+    return None if adapter is None else frozenset(adapter.served_roles)
+
+
+def _role_value(value: str, what: str) -> tuple[WorkerRole, str]:
+    role, _, rest = value.partition("=")
+    if role not in list(WorkerRole) or not rest:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} must be ROLE={what}, with ROLE one of {', '.join(WorkerRole)}"
+        )
+    return WorkerRole(role), rest
+
+
+def _role_model(value: str) -> tuple[WorkerRole, str]:
+    return _role_value(value, "REF")
+
+
+def _role_engine(value: str) -> tuple[WorkerRole, str]:
+    return _role_value(value, "ENGINE")
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="engine_demo", description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    run = commands.add_parser("run", help="run one engine and write a transcript")
+    run.add_argument(
+        "--engine",
+        required=True,
+        help="engine name, as lilbee engine list shows it; it runs every role that "
+        "--role-engine does not move",
+    )
+    run.add_argument(
+        "--role-engine",
+        action="append",
+        default=[],
+        type=_role_engine,
+        metavar="ROLE=ENGINE",
+        help="engine for one role, in place of --engine; repeat it for a mixed-engine run",
+    )
+    run.add_argument("--backend", required=True, help="backend of the install, such as cpu")
+    run.add_argument("--out", required=True, type=Path, help="transcript file to write")
+    run.add_argument("--cli", default="lilbee", help="command that starts lilbee")
+    run.add_argument(
+        "--roles",
+        nargs="+",
+        type=WorkerRole,
+        choices=list(WorkerRole),
+        help="roles the engine claims; the default is every role of chat, embed and rerank "
+        "that the engine serves",
+    )
+    run.add_argument(
+        "--model",
+        action="append",
+        default=[],
+        type=_role_model,
+        metavar="ROLE=REF",
+        help="model for a claimed role, in place of the default",
+    )
+    run.add_argument("--image-pdf", type=Path, help="image-only PDF; the vision role needs it")
+    run.add_argument("--question", default=DEFAULT_QUESTION, help="question for ask and chat")
+    run.add_argument("--work-dir", type=Path, help="folder for the fresh data folder of this run")
+    report = commands.add_parser("report", help="judge a transcript")
+    report.add_argument("transcript", type=Path)
+    return parser
+
+
+def _serves(engine: str, role: WorkerRole) -> bool:
+    """The adapter of *engine* serves *role*, or no adapter has that name to say it does not."""
+    served = served_roles(engine)
+    return served is None or role in served
+
+
+def _planned_engines(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> dict[WorkerRole, str]:
+    """The engine of each role to run: those named, or the default roles their engine serves."""
+    requested = args.roles or list(_DEFAULT_ROLES)
+    engines = {role: args.engine for role in requested}
+    for role, engine in args.role_engine:
+        if role not in engines:
+            parser.error(f"--role-engine names {role}, which the run does not claim")
+        engines[role] = engine
+    unserved = [role for role, engine in engines.items() if not _serves(engine, role)]
+    if args.roles:
+        if unserved:
+            parser.error("; ".join(f"{engines[r]} does not serve {r}" for r in unserved))
+        return engines
+    if unserved:
+        print(f"roles skipped: {', '.join(unserved)} (their engine does not serve them)")
+    engines = {role: engine for role, engine in engines.items() if role not in unserved}
+    if not engines:
+        parser.error("no engine serves any default role: pass --roles")
+    return engines
+
+
+def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    engines = _planned_engines(parser, args)
+    models = default_models(engines)
+    for role, ref in args.model:
+        if role not in models:
+            parser.error(f"--model names {role}, which --roles does not claim")
+        models[role] = ref
+    try:
+        plan = RunPlan(
+            cli=tuple(shlex.split(args.cli)),
+            engines=engines,
+            backend=args.backend,
+            models=models,
+            image_pdf=args.image_pdf,
+            question=args.question,
+        )
+    except ValueError as exc:
+        parser.error(f"{exc}: pass --image-pdf")
+    run_dir = Path(tempfile.mkdtemp(prefix="engine-demo-", dir=args.work_dir))
+    transcript = observe(plan, run_dir)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    scrubbed = scrub_recording(transcript.to_json(), socket.gethostname())
+    args.out.write_text(json.dumps(scrubbed, indent=2) + "\n", encoding="utf-8")
+    print(f"run folder: {run_dir}")
+    print(f"transcript: {args.out}")
+    return 0
+
+
+def _report(args: argparse.Namespace) -> int:
+    try:
+        transcript = Transcript.from_json(json.loads(args.transcript.read_text(encoding="utf-8")))
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"cannot read {args.transcript}: {exc}") from exc
+    failures = judge(transcript)
+    builds = ", ".join(f"{engine} {pin}" for engine, pin in transcript.engines.items())
+    label = f"{builds} on {transcript.backend}"
+    print(f"{'FAIL' if failures else 'PASS'} {label}")
+    for failure in failures:
+        print(f"  {failure.rule}: {failure.detail}")
+    return 1 if failures else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _parser()
+    args = parser.parse_args(argv)
+    return _run(parser, args) if args.command == "run" else _report(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from lilbee.catalog.refs import GGUF_SUFFIX, NATIVE_GGUF_REF_MIN_SLASHES
-from lilbee.catalog.types import ModelSource
+from lilbee.catalog.refs import canonical_ref, is_gguf_filename, is_native_gguf_shape, model_format
+from lilbee.catalog.types import ModelFormat, ModelSource
 from lilbee.providers.base import (
     ChosenSeed,
     ProviderError,
@@ -20,29 +20,14 @@ from lilbee.providers.base import (
     filter_options,
     normalize_generation_options,
 )
-from lilbee.providers.local_servers import (
-    LOCAL_SERVER_KEYS,
-    local_server_for_key,
-    local_server_for_label,
+from lilbee.providers.local_servers import local_server_for_key, local_server_for_label
+from lilbee.providers.server_registry import (
+    API_PROVIDERS,
+    BUILTIN_PREFIXES,
+    LOCAL_PROVIDER,
+    route_for,
 )
 
-_API_PROVIDERS = frozenset(
-    {
-        "openrouter",
-        "gemini",
-        "anthropic",
-        "openai",
-        "mistral",
-        "deepseek",
-    }
-)
-
-# All provider prefixes that route a ref away from the local registry:
-# API providers plus the local OpenAI-compatible servers (ollama, lm_studio).
-PROVIDER_PREFIXES: frozenset[str] = frozenset(_API_PROVIDERS | LOCAL_SERVER_KEYS)
-
-# Provider value for refs served from the local registry (native GGUF).
-LOCAL_PROVIDER = "local"
 OLLAMA_NO_THINKING = "none"
 
 
@@ -58,8 +43,8 @@ def is_native_gguf_ref(raw: str) -> bool:
     (:func:`lilbee.catalog.refs.hf_repo_from_ref`) only recognises the
     lowercase ``.gguf`` suffix, and classification must agree with it.
     """
-    return raw.endswith(GGUF_SUFFIX) and (
-        PureWindowsPath(raw).is_absolute() or raw.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES
+    return is_native_gguf_shape(raw) or (
+        is_gguf_filename(raw) and PureWindowsPath(raw).is_absolute()
     )
 
 
@@ -80,8 +65,27 @@ def routes_to_native_gguf(raw: str) -> bool:
     shape rule: those servers report model ids that can themselves look like
     GGUF paths, so the prefix wins over the shape.
     """
-    first_segment = raw.split("/", 1)[0]
-    return first_segment not in LOCAL_SERVER_KEYS and is_native_gguf_ref(raw)
+    return not _has_local_server_prefix(raw) and is_native_gguf_ref(raw)
+
+
+def routes_to_native_model(raw: str, *, read_presets: bool = False) -> bool:
+    """True when *raw* is a native model in any format.
+
+    A GGUF shape follows :func:`routes_to_native_gguf`. A ``#<format>`` ref
+    routes natively unless its prefix names a provider: ``openai/x#mlx`` and
+    ``ollama/x#mlx`` keep their provider. A malformed format qualifier is not a
+    native ref. With *read_presets*, a stored server preset name is a provider.
+    """
+    if routes_to_native_gguf(raw):
+        return True
+    if model_format(raw) == ModelFormat.GGUF:
+        return False
+    prefix = raw.split("/", 1)[0]
+    return prefix not in BUILTIN_PREFIXES and not (read_presets and route_for(prefix))
+
+
+def _has_local_server_prefix(raw: str) -> bool:
+    return local_server_for_key(raw.split("/", 1)[0]) is not None
 
 
 @dataclass(frozen=True)
@@ -89,16 +93,21 @@ class ProviderModelRef:
     """Parsed model reference with provider routing information."""
 
     raw: str
-    provider: str  # LOCAL_PROVIDER or any value in PROVIDER_PREFIXES
+    provider: str  # LOCAL_PROVIDER, a built-in prefix or the name of a server preset
     name: str  # provider-specific name with tag normalization applied
 
     @property
     def is_api(self) -> bool:
-        return self.provider in _API_PROVIDERS
+        return self.provider in API_PROVIDERS
 
     @property
     def is_local(self) -> bool:
         return self.provider == LOCAL_PROVIDER
+
+    @property
+    def is_preset(self) -> bool:
+        """True when the provider is a stored server preset rather than a built-in prefix."""
+        return self.is_remote and not self.is_api and local_server_for_key(self.provider) is None
 
     @property
     def is_remote(self) -> bool:
@@ -110,7 +119,7 @@ class ProviderModelRef:
         spec = local_server_for_key(self.provider)
         if spec is not None:
             return spec.qualify(self.name)
-        if self.is_api:
+        if self.is_remote:
             return f"{self.provider}/{self.name}"
         return self.name
 
@@ -130,11 +139,24 @@ def format_remote_ref(name: str, provider: str) -> str:
     *provider* may be a routing key (``"ollama"``) or a backend display
     name (``"LM Studio"``); local-server labels are normalised to the
     routing key so the prefix survives. API providers fall through to
-    their lowercase key unchanged.
+    their lowercase key unchanged. A label that is no built-in routing key
+    (``"Remote"``) adds no prefix: the name stays as the server reported it.
     """
     spec = local_server_for_label(provider)
     key = spec.key if spec is not None else provider.lower()
+    if key not in BUILTIN_PREFIXES:
+        return name
     return ProviderModelRef(raw=name, provider=key, name=name).for_openai_prefix()
+
+
+def canonical_model_ref(raw: str) -> str:
+    """The canonical text of a model ref, decided from the text alone.
+
+    A ref that names a stored server preset and a ref that names none both keep
+    the text as written, so this reads no stored preset. The config validators call it.
+    A ``#gguf`` qualifier reads as the plain ref, so config holds one spelling.
+    """
+    return _classify(canonical_ref(raw), read_presets=False).for_openai_prefix()
 
 
 def parse_model_ref(raw: str) -> ProviderModelRef:
@@ -146,22 +168,30 @@ def parse_model_ref(raw: str) -> ProviderModelRef:
     prefixes (``ollama/``, ``lm_studio/``) are exempt from the shape rule:
     those servers report model ids that can themselves look like GGUF paths
     (LM Studio 0.2.x uses full relative GGUF paths), so the prefix wins there.
-    Remote providers use prefixes from :data:`PROVIDER_PREFIXES`.
+    Remote providers use a built-in prefix or the name of a stored server preset.
     """
-    if routes_to_native_gguf(raw):
+    return _classify(raw, read_presets=True)
+
+
+def _classify(raw: str, *, read_presets: bool) -> ProviderModelRef:
+    if routes_to_native_model(raw, read_presets=read_presets):
         return ProviderModelRef(raw=raw, provider=LOCAL_PROVIDER, name=raw)
     if "/" not in raw:
-        known = ", ".join(f"{p}/" for p in sorted(PROVIDER_PREFIXES))
+        known = ", ".join(f"{p}/" for p in sorted(BUILTIN_PREFIXES))
         raise ValueError(
-            f"Model ref {raw!r} must be a HuggingFace ref "
-            f"('<org>/<repo>/<filename>.gguf') or carry a known provider prefix ({known})."
+            f"Model ref '{raw}' must be a HuggingFace ref "
+            f"('<org>/<repo>/<filename>.gguf') or carry a known provider prefix ({known}) "
+            "or the name of a server preset."
         )
     prefix, rest = raw.split("/", 1)
-    if prefix in _API_PROVIDERS:
+    if prefix in API_PROVIDERS:
         return ProviderModelRef(raw=raw, provider=prefix, name=rest)
     spec = local_server_for_key(prefix)
     if spec is not None:
         return ProviderModelRef(raw=raw, provider=spec.key, name=spec.normalize_name(rest))
+    route = route_for(prefix) if read_presets else None
+    if route is not None:
+        return ProviderModelRef(raw=raw, provider=route.name, name=rest)
     return ProviderModelRef(raw=raw, provider=LOCAL_PROVIDER, name=raw)
 
 
@@ -185,7 +215,6 @@ def _refuse_unsupported(
         raise ProviderError(
             f"The provider rejected the request for {ref.raw}. "
             f"It does not support {', '.join(refused)}. Remove the setting and try again.",
-            provider=ModelSource.REMOTE,
             kind=ProviderErrorKind.BAD_REQUEST,
         )
 
@@ -198,8 +227,8 @@ def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[st
     ``num_ctx``) plus a ``top_k`` and ``repeat_penalty`` drop: hosted APIs do not
     take either, so dropping them keeps the wire request clean. An Anthropic ref
     refuses a ``seed`` or penalty set to any value, zero included, with a bad-request
-    error; when ``response_format`` is set it drops them and sends the request,
-    and it drops a seed that is a :class:`ChosenSeed` instead of refusing it.
+    error, with or without ``response_format``; it drops a seed that is a
+    :class:`ChosenSeed` instead of refusing it.
     ``cache_prompt`` is a llama-server field, and no ref here gets it.
     """
     if not ref.is_api:
@@ -213,15 +242,13 @@ def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[st
         return filtered
     api_options = normalize_generation_options(options)
     if ref.provider == "anthropic":
-        # A ``response_format`` marks an internal call, and so does a seed lilbee chose:
-        # the fix the refusal asks for is not the user's to make.
-        if "response_format" not in api_options:
-            chosen = isinstance(options.get("seed"), ChosenSeed)
-            _refuse_unsupported(
-                {k: v for k, v in api_options.items() if not (chosen and k == "seed")},
-                ref,
-                _ANTHROPIC_UNSUPPORTED,
-            )
+        # A seed lilbee chose is not the user's to remove, so it is dropped, not refused.
+        chosen = isinstance(options.get("seed"), ChosenSeed)
+        _refuse_unsupported(
+            {k: v for k, v in api_options.items() if not (chosen and k == "seed")},
+            ref,
+            _ANTHROPIC_UNSUPPORTED,
+        )
         for name in _ANTHROPIC_UNSUPPORTED:
             api_options.pop(name, None)
     api_options.pop("cache_prompt", None)

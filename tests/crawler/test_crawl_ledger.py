@@ -430,6 +430,69 @@ class TestCompaction:
         assert _save(store, "# P") == _page_file()
         assert "Folding the crawl page table failed" in caplog.text
 
+    def test_a_fold_deletes_replaced_rows_past_one_delete_batch(self, store):
+        """A fold deletes in batches of _KEYS_PER_DELETE keys, so every replaced row goes."""
+        pages = store.crawl_pages
+        keys = crawl_pages_mod._KEYS_PER_DELETE + 5
+        with pages.held():
+            for i in range(keys):
+                first = CrawlPage(f"https://x.com/{i}", f"x.com/{i}.md", "h1", "t")
+                pages.claim(first)
+                pages.claim(CrawlPage(first.address, first.file, "h2", "t"))
+            pages.compact()
+        rows = _raw_table().to_arrow().to_pylist()
+        assert len(rows) == keys
+        assert {row["content_hash"] for row in rows} == {"h2"}
+
+    def test_a_fold_keeps_the_other_address_of_a_shared_file(self, store):
+        """A fold's delete names the address, so the other address on the file stays."""
+        pages = store.crawl_pages
+        with pages.held():
+            pages.claim(CrawlPage("https://a.com/", "shared.md", "h1", "t1"))
+            pages.claim(CrawlPage("https://b.com/", "shared.md", "h2", "t2"))
+            pages.claim(CrawlPage("https://a.com/", "shared.md", "h3", "t3"))
+            pages.compact()
+            assert pages.current("https://b.com/") == CrawlPage(
+                "https://b.com/", "shared.md", "h2", "t2"
+            )
+            assert pages.current("https://a.com/") == CrawlPage(
+                "https://a.com/", "shared.md", "h3", "t3"
+            )
+
+    def test_a_fold_keeps_the_new_file_of_an_address_that_changed_files(self, store):
+        """A fold's delete names the file, so the address's row on another file stays."""
+        pages = store.crawl_pages
+        with pages.held():
+            pages.claim(CrawlPage("https://a.com/", "one.md", "h1", "t1"))
+            pages.claim(CrawlPage("https://a.com/", "two.md", "h2", "t2"))
+            pages.compact()
+            assert pages.current("https://a.com/") == CrawlPage(
+                "https://a.com/", "two.md", "h2", "t2"
+            )
+            assert pages.earlier("https://a.com/") == [
+                CrawlPage("https://a.com/", "one.md", "h1", "t1", current=False)
+            ]
+
+    def test_a_fold_leaves_the_view_stamped_with_the_tables_version(self, store, monkeypatch):
+        """After a fold the next hold reads no rows again: the view carries the folded version."""
+        reads = {"rows": 0}
+        read_rows = LanceTable.to_arrow
+
+        def counted(table: LanceTable, *args: object, **kwargs: object) -> object:
+            reads["rows"] += 1
+            return read_rows(table, *args, **kwargs)
+
+        monkeypatch.setattr(LanceTable, "to_arrow", counted)
+        pages = store.crawl_pages
+        with pages.held():
+            pages.claim(CrawlPage(URL, NAME, "h1", "t"))
+            pages.claim(CrawlPage(URL, NAME, "h2", "t"))
+            pages.compact()
+            assert reads["rows"] == 1
+        with pages.held():
+            assert reads["rows"] == 1
+            assert pages.current(URL) == CrawlPage(URL, NAME, "h2", "t")
+
 
 class TestRowOrder:
     def test_the_highest_seq_of_a_key_counts_whatever_the_scan_order(self):

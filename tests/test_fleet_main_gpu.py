@@ -63,6 +63,20 @@ def test_a_read_of_one_other_key_says_nothing_about_main_gpu(tmp_path) -> None:
     assert (value, found) == (7, [])
 
 
+def test_a_refusal_the_load_already_reported_is_not_reported_again(tmp_path) -> None:
+    from lilbee.core.config.model import _TomlSource
+
+    stored = tmp_path / "config.toml"
+    stored.write_text("main_gpu = 1\ntop_k = 7\n", encoding="utf-8")
+    already = (f"config.toml: main_gpu is not a setting and is ignored; {_HINT}",)
+
+    with collecting() as found:
+        values = _TomlSource(Config, stored, reported=already)()
+
+    assert values["top_k"] == 7
+    assert found == []
+
+
 def test_the_environment_variable_is_refused_by_name(tmp_path) -> None:
     _built, warnings = _built_with(tmp_path, "", LILBEE_MAIN_GPU="1")
 

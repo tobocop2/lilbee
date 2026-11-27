@@ -27,8 +27,9 @@ def deny_listing(monkeypatch: pytest.MonkeyPatch, folder: Path) -> None:
     """
     real_scandir = os.scandir
 
-    def scandir(path: str | os.PathLike[str] = ".") -> object:
-        if Path(path) == folder:
+    def scandir(path: str | os.PathLike[str] | int = ".") -> object:
+        # shutil.rmtree lists a folder by file descriptor, which names no path to deny.
+        if not isinstance(path, int) and Path(path) == folder:
             raise PermissionError(errno.EACCES, "Permission denied", str(folder))
         return real_scandir(path)
 

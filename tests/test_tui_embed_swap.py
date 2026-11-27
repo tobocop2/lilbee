@@ -83,7 +83,7 @@ async def _pick_frontier(app: LilbeeAppHost, pilot: Pilot, ref: str) -> None:
 
 
 async def _pick_first_download(app: LilbeeAppHost, pilot: Pilot, ref: str) -> None:
-    model = SimpleNamespace(task=ModelTask.EMBEDDING, ref=ref)
+    model = SimpleNamespace(task=ModelTask.EMBEDDING, ref=ref, pull_ref=ref)
     (await _catalog(app, pilot))._adopt_first_download(model)  # type: ignore[arg-type]
 
 
@@ -430,6 +430,7 @@ async def _all_work_ended(app: LilbeeAppHost, pilot: Pilot) -> bool:
     )
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 @pytest.mark.parametrize("start", _WORK.values(), ids=_WORK.keys())
 async def test_a_rebuild_asked_during_running_work_runs_once_when_the_work_ends(
     start: Callable[[ChatScreen], None],
@@ -462,6 +463,7 @@ async def test_a_rebuild_asked_during_running_work_runs_once_when_the_work_ends(
             patch.stop()
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 async def test_yes_during_a_running_sync_starts_the_rebuild_when_the_sync_ends(
     services: mock.MagicMock,
 ) -> None:
@@ -494,6 +496,7 @@ async def test_yes_during_a_running_sync_starts_the_rebuild_when_the_sync_ends(
             patch.stop()
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 async def test_a_plain_sync_during_running_work_is_refused_and_owes_nothing() -> None:
     work = _BlockedWork()
     patches = work.patches()
@@ -518,6 +521,7 @@ async def test_a_plain_sync_during_running_work_is_refused_and_owes_nothing() ->
             patch.stop()
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 async def test_a_rebuild_asked_while_a_cancelled_sync_unwinds_waits_for_its_worker() -> None:
     """A cancelled row has left the queue, but its worker still writes until it ends."""
     work = _BlockedWork()
@@ -745,6 +749,7 @@ class _ChatRun:
         await self.pilot.pause()
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 async def test_an_owed_rebuild_never_queues_behind_the_ending_worker() -> None:
     """At the end of a sync's worker, no rebuild row exists for the user to cancel and strand."""
     async with _ChatRun() as run:
@@ -914,6 +919,7 @@ async def test_a_raising_work_end_listener_is_logged_and_the_next_one_still_runs
     assert len(raised) == 2
 
 
+@pytest.mark.usefixtures("slow_worker_final_call")
 async def test_a_cancel_whose_row_was_cleared_still_stops_the_worker() -> None:
     """The Task Center's C between a cancel and the worker's next checkpoint keeps the cancel."""
     async with _ChatRun() as run:
@@ -939,6 +945,32 @@ async def test_a_cancel_whose_row_was_cleared_still_stops_the_worker() -> None:
         assert steps == []
 
 
+async def test_a_worker_that_left_the_map_is_running_until_it_makes_its_last_call() -> None:
+    from lilbee.cli.tui.widgets import task_bar_controller
+
+    in_last_call = threading.Event()
+    let_go = threading.Event()
+    real = task_bar_controller.call_from_thread
+
+    def held(node: Any, fn: Any, *args: Any, **kwargs: Any) -> None:
+        if getattr(fn, "__name__", "") == "_work_ended":
+            in_last_call.set()
+            assert let_go.wait(timeout=30)
+        real(node, fn, *args, **kwargs)
+
+    with mock.patch.object(task_bar_controller, "call_from_thread", held):
+        async with _ChatRun() as run:
+            controller = run.app.task_bar
+            assert not controller.has_running_workers()
+            controller.start_task("Pull", TaskType.DOWNLOAD, lambda _reporter: None)
+            assert await pump_until(run.pilot, in_last_call.is_set)
+            assert not controller._workers
+            assert controller.has_running_workers()
+            let_go.set()
+            assert await pump_until(run.pilot, lambda: not controller.has_running_workers())
+
+
+@pytest.mark.usefixtures("slow_worker_final_call")
 async def test_a_worker_whose_row_was_cleared_counts_as_live_for_its_own_type_only() -> None:
     async with _ChatRun() as run:
         controller = run.app.task_bar

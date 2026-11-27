@@ -1,0 +1,13 @@
+# Licence texts that the build supplies, as <name>-<version> <path relative to this folder>, read by
+# tools/wheel-build/collect_python_licences.py.
+#
+# sentencepiece and tokenizers ship no licence file in their wheels. Both upstream LICENSE files are
+# the Apache License 2.0 text of tools/wheel-build/LICENSE-Apache-2.0: google/sentencepiece at
+# v0.2.2 and huggingface/tokenizers at v0.23.3.
+sentencepiece-0.2.2 ../../tools/wheel-build/LICENSE-Apache-2.0
+tokenizers-0.23.3 ../../tools/wheel-build/LICENSE-Apache-2.0
+# The numpy wheels of every platform ship one LICENSE.txt that also covers OpenBLAS, LAPACK and the
+# GCC runtime under numpy/.dylibs. The macosx_14_0 arm64 wheel holds none of them (it uses
+# Accelerate), and the GPL text of the GCC runtime makes the engine store refuse the pack. The
+# replacement is LICENSE.txt of numpy/numpy at v2.5.4, the licence of numpy itself.
+numpy-2.5.4 licences/numpy-2.5.4-LICENSE.txt replaces licenses/LICENSE.txt

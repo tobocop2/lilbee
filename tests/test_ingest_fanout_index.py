@@ -547,13 +547,13 @@ class TestEqualToOneProcess:
         self, tmp_path, monkeypatch
     ):
         full_flags: list[bool] = []
-        real = pipeline_mod._rebuild_concept_clusters
+        real = pipeline_mod._update_concept_graph
 
         async def recording(*args, full=False, **kwargs):
             full_flags.append(full)
             return await real(*args, full=full, **kwargs)
 
-        monkeypatch.setattr(pipeline_mod, "_rebuild_concept_clusters", recording)
+        monkeypatch.setattr(pipeline_mod, "_update_concept_graph", recording)
         library = Library(tmp_path / "lib", 2)
         library.write_notes("note", 12)
         await library.sync()
@@ -623,6 +623,86 @@ class TestASourceRowWithNoChunks:
         assert len(library.chunk_sources()) == len(set(library.chunk_sources())) == 6
 
 
+class TestChunkTitlesOfAMixedBatch:
+    @pytest.mark.parametrize("archive_first", [True, False], ids=["archive-first", "note-first"])
+    async def test_every_chunk_keeps_the_title_of_its_own_source(self, tmp_path, archive_first):
+        """The title follows the chunk's source, never its place in the flush batch."""
+        library = Library(tmp_path / "lib", 1)
+        library.write_notes("note", 3)
+        _write_bundle(library.documents / ("0bundle.zip" if archive_first else "zbundle.zip"))
+        await library.sync()
+
+        table = Store(cfg).open_table("chunks")
+        assert table is not None
+        titles = table.to_arrow().column("title").to_pylist()
+        assert len(titles) == 3 + 2
+        assert None not in titles
+
+
+def _chunk(source: str, **extra) -> dict:
+    return {
+        "source": source,
+        "content_type": "text",
+        "chunk_type": "raw",
+        "page_start": 0,
+        "page_end": 0,
+        "line_start": 0,
+        "line_end": 0,
+        "chunk": f"{source} text",
+        "chunk_index": 0,
+        "vector": [0.1] * cfg.embedding_dim,
+        **extra,
+    }
+
+
+def _titles_by_source(library: Library) -> dict[str, list[str | None]]:
+    table = Store(cfg).open_table("chunks")
+    assert table is not None
+    ids = table.to_arrow().column("source_id").to_pylist()
+    paths = Store(cfg).source_paths(ids)
+    titles = table.to_arrow().column("title").to_pylist()
+    return {paths[i]: [t] for i, t in zip(ids, titles, strict=True)}
+
+
+class TestARecordWithoutATitle:
+    def test_a_record_without_a_title_does_not_null_the_title_of_the_next(self, tmp_path):
+        """The store builds the rows against the table's schema, not from the first record."""
+        library = Library(tmp_path / "lib", 1)
+        library.write("bare.txt", "x")
+        library.write("titled.txt", "y")
+        Store(cfg).add_chunks([_chunk("bare.txt"), _chunk("titled.txt", title="Kept")])
+
+        assert _titles_by_source(library) == {"bare.txt": [None], "titled.txt": ["Kept"]}
+
+    def test_a_flush_that_starts_with_an_untitled_record_keeps_the_later_titles(self, tmp_path):
+        from lilbee.data.types import _IngestResult
+
+        library = Library(tmp_path / "lib", 1)
+        results = [
+            _IngestResult(
+                name=name,
+                path=library.write(name, name),
+                chunk_count=1,
+                error=None,
+                file_hash=name,
+                records=[_chunk(name, **extra)],
+            )
+            for name, extra in (
+                ("bare.txt", {}),
+                ("one.txt", {"title": "One"}),
+                ("two.txt", {"title": "Two"}),
+            )
+        ]
+
+        pipeline_mod._flush_batch(results)
+
+        assert _titles_by_source(library) == {
+            "bare.txt": [None],
+            "one.txt": ["One"],
+            "two.txt": ["Two"],
+        }
+
+
 _STOPS = ("before_the_start", "first_report", "every_report", "in_a_write")
 
 
@@ -640,9 +720,9 @@ class TestAStoppedSync:
         elif moment == "in_a_write":
             real_write = Store.write_chunks_batch
 
-            def _write(store, items, present=None):
+            def _write(store, items, present=None, chunk_settings=None):
                 cancel.set()
-                return real_write(store, items, present)
+                return real_write(store, items, present, chunk_settings)
 
             monkeypatch.setattr(Store, "write_chunks_batch", _write)
         else:
@@ -1101,9 +1181,9 @@ class TestAMovedFileInTheWiki:
         cancel = threading.Event()
         real_write = Store.write_chunks_batch
 
-        def _write(store, items, present=None):
+        def _write(store, items, present=None, chunk_settings=None):
             cancel.set()
-            return real_write(store, items, present)
+            return real_write(store, items, present, chunk_settings)
 
         with monkeypatch.context() as patch:
             patch.setattr(Store, "write_chunks_batch", _write)
@@ -1346,14 +1426,14 @@ class TestTheWikiIndex:
             index_written.set()
             assert files_written.wait(_STEP_WAIT_S)
 
-        def _write_inside_the_other_pass(store, items, present=None):
+        def _write_inside_the_other_pass(store, items, present=None, chunk_settings=None):
             if not files_written.is_set():
                 with ThreadPoolExecutor(max_workers=1) as other_sync:
                     other_pass = other_sync.submit(
                         asyncio.run, pipeline_mod._update_wiki(set(others), cfg)
                     )
                     assert index_written.wait(_STEP_WAIT_S)
-                    written = real_write(store, items, present)
+                    written = real_write(store, items, present, chunk_settings)
                     files_written.set()
                     other_pass.result()
                 cancel.set()

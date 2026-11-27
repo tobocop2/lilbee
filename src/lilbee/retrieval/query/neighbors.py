@@ -95,6 +95,50 @@ def merge_adjacent_texts(texts: list[str]) -> str:
     return _merge_span(list(range(len(texts))), dict(enumerate(texts)), {})
 
 
+class NeighborCache:
+    """The neighbor rows and seam scans of one request, shared by its assemblies.
+
+    A refit widens the same passages again with a smaller budget. The rows
+    and the seams do not change within a request, so each row is fetched once
+    and each seam is scanned once. Build one for each request; never keep it.
+    """
+
+    def __init__(self) -> None:
+        self._rows: dict[tuple[str, int], SearchChunk] = {}
+        self._fetched: dict[str, set[int]] = {}
+        self._seams: dict[str, dict[tuple[int, int], tuple[int, str]]] = {}
+
+    def rows(
+        self, store: Store, centers: dict[str, set[int]], radius: int
+    ) -> dict[tuple[str, int], SearchChunk]:
+        """Every candidate neighbor row, with one store call per source that needs new indices.
+
+        The centers are fetched alongside their neighbors so the caller can tell
+        whether the document was re-ingested since the search snapshot; indices
+        past the end of a document are simply absent from the reply. The reply
+        can also hold rows from an earlier assembly of the request; a lookup
+        within the radius of a center finds the same row either way.
+        """
+        for source, owned in centers.items():
+            fetched = self._fetched.setdefault(source, set())
+            wanted = {
+                index
+                for center in owned
+                for index in range(center - radius, center + radius + 1)
+                if index >= 0
+            } - fetched
+            if not wanted:
+                continue
+            for row in store.get_chunks_by_indices(source, sorted(wanted)):
+                self._rows[(source, row.chunk_index)] = row
+            fetched.update(wanted)
+        return self._rows
+
+    def seams(self, source: str) -> dict[tuple[int, int], tuple[int, str]]:
+        """The seam scans of *source*, keyed by the two chunk indices."""
+        return self._seams.setdefault(source, {})
+
+
 def expand_neighbors(
     results: list[SearchChunk],
     store: Store,
@@ -103,6 +147,7 @@ def expand_neighbors(
     cost: Callable[[str], int],
     *,
     exclude: Callable[[str], bool] | None = None,
+    cache: NeighborCache | None = None,
 ) -> list[SearchChunk]:
     """Widen each result with up to *radius* adjacent same-source chunks.
 
@@ -124,7 +169,8 @@ def expand_neighbors(
     centers: dict[str, set[int]] = {}
     for r in results:
         centers.setdefault(r.source, set()).add(r.chunk_index)
-    rows = _fetch_neighbor_rows(store, centers, radius)
+    cache = cache if cache is not None else NeighborCache()
+    rows = cache.rows(store, centers, radius)
     if exclude is not None:
         rows = {
             key: row
@@ -137,34 +183,11 @@ def expand_neighbors(
     remaining = budget
     expanded: list[SearchChunk] = []
     for r in results:
-        widened, spent = _widen(r, rows, claimed[r.source], radius, remaining, cost)
+        seams = cache.seams(r.source)
+        widened, spent = _widen(r, rows, claimed[r.source], radius, remaining, cost, seams)
         remaining -= spent
         expanded.append(widened)
     return expanded
-
-
-def _fetch_neighbor_rows(
-    store: Store, centers: dict[str, set[int]], radius: int
-) -> dict[tuple[str, int], SearchChunk]:
-    """Every candidate neighbor row, fetched with one store call per source.
-
-    The centers are fetched alongside their neighbors so the caller can tell
-    whether the document was re-ingested since the search snapshot; indices past
-    the end of a document are simply absent from the reply.
-    """
-    rows: dict[tuple[str, int], SearchChunk] = {}
-    for source, owned in centers.items():
-        wanted = sorted(
-            {
-                index
-                for center in owned
-                for index in range(center - radius, center + radius + 1)
-                if index >= 0
-            }
-        )
-        for row in store.get_chunks_by_indices(source, wanted):
-            rows[(source, row.chunk_index)] = row
-    return rows
 
 
 def _neighbor_run(
@@ -191,6 +214,7 @@ def _widen(
     radius: int,
     remaining: int,
     cost: Callable[[str], int],
+    seams: dict[tuple[int, int], tuple[int, str]],
 ) -> tuple[SearchChunk, int]:
     """One result widened within *remaining* tokens: (chunk, tokens spent).
 
@@ -211,7 +235,6 @@ def _widen(
     texts = {center: result.chunk}
     for index in [*left, *right]:
         texts[index] = rows[(result.source, index)].chunk
-    seams: dict[tuple[int, int], tuple[int, str]] = {}
     while left or right:
         span = sorted([*left, center, *right])
         merged = _merge_span(span, texts, seams)

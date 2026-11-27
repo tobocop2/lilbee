@@ -10,10 +10,11 @@ setup() {
   PLAN="${REPO_ROOT}/scripts/release_plan_cells.sh"
 }
 
-# The text of every `run` step of one workflow, with line continuations joined.
+# The text of every `run` step of one workflow, with comment lines dropped and
+# line continuations joined. A comment that names a script is not a call.
 runs_of() {  # workflow file name
   local text
-  text=$(yq -r '.jobs[].steps[]? | select(.run != null) | .run' "${WORKFLOWS}/$1")
+  text=$(yq -r '.jobs[].steps[]? | select(.run != null) | .run' "${WORKFLOWS}/$1" | awk '!/^[[:space:]]*#/')
   text="${text//\\$'\n'/ }"
   printf '%s\n' "${text}" | tr -s ' '
 }

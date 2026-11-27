@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import dataclasses
+import gc
 import json
 import logging
 import os
+import re
+import socket
 import struct
 import threading
 import time
+from collections.abc import Callable, Generator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -20,17 +25,27 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
-from lilbee.providers.base import ProviderErrorKind
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.client import LlamaServerClient
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines.llama import LlamaCppAdapter
+from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
-from lilbee.providers.fleet.swap_manager import EngineLifetime
+from lilbee.providers.fleet.rerank_pair import RerankPair
+from lilbee.providers.fleet.swap_manager import EngineLifetime, EngineReadiness
+from lilbee.providers.fleet.windowing import window_messages
 from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.routing_provider import RoutingProvider
+from tests._async_wait import poll_until
 from tests._exit_probe import assert_probe_exits
+from tests._fleet_engines import engines_for_all_roles
 from tests._prior_run import request_keep_warm_in_prior_run
+from tests._router_release import ROUTER, router_reports
+from tests.conformance.fake_adapter import FAKE
 
 _GB = 1024**3
 _real_plan_all_launches = planning_mod.plan_all_launches
@@ -52,7 +67,15 @@ def reaper_ensures(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
 def _fake_client(in_flight: int = 0) -> MagicMock:
     client = MagicMock()
     client.in_flight = in_flight
+    client.restart_message = None
+    # A llama-server client: its engine names no device route, so a warm sends its load.
+    client.needs_device_check = False
     return client
+
+
+def _pool(*members: object) -> prov_mod._LivePool:
+    """A live pool over fixed *members*, the shape the routing helpers take."""
+    return prov_mod._LivePool(threading.RLock(), lambda: list(members), lambda: None)
 
 
 def _fake_launch(
@@ -62,6 +85,7 @@ def _fake_launch(
     slots: int = 1,
     ctx: int = 0,
     weights_bytes: int = 0,
+    read_bytes_per_s: int = 0,
     replica: int = 0,
     built_ctx_target: int = 0,
 ) -> MagicMock:
@@ -72,6 +96,7 @@ def _fake_launch(
     launch.slots = slots
     launch.ctx = ctx
     launch.weights_bytes = weights_bytes
+    launch.read_bytes_per_s = read_bytes_per_s
     launch.replica = replica
     launch.built_ctx_target = built_ctx_target
     launch.token_cap = None
@@ -88,6 +113,11 @@ class _FakeSwap:
         self.shutdowns = 0
         self.ready: set[WorkerRole] = set()
         self.running = True
+        self.ready_records = 0
+        # Each report read: the ids it was given and the thread it ran on.
+        self.claimed: list[tuple[list[str], str]] = []
+        self.loaded_reads: list[tuple[list[str], str]] = []
+        self.read_done = threading.Event()
         self.bound = False  # bound to a shared engine (set by the adopt/bind path)
         self.lifetime: EngineLifetime | None = None  # set by start()
         self.log_path = Path("/engine/logs/llama-swap-fake.log")
@@ -116,6 +146,19 @@ class _FakeSwap:
     def role_ready(self, role: WorkerRole) -> bool:
         return role in self.ready
 
+    def record_ready(self) -> None:
+        self.ready_records += 1
+
+    def claim_loaded(self, model_ids):
+        ids = list(model_ids)
+        self.claimed.append((ids, threading.current_thread().name))
+
+        def read() -> None:
+            self.loaded_reads.append((ids, threading.current_thread().name))
+            self.read_done.set()
+
+        return read
+
     def health_warnings(self) -> list:
         return []
 
@@ -142,11 +185,13 @@ def _no_real_probe(monkeypatch, tmp_path_factory):
     recorders; placeability is stubbed true so a configured role is placeable
     unless a test says otherwise.
     """
-    monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
-    monkeypatch.setattr(planning_mod, "refresh_plan_devices", lambda: None)
-    monkeypatch.setattr(planning_mod, "assert_engine_probeable", lambda: None)
-    monkeypatch.setattr(planning_mod, "placeable_total_vram", lambda: 0)
-    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda engine: None)
+    monkeypatch.setattr(planning_mod, "refresh_plan_devices", lambda engine: None)
+    monkeypatch.setattr(planning_mod, "assert_engine_probeable", lambda engine: None)
+    monkeypatch.setattr(planning_mod, "placeable_total_vram", lambda engine: 0)
+    monkeypatch.setattr(
+        planning_mod, "role_model_placeable", lambda _role, _ref, _vram, *, engine: True
+    )
     mslot = tmp_path_factory.mktemp("machine-slot")
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: mslot)
     # The suite's subject is fleet mechanics, not model selection: pin sample
@@ -171,15 +216,17 @@ def _install_engine(
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: swap)
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: machine)
     monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
-    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: EngineReadiness.READY)
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
-    monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda engine: None)
     monkeypatch.setattr(
         prov_mod, "LlamaServerClient", lambda _endpoint, _model, **_kw: _fake_client()
     )
     monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan(tuple(launches))
+        planning_mod,
+        "plan_all_launches",
+        lambda *, engines: planning_mod.FleetPlan(tuple(launches)),
     )
     return swap
 
@@ -195,6 +242,12 @@ def engine_installed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     binary.write_text("#!/bin/sh\n")
     monkeypatch.setattr(cfg, "llama_server_path", str(binary))
     return binary
+
+
+def _run_work(p: FleetProvider) -> None:
+    """Run the fleet work for one write on this thread, where its failure raises."""
+    p._writes_wanted += 1
+    p._run_fleet_work()
 
 
 def _provider_with_clients(clients: dict[WorkerRole, list[MagicMock]]) -> FleetProvider:
@@ -333,7 +386,7 @@ def test_chat_ends_the_lazy_warm_when_the_pool_check_refuses(monkeypatch) -> Non
     p._warm_tracker.ready()
 
     def _refuse(role):
-        raise ProviderError("the planner refused the launch", provider="fleet")
+        raise ProviderError("the planner refused the launch")
 
     monkeypatch.setattr(p, "_require_clients", _refuse)
     with pytest.raises(ProviderError, match="refused"):
@@ -363,7 +416,7 @@ def test_chat_marks_tracker_ready_when_the_request_fails_but_the_role_loaded(
 
     def _load_then_reject(*args, **kwargs):
         swap.ready.add(WorkerRole.CHAT)
-        raise ProviderError("bad tool schema", provider="fleet")
+        raise ProviderError("bad tool schema")
 
     client.chat_result.side_effect = _load_then_reject
     with pytest.raises(ProviderError, match="bad tool schema"):
@@ -502,7 +555,7 @@ def test_vision_without_server_names_the_missing_projector(
     monkeypatch.setattr(prov_mod, "_configured_model_for", lambda _role: "org/vlm/vlm.gguf")
     monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _ref: None)
 
-    message = prov_mod._no_server_message(WorkerRole.VISION)
+    message = prov_mod._no_server_message(WorkerRole.VISION, None)
 
     assert "org/vlm/vlm.gguf has no mmproj" in message
 
@@ -513,7 +566,7 @@ def test_vision_without_server_keeps_the_generic_message_when_the_projector_exis
     monkeypatch.setattr(prov_mod, "_configured_model_for", lambda _role: "org/vlm/vlm.gguf")
     monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _ref: Path("/m/mmproj.gguf"))
 
-    message = prov_mod._no_server_message(WorkerRole.VISION)
+    message = prov_mod._no_server_message(WorkerRole.VISION, None)
 
     assert "mmproj" not in message
     assert "No vision model server is running" in message
@@ -562,6 +615,31 @@ def test_count_tokens_routes_to_embed_server() -> None:
     p = _provider_with_clients({WorkerRole.EMBED: [client]})
     assert p.count_tokens("hello") == 9
     client.count_tokens.assert_called_once_with("hello")
+
+
+def test_count_chat_text_tokens_routes_to_chat_server() -> None:
+    """Retrieval budgets with the chat model's tokenizer, not the embedder's."""
+    chat, embed = _fake_client(), _fake_client()
+    chat.count_text_tokens.return_value = 13
+    p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    assert p.count_chat_text_tokens("hello") == 13
+    chat.count_text_tokens.assert_called_once_with("hello")
+    embed.count_text_tokens.assert_not_called()
+
+
+def test_count_chat_text_tokens_is_none_when_the_chat_engine_has_no_route() -> None:
+    chat = _fake_client()
+    chat.count_text_tokens.return_value = None
+    p = _provider_with_clients({WorkerRole.CHAT: [chat]})
+    assert p.count_chat_text_tokens("hello") is None
+
+
+def test_estimate_chat_tokens_counts_utf8_bytes_without_a_server() -> None:
+    """The estimate answers when the engine cannot render, so it calls no server."""
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    assert p.estimate_chat_tokens("héllo", model="vendor/m") == len("héllo".encode())
+    assert client.method_calls == []
 
 
 _COUNT_MESSAGES = [{"role": "user", "content": "hello"}]
@@ -647,6 +725,26 @@ def test_count_tokens_connection_failure_rediscovers_once_and_recovers(
     assert len(clients) == 2  # first pool failed, rediscovery built a second
 
 
+def test_a_count_with_the_engine_down_raises_the_not_responding_message(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A count for chunk sizing fails with the message an embedding gets, not a transport error."""
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    _install_ladder(monkeypatch, tmp_path, launches=[_embed_launch()])
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        client.count_tokens.side_effect = httpx.ConnectError("router down")
+        return client
+
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _client_factory)
+
+    with pytest.raises(ProviderError, match=r"^The model server is not responding") as err:
+        FleetProvider().count_tokens("hello")
+    assert err.value.kind is ProviderErrorKind.CONNECTION
+
+
 def test_embed_routes_to_least_busy_replica() -> None:
     # Data-parallel replicas: a request goes to the idlest replica in the pool.
     busy, idle = _fake_client(5), _fake_client(1)
@@ -673,7 +771,7 @@ def test_ensure_fleet_records_skipped_not_installed_from_plan(monkeypatch, tmp_p
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (_fake_launch(WorkerRole.EMBED),),
             skipped_not_installed={WorkerRole.CHAT: "org/repo/missing-chat.gguf"},
         ),
@@ -691,16 +789,16 @@ def test_acquire_engine_records_the_demand_plans_refusal(monkeypatch, tmp_path: 
     monkeypatch.setattr(
         prov_mod,
         "_placeable_demand",
-        lambda: prov_mod._EngineDemand(set(), 0, {}, {WorkerRole.CHAT: reason}),
+        lambda engine, engines: prov_mod._EngineDemand(set(), 0, {}, {WorkerRole.CHAT: reason}),
     )
     monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
     p = FleetProvider()
     monkeypatch.setattr(p, "_acquire_in_dir", lambda *_a, **_k: False)
     assert p._acquire_engine(tmp_path) is False
-    assert p._skipped_unusable_ctx == {WorkerRole.CHAT: reason}
+    assert p._refused_roles == {WorkerRole.CHAT: reason}
 
 
-def test_ensure_fleet_records_skipped_unusable_ctx_from_plan(monkeypatch, tmp_path: Path) -> None:
+def test_ensure_fleet_records_refused_roles_from_plan(monkeypatch, tmp_path: Path) -> None:
     # The plan refused a chat launch whose window cannot hold a grounded prompt;
     # _plan_and_spawn records the reason so the warm finalizer and the request
     # path can name it. The installed embed role still starts.
@@ -708,14 +806,14 @@ def test_ensure_fleet_records_skipped_unusable_ctx_from_plan(monkeypatch, tmp_pa
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (_fake_launch(WorkerRole.EMBED),),
-            skipped_unusable_ctx={WorkerRole.CHAT: "chat model serves only 512 tokens"},
+            refused_roles={WorkerRole.CHAT: "chat model serves only 512 tokens"},
         ),
     )
     p = FleetProvider()
     p._ensure_fleet()
-    assert p._skipped_unusable_ctx == {WorkerRole.CHAT: "chat model serves only 512 tokens"}
+    assert p._refused_roles == {WorkerRole.CHAT: "chat model serves only 512 tokens"}
 
 
 def test_reload_propagates_a_probe_failure_on_the_resurrect_path(monkeypatch) -> None:
@@ -726,10 +824,8 @@ def test_reload_propagates_a_probe_failure_on_the_resurrect_path(monkeypatch) ->
 
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
 
-    def _wedged() -> None:
-        raise ProviderError(
-            "device probe wedged", provider="llama-server", kind=ProviderErrorKind.CONNECTION
-        )
+    def _wedged(engine) -> None:
+        raise ProviderError("device probe wedged", kind=ProviderErrorKind.CONNECTION)
 
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _wedged)
     p = FleetProvider()  # no swaps: the resurrect path recaptures the probe
@@ -738,21 +834,46 @@ def test_reload_propagates_a_probe_failure_on_the_resurrect_path(monkeypatch) ->
     assert excinfo.value.kind is ProviderErrorKind.CONNECTION
 
 
-def test_reload_stays_quiet_when_the_engine_binary_is_missing(monkeypatch) -> None:
-    # A missing binary on the reload resurrect path aborts quietly (nothing to
-    # serve), mirroring the build path rather than raising.
+@pytest.mark.parametrize(("reaped", "kept"), [(True, False), (False, True)], ids=["reaped", "none"])
+def test_a_reload_forgets_a_kept_device_reading_only_after_a_reap(
+    monkeypatch, tmp_path: Path, reaped: bool, kept: bool
+) -> None:
+    from lilbee.providers.base import ProviderError
+
+    binary = tmp_path / "engine"
+    binary.write_bytes(b"v1")
+    planning_mod.clear_read_device_cache()
+    planning_mod._read_device_cache.remember(
+        binary, planning_mod.DeviceReading([], planning_mod.EngineBackend.UNKNOWN)
+    )
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: reaped)
+    seen: list[bool] = []
+
+    def _capture(_engines) -> None:
+        seen.append(planning_mod._read_device_cache.recent_empty(binary) is not None)
+        raise ProviderError("stop here")
+
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", _capture)
+    with pytest.raises(ProviderError):
+        FleetProvider()._reload_pass()
+    planning_mod.clear_read_device_cache()
+    assert seen == [kept]
+
+
+def test_reload_fails_loud_when_the_engine_binary_is_missing(monkeypatch) -> None:
+    # A reload that cannot find the engine binary did not apply the change, so it
+    # raises; the caller of a write must not report success.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
 
-    def _no_binary() -> None:
-        raise ProviderError(
-            "no engine binary", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
-        )
+    def _no_binary(engine) -> None:
+        raise ProviderError("no engine binary", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
     p = FleetProvider()
-    p._reload_pass()  # must not raise
+    with pytest.raises(ProviderError, match="no engine binary"):
+        p._reload_pass()
     assert p._swaps == {}
 
 
@@ -811,7 +932,7 @@ def test_reload_of_a_bound_engine_reacquires_instead_of_duplicating(monkeypatch)
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+        lambda *, engines: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
     )
     reacquired: list[bool] = []
 
@@ -856,6 +977,109 @@ def test_reload_of_a_bound_engine_preloads_the_reacquired_roles(monkeypatch) -> 
     p._reload_pass()
 
     assert kicked and kicked[0]["name"] == "fleet-reload-warm"  # roles warmed off-thread
+
+
+def test_a_reload_after_shutdown_starts_no_warm(monkeypatch) -> None:
+    """A reload that lands after the shutdown latch leaves no warm to outlive the provider."""
+    kicked = _stub_warm_thread(monkeypatch)
+    p = FleetProvider()
+    p._shut_down = True
+
+    p._preload_restarted([WorkerRole.CHAT])
+
+    assert kicked == []
+    assert p._reload_warm is None
+
+
+def test_a_second_reload_warm_waits_for_the_first(monkeypatch) -> None:
+    """Two reload warms never overlap: the second starts its requests after the first ends."""
+    p = FleetProvider()
+    first_started = threading.Event()
+    release_first = threading.Event()
+    order: list[frozenset[WorkerRole]] = []
+
+    def preload(roles: frozenset[WorkerRole]) -> None:
+        if roles == {WorkerRole.CHAT}:
+            first_started.set()
+            release_first.wait(timeout=5.0)
+        order.append(roles)
+
+    monkeypatch.setattr(p, "_preload_roles", preload)
+    p._preload_restarted([WorkerRole.CHAT])
+    assert first_started.wait(timeout=5.0)
+    p._preload_restarted([WorkerRole.EMBED])
+    second = p._reload_warm
+    assert second is not None
+
+    second.join(timeout=0.2)
+    assert second.is_alive()  # held behind the first warm
+    release_first.set()
+    second.join(timeout=5.0)
+
+    assert order == [frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.EMBED})]
+
+
+def test_a_shutdown_warns_when_the_warm_outlives_its_wait(monkeypatch, caplog) -> None:
+    """A warm still running at the bound is named in a warning, as the work wait is."""
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", 0.1)
+    p = FleetProvider()
+    started = threading.Event()
+    release = threading.Event()
+
+    def preload(roles: frozenset[WorkerRole]) -> None:
+        started.set()
+        release.wait(timeout=30.0)
+
+    monkeypatch.setattr(p, "_preload_roles", preload)
+    monkeypatch.setattr(p, "_release_engines", lambda: None)
+    p._preload_restarted([WorkerRole.EMBED])
+    warm = p._reload_warm
+    assert warm is not None
+    assert started.wait(timeout=5.0)
+
+    try:
+        with caplog.at_level(logging.WARNING, logger=prov_mod.log.name):
+            p._shutdown_swap()
+    finally:
+        release.set()
+        warm.join(timeout=5.0)
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings == [
+        "Model warm-up still in progress after 0s; shutting down without waiting for it."
+    ]
+
+
+def test_a_shutdown_stops_the_engines_before_it_waits_for_the_warm(monkeypatch, caplog) -> None:
+    """A blocking warm read ends when its engine stops, so the engines stop before the join."""
+    bound_s = 5.0
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", bound_s)
+    p = FleetProvider()
+    started = threading.Event()
+    engines_stopped = threading.Event()
+
+    def preload(roles: frozenset[WorkerRole]) -> None:
+        started.set()
+        engines_stopped.wait(timeout=30.0)  # the read fails once the engine is gone
+
+    monkeypatch.setattr(p, "_preload_roles", preload)
+    monkeypatch.setattr(p, "_release_engines", engines_stopped.set)
+    p._preload_restarted([WorkerRole.EMBED])
+    warm = p._reload_warm
+    assert warm is not None
+    assert started.wait(timeout=5.0)
+
+    begin = time.monotonic()
+    try:
+        with caplog.at_level(logging.WARNING, logger=prov_mod.log.name):
+            p._shutdown_swap()
+    finally:
+        engines_stopped.set()
+        warm.join(timeout=5.0)
+    elapsed = time.monotonic() - begin
+
+    assert elapsed < bound_s, f"shutdown took {elapsed:.2f} s waiting on the warm"
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
 
 
 def test_ensure_fleet_refused_after_shutdown(monkeypatch, tmp_path: Path) -> None:
@@ -945,24 +1169,81 @@ def test_adopt_group_threads_rerank_mode(monkeypatch) -> None:
         "_configured_model_for",
         lambda role: "m-rerank" if role is WorkerRole.RERANK else "",
     )
-    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
     monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan((launch,))
+        planning_mod, "role_model_placeable", lambda _role, _ref, _vram, *, engine: True
+    )
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
     )
     FleetProvider()._ensure_fleet()
     assert captured["rerank_mode"] is RerankMode.LLM
 
 
+def test_adopt_group_threads_the_rerank_pair_layout(monkeypatch) -> None:
+    launch = _fake_launch(WorkerRole.RERANK)
+    launch.rerank_pair = RerankPair(head=(0,), middle=(2, 2), tail=(2,))
+    captured: dict[str, object] = {}
+
+    def _capture(_endpoint, _model, **kw):
+        captured["rerank_pair"] = kw.get("rerank_pair")
+        return _fake_client()
+
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
+    monkeypatch.setattr(
+        prov_mod,
+        "_configured_model_for",
+        lambda role: "m-rerank" if role is WorkerRole.RERANK else "",
+    )
+    monkeypatch.setattr(
+        planning_mod, "role_model_placeable", lambda _role, _ref, _vram, *, engine: True
+    )
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
+    )
+    FleetProvider()._ensure_fleet()
+    assert captured["rerank_pair"] == RerankPair(head=(0,), middle=(2, 2), tail=(2,))
+
+
+def test_adopt_group_gives_each_client_its_engine_request_profile(monkeypatch) -> None:
+    launch = _fake_launch(WorkerRole.EMBED)
+    captured: dict[str, object] = {}
+
+    def _capture(_endpoint, _model, **kw):
+        captured["profile"] = kw.get("profile")
+        return _fake_client()
+
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m" if role is WorkerRole.EMBED else ""
+    )
+    monkeypatch.setattr(
+        planning_mod, "role_model_placeable", lambda _role, _ref, _vram, *, engine: True
+    )
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
+    )
+    sentinel = dataclasses.replace(LLAMA.request_profile(WorkerRole.EMBED), label="sentinel")
+    monkeypatch.setattr(type(LLAMA), "request_profile", lambda _self, _role: sentinel)
+    FleetProvider()._ensure_fleet()
+    assert captured["profile"] is sentinel
+
+
 def test_adopt_group_logs_the_embed_window_warning(monkeypatch) -> None:
     """Every serving process passes through adoption, so the window check fires there."""
     launch = _fake_launch(WorkerRole.EMBED)
-    launch.rerank_mode = None
-    launch.model_id = launch.role
     seen: list[object] = []
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda *_a, **_kw: _fake_client())
     monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan((launch,))
+        prov_mod, "_configured_model_for", lambda role: "m" if role is WorkerRole.EMBED else ""
+    )
+    monkeypatch.setattr(
+        planning_mod, "role_model_placeable", lambda _role, _ref, _vram, *, engine: True
+    )
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
     )
     monkeypatch.setattr(planning_mod, "warn_when_embed_window_below_chunk", seen.append)
     FleetProvider()._ensure_fleet()
@@ -991,7 +1272,7 @@ def test_missing_engine_is_reported_as_a_missing_engine() -> None:
 
     message = str(caught.value)
     assert "llama-server" in message
-    assert "lilbee[engine]" in message
+    assert "lilbee engine install" in message
     assert "Make sure the embed model is installed" not in message
 
 
@@ -1121,6 +1402,186 @@ def test_fit_chat_context_raises_when_even_the_floor_cannot_fit() -> None:
     assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
 
 
+_SEARCH_TOOL = {"type": "function", "function": {"name": "search", "parameters": {}}}
+
+
+def _tool_convo() -> list[dict]:
+    msgs: list[dict] = [{"role": "system", "content": "s"}]
+    for _ in range(4):
+        msgs.append({"role": "user", "content": "x" * 280})
+        msgs.append({"role": "assistant", "content": "y" * 280})
+    msgs.append({"role": "user", "content": "q"})
+    return msgs
+
+
+def _rendered_count(messages: list[dict], **_: object) -> int:
+    """A stand-in engine count: a 300-token tool preamble the wire JSON does not show."""
+    return 300 + sum(len(m["content"]) for m in messages) // 2
+
+
+def _tool_convo_near_budget_provider(client: MagicMock) -> FleetProvider:
+    """A provider whose 896-token budget the estimate of _tool_convo nearly fills (858)."""
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+    return p
+
+
+def test_fit_chat_context_counts_tools_as_the_engine_renders_them() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048  # a prompt budget of 896 tokens
+    msgs = _tool_convo()
+
+    out = p._fit_chat_context(msgs, [_SEARCH_TOOL], None, "m")
+
+    assert len(out) < len(msgs)
+    assert _rendered_count(out) <= 896
+    assert out[0]["role"] == "system"
+    assert out[-1]["content"] == "q"
+
+
+def test_fit_chat_context_sends_the_tool_choice_to_the_render() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 10
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+
+    p._fit_chat_context(_tool_convo(), [_SEARCH_TOOL], None, "m", "required")
+
+    kwargs = client.count_chat_prompt_tokens.call_args.kwargs
+    assert kwargs["tools"] == [_SEARCH_TOOL]
+    assert kwargs["tool_choice"] == "required"
+
+
+def test_fit_chat_context_raises_when_the_rendered_prompt_cannot_fit() -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 5000
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+
+    with pytest.raises(ProviderError, match="Prompt of about 5000 tokens") as excinfo:
+        p._fit_chat_context(_tool_convo(), [_SEARCH_TOOL], None, "m")
+    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+def test_fit_chat_context_falls_back_to_the_estimate_with_no_render_route() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = NotImplementedError("no route")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+    msgs = _tool_convo()
+
+    assert p._fit_chat_context(msgs, [_SEARCH_TOOL], None, "m") == msgs
+
+
+def test_fit_chat_context_renders_twice_when_one_drop_clears_the_overshoot() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    p = _tool_convo_near_budget_provider(client)
+
+    p._fit_chat_context(_tool_convo(), [_SEARCH_TOOL], None, "m")
+
+    assert client.count_chat_prompt_tokens.call_count == 2
+
+
+def test_fit_chat_context_renders_once_far_under_the_budget() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 16_384
+    msgs = _tool_convo()
+
+    assert p._fit_chat_context(msgs, [_SEARCH_TOOL], None, "m") == msgs
+    assert client.count_chat_prompt_tokens.call_count == 1
+
+
+def _short_tool_convo() -> list[dict]:
+    """Two turns and a question: the estimate sits far under the 896 budget."""
+    return [
+        {"role": "system", "content": "s"},
+        *_tool_convo()[1:5],
+        {"role": "user", "content": "q"},
+    ]
+
+
+def test_fit_chat_context_refuses_a_tool_prompt_the_estimate_leaves_under_the_budget() -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 5000
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+    estimate = window_messages(_short_tool_convo(), [_SEARCH_TOOL], 10**6).prompt_tokens
+    assert estimate < 0.8 * 896  # under any 0.937 ratio gate
+
+    with pytest.raises(ProviderError, match="Prompt of about 5000 tokens") as excinfo:
+        p._fit_chat_context(_short_tool_convo(), [_SEARCH_TOOL], None, "m")
+    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+def test_fit_chat_context_does_not_render_an_empty_tool_list() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 10
+    p = _tool_convo_near_budget_provider(client)
+
+    p._fit_chat_context(_tool_convo(), [], None, "m")
+
+    client.count_chat_prompt_tokens.assert_not_called()
+
+
+def test_fit_chat_context_surfaces_a_render_error() -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = ProviderError(
+        "render failed", kind=ProviderErrorKind.BAD_REQUEST
+    )
+    p = _tool_convo_near_budget_provider(client)
+
+    with pytest.raises(ProviderError, match="render failed"):
+        p._fit_chat_context(_tool_convo(), [_SEARCH_TOOL], None, "m")
+
+
+def test_render_count_passes_the_options_the_chat_call_sends() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 10
+    p = _tool_convo_near_budget_provider(client)
+
+    p._fit_chat_context(_tool_convo(), [_SEARCH_TOOL], {"temperature": 0.25}, "m")
+
+    assert client.count_chat_prompt_tokens.call_args.kwargs["options"] == {"temperature": 0.25}
+
+
+def test_render_count_retries_through_the_chat_role(monkeypatch) -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 10
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    roles: list[WorkerRole | None] = []
+    real = p._with_rediscover
+
+    def spy(call, *, role=None):
+        roles.append(role)
+        return real(call, role=role)
+
+    monkeypatch.setattr(p, "_with_rediscover", spy)
+
+    assert p._render_count(_tool_convo(), [_SEARCH_TOOL], None, None) == 10
+    assert roles == [WorkerRole.CHAT]
+
+
+def test_fit_chat_context_does_not_render_a_prompt_without_tools() -> None:
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+
+    p._fit_chat_context(_tool_convo(), None, None, "m")
+
+    client.count_chat_prompt_tokens.assert_not_called()
+
+
 def test_vision_ocr_routes_to_engine_for_configured_model(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     client = _fake_client()
@@ -1150,7 +1611,7 @@ def test_vision_ocr_waiting_for_a_slot_stops_on_cancel(monkeypatch) -> None:
         except BaseException as exc:
             raised.append(exc)
 
-    with prov_mod._VISION_DISPATCHER.slot([prov_mod._VisionReplica(client, 1)]):
+    with prov_mod._VISION_DISPATCHER.slot(_pool(prov_mod._VisionReplica(client, 1))):
         waiter = threading.Thread(target=_page, daemon=True)
         waiter.start()
         waiter.join(timeout=0.3)
@@ -1221,7 +1682,9 @@ def test_vision_ocr_cancel_aborts_a_page_whose_headers_have_not_arrived(
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     server = _HeldHeadersServer()
     try:
-        client = LlamaServerClient(server.url, "vision-model")
+        client = LlamaServerClient(
+            server.url, "vision-model", profile=LLAMA.request_profile(WorkerRole.CHAT)
+        )
         p = _provider_with_clients({WorkerRole.VISION: [client]})
         cancel = threading.Event()
         threading.Timer(0.3, cancel.set).start()
@@ -1278,6 +1741,41 @@ def test_vision_call_streams_every_page_under_its_deadline(
     client.chat.assert_not_called()
 
 
+def _page_cut_after_a_frame(cause: httpx.TransportError) -> Exception:
+    """The error of a vision page whose stream broke with *cause* after its first frame."""
+    from lilbee.providers.fleet.client import StreamInterruptedError
+
+    try:
+        raise StreamInterruptedError() from cause
+    except StreamInterruptedError as exc:
+        return exc
+
+
+@pytest.mark.parametrize(
+    "cause", [httpx.ReadTimeout("silent"), httpx.RemoteProtocolError("closed")], ids=str
+)
+def test_a_vision_page_cut_after_a_frame_fails_with_the_transport_error(cause) -> None:
+    """A page cut after a frame is a connection failure, as at the base, not a cut answer."""
+    client = _fake_client()
+    client.chat_abortable.side_effect = _page_cut_after_a_frame(cause)
+    with pytest.raises(type(cause)) as caught:
+        prov_mod._vision_call(client, [{"role": "user", "content": "x"}], None)
+    assert caught.value is cause
+    assert prov_mod.is_connection_failure(caught.value)
+
+
+def test_a_vision_page_cut_after_a_frame_fails_over_to_another_replica() -> None:
+    cut, alive = _fake_client(), _fake_client()
+    cut.chat_abortable.side_effect = _page_cut_after_a_frame(httpx.ReadTimeout("silent"))
+    alive.chat_abortable.return_value = "ocr text"
+    pool = _pool(prov_mod._VisionReplica(cut, 2), prov_mod._VisionReplica(alive, 1))
+    page = [{"role": "user", "content": "x"}]
+    result = prov_mod._dispatch_vision(pool, lambda c: prov_mod._vision_call(c, page, None))
+    assert result == "ocr text"
+    cut.mark_unhealthy.assert_called_once()
+    alive.mark_healthy.assert_called_once()
+
+
 def test_vision_ocr_hands_the_cancel_to_the_streamed_page(monkeypatch) -> None:
     # The page in flight on the server stops streaming when the run is cancelled.
     import threading
@@ -1332,7 +1830,10 @@ def test_vision_ocr_request_body_carries_sampler_options(
         )
 
     client = LlamaServerClient(
-        "http://gpu", "vision-model", async_transport=httpx.MockTransport(handler)
+        "http://gpu",
+        "vision-model",
+        async_transport=httpx.MockTransport(handler),
+        profile=LLAMA.request_profile(WorkerRole.CHAT),
     )
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     assert p.vision_ocr(b"png", "org/repo/v.gguf", timeout=timeout) == "page"
@@ -1351,7 +1852,7 @@ def test_vision_ocr_retries_a_gateway_error_then_succeeds(monkeypatch) -> None:
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
-    gateway = ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
+    gateway = ProviderError("HTTP 502", kind=ProviderErrorKind.SERVER)
     client = _fake_client()
     client.chat_abortable.side_effect = [gateway, gateway, "ocr text"]
     p = _provider_with_clients({WorkerRole.VISION: [client]})
@@ -1367,7 +1868,7 @@ def test_vision_ocr_reports_a_429_after_one_request(monkeypatch) -> None:
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
-    busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+    busy = ProviderError("busy", kind=ProviderErrorKind.RATE_LIMIT)
     client = _fake_client()
     client.chat_abortable.side_effect = [busy, "ocr text"]
     p = _provider_with_clients({WorkerRole.VISION: [client]})
@@ -1386,7 +1887,7 @@ def test_vision_ocr_retries_past_attempt_cap_until_deadline(monkeypatch) -> None
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
-    gateway = ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
+    gateway = ProviderError("HTTP 502", kind=ProviderErrorKind.SERVER)
     client = _fake_client()
     retries = prov_mod._VISION_GATEWAY_RETRIES
     client.chat_abortable.side_effect = [gateway] * (retries + 5) + ["ocr text"]
@@ -1408,7 +1909,7 @@ def test_vision_ocr_gives_up_when_deadline_passes(monkeypatch) -> None:
 
     def _gateway(*_a, **_k):
         clock["t"] += 5.0  # each attempt advances the clock toward the deadline
-        raise ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
+        raise ProviderError("HTTP 502", kind=ProviderErrorKind.SERVER)
 
     client = _fake_client()
     client.chat_abortable.side_effect = _gateway
@@ -1441,7 +1942,7 @@ def test_vision_ocr_does_not_retry_non_busy_errors(monkeypatch) -> None:
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     client = _fake_client()
-    client.chat_abortable.side_effect = ProviderError("boom", provider="llama-server")
+    client.chat_abortable.side_effect = ProviderError("boom")
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     with pytest.raises(ProviderError, match="boom"):
         p.vision_ocr(b"png", "org/repo/v.gguf")
@@ -1460,7 +1961,7 @@ def test_vision_pool_pairs_each_replica_with_its_fitted_slots(monkeypatch) -> No
         _fake_launch(WorkerRole.VISION, slots=3),
         _fake_launch(WorkerRole.VISION, slots=2, replica=1),
     )
-    assert p._vision_pool() == [
+    assert p._live_vision_pool(float("inf")).pick(list) == [
         prov_mod._VisionReplica(first_client, 3),
         prov_mod._VisionReplica(second_client, 2),
     ]
@@ -1471,7 +1972,7 @@ def test_vision_pool_falls_back_to_configured_slots(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
     client = _fake_client()
     p = _provider_with_clients({WorkerRole.VISION: [client]})
-    assert p._vision_pool() == [prov_mod._VisionReplica(client, 4)]
+    assert p._live_vision_pool(float("inf")).pick(list) == [prov_mod._VisionReplica(client, 4)]
 
 
 def test_vision_pool_falls_back_on_launch_client_mismatch(monkeypatch) -> None:
@@ -1482,7 +1983,8 @@ def test_vision_pool_falls_back_on_launch_client_mismatch(monkeypatch) -> None:
     p = _provider_with_clients({WorkerRole.VISION: clients})
     p._role_group[WorkerRole.VISION] = SwapGroup.VISION
     p._launches[SwapGroup.VISION] = (_fake_launch(WorkerRole.VISION, slots=3),)
-    assert [replica.slots for replica in p._vision_pool()] == [4, 4]
+    pool = p._live_vision_pool(float("inf"))
+    assert [replica.slots for replica in pool.pick(list)] == [4, 4]
 
 
 def test_vision_slot_capacity_sums_fitted_launch_slots() -> None:
@@ -1508,7 +2010,7 @@ def ocr_gated_engine(monkeypatch, tmp_path: Path):
     by_role = {role: _fake_launch(role) for role in (WorkerRole.CHAT, WorkerRole.VISION)}
     plans: list[set[WorkerRole]] = []
 
-    def _plan(roles, *_args) -> planning_mod.FleetPlan:
+    def _plan(roles, *_args, engines) -> planning_mod.FleetPlan:
         plans.append(set(roles))
         return planning_mod.FleetPlan(tuple(by_role[role] for role in by_role if role in roles))
 
@@ -1516,8 +2018,11 @@ def ocr_gated_engine(monkeypatch, tmp_path: Path):
     ocr_client.chat_abortable.return_value = "ocr text"
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: ocr_client)
     monkeypatch.setattr(planning_mod, "plan_all_launches", _real_plan_all_launches)
-    monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
-    monkeypatch.setattr(planning_mod, "_plan_devices", lambda _binary: [])
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+        lambda: Path("/bin/llama-server"),
+    )
+    monkeypatch.setattr(planning_mod, "_plan_devices", lambda _binary, engine: [])
     monkeypatch.setattr(planning_mod, "plan_launches", _plan)
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     yield SimpleNamespace(swap=swap, plans=plans)
@@ -1618,12 +2123,12 @@ def test_concurrent_vision_ocr_with_ocr_off_starts_vision_once(
 
     plan = planning_mod.plan_launches
 
-    def _held_plan(roles, *args) -> planning_mod.FleetPlan:
+    def _held_plan(roles, *args, engines) -> planning_mod.FleetPlan:
         if WorkerRole.VISION in roles:
             # Hold the first vision re-plan until every page is inside the start.
             with arrived:
                 assert arrived.wait_for(lambda: arrivals["n"] == pages, timeout=10)
-        return plan(roles, *args)
+        return plan(roles, *args, engines=engines)
 
     monkeypatch.setattr(p, "_serve_vision_on_request", _counted_serve)
     monkeypatch.setattr(planning_mod, "plan_launches", _held_plan)
@@ -1651,7 +2156,7 @@ def test_a_failed_vision_start_lets_the_next_page_retry(monkeypatch, ocr_gated_e
     p = _provider_without_preload(monkeypatch)
     p._ensure_fleet()
     reload_pass = p._reload_pass
-    failures = iter([ProviderError("engine refused", provider="llama-server")])
+    failures = iter([ProviderError("engine refused")])
 
     def _fail_once(*args, **kwargs) -> None:
         failure = next(failures, None)
@@ -1686,7 +2191,7 @@ def test_vision_dispatcher_caps_each_replica_at_its_slots() -> None:
 
     dispatcher = prov_mod._VisionDispatcher()
     replica_a, replica_b = _fake_client(), _fake_client()
-    pool = [prov_mod._VisionReplica(replica_a, 2), prov_mod._VisionReplica(replica_b, 1)]
+    pool = _pool(prov_mod._VisionReplica(replica_a, 2), prov_mod._VisionReplica(replica_b, 1))
 
     lock = threading.Lock()
     live: dict[int, int] = {}
@@ -1725,7 +2230,7 @@ def test_vision_dispatcher_blocks_on_a_full_pool_until_a_slot_frees() -> None:
 
     dispatcher = prov_mod._VisionDispatcher()
     only = _fake_client()
-    pool = [prov_mod._VisionReplica(only, 1)]
+    pool = _pool(prov_mod._VisionReplica(only, 1))
 
     acquired = threading.Event()
 
@@ -1751,7 +2256,7 @@ def test_vision_dispatcher_prefers_replica_with_most_free_slots() -> None:
     # the most free slots, not to whichever raced ahead.
     dispatcher = prov_mod._VisionDispatcher()
     roomy, tight = _fake_client(), _fake_client()
-    pool = [prov_mod._VisionReplica(tight, 1), prov_mod._VisionReplica(roomy, 3)]
+    pool = _pool(prov_mod._VisionReplica(tight, 1), prov_mod._VisionReplica(roomy, 3))
     with dispatcher.slot(pool) as first, dispatcher.slot(pool) as second:
         assert first is roomy  # 3 free beats 1
         assert second is roomy  # still 2 free vs 1
@@ -1765,7 +2270,7 @@ def test_vision_dispatcher_skips_unhealthy_replica() -> None:
     dispatcher = prov_mod._VisionDispatcher()
     dead, alive = _fake_client(), _fake_client()
     dead.healthy = False
-    pool = [prov_mod._VisionReplica(dead, 4), prov_mod._VisionReplica(alive, 1)]
+    pool = _pool(prov_mod._VisionReplica(dead, 4), prov_mod._VisionReplica(alive, 1))
     with dispatcher.slot(pool) as client:
         assert client is alive
 
@@ -1777,7 +2282,7 @@ def test_vision_dispatcher_falls_back_when_all_unhealthy() -> None:
     dispatcher = prov_mod._VisionDispatcher()
     dead = _fake_client()
     dead.healthy = False
-    pool = [prov_mod._VisionReplica(dead, 1)]
+    pool = _pool(prov_mod._VisionReplica(dead, 1))
     with dispatcher.slot(pool) as client:
         assert client is dead
 
@@ -1792,7 +2297,7 @@ def test_dispatch_vision_fails_over_and_marks_health() -> None:
     dead, alive = _fake_client(), _fake_client()
     dead.chat.side_effect = _httpx.ConnectError("refused")
     alive.chat.return_value = "ocr text"
-    pool = [prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(alive, 1)]
+    pool = _pool(prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(alive, 1))
     result = prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False))
     assert result == "ocr text"
     dead.mark_unhealthy.assert_called_once()
@@ -1803,7 +2308,7 @@ def test_dispatch_vision_fails_over_and_marks_health() -> None:
     lone.chat.side_effect = _httpx.ConnectError("refused")
     with pytest.raises(ProviderError, match="no healthy replica"):
         prov_mod._dispatch_vision(
-            [prov_mod._VisionReplica(lone, 1)],
+            _pool(prov_mod._VisionReplica(lone, 1)),
             lambda c: c.chat([], options={}, stream=False),
         )
 
@@ -1824,9 +2329,9 @@ def test_dispatch_vision_failover_wait_stops_on_cancel() -> None:
         raise _httpx.ConnectError("refused")
 
     dead.chat.side_effect = _refuse
-    pool = [prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(busy, 1)]
+    pool = _pool(prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(busy, 1))
     with (
-        prov_mod._VISION_DISPATCHER.slot([prov_mod._VisionReplica(busy, 1)]),
+        prov_mod._VISION_DISPATCHER.slot(_pool(prov_mod._VisionReplica(busy, 1))),
         pytest.raises(TaskCancelledError),
     ):
         prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False), cancel)
@@ -1850,7 +2355,13 @@ def _exited_embed_client(
 
     http = _httpx.Client(transport=_httpx.MockTransport(_handler), base_url="http://swap")
     return LlamaServerClient(
-        "http://swap", "embed-0", http=http, model_ref=model_ref, engine_log=engine_log
+        "http://swap",
+        "embed-0",
+        http=http,
+        model_ref=model_ref,
+        engine_log=engine_log,
+        rerank_pair=RerankPair(head=(1,), middle=(2,), tail=(2,)),
+        profile=LLAMA.request_profile(WorkerRole.CHAT),
     )
 
 
@@ -1862,7 +2373,7 @@ def test_lone_replica_whose_engine_exited_names_the_death_and_the_log(monkeypatc
     log = Path("/engine/logs/llama-swap-embed.log")
     client = _exited_embed_client(log)
     with pytest.raises(ProviderError) as info:
-        prov_mod._call_with_failover([client], lambda c: c.embed(["a"]))
+        prov_mod._call_with_failover(_pool(client), lambda c: c.embed(["a"]))
     assert str(info.value) == (
         f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500). "
         f"The full engine output is in {log}."
@@ -1876,7 +2387,7 @@ def test_exited_engine_without_a_known_log_still_names_the_death(monkeypatch) ->
 
     monkeypatch.setattr(client_mod, "_fetch_log_tail", lambda _url: "")
     with pytest.raises(ProviderError) as info:
-        prov_mod._call_with_failover([_exited_embed_client(None)], lambda c: c.embed(["a"]))
+        prov_mod._call_with_failover(_pool(_exited_embed_client(None)), lambda c: c.embed(["a"]))
     assert str(info.value) == (
         f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500)."
     )
@@ -1890,7 +2401,7 @@ def test_lone_rerank_replica_whose_engine_exited_names_the_model_and_the_log(mon
     log = Path("/engine/logs/llama-swap-rerank.log")
     client = _exited_embed_client(log)
     with pytest.raises(ProviderError) as info:
-        prov_mod._call_with_failover([client], lambda c: c.rerank("q", ["a"]))
+        prov_mod._call_with_failover(_pool(client), lambda c: c.rerank("q", ["a"]))
     assert str(info.value) == (
         f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500). "
         f"The full engine output is in {log}."
@@ -1907,7 +2418,7 @@ def test_lone_unreachable_replica_keeps_the_not_responding_text() -> None:
     lone.engine_log = Path("/engine/logs/llama-swap-embed.log")
     lone.embed.side_effect = _httpx.ConnectError("refused")
     with pytest.raises(ProviderError) as info:
-        prov_mod._call_with_failover([lone], lambda c: c.embed(["a"]))
+        prov_mod._call_with_failover(_pool(lone), lambda c: c.embed(["a"]))
     assert str(info.value) == (
         "The model server is not responding and no healthy replica is available. "
         "It may be restarting; try again in a moment."
@@ -1923,7 +2434,7 @@ def test_lone_vision_replica_whose_engine_exited_names_the_death(monkeypatch) ->
     lone = _exited_embed_client(log)
     with pytest.raises(ProviderError) as info:
         prov_mod._dispatch_vision(
-            [prov_mod._VisionReplica(lone, 1)],
+            _pool(prov_mod._VisionReplica(lone, 1)),
             lambda c: c.embed(["a"]),
         )
     assert str(info.value) == (
@@ -1955,9 +2466,11 @@ def test_request_through_the_fleet_names_the_model_and_the_engine_own_log(
     swap.log_path = Path("/engine/logs/llama-swap-embed.log")
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: swap)
     monkeypatch.setattr(prov_mod, "_configured_model_for", lambda r: "m" if r is role else "")
-    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
     monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan((launch,))
+        planning_mod, "role_model_placeable", lambda _role, _ref, _vram, *, engine: True
+    )
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
     )
     monkeypatch.setattr(
         prov_mod,
@@ -1976,22 +2489,37 @@ def test_request_through_the_fleet_names_the_model_and_the_engine_own_log(
 
 def test_dispatch_vision_marks_second_replica_unhealthy_on_retry_failure() -> None:
     # The failover leg stamps health too: a second dead replica is marked
-    # unhealthy and the failure propagates.
+    # unhealthy and the failure surfaces as the not-responding provider error.
     import httpx as _httpx
 
     dead_a, dead_b = _fake_client(), _fake_client()
+    refused = _httpx.ConnectError("refused")
     dead_a.chat.side_effect = _httpx.ConnectError("refused")
-    dead_b.chat.side_effect = _httpx.ConnectError("refused")
-    pool = [prov_mod._VisionReplica(dead_a, 2), prov_mod._VisionReplica(dead_b, 1)]
-    with pytest.raises(_httpx.ConnectError):
+    dead_b.chat.side_effect = refused
+    pool = _pool(prov_mod._VisionReplica(dead_a, 2), prov_mod._VisionReplica(dead_b, 1))
+    with pytest.raises(ProviderError, match="not responding") as caught:
         prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False))
+    assert caught.value.kind is ProviderErrorKind.CONNECTION
+    assert caught.value.__cause__ is refused
     dead_a.mark_unhealthy.assert_called_once()
     dead_b.mark_unhealthy.assert_called_once()
 
 
+def test_dispatch_vision_model_error_on_the_retry_replica_surfaces_unchanged() -> None:
+    dead, other = _fake_client(), _fake_client()
+    rejected = ProviderError("bad image", kind=ProviderErrorKind.BAD_REQUEST)
+    dead.chat.side_effect = httpx.ConnectError("refused")
+    other.chat.side_effect = rejected
+    pool = _pool(prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(other, 1))
+    with pytest.raises(ProviderError) as caught:
+        prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False))
+    assert caught.value is rejected
+    other.mark_unhealthy.assert_not_called()
+
+
 def test_chat_streams_from_server() -> None:
     client = _fake_client(0)
-    client.chat_stream_items.return_value = iter(["a", "b"])
+    client.chat_stream_items.return_value = _frames_of("a", "b")
     p = _provider_with_clients({WorkerRole.CHAT: [client]})
     assert list(p.chat([{"role": "user", "content": "hi"}], stream=True)) == ["a", "b"]
     client.chat_stream_items.assert_called_once()
@@ -2000,7 +2528,7 @@ def test_chat_streams_from_server() -> None:
 def test_chat_stream_with_no_frames_yields_nothing() -> None:
     # Priming must pass an immediately-exhausted stream through, not error on it.
     client = _fake_client(0)
-    client.chat_stream_items.return_value = iter([])
+    client.chat_stream_items.return_value = _frames_of()
     p = _provider_with_clients({WorkerRole.CHAT: [client]})
     assert list(p.chat([{"role": "user", "content": "hi"}], stream=True)) == []
 
@@ -2023,9 +2551,1005 @@ def test_chat_stream_close_before_iteration_releases_the_request() -> None:
     assert closed == [True]  # the source stream (and its request slot) was released
 
 
-def test_supports_rerank_always_true() -> None:
-    # llama-server reranks any cross-encoder GGUF via --pooling rank.
+def _frames_of(*frames: str) -> Generator[str]:
+    """A closable frame stream, as the real client's chat_stream_items returns."""
+    yield from frames
+
+
+def _counting_client() -> MagicMock:
+    """A fake client whose reserve and release move ``in_flight`` like the real one."""
+    client = _fake_client(0)
+
+    def _reserve() -> None:
+        client.in_flight += 1
+
+    def _release() -> None:
+        client.in_flight -= 1
+
+    client.reserve.side_effect = _reserve
+    client.release.side_effect = _release
+    return client
+
+
+def _reload_twice_away_from(p: FleetProvider, old: MagicMock) -> None:
+    """Two reloads in a row: the first retires *old*, the second closes idle retired clients."""
+    p._clients = {WorkerRole.CHAT: [_counting_client()]}
+    with p._lock:
+        p._retire_clients([old])
+        p._retire_clients([])
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_chat_client_is_not_closed_by_reloads_during_its_request(streaming: bool) -> None:
+    from lilbee.providers.base import ChatResult, FinishReason
+
+    client = _counting_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+
+    def _request(*_args: object, **_kwargs: object) -> object:
+        # The reloads land after the pick and before the call counts itself.
+        _reload_twice_away_from(p, client)
+        client.close.assert_not_called()
+        if streaming:
+            return _frames_of("a")
+        return ChatResult(text="a", tool_calls=(), finish_reason=FinishReason.STOP)
+
+    client.chat_stream_items.side_effect = _request
+    client.chat_result.side_effect = _request
+    if streaming:
+        assert list(p.chat([{"role": "user", "content": "hi"}], stream=True)) == ["a"]
+    else:
+        result = p.chat([{"role": "user", "content": "hi"}])
+        assert result.text == "a"
+    assert client.in_flight == 0  # the reservation is given back
+
+
+def test_chat_with_tools_client_is_not_closed_by_reloads_during_its_request() -> None:
+    from lilbee.providers.base import ChatToolResult
+
+    client = _counting_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+
+    def _request(*_args: object, **_kwargs: object) -> object:
+        _reload_twice_away_from(p, client)
+        client.close.assert_not_called()
+        return ChatToolResult(content="a", tool_calls=[])
+
+    client.chat_tools.side_effect = _request
+    p.chat_with_tools([{"role": "user", "content": "hi"}], tools=[{"type": "function"}])
+    assert client.in_flight == 0
+
+
+def test_chat_forwards_the_whole_request_to_the_reserved_client() -> None:
+    from lilbee.providers.base import ChatResult, FinishReason
+
+    client = _counting_client()
+    client.chat_result.return_value = ChatResult(
+        text="a", tool_calls=(), finish_reason=FinishReason.STOP
+    )
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function"}]
+    p.chat(messages, tools=tools, tool_choice="auto", options={"temperature": 0.2})
+    client.chat_result.assert_called_once_with(
+        messages, tools=tools, tool_choice="auto", options={"temperature": 0.2}
+    )
+
+
+def test_chat_stream_forwards_the_whole_request_to_the_reserved_client() -> None:
+    client = _counting_client()
+    client.chat_stream_items.return_value = _frames_of("a")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function"}]
+    stream = p.chat(
+        messages, stream=True, tools=tools, tool_choice="auto", options={"temperature": 0.2}
+    )
+    assert list(stream) == ["a"]
+    client.chat_stream_items.assert_called_once_with(
+        messages, tools=tools, tool_choice="auto", options={"temperature": 0.2}
+    )
+
+
+def test_chat_with_tools_forwards_the_whole_request_to_the_reserved_client() -> None:
+    from lilbee.providers.base import ChatToolResult
+
+    client = _counting_client()
+    client.chat_tools.return_value = ChatToolResult(content="a", tool_calls=[])
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function"}]
+    p.chat_with_tools(messages, tools=tools, tool_choice="auto", options={"temperature": 0.2})
+    client.chat_tools.assert_called_once_with(
+        messages, tools=tools, tool_choice="auto", options={"temperature": 0.2}
+    )
+
+
+_CHAT_MESSAGES = [{"role": "user", "content": "hi"}]
+_CHAT_TOOLS = [{"type": "function"}]
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda p: p.chat(_CHAT_MESSAGES, tools=_CHAT_TOOLS, options={"temperature": 0.2}),
+        lambda p: p.chat_with_tools(
+            _CHAT_MESSAGES, tools=_CHAT_TOOLS, options={"temperature": 0.2}
+        ),
+    ],
+    ids=["chat", "chat_with_tools"],
+)
+def test_chat_fits_the_context_to_the_configured_model(monkeypatch, invoke) -> None:
+    monkeypatch.setattr(cfg, "chat_model", "org/repo/configured.gguf")
+    p = _provider_with_clients({WorkerRole.CHAT: [_counting_client()]})
+    seen: list[tuple[object, ...]] = []
+
+    def _fit(*args: object) -> object:
+        seen.append(args)
+        return _CHAT_MESSAGES
+
+    monkeypatch.setattr(p, "_fit_chat_context", _fit)
+    invoke(p)
+    assert seen == [
+        (_CHAT_MESSAGES, _CHAT_TOOLS, {"temperature": 0.2}, "org/repo/configured.gguf", None)
+    ]
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda p, model: p.chat_with_tools(_CHAT_MESSAGES, tools=_CHAT_TOOLS, model=model),
+        lambda p, model: p.count_chat_prompt_tokens(_CHAT_MESSAGES, model=model),
+    ],
+    ids=["chat_with_tools", "count_chat_prompt_tokens"],
+)
+def test_chat_calls_accept_only_the_configured_model(monkeypatch, invoke) -> None:
+    monkeypatch.setattr(cfg, "chat_model", "org/repo/configured.gguf")
+    p = _provider_with_clients({WorkerRole.CHAT: [_counting_client()]})
+    invoke(p, "org/repo/configured.gguf")
+    with pytest.raises(ProviderError, match=r"configured chat model \(org/repo/configured.gguf\)"):
+        invoke(p, "org/repo/other.gguf")
+
+
+@pytest.mark.parametrize(
+    ("method", "invoke"),
+    [
+        ("chat_result", lambda p: p.chat(_CHAT_MESSAGES)),
+        ("chat_stream_items", lambda p: p.chat(_CHAT_MESSAGES, stream=True)),
+        ("chat_tools", lambda p: p.chat_with_tools(_CHAT_MESSAGES, tools=_CHAT_TOOLS)),
+        ("count_text_tokens", lambda p: p.count_chat_text_tokens("hi")),
+        ("count_chat_prompt_tokens", lambda p: p.count_chat_prompt_tokens(_CHAT_MESSAGES)),
+    ],
+)
+def test_chat_load_failure_rebuilds_the_chat_role(monkeypatch, method, invoke) -> None:
+    client = _counting_client()
+    getattr(client, method).side_effect = ProviderError("no room", kind=ProviderErrorKind.CAPACITY)
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    roles: list[WorkerRole] = []
+
+    def _rebuilt(_call: object, role: WorkerRole, _err: BaseException) -> str:
+        roles.append(role)
+        return "rebuilt"
+
+    monkeypatch.setattr(p, "_retry_rebuilt", _rebuilt)
+    assert invoke(p) == "rebuilt"
+    assert roles == [WorkerRole.CHAT]
+
+
+_SERVED_CHAT_URL = "http://127.0.0.1:8080/v1/chat/completions"
+
+
+def _timing_out_chat(monkeypatch, adapter: object, method: str, error: Exception):
+    """A chat provider whose *method* fails with *error*, served by *adapter*."""
+    client = _counting_client()
+    client.profile = adapter.request_profile(WorkerRole.CHAT)
+    client.sent.side_effect = lambda request: str(request.url) == _SERVED_CHAT_URL
+    getattr(client, method).side_effect = error
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
+    restarted: list[WorkerRole] = []
+    monkeypatch.setattr(p, "_force_restart", lambda role, **_k: restarted.append(role))
+    monkeypatch.setattr(p, "_rebuild_role", restarted.append)
+    return p, client, restarted
+
+
+_TIMED_CHATS = [
+    ("chat_result", lambda p: p.chat(_CHAT_MESSAGES)),
+    ("chat_tools", lambda p: p.chat_with_tools(_CHAT_MESSAGES, tools=_CHAT_TOOLS)),
+]
+
+
+@pytest.mark.parametrize(("method", "invoke"), _TIMED_CHATS)
+def test_a_timeout_on_mlx_restarts_the_chat_server_and_sends_no_retry(
+    monkeypatch, method, invoke
+) -> None:
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    timeout = httpx.ReadTimeout("no answer", request=httpx.Request("POST", _SERVED_CHAT_URL))
+    p, client, restarted = _timing_out_chat(monkeypatch, MLX, method, timeout)
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        invoke(p)
+    assert caught.value.__cause__ is timeout
+    assert restarted == [WorkerRole.CHAT]
+    assert getattr(client, method).call_count == 1
+
+
+@pytest.mark.parametrize(("method", "invoke"), _TIMED_CHATS)
+def test_a_timeout_on_llama_cpp_keeps_the_one_retry_and_no_restart(
+    monkeypatch, method, invoke
+) -> None:
+    p, client, restarted = _timing_out_chat(monkeypatch, LLAMA, method, httpx.ReadTimeout("slow"))
+    with pytest.raises(ProviderError, match="not responding"):
+        invoke(p)
+    assert restarted == []
+    assert getattr(client, method).call_count == 2
+
+
+# What the user reads after the retry: the model server and the wait.
+_SILENT_MESSAGE = r"^The model server sent no answer for 120 s, so the request stopped\.$"
+
+
+def _silent_stream() -> httpx.ReadTimeout:
+    """The error of a chat stream that sent its headers and then no frame."""
+    from lilbee.providers.fleet.client import StreamSilentError
+
+    return StreamSilentError(120.0, request=httpx.Request("POST", _SERVED_CHAT_URL))
+
+
+def test_a_silent_stream_on_llama_cpp_takes_the_one_retry_and_no_restart(monkeypatch) -> None:
+    silent = _silent_stream()
+    p, client, restarted = _timing_out_chat(monkeypatch, LLAMA, "chat_stream_items", silent)
+    with pytest.raises(ProviderError, match=_SILENT_MESSAGE) as caught:
+        p.chat(_CHAT_MESSAGES, stream=True)
+    assert caught.value.__cause__ is silent
+    assert restarted == []
+    assert client.chat_stream_items.call_count == 2
+
+
+def test_a_silent_stream_on_mlx_restarts_the_chat_server_and_sends_no_retry(monkeypatch) -> None:
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    silent = _silent_stream()
+    p, client, restarted = _timing_out_chat(monkeypatch, MLX, "chat_stream_items", silent)
+    with pytest.raises(ProviderError, match=_SILENT_MESSAGE) as caught:
+        p.chat(_CHAT_MESSAGES, stream=True)
+    assert caught.value.__cause__ is silent
+    assert restarted == [WorkerRole.CHAT]
+    assert client.chat_stream_items.call_count == 1
+
+
+def test_a_timeout_on_llama_cpp_keeps_its_retry_when_the_engine_choice_is_gone(
+    monkeypatch,
+) -> None:
+    p, client, restarted = _timing_out_chat(
+        monkeypatch,
+        LLAMA,
+        "chat_result",
+        httpx.ReadTimeout("slow", request=httpx.Request("POST", _SERVED_CHAT_URL)),
+    )
+
+    def gone(_role: WorkerRole) -> object:
+        raise ProviderError("The engine is gone.")
+
+    monkeypatch.setattr(p, "_adopt_engine", gone)
+    with pytest.raises(ProviderError, match="not responding"):
+        p.chat(_CHAT_MESSAGES)
+    assert restarted == []
+    assert client.chat_result.call_count == 2
+
+
+def test_a_refused_connection_on_mlx_takes_the_retry_and_no_restart(monkeypatch) -> None:
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    refused = httpx.ConnectError("refused")
+    p, client, restarted = _timing_out_chat(monkeypatch, MLX, "chat_result", refused)
+    with pytest.raises(ProviderError, match="not responding"):
+        p.chat(_CHAT_MESSAGES)
+    assert restarted == []
+    assert client.chat_result.call_count == 2
+
+
+def test_vision_ocr_client_is_not_closed_by_reloads_during_its_request(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _counting_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    held: list[int] = []
+
+    def _request(*_args: object, **_kwargs: object) -> str:
+        _reload_twice_away_from(p, client)
+        client.close.assert_not_called()
+        held.append(client.in_flight)
+        return "ocr text"
+
+    client.chat_abortable.side_effect = _request
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
+    assert held == [1]  # reserved while the call ran
+    assert client.in_flight == 0  # given back
+
+
+def test_vision_ocr_gives_the_reservation_back_when_it_fails(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _counting_client()
+    client.chat_abortable.side_effect = ProviderError("boom")
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    with pytest.raises(ProviderError, match="boom"):
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert client.in_flight == 0
+
+
+def test_vision_failover_reserves_each_replica_only_while_it_runs() -> None:
+    failed, spare = _counting_client(), _counting_client()
+    seen: list[tuple[int, int]] = []
+
+    def _call(client: MagicMock) -> str:
+        seen.append((failed.in_flight, spare.in_flight))
+        if client is failed:
+            raise httpx.ConnectError("refused")
+        return "ok"
+
+    pool = _pool(prov_mod._VisionReplica(failed, 1), prov_mod._VisionReplica(spare, 1))
+    assert prov_mod._dispatch_vision(pool, _call) == "ok"
+    assert seen == [(1, 0), (0, 1)]  # the failed replica is let go before the retry
+    assert (failed.in_flight, spare.in_flight) == (0, 0)
+
+
+def test_vision_ocr_cancelled_while_waiting_reserves_nothing(monkeypatch) -> None:
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    class _CancelAfterOneWait:
+        """Not set on the first poll, so the request waits; set on the next."""
+
+        def __init__(self) -> None:
+            self.polls = 0
+
+        def is_set(self) -> bool:
+            self.polls += 1
+            return self.polls > 1
+
+    monkeypatch.setattr(prov_mod, "_DISPATCH_HEALTH_RECHECK_S", 0.01)
+    busy, cancel = _counting_client(), _CancelAfterOneWait()
+    pool = _pool(prov_mod._VisionReplica(busy, 1))
+    with prov_mod._VISION_DISPATCHER.slot(pool):
+        with pytest.raises(TaskCancelledError):
+            prov_mod._dispatch_vision(pool, lambda c: "x", cancel)
+        assert cancel.polls == 2  # it waited once, then saw the cancel
+        assert busy.in_flight == 1  # only the slot holder's reservation
+    assert busy.in_flight == 0
+
+
+def _serving_client(served: list[bool]) -> MagicMock:
+    """A counting client that records, at each call, whether a reload had closed it."""
+    from lilbee.providers.base import ChatResult, FinishReason
+
+    client = _counting_client()
+
+    def _serve(result: object) -> Callable[..., object]:
+        def _call(*_args: object, **_kwargs: object) -> object:
+            served.append(client.close.called)
+            return result
+
+        return _call
+
+    client.chat_result.side_effect = _serve(
+        ChatResult(text="a", tool_calls=(), finish_reason=FinishReason.STOP)
+    )
+    client.chat_stream_items.side_effect = lambda *_a, **_k: _serve(_frames_of("a"))()
+    client.embed.side_effect = _serve([[0.1]])
+    return client
+
+
+@pytest.mark.parametrize("route", ["chat", "stream", "embed"])
+def test_a_pick_after_two_reloads_reserves_a_live_client(monkeypatch, route: str) -> None:
+    # Each pool read is followed by two reloads: the first retires what the read
+    # returned, the second closes it while idle. The pick must not land on it.
+    role = WorkerRole.EMBED if route == "embed" else WorkerRole.CHAT
+    served: list[bool] = []
+    p = _provider_with_clients({role: [_serving_client(served)]})
+    read = p._require_clients
+
+    def _read_then_reload_twice(asked: WorkerRole) -> list[LlamaServerClient]:
+        clients = read(asked)
+        p._clients[role] = [_serving_client(served)]
+        with p._lock:
+            p._retire_clients(list(clients))
+            p._retire_clients([])
+        return clients
+
+    monkeypatch.setattr(p, "_require_clients", _read_then_reload_twice)
+    messages = [{"role": "user", "content": "hi"}]
+    if route == "embed":
+        assert p.embed(["x"]) == [[0.1]]
+    elif route == "stream":
+        assert list(p.chat(messages, stream=True)) == ["a"]
+    else:
+        assert p.chat(messages).text == "a"
+    assert served == [False]  # one call, on a client no reload closed
+
+
+def test_an_ocr_pick_after_two_reloads_in_its_slot_wait_reserves_a_live_client(
+    monkeypatch,
+) -> None:
+    # Page one holds the only slot on the old client. Page two waits for a slot;
+    # two reloads during that wait retire and close the old client. When the slot
+    # frees, page two must run on the new client.
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
+    old, new = _fake_client(), _fake_client()  # in_flight stays 0: the reload closes old
+    entered, finish = threading.Event(), threading.Event()
+    served: list[tuple[str, bool]] = []
+
+    def _old_call(*_args: object, **_kwargs: object) -> str:
+        served.append(("old", old.close.called))
+        entered.set()
+        finish.wait(10)
+        return "old text"
+
+    old.chat_abortable.side_effect = _old_call
+    new.chat_abortable.return_value = "new text"
+    p = _provider_with_clients({WorkerRole.VISION: [old]})
+
+    class _SeesTheWait:
+        """Never set; marks that page two found the pool full and waited at least once."""
+
+        def __init__(self) -> None:
+            self.polls = 0
+            self.waiting = threading.Event()
+
+        def is_set(self) -> bool:
+            # Each pass polls twice, the dispatcher and then the pool's reload wait,
+            # so a third poll comes after page two waited once on the full pool.
+            self.polls += 1
+            if self.polls >= 3:
+                self.waiting.set()
+            return False
+
+    results: list[str] = []
+    first = threading.Thread(target=lambda: results.append(p.vision_ocr(b"png", "")))
+    first.start()
+    assert entered.wait(10)
+    probe = _SeesTheWait()
+    second = threading.Thread(target=lambda: results.append(p.vision_ocr(b"png", "", cancel=probe)))
+    second.start()
+    assert probe.waiting.wait(10)
+    p._clients[WorkerRole.VISION] = [new]
+    with p._lock:
+        p._retire_clients([old])
+        p._retire_clients([])
+    old.close.assert_called_once()  # the second reload closed the idle old client
+    finish.set()
+    first.join(10)
+    second.join(10)
+    assert sorted(results) == ["new text", "old text"]
+    assert served == [("old", False)]  # only page one ran on old, before it closed
+
+
+def test_vision_ocr_attempts_a_failing_fleet_check_once(monkeypatch) -> None:
+    # A build that fails with a retryable kind surfaces at once, not after the
+    # gateway retries: the fleet check runs once, outside the retry loop.
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    checks: list[WorkerRole] = []
+
+    def _engine_missing(role: WorkerRole) -> list[LlamaServerClient]:
+        checks.append(role)
+        raise ProviderError("the engine library is missing", kind=ProviderErrorKind.SERVER)
+
+    monkeypatch.setattr(p, "_require_clients", _engine_missing)
+    with pytest.raises(ProviderError, match="engine library is missing"):
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert checks == [WorkerRole.VISION]
+    client.chat_abortable.assert_not_called()
+
+
+def _start_vision_reload(p: FleetProvider, monkeypatch) -> None:
+    """After the call's fleet check, a reload drops vision; *owed* says one brings it back."""
+    check = p._require_clients
+
+    def _check_then_drop(role: WorkerRole) -> list[LlamaServerClient]:
+        clients = check(role)
+        p._clients.pop(WorkerRole.VISION)
+        p._reload_owed = frozenset({WorkerRole.VISION})
+        return clients
+
+    monkeypatch.setattr(p, "_require_clients", _check_then_drop)
+
+
+def test_vision_ocr_sees_a_cancel_while_a_reload_owes_its_clients(monkeypatch) -> None:
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    class _CancelOnSecondPoll:
+        """Not set on the dispatcher's first poll; set on the reload wait's poll."""
+
+        def __init__(self) -> None:
+            self.polls = 0
+
+        def is_set(self) -> bool:
+            self.polls += 1
+            return self.polls > 1
+
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    _start_vision_reload(p, monkeypatch)
+    cancel = _CancelOnSecondPoll()
+    with pytest.raises(TaskCancelledError):
+        p.vision_ocr(b"png", "org/repo/v.gguf", cancel=cancel)
+    assert cancel.polls == 2  # the reload wait checked the cancel
+    client.chat_abortable.assert_not_called()
+
+
+def test_vision_ocr_waits_out_a_reload_and_runs_on_the_new_client(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    old, new = _fake_client(), _fake_client()
+    new.chat_abortable.return_value = "new text"
+    p = _provider_with_clients({WorkerRole.VISION: [old]})
+    _start_vision_reload(p, monkeypatch)
+
+    class _CountedCondition(threading.Condition):
+        """The reload condition; counts the wait slices that start on it."""
+
+        waits = 0
+
+        def wait(self, timeout: float | None = None) -> bool:
+            self.waits += 1
+            return super().wait(timeout)
+
+    reload_done = _CountedCondition(p._lock)
+    monkeypatch.setattr(p, "_reload_done", reload_done)
+    results: list[str] = []
+    page = threading.Thread(
+        target=lambda: results.append(p.vision_ocr(b"png", "org/repo/v.gguf")), daemon=True
+    )
+    page.start()
+    assert poll_until(lambda: reload_done.waits >= 2)  # one recheck passed, still owed
+    with p._lock:
+        p._clients[WorkerRole.VISION] = [new]
+        p._reload_owed = frozenset()
+        p._reload_done.notify_all()
+    page.join(10)
+    assert results == ["new text"]
+    old.chat_abortable.assert_not_called()
+
+
+def test_vision_ocr_raises_when_a_reload_left_no_vision_server(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    _start_vision_reload(p, monkeypatch)
+    check = p._require_clients
+
+    def _check_then_drop_for_good(role: WorkerRole) -> list[LlamaServerClient]:
+        clients = check(role)
+        p._reload_owed = frozenset()  # the reload ended without vision
+        return clients
+
+    monkeypatch.setattr(p, "_require_clients", _check_then_drop_for_good)
+    with pytest.raises(ProviderError) as expected:
+        p._raise_no_clients(WorkerRole.VISION)
+    with pytest.raises(ProviderError, match=re.escape(str(expected.value))):
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    client.chat_abortable.assert_not_called()
+
+
+class _ReloadClock:
+    """A fake clock and reload condition: each wait slice moves the clock by its timeout.
+
+    The reload never brings vision back, so only a deadline ends the wait; a wait
+    with no end fails after *max_waits* slices instead of hanging the test.
+    """
+
+    def __init__(self, max_waits: int = 50) -> None:
+        self.now = 0.0
+        self.waits: list[float] = []
+        self._max_waits = max_waits
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def wait(self, timeout: float | None = None) -> bool:
+        assert timeout is not None, "a reload wait slice has no timeout"
+        self.waits.append(timeout)
+        assert len(self.waits) <= self._max_waits, "the reload wait never ended"
+        self.now += timeout
+        return False
+
+    def wait_for(self, predicate: Callable[[], bool], timeout: float | None = None) -> bool:
+        if not predicate():
+            self.wait(timeout)
+        return predicate()
+
+    def notify_all(self) -> None:
+        return None
+
+
+def _install_reload_clock(p: FleetProvider, monkeypatch) -> _ReloadClock:
+    clock = _ReloadClock()
+    monkeypatch.setattr("lilbee.providers.fleet.provider.time.monotonic", clock.monotonic)
+    monkeypatch.setattr(p, "_reload_done", clock)
+    return clock
+
+
+def _owed_vision_page(
+    monkeypatch, load_budget: float
+) -> tuple[FleetProvider, MagicMock, _ReloadClock]:
+    """A vision provider whose call meets a reload that owes vision and never ends."""
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_load_budget_s", load_budget)
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    _start_vision_reload(p, monkeypatch)
+    return p, client, _install_reload_clock(p, monkeypatch)
+
+
+def _assert_reload_timeout(raised: pytest.ExceptionInfo[ProviderError]) -> None:
+    assert raised.value.kind is ProviderErrorKind.STARTING
+    assert "did not come back from its reload in time" in str(raised.value)
+
+
+def test_vision_reload_wait_with_no_page_limit_ends_at_the_load_budget(monkeypatch) -> None:
+    # Slices of the 0.5 s recheck, the last one cut to the time left.
+    p, client, clock = _owed_vision_page(monkeypatch, load_budget=1.25)
+    with pytest.raises(ProviderError) as raised:
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=0)
+    _assert_reload_timeout(raised)
+    assert clock.waits == [0.5, 0.5, 0.25]
+    assert clock.now == 1.25
+    client.chat_abortable.assert_not_called()
+
+
+def test_vision_reload_wait_with_a_page_limit_ends_at_the_page_deadline(monkeypatch) -> None:
+    # The page deadline is ocr_timeout plus the load budget: 1.0 + 0.25. The wait
+    # runs to it, not to the load budget alone (0.25).
+    p, client, clock = _owed_vision_page(monkeypatch, load_budget=0.25)
+    with pytest.raises(ProviderError) as raised:
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=1.0)
+    _assert_reload_timeout(raised)
+    assert clock.waits == [0.5, 0.5, 0.25]
+    assert clock.now == 1.25
+    client.chat_abortable.assert_not_called()
+
+
+def test_vision_reload_wait_with_a_zero_load_budget_does_not_wait(monkeypatch) -> None:
+    # A load budget of 0 reserves no time for a load, as in the PDF budget.
+    p, client, clock = _owed_vision_page(monkeypatch, load_budget=0.0)
+    with pytest.raises(ProviderError) as raised:
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=0)
+    _assert_reload_timeout(raised)
+    assert clock.waits == []
+    client.chat_abortable.assert_not_called()
+
+
+def test_vision_reload_budget_counts_from_the_start_of_the_wait(monkeypatch) -> None:
+    # A page with no limit generates for 1000 s, hits a gateway error and meets a
+    # reload. Its reload wait still gets the whole load budget.
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_load_budget_s", 0.5)
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    clock = _install_reload_clock(p, monkeypatch)
+
+    def _generate_then_meet_a_reload(*_args: object, **_kwargs: object) -> str:
+        clock.now += 1000.0
+        p._clients.pop(WorkerRole.VISION)
+        p._reload_owed = frozenset({WorkerRole.VISION})
+        raise ProviderError("bad gateway", kind=ProviderErrorKind.SERVER)
+
+    client.chat_abortable.side_effect = _generate_then_meet_a_reload
+    with pytest.raises(ProviderError) as raised:
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=0)
+    _assert_reload_timeout(raised)
+    assert clock.waits == [0.5]
+    assert clock.now == 1000.5
+    assert client.chat_abortable.call_count == 1
+
+
+def test_embed_failover_after_two_reloads_retries_on_a_live_client() -> None:
+    # The first replica refuses after two reloads retired the pool: the retry must
+    # run on the new pool, not on the old spare that the second reload closed.
+    served: list[bool] = []
+    first, spare, fresh = _counting_client(), _serving_client(served), _serving_client(served)
+    p = _provider_with_clients({WorkerRole.EMBED: [first, spare]})
+
+    def _refuse_after_reloads(*_args: object, **_kwargs: object) -> object:
+        p._clients[WorkerRole.EMBED] = [fresh]
+        with p._lock:
+            p._retire_clients([first, spare])
+            p._retire_clients([])
+        raise httpx.ConnectError("refused")
+
+    first.embed.side_effect = _refuse_after_reloads
+    assert p.embed(["x"]) == [[0.1]]
+    assert served == [False]  # the retry ran once, on a client no reload closed
+    spare.close.assert_called_once()
+
+
+def test_embed_failover_with_two_reloads_during_its_wait_retries_on_a_live_client(
+    monkeypatch,
+) -> None:
+    # The first replica refuses with the pool intact. Two reloads then land inside
+    # the failover itself, after its wait: the retry must run on the new pool.
+    served: list[bool] = []
+    first, spare, fresh = _counting_client(), _serving_client(served), _serving_client(served)
+    p = _provider_with_clients({WorkerRole.EMBED: [first, spare]})
+    check = p._require_clients
+    checks: list[WorkerRole] = []
+
+    def _reload_twice_in_the_failover(role: WorkerRole) -> list[LlamaServerClient]:
+        checks.append(role)
+        clients = check(role)
+        if len(checks) == 2:  # the failover's wait
+            p._clients[WorkerRole.EMBED] = [fresh]
+            with p._lock:
+                p._retire_clients([first, spare])
+                p._retire_clients([])
+        return clients
+
+    monkeypatch.setattr(p, "_require_clients", _reload_twice_in_the_failover)
+    first.embed.side_effect = httpx.ConnectError("refused")
+    assert p.embed(["x"]) == [[0.1]]
+    assert served == [False]  # the retry ran once, on a client no reload closed
+    spare.close.assert_called_once()
+    assert len(checks) == 2
+
+
+def test_embed_failover_with_no_server_left_surfaces_the_connection_error(monkeypatch) -> None:
+    first = _counting_client()
+    p = _provider_with_clients({WorkerRole.EMBED: [first, _counting_client()]})
+    refused = httpx.ConnectError("refused")
+    check = p._require_clients
+    checks: list[WorkerRole] = []
+
+    def _no_server_on_the_retry(role: WorkerRole) -> list[LlamaServerClient]:
+        checks.append(role)
+        if len(checks) > 1:
+            raise ProviderError("the embed server is still restarting")
+        return check(role)
+
+    monkeypatch.setattr(p, "_require_clients", _no_server_on_the_retry)
+    first.embed.side_effect = refused
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        prov_mod._call_with_failover(p._live_pool(WorkerRole.EMBED), lambda c: c.embed(["x"]))
+    assert caught.value.__cause__ is refused
+    assert len(checks) == 2  # the retry's check ran and its error gave way
+
+
+def _vision_pair(
+    monkeypatch, first_fails: Exception
+) -> tuple[FleetProvider, MagicMock, MagicMock, MagicMock]:
+    """A vision pool of two; the first call reloads twice to a new client, then fails."""
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
+    first, spare, fresh = _fake_client(), _fake_client(), _fake_client()
+    spare.chat_abortable.return_value = "spare text"
+    fresh.chat_abortable.return_value = "fresh text"
+    p = _provider_with_clients({WorkerRole.VISION: [first, spare]})
+
+    def _fail_after_reloads(*_args: object, **_kwargs: object) -> str:
+        p._clients[WorkerRole.VISION] = [fresh]
+        with p._lock:
+            p._retire_clients([first, spare])
+            p._retire_clients([])
+        raise first_fails
+
+    first.chat_abortable.side_effect = _fail_after_reloads
+    return p, first, spare, fresh
+
+
+def test_vision_failover_after_two_reloads_retries_on_a_live_client(monkeypatch) -> None:
+    p, first, spare, _fresh = _vision_pair(monkeypatch, httpx.ConnectError("refused"))
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "fresh text"
+    first.mark_unhealthy.assert_called_once()
+    spare.chat_abortable.assert_not_called()  # closed by the second reload
+
+
+def test_vision_gateway_retry_after_two_reloads_runs_on_a_live_client(monkeypatch) -> None:
+    gateway = ProviderError("bad gateway", kind=ProviderErrorKind.SERVER)
+    p, first, spare, _fresh = _vision_pair(monkeypatch, gateway)
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "fresh text"
+    assert first.chat_abortable.call_count == 1
+    spare.chat_abortable.assert_not_called()
+
+
+def test_vision_failover_with_no_server_left_surfaces_the_connection_error(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    first, spare = _fake_client(), _fake_client()
+    refused = httpx.ConnectError("refused")
+    p = _provider_with_clients({WorkerRole.VISION: [first, spare]})
+
+    def _refuse_after_vision_left(*_args: object, **_kwargs: object) -> str:
+        p._clients.pop(WorkerRole.VISION)  # a reload ended without vision
+        raise refused
+
+    first.chat_abortable.side_effect = _refuse_after_vision_left
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert caught.value.__cause__ is refused
+    spare.chat_abortable.assert_not_called()
+
+
+def test_live_pool_waits_again_when_a_reload_empties_it_before_the_pick() -> None:
+    reads: list[list[str]] = [[], ["live"]]
+    waits: list[int] = []
+    pool = prov_mod._LivePool(threading.RLock(), lambda: reads.pop(0), lambda: waits.append(1))
+    assert pool.pick(list) == ["live"]
+    assert waits == [1, 1]  # the empty read sent the pick back to wait
+
+
+def test_vision_dispatcher_does_not_wait_for_a_slot_freed_after_its_pick(monkeypatch) -> None:
+    # A slot freed between a full pick and the wait must not be slept through.
+    monkeypatch.setattr(prov_mod, "_DISPATCH_HEALTH_RECHECK_S", 60.0)
+    dispatcher = prov_mod._VisionDispatcher()
+    only = _fake_client()
+    replicas = [prov_mod._VisionReplica(only, 1)]
+    held = dispatcher.slot(_pool(*replicas))
+    assert held.__enter__() is only
+
+    class _FreeTheSlotAfterThePick:
+        """The pool lock; leaving it the first time frees the held slot."""
+
+        def __init__(self) -> None:
+            self.left = 0
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *_exc: object) -> None:
+            self.left += 1
+            if self.left == 1:
+                held.__exit__(None, None, None)
+
+    lock = _FreeTheSlotAfterThePick()
+    pool = prov_mod._LivePool(lock, lambda: replicas, lambda: None)
+    started = time.monotonic()
+    with dispatcher.slot(pool) as client:
+        assert client is only
+    assert lock.left == 2  # one full pick, then the pick that took the freed slot
+    assert time.monotonic() - started < 5.0
+
+
+def test_chat_token_counts_hold_the_reservation_for_the_call() -> None:
+    client = _counting_client()
+    seen: list[int] = []
+
+    def _text_tokens(_text: str) -> int:
+        seen.append(client.in_flight)
+        return 3
+
+    def _prompt_tokens(*_args: object, **_kwargs: object) -> int:
+        seen.append(client.in_flight)
+        return 7
+
+    client.count_text_tokens.side_effect = _text_tokens
+    client.count_chat_prompt_tokens.side_effect = _prompt_tokens
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    assert p.count_chat_text_tokens("hi") == 3
+    assert p.count_chat_prompt_tokens([{"role": "user", "content": "hi"}]) == 7
+    assert seen == [1, 1]  # reserved during each call
+    assert client.in_flight == 0
+
+
+def test_chat_call_gives_the_reservation_back_when_it_fails() -> None:
+    client = _counting_client()
+    client.chat_result.side_effect = ProviderError("bad", kind=ProviderErrorKind.BAD_REQUEST)
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    with pytest.raises(ProviderError, match="bad"):
+        p.chat([{"role": "user", "content": "hi"}])
+    assert client.in_flight == 0
+
+
+def test_chat_stream_holds_the_reservation_until_it_is_exhausted() -> None:
+    client = _counting_client()
+    client.chat_stream_items.return_value = _frames_of("a", "b")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert client.in_flight == 1  # held while the caller reads
+    assert next(stream) == "a"
+    assert client.in_flight == 1
+    assert list(stream) == ["b"]
+    assert client.in_flight == 0
+    stream.close()  # a second close gives nothing back twice
+    assert client.in_flight == 0
+
+
+def test_chat_stream_closed_early_gives_the_reservation_back() -> None:
+    client = _counting_client()
+    client.chat_stream_items.return_value = _frames_of("a", "b")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert client.in_flight == 1
+    stream.close()
+    assert client.in_flight == 0
+
+
+def test_chat_stream_gives_the_reservation_back_when_closing_the_source_fails() -> None:
+    class _SourceThatFailsToClose:
+        def __iter__(self) -> _SourceThatFailsToClose:
+            return self
+
+        def __next__(self) -> str:
+            return "a"
+
+        def close(self) -> None:
+            raise OSError("socket already gone")
+
+    client = _counting_client()
+    client.chat_stream_items.return_value = _SourceThatFailsToClose()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert client.in_flight == 1
+    with pytest.raises(OSError, match="socket already gone"):
+        stream.close()
+    assert client.in_flight == 0
+
+
+def test_chat_stream_that_fails_midway_gives_the_reservation_back() -> None:
+    def _frames():
+        yield "a"
+        raise ProviderError("died", kind=ProviderErrorKind.BAD_REQUEST)
+
+    client = _counting_client()
+    client.chat_stream_items.return_value = _frames()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert next(stream) == "a"
+    assert client.in_flight == 1
+    with pytest.raises(ProviderError, match="died"):
+        next(stream)
+    assert client.in_flight == 0
+
+
+def test_chat_stream_that_fails_to_open_gives_the_reservation_back() -> None:
+    client = _counting_client()
+    client.chat_stream_items.side_effect = ProviderError("no", kind=ProviderErrorKind.BAD_REQUEST)
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    with pytest.raises(ProviderError, match="no"):
+        p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert client.in_flight == 0
+
+
+def test_chat_stream_dropped_unread_gives_the_reservation_back() -> None:
+    client = _counting_client()
+    client.chat_stream_items.return_value = _frames_of("a")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert client.in_flight == 1
+    del stream
+    gc.collect()
+    assert client.in_flight == 0
+
+
+def _book_of(monkeypatch: pytest.MonkeyPatch, engine: object) -> None:
+    from lilbee.app.engine_choice import BookReading, EngineBook
+
+    monkeypatch.setattr(
+        EngineBook, "read", lambda self: BookReading(engines_for_all_roles(engine), {})
+    )
+
+
+def test_supports_rerank_when_the_engine_serves_the_rerank_role(monkeypatch) -> None:
+    _book_of(monkeypatch, LLAMA)
     assert FleetProvider().supports_rerank() is True
+
+
+def test_supports_rerank_is_false_when_the_engine_serves_no_rerank_role(monkeypatch) -> None:
+    assert WorkerRole.RERANK not in FAKE.served_roles
+    _book_of(monkeypatch, FAKE)
+    assert FleetProvider().supports_rerank() is False
+
+
+def test_supports_rerank_is_false_when_no_role_has_an_engine(monkeypatch) -> None:
+    from lilbee.app.engine_choice import BookReading, EngineBook
+
+    monkeypatch.setattr(EngineBook, "read", lambda self: BookReading({}, {}))
+    assert FleetProvider().supports_rerank() is False
+
+
+def test_embed_token_cap_is_none_when_no_role_has_an_engine(monkeypatch) -> None:
+    from lilbee.app.engine_choice import BookReading, EngineBook
+
+    monkeypatch.setattr(EngineBook, "read", lambda self: BookReading({}, {}))
+    assert FleetProvider().embed_token_cap() is None
 
 
 def test_list_chat_models_empty() -> None:
@@ -2074,30 +3598,10 @@ def test_get_capabilities_rerank_ref(monkeypatch) -> None:
     assert FleetProvider().get_capabilities("org/repo/rerank.gguf") == ["rerank"]
 
 
-def test_get_capabilities_vision_when_mmproj_present(monkeypatch) -> None:
+@pytest.mark.parametrize("ref", ["org/repo/v.gguf", "org/repo/folder", "missing/model.gguf"])
+def test_get_capabilities_of_a_chat_model_is_completion_only(monkeypatch, ref) -> None:
     monkeypatch.setattr("lilbee.catalog.is_rerank_ref", lambda _m: False)
-    monkeypatch.setattr(
-        "lilbee.providers.engine_params.resolve_model_path", lambda _m: Path("/m/v.gguf")
-    )
-    monkeypatch.setattr(
-        "lilbee.providers.gguf_meta.find_mmproj_for_model", lambda _p: Path("/m/mmproj.gguf")
-    )
-    assert FleetProvider().get_capabilities("org/repo/v.gguf") == ["completion", "vision"]
-
-
-def test_get_capabilities_completion_only_without_mmproj(monkeypatch) -> None:
-    from lilbee.providers.base import ProviderError
-
-    monkeypatch.setattr("lilbee.catalog.is_rerank_ref", lambda _m: False)
-    monkeypatch.setattr(
-        "lilbee.providers.engine_params.resolve_model_path", lambda _m: Path("/m/c.gguf")
-    )
-
-    def _no_mmproj(_p: Path) -> Path:
-        raise ProviderError("no mmproj")
-
-    monkeypatch.setattr("lilbee.providers.gguf_meta.find_mmproj_for_model", _no_mmproj)
-    assert FleetProvider().get_capabilities("org/repo/c.gguf") == ["completion"]
+    assert FleetProvider().get_capabilities(ref) == ["completion"]
 
 
 _TOOL_AWARE_TEMPLATE = "{% if tools %}{{ tool_calls }}{% endif %}"
@@ -2175,6 +3679,48 @@ def test_supports_tools_tolerates_unstattable_path(monkeypatch, _clear_tools_cac
     assert FleetProvider().supports_tools("org/repo/chat.gguf") is True
 
 
+def test_supports_tools_passes_a_model_folder_to_the_chat_engine(
+    monkeypatch, tmp_path, _clear_tools_cache
+):
+    """A folder has no GGUF header to judge, so it passes after the chat engine resolves."""
+    asked: list[WorkerRole] = []
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _m: tmp_path)
+    monkeypatch.setattr(FleetProvider, "_adopt_engine", lambda _s, role: asked.append(role))
+    assert FleetProvider().supports_tools("org/repo#safetensors") is True
+    assert asked == [WorkerRole.CHAT]
+
+
+def test_supports_tools_raises_for_a_model_folder_no_engine_loads(
+    monkeypatch, tmp_path, _clear_tools_cache
+):
+    from lilbee.providers.fleet.engines.choice import NoEngineError
+
+    def _none(_self, _role):
+        raise NoEngineError("No installed engine loads the safetensors format.")
+
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _m: tmp_path)
+    monkeypatch.setattr(FleetProvider, "_adopt_engine", _none)
+    with pytest.raises(NoEngineError, match="No installed engine loads the safetensors format"):
+        FleetProvider().supports_tools("org/repo#safetensors")
+
+
+def test_supports_tools_never_asks_the_engine_for_a_file(monkeypatch, tmp_path, _clear_tools_cache):
+    """A file is judged by its own header on every engine, as before."""
+    gguf = tmp_path / "chat.gguf"
+    gguf.write_bytes(b"gguf")
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _m: gguf)
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.read_gguf_metadata",
+        lambda _p: {"chat_template": _PLAIN_TEMPLATE},
+    )
+
+    def _fail(_self, _role):
+        raise AssertionError("a file must not reach the engine")
+
+    monkeypatch.setattr(FleetProvider, "_adopt_engine", _fail)
+    assert FleetProvider().supports_tools("org/repo/chat.gguf") is False
+
+
 # --- llama-swap lifecycle ----------------------------------------------------
 
 
@@ -2214,7 +3760,7 @@ class _OrderedReapSwap(_FakeSwap):
 def _ordered_planner(order: list[str], launches: list) -> object:
     """A plan_all_launches stand-in appending to the shared order log."""
 
-    def _plan() -> planning_mod.FleetPlan:
+    def _plan(*, engines) -> planning_mod.FleetPlan:
         order.append("plan")
         return planning_mod.FleetPlan(tuple(launches))
 
@@ -2263,16 +3809,16 @@ def test_reload_pass_refreshes_the_skip_reasons_from_the_new_plan(monkeypatch) -
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (_fake_launch(WorkerRole.EMBED),),
-            skipped_unusable_ctx={WorkerRole.CHAT: "chat model serves only 512 tokens"},
+            refused_roles={WorkerRole.CHAT: "chat model serves only 512 tokens"},
         ),
     )
     p = FleetProvider()
     p._swaps = {SwapGroup.CHAT: swap}
     p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
     p._reload_pass()
-    assert p._skipped_unusable_ctx == {WorkerRole.CHAT: "chat model serves only 512 tokens"}
+    assert p._refused_roles == {WorkerRole.CHAT: "chat model serves only 512 tokens"}
 
 
 def test_reload_pass_names_the_roles_it_restarts_and_logs_replica_counts(
@@ -2285,7 +3831,7 @@ def test_reload_pass_names_the_roles_it_restarts_and_logs_replica_counts(
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (_fake_launch(WorkerRole.EMBED), _fake_launch(WorkerRole.EMBED))
         ),
     )
@@ -2327,7 +3873,7 @@ def test_ensure_fleet_returns_none_when_engine_binary_unavailable(monkeypatch) -
 
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
 
-    def _no_binary() -> list:
+    def _no_binary(*, engines) -> list:
         raise ProviderError("llama-server binary not found.", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
@@ -2340,7 +3886,7 @@ def _captured_client_kwargs(monkeypatch, launch) -> dict:
     """Build the engine around *launch* and return the client constructor kwargs."""
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: _FakeSwap())
     monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan((launch,))
+        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
     )
     captured: list[dict] = []
 
@@ -2391,10 +3937,29 @@ def test_giant_model_client_timeout_covers_its_cold_load(monkeypatch) -> None:
 
     launch = _fake_launch(WorkerRole.CHAT, weights_bytes=300 * _GB)
     kwargs = _captured_client_kwargs(monkeypatch, launch)
-    health_timeout = swap_config_mod._health_check_timeout_s([launch])
+    health_timeout = swap_config_mod.health_check_timeout_s([launch])
     assert health_timeout > prov_mod._REQUEST_TIMEOUT_FLOOR_S
     assert kwargs["timeout"] >= health_timeout
     assert kwargs["timeout"] == health_timeout + prov_mod._REQUEST_TIMEOUT_GENERATION_MARGIN_S
+
+
+def test_a_slow_volume_client_timeout_covers_the_stretched_cold_load(monkeypatch) -> None:
+    # 20 GB on a 25 MiB/s volume: llama-swap waits past its 600 s floor, so the
+    # client must wait as long, or it gives up on a load llama-swap still allows.
+    from lilbee.providers.fleet import swap_config as swap_config_mod
+
+    launch = _fake_launch(WorkerRole.CHAT, weights_bytes=20 * _GB, read_bytes_per_s=25 * 1024**2)
+    kwargs = _captured_client_kwargs(monkeypatch, launch)
+    health_timeout = swap_config_mod.health_check_timeout_s([launch])
+    assert health_timeout > 600
+    assert kwargs["timeout"] == health_timeout + prov_mod._REQUEST_TIMEOUT_GENERATION_MARGIN_S
+
+
+def test_a_stalled_reading_caps_the_client_timeout(monkeypatch) -> None:
+    # A rate of 1 B/s would set a wait of centuries; the client waits the cap plus margin.
+    launch = _fake_launch(WorkerRole.CHAT, weights_bytes=60 * _GB, read_bytes_per_s=1)
+    kwargs = _captured_client_kwargs(monkeypatch, launch)
+    assert kwargs["timeout"] == 3600 + prov_mod._REQUEST_TIMEOUT_GENERATION_MARGIN_S
 
 
 def test_chat_starts_swap_on_first_use(monkeypatch) -> None:
@@ -2416,7 +3981,7 @@ def test_chat_starts_swap_on_first_use(monkeypatch) -> None:
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+        lambda *, engines: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
     )
     p = FleetProvider()
     assert p.chat([{"role": "user", "content": "hi"}]).text == "ok"
@@ -2570,7 +4135,7 @@ def test_a_reload_restart_hands_the_engine_to_its_users(monkeypatch, tmp_path: P
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+        lambda *, engines: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
     )
     p = FleetProvider()
     p._swaps = {SwapGroup.CHAT: _FakeSwap()}
@@ -2596,7 +4161,7 @@ def test_a_reload_restart_of_a_session_engine_takes_no_hold_when_shared(
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+        lambda *, engines: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
     )
     p = FleetProvider(hold_warm=True)
     p._swaps = {SwapGroup.CHAT: _FakeSwap()}
@@ -2628,7 +4193,7 @@ def test_concurrent_first_requests_start_swap_once(monkeypatch) -> None:
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+        lambda *, engines: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
     )
     p = FleetProvider()
     barrier = threading.Barrier(8)
@@ -2777,7 +4342,7 @@ def test_warm_up_pool_noop_when_swap_already_up_and_ready(monkeypatch, tmp_path:
 
 
 def test_warm_up_blocking_logs_and_clears_guard_on_failure(monkeypatch, caplog) -> None:
-    def _boom() -> list:
+    def _boom(*, engines) -> list:
         raise RuntimeError("plan failed")
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _boom)
@@ -2814,7 +4379,7 @@ def test_warm_up_blocking_stamps_error_with_the_real_reason(monkeypatch) -> None
     """
     from lilbee.providers.warm_progress import WarmPhase
 
-    def _boom() -> list:
+    def _boom(*, engines) -> list:
         raise RuntimeError("engine exited before it was ready")
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _boom)
@@ -2837,7 +4402,7 @@ def test_warm_up_blocking_surfaces_a_probe_failure(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
     from lilbee.providers.warm_progress import WarmPhase
 
-    def _wedged() -> list:
+    def _wedged(*, engines) -> list:
         raise ProviderError(
             "The GPU device probe (llama-server --list-devices) did not respond within 60s",
             kind=ProviderErrorKind.SERVER,
@@ -2864,10 +4429,10 @@ def test_ensure_fleet_propagates_a_probe_failure_to_on_demand_callers(monkeypatc
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+        lambda *, engines: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
     )
 
-    def _wedged() -> None:
+    def _wedged(engine) -> None:
         raise ProviderError("The GPU device probe did not respond", kind=ProviderErrorKind.SERVER)
 
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _wedged)
@@ -2883,7 +4448,7 @@ def test_ensure_fleet_stays_quiet_when_the_binary_is_missing(monkeypatch) -> Non
 
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
 
-    def _no_binary() -> None:
+    def _no_binary(*, engines) -> None:
         raise ProviderError("llama-server binary not found.", kind=ProviderErrorKind.NOT_FOUND)
 
     # A missing binary surfaces first when the placeable set is planned; nothing
@@ -2903,7 +4468,7 @@ def test_plan_and_spawn_serves_nothing_if_the_binary_vanishes_before_the_snapsho
     # snapshot; it must serve nothing, not raise.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    def _no_binary() -> None:
+    def _no_binary(engine) -> None:
         raise ProviderError("binary vanished", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
@@ -2919,7 +4484,7 @@ def test_warm_up_blocking_reports_starting_before_fleet_spawn(monkeypatch) -> No
     p = FleetProvider()
     seen: list[WarmPhase] = []
 
-    def _observe_fleet() -> None:
+    def _observe_fleet(**_: object) -> None:
         snap = p.warm_progress()
         assert snap is not None
         seen.append(snap.phase)
@@ -2937,7 +4502,7 @@ def test_warm_up_blocking_clears_stamp_when_chat_routes_remote(monkeypatch) -> N
     problem and must not be stamped on its warm."""
     monkeypatch.setattr(cfg, "chat_model", "ollama/llama3.2:1b")
     p = FleetProvider()
-    monkeypatch.setattr(p, "_ensure_fleet", lambda: None)
+    monkeypatch.setattr(p, "_ensure_fleet", lambda **_: None)
     monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
     p._warm_up_blocking()
     assert p.warm_progress() is None
@@ -2950,27 +4515,29 @@ def test_warm_up_blocking_fails_with_the_engine_when_no_engine_resolves(monkeypa
     from lilbee.providers.warm_progress import WarmPhase
 
     p = FleetProvider()
-    monkeypatch.setattr(p, "_ensure_fleet", lambda: None)
+    monkeypatch.setattr(p, "_ensure_fleet", lambda **_: None)
     monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
     p._warm_up_blocking()
     snap = p.warm_progress()
     assert snap is not None
     assert snap.phase is WarmPhase.ERROR
     assert "llama-server binary not found" in (snap.error or "")
-    assert "lilbee[engine]" in (snap.error or "")
+    assert "lilbee engine install" in (snap.error or "")
 
 
 def test_a_chat_load_failure_warm_text_carries_the_clients_plain_line(monkeypatch) -> None:
     """The warm failure shows the client's own line unchanged after the plain prefix."""
     from lilbee.providers.base import ProviderError
 
-    client = LlamaServerClient("http://127.0.0.1:1", "chat-0")
+    client = LlamaServerClient(
+        "http://127.0.0.1:1", "chat-0", profile=LLAMA.request_profile(WorkerRole.CHAT)
+    )
     line = "The engine for acme/x stopped before it could answer (HTTP 500). Log: /l."
 
     def _dies(*_args, **_kwargs):
         raise ProviderError(line, kind=ProviderErrorKind.CONNECTION)
 
-    monkeypatch.setattr(client, "chat", _dies)
+    monkeypatch.setattr(client, "chat_abortable", _dies)
     p = FleetProvider()
     monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
     p._warm_chat_role([client])
@@ -2992,7 +4559,7 @@ def _chat_that_cannot_load(monkeypatch, tmp_path: Path, argv: list[str]) -> Flee
     swap.log_path = tmp_path / "logs" / "llama-swap-chat.log"
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: swap)
     monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan((launch,))
+        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
     )
 
     def _build(_endpoint, model, **kwargs):
@@ -3029,15 +4596,40 @@ def test_a_chat_request_into_a_model_that_cannot_load_names_the_model_and_its_en
     assert snap.error == line
 
 
-def test_a_chat_request_names_no_log_for_an_engine_that_writes_none(monkeypatch, tmp_path) -> None:
-    """A launch that serves its numbers over HTTP has no engine log file, so none is named."""
+def test_a_chat_request_names_the_engine_log_for_a_launch_that_serves_its_memory(
+    monkeypatch, tmp_path
+) -> None:
+    """A launch that serves its numbers over HTTP still writes its own log, and it is named."""
     from lilbee.providers.base import ProviderError
 
     p = _chat_that_cannot_load(monkeypatch, tmp_path, ["llama-server", "--memory"])
     with pytest.raises(ProviderError) as info:
         p.chat([{"role": "user", "content": "hi"}])
     assert str(info.value) == (
-        "The engine for acme/bort-GGUF/unk-arch.gguf stopped before it could answer (HTTP 500)."
+        "The engine for acme/bort-GGUF/unk-arch.gguf stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {tmp_path / 'logs' / 'engine-chat-0.log'}."
+    )
+
+
+class _NoOwnLogEngine(LlamaCppAdapter):
+    """An engine like TEI: it reads no log variables, so llama-swap keeps its output."""
+
+    writes_own_log = False
+
+
+def test_a_request_into_an_engine_that_writes_no_log_names_the_group_log(
+    monkeypatch, tmp_path
+) -> None:
+    """A worker without a log of its own is named by the llama-swap log that holds its output."""
+    from lilbee.providers.base import ProviderError
+
+    p = _chat_that_cannot_load(monkeypatch, tmp_path, ["text-embeddings-router"])
+    monkeypatch.setattr(p, "_engine_of", lambda _launch: _NoOwnLogEngine())
+    with pytest.raises(ProviderError) as info:
+        p.chat([{"role": "user", "content": "hi"}])
+    assert str(info.value) == (
+        "The engine for acme/bort-GGUF/unk-arch.gguf stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {tmp_path / 'logs' / 'llama-swap-chat.log'}."
     )
 
 
@@ -3049,7 +4641,7 @@ def test_warm_up_blocking_fails_when_chat_model_not_installed(monkeypatch) -> No
 
     p = FleetProvider()
 
-    def _plan_skips_chat() -> None:
+    def _plan_skips_chat(**_: object) -> None:
         # _ensure_fleet records what the plan left unplaced; a not-installed chat
         # model is skipped here, as _plan_and_spawn would record it.
         p._skipped_not_installed = {WorkerRole.CHAT: "Qwen/Qwen3-8B-GGUF"}
@@ -3072,8 +4664,8 @@ def test_warm_up_blocking_fails_when_chat_window_is_unusable(monkeypatch) -> Non
     p = FleetProvider()
     reason = "The chat model org/m.gguf leaves room for only a 512-token context"
 
-    def _plan_refuses_chat() -> None:
-        p._skipped_unusable_ctx = {WorkerRole.CHAT: reason}
+    def _plan_refuses_chat(**_: object) -> None:
+        p._refused_roles = {WorkerRole.CHAT: reason}
 
     monkeypatch.setattr(p, "_ensure_fleet", _plan_refuses_chat)
     monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
@@ -3088,7 +4680,7 @@ def test_warm_up_blocking_swallows_interpreter_shutdown_race(monkeypatch, caplog
     # A fast CLI exit tears down the interpreter mid-warm; starting a thread then
     # raises RuntimeError. During finalization this must be dropped quietly, not
     # logged as a scary WARNING traceback.
-    def _shutdown_race() -> list:
+    def _shutdown_race(*, engines) -> list:
         raise RuntimeError("can't create new thread at interpreter shutdown")
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _shutdown_race)
@@ -3111,7 +4703,7 @@ def test_preload_roles_warms_each_role_and_fires_listeners(monkeypatch) -> None:
     spawned: list[WorkerRole] = []
     p.add_spawn_listener(on_spawning=spawning.append, on_spawned=spawned.append)
     p._preload_roles()
-    chat.chat.assert_called_once()  # chat warmed with a minimal completion
+    chat.chat_abortable.assert_called_once()  # chat warmed with a minimal completion
     embed.embed.assert_called_once()  # embed warmed
     assert set(spawning) == {WorkerRole.CHAT, WorkerRole.EMBED}
     assert set(spawned) == {WorkerRole.CHAT, WorkerRole.EMBED}
@@ -3155,7 +4747,7 @@ def test_preload_roles_warms_roles_concurrently(monkeypatch) -> None:
         release_chat.wait(timeout=5.0)
         return MagicMock()
 
-    chat.chat.side_effect = _blocked_chat
+    chat.chat_abortable.side_effect = _blocked_chat
     embed.embed.side_effect = lambda *a, **k: (embed_warmed.set(), [[0.1]])[1]
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
@@ -3226,13 +4818,30 @@ def test_role_device_sets_unions_replicas_and_skips_unpinned() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "var",
+    [
+        "CUDA_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "GGML_VK_VISIBLE_DEVICES",
+        "ONEAPI_DEVICE_SELECTOR",
+    ],
+)
+def test_role_device_sets_reads_every_backends_pin_variable(var: str) -> None:
+    launch = InstanceLaunch(
+        role=WorkerRole.EMBED, argv=[], env_overrides={var: "2"}, model="embed-0"
+    )
+    assert prov_mod._role_device_sets([launch]) == {WorkerRole.EMBED: frozenset({f"{var}=2"})}
+
+
 def test_preload_serializes_roles_sharing_a_device(monkeypatch) -> None:
     # Chat and embed pinned to the same card must warm one at a time, embed
     # first: concurrent loads on a shared device race each other for VRAM and
     # the loser OOMs its first attempt.
     order: list[str] = []
     chat, embed = _fake_client(), _fake_client()
-    chat.chat.side_effect = lambda *a, **k: (order.append("chat"), MagicMock())[1]
+    chat.chat_abortable.side_effect = lambda *a, **k: (order.append("chat"), MagicMock())[1]
     embed.embed.side_effect = lambda *a, **k: (order.append("embed"), [[0.1]])[1]
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     p._launches = {
@@ -3257,7 +4866,7 @@ def test_preload_starts_chat_only_after_the_card_mate_finished_loading(monkeypat
         return [[0.1]]
 
     embed.embed.side_effect = _embed
-    chat.chat.side_effect = lambda *a, **k: (events.append("chat-start"), MagicMock())[1]
+    chat.chat_abortable.side_effect = lambda *a, **k: (events.append("chat-start"), MagicMock())[1]
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     p._launches = {
         SwapGroup.CHAT: (_pinned_launch(WorkerRole.CHAT, "0"),),
@@ -3269,10 +4878,9 @@ def test_preload_starts_chat_only_after_the_card_mate_finished_loading(monkeypat
 
 
 def test_preload_chain_gives_every_role_its_warm_attempt(monkeypatch) -> None:
-    # An unexpected error warming one chain role (a listener blowing up) must
-    # not rob the roles behind it of their warm; it surfaces after the chain.
+    # An unexpected error warming one chain role must not rob the roles behind it
+    # of their warm; it surfaces after the chain.
     chat, embed = _fake_client(), _fake_client()
-    embed.embed.return_value = [[0.1]]
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     p._launches = {
         SwapGroup.CHAT: (_pinned_launch(WorkerRole.CHAT, "0"),),
@@ -3280,34 +4888,48 @@ def test_preload_chain_gives_every_role_its_warm_attempt(monkeypatch) -> None:
     }
     monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
 
-    def _blowing_listener(role: WorkerRole) -> None:
-        if role is WorkerRole.EMBED:
-            raise RuntimeError("listener broke")
+    real_warm = p._warm_role_clients
 
-    p.add_spawn_listener(on_spawning=_blowing_listener)
-    with pytest.raises(RuntimeError, match="listener broke"):
+    def _broken_warm(role: WorkerRole, clients: list) -> bool:
+        if role is WorkerRole.EMBED:
+            raise RuntimeError("warm broke")
+        return real_warm(role, clients)
+
+    monkeypatch.setattr(p, "_warm_role_clients", _broken_warm)
+    spawned: list[WorkerRole] = []
+    p.add_spawn_listener(on_spawned=spawned.append)
+    with pytest.raises(RuntimeError, match="warm broke"):
         p._preload_roles()
-    chat.chat.assert_called_once()  # chat still warmed behind the failed embed
+    chat.chat_abortable.assert_called_once()  # chat still warmed behind the failed embed
+    assert spawned == [WorkerRole.CHAT]  # a role whose warm failed is not reported loaded
 
 
 _HUNG_WARM_PROBE = """
+import asyncio
 import threading
 import httpx
 from lilbee.providers.fleet.client import LlamaServerClient
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import WorkerRole
 
 in_flight = threading.Event()
 
-def never_answers(request):
+async def never_answers(request):
     in_flight.set()
-    threading.Event().wait()
+    await asyncio.Event().wait()
 
-http = httpx.Client(base_url="http://engine", transport=httpx.MockTransport(never_answers))
 p = FleetProvider()
 p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-p._clients = {WorkerRole.CHAT: [LlamaServerClient("http://engine", "chat", http=http)]}
+profile = LLAMA.request_profile(WorkerRole.CHAT)
+client = LlamaServerClient(
+    "http://engine",
+    "chat",
+    async_transport=httpx.MockTransport(never_answers),
+    profile=profile,
+)
+p._clients = {WorkerRole.CHAT: [client]}
 p._prewarm_chat_weights = lambda: None
 threading.Thread(target=p._preload_roles, daemon=True).start()
 assert in_flight.wait(10.0)
@@ -3332,7 +4954,7 @@ def test_preload_runs_chains_in_parallel_and_waits_for_them(monkeypatch) -> None
         finished.append(role)
         return value
 
-    chat.chat.side_effect = lambda *a, **k: _meet(WorkerRole.CHAT, MagicMock())
+    chat.chat_abortable.side_effect = lambda *a, **k: _meet(WorkerRole.CHAT, MagicMock())
     embed.embed.side_effect = lambda *a, **k: _meet(WorkerRole.EMBED, [[0.1]])
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
@@ -3351,7 +4973,7 @@ def test_preload_raises_first_chains_error_after_every_chain_finishes(monkeypatc
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
 
-    def _failing_listener(role: WorkerRole) -> None:
+    def _failing_warm(role: WorkerRole, clients: list) -> bool:
         if role is WorkerRole.EMBED:
             embed_failed.set()
             raise RuntimeError("embed broke")
@@ -3360,7 +4982,7 @@ def test_preload_raises_first_chains_error_after_every_chain_finishes(monkeypatc
         chat_finished.set()
         raise RuntimeError("chat broke")
 
-    p.add_spawn_listener(on_spawning=_failing_listener)
+    monkeypatch.setattr(p, "_warm_role_clients", _failing_warm)
     with pytest.raises(RuntimeError, match="embed broke"):
         p._preload_roles()
     assert chat_finished.is_set()
@@ -3427,13 +5049,35 @@ def test_prewarm_rereads_when_a_shard_changed(monkeypatch, tmp_path) -> None:
     assert opens["n"] == 1  # changed shard is read again
 
 
+def test_prewarm_read_ends_when_shutdown_starts(monkeypatch, tmp_path) -> None:
+    """The cache read checks the latch once per chunk, so a shutdown ends it at once."""
+    shard = tmp_path / "model.gguf"
+    shard.write_bytes(b"x" * 64)
+    _registry_with_shards(monkeypatch, [shard])
+    monkeypatch.setattr(prov_mod, "_PREWARMED_SHARDS", set())
+    monkeypatch.setattr(prov_mod, "_PREWARM_CHUNK_BYTES", 16)
+    p = _provider_with_clients({})
+    read: list[int] = []
+
+    def reading(done: int, total: int, detail: str | None = None) -> None:
+        read.append(done)
+        if done:
+            p._shut_down = True  # the shutdown starts after the first chunk
+
+    monkeypatch.setattr(p._warm_tracker, "reading", reading)
+    p._prewarm_chat_weights()
+
+    assert read == [0, 16]
+    assert not prov_mod._PREWARMED_SHARDS  # a cut read leaves the cache cold
+
+
 def test_warm_role_dispatches_per_role() -> None:
     chat, embed, rerank, vision = (_fake_client() for _ in range(4))
     prov_mod._warm_role(WorkerRole.CHAT, chat)
     prov_mod._warm_role(WorkerRole.EMBED, embed)
     prov_mod._warm_role(WorkerRole.RERANK, rerank)
     prov_mod._warm_role(WorkerRole.VISION, vision)  # vision warms lazily -> no call
-    chat.chat.assert_called_once()
+    chat.chat_abortable.assert_called_once()
     embed.embed.assert_called_once_with([prov_mod._WARM_PROMPT])
     rerank.rerank.assert_called_once()
     vision.chat.assert_not_called()
@@ -3550,17 +5194,6 @@ def test_routing_provider_local_engine_is_fleet() -> None:
     assert isinstance(RoutingProvider()._get_local(), FleetProvider)
 
 
-def test_get_capabilities_unresolved_model_returns_completion(monkeypatch) -> None:
-    from lilbee.providers.base import ProviderError
-
-    def _raise(_m: str):
-        raise ProviderError("not found")
-
-    monkeypatch.setattr("lilbee.catalog.is_rerank_ref", lambda _m: False)
-    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", _raise)
-    assert FleetProvider().get_capabilities("missing/model.gguf") == ["completion"]
-
-
 class TestLifecycleMethods:
     def test_cancel_inference_is_noop(self) -> None:
         # llama-server stops on client disconnect; cancel has nothing to flip.
@@ -3578,14 +5211,16 @@ class TestLifecycleMethods:
         p = FleetProvider()
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}  # non-None so reload dispatches
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-        p._reload_blocking = lambda: done.set()  # type: ignore[method-assign]
+        p._reload_pass = lambda force: done.set()  # type: ignore[method-assign]
         p.reload_role(WorkerRole.EMBED)
-        assert done.wait(timeout=2.0)  # the spawned thread ran the blocking restart
+        assert done.wait(timeout=2.0)  # the spawned thread ran the restart
 
-    def test_reload_blocking_restarts_swap_and_readopts(self, monkeypatch) -> None:
+    def test_reload_work_restarts_swap_and_readopts(self, monkeypatch) -> None:
         launches = [_fake_launch(WorkerRole.CHAT, slots=2, ctx=4096)]
         monkeypatch.setattr(
-            planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan(tuple(launches))
+            planning_mod,
+            "plan_all_launches",
+            lambda *, engines: planning_mod.FleetPlan(tuple(launches)),
         )
         monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
         fresh = _FakeSwap()
@@ -3595,7 +5230,7 @@ class TestLifecycleMethods:
         stale = _FakeSwap()
         p._swaps = {SwapGroup.CHAT: stale}
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-        p._reload_blocking()
+        _run_work(p)
         # The chat launches changed (old running set unknown -> differs), so the
         # old group was stopped and a fresh one started and adopted.
         assert stale.shutdowns == 1
@@ -3604,67 +5239,70 @@ class TestLifecycleMethods:
         assert p._chat_slots == 2  # capacity re-adopted from the new launch set
         assert set(p._clients) == {WorkerRole.CHAT}
 
-    def test_reload_blocking_noop_when_swap_cleared(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan(()))
-        p = FleetProvider()  # _swap stays None
-        p._reload_blocking()  # must not raise
-
-    def test_reload_role_wait_runs_synchronously(self, monkeypatch) -> None:
-        spawned = {"thread": False}
-        monkeypatch.setattr("threading.Thread", lambda *a, **k: spawned.__setitem__("thread", True))
+    def test_reload_role_wait_returns_after_the_pass_ran(self) -> None:
         p = FleetProvider()
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-        ran = {"blocking": False}
-        p._reload_blocking = lambda: ran.__setitem__("blocking", True)  # type: ignore[method-assign]
+        ran = {"pass": False}
+        p._reload_pass = lambda force: ran.__setitem__("pass", True)  # type: ignore[method-assign]
         p.reload_role(WorkerRole.CHAT, wait=True)
-        assert spawned["thread"] is False  # no background thread; ran in the caller's
-        assert ran["blocking"] is True  # reload ran synchronously before returning
+        assert ran["pass"] is True  # the pass ran before the caller returned
+        assert p._fleet_work is None
 
     def test_reload_role_wait_propagates_failure(self) -> None:
         p = FleetProvider()
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
 
-        def boom() -> None:
+        def boom(force: frozenset[WorkerRole]) -> None:
             raise RuntimeError("reload failed")
 
-        p._reload_blocking = boom  # type: ignore[method-assign]
+        p._reload_pass = boom  # type: ignore[method-assign]
         with pytest.raises(RuntimeError, match="reload failed"):
             p.reload_role(WorkerRole.CHAT, wait=True)
 
-    def test_reload_role_wait_blocks_until_in_flight_done(self) -> None:
-        p = FleetProvider()
-        p._swaps = {SwapGroup.CHAT: _FakeSwap()}
-        p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-        with p._lock:
-            p._reloading = True  # simulate a reload already in flight
-        returned = threading.Event()
+    def test_every_added_spawn_listener_hears_each_role_load(self) -> None:
+        embed = _fake_client()
+        embed.embed.return_value = [[0.1]]
+        p = _provider_with_clients({WorkerRole.EMBED: [embed]})
+        first_spawning: list[WorkerRole] = []
+        first_spawned: list[WorkerRole] = []
+        second_spawning: list[WorkerRole] = []
+        second_spawned: list[WorkerRole] = []
+        third_spawned: list[WorkerRole] = []
 
-        def waiter() -> None:
-            p.reload_role(WorkerRole.CHAT, wait=True)  # sets pending, waits on the cond
-            returned.set()
+        p.add_spawn_listener(on_spawning=first_spawning.append, on_spawned=first_spawned.append)
+        p.add_spawn_listener(on_spawning=second_spawning.append, on_spawned=second_spawned.append)
+        p.add_spawn_listener(on_spawned=third_spawned.append)
+        p._preload_roles()
 
-        t = threading.Thread(target=waiter)
-        t.start()
-        assert not returned.wait(timeout=0.3)  # blocked while the in-flight reload runs
-        assert p._reload_pending is True  # the waiter queued its pass
-        with p._lock:  # the in-flight reload finishes
-            p._reloading = False
-            p._reload_done.notify_all()
-        assert returned.wait(timeout=2.0)  # the waiter woke and returned
-        t.join(timeout=2.0)
+        assert first_spawning == [WorkerRole.EMBED]
+        assert first_spawned == [WorkerRole.EMBED]
+        assert second_spawning == [WorkerRole.EMBED]
+        assert second_spawned == [WorkerRole.EMBED]
+        assert third_spawned == [WorkerRole.EMBED]
 
-    def test_add_spawn_listener_stores_callbacks(self) -> None:
-        p = FleetProvider()
+    def test_a_listener_that_raises_mutes_no_other_listener_and_no_warm(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        embed = _fake_client()
+        embed.embed.return_value = [[0.1]]
+        p = _provider_with_clients({WorkerRole.EMBED: [embed]})
+        second_spawning: list[WorkerRole] = []
+        second_spawned: list[WorkerRole] = []
 
-        def on_spawning(_r: WorkerRole) -> None: ...
+        def broken(role: WorkerRole) -> None:
+            raise RuntimeError("listener broke")
 
-        def on_spawned(_r: WorkerRole) -> None: ...
+        p.add_spawn_listener(on_spawning=broken, on_spawned=broken)
+        p.add_spawn_listener(on_spawning=second_spawning.append, on_spawned=second_spawned.append)
+        with caplog.at_level(logging.WARNING, logger=prov_mod.log.name):
+            p._preload_roles()
 
-        p.add_spawn_listener(on_spawning=on_spawning, on_spawned=on_spawned)
-        assert p._on_spawning is on_spawning
-        assert p._on_spawned is on_spawned
+        assert second_spawning == [WorkerRole.EMBED]
+        embed.embed.assert_called_once()
+        assert second_spawned == [WorkerRole.EMBED]
+        assert caplog.text.count("A spawn listener failed for the embed role") == 2
 
 
 class TestChatWithTools:
@@ -3745,8 +5383,73 @@ class TestEmbedTokenCap:
         p._swaps = {SwapGroup.EMBED: _FakeSwap()}
         p._role_group = {WorkerRole.EMBED: SwapGroup.EMBED}
         p._launches = {SwapGroup.EMBED: (launch,)}
-        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r: 8184)
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: 8184)
         assert p.embed_token_cap() == 504
+
+    @pytest.mark.parametrize(
+        ("served", "expected"),
+        [((400,), 400), ((8192,), 8192), ((8192, 512), 512), ((None,), None)],
+    )
+    def test_an_engine_that_reports_its_window_serves_that_window_only(
+        self, served, expected
+    ) -> None:
+        """TEI reports its window in /info and ignores the planned context: the launch's
+        fallback cap of 2040 is not a window, and the window is unknown until /info answers."""
+        p = FleetProvider()
+        launch = _fake_launch(WorkerRole.EMBED, ctx=2048)
+        launch.token_cap = 2040
+        p._swaps = {SwapGroup.EMBED: _FakeSwap()}
+        p._role_group = {WorkerRole.EMBED: SwapGroup.EMBED}
+        p._launches = {SwapGroup.EMBED: (launch,)}
+        clients = []
+        for limit in served:
+            client = MagicMock()
+            client.profile = TEI.request_profile(WorkerRole.EMBED)
+            client.input_limit.return_value = limit
+            clients.append(client)
+        p._clients = {WorkerRole.EMBED: clients}
+        assert p.embed_token_cap() == expected
+
+    @pytest.mark.parametrize(("known", "expected"), [((8192, None), 8192), ((None,), None)])
+    def test_a_known_only_window_read_sends_no_request(self, known, expected) -> None:
+        """After a warm failure the window read uses only what the clients already read."""
+        p = FleetProvider()
+        launch = _fake_launch(WorkerRole.EMBED, ctx=2048)
+        launch.token_cap = 2040
+        p._swaps = {SwapGroup.EMBED: _FakeSwap()}
+        p._role_group = {WorkerRole.EMBED: SwapGroup.EMBED}
+        p._launches = {SwapGroup.EMBED: (launch,)}
+        clients = []
+        for limit in known:
+            client = MagicMock()
+            client.profile = TEI.request_profile(WorkerRole.EMBED)
+            client.known_input_limit = limit
+            clients.append(client)
+        p._clients = {WorkerRole.EMBED: clients}
+        assert p.embed_token_cap(known_only=True) == expected
+        for client in clients:
+            client.input_limit.assert_not_called()
+
+    def test_an_engine_without_a_window_route_serves_the_launch_cap(self) -> None:
+        p = FleetProvider()
+        launch = _fake_launch(WorkerRole.EMBED, ctx=512)
+        launch.token_cap = 504
+        p._swaps = {SwapGroup.EMBED: _FakeSwap()}
+        p._role_group = {WorkerRole.EMBED: SwapGroup.EMBED}
+        p._launches = {SwapGroup.EMBED: (launch,)}
+        client = MagicMock()
+        client.profile = LLAMA.request_profile(WorkerRole.EMBED)
+        p._clients = {WorkerRole.EMBED: [client]}
+        assert p.embed_token_cap() == 504
+        client.input_limit.assert_not_called()
+
+    def test_the_window_of_an_engine_that_reports_it_is_unknown_before_it_is_up(
+        self, monkeypatch
+    ) -> None:
+        """No launch: TEI's planned cap is the 2048 fallback, not the model's window."""
+        _book_of(monkeypatch, TEI)
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: 2040)
+        assert FleetProvider().embed_token_cap() is None
 
     def test_plans_the_cap_from_the_configured_embedder_before_the_engine_is_up(
         self, monkeypatch
@@ -3754,7 +5457,7 @@ class TestEmbedTokenCap:
         monkeypatch.setattr(cfg, "embedding_model", "org/repo/e.gguf")
         seen: list[str] = []
 
-        def _planned(ref: str) -> int:
+        def _planned(ref: str, *, engine) -> int:
             seen.append(ref)
             return 8184
 
@@ -3762,38 +5465,31 @@ class TestEmbedTokenCap:
         assert FleetProvider().embed_token_cap() == 8184
         assert seen == ["org/repo/e.gguf"]
 
-    def test_health_is_clean_when_token_sizing_self_corrects(self, monkeypatch) -> None:
-        """The chunker already switches to token sizing on its own below this cap,
-        so health has nothing actionable to report."""
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "token_sizing", False)
-        monkeypatch.setattr(cfg, "semantic_chunking", False)
-        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r: 504)
-        assert FleetProvider().health_warnings() == []
-
-    def test_health_warns_when_semantic_chunking_will_lose_text(self, monkeypatch) -> None:
+    @pytest.mark.parametrize("semantic", [False, True])
+    def test_health_names_an_embed_window_below_the_chunk_size(self, monkeypatch, semantic) -> None:
+        """A window that cannot hold one chunk makes ingest refuse, and health says so."""
         from lilbee.core.health_warnings import WarningCode
 
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "semantic_chunking", True)
-        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r: 504)
+        monkeypatch.setattr(cfg, "semantic_chunking", semantic)
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: 504)
         codes = [w.code for w in FleetProvider().health_warnings()]
         assert codes == [WarningCode.EMBED_WINDOW_BELOW_CHUNK]
 
-    def test_health_is_clean_when_the_cap_covers_the_chunk_budget(self, monkeypatch) -> None:
+    @pytest.mark.parametrize("cap", [513, 640, None])
+    def test_health_is_clean_when_the_cap_holds_the_chunk_and_newline(
+        self, monkeypatch, cap
+    ) -> None:
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r: 2048)
-        assert FleetProvider().health_warnings() == []
-
-    def test_health_is_clean_with_no_resolvable_embedder(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r: None)
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/e.gguf")  # no document prefix
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: cap)
         assert FleetProvider().health_warnings() == []
 
 
 class TestRoutingProviderEmbedCap:
     @staticmethod
     def _routing_over_a_capped_engine(monkeypatch, embedding_model: str):
-        """A RoutingProvider whose local engine would report a cap and a warning."""
+        """A RoutingProvider whose local engine would report a cap and a placement warning."""
         from lilbee.core.health_warnings import HealthWarning, WarningCode
         from lilbee.providers.routing_provider import RoutingProvider
 
@@ -3801,8 +5497,9 @@ class TestRoutingProviderEmbedCap:
         routing = RoutingProvider()
         local = MagicMock()
         local.embed_token_cap.return_value = 504
+        local.reload_notice.return_value = None
         local.health_warnings.return_value = [
-            HealthWarning(code=WarningCode.EMBED_WINDOW_BELOW_CHUNK, message="chunks are cut")
+            HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan")
         ]
         routing._local = local
         return routing
@@ -3812,33 +5509,46 @@ class TestRoutingProviderEmbedCap:
 
         routing = self._routing_over_a_capped_engine(monkeypatch, "org/repo/e.gguf")
         assert routing.embed_token_cap() == 504
-        assert [w.code for w in routing.health_warnings()] == [WarningCode.EMBED_WINDOW_BELOW_CHUNK]
+        assert [w.code for w in routing.health_warnings()] == [WarningCode.PLACEMENT_DIVERGED]
 
-    def test_reports_nothing_for_a_remote_embedder(self, monkeypatch) -> None:
-        """The local engine's cap is not the remote embedder's, so it is not reported."""
-        routing = self._routing_over_a_capped_engine(monkeypatch, "openai/text-embedding-3-small")
+    @pytest.mark.parametrize("known_only", [False, True])
+    def test_passes_known_only_to_the_local_engine(self, monkeypatch, known_only) -> None:
+        routing = self._routing_over_a_capped_engine(monkeypatch, "org/repo/e.gguf")
+        routing.embed_token_cap(known_only=known_only)
+        routing._local.embed_token_cap.assert_called_once_with(known_only=known_only)
+
+    @pytest.mark.parametrize("embedding_model", ["openai/text-embedding-3-small", ""])
+    def test_reports_no_cap_without_a_local_embedder(self, monkeypatch, embedding_model) -> None:
+        """The local engine's cap is not a remote embedder's, so it is not reported."""
+        routing = self._routing_over_a_capped_engine(monkeypatch, embedding_model)
         assert routing.embed_token_cap() is None
-        assert routing.health_warnings() == []
 
-    def test_reports_nothing_with_no_embedder_configured(self, monkeypatch) -> None:
-        routing = self._routing_over_a_capped_engine(monkeypatch, "")
-        assert routing.embed_token_cap() is None
-        assert routing.health_warnings() == []
-
-    def test_keeps_placement_warnings_for_a_remote_embedder(self, monkeypatch) -> None:
+    @pytest.mark.parametrize("embedding_model", ["openai/text-embedding-3-small", ""])
+    def test_keeps_placement_warnings_without_a_local_embedder(
+        self, monkeypatch, embedding_model
+    ) -> None:
         """Placement covers every local role, so it is not gated on the embedder."""
-        from lilbee.core.health_warnings import HealthWarning, WarningCode
-        from lilbee.providers.routing_provider import RoutingProvider
+        from lilbee.core.health_warnings import WarningCode
 
-        monkeypatch.setattr(cfg, "embedding_model", "openai/text-embedding-3-small")
-        routing = RoutingProvider()
-        local = MagicMock()
-        local.health_warnings.return_value = [
+        routing = self._routing_over_a_capped_engine(monkeypatch, embedding_model)
+        assert [w.code for w in routing.health_warnings()] == [WarningCode.PLACEMENT_DIVERGED]
+
+    def test_drops_the_embed_window_warning_without_a_local_embedder(self, monkeypatch) -> None:
+        """The local engine's window is not a remote embedder's, so its warning is not reported."""
+        from lilbee.core.health_warnings import HealthWarning, WarningCode
+
+        routing = self._routing_over_a_capped_engine(monkeypatch, "openai/text-embedding-3-small")
+        routing._local.health_warnings.return_value = [
             HealthWarning(code=WarningCode.EMBED_WINDOW_BELOW_CHUNK, message="chunks are cut"),
             HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan"),
         ]
-        routing._local = local
         assert [w.code for w in routing.health_warnings()] == [WarningCode.PLACEMENT_DIVERGED]
+
+    def test_reports_no_warnings_before_a_local_engine_exists(self, monkeypatch) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        monkeypatch.setattr(cfg, "embedding_model", "")
+        assert RoutingProvider().health_warnings() == []
 
 
 class _FakeReplica:
@@ -3866,7 +5576,7 @@ class _FakeReplica:
         """Rediscovery retires the pool; a real client's close releases httpx."""
 
     def notify_when_idle(self, _callback: object) -> None:
-        """Retiring registers the hold sweep; these routing tests never end a request."""
+        """Retiring registers the end of the dir use; these routing tests never end a request."""
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls += 1
@@ -3893,13 +5603,13 @@ class TestReserveSpreadsLoad:
         # each get exactly one request instead of all landing on the first
         # (the thundering herd that left cards idle on the 8x A100 fleet).
         replicas = [_FakeReplica() for _ in range(4)]
-        picked = [prov_mod._reserve_least_in_flight(replicas) for _ in range(4)]
+        picked = [prov_mod._reserve_least_busy(replicas) for _ in range(4)]
         assert {id(c) for c in picked} == {id(c) for c in replicas}
         assert all(r.in_flight == 1 for r in replicas)
 
     def test_call_with_failover_releases_the_reservation(self) -> None:
         replicas = [_FakeReplica(), _FakeReplica()]
-        prov_mod._call_with_failover(replicas, lambda c: c.embed(["x"]))
+        prov_mod._call_with_failover(_pool(*replicas), lambda c: c.embed(["x"]))
         assert all(r.in_flight == 0 for r in replicas)  # reservation released
 
     def test_failover_releases_both_reservations(self) -> None:
@@ -3907,9 +5617,29 @@ class TestReserveSpreadsLoad:
 
         bad = _FakeReplica(fail=httpx.ConnectError("refused"))
         good = _FakeReplica()
-        prov_mod._call_with_failover([bad, good], lambda c: c.embed(["x"]))
+        prov_mod._call_with_failover(_pool(bad, good), lambda c: c.embed(["x"]))
         assert bad.in_flight == 0 and good.in_flight == 0  # both released
         assert good.calls == 1 and not bad.healthy  # retried onto the healthy one
+
+    def test_every_replica_unreachable_raises_a_provider_error(self) -> None:
+        refused = httpx.ConnectError("refused")
+        first = _FakeReplica(fail=refused)
+        second = _FakeReplica(fail=refused)
+        with pytest.raises(ProviderError, match="not responding") as info:
+            prov_mod._call_with_failover(_pool(first, second), lambda c: c.embed(["x"]))
+        assert info.value.kind is ProviderErrorKind.CONNECTION
+        assert info.value.__cause__ is refused
+        assert not first.healthy and not second.healthy
+        assert first.in_flight == 0 and second.in_flight == 0
+
+    def test_a_model_error_on_the_retry_replica_surfaces_unchanged(self) -> None:
+        bad = _FakeReplica(fail=httpx.ConnectError("refused"))
+        rejected = ProviderError("bad input", kind=ProviderErrorKind.BAD_REQUEST)
+        other = _FakeReplica(fail=rejected)
+        with pytest.raises(ProviderError) as info:
+            prov_mod._call_with_failover(_pool(bad, other), lambda c: c.embed(["x"]))
+        assert info.value is rejected
+        assert other.healthy
 
     def test_concurrent_dispatch_does_not_pile_on_one_replica(self) -> None:
         import threading
@@ -3920,9 +5650,10 @@ class TestReserveSpreadsLoad:
         # With the atomic reserve the 8 requests spread evenly (2 per replica);
         # without it the herd piled onto whichever replica read idlest first.
         overlap = threading.Barrier(8)
+        pool = _pool(*replicas)
 
         def _dispatch() -> None:
-            prov_mod._call_with_failover(replicas, lambda c: (overlap.wait(), c.embed(["x"]))[1])
+            prov_mod._call_with_failover(pool, lambda c: (overlap.wait(), c.embed(["x"]))[1])
 
         threads = [threading.Thread(target=_dispatch) for _ in range(8)]
         for t in threads:
@@ -4002,7 +5733,7 @@ class TestReplicaHealthRouting:
     def test_model_level_errors_propagate_without_failover(self) -> None:
         from lilbee.providers.base import ProviderError
 
-        broken = _FakeReplica(fail=ProviderError("bad input", provider="llama-server"))
+        broken = _FakeReplica(fail=ProviderError("bad input"))
         sibling = _FakeReplica(in_flight=5)
         p = _provider_with_clients({WorkerRole.EMBED: [broken, sibling]})
         with pytest.raises(ProviderError, match="bad input"):
@@ -4051,7 +5782,7 @@ class TestReplicaHealthRouting:
         from lilbee.providers.base import ProviderError
 
         dead = _FakeReplica(fail=_httpx.ConnectError("refused"))
-        broken = _FakeReplica(in_flight=5, fail=ProviderError("bad input", provider="llama-server"))
+        broken = _FakeReplica(in_flight=5, fail=ProviderError("bad input"))
         p = _provider_with_clients({WorkerRole.EMBED: [dead, broken]})
         with pytest.raises(ProviderError, match="bad input"):
             p.embed(["a"])
@@ -4079,7 +5810,9 @@ class TestReplicaHealthRouting:
             http = _httpx.Client(
                 transport=_httpx.MockTransport(_handler(name)), base_url="http://gpu"
             )
-            return LlamaServerClient("http://gpu", name, http=http)
+            return LlamaServerClient(
+                "http://gpu", name, http=http, profile=LLAMA.request_profile(WorkerRole.CHAT)
+            )
 
         recovered, sibling = _real_client("recovered"), _real_client("sibling")
         recovered.mark_unhealthy()
@@ -4099,7 +5832,7 @@ class TestVisionTimeout:
         from lilbee.providers.fleet.client import ChatDeadlineError
 
         client = _fake_client(0)
-        client.chat_abortable.side_effect = ChatDeadlineError("deadline", provider="llama-server")
+        client.chat_abortable.side_effect = ChatDeadlineError("deadline")
         with pytest.raises(
             ProviderError, match=f"Vision OCR timed out after {shown}\\."
         ) as excinfo:
@@ -4124,20 +5857,23 @@ class TestReloadSingleFlight:
                 threads.append(self)
 
             def start(self) -> None:
-                return None  # held un-run so the second call sees the in-flight guard
+                return None  # held un-run so the second call sees the work in flight
 
         monkeypatch.setattr(prov_mod.threading, "Thread", _RecordingThread)
         p = _provider_with_clients({})
         p.reload_role(WorkerRole.CHAT)
         p.reload_role(WorkerRole.EMBED)  # racing call while the first is in flight
         assert len(threads) == 1
-        assert p._reload_pending is True  # queued for the in-flight thread, not dropped
+        assert p._writes_wanted == 2  # the loop sees both, none dropped
+        assert p._writes_done == 0
 
     def test_reload_requested_mid_flight_runs_a_second_pass(self, monkeypatch) -> None:
         plans: list[int] = []
 
-        def _plan() -> planning_mod.FleetPlan:
+        def _plan(*, engines) -> planning_mod.FleetPlan:
             plans.append(len(plans))
+            if len(plans) == 1:
+                p._writes_wanted += 1  # a second change lands after this plan
             # fresh object -> differs -> restarts
             return planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),))
 
@@ -4149,40 +5885,36 @@ class TestReloadSingleFlight:
         monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-        p._reloading = True  # an in-flight reload that already snapshotted its plan
-        p.reload_role(WorkerRole.EMBED)  # the second settings change arrives mid-flight
-        assert p._reload_pending is True
-        p._reload_blocking()  # the in-flight thread runs to completion
+        _run_work(p)
         assert len(plans) == 2  # one pass per request: the change was applied
-        assert p._reloading is False
-        assert p._reload_pending is False
+        assert p._fleet_work is None
+        assert p._writes_done == p._writes_wanted
 
-    def test_fresh_reload_clears_a_stale_pending_flag(self, monkeypatch) -> None:
-        threads: list[object] = []
+    def test_a_reload_with_no_group_up_and_work_in_flight_is_queued(self) -> None:
+        p = FleetProvider()
+        with p._lock:  # the work's pass has stopped every group
+            p._fleet_work = prov_mod.DaemonCall(lambda: None, name="test-work")
+        p.replan_fleet()
+        assert p._writes_wanted == 1
+        assert p._writes_done == 0
 
-        class _RecordingThread:
-            def __init__(self, *, target, name, daemon) -> None:
-                threads.append(self)
+    def test_a_reload_with_no_group_up_and_no_work_starts_nothing(self) -> None:
+        p = FleetProvider()
+        p.replan_fleet()
+        assert p._writes_wanted == 1
+        assert p._fleet_work is None
 
-            def start(self) -> None:
-                return None
-
-        monkeypatch.setattr(prov_mod.threading, "Thread", _RecordingThread)
-        p = _provider_with_clients({})
-        p._reload_pending = True  # left over; the fresh pass plans from current cfg
-        p.reload_role(WorkerRole.CHAT)
-        assert len(threads) == 1
-        assert p._reload_pending is False
-
-    def test_reload_pass_failure_clears_guards_and_propagates(self, monkeypatch) -> None:
+    def test_reload_pass_failure_clears_the_work_and_propagates(self, monkeypatch) -> None:
         class _ExplodingSwap(_FakeSwap):
             def start(self, launches: list, **_kw: object) -> None:
                 raise RuntimeError("respawn failed")
 
         plans: list[int] = []
 
-        def _plan() -> planning_mod.FleetPlan:
+        def _plan(*, engines) -> planning_mod.FleetPlan:
             plans.append(len(plans))
+            if len(plans) == 1:
+                p._writes_wanted += 1  # a later write lands during the failing pass
             return planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),))
 
         monkeypatch.setattr(planning_mod, "plan_all_launches", _plan)
@@ -4191,13 +5923,10 @@ class TestReloadSingleFlight:
         p = FleetProvider()
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-        p._reloading = True
-        p._reload_pending = True
         with pytest.raises(RuntimeError, match="respawn failed"):
-            p._reload_blocking()
+            _run_work(p)
         assert len(plans) == 2  # the pending pass still ran before the failure surfaced
-        assert p._reloading is False
-        assert p._reload_pending is False
+        assert p._fleet_work is None
 
     def test_failed_pass_still_applies_the_pending_change(self, monkeypatch) -> None:
         built: list[_FakeSwap] = []
@@ -4215,22 +5944,23 @@ class TestReloadSingleFlight:
         monkeypatch.setattr(prov_mod, "SwapManager", _factory)
         monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
         monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
-        monkeypatch.setattr(
-            planning_mod,
-            "plan_all_launches",
-            lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
-        )
+        plans: list[int] = []
+
+        def _plan(*, engines) -> planning_mod.FleetPlan:
+            plans.append(len(plans))
+            if len(plans) == 1:
+                p._writes_wanted += 1  # a change arrives during the failing pass
+            return planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),))
+
+        monkeypatch.setattr(planning_mod, "plan_all_launches", _plan)
         p = FleetProvider()
         monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-        p._reloading = True
-        p._reload_pending = True  # a settings change arrived during the failing pass
-        p._reload_blocking()  # must not raise: the pending pass succeeded
+        _run_work(p)  # must not raise: the pending pass succeeded
         assert len(built) == 2
         assert p._swaps.get(WorkerRole.CHAT) is built[-1]  # adopted by the successful pass
-        assert p._reloading is False
-        assert p._reload_pending is False
+        assert p._fleet_work is None
 
     def test_final_pass_failure_drops_the_dead_swap(self, monkeypatch) -> None:
         class _ExplodingSwap(_FakeSwap):
@@ -4243,29 +5973,42 @@ class TestReloadSingleFlight:
         monkeypatch.setattr(
             planning_mod,
             "plan_all_launches",
-            lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+            lambda *, engines: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
         )
         p = FleetProvider()
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-        p._reloading = True
         with pytest.raises(RuntimeError, match="respawn failed"):
-            p._reload_blocking()
+            _run_work(p)
         assert p._swaps == {}  # the next call rebuilds instead of hitting a dead swap
+
+    def test_a_failed_pass_drops_a_dead_group_so_the_next_use_rebuilds(self, monkeypatch) -> None:
+        swap = _FakeSwap()
+        swap.running = False
+        p = FleetProvider()
+        p._swaps = {SwapGroup.CHAT: swap}
+        p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
+
+        def _broken_plan(*, engines) -> list:
+            raise RuntimeError("no devices")
+
+        monkeypatch.setattr(planning_mod, "plan_all_launches", _broken_plan)
+        with pytest.raises(RuntimeError, match="no devices"):
+            _run_work(p)
+        assert p._swaps == {}
 
     def test_planning_failure_keeps_a_live_swap(self, monkeypatch) -> None:
         swap = _FakeSwap()
         p = FleetProvider()
         p._swaps = {SwapGroup.CHAT: swap}
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-        p._reloading = True
 
-        def _broken_plan() -> list:
+        def _broken_plan(*, engines) -> list:
             raise RuntimeError("no devices")
 
         monkeypatch.setattr(planning_mod, "plan_all_launches", _broken_plan)
         with pytest.raises(RuntimeError, match="no devices"):
-            p._reload_blocking()
+            _run_work(p)
         assert p._swaps.get(WorkerRole.CHAT) is swap  # still running and serving the old config
         assert swap.shutdowns == 0
 
@@ -4274,24 +6017,26 @@ class TestReloadSingleFlight:
         p = FleetProvider()
         p._swaps = {SwapGroup.CHAT: swap}
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-        p._reloading = True
         monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
-        monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan(()))
-        p._reload_blocking()
+        monkeypatch.setattr(
+            planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan(())
+        )
+        _run_work(p)
         assert swap.shutdowns == 1  # nothing planned -> the running group stops
-        assert p._reloading is False
+        assert p._fleet_work is None
         p.reload_role(WorkerRole.CHAT)  # guard released -> a new reload can dispatch
 
-    def test_reload_blocking_noops_when_swap_already_gone(self, monkeypatch) -> None:
+    def test_pass_noops_when_swap_already_gone(self, monkeypatch) -> None:
         # Nothing running and nothing planned: the pass replans (a resurrect
         # would start whatever the fresh plan holds), finds nothing, and the
         # guard is still released.
         monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
-        monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan(()))
+        monkeypatch.setattr(
+            planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan(())
+        )
         p = FleetProvider()
-        p._reloading = True
-        p._reload_blocking()
-        assert p._reloading is False
+        _run_work(p)
+        assert p._fleet_work is None
         assert p._swaps == {}
 
     def test_reload_racing_shutdown_serializes_and_leaks_nothing(self, monkeypatch) -> None:
@@ -4307,11 +6052,10 @@ class TestReloadSingleFlight:
         p = FleetProvider()
         p._swaps = {SwapGroup.CHAT: swap}
         p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
-        p._reloading = True
 
         reload_entered = threading.Event()
 
-        def _slow_plan() -> planning_mod.FleetPlan:
+        def _slow_plan(*, engines) -> planning_mod.FleetPlan:
             reload_entered.set()
             gate.wait(5.0)
             return planning_mod.FleetPlan(())
@@ -4319,18 +6063,28 @@ class TestReloadSingleFlight:
         monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
         monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
         monkeypatch.setattr(planning_mod, "plan_all_launches", _slow_plan)
-        reloader = threading.Thread(target=p._reload_blocking)
-        reloader.start()
-        assert reload_entered.wait(5.0)  # the reload holds the build lock first
+        with p._lock:
+            p._writes_wanted += 1
+            work = p._start_fleet_work()
+        assert reload_entered.wait(5.0)  # the pass is the running fleet work
+        latched = threading.Event()
+        wait_on_work = work.wait
+
+        def _wait_seen(timeout: float | None = None) -> bool:
+            latched.set()
+            return wait_on_work(timeout)
+
+        monkeypatch.setattr(work, "wait", _wait_seen)
         shutter = threading.Thread(target=p._shutdown_swap)
         shutter.start()
-        time.sleep(0.05)
-        assert order == []  # shutdown is blocked behind the in-flight reload
+        assert latched.wait(5.0)
+        assert order == []  # shutdown waits on the in-flight pass
         gate.set()
-        reloader.join(timeout=5.0)
+        assert wait_on_work(5.0) is True
         shutter.join(timeout=5.0)
-        # The reload's stop phase ran (nothing planned -> group stops); the
-        # terminal shutdown then dropped refs, serialized on the build lock.
+        assert not shutter.is_alive()
+        # The pass's stop phase ran (nothing planned -> group stops); the terminal
+        # shutdown then dropped refs, after the pass ended.
         assert order == ["shutdown"]
         assert p._swaps == {}  # the shutdown's state cleanup still landed
 
@@ -4444,7 +6198,7 @@ class TestWarmProgressTracking:
         from lilbee.providers.warm_progress import WarmPhase
 
         client = _fake_client()
-        client.chat.side_effect = RuntimeError("engine never came up")
+        client.chat_abortable.side_effect = RuntimeError("engine never came up")
         p = _provider_with_clients({WorkerRole.CHAT: [client]})
         monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
         monkeypatch.setattr(cfg, "chat_model", "repo/m.gguf")
@@ -4532,7 +6286,7 @@ def test_require_clients_names_the_unusable_window_refusal(monkeypatch) -> None:
     p = FleetProvider()
     reason = "The chat model org/m.gguf leaves room for only a 512-token context"
     monkeypatch.setattr(p, "_ensure_fleet", lambda: True)
-    p._skipped_unusable_ctx = {WorkerRole.CHAT: reason}
+    p._refused_roles = {WorkerRole.CHAT: reason}
     with pytest.raises(ProviderError, match="512-token context") as excinfo:
         p._require_clients(WorkerRole.CHAT)
     assert excinfo.value.kind is ProviderErrorKind.BAD_REQUEST
@@ -4571,7 +6325,7 @@ def test_rebuild_role_restarts_only_that_role(monkeypatch) -> None:
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan((chat_launch, embed_launch)),
+        lambda *, engines: planning_mod.FleetPlan((chat_launch, embed_launch)),
     )
     p = FleetProvider()
     monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
@@ -4610,17 +6364,17 @@ def test_co_tenant_roles_share_one_swap_process(monkeypatch, tmp_path: Path) -> 
         lambda: Path(tempfile.mkdtemp(prefix="lilbee-slot-", dir=tmp_path)),
     )
     monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
-    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _s: True)
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: EngineReadiness.READY)
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
-    monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda engine: None)
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (chat, vision, embed),
-            co_tenants=frozenset({WorkerRole.CHAT, WorkerRole.VISION}),
+            swap_classes=(frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION})),
         ),
     )
 
@@ -4659,7 +6413,7 @@ def test_ensure_fleet_partial_failure_tears_down_started_groups(monkeypatch) -> 
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (_fake_launch(WorkerRole.CHAT), _fake_launch(WorkerRole.EMBED))
         ),
     )
@@ -4670,12 +6424,12 @@ def test_ensure_fleet_partial_failure_tears_down_started_groups(monkeypatch) -> 
     assert p._swaps == {}
 
 
-def test_drop_dead_swaps_drops_only_dead_groups() -> None:
+def test_a_failed_end_of_work_drops_only_dead_groups() -> None:
     p = FleetProvider()
     dead, live = _FakeSwap(), _FakeSwap()
     dead.running = False
     p._swaps = {WorkerRole.EMBED: dead, WorkerRole.CHAT: live}
-    p._drop_dead_swaps()
+    p._end_fleet_work(RuntimeError("step failed"))
     assert set(p._swaps) == {WorkerRole.CHAT}  # the live group is untouched
 
 
@@ -4692,7 +6446,7 @@ def test_replan_fleet_dispatches_the_diff_reload(monkeypatch) -> None:
 def test_reload_pass_refuses_after_terminal_shutdown(monkeypatch) -> None:
     """A reload queued behind a terminal shutdown must not resurrect the fleet."""
     plans: list[int] = []
-    monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: plans.append(1) or [])
+    monkeypatch.setattr(planning_mod, "plan_all_launches", lambda *, engines: plans.append(1) or [])
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
     p = FleetProvider()
     p._shut_down = True
@@ -4713,15 +6467,17 @@ class TestPlanProbeLifecycle:
             lambda: Path(tempfile.mkdtemp(prefix="lilbee-slot-", dir=tmp_path)),
         )
         monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
-        monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _s: True)
+        monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: EngineReadiness.READY)
         monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
         monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: order.append("reap"))
-        monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: order.append("capture"))
+        monkeypatch.setattr(
+            planning_mod, "capture_plan_probe", lambda engine: order.append("capture")
+        )
         monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
         monkeypatch.setattr(
             planning_mod,
             "plan_all_launches",
-            lambda: (
+            lambda *, engines: (
                 order.append("plan") or planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),))
             ),
         )
@@ -4774,7 +6530,7 @@ class TestWarmFailureIsSurfaced:
     def test_warm_failure_logs_the_underlying_error_at_warning(self, caplog) -> None:
         p = FleetProvider()
         client = _fake_client()
-        client.chat.side_effect = RuntimeError("unknown model architecture: qwen35moe")
+        client.chat_abortable.side_effect = RuntimeError("unknown model architecture: qwen35moe")
 
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.provider"):
             warmed = p._warm_role_clients(WorkerRole.CHAT, [client])
@@ -4785,10 +6541,12 @@ class TestWarmFailureIsSurfaced:
 
     def test_warm_cut_off_by_shutdown_logs_nothing(self, caplog) -> None:
         """Shutdown closes the client under the warm request; the model did not fail."""
+        from lilbee.runtime.cancellation import TaskCancelledError
+
         p = FleetProvider()
         p._shut_down = True
         client = _fake_client()
-        client.chat.side_effect = OSError(9, "Bad file descriptor")
+        client.chat_abortable.side_effect = TaskCancelledError
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.provider"):
             assert p._warm_role_clients(WorkerRole.CHAT, [client]) is False
         assert caplog.text == ""
@@ -4860,7 +6618,16 @@ class TestLaunchStateRoundTrip:
 
 
 def _engine_state_file(
-    engine_dir: Path, group: str, *, pin: str, model: str, role: str, ctx: int = 0, slots: int = 1
+    engine_dir: Path,
+    group: str,
+    *,
+    pin: str,
+    model: str,
+    role: str,
+    ctx: int = 0,
+    slots: int = 1,
+    argv: tuple[str, ...] = ("/bin/llama-server",),
+    env: dict[str, str] | None = None,
 ) -> Path:
     """A live engine's state record as another process would have written it."""
     import json
@@ -4878,8 +6645,8 @@ def _engine_state_file(
                 "launches": [
                     {
                         "role": role,
-                        "argv": ["/bin/llama-server"],
-                        "env_overrides": {},
+                        "argv": list(argv),
+                        "env_overrides": env or {},
                         "model": model,
                         "ctx": ctx,
                         "slots": slots,
@@ -4930,17 +6697,22 @@ def _install_ladder(
     monkeypatch.setattr(prov_mod, "engine_pin", lambda: pin)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _data_dir: None)
-    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
-    monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
+    monkeypatch.setattr(prov_mod, "kill_engine", lambda _data_dir: None)
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: EngineReadiness.READY)
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda engine: None)
     # Everything the test configures is placeable and buildable unless overridden.
-    monkeypatch.setattr(planning_mod, "placeable_total_vram", lambda: 0)
-    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
-    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: True)
+    monkeypatch.setattr(planning_mod, "placeable_total_vram", lambda engine: 0)
+    monkeypatch.setattr(
+        planning_mod, "role_model_placeable", lambda _role, _ref, _vram, *, engine: True
+    )
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted, engine: True)
     monkeypatch.setattr(
         prov_mod, "LlamaServerClient", lambda _endpoint, _model, **_kw: _fake_client()
     )
     monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan(tuple(launches))
+        planning_mod,
+        "plan_all_launches",
+        lambda *, engines: planning_mod.FleetPlan(tuple(launches)),
     )
     return swap, machine, built_dirs
 
@@ -4964,7 +6736,7 @@ def test_ladder_never_kills_a_live_engine_on_a_probe_failure(monkeypatch, tmp_pa
     reaped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
     monkeypatch.setattr(prov_mod, "reap_stale", lambda d, **_k: reaped.append(Path(d)))
-    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: False)  # every probe fails
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: None)  # every probe fails
     monkeypatch.setattr(
         prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
     )
@@ -4990,9 +6762,11 @@ def test_ladder_leaves_a_warm_engine_it_cannot_replace(monkeypatch, tmp_path: Pa
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
     monkeypatch.setattr(
-        prov_mod, "_placeable_demand", lambda: prov_mod._EngineDemand(set(), 0, {}, {})
+        prov_mod,
+        "_placeable_demand",
+        lambda engine, engines: prov_mod._EngineDemand(set(), 0, {}, {}),
     )  # nothing placeable
-    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: False)
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted, engine: False)
     _engine_state_file(machine, "chat", pin="pin-a", model="m-warm", role="chat")
     p = FleetProvider()
     assert p._ensure_fleet() is False  # serves nothing...
@@ -5018,7 +6792,7 @@ def test_ladder_binds_when_a_configured_role_is_unplaceable(monkeypatch, tmp_pat
     monkeypatch.setattr(
         planning_mod,
         "role_model_placeable",
-        lambda role, _ref, _vram: role is WorkerRole.CHAT,
+        lambda role, _ref, _vram, *, engine: role is WorkerRole.CHAT,
     )
     _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
     p = FleetProvider()
@@ -5108,6 +6882,249 @@ def test_ladder_builds_into_the_machine_dir_when_slot_is_empty(monkeypatch, tmp_
     assert len(users) == 1  # holding membership
 
 
+def test_the_membership_exists_before_the_engine_starts(monkeypatch, tmp_path: Path) -> None:
+    """An exit during the start finds this engine's hold and its in-progress mark."""
+    from lilbee.runtime.engine_lock import live_users_exist
+
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    p = FleetProvider()
+    seen: list[tuple[bool, bool, bool]] = []
+
+    def _look_during_start(launches: list, **_kwargs: object) -> None:
+        seen.append(
+            (machine in p._engine_holds, live_users_exist(machine), machine in p._starting_dirs)
+        )
+
+    monkeypatch.setattr(swap, "start", _look_during_start)
+    assert p._ensure_fleet() is True
+
+    assert seen == [(True, True, True)]
+
+
+def test_a_shutdown_during_a_stuck_start_stops_its_engine_without_waiting(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The start fails once its engine is stopped, so the exit waits on neither work nor lock."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.runtime.engine_lock import live_users_exist
+
+    work_wait_s = 3.0
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", work_wait_s)
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    started = threading.Event()
+    engine_gone = threading.Event()
+    stopped: list[Path] = []
+
+    def _stop(engine_dir: Path) -> None:
+        stopped.append(Path(engine_dir))
+        engine_gone.set()
+
+    def _start_until_the_engine_exits(launches: list, **_kwargs: object) -> None:
+        started.set()
+        engine_gone.wait(30)
+        raise ProviderError("The local model engine exited before it was ready.")
+
+    monkeypatch.setattr(prov_mod, "kill_engine", _stop)
+    monkeypatch.setattr(swap, "start", _start_until_the_engine_exits)
+    p = FleetProvider()
+    outcome: list[BaseException] = []
+
+    def _build() -> None:
+        try:
+            p._ensure_fleet(bounded=False)
+        except ProviderError as exc:
+            outcome.append(exc)
+
+    builder = threading.Thread(target=_build, daemon=True)
+    builder.start()
+    assert started.wait(5)
+
+    begin = time.monotonic()
+    p.shutdown()
+    elapsed = time.monotonic() - begin
+    builder.join(5)
+
+    assert elapsed < work_wait_s, f"shutdown took {elapsed:.2f} s with a start stuck"
+    # The shutdown kills what the start had recorded; the cancelled start kills what came after.
+    assert stopped == [machine, machine]
+    assert [str(exc) for exc in outcome] == ["The local model engine exited before it was ready."]
+    assert not live_users_exist(machine)
+
+
+def test_a_start_that_serves_nothing_leaves_no_membership(monkeypatch, tmp_path: Path) -> None:
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[])
+    p = FleetProvider()
+
+    assert p._ensure_fleet() is False
+
+    assert p._engine_holds == {}
+    assert not list((machine / "engine-users").glob("*.lock"))
+
+
+def test_a_failed_start_leaves_no_membership(monkeypatch, tmp_path: Path) -> None:
+    from lilbee.providers.base import ProviderError
+    from lilbee.runtime.engine_lock import live_users_exist
+
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    # A reference keeps the hold alive, so only a release frees the lock, not collection.
+    held: list[object] = []
+
+    def _fail(launches: list, **_kwargs: object) -> None:
+        held.append(p._engine_holds[machine])
+        raise ProviderError("engine did not come up")
+
+    monkeypatch.setattr(swap, "start", _fail)
+    p = FleetProvider()
+
+    with pytest.raises(ProviderError, match="engine did not come up"):
+        p._ensure_fleet()
+
+    assert len(held) == 1
+    assert p._engine_holds == {}
+    assert not live_users_exist(machine)
+
+
+def test_a_shutdown_during_a_start_stuck_before_spawn_waits_only_for_the_work(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A pending start keeps its hold, so the exit never waits on the build lock it holds."""
+    from lilbee.runtime.engine_lock import live_users_exist
+
+    work_wait_s = 1.0
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", work_wait_s)
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    killed: list[Path] = []
+    monkeypatch.setattr(prov_mod, "kill_engine", lambda d: killed.append(Path(d)))
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _stuck_then_spawned(self: FleetProvider, data_dir: Path) -> bool:
+        entered.set()
+        release.wait(30)
+        return True
+
+    monkeypatch.setattr(FleetProvider, "_plan_and_spawn", _stuck_then_spawned)
+    p = FleetProvider()
+    outcome: list[object] = []
+    builder = threading.Thread(target=lambda: outcome.append(p._ensure_fleet(bounded=False)))
+    builder.daemon = True
+    builder.start()
+    assert entered.wait(5)
+
+    begin = time.monotonic()
+    p.shutdown()
+    elapsed = time.monotonic() - begin
+    assert elapsed < work_wait_s + 1.0, f"shutdown took {elapsed:.2f} s with a start pending"
+    # The hold stays with the start until it returns.
+    assert machine in p._engine_holds
+    assert live_users_exist(machine)
+
+    release.set()
+    builder.join(5)
+    assert outcome == [False]
+    # The shutdown kills what the start had recorded; the cancelled start kills what came after.
+    assert killed == [machine, machine]
+    assert p._engine_holds == {}
+    assert not live_users_exist(machine)
+
+
+def test_a_shutdown_kills_a_starting_engine_without_the_graceful_stop(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    killed: list[Path] = []
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "kill_engine", lambda d: killed.append(Path(d)))
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    p = FleetProvider()
+    p._starting_dirs.add(machine)
+
+    p.shutdown()
+
+    assert killed == [machine]
+    assert stopped == []
+
+
+class _CountingLock:
+    """A lock wrapper that counts how deep the current holder is."""
+
+    def __init__(self, inner: threading.RLock) -> None:
+        self._inner = inner
+        self.depth = 0
+
+    def __enter__(self) -> _CountingLock:
+        self._inner.__enter__()
+        self.depth += 1
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.depth -= 1
+        self._inner.__exit__(*exc)
+
+
+def test_the_shutdown_kills_starting_engines_under_the_provider_lock(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The kill and the latch are one lock hold, so no start registers between them."""
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    p = FleetProvider()
+    lock = _CountingLock(p._lock)
+    p._lock = lock  # type: ignore[assignment]
+    depth_at_kill: list[int] = []
+    monkeypatch.setattr(prov_mod, "kill_engine", lambda _d: depth_at_kill.append(lock.depth))
+    p._starting_dirs.add(machine)
+
+    p.shutdown()
+
+    assert depth_at_kill == [1]
+
+
+@pytest.mark.parametrize("outcome", ["spawned", "nothing", "failed"])
+def test_a_start_leaves_the_in_progress_set_however_it_ends(
+    monkeypatch, tmp_path: Path, outcome: str
+) -> None:
+    from lilbee.providers.base import ProviderError
+
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    p = FleetProvider()
+    in_progress_during_spawn: list[set[Path]] = []
+
+    def _spawn(self: FleetProvider, data_dir: Path) -> bool:
+        in_progress_during_spawn.append(set(self._starting_dirs))
+        if outcome == "failed":
+            raise ProviderError("engine did not come up")
+        if outcome == "spawned":
+            # A spawned group uses the dir, as an adopted group does.
+            with self._lock:
+                self._set_group_dir(SwapGroup.CHAT, data_dir)
+        return outcome == "spawned"
+
+    monkeypatch.setattr(FleetProvider, "_plan_and_spawn", _spawn)
+
+    if outcome == "failed":
+        with pytest.raises(ProviderError, match="engine did not come up"):
+            p._ensure_fleet()
+    else:
+        p._ensure_fleet()
+
+    assert in_progress_during_spawn == [{machine}]
+    assert p._starting_dirs == set()
+    assert (machine in p._engine_holds) is (outcome == "spawned")
+
+
+def test_a_start_spawns_nothing_once_the_shutdown_latched(monkeypatch, tmp_path: Path) -> None:
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    started: list[list] = []
+    monkeypatch.setattr(swap, "start", lambda launches, **_kw: started.append(launches))
+    p = FleetProvider()
+    p._shut_down = True
+
+    assert p._plan_and_spawn(machine) is False
+
+    assert started == []
+    assert p._swaps == {}
+
+
 def test_ladder_overflows_to_private_dir_on_pin_mismatch(monkeypatch, tmp_path: Path) -> None:
     from lilbee.runtime.engine_lock import hold_user_lock
 
@@ -5153,7 +7170,7 @@ def test_ladder_private_path_stops_short_when_it_cannot_build(monkeypatch, tmp_p
     monkeypatch.setattr(
         prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
     )
-    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: False)
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted, engine: False)
     _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
     holder = hold_user_lock(machine, pid=999_888)  # live foreign incumbent forces overflow
     monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
@@ -5183,6 +7200,172 @@ def test_ladder_replaces_an_unused_incompatible_machine_engine(monkeypatch, tmp_
     assert swap.binds == []  # incompatible: never bound
     assert stopped == [machine]  # the unused incumbent was stopped...
     assert built and built[0] == machine  # ...and the slot rebuilt, not overflowed
+
+
+def _failed_record_ladder(monkeypatch, tmp_path: Path, *, pin: str):
+    """A machine slot whose engine answers but never loaded, recorded under *pin*."""
+    swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: EngineReadiness.FAILED)
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin=pin, model="m-chat", role="chat")
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    return swap, machine, built, stopped
+
+
+def test_ladder_rebuilds_an_unused_engine_that_never_loaded(monkeypatch, tmp_path: Path) -> None:
+    swap, machine, built, stopped = _failed_record_ladder(monkeypatch, tmp_path, pin="pin-a")
+    assert FleetProvider()._ensure_fleet() is True
+    assert swap.binds == []  # the hung engine is not bound
+    assert stopped == [machine]
+    assert built and built[0] == machine
+
+
+def test_ladder_binds_its_own_engine_without_a_load_proof_while_in_use(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A live user may never have asked for a load, so an in-use engine is not called failed."""
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    swap, machine, _built, stopped = _failed_record_ladder(monkeypatch, tmp_path, pin="pin-a")
+    holder = hold_user_lock(machine, pid=999_888)
+    assert FleetProvider()._ensure_fleet() is True
+    assert len(swap.binds) == 1
+    assert swap.started == []
+    assert stopped == []
+    holder.release_and_check_last()
+
+
+def test_ladder_overflows_around_a_foreign_engine_that_never_loaded_while_in_use(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    swap, machine, built, stopped = _failed_record_ladder(monkeypatch, tmp_path, pin="pin-OTHER")
+    holder = hold_user_lock(machine, pid=999_888)
+    assert FleetProvider()._ensure_fleet() is True
+    assert swap.binds == []
+    assert stopped == []  # a live user's engine is never stopped
+    assert built and built[0] == tmp_path / "root" / "data" / "engine"
+    holder.release_and_check_last()
+
+
+def test_ladder_rebuilds_an_unused_foreign_engine_that_never_loaded(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _swap, machine, built, stopped = _failed_record_ladder(monkeypatch, tmp_path, pin="pin-OTHER")
+    assert FleetProvider()._ensure_fleet() is True
+    assert stopped == [machine]
+    assert built and built[0] == machine
+
+
+def test_ladder_keeps_an_idle_engine_even_when_it_is_old(monkeypatch, tmp_path: Path) -> None:
+    swap, _machine, _built, stopped = _failed_record_ladder(monkeypatch, tmp_path, pin="pin-a")
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: EngineReadiness.IDLE)
+    assert FleetProvider()._ensure_fleet() is True
+    assert len(swap.binds) == 1
+    assert stopped == []
+
+
+def test_healthy_states_leaves_out_a_failed_group(monkeypatch, tmp_path: Path) -> None:
+    machine = tmp_path / "machine-slot"
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    _engine_state_file(machine, "embed", pin="pin-a", model="m-embed", role="embed")
+    verdicts = {4100: EngineReadiness.FAILED}
+    monkeypatch.setattr(
+        prov_mod, "engine_readiness", lambda state, *, now: verdicts.get(state.proxy_port)
+    )
+    assert prov_mod._healthy_states(machine) == {}
+    verdicts[4100] = EngineReadiness.IDLE
+    assert set(prov_mod._healthy_states(machine)) == {SwapGroup.CHAT, SwapGroup.EMBED}
+    verdicts[4100] = EngineReadiness.FAILED
+    assert set(prov_mod._healthy_states(machine, in_use=True)) == {
+        SwapGroup.CHAT,
+        SwapGroup.EMBED,
+    }
+    verdicts[4100] = None
+    assert prov_mod._healthy_states(machine, in_use=True) == {}
+    assert prov_mod._healthy_states(machine) == {}
+
+
+def _answering_engine_that_has_not_loaded(
+    monkeypatch, tmp_path: Path, *, wall: SimpleNamespace, boot_age_s: list[float]
+) -> Path:
+    """A chat engine with the Linux boot pair whose proxy answers with nothing loaded.
+
+    The provider reads the wall clock from *wall*; the boot clock reads ``boot_age_s[0]``.
+    """
+    from lilbee.providers.fleet import swap_manager as sm
+
+    machine = tmp_path / "machine-slot"
+    chat = sm.SwapState(
+        pid=1,
+        pgid=None,
+        created_at=wall.now,
+        boot_id="boot-A",
+        start_ticks=5000.0,
+        proxy_port=4100,
+        launches=(_chat_launch().to_state(),),
+    )
+    monkeypatch.setattr(
+        prov_mod, "find_live_state", lambda _dir, group: chat if group is SwapGroup.CHAT else None
+    )
+    listing = SimpleNamespace(status_code=200, json=lambda: {"running": []})
+    monkeypatch.setattr(sm, "_probe_client", lambda: SimpleNamespace(get=lambda *_a, **_k: listing))
+    monkeypatch.setattr(
+        prov_mod,
+        "time",
+        SimpleNamespace(
+            time=lambda: wall.now,
+            monotonic=lambda: pytest.fail("the provider hands the verdict the wall clock"),
+        ),
+    )
+    monkeypatch.setattr(sm, "linux_age_s", lambda _boot, _ticks: boot_age_s[0], raising=False)
+    return machine
+
+
+def test_a_forward_clock_step_does_not_fail_a_loading_engine(monkeypatch, tmp_path: Path) -> None:
+    wall = SimpleNamespace(now=1_000_000.0)
+    machine = _answering_engine_that_has_not_loaded(
+        monkeypatch, tmp_path, wall=wall, boot_age_s=[5.0]
+    )
+    assert set(prov_mod._healthy_states(machine)) == {SwapGroup.CHAT}
+    wall.now += 10 * 86_400  # NTP or an operator steps the wall clock forward ten days
+    assert set(prov_mod._healthy_states(machine)) == {SwapGroup.CHAT}
+
+
+def test_an_engine_that_never_loads_still_fails_after_the_deadline(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from lilbee.providers.fleet import swap_manager as sm
+
+    wall = SimpleNamespace(now=1_000_000.0)
+    boot_age_s = [5.0]
+    machine = _answering_engine_that_has_not_loaded(
+        monkeypatch, tmp_path, wall=wall, boot_age_s=boot_age_s
+    )
+    assert set(prov_mod._healthy_states(machine)) == {SwapGroup.CHAT}
+    boot_age_s[0] = sm.health_check_timeout_s([_chat_launch()]) + sm._BOOT_TIMEOUT_S
+    assert prov_mod._healthy_states(machine) == {}
+
+
+def test_the_slot_wait_keeps_waiting_on_an_in_use_engine_that_never_loaded(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The wait compares the in-use view the ladder took, so a failed record is no change."""
+    machine = tmp_path / "machine-slot"
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: EngineReadiness.FAILED)
+    monkeypatch.setattr(prov_mod, "live_users_exist", lambda _d, **_k: True)
+    before = prov_mod._healthy_states(machine, in_use=True)
+    assert set(before) == {SwapGroup.CHAT}
+    polls: list[float] = []
+    monkeypatch.setattr(prov_mod.time, "sleep", polls.append)
+    prov_mod._await_slot_change(machine, before, time.monotonic() + 0.05)
+    assert len(polls) > 1  # it ran to the deadline instead of returning on the first poll
 
 
 def test_last_out_stops_the_engine(monkeypatch, tmp_path: Path) -> None:
@@ -5681,7 +7864,12 @@ def test_ladder_adopts_a_warm_engine_planned_with_a_different_ctx_target(
 
 
 def _ladder_against_live_chat_engine(
-    monkeypatch, tmp_path: Path, recorded_pin: str
+    monkeypatch,
+    tmp_path: Path,
+    recorded_pin: str,
+    *,
+    argv: tuple[str, ...] = ("/bin/llama-server",),
+    env: dict[str, str] | None = None,
 ) -> tuple[_BindableSwap, Path, list[Path], list[Path]]:
     """Run this lilbee's ladder against a live chat engine recorded with *recorded_pin*."""
     from lilbee.providers.fleet import binary as binary_mod
@@ -5695,7 +7883,9 @@ def _ladder_against_live_chat_engine(
     monkeypatch.setattr(
         prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
     )
-    _engine_state_file(machine, "chat", pin=recorded_pin, model="m-chat", role="chat")
+    _engine_state_file(
+        machine, "chat", pin=recorded_pin, model="m-chat", role="chat", argv=argv, env=env
+    )
     holder = hold_user_lock(machine, pid=999_888)  # the other process still serves from it
     monkeypatch.setattr(cfg, "data_root", tmp_path / "root", raising=False)
     try:
@@ -5719,6 +7909,30 @@ def test_ladder_does_not_adopt_an_engine_started_with_an_older_swap_config(
     older_pin = f"{binary_mod.engine_build_id()}|swap-config=older"
     swap, machine, built, stopped = _ladder_against_live_chat_engine(
         monkeypatch, tmp_path, older_pin
+    )
+    assert swap.binds == []
+    assert stopped == []
+    assert built and machine not in built
+
+
+def test_ladder_does_not_adopt_a_split_launch_recorded_before_tensor_parallel(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A mistral.rs layer-map engine from revision 1 is not bound after the upgrade.
+
+    That launch carried the collective-library opt-out and a layer map, and
+    answered with garbage on two cards. The record's pin names revision 1, so
+    the ladder refuses the bind and builds its own engine.
+    """
+    from lilbee.providers.fleet import binary as binary_mod
+
+    revision_one_pin = f"{binary_mod.engine_build_id()}|swap-config=1"
+    swap, machine, built, stopped = _ladder_against_live_chat_engine(
+        monkeypatch,
+        tmp_path,
+        revision_one_pin,
+        argv=("/bin/mistralrs", "--device-layers", "0:16;1:16"),
+        env={"MISTRALRS_NO_NCCL": "1"},
     )
     assert swap.binds == []
     assert stopped == []
@@ -5771,8 +7985,12 @@ def test_binding_logs_the_engine_and_the_pid_that_owns_it(
 ) -> None:
     """Adoption names the engine it joined, so a wrong backend is traceable."""
     swap, _machine = _bindable_machine(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.engine_binary_identity",
+        lambda binary: f"{binary}@digest",
+    )
     monkeypatch.setattr(planning_mod, "engine_build_id", lambda: "wheel:0.6.91")
-    monkeypatch.setattr(planning_mod, "probed_devices", lambda: ())
+    monkeypatch.setattr(planning_mod, "probed_devices", lambda engine: ())
 
     p = FleetProvider()
     with caplog.at_level("INFO", logger="lilbee.providers.fleet.planning"):
@@ -5780,9 +7998,12 @@ def test_binding_logs_the_engine_and_the_pid_that_owns_it(
 
     assert len(swap.binds) == 1  # rode the running engine rather than starting one
     adopted = [r.message for r in caplog.records if r.message.startswith("Adopted")]
+    # The build names the binary as a path of this platform; the launch keeps its argv text.
+    built_from = Path("/bin/llama-server")
     assert adopted == [
         "Adopted chat-0 serving m-chat from engine pid 999998 on "
-        "/bin/llama-server (build wheel:0.6.91, backend unknown, devices: none)"
+        f"/bin/llama-server (engine llama.cpp, build wheel:0.6.91 {built_from}@digest, "
+        "backend unknown, devices: none)"
     ]
 
 
@@ -5814,13 +8035,13 @@ def test_ladder_probes_each_group_once_per_pass(monkeypatch, tmp_path: Path) -> 
 
     _swap, machine = _bindable_machine(monkeypatch, tmp_path)
     probed: list[int | None] = []
-    real_healthy = prov_mod.state_is_healthy
+    real_readiness = prov_mod.engine_readiness
 
-    def counting_probe(state):
+    def counting_probe(state, *, now):
         probed.append(state.proxy_port)
-        return real_healthy(state)
+        return real_readiness(state, now=now)
 
-    monkeypatch.setattr(prov_mod, "state_is_healthy", counting_probe)
+    monkeypatch.setattr(prov_mod, "engine_readiness", counting_probe)
     # Want a model the recorded engine does not serve, so the bind fails and the
     # replaceability check runs too -- the path that used to re-probe. A live
     # peer keeps that check from short-circuiting on membership.
@@ -5893,7 +8114,7 @@ def _embed_launch() -> InstanceLaunch:
 def _connection_error() -> Exception:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    return ProviderError("refused", provider="llama-server", kind=ProviderErrorKind.CONNECTION)
+    return ProviderError("refused", kind=ProviderErrorKind.CONNECTION)
 
 
 def test_placeable_demand_drops_roles_the_plan_does_not_place(monkeypatch) -> None:
@@ -5903,11 +8124,13 @@ def test_placeable_demand_drops_roles_the_plan_does_not_place(monkeypatch) -> No
     # co-tenant), so chat is excluded despite being configured.
     models = {"chat": "m-chat", "embed": "m-embed", "rerank": "m-rerank"}
     monkeypatch.setattr(prov_mod, "_configured_model_for", lambda role: models.get(role.value, ""))
-    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
+    monkeypatch.setattr(
+        planning_mod, "role_model_placeable", lambda _role, _ref, _vram, *, engine: True
+    )
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (
                 _fake_launch(WorkerRole.EMBED, model="m-embed"),
                 _fake_launch(WorkerRole.RERANK, model="m-rerank"),
@@ -5915,7 +8138,7 @@ def test_placeable_demand_drops_roles_the_plan_does_not_place(monkeypatch) -> No
         ),
     )
 
-    assert prov_mod._placeable_demand().pairs == {
+    assert prov_mod._placeable_demand(LLAMA, engines_for_all_roles(LLAMA)).pairs == {
         (WorkerRole.EMBED, "m-embed"),
         (WorkerRole.RERANK, "m-rerank"),
     }  # chat placed nowhere -> not wanted
@@ -5948,24 +8171,26 @@ def test_demanded_chat_ctx_not_capped_by_a_split_plan(monkeypatch) -> None:
 def test_placeable_demand_is_empty_without_an_engine_binary(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    def _no_binary() -> planning_mod.FleetPlan:
+    def _no_binary(*, engines) -> planning_mod.FleetPlan:
         raise ProviderError("no engine binary", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
 
-    assert prov_mod._placeable_demand() == prov_mod._EngineDemand(set(), 0, {}, {})
+    assert prov_mod._placeable_demand(
+        LLAMA, engines_for_all_roles(LLAMA)
+    ) == prov_mod._EngineDemand(set(), 0, {}, {})
 
 
 def test_placeable_demand_propagates_a_real_planning_failure(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    def _wedged() -> planning_mod.FleetPlan:
+    def _wedged(*, engines) -> planning_mod.FleetPlan:
         raise ProviderError("wedged probe", kind=ProviderErrorKind.SERVER)
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _wedged)
 
     with pytest.raises(ProviderError, match="wedged"):
-        prov_mod._placeable_demand()
+        prov_mod._placeable_demand(LLAMA, engines_for_all_roles(LLAMA))
 
 
 def test_placeable_demand_carries_not_installed_skips(monkeypatch) -> None:
@@ -5974,11 +8199,11 @@ def test_placeable_demand_carries_not_installed_skips(monkeypatch) -> None:
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (), skipped_not_installed={WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
         ),
     )
-    demand = prov_mod._placeable_demand()
+    demand = prov_mod._placeable_demand(LLAMA, engines_for_all_roles(LLAMA))
     assert demand.pairs == set()
     assert demand.skipped_not_installed == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
 
@@ -5989,7 +8214,9 @@ def test_acquire_engine_records_demand_skips_before_the_ladder(monkeypatch, tmp_
     the missing chat model instead of leaving a retry-forever 'not ready'."""
     skips = {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
     monkeypatch.setattr(
-        prov_mod, "_placeable_demand", lambda: prov_mod._EngineDemand(set(), 0, skips, {})
+        prov_mod,
+        "_placeable_demand",
+        lambda engine, engines: prov_mod._EngineDemand(set(), 0, skips, {}),
     )
     monkeypatch.setattr(prov_mod, "engine_pin", lambda: "pin")
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path)
@@ -6005,7 +8232,7 @@ def test_plan_and_spawn_missing_binary_keeps_demand_skips(monkeypatch, tmp_path:
     # demand-time not-installed record the ladder already stored.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    def _no_binary() -> None:
+    def _no_binary(engine) -> None:
         raise ProviderError("no engine binary", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
@@ -6015,89 +8242,29 @@ def test_plan_and_spawn_missing_binary_keeps_demand_skips(monkeypatch, tmp_path:
     assert p._skipped_not_installed == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
 
 
-def test_release_unused_holds_drops_only_dirs_no_group_uses_and_stops_nothing(
-    monkeypatch,
-) -> None:
-    stopped: list[Path] = []
-    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
-    p = FleetProvider()
-    unused, used = MagicMock(), MagicMock()
-    p._engine_holds = {Path("/e1"): unused, Path("/e2"): used}
-    p._group_dirs = {SwapGroup.CHAT: Path("/e2")}
-
-    p._release_unused_holds()
-
-    assert p._engine_holds == {Path("/e2"): used}
-    unused.release_and_check_last.assert_called_once()
-    used.release_and_check_last.assert_not_called()
-    assert stopped == []
-
-
-def test_release_unused_holds_waits_while_a_retired_client_is_in_flight() -> None:
+def _rediscover_over_a_held_dir(monkeypatch, order: list[str]) -> tuple[FleetProvider, MagicMock]:
+    """A provider whose chat group uses one held dir; *order* records the drop and the release."""
     p = FleetProvider()
     hold = MagicMock()
+    hold.release_and_check_last.side_effect = lambda: order.append("release")
     p._engine_holds = {Path("/e1"): hold}
-    p._retiring_clients = [_fake_client(in_flight=1)]
-
-    p._release_unused_holds()
-
-    assert p._engine_holds == {Path("/e1"): hold}
-    hold.release_and_check_last.assert_not_called()
-
-
-def test_a_sweep_during_a_rediscover_keeps_the_holds_until_the_retry_ends(monkeypatch) -> None:
-    # A retired client's last request can start a sweep while another thread's
-    # rediscover has dropped its groups and not yet retried.
-    p = FleetProvider()
-    hold = MagicMock()
-    p._engine_holds = {Path("/e1"): hold}
-    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
-    calls = {"n": 0}
-
-    def _call() -> str:
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise _connection_error()
-        p._release_unused_holds()
-        assert p._engine_holds == {Path("/e1"): hold}
-        return "ok"
-
-    assert p._with_rediscover(_call) == "ok"
-    assert p._open_rediscovers == 0
-    assert p._engine_holds == {}
-    hold.release_and_check_last.assert_called_once()
-
-
-def test_a_retired_client_starts_a_hold_sweep_when_its_last_request_ends(monkeypatch) -> None:
-    from lilbee.providers.fleet.client import LlamaServerClient
-
-    p = FleetProvider()
-    swept: list[str] = []
-    monkeypatch.setattr(
-        p, "_release_unused_holds", lambda: swept.append(threading.current_thread().name)
-    )
-    client = LlamaServerClient("http://127.0.0.1:1", "chat-0")
-    client.reserve()
-    client.reserve()
     with p._lock:
-        p._retire_clients([client])
-    client.release()
-    assert swept == []
-    client.release()
-    for thread in threading.enumerate():
-        if thread.name == prov_mod._HOLD_SWEEP_THREAD:
-            thread.join()
-    assert swept == [prov_mod._HOLD_SWEEP_THREAD]
-    client.close()
+        p._set_group_dir(SwapGroup.CHAT, Path("/e1"))
+    real_drop = p._drop_swap_refs
+
+    def _drop(**kwargs: bool) -> None:
+        order.append("drop")
+        real_drop(**kwargs)
+
+    monkeypatch.setattr(p, "_drop_swap_refs", _drop)
+    return p, hold
 
 
 def test_rediscover_releases_unused_holds_after_the_retry(monkeypatch) -> None:
     # The ladder skips this process's own hold, so the holds stay through the
     # retry and only the dirs it left behind are released afterwards.
-    p = FleetProvider()
     order: list[str] = []
-    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: order.append("drop"))
-    monkeypatch.setattr(p, "_release_unused_holds", lambda: order.append("release"))
+    p, _hold = _rediscover_over_a_held_dir(monkeypatch, order)
     calls = {"n": 0}
 
     def _call() -> str:
@@ -6112,27 +8279,134 @@ def test_rediscover_releases_unused_holds_after_the_retry(monkeypatch) -> None:
 
 
 def test_rediscover_releases_unused_holds_when_the_retry_fails(monkeypatch) -> None:
-    p = FleetProvider()
-    released: list[int] = []
-    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
-    monkeypatch.setattr(p, "_release_unused_holds", lambda: released.append(1))
+    order: list[str] = []
+    p, _hold = _rediscover_over_a_held_dir(monkeypatch, order)
 
     def _call() -> str:
         raise _connection_error()
 
     with pytest.raises(type(_connection_error())):
         p._with_rediscover(_call)
-    assert released == [1]
+    assert order == ["drop", "release"]
+    assert p._engine_holds == {}
 
 
-def test_a_failed_sweep_after_a_rediscover_keeps_the_retry_result(monkeypatch) -> None:
+def test_a_transport_failure_on_the_rediscover_retry_is_not_responding(monkeypatch) -> None:
     p = FleetProvider()
     monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
+    refused = httpx.ConnectError("refused")
 
-    def _broken_sweep() -> None:
-        raise OSError("lock file gone")
+    def _call() -> str:
+        raise refused
 
-    monkeypatch.setattr(p, "_release_unused_holds", _broken_sweep)
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        p._with_rediscover(_call)
+    assert caught.value.kind is ProviderErrorKind.CONNECTION
+    assert caught.value.__cause__ is refused
+
+
+def _status_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://127.0.0.1:1/v1/chat/completions")
+    response = httpx.Response(status, request=request)
+    return httpx.HTTPStatusError(f"server answered {status}", request=request, response=response)
+
+
+_MODEL_ERRORS = [
+    pytest.param(
+        lambda: ProviderError("bad input", kind=ProviderErrorKind.BAD_REQUEST),
+        id="provider-error",
+    ),
+    pytest.param(lambda: ValueError("malformed reply"), id="value-error"),
+    pytest.param(lambda: _status_error(500), id="http-status-error"),
+]
+
+
+@pytest.mark.parametrize("make_error", _MODEL_ERRORS)
+def test_a_model_error_on_the_rediscover_retry_surfaces_unchanged(
+    monkeypatch, make_error: Callable[[], Exception]
+) -> None:
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
+    rejected = make_error()
+    calls = {"n": 0}
+
+    def _call() -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _connection_error()
+        raise rejected
+
+    with pytest.raises(type(rejected), match=str(rejected)) as caught:
+        p._with_rediscover(_call)
+    assert caught.value is rejected
+    assert calls["n"] == 2
+
+
+@pytest.mark.parametrize("make_error", _MODEL_ERRORS)
+def test_a_model_error_after_a_rebuild_surfaces_unchanged(
+    monkeypatch, make_error: Callable[[], Exception]
+) -> None:
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_rebuild_role", lambda _role: None)
+    rejected = make_error()
+    held_port = ProviderError("port held", kind=ProviderErrorKind.CONNECTION)
+
+    def _call() -> str:
+        raise rejected
+
+    with pytest.raises(type(rejected), match=str(rejected)) as caught:
+        p._retry_rebuilt(_call, WorkerRole.CHAT, held_port)
+    assert caught.value is rejected
+
+
+def test_a_count_whose_engine_did_not_finish_starting_runs_once(monkeypatch) -> None:
+    """A warm timeout is not retried, rebuilt or downshifted: each would start the
+    same slow launch again."""
+    from lilbee.providers.base import WarmTimeoutError
+
+    p = FleetProvider()
+    counts: list[str] = []
+    rebuilt: list[WorkerRole] = []
+    dropped: list[bool] = []
+    downshifted: list[WorkerRole] = []
+
+    def _count(text: str) -> int:
+        counts.append(text)
+        raise WarmTimeoutError("slow", wait_s=120.0)
+
+    monkeypatch.setattr(p, "_count_once", _count)
+    monkeypatch.setattr(p, "_rebuild_role", rebuilt.append)
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: dropped.append(True))
+    monkeypatch.setattr(
+        planning_mod, "record_ctx_downshift", lambda role: downshifted.append(role) or True
+    )
+
+    with pytest.raises(WarmTimeoutError):
+        p.count_tokens("\n")
+    assert counts == ["\n"]
+    assert rebuilt == []
+    assert dropped == []
+    assert downshifted == []
+
+
+def test_a_transport_failure_after_a_rebuild_is_not_responding(monkeypatch) -> None:
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_rebuild_role", lambda _role: None)
+    refused = httpx.ConnectError("refused")
+    held_port = ProviderError("port held", kind=ProviderErrorKind.CONNECTION)
+
+    def _call() -> str:
+        raise refused
+
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        p._retry_rebuilt(_call, WorkerRole.CHAT, held_port)
+    assert caught.value.__cause__ is refused
+
+
+def test_a_failed_hold_release_after_a_rediscover_keeps_the_retry_result(monkeypatch) -> None:
+    order: list[str] = []
+    p, hold = _rediscover_over_a_held_dir(monkeypatch, order)
+    hold.release_and_check_last.side_effect = OSError("lock file gone")
     calls = {"n": 0}
 
     def _call() -> str:
@@ -6142,62 +8416,25 @@ def test_a_failed_sweep_after_a_rediscover_keeps_the_retry_result(monkeypatch) -
         return "ok"
 
     assert p._with_rediscover(_call) == "ok"
-    assert p._open_rediscovers == 0
+    hold.release_and_check_last.assert_called_once()
+    assert p._dir_users == {}
 
 
-class _LockRaisingOnFirstExit:
-    """Wraps the provider lock; the first release raises, as an async exception there would."""
-
-    def __init__(self, inner: contextlib.AbstractContextManager[object]) -> None:
-        self._inner = inner
-        self._raised = False
-
-    def __enter__(self) -> object:
-        return self._inner.__enter__()
-
-    def __exit__(self, *exc: object) -> None:
-        self._inner.__exit__(*exc)
-        if not self._raised:
-            self._raised = True
-            raise KeyboardInterrupt
-
-
-def test_an_exception_right_after_the_open_count_goes_up_brings_it_down(monkeypatch) -> None:
-    p = FleetProvider()
-    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
-    monkeypatch.setattr(p, "_release_unused_holds", lambda: None)
+def test_a_fleet_wait_error_from_the_rediscover_drop_ends_the_retry_uses(monkeypatch) -> None:
+    order: list[str] = []
+    p, hold = _rediscover_over_a_held_dir(monkeypatch, order)
+    # A server stop answers the drop's wait for the running fleet work.
+    p._fleet_work = MagicMock()
+    p._stop_waiting = True
 
     def _call() -> str:
-        if not isinstance(p._lock, _LockRaisingOnFirstExit):
-            p._lock = _LockRaisingOnFirstExit(p._lock)  # type: ignore[assignment]
         raise _connection_error()
 
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(ProviderError):
         p._with_rediscover(_call)
-    assert p._open_rediscovers == 0
-
-
-def test_a_sweep_with_nothing_to_release_does_not_wait_on_the_build_lock() -> None:
-    p = FleetProvider()
-    hold = MagicMock()
-    p._engine_holds = {Path("/e1"): hold}
-    p._group_dirs = {SwapGroup.CHAT: Path("/e1")}
-    p._build_lock = MagicMock()  # type: ignore[assignment]
-
-    p._release_unused_holds()
-
-    p._build_lock.__enter__.assert_not_called()
+    assert order == ["drop"]
+    assert p._dir_users == {Path("/e1"): 1}  # the group's own use; the retry's ended
     hold.release_and_check_last.assert_not_called()
-
-
-def test_a_hold_sweep_that_cannot_start_a_thread_is_skipped(monkeypatch) -> None:
-    p = FleetProvider()
-
-    def _no_threads(self: threading.Thread) -> None:
-        raise RuntimeError("can't create new thread at interpreter shutdown")
-
-    monkeypatch.setattr(threading.Thread, "start", _no_threads)
-    p._start_hold_sweep()
 
 
 def test_rediscover_takes_the_config_file_after_the_drops_and_before_the_retry(
@@ -6205,9 +8442,8 @@ def test_rediscover_takes_the_config_file_after_the_drops_and_before_the_retry(
 ) -> None:
     # The take replans; with groups still held the replan would run against them.
     order: list[str] = []
-    p = FleetProvider(config_refresh=lambda: order.append("refresh"))
-    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: order.append("drop"))
-    monkeypatch.setattr(p, "_release_unused_holds", lambda: order.append("release"))
+    p, _hold = _rediscover_over_a_held_dir(monkeypatch, order)
+    p._config_refresh = lambda: order.append("refresh")
     calls = {"n": 0}
 
     def _call() -> str:
@@ -6299,9 +8535,7 @@ def test_non_connection_errors_do_not_rediscover(monkeypatch, tmp_path: Path) ->
 
     def _client_factory(_endpoint, _model, **_kw):
         client = _fake_client()
-        client.embed.side_effect = ProviderError(
-            "boom", provider="llama-server", kind=ProviderErrorKind.SERVER
-        )
+        client.embed.side_effect = ProviderError("boom", kind=ProviderErrorKind.SERVER)
         calls.append(1)
         return client
 
@@ -6361,7 +8595,7 @@ def test_chat_stream_open_failure_rediscovers_once_and_streams(monkeypatch, tmp_
         if not clients:
             client.chat_stream_items.return_value = _dead_stream()
         else:
-            client.chat_stream_items.return_value = iter(["a", "b"])
+            client.chat_stream_items.return_value = _frames_of("a", "b")
         clients.append(client)
         return client
 
@@ -6419,36 +8653,113 @@ def test_chat_with_tools_resets_stale_tracker_after_eviction(monkeypatch) -> Non
     assert not p._lazy_warming
 
 
+def test_chat_with_tools_sends_the_server_a_prompt_that_fits_as_rendered() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    client.chat_tools.return_value = "tools-ok"
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+    msgs = _tool_convo()
+
+    assert p.chat_with_tools(msgs, tools=[_SEARCH_TOOL], tool_choice="auto") == "tools-ok"
+
+    sent = client.chat_tools.call_args.args[0]
+    assert len(sent) < len(msgs)
+    assert _rendered_count(sent) <= 896
+    assert client.count_chat_prompt_tokens.call_args.kwargs["tool_choice"] == "auto"
+
+
+def test_chat_sends_the_server_a_prompt_that_fits_as_rendered() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    client.chat_result.return_value = "chat-ok"
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+    msgs = _tool_convo()
+
+    assert p.chat(msgs, tools=[_SEARCH_TOOL], tool_choice="required") == "chat-ok"
+
+    sent = client.chat_result.call_args.args[0]
+    assert len(sent) < len(msgs)
+    assert _rendered_count(sent) <= 896
+    assert client.count_chat_prompt_tokens.call_args.kwargs["tool_choice"] == "required"
+
+
+def test_chat_stream_sends_the_server_a_prompt_that_fits_as_rendered() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    client.chat_stream_items.return_value = _frames_of("a", "b")
+    p = _tool_convo_near_budget_provider(client)
+    msgs = _tool_convo()
+
+    assert list(p.chat(msgs, stream=True, tools=[_SEARCH_TOOL])) == ["a", "b"]
+
+    sent = client.chat_stream_items.call_args.args[0]
+    assert len(sent) < len(msgs)
+    assert _rendered_count(sent) <= 896
+
+
+def _call_chat(p: FleetProvider, entry: str, **kwargs: object) -> object:
+    """Call the chat entry point named *entry* with the search tool and the tool convo."""
+    if entry == "chat":
+        return p.chat(_tool_convo(), tools=[_SEARCH_TOOL], **kwargs)
+    return p.chat_with_tools(_tool_convo(), tools=[_SEARCH_TOOL], **kwargs)
+
+
+@pytest.mark.parametrize("entry", ["chat", "chat_with_tools"])
+def test_chat_entry_points_send_the_options_to_the_render(entry: str) -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    p = _tool_convo_near_budget_provider(client)
+
+    _call_chat(p, entry, options={"temperature": 0.25})
+
+    assert client.count_chat_prompt_tokens.call_args.kwargs["options"] == {"temperature": 0.25}
+
+
+@pytest.mark.parametrize("entry", ["chat", "chat_with_tools"])
+def test_chat_entry_points_name_the_configured_model_in_an_overflow(
+    entry: str, monkeypatch
+) -> None:
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr(cfg, "chat_model", "org/repo/configured.gguf")
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 5000
+    p = _tool_convo_near_budget_provider(client)
+
+    with pytest.raises(ProviderError, match=r"org/repo/configured\.gguf"):
+        _call_chat(p, entry)
+
+
 def test_can_build_engine_false_when_nothing_placeable() -> None:
-    assert prov_mod._can_build_engine(set()) is False
+    assert prov_mod._can_build_engine(set(), engine=LLAMA) is False
 
 
 def test_can_build_engine_false_when_binary_unresolvable(monkeypatch) -> None:
     # A NOT_FOUND probe failure (no engine binary) is the quiet serve-nothing case.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    def _boom():
-        raise ProviderError(
-            "no engine binary", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
-        )
+    def _boom(engine):
+        raise ProviderError("no engine binary", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "assert_engine_probeable", _boom)
-    assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}) is False
+    assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}, engine=LLAMA) is False
 
 
 def test_can_build_engine_true_with_a_placeable_model_and_binary(monkeypatch) -> None:
-    monkeypatch.setattr(planning_mod, "assert_engine_probeable", lambda: None)
-    assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}) is True
+    monkeypatch.setattr(planning_mod, "assert_engine_probeable", lambda engine: None)
+    assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}, engine=LLAMA) is True
 
 
 def test_can_build_engine_false_when_the_probe_raises_oserror(monkeypatch) -> None:
     # A probe OSError (a device node vanished, a broken pipe) is not a viable
     # build; stand down quietly rather than propagate a raw OS error.
-    def _oops() -> None:
+    def _oops(engine) -> None:
         raise OSError("device node gone")
 
     monkeypatch.setattr(planning_mod, "assert_engine_probeable", _oops)
-    assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}) is False
+    assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}, engine=LLAMA) is False
 
 
 def test_can_build_engine_propagates_a_wedged_probe(monkeypatch) -> None:
@@ -6456,14 +8767,12 @@ def test_can_build_engine_propagates_a_wedged_probe(monkeypatch) -> None:
     # loud here, before any caller stops a replaceable incumbent.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-    def _wedged():
-        raise ProviderError(
-            "cuda init failed", provider="llama-server", kind=ProviderErrorKind.CONNECTION
-        )
+    def _wedged(engine):
+        raise ProviderError("cuda init failed", kind=ProviderErrorKind.CONNECTION)
 
     monkeypatch.setattr(planning_mod, "assert_engine_probeable", _wedged)
     with pytest.raises(ProviderError) as excinfo:
-        prov_mod._can_build_engine({(WorkerRole.CHAT, "m")})
+        prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}, engine=LLAMA)
     assert excinfo.value.kind is ProviderErrorKind.CONNECTION
 
 
@@ -6482,14 +8791,12 @@ def test_ladder_does_not_kill_a_replaceable_incumbent_when_the_probe_is_wedged(
     real_can_build = prov_mod._can_build_engine  # captured before _install_ladder stubs it
     _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
     monkeypatch.setattr(prov_mod, "_can_build_engine", real_can_build)  # exercise the real gate
-    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: False)  # bind fails
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: None)  # bind fails
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
 
-    def _wedged() -> None:
-        raise ProviderError(
-            "cuda init failed", provider="llama-server", kind=ProviderErrorKind.CONNECTION
-        )
+    def _wedged(engine) -> None:
+        raise ProviderError("cuda init failed", kind=ProviderErrorKind.CONNECTION)
 
     monkeypatch.setattr(planning_mod, "assert_engine_probeable", _wedged)
     # A recorded incumbent with no live users: replaceable, so without the pre-stop
@@ -6510,7 +8817,7 @@ def test_ladder_clears_an_unprobeable_incumbent_before_build(monkeypatch, tmp_pa
     _swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
-    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: False)  # unprobeable
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: None)  # unprobeable
     monkeypatch.setattr(
         prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
     )
@@ -6523,29 +8830,99 @@ def test_ladder_clears_an_unprobeable_incumbent_before_build(monkeypatch, tmp_pa
     assert built and built[0] == machine  # ...then built fresh in the same slot
 
 
-def test_shutdown_does_not_hang_on_a_wedged_build(monkeypatch) -> None:
-    """A wedged engine start must not make process exit unreachable.
+def test_an_old_router_replaces_an_idle_incumbent_with_a_started_engine(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A llama-swap older than v259 still starts the fleet that replaces a warm engine.
 
-    Every _shut_down check runs after the build lock is taken, so a build that
-    never finishes used to hold shutdown forever rather than for a bounded time.
+    The incumbent is idle and cannot be bound, so the ladder stops it. The new
+    fleet then starts on the old router with the proxy stream alone, which every
+    release reads, so the user is never left with no engine.
     """
-    import threading
+    from lilbee.providers.fleet import swap_manager as sm
 
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(prov_mod, "SwapManager", sm.SwapManager)  # the real start
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: None)  # no bind
+    monkeypatch.setattr(prov_mod, "_watch_bound_engine", lambda _dir: None)
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    probes = router_reports(monkeypatch, "version: 223 (8c5e40e), built at x\n")
+    spawned: list[list[str]] = []
+    monkeypatch.setattr(
+        sm, "spawn_bound_child", lambda argv, *_a, **_k: spawned.append(argv) or MagicMock(pid=1)
+    )
+    monkeypatch.setattr(sm.SwapManager, "_await_health", lambda _self: None)
+    monkeypatch.setattr(sm, "ensure_engine_reaper", lambda _dir: True)
+    monkeypatch.setattr(sm, "reap_stale", lambda _dir, **_kw: None)
+    monkeypatch.setattr(sm, "_stop_own_fleet", lambda _cfg, _ports: None)
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    p = FleetProvider()
+    try:
+        assert p._ensure_fleet() is True
+        assert stopped == [machine]  # the idle incumbent was replaced...
+        assert [argv[0] for argv in spawned] == [str(ROUTER)]  # ...by a started engine
+        assert probes == [[str(ROUTER), "--version"]]
+        (config,) = machine.glob(sm._CONFIG_FILE_GLOB)
+        assert json.loads(config.read_text(encoding="utf-8"))["logToStdout"] == "proxy"
+    finally:
+        for swap in p._swaps.values():
+            swap._close_log()
+
+
+class _FakeWork:
+    """Fleet work whose wait reports a set answer and records the bound it was given."""
+
+    def __init__(self, provider: FleetProvider, finished: bool) -> None:
+        self.finished = finished
+        self.provider = provider
+        self.waits: list[float | None] = []
+        self.latched: list[bool] = []
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waits.append(timeout)
+        self.latched.append(self.provider._shut_down)
+        return self.finished
+
+
+@pytest.mark.parametrize("finished", [True, False], ids=["work_ends", "work_is_stuck"])
+def test_shutdown_waits_on_the_fleet_work_with_the_latch_set_then_tears_down(
+    monkeypatch, finished: bool
+) -> None:
     p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
-    monkeypatch.setattr(prov_mod, "_SHUTDOWN_BUILD_LOCK_WAIT_S", 0.2)
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", 7.0)
     released: list[str] = []
     monkeypatch.setattr(p, "_release_engines", lambda **_kw: released.append("released"))
+    work = _FakeWork(p, finished)
+    p._fleet_work = work  # type: ignore[assignment]
 
-    p._build_lock.acquire()  # stand in for a builder that never returns
-    try:
-        done = threading.Event()
-        threading.Thread(target=lambda: (p.shutdown(), done.set()), daemon=True).start()
-        assert done.wait(timeout=10), "shutdown blocked on the build lock"
-    finally:
-        p._build_lock.release()
+    p.shutdown()
 
-    assert released == ["released"]  # teardown ran rather than being skipped
-    assert p._shut_down is True  # and the latch is set for any queued thread
+    assert work.waits == [7.0]
+    assert work.latched == [True]
+    assert released == ["released"]
+    assert p._clients == {}
+
+
+def test_a_second_shutdown_during_the_first_releases_no_hold_twice(tmp_path: Path) -> None:
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    releases: list[str] = []
+
+    class _Hold:
+        def release_and_check_last(self) -> bool:
+            releases.append("released")
+            p.shutdown()  # the other caller arrives while this one holds the release
+            return False
+
+    p._engine_holds = {tmp_path: _Hold()}  # type: ignore[dict-item]
+
+    p.shutdown()
+
+    assert releases == ["released"]
+    assert p._engine_holds == {}
 
 
 def test_two_concurrent_shutdowns_release_each_engine_once(monkeypatch, tmp_path: Path) -> None:
@@ -6557,70 +8934,42 @@ def test_two_concurrent_shutdowns_release_each_engine_once(monkeypatch, tmp_path
     monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     in_stop = threading.Event()
-    second_waits = threading.Event()
+    second_is_done = threading.Event()
     stopped: list[Path] = []
 
     def stop_engine(engine_dir: Path) -> None:
         stopped.append(engine_dir)
         in_stop.set()
-        assert second_waits.wait(10)
+        assert second_is_done.wait(10)
 
     monkeypatch.setattr(prov_mod, "stop_engine", stop_engine)
-    inner = p._build_lock
-
-    class _SpyLock:
-        def acquire(self, *args, **kwargs):
-            if in_stop.is_set():
-                second_waits.set()  # the second shutdown asks while the first holds it
-            return inner.acquire(*args, **kwargs)
-
-        def release(self) -> None:
-            inner.release()
-
-    p._build_lock = _SpyLock()  # type: ignore[assignment]
     first = threading.Thread(target=p.shutdown)
     first.start()
     assert in_stop.wait(10)
     second = threading.Thread(target=p.shutdown)
     second.start()
-    first.join(10)
     second.join(10)
+    second_ended_during_the_stop = not second.is_alive()
+    second_is_done.set()
+    first.join(10)
 
-    assert second_waits.is_set()
-    assert not first.is_alive() and not second.is_alive()
+    assert second_ended_during_the_stop
+    assert not first.is_alive()
     assert stopped == [tmp_path]
     hold.release_and_check_last.assert_called_once_with()
     client.close.assert_called_once_with()
     assert p._engine_holds == {}
 
 
-def test_shutdown_latches_before_taking_the_build_lock() -> None:
-    """A queued warm thread can only bail early if the flag is already set."""
-    provider = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
-    seen: list[bool] = []
+def test_shutdown_with_no_fleet_work_tears_down_at_once(monkeypatch) -> None:
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    released: list[str] = []
+    monkeypatch.setattr(p, "_release_engines", lambda **_kw: released.append("released"))
 
-    class _SpyLock:
-        def __init__(self, inner) -> None:
-            self._inner = inner
+    p.shutdown()
 
-        def acquire(self, *args, **kwargs):
-            # What a warm or reload thread would observe on getting the lock next.
-            seen.append(provider._shut_down)
-            return self._inner.acquire(*args, **kwargs)
-
-        def release(self) -> None:
-            self._inner.release()
-
-        def __enter__(self):
-            self.acquire()
-            return self
-
-        def __exit__(self, *_exc) -> None:
-            self.release()
-
-    provider._build_lock = _SpyLock(provider._build_lock)  # type: ignore[assignment]
-    provider.shutdown()
-    assert seen == [True]
+    assert p._shut_down is True
+    assert released == ["released"]
 
     def test_no_detached_states_means_no_adoption(self, tmp_path) -> None:
         assert FleetProvider()._try_adopt_detached(tmp_path) is False
@@ -6634,6 +8983,39 @@ class TestAReplicaThatCannotLoadLeavesTheRoutingPool:
     request goes to the one instance that cannot serve while a sibling on a
     working card sits idle.
     """
+
+    def _fleet(self, swap: _FakeSwap | None = None):
+        from lilbee.providers.fleet import provider as provider_mod
+
+        fleet = provider_mod.FleetProvider.__new__(provider_mod.FleetProvider)
+        fleet._warm_errors = {}
+        fleet._shut_down = False
+        fleet._lock = threading.RLock()
+        fleet._role_group = {WorkerRole.EMBED: SwapGroup.CHAT} if swap else {}
+        fleet._swaps = {SwapGroup.CHAT: swap} if swap else {}
+        return fleet
+
+    def test_a_loaded_role_stamps_its_swap_as_ready(self, monkeypatch) -> None:
+        from lilbee.providers.fleet import provider as provider_mod
+
+        clients, _ = self._clients(set())
+        monkeypatch.setattr(provider_mod, "_warm_role", lambda _r, _c: None)
+        swap = _FakeSwap()
+        assert self._fleet(swap)._warm_role_clients(WorkerRole.EMBED, clients) is True
+        assert swap.ready_records == 1
+
+    def test_a_role_that_never_loads_leaves_its_swap_unstamped(self, monkeypatch) -> None:
+        from lilbee.providers.fleet import provider as provider_mod
+
+        clients, _ = self._clients({0, 1})
+
+        def _boom(_role, _client):
+            raise RuntimeError("no device could allocate")
+
+        monkeypatch.setattr(provider_mod, "_warm_role", _boom)
+        swap = _FakeSwap()
+        assert self._fleet(swap)._warm_role_clients(WorkerRole.EMBED, clients) is False
+        assert swap.ready_records == 0
 
     def _clients(self, failing: set[int]):
         from lilbee.providers.fleet.client import LlamaServerClient
@@ -6657,9 +9039,7 @@ class TestAReplicaThatCannotLoadLeavesTheRoutingPool:
                 raise RuntimeError("failed to allocate on device 0")
 
         monkeypatch.setattr(provider_mod, "_warm_role", _warm)
-        fleet = provider_mod.FleetProvider.__new__(provider_mod.FleetProvider)
-        fleet._warm_errors = {}
-        fleet._shut_down = False
+        fleet = self._fleet()
 
         assert fleet._warm_role_clients(WorkerRole.EMBED, clients) is True
 
@@ -6673,9 +9053,7 @@ class TestAReplicaThatCannotLoadLeavesTheRoutingPool:
 
         clients, _ = self._clients(set())
         monkeypatch.setattr(provider_mod, "_warm_role", lambda _r, _c: None)
-        fleet = provider_mod.FleetProvider.__new__(provider_mod.FleetProvider)
-        fleet._warm_errors = {}
-        fleet._shut_down = False
+        fleet = self._fleet()
 
         fleet._warm_role_clients(WorkerRole.EMBED, clients)
 
@@ -6692,9 +9070,7 @@ class TestAReplicaThatCannotLoadLeavesTheRoutingPool:
             raise RuntimeError("no device could allocate")
 
         monkeypatch.setattr(provider_mod, "_warm_role", _boom)
-        fleet = provider_mod.FleetProvider.__new__(provider_mod.FleetProvider)
-        fleet._warm_errors = {}
-        fleet._shut_down = False
+        fleet = self._fleet()
 
         assert fleet._warm_role_clients(WorkerRole.EMBED, clients) is False
         assert "no device could allocate" in fleet._warm_errors[WorkerRole.EMBED]
@@ -6756,7 +9132,9 @@ class TestChatPrefillProgress:
         monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
         monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
         monkeypatch.setattr(
-            planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan(tuple(launches))
+            planning_mod,
+            "plan_all_launches",
+            lambda *, engines: planning_mod.FleetPlan(tuple(launches)),
         )
         p = FleetProvider()
         p._ensure_fleet()
@@ -6780,3 +9158,627 @@ def test_demanded_vision_slots_follows_the_configured_concurrency(
 
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
     assert _demanded_vision_slots(pairs) == expected
+
+
+def test_the_reload_notice_is_none_when_no_reload_ran(monkeypatch) -> None:
+    p = _provider_without_preload(monkeypatch)
+    assert p.reload_notice() is None
+
+
+def test_the_reload_notice_says_roles_may_run_the_previous_engine_while_a_reload_runs(
+    monkeypatch,
+) -> None:
+    p = _provider_without_preload(monkeypatch)
+    p._swaps = {SwapGroup.CHAT: _FakeSwap()}
+    seen: list[str | None] = []
+    monkeypatch.setattr(p, "_reload_pass", lambda *a, **k: seen.append(p.reload_notice()))
+    p.replan_fleet(wait=True)
+    notice = "A change to the engines is being applied; roles may run their previous engine."
+    assert seen == [notice]
+    assert p.reload_notice() is None
+
+
+def test_a_failed_reload_leaves_the_notice_until_a_pass_succeeds(
+    monkeypatch, ocr_gated_engine
+) -> None:
+    from lilbee.providers.base import ProviderError
+
+    p = _provider_without_preload(monkeypatch)
+    p._ensure_fleet()
+    reload_pass = p._reload_pass
+    failures = iter([ProviderError("engine refused")])
+
+    def _fail_once(*args, **kwargs) -> None:
+        failure = next(failures, None)
+        if failure is not None:
+            raise failure
+        reload_pass(*args, **kwargs)
+
+    monkeypatch.setattr(p, "_reload_pass", _fail_once)
+    with pytest.raises(ProviderError, match="engine refused"):
+        p.replan_fleet(wait=True)
+    assert p.reload_notice() == (
+        "The last engine reload failed; a role may still run its previous engine."
+    )
+    p.replan_fleet(wait=True)
+    assert p.reload_notice() is None
+
+
+def test_the_engine_warning_reads_the_reload_state_not_the_live_setting(monkeypatch) -> None:
+    from lilbee.core.health_warnings import WarningCode
+    from lilbee.providers.routing_provider import RoutingProvider
+
+    routing = RoutingProvider()
+    assert routing.reload_notice() is None
+    local = MagicMock()
+    local.reload_notice.return_value = "The last engine reload failed; kept."
+    local.health_warnings.return_value = []
+    routing._local = local
+    warnings = routing.health_warnings()
+    assert [(w.code, w.message) for w in warnings] == [
+        (WarningCode.ENGINE_FALLBACK, "The last engine reload failed; kept.")
+    ]
+
+
+@pytest.fixture
+def served(monkeypatch, ocr_gated_engine, tmp_path: Path) -> FleetProvider:
+    """A started provider that the engine service reaches as the running server's provider."""
+    from lilbee.app import engine_service
+
+    monkeypatch.setattr(cfg, "data_root", tmp_path)
+    p = _provider_without_preload(monkeypatch)
+    assert p._ensure_fleet()
+    empty = SimpleNamespace(source_summary=lambda _n: SimpleNamespace(document_count=0))
+    services = SimpleNamespace(provider=p, store=empty)
+    monkeypatch.setattr(engine_service, "peek_services", lambda: services)
+    return p
+
+
+def test_a_failed_engine_write_leaves_the_running_role_working_and_says_so(
+    monkeypatch, served: FleetProvider
+) -> None:
+    from lilbee.app import engine_service
+    from lilbee.providers.base import ProviderError
+
+    working = served._require_clients(WorkerRole.CHAT)[0]
+
+    def _refuse(*args, **kwargs) -> None:
+        raise ProviderError("engine refused")
+
+    monkeypatch.setattr(served, "_reload_pass", _refuse)
+    with pytest.raises(engine_service.EngineNotAppliedError, match="Restart lilbee"):
+        engine_service.prefer("llama.cpp")
+    assert served._require_clients(WorkerRole.CHAT)[0] is working
+    assert served.reload_notice() == (
+        "The last engine reload failed; a role may still run its previous engine."
+    )
+
+
+def test_two_close_engine_writes_each_return_after_the_second_pass(
+    monkeypatch, served: FleetProvider
+) -> None:
+    from lilbee.app import engine_service
+
+    passes: list[int] = []
+    entered, release = threading.Event(), threading.Event()
+
+    def _pass(force=frozenset()) -> None:
+        passes.append(1)
+        if len(passes) == 1:
+            entered.set()
+            assert release.wait(10)
+
+    monkeypatch.setattr(served, "_reload_pass", _pass)
+    returned: list[str] = []
+    writes = [
+        threading.Thread(target=lambda: returned.append(engine_service.prefer("llama.cpp")))
+        for _ in range(2)
+    ]
+    writes[0].start()
+    assert entered.wait(10)
+    writes[1].start()
+    deadline = time.monotonic() + 10
+    while served._writes_wanted != 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert served._writes_wanted == 2  # the second write queued behind the first pass
+    release.set()
+    for write in writes:
+        write.join(10)
+    assert returned == ["llama.cpp", "llama.cpp"]
+    assert len(passes) == 2  # the second write ran its own pass, not the first one's
+    assert served.reload_notice() is None
+
+
+def test_an_engine_write_during_a_chat_leaves_the_chat_client_open(
+    monkeypatch, served: FleetProvider
+) -> None:
+    from lilbee.app import engine_service
+
+    streaming = _fake_client(in_flight=1)
+    served._clients[WorkerRole.CHAT] = [streaming]
+    reload_pass = served._reload_pass
+    monkeypatch.setattr(
+        served, "_reload_pass", lambda force=frozenset(): reload_pass(frozenset({WorkerRole.CHAT}))
+    )
+    engine_service.prefer("llama.cpp")
+    streaming.close.assert_not_called()
+    assert streaming in served._retiring_clients
+    assert served._require_clients(WorkerRole.CHAT)[0] is not streaming
+    streaming.in_flight = 0
+    engine_service.prefer("llama.cpp")  # the next reload closes the finished stream's client
+    streaming.close.assert_called_once_with()
+
+
+class TestDeadServersThroughTheRoutingProvider:
+    """The routing provider over a fleet whose replicas listen on no port."""
+
+    @staticmethod
+    def _dead_endpoint() -> str:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        return f"http://127.0.0.1:{port}"
+
+    @classmethod
+    def _routing(cls, monkeypatch, replicas: int):
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
+        routing = RoutingProvider()
+        fleet = routing._get_local()
+        assert isinstance(fleet, FleetProvider)
+        pools = {
+            role: [
+                LlamaServerClient(
+                    cls._dead_endpoint(), f"{role.value}-{i}", profile=LLAMA.request_profile(role)
+                )
+                for i in range(replicas)
+            ]
+            for role in (WorkerRole.EMBED, WorkerRole.CHAT)
+        }
+        monkeypatch.setattr(fleet, "_require_clients", lambda role: pools[role])
+        monkeypatch.setattr(fleet, "_clients", pools)
+        # The fleet start-up layer is out; the clients and their sockets are real.
+        monkeypatch.setattr(fleet, "_drop_swap_refs", lambda **_k: None)
+        monkeypatch.setattr(routing, "_announce", lambda _role, _ref: None)
+        return routing, pools
+
+    @pytest.mark.parametrize("replicas", [1, 2])
+    def test_embed_with_every_server_down_is_a_provider_error(self, monkeypatch, replicas) -> None:
+        routing, pools = self._routing(monkeypatch, replicas)
+        with pytest.raises(ProviderError, match="not responding") as caught:
+            routing.embed(["text"])
+        assert caught.value.kind is ProviderErrorKind.CONNECTION
+        assert not any(client.healthy for client in pools[WorkerRole.EMBED])
+
+    @pytest.mark.parametrize("replicas", [1, 2])
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_chat_with_every_server_down_is_a_provider_error(
+        self, monkeypatch, replicas, stream
+    ) -> None:
+        routing, _pools = self._routing(monkeypatch, replicas)
+        with pytest.raises(ProviderError, match="not responding") as caught:
+            routing.chat([{"role": "user", "content": "hi"}], stream=stream)
+        assert caught.value.kind is ProviderErrorKind.CONNECTION
+
+
+_ROLE_ONLY_FRAME = b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+
+
+class _RoleOnlyCuttingServer:
+    """A local chat server that sends role-only stream frames, then cuts the connection."""
+
+    def __init__(self, frames: int, how: str) -> None:
+        self._frames = frames
+        self._how = how
+        self.streams = 0
+        self._listener = socket.socket()
+        self._listener.bind(("127.0.0.1", 0))
+        self._listener.listen(4)
+        self.url = f"http://127.0.0.1:{self._listener.getsockname()[1]}"
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def close(self) -> None:
+        # shutdown wakes the accept thread on Linux; close alone leaves it blocked.
+        with contextlib.suppress(OSError):
+            self._listener.shutdown(socket.SHUT_RDWR)
+        self._listener.close()
+
+    def _accept(self) -> None:
+        while True:
+            try:
+                conn, _ = self._listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+
+    def _serve(self, conn: socket.socket) -> None:
+        # The socket stays open until its reader closes too; a client that hangs up ends both reads.
+        reader = conn.makefile("rb")
+        length = 0
+        while (line := reader.readline()) not in (b"\r\n", b""):
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":")[1])
+        body = reader.read(length)
+        reader.close()
+        if b'"stream":true' in body.replace(b" ", b""):
+            self.streams += 1
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+            b"Transfer-Encoding: chunked\r\n\r\n"
+        )
+        for _ in range(self._frames):
+            conn.sendall(b"%x\r\n" % len(_ROLE_ONLY_FRAME) + _ROLE_ONLY_FRAME + b"\r\n")
+        if self._how == "reset":
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        conn.close()
+
+
+class TestAStreamCutBeforeAnyText:
+    """A chat stream that sends only role frames, then loses its connection."""
+
+    @pytest.mark.parametrize("frames", [1, 3])
+    @pytest.mark.parametrize("how", ["reset", "closed"])
+    def test_the_cut_is_the_not_responding_error(self, monkeypatch, frames, how) -> None:
+        server = _RoleOnlyCuttingServer(frames, how)
+        try:
+            monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
+            monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+            routing = RoutingProvider()
+            fleet = routing._get_local()
+            assert isinstance(fleet, FleetProvider)
+            client = LlamaServerClient(
+                server.url, "chat-0", profile=LLAMA.request_profile(WorkerRole.CHAT)
+            )
+            # The fleet start-up layer is out; the client and its socket are real.
+            monkeypatch.setattr(fleet, "_require_clients", lambda role: [client])
+            monkeypatch.setattr(fleet, "_clients", {WorkerRole.CHAT: [client]})
+            monkeypatch.setattr(fleet, "_drop_swap_refs", lambda **_k: None)
+            monkeypatch.setattr(routing, "_announce", lambda _role, _ref: None)
+            with pytest.raises(ProviderError, match="not responding") as caught:
+                list(routing.chat([{"role": "user", "content": "hi"}], stream=True))
+            assert caught.value.kind is ProviderErrorKind.CONNECTION
+            assert isinstance(caught.value.__cause__, httpx.TransportError)
+            assert server.streams == 2  # the first cut is retried once, the second is final
+        finally:
+            server.close()
+
+
+_HELLO_TURN = ({"role": "user", "content": "hi"},)
+
+
+class TestReportsReadAfterTheLoad:
+    """A load that a warm or a lazy owner saw reads its engine report on a worker, after READY."""
+
+    def _replica(self, model_id: str, *, in_flight: int = 0, healthy: bool = True) -> MagicMock:
+        from lilbee.providers.base import ChatResult, FinishReason
+
+        client = _fake_client(in_flight)
+        client.model_id = model_id
+        client.healthy = healthy
+        client.chat_result.return_value = ChatResult(
+            text="ok", tool_calls=(), finish_reason=FinishReason.STOP
+        )
+        return client
+
+    def _warming(self, monkeypatch) -> tuple[FleetProvider, _FakeSwap]:
+        """A provider whose warm loads every replica of a chat and an embed role in one group."""
+        monkeypatch.setattr(prov_mod, "_warm_role", lambda _r, _c: None)
+        swap = _FakeSwap()
+        p = FleetProvider()
+        monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+        p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT, WorkerRole.EMBED: SwapGroup.CHAT}
+        p._swaps = {SwapGroup.CHAT: swap}
+        return p, swap
+
+    def _cold(self, *clients: MagicMock) -> tuple[FleetProvider, _FakeSwap]:
+        """A provider whose chat role was unloaded, so the next chat request owns the load."""
+        p = _provider_with_clients({WorkerRole.CHAT: list(clients)})
+        p._warm_tracker.begin("stale-model")
+        p._warm_tracker.ready()
+        return p, next(iter(p._swaps.values()))
+
+    def _reads_once_settled(self, swap: _FakeSwap) -> list[tuple[list[str], str]]:
+        """*swap*'s reads after every report thread started so far has ended.
+
+        The event starts its thread before it returns, so a read it started is joined here.
+        """
+        for thread in threading.enumerate():
+            if thread.name.startswith("fleet-report-"):
+                thread.join(timeout=5)
+        return swap.loaded_reads
+
+    def test_the_warm_reads_the_replicas_it_warmed(self, monkeypatch) -> None:
+        p, swap = self._warming(monkeypatch)
+        pools = {
+            WorkerRole.EMBED: [self._replica("embed-0"), self._replica("embed-1", healthy=False)]
+        }
+        p._warm_chain([WorkerRole.EMBED], pools, ((), ()))
+        assert swap.read_done.wait(5)
+        assert [ids for ids, _thread in swap.loaded_reads] == [["embed-0"]]
+
+    def test_a_failed_warm_reads_nothing(self, monkeypatch) -> None:
+        p, swap = self._warming(monkeypatch)
+        monkeypatch.setattr(
+            prov_mod, "_warm_role", lambda _r, _c: (_ for _ in ()).throw(RuntimeError("x"))
+        )
+        p._warm_chain([WorkerRole.EMBED], {WorkerRole.EMBED: [self._replica("embed-0")]}, ((), ()))
+        assert self._reads_once_settled(swap) == []
+
+    def test_the_warm_thread_does_not_run_the_read(self, monkeypatch) -> None:
+        p, swap = self._warming(monkeypatch)
+        p._warm_chain([WorkerRole.CHAT], {WorkerRole.CHAT: [self._replica("chat-0")]}, ((), ()))
+        assert swap.read_done.wait(5)
+        [(ids, thread)] = swap.loaded_reads
+        assert ids == ["chat-0"]
+        assert thread == "fleet-report-chat"
+        assert thread != threading.current_thread().name
+
+    def test_chat_is_ready_and_the_listeners_heard_before_the_read(self, monkeypatch) -> None:
+        from lilbee.providers.warm_progress import WarmPhase
+
+        p, swap = self._warming(monkeypatch)
+        order: list[object] = []
+
+        def read() -> None:
+            order.append(p.warm_progress().phase)
+            swap.read_done.set()
+
+        swap.claim_loaded = lambda ids: read  # type: ignore[method-assign]
+        listeners = ((), (lambda _r: order.append("spawned"),))
+        p._warm_chain([WorkerRole.CHAT], {WorkerRole.CHAT: [self._replica("chat-0")]}, listeners)
+        assert swap.read_done.wait(5)
+        assert order == ["spawned", WarmPhase.READY]
+
+    def test_a_lazy_load_reads_only_the_replica_that_answered(self) -> None:
+        busy, idle = self._replica("chat-0", in_flight=1), self._replica("chat-1")
+        p, swap = self._cold(busy, idle)
+        p.chat(list(_HELLO_TURN))
+        assert swap.read_done.wait(5)
+        assert [ids for ids, _thread in swap.loaded_reads] == [["chat-1"]]
+
+    def test_a_lazy_stream_reads_the_replica_that_streamed(self) -> None:
+        streaming = self._replica("chat-0")
+        streaming.chat_stream_items.return_value = _frames_of("a")
+        p, swap = self._cold(streaming)
+        list(p.chat(list(_HELLO_TURN), stream=True))
+        assert swap.read_done.wait(5)
+        assert [ids for ids, _thread in swap.loaded_reads] == [["chat-0"]]
+
+    def test_a_lazy_load_is_ready_before_its_read(self) -> None:
+        from lilbee.providers.warm_progress import WarmPhase
+
+        p, swap = self._cold(self._replica("chat-0"))
+        phases: list[object] = []
+
+        def read() -> None:
+            phases.append(p.warm_progress().phase)
+            swap.read_done.set()
+
+        swap.claim_loaded = lambda ids: read  # type: ignore[method-assign]
+        p.chat(list(_HELLO_TURN))
+        assert swap.read_done.wait(5)
+        assert phases == [WarmPhase.READY]
+
+    def test_no_read_runs_on_the_event_loop_or_the_request_thread(self) -> None:
+        import asyncio
+
+        p, swap = self._cold(self._replica("chat-0"))
+
+        async def _request() -> str:
+            p.chat(list(_HELLO_TURN))
+            return threading.current_thread().name
+
+        loop_thread = asyncio.run(_request())
+        assert swap.read_done.wait(5)
+        [(_ids, thread)] = swap.loaded_reads
+        assert thread == "fleet-report-chat"
+        assert thread != loop_thread
+
+    def test_a_lazy_load_that_fails_reads_nothing(self) -> None:
+        failing = self._replica("chat-0")
+        failing.chat_result.side_effect = ProviderError("the model did not load")
+        p, swap = self._cold(failing)
+        with pytest.raises(ProviderError, match="did not load"):
+            p.chat(list(_HELLO_TURN))
+        assert self._reads_once_settled(swap) == []
+
+    def test_a_request_that_owns_no_load_reads_nothing(self) -> None:
+        p, swap = self._cold(self._replica("chat-0"))
+        swap.ready.add(WorkerRole.CHAT)
+        p.chat(list(_HELLO_TURN))
+        assert self._reads_once_settled(swap) == []
+
+    def test_a_lazy_load_refused_by_one_replica_reads_the_one_that_answered(self) -> None:
+        from lilbee.providers.fleet.client import DeviceRefusedError
+
+        refusing, sibling = self._replica("chat-0"), self._replica("chat-1", in_flight=1)
+        refusing.chat_result.side_effect = DeviceRefusedError("the model is on the wrong card")
+        p, swap = self._cold(refusing, sibling)
+        p.chat(list(_HELLO_TURN))
+        assert [ids for ids, _thread in self._reads_once_settled(swap)] == [["chat-1"]]
+
+    def test_a_lazy_stream_refused_by_one_replica_reads_the_one_that_streamed(self) -> None:
+        from lilbee.providers.fleet.client import DeviceRefusedError
+
+        refusing, sibling = self._replica("chat-0"), self._replica("chat-1", in_flight=1)
+        refusing.chat_stream_items.side_effect = DeviceRefusedError("on the wrong card")
+        sibling.chat_stream_items.return_value = _frames_of("a")
+        p, swap = self._cold(refusing, sibling)
+        list(p.chat(list(_HELLO_TURN), stream=True))
+        assert [ids for ids, _thread in self._reads_once_settled(swap)] == [["chat-1"]]
+
+    def test_a_lazy_load_that_fails_after_a_replica_answered_reads_nothing(self) -> None:
+        answered = self._replica("chat-0")
+        p, swap = self._cold(answered)
+        with pytest.raises(RuntimeError, match="after the count"), p._lazy_warm_scope():
+            prov_mod._note_answered(answered)
+            raise RuntimeError("the chat failed after the count")
+        assert self._reads_once_settled(swap) == []
+
+    def test_the_answered_list_ends_with_the_lazy_load(self) -> None:
+        p, _swap = self._cold(self._replica("chat-0"))
+        p.chat(list(_HELLO_TURN))
+        assert prov_mod._answered_replicas.get() is None
+
+    def test_the_answered_list_does_not_reach_another_thread(self) -> None:
+        seen: list[object] = []
+        token = prov_mod._answered_replicas.set([])
+        try:
+            thread = threading.Thread(target=lambda: seen.append(prov_mod._answered_replicas.get()))
+            thread.start()
+            thread.join()
+        finally:
+            prov_mod._answered_replicas.reset(token)
+        assert seen == [None]
+
+    def test_the_load_is_claimed_before_the_read_thread_starts(self, monkeypatch) -> None:
+        """A downshift that an OOM records after the load, before the read runs, stays."""
+        monkeypatch.setattr(cfg, "num_ctx", None, raising=False)
+        p, swap = self._cold(self._replica("chat-0"))
+
+        def claim(ids: list[str]) -> Callable[[], None]:
+            planning_mod.clear_ctx_downshift(WorkerRole.CHAT)  # what the real claim does
+            return lambda: None
+
+        swap.claim_loaded = claim  # type: ignore[method-assign]
+        held: list[tuple[Callable[..., None], tuple[object, ...]]] = []
+        real_thread = threading.Thread
+
+        class _HeldThread:
+            def __init__(self, *, target, args, name, daemon) -> None:
+                self._run = (target, args)
+
+            def start(self) -> None:
+                held.append(self._run)
+
+        def thread(*args, **kwargs) -> object:
+            if str(kwargs.get("name", "")).startswith("fleet-report-"):
+                return _HeldThread(**kwargs)
+            return real_thread(*args, **kwargs)
+
+        monkeypatch.setattr(threading, "Thread", thread)
+        planning_mod.clear_ctx_downshift()
+        try:
+            planning_mod.record_ctx_downshift(WorkerRole.CHAT)  # the step taken to load
+            p.chat(list(_HELLO_TURN))
+            planning_mod.record_ctx_downshift(WorkerRole.CHAT)  # an OOM after the load
+            [(target, args)] = held
+            target(*args)
+            assert planning_mod._ctx_downshift_store.steps(WorkerRole.CHAT) == 1
+        finally:
+            planning_mod.clear_ctx_downshift()
+
+    def test_a_read_that_raises_is_logged_not_left_to_the_thread_hook(
+        self, monkeypatch, caplog
+    ) -> None:
+        p, swap = self._cold(self._replica("chat-0"))
+
+        def failing_read() -> None:
+            raise RuntimeError("the report broke")
+
+        swap.claim_loaded = lambda ids: failing_read  # type: ignore[method-assign]
+        hooked: list[object] = []
+        monkeypatch.setattr(threading, "excepthook", hooked.append)
+        with caplog.at_level(logging.WARNING, logger=prov_mod.__name__):
+            p.chat(list(_HELLO_TURN))
+            self._reads_once_settled(swap)
+        assert hooked == []
+        assert "memory report could not be read: the report broke" in caplog.text
+
+    def test_a_client_names_its_replica_id(self) -> None:
+        client = LlamaServerClient(
+            "http://127.0.0.1:1", "chat-3", profile=LLAMA.request_profile(WorkerRole.CHAT)
+        )
+        assert client.model_id == "chat-3"
+
+
+class TestAdoptGroupPins:
+    """The values adoption hands to each client and to the retiring pool."""
+
+    def test_only_the_chat_client_inlines_reasoning(self, monkeypatch) -> None:
+        launches = [_fake_launch(WorkerRole.CHAT), _fake_launch(WorkerRole.EMBED)]
+        for launch in launches:
+            launch.rerank_mode = None
+            launch.model_id = launch.role
+        inline: dict[WorkerRole, object] = {}
+
+        def _capture(_endpoint, model, **kw):
+            inline[model] = kw.get("inline_reasoning")
+            return _fake_client()
+
+        monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
+        monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_all_launches",
+            lambda *, engines: planning_mod.FleetPlan(tuple(launches)),
+        )
+        FleetProvider()._ensure_fleet()
+        assert inline[WorkerRole.CHAT] is True
+        assert inline[WorkerRole.EMBED] is False
+
+    def test_the_old_clients_wait_in_the_dir_of_the_group_they_ran_in(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        launch = _fake_launch(WorkerRole.EMBED)
+        swap = _install_engine(monkeypatch, tmp_path, launches=[launch])
+        p = FleetProvider()
+        old = _fake_client()
+        old_dir = tmp_path / "old-engine"
+        p._clients = {WorkerRole.EMBED: [old]}
+        p._role_group = {WorkerRole.EMBED: SwapGroup.CO_TENANT}
+        p._group_dirs = {SwapGroup.CO_TENANT: old_dir}
+        retired: list[tuple[tuple, dict]] = []
+        monkeypatch.setattr(p, "_retire_clients", lambda *a, **kw: retired.append((a, kw)))
+        with p._lock:
+            p._adopt_group(SwapGroup.EMBED, swap, [launch])
+        assert retired == [(([old], old_dir), {})]
+
+    def test_a_chat_group_gets_no_embed_window_warning(self, monkeypatch, tmp_path: Path) -> None:
+        launch = _fake_launch(WorkerRole.CHAT)
+        swap = _install_engine(monkeypatch, tmp_path, launches=[launch])
+        seen: list[object] = []
+        monkeypatch.setattr(planning_mod, "warn_when_chat_downsized", lambda _launch: None)
+        monkeypatch.setattr(planning_mod, "warn_when_embed_window_below_chunk", seen.append)
+        p = FleetProvider()
+        with p._lock:
+            p._adopt_group(SwapGroup.CHAT, swap, [launch])
+        assert seen == []
+
+
+class TestEmbedTokenCapPins:
+    def test_the_embed_profile_decides_whether_the_engine_reports_its_window(
+        self, monkeypatch
+    ) -> None:
+        _book_of(monkeypatch, TEI)
+        real = TEI.request_profile
+        monkeypatch.setattr(
+            TEI,
+            "request_profile",
+            lambda role: (
+                real(role)
+                if role is WorkerRole.EMBED
+                else dataclasses.replace(real(WorkerRole.EMBED), input_limit_path=None)
+            ),
+        )
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: 2040)
+        assert FleetProvider().embed_token_cap() is None
+
+    def test_the_planned_cap_is_read_through_the_embed_engine(self, monkeypatch) -> None:
+        _book_of(monkeypatch, LLAMA)
+        engines: list[object] = []
+
+        def _planned(_ref: str, *, engine) -> int:
+            engines.append(engine)
+            return 8184
+
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", _planned)
+        assert FleetProvider().embed_token_cap() == 8184
+        assert engines == [LLAMA]
+
+    def test_the_routing_provider_asks_for_a_full_read_by_default(self, monkeypatch) -> None:
+        routing = TestRoutingProviderEmbedCap._routing_over_a_capped_engine(
+            monkeypatch, "org/repo/e.gguf"
+        )
+        routing.embed_token_cap()
+        routing._local.embed_token_cap.assert_called_once_with(known_only=False)

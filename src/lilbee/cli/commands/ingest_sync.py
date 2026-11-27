@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,9 +24,10 @@ from lilbee.app.ingest import (
     AddRollback,
     RegisterResult,
     expand_remove_targets,
+    iter_removable_names,
     leave_as_cancel,
     register_sources,
-    removable_names,
+    removable_among,
     remove_documents_durably,
 )
 from lilbee.app.search import clean_results
@@ -55,6 +55,9 @@ from lilbee.core.text import strip_control_characters
 from lilbee.crawler import is_url
 from lilbee.crawler.models import NO_LOGIN, CrawlLogin
 from lilbee.crawler.url_filter import without_userinfo
+from lilbee.providers.base import ProviderError
+from lilbee.runtime.asyncio_loop import run_interruptible
+from lilbee.runtime.cancellation import CancelSignal, SignalFlag, sigint_cancel
 
 _SYNC_CANCELLED_MESSAGE = "Sync cancelled."
 # The shell's exit status for a command stopped by Ctrl+C (128 + SIGINT).
@@ -72,7 +75,10 @@ _ocr_option = typer.Option(
 _retry_skipped_option = typer.Option(
     False,
     "--retry-skipped",
-    help="Retry files that were skipped on a previous sync (clears the failed-file markers).",
+    help=(
+        "Retry files that failed on a previous sync, and read partly read files again "
+        "(releases the records of failed files)."
+    ),
 )
 _prune_ignored_option = typer.Option(
     False,
@@ -228,7 +234,7 @@ def _crawl_urls_blocking(
     crawl: bool,
     depth: int | None,
     max_pages: int | None,
-    cancel_event: threading.Event,
+    cancel_event: SignalFlag,
     include_subdomains: bool = False,
     login: CrawlLogin = NO_LOGIN,
 ) -> _CrawlOutcome:
@@ -238,7 +244,7 @@ def _crawl_urls_blocking(
     A URL whose address is refused, or whose crawl saved nothing and failed on every page,
     is a failed source; the next URL is still crawled.
     """
-    from rich.progress import Progress, SpinnerColumn, TaskID
+    from rich.progress import SpinnerColumn, TaskID
 
     from lilbee.crawler import crawl_and_save
     from lilbee.runtime.progress import (
@@ -252,11 +258,11 @@ def _crawl_urls_blocking(
 
     effective_depth, effective_pages = (depth, max_pages) if crawl else (0, None)
 
-    from lilbee.runtime.console import PlainConsole
+    from lilbee.runtime.console import PlainConsole, live_progress
 
     err_console = PlainConsole(stderr=True)
     outcome = _CrawlOutcome()
-    with Progress(
+    with live_progress(
         SpinnerColumn(),
         literal_text_column("{task.description}"),
         transient=True,
@@ -326,21 +332,14 @@ def _run_crawl_with_signal_cancel(
     depth: int | None,
     max_pages: int | None,
     on_progress: DetailedProgressCallback,
-    cancel_event: threading.Event,
+    cancel_event: SignalFlag,
     crawl_and_save: Callable[..., Awaitable[list[Path]]],
     include_subdomains: bool = False,
     login: CrawlLogin = NO_LOGIN,
 ) -> list[Path]:
     """Crawl one URL on its own event loop; a crawl that ends under a set cancel raises it."""
-    # Manage the event loop explicitly. In the CLI this runs once per process,
-    # but under pytest-xdist the same worker thread runs many tests; leaving a
-    # closed loop set as the "current" loop for the thread poisons every later
-    # asyncio.get_event_loop() call and hangs macOS 3.12/3.13 unit-test CI.
-    # Always clear the thread-current loop in finally.
-    loop = asyncio.new_event_loop()
-    try:
-        asyncio.set_event_loop(loop)
-        coro = crawl_and_save(
+    result: list[Path] = run_interruptible(
+        crawl_and_save(
             url,
             depth=depth,
             max_pages=max_pages,
@@ -348,19 +347,17 @@ def _run_crawl_with_signal_cancel(
             cancel=cancel_event,
             include_subdomains=include_subdomains,
             login=login,
-        )
-        result: list[Path] = loop.run_until_complete(coro)
-        # A cancelled crawl returns the pages it saved; the command still stops here.
-        if cancel_event.is_set():
-            raise asyncio.CancelledError
-        return result
-    finally:
-        loop.close()
-        asyncio.set_event_loop(None)
+        ),
+        cancel_event,
+    )
+    # A cancelled crawl returns the pages it saved; the command still stops here.
+    if cancel_event.is_set():
+        raise asyncio.CancelledError
+    return result
 
 
 def _cancellable_progress(
-    cancel_event: threading.Event, chain: DetailedProgressCallback
+    cancel_event: CancelSignal, chain: DetailedProgressCallback
 ) -> DetailedProgressCallback:
     """Wrap *chain* so a set *cancel_event* aborts the in-flight file cooperatively.
 
@@ -400,35 +397,19 @@ def _exit_cancelled(
 
 
 @contextmanager
-def _ctrl_c_sets(cancel_event: threading.Event) -> Iterator[None]:
-    """Make Ctrl+C set *cancel_event* instead of raising KeyboardInterrupt, for the block."""
-    import signal
+def _ctrl_c_stops(rollback: AddRollback) -> Iterator[SignalFlag]:
+    """Run a command under Ctrl+C and yield the cancel it polls; a stop exits 130 after *rollback*.
 
-    # signal.signal raises ValueError off the main thread (e.g. under pytest-xdist
-    # workers); the cancel_event can still be driven externally there.
-    if threading.current_thread() is not threading.main_thread():
-        yield
-        return
-
-    def _on_sigint(_signum: int, _frame: object) -> None:
-        cancel_event.set()
-
-    previous_handler = signal.signal(signal.SIGINT, _on_sigint)
-    try:
-        yield
-    finally:
-        signal.signal(signal.SIGINT, previous_handler)
-
-
-@contextmanager
-def _ctrl_c_stops(cancel_event: threading.Event, rollback: AddRollback) -> Iterator[None]:
-    """Run a command under Ctrl+C; one it stops exits 130 after *rollback*."""
-    try:
-        # Only the user's Ctrl+C sets this cancel.
-        with _ctrl_c_sets(cancel_event), leave_as_cancel(rollback, cancel_event, lambda: True):
-            yield
-    except asyncio.CancelledError:
-        _exit_cancelled(rollback)
+    The first Ctrl+C sets the cancel; a second one force-quits a run that never polls it,
+    after the rollback and its message.
+    """
+    with sigint_cancel() as cancel_event:
+        try:
+            # Only the user's Ctrl+C sets this cancel.
+            with leave_as_cancel(rollback, cancel_event, lambda: True):
+                yield cancel_event
+        except asyncio.CancelledError:
+            _exit_cancelled(rollback)
 
 
 def run_sync_with_signal_cancel(
@@ -438,10 +419,13 @@ def run_sync_with_signal_cancel(
     prune_ignored: bool = False,
     on_progress: DetailedProgressCallback | None = None,
     started_by: str = "lilbee sync",
+    analyze_tip: bool = False,
 ) -> SyncResult:
-    """Run ``sync`` under Ctrl+C; a sync it stops ends the command with exit status 130."""
-    cancel_event = threading.Event()
-    with _ctrl_c_stops(cancel_event, AddRollback()):
+    """Run ``sync`` under Ctrl+C; a sync it stops ends the command with exit status 130.
+
+    *analyze_tip* prints the analyze tip before the first file is ingested.
+    """
+    with _ctrl_c_stops(AddRollback()) as cancel_event:
         return _run_sync(
             cancel_event,
             force_rebuild=force_rebuild,
@@ -449,6 +433,7 @@ def run_sync_with_signal_cancel(
             prune_ignored=prune_ignored,
             on_progress=on_progress,
             started_by=started_by,
+            analyze_tip=analyze_tip,
         )
 
 
@@ -470,6 +455,27 @@ def _wait_shown_on_stderr(chain: DetailedProgressCallback) -> DetailedProgressCa
     return _callback
 
 
+def _tip_before_first_file(chain: DetailedProgressCallback) -> DetailedProgressCallback:
+    """Wrap *chain* so the analyze tip prints once, as the first file starts to ingest.
+
+    The sync has scanned the library by then, so a sync with nothing to ingest
+    never starts a file and prints no tip. A multi-GPU sync reports batch progress
+    in place of per-file starts, so either event counts.
+    """
+    from lilbee.runtime.progress import EventType, ProgressEvent
+
+    shown = False
+
+    def _callback(event_type: EventType, data: ProgressEvent) -> None:
+        nonlocal shown
+        if event_type in (EventType.FILE_START, EventType.BATCH_PROGRESS) and not shown:
+            shown = True
+            print_tip_if_shown(cfg.data_root, above_live_display=True)
+        chain(event_type, data)
+
+    return _callback
+
+
 def _default_progress() -> DetailedProgressCallback:
     """Print a line per file when the live bar cannot draw (piped output); else stay silent.
 
@@ -484,7 +490,7 @@ def _default_progress() -> DetailedProgressCallback:
 
 
 def _run_sync(
-    cancel_event: threading.Event,
+    cancel_event: SignalFlag,
     *,
     force_rebuild: bool = False,
     retry_skipped: bool = False,
@@ -492,11 +498,14 @@ def _run_sync(
     on_progress: DetailedProgressCallback | None = None,
     before_sync: Callable[[], None] | None = None,
     started_by: str,
+    analyze_tip: bool = False,
 ) -> SyncResult:
     """Run ``sync`` on its own event loop; it polls *cancel_event* between files and pages.
 
     *before_sync* runs once the eager warm is off, before the sync starts. *started_by*
-    names the command for the notice of a sync that waits for this one.
+    names the command for the notice of a sync that waits for this one. *analyze_tip*
+    prints the analyze tip as the first file starts to ingest, and never for a sync
+    with nothing to ingest.
     """
     from lilbee.data.ingest import sync
 
@@ -508,26 +517,35 @@ def _run_sync(
     if before_sync is not None:
         before_sync()
 
-    callback = _cancellable_progress(
-        cancel_event, _wait_shown_on_stderr(on_progress or _default_progress())
+    chain = on_progress or _default_progress()
+    if analyze_tip:
+        chain = _tip_before_first_file(chain)
+    callback = _cancellable_progress(cancel_event, _wait_shown_on_stderr(chain))
+    return run_interruptible(
+        sync(
+            force_rebuild=force_rebuild,
+            quiet=cfg.json_mode,
+            on_progress=callback,
+            cancel=cancel_event,
+            retry_skipped=retry_skipped,
+            prune_ignored=prune_ignored,
+            started_by=started_by,
+        ),
+        cancel_event,
     )
-    loop = asyncio.new_event_loop()
-    try:
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(
-            sync(
-                force_rebuild=force_rebuild,
-                quiet=cfg.json_mode,
-                on_progress=callback,
-                cancel=cancel_event,
-                retry_skipped=retry_skipped,
-                prune_ignored=prune_ignored,
-                started_by=started_by,
-            )
-        )
-    finally:
-        loop.close()
-        asyncio.set_event_loop(None)
+
+
+def _exit_if_failed(result: object) -> None:
+    """Exit 1 when a sync failed a file, held out failed files, or met another embedder's index.
+
+    Call it after printing, so the result names the failed files or the rebuild advice.
+    """
+    from lilbee.data.ingest import SyncResult
+
+    if isinstance(result, SyncResult) and (
+        result.has_failures() or result.index_mismatch is not None
+    ):
+        raise SystemExit(1)
 
 
 def sync_cmd(
@@ -541,6 +559,8 @@ def sync_cmd(
     processes: int | None = _processes_option,
 ) -> None:
     """Manually trigger document sync."""
+    from lilbee.data.ingest import SyncResult
+
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
     if max_cpus is not None:
@@ -550,25 +570,24 @@ def sync_cmd(
 
     try:
         result = run_sync_with_signal_cancel(
-            retry_skipped=retry_skipped, prune_ignored=prune_ignored, started_by="lilbee sync"
+            retry_skipped=retry_skipped,
+            prune_ignored=prune_ignored,
+            started_by="lilbee sync",
+            analyze_tip=True,
         )
-    except RuntimeError as exc:
+    except (RuntimeError, ProviderError) as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
         print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
+    if not isinstance(result, SyncResult):
+        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
     if cfg.json_mode:
         json_output(sync_result_to_json(result))
-        return
-    console.print(result)
-    if _changed_content(result):
-        print_tip_if_shown(cfg.data_root)
-
-
-def _changed_content(result: SyncResult) -> bool:
-    """True when the sync added, updated or removed a file: the tip is about new content."""
-    return bool(result.added or result.updated or result.removed)
+    else:
+        console.print(result)
+    _exit_if_failed(result)
 
 
 def rebuild_failure_message(failed: list[str]) -> str:
@@ -598,7 +617,7 @@ def run_rebuild() -> SyncResult:
     """Re-ingest every document in place; a refused rebuild exits 1 with its reason."""
     try:
         return rebuild_or_raise()
-    except RuntimeError as exc:
+    except (RuntimeError, ProviderError) as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
@@ -627,18 +646,20 @@ def rebuild(
             "command": "rebuild",
             "ingested": len(result.added),
             "failed": len(result.failed),
+            **result.model_dump(include={"partial", "reasons"}),
         }
         if result.failed:
             payload["error"] = rebuild_failure_message(result.failed)
         json_output(payload)
     else:
         console.print(f"Rebuilt: {len(result.added)} documents ingested")
+        if result.partial:
+            console.print(result.partial_summary())
         if result.failed:
             print_prefixed(
                 console, "Error: ", rebuild_failure_message(result.failed), style=theme.ERROR
             )
-    if result.failed:
-        raise SystemExit(1)
+    _exit_if_failed(result)
 
 
 def index(
@@ -684,18 +705,17 @@ def _crawl_urls_step(
     depth: int | None,
     max_pages: int | None,
     include_subdomains: bool,
-    cancel_event: threading.Event,
+    cancel_event: SignalFlag,
     typed_login: CrawlLogin,
 ) -> _CrawlOutcome:
     """Crawl URLs; without the crawler extra every URL fails with the install message."""
     if not urls:
         return _CrawlOutcome()
-    from lilbee.crawler import CRAWLER_MISSING_MESSAGE, crawler_available
+    from lilbee.crawler import crawler_available, crawler_unavailable_message
 
     if not crawler_available():
-        return _CrawlOutcome(
-            failed=[_FailedSource(without_userinfo(url), CRAWLER_MISSING_MESSAGE) for url in urls]
-        )
+        message = crawler_unavailable_message()
+        return _CrawlOutcome(failed=[_FailedSource(without_userinfo(url), message) for url in urls])
     try:
         login = crawl_login(urls, typed_login)
     except ValueError as exc:
@@ -739,7 +759,7 @@ def _report_failed_sources(payload: dict | None, failed: list[_FailedSource]) ->
         raise SystemExit(1)
 
 
-def _report_add_error(exc: RuntimeError, failed: list[_FailedSource]) -> NoReturn:
+def _report_add_error(exc: RuntimeError | ProviderError, failed: list[_FailedSource]) -> NoReturn:
     """Report the failed sources, then the error that stopped the add; exit 1."""
     if cfg.json_mode:
         payload: dict = {"error": str(exc)}
@@ -784,22 +804,24 @@ def _register_and_sync(
     crawled_paths: list[Path],
     *,
     force: bool,
-    cancel_event: threading.Event,
+    cancel_event: SignalFlag,
     rollback: AddRollback,
+    sync_results: list[object],
 ) -> dict | None:
-    """Register the files and sync; returns the JSON result, or None after human output."""
+    """Register the files and sync; returns the JSON result, or None after human output.
 
-    synced = False
+    Each sync result lands in *sync_results*, so the caller can set the exit code after output.
+    """
 
     def _sync(registration: RegisterResult) -> object:
-        nonlocal synced
         rollback.absorbed_into = registration.absorbed_into
         result = _run_sync(
             cancel_event,
-            before_sync=lambda: rollback.registered(registration.revocable, cancel_event),
+            before_sync=lambda: rollback.registered(registration, cancel_event),
             started_by="lilbee add",
+            analyze_tip=True,
         )
-        synced = _changed_content(result)
+        sync_results.append(result)
         return result
 
     if cfg.json_mode:
@@ -815,9 +837,6 @@ def _register_and_sync(
         )
     elif crawled_paths:
         console.print(_sync(RegisterResult()))
-    # After the result: a refused, cancelled or failed sync raises before this line.
-    if synced:
-        print_tip_if_shown(cfg.data_root)
     return None
 
 
@@ -857,11 +876,11 @@ def add(
     file_paths, urls = _partition_inputs(paths)
     _validate_file_paths(file_paths)
 
-    cancel_event = threading.Event()
     rollback = AddRollback(paths=file_paths, at_sync=False)
     outcome = _CrawlOutcome()
+    sync_results: list[object] = []
     try:
-        with _ctrl_c_stops(cancel_event, rollback):
+        with _ctrl_c_stops(rollback) as cancel_event:
             outcome = _crawl_urls_step(
                 urls,
                 crawl=crawl,
@@ -877,14 +896,17 @@ def add(
                 force=force,
                 cancel_event=cancel_event,
                 rollback=rollback,
+                sync_results=sync_results,
             )
             # An add that ends before its sync under a Ctrl+C still stops; a sync
             # that returned has finished, and its result stands.
             if cancel_event.is_set() and not rollback.at_sync:
                 raise asyncio.CancelledError
-    except RuntimeError as exc:
+    except (RuntimeError, ProviderError) as exc:
         _report_add_error(exc, outcome.failed)
     _report_failed_sources(payload, outcome.failed)
+    for result in sync_results:
+        _exit_if_failed(result)
 
 
 _chunks_source_argument = typer.Argument(..., help="Source name to inspect chunks for.")
@@ -973,12 +995,11 @@ def remove(
     # Remove only touches the store, never the engine; skip the eager fleet warm.
     cfg.worker_pool_eager_start = False
 
-    known = removable_names()
-    targets = expand_remove_targets(names, known=known)
+    targets = expand_remove_targets(names, known=iter_removable_names())
     expanded = sorted(set(targets)) != sorted(set(names))
     if expanded and not yes and not cfg.json_mode:
         # Count only what actually exists; not-found names are kept in targets.
-        removable = sum(1 for t in targets if t in set(known))
+        removable = len(removable_among(targets))
         typer.confirm(f"Remove {removable} document(s)? Source files on disk are kept.", abort=True)
 
     result = _remove_or_exit(names, targets)

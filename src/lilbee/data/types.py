@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import NamedTuple, NotRequired, TypedDict
@@ -16,6 +17,7 @@ from lilbee.core.vectors import Vector
 from lilbee.data.store import (
     ChunkType,
     ConceptRecords,
+    FailedPage,
     IndexMismatch,
     PageTextRecord,
     SourceMeta,
@@ -34,6 +36,18 @@ MARKDOWN_OUTPUT = "markdown"
 MARKDOWN_MIME = "text/markdown"
 # Sync summary note for a skipped document whose extraction ran with OCR off.
 SKIPPED_OCR_OFF_NOTE = ": ocr is off"
+# Heading for the indexed files with pages whose OCR failed.
+PARTLY_READ_TITLE = "Partly read"
+PARTLY_READ_FILE_COLUMN = "File"
+PARTLY_READ_PAGES_COLUMN = "Pages OCR failed on"
+# Sync summary note for an indexed file with pages whose OCR failed.
+PARTIAL_NOTE = ": partly read"
+# Failed pages listed under one partly read file before the rest are counted.
+FAILED_PAGES_SHOWN = 5
+FAILED_PAGES_MORE = "and {count} more"
+FAILED_PAGE_LINE = "page {page}: {error}"
+# Marks a failed page that still has native text or text from an embedded image.
+FAILED_PAGE_RECOVERED = " (other text kept)"
 
 
 def is_under(key: str, root: str) -> bool:
@@ -83,14 +97,26 @@ class MemberRecords(NamedTuple):
     records: list[ChunkRecord]
     page_texts: list[PageTextRecord]
     meta: SourceMeta
+    # The pages of the member whose OCR failed.
+    failed_pages: tuple[FailedPage, ...] = ()
 
 
 class DocumentRecords(NamedTuple):
-    """One file's records, its source metadata, and the OCR its extraction ran with."""
+    """One file's records, source metadata, the OCR its extraction ran with, and failed pages."""
 
     records: list[ChunkRecord]
     meta: SourceMeta
     ocr: OcrReport | None = None
+    # The pages whose OCR failed.
+    failed_pages: tuple[FailedPage, ...] = ()
+
+
+@dataclass(frozen=True)
+class PartialFile:
+    """A file indexed with at least one page whose OCR failed."""
+
+    name: str
+    pages: list[FailedPage]
 
 
 class SkippedSource(BaseModel):
@@ -168,6 +194,11 @@ class ChunkRecord(TypedDict):
     title: NotRequired[str | None]
 
 
+def rebuild_advice(drift: list[str]) -> str:
+    """The advice for an index whose chunks were cut with other values of the *drift* settings."""
+    return f"{', '.join(drift)} changed since the chunks were cut; run `lilbee rebuild`"
+
+
 class SyncResult(BaseModel):
     """Summary of a sync operation."""
 
@@ -180,6 +211,10 @@ class SyncResult(BaseModel):
     relocated: list[str] = []
     failed: list[str] = []
     skipped: list[str] = []
+    # Indexed files with pages whose OCR failed; each is also in added or updated.
+    partial: list[PartialFile] = []
+    # Why each failed or skipped file of this run was not indexed, by filename.
+    reasons: dict[str, str] = {}
     # The OCR each skipped document ran with; files that never reach OCR are absent.
     skipped_ocr: dict[str, OcrReport] = {}
     # Files an earlier sync held out, so this run did not attempt them.
@@ -192,6 +227,14 @@ class SyncResult(BaseModel):
     # Set when the index was built with another embedder than the one configured:
     # the sync left it as it is, and search refuses it until a rebuild or a switch back.
     index_mismatch: IndexMismatch | None = None
+    # The settings now in force that differ from the ones the chunks were cut with.
+    # Advisory: search and ingest go on, and a rebuild brings the chunks in line.
+    chunk_drift: list[str] = []
+
+    def has_failures(self) -> bool:
+        """Whether a file failed this run, or failed files are held out and none is indexed."""
+        kept = self.added or self.updated or self.unchanged or self.relocated
+        return bool(self.failed or (self.held_out and not kept))
 
     def _lines(self) -> list[list[tuple[str, str]]]:
         """The summary as lines of ``(text, style)`` segments; ``""`` means unstyled."""
@@ -203,10 +246,14 @@ class SyncResult(BaseModel):
         ]
         if self.index_mismatch is not None:
             lines.append([("Index mismatch:", "red"), (f" {self.index_mismatch.message}", "")])
+        if self.chunk_drift:
+            advice = rebuild_advice(self.chunk_drift)
+            lines.append([("Rebuild advised:", "yellow"), (f" {advice}", "")])
         if self.relocated:
             lines.append([(f"Relocated: {len(self.relocated)}", "")])
         lines += [
             [(f"Held out: {len(self.held_out)}", "")],
+            self._partial_count_line(),
             [(f"Skipped: {len(self.skipped)}", "")],
             [(f"Failed: {len(self.failed)}", "")],
             [(f"Truncated: {self.truncated}", "")],
@@ -214,6 +261,7 @@ class SyncResult(BaseModel):
         lines += [
             [("  ", ""), (h.filename, "yellow"), (f": {h.reason}", "")] for h in self.held_out
         ]
+        lines += self._partial_file_lines()
         lines += [[("  ", ""), (name, "yellow"), self._skip_note(name)] for name in self.skipped]
         lines += [[("  ", ""), (name, "red")] for name in self.failed]
         lines += [
@@ -221,6 +269,19 @@ class SyncResult(BaseModel):
             for folder in self.unreadable_folders
         ]
         return lines
+
+    def _partial_count_line(self) -> list[tuple[str, str]]:
+        """The count of partly read files, as one summary line."""
+        return [(f"{PARTLY_READ_TITLE}: {len(self.partial)}", "")]
+
+    def _partial_file_lines(self) -> list[list[tuple[str, str]]]:
+        """Each partly read file's name and failed pages, as summary lines."""
+        return [line for partial in self.partial for line in _partial_lines(partial)]
+
+    def partial_summary(self) -> Text:
+        """The partly read count and each file's failed pages, as literal text."""
+        lines = [self._partial_count_line(), *self._partial_file_lines()]
+        return Text("\n").join(Text.assemble(*line) for line in lines)
 
     def _skip_note(self, name: str) -> tuple[str, str]:
         """The OCR-off note for a skipped file, or an empty segment."""
@@ -239,7 +300,8 @@ class SyncResult(BaseModel):
         return (
             f"SyncResult(added={len(self.added)}, updated={len(self.updated)}, "
             f"removed={len(self.removed)}, unchanged={self.unchanged}, "
-            f"held_out={len(self.held_out)}, skipped={len(self.skipped)}, "
+            f"held_out={len(self.held_out)}, partial={len(self.partial)}, "
+            f"skipped={len(self.skipped)}, "
             f"failed={len(self.failed)}, truncated={self.truncated})"
         )
 
@@ -247,6 +309,26 @@ class SyncResult(BaseModel):
         """Render the summary with every filename and reason as literal text."""
         rendered = Text("\n").join(Text.assemble(*line) for line in self._lines())
         return ReprHighlighter()(rendered)
+
+
+def failed_page_line(page: FailedPage) -> str:
+    """One failed page as display text: its number, the error, and a mark when text was kept."""
+    line = FAILED_PAGE_LINE.format(page=page.page, error=page.error)
+    return line + FAILED_PAGE_RECOVERED if page.recovered else line
+
+
+def failed_page_lines(pages: Sequence[FailedPage]) -> list[str]:
+    """One line for each of the first FAILED_PAGES_SHOWN of *pages*, then one counting the rest."""
+    shown = [failed_page_line(page) for page in pages[:FAILED_PAGES_SHOWN]]
+    hidden = len(pages) - len(shown)
+    return [*shown, FAILED_PAGES_MORE.format(count=hidden)] if hidden else shown
+
+
+def _partial_lines(partial: PartialFile) -> list[list[tuple[str, str]]]:
+    """A partly read file's summary lines: its name, then its failed pages."""
+    lines = [[("  ", ""), (partial.name, "yellow"), (PARTIAL_NOTE, "")]]
+    lines += [[("    ", ""), (line, "")] for line in failed_page_lines(partial.pages)]
+    return lines
 
 
 @dataclass
@@ -263,6 +345,7 @@ class _IngestResult:
     ``skip_reason`` is set when the file was refused rather than attempted, and
     it decides the outcome ahead of the chunk count. ``ocr`` is the OCR the
     document extraction ran with; ``None`` for files that never reach OCR.
+    ``failed_pages`` holds the pages whose OCR failed.
     """
 
     name: str
@@ -280,3 +363,4 @@ class _IngestResult:
     meta: SourceMeta | None = None
     members: list[MemberRecords] | None = None
     ocr: OcrReport | None = None
+    failed_pages: list[FailedPage] = field(default_factory=list)

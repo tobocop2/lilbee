@@ -44,6 +44,7 @@ from lilbee.core.profile_files import (
     ProfileCatalog,
     ProfileEntry,
     ProfileFile,
+    ProfileFileError,
     ProfileFolder,
     ProfileStore,
     ProfileValidation,
@@ -403,17 +404,28 @@ def _your_profile_keys(layers: SettingLayers) -> tuple[str, ...]:
 
 
 def your_changes() -> tuple[ChangeRow, ...]:
-    """Your config.toml values of profile settings against the profile's; env-set keys stay out."""
+    """Your config.toml values that differ from the profile's; env-set and equal keys stay out."""
     return _changes_in(read_layers(cfg.data_root))
 
 
 def _changes_in(layers: SettingLayers) -> tuple[ChangeRow, ...]:
     underneath = replace(layers, user={})
-    return tuple(
+    rows = (
         _change_row(key, layers.user[key], resolve(key, underneath))
         for key in _your_profile_keys(layers)
         if key not in layers.env
     )
+    return tuple(row for row in rows if not _same_setting(row))
+
+
+def _same_setting(row: ChangeRow) -> bool:
+    """Whether your value and the profile's are one value once the setting's validator runs."""
+    try:
+        yours = normalized_values({row.key: row.yours})[row.key]
+        theirs = normalized_values({row.key: row.profile_value})[row.key]
+    except ProfileFileError:
+        return bool(row.yours == row.profile_value)
+    return bool(yours == theirs)
 
 
 def _change_row(key: str, yours: Any, fallback: Resolved) -> ChangeRow:

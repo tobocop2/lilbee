@@ -1,0 +1,614 @@
+"""The output checks of the harness reject the answers a weak check let through."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from lilbee.core.config import cfg
+from lilbee.providers.base import ChatResult, FinishReason, ToolCall
+from lilbee.providers.routing_provider import RoutingProvider
+from tests import _fake_sdk as fakes
+from tests.conformance import harness, preset_check, record_presets, request_set
+from tests.conformance.fake_engine import Behaviour, FakeEngine
+from tests.conformance.harness import (
+    NEAR_COPY_COSINE,
+    Verdict,
+    answer_fault,
+    colour_fault,
+    cosine,
+    embed_fault,
+    json_fault,
+    reasoning_fault,
+    reasoning_split_fault,
+    run,
+    tool_arguments_fault,
+)
+from tests.conformance.preset_check import (
+    FIXTURES,
+    Setup,
+    harness_recordings,
+    load_fixture,
+    steps_for,
+)
+
+_SCHEMA = {
+    "type": "object",
+    "properties": {"city": {"type": "string"}, "pop": {"type": "integer"}},
+    "required": ["city", "pop"],
+}
+_GOOD = '{"city": "Paris", "pop": 2100000}'
+_MODELS = {role: "m" for role in ("chat", "embed", "rerank", "vision")}
+
+
+@pytest.mark.parametrize(
+    ("content", "schema", "ok"),
+    [
+        (_GOOD, _SCHEMA, True),
+        ('{"anything": 1}', None, True),
+        ("<think>hm</think>\n" + _GOOD, _SCHEMA, True),
+        ("hm</think>\n" + _GOOD, _SCHEMA, True),
+        ("<think>hm " + _GOOD, _SCHEMA, False),
+        ("Sure, here is Paris.", None, False),
+        ('```json\n{"city": "Paris", "pop": 1}\n```', _SCHEMA, False),
+        ('{"city": "Paris", "pop": 1} Hope that helps.', _SCHEMA, False),
+        ('{"city": "Paris"}', _SCHEMA, False),
+        ('{"city": "Paris", "pop": "many"}', _SCHEMA, False),
+        ('{"city": "Paris", "pop": true}', _SCHEMA, False),
+        ('{"city": "Paris", "pop": 1, "extra": 1}', _SCHEMA, False),
+        ("[1, 2]", None, False),
+        ("", None, False),
+        (None, None, False),
+    ],
+)
+def test_json_answer(content: Any, schema: Any, ok: bool) -> None:
+    assert (json_fault(content, schema) == "") is ok
+
+
+@pytest.mark.parametrize(
+    ("arguments", "fault"),
+    [
+        ('{"city": "Paris"}', ""),
+        ({"city": "Paris"}, ""),
+        ("{}", "empty"),
+        ('{"town": "Paris"}', "no string city"),
+        ('{"city": 3}', "no string city"),
+        ("{city", "not JSON"),
+        ("[1]", "not an object"),
+    ],
+)
+def test_tool_arguments_name_the_cause(arguments: Any, fault: str) -> None:
+    assert fault in tool_arguments_fault(arguments)
+    assert (tool_arguments_fault(arguments) == "") is (fault == "")
+
+
+@pytest.mark.parametrize(
+    ("message", "finish", "ok"),
+    [
+        ({"reasoning_content": "hm", "content": "Rome."}, "stop", True),
+        ({"reasoning": "hm", "content": "Rome."}, "stop", True),
+        ({"content": "<think>hm</think>Rome."}, "stop", True),
+        # the chat template supplies the opening tag
+        ({"content": "hm</think>Rome."}, "stop", True),
+        # a tag in the answer beside the field is a leak, open or closing
+        ({"reasoning_content": "hm", "content": "Write <think> to start."}, "stop", False),
+        ({"reasoning_content": "hm", "content": "Rome.</think>"}, "stop", False),
+        # a full block in the answer beside the field is a leak
+        ({"reasoning_content": "hm", "content": "<think>hm</think>Rome."}, "stop", False),
+        ({"content": "<think>hm Rome."}, "stop", False),
+        ({"content": "<think>hm</think>"}, "stop", False),
+        ({"content": "<think>a</think><think>b</think>Rome."}, "stop", False),
+        ({"content": "</think>hm<think>Rome."}, "stop", False),
+        ({"content": "Rome."}, "stop", False),
+        ({"reasoning_content": "hm", "content": ""}, "stop", False),
+        ({"reasoning_content": "hm", "content": ""}, "length", True),
+    ],
+)
+def test_reasoning_split(message: dict[str, Any], finish: str, ok: bool) -> None:
+    assert (reasoning_fault(message, finish) == "") is ok
+
+
+@pytest.mark.parametrize("check", [reasoning_fault, reasoning_split_fault])
+@pytest.mark.parametrize(
+    ("message", "ok"),
+    [
+        ({"content": "<think>hm Rome."}, False),
+        ({"reasoning_content": "hm", "content": "Write <think> to start."}, False),
+        ({"content": "<think>hm</think>Rome."}, True),
+        ({"reasoning_content": "hm", "content": "<think>hm</think>Rome."}, False),
+        ({"content": "hm</think>Rome."}, True),
+        ({"reasoning_content": "hm", "content": "Rome.</think>"}, False),
+        ({"reasoning_content": "hm", "content": "a<think>b Rome."}, False),
+        ({"reasoning_content": "hm", "content": "Rome."}, True),
+        ({"reasoning": "hm", "content": "Rome."}, True),
+        ({"reasoning_content": "", "content": "Rome."}, False),
+        # a blank field is no field: the answer needs its own closed think block
+        ({"reasoning_content": "  ", "content": "Rome."}, False),
+        ({"reasoning_content": "  ", "content": "<think>hm</think>Rome."}, True),
+        ({"reasoning_content": "  ", "content": "<think>hm Rome."}, False),
+        # text that is not a tag is no leak: the plain word, an escaped tag and an entity tag
+        ({"reasoning_content": "hm", "content": "I think Rome."}, True),
+        ({"reasoning_content": "hm", "content": "Use \\<think\\> to start."}, True),
+        ({"reasoning_content": "hm", "content": "Use &lt;think&gt; to start."}, True),
+        ({"reasoning_content": "hm", "content": ""}, False),
+    ],
+)
+def test_both_reasoning_checks_give_one_answer_for_the_think_tags(
+    check: Callable[[dict[str, Any], str], str], message: dict[str, Any], ok: bool
+) -> None:
+    assert (check(message, "stop") == "") is ok
+
+
+def test_answer_fault_accepts_plain_text_and_names_an_open_tag() -> None:
+    assert answer_fault("Rome.") == ""
+    assert "no answer" in answer_fault("  ")
+    assert "open" in answer_fault("<think>hm Rome.")
+
+
+def _doc(vectors: list[list[float]]) -> dict[str, Any]:
+    return {"data": [{"index": i, "embedding": v} for i, v in enumerate(vectors)]}
+
+
+def test_embeddings_reject_near_copies_and_accept_distinct_vectors() -> None:
+    distinct = [[1.0, 0.0, 0.5], [0.0, 1.0, 0.5], [0.5, 0.5, 1.0]]
+    near = [[1.0 + 1e-7 * i] + [0.5] * 7 for i in range(3)]
+    assert embed_fault(_doc(distinct), 3, "float") == ""
+    assert cosine(near[0], near[1]) > NEAR_COPY_COSINE
+    assert "near copies" in embed_fault(_doc(near), 3, "float")
+
+
+def _verdicts(behaviour: Behaviour, claims: set[str]) -> tuple[dict[str, Verdict], dict[str, str]]:
+    reasons: dict[str, str] = {}
+    with FakeEngine(behaviour) as engine:
+        got = run(
+            engine.url, claims=claims, models=_MODELS, quality=True, timeout=2.0, reasons=reasons
+        )
+    return got, reasons
+
+
+def test_run_fails_empty_tool_arguments_and_names_the_cause() -> None:
+    got, reasons = _verdicts(Behaviour(tools="emptyargs"), {"chat"})
+    assert got["E7"] == Verdict.FAIL
+    assert "arguments are empty" in reasons["E7"]
+
+
+def test_run_fails_a_vision_server_that_answers_red_for_every_image() -> None:
+    got, reasons = _verdicts(Behaviour(vision="const"), {"chat", "vision"})
+    assert got["E10"] == Verdict.FAIL
+    assert "the blue image is answered ['red'], not the one word blue" in reasons["E10"]
+
+
+def test_run_names_the_one_word_rule_for_a_sentence_answer() -> None:
+    got, reasons = _verdicts(Behaviour(vision="sentence"), {"chat", "vision"})
+    assert got["E10"] == Verdict.FAIL
+    assert "the red image is answered ['the', 'colour', 'is', 'red']" in reasons["E10"]
+
+
+def test_run_fails_prose_for_response_format_and_names_the_cause() -> None:
+    got, reasons = _verdicts(Behaviour(json_mode="ignore"), {"chat", "json"})
+    assert got["E14"] == Verdict.FAIL
+    assert reasons["E14"].startswith("json_object:")
+
+
+def test_run_gives_no_reason_for_a_conforming_engine() -> None:
+    got, reasons = _verdicts(Behaviour(), {"chat", "json", "vision"})
+    assert {got["E7"], got["E10"], got["E14"]} == {Verdict.PASS}
+    assert reasons == {}
+
+
+class _Provider:
+    """A stand-in for the SDK provider that returns one canned answer."""
+
+    def __init__(self, **answers: Any) -> None:
+        self.answers = answers
+
+    def chat(self, *_args: Any, **_kwargs: Any) -> ChatResult:
+        return self.answers["chat"]
+
+    def embed(self, _texts: list[str]) -> list[list[float]]:
+        return self.answers["embed"]
+
+    def vision_ocr(self, _png: bytes, _model: str, _prompt: str, **_kw: Any) -> str:
+        return self.answers["vision"].pop(0)
+
+
+def _own(answers: dict[str, Any]) -> dict[str, Any]:
+    """Copy the answer lists, so a run drains its own copy and not the parametrized one.
+
+    The steps build a provider per request, so the copy is shared by those providers of one run.
+    """
+    return {k: list(v) if isinstance(v, list) else v for k, v in answers.items()}
+
+
+def _result(
+    text: str = "", finish: FinishReason = FinishReason.STOP, calls: tuple[ToolCall, ...] = ()
+) -> ChatResult:
+    return ChatResult(text=text, tool_calls=calls, finish_reason=finish)
+
+
+def _outcome(monkeypatch: pytest.MonkeyPatch, step: str, **answers: Any) -> bool:
+    own = _own(answers)
+    monkeypatch.setattr(preset_check, "create_sdk_provider", lambda: _Provider(**own))
+    monkeypatch.setattr(cfg, "embedding_model", cfg.embedding_model)
+    setup = Setup(("chat", "embed", "vision"), dict(_MODELS), embed_dim=2, strict=True)
+    return preset_check._STEP_FUNCTIONS[step](setup).ok
+
+
+@pytest.mark.parametrize(
+    ("arguments", "ok"), [('{"city": "Paris"}', True), ("{}", False), ('{"town": "x"}', False)]
+)
+def test_preset_tool_step_reads_the_arguments(
+    monkeypatch: pytest.MonkeyPatch, arguments: str, ok: bool
+) -> None:
+    call = ToolCall(id="c", name="get_weather", arguments=arguments)
+    chat = _result(calls=(call,), finish=FinishReason.TOOL_CALLS)
+    assert _outcome(monkeypatch, "tool", chat=chat) is ok
+
+
+@pytest.mark.parametrize(
+    ("vectors", "ok"), [([[1.0, 0.0], [0.0, 1.0]], True), ([[1.0, 0.5], [1.0000001, 0.5]], False)]
+)
+def test_preset_embed_step_rejects_near_copies(
+    monkeypatch: pytest.MonkeyPatch, vectors: list[list[float]], ok: bool
+) -> None:
+    assert _outcome(monkeypatch, "embed", embed=vectors) is ok
+
+
+class _OptionsRecorder:
+    """A provider that keeps the options of every chat call."""
+
+    def __init__(self) -> None:
+        self.options: list[dict[str, Any]] = []
+
+    def chat(self, *_args: Any, **kwargs: Any) -> ChatResult:
+        self.options.append(kwargs.get("options") or {})
+        return _result("Rome.")
+
+
+@pytest.mark.parametrize("step", ["template", "tool", "overflow", "json_object", "json_schema"])
+def test_preset_chat_steps_send_the_pinned_sampling(
+    monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    provider = _OptionsRecorder()
+    monkeypatch.setattr(preset_check, "create_sdk_provider", lambda: provider)
+    preset_check._STEP_FUNCTIONS[step](Setup(("chat",), dict(_MODELS), strict=True))
+    assert len(provider.options) == 1
+    assert request_set.PINNED_SAMPLING == {"temperature": 0, "seed": 7}
+    assert {k: provider.options[0].get(k) for k in ("temperature", "seed")} == {
+        "temperature": 0,
+        "seed": 7,
+    }
+
+
+def test_harness_chat_sends_the_pinned_sampling() -> None:
+    sent: list[dict[str, Any]] = []
+
+    class _Spy(harness._Probe):
+        def call(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+            sent.append(body or {})
+            return 200, b"{}"
+
+    _Spy("http://unused", {"chat": "m"}, 1.0).chat("chat", [{"role": "user", "content": "x"}])
+    assert (sent[0]["temperature"], sent[0]["seed"]) == (0, 7)
+
+
+def _reasoning_outcome(
+    tmp_path: Path, message: dict[str, Any], finish: str = "stop"
+) -> preset_check.Outcome:
+    """Run the reasoning step against a server that sends *message* as its one reply."""
+    setup = Setup(("chat",), dict(_MODELS), strict=True)
+    request = {
+        "messages": [request_set.REASONING_ASK],
+        "model": "m",
+        "stream": False,
+        **request_set.PINNED_SAMPLING,
+    }
+    reply = {"choices": [{"message": message, "finish_reason": finish}]}
+    exchange = preset_check.Exchange(
+        "POST", "/v1/chat/completions", request, 200, "application/json", json.dumps(reply)
+    )
+    with (
+        preset_check.replaying([exchange]) as url,
+        preset_check.configured(url, setup, tmp_path),
+    ):
+        return preset_check._STEP_FUNCTIONS["reasoning"](setup)
+
+
+@pytest.mark.parametrize(
+    ("message", "finish", "fault"),
+    [
+        ({"content": "42", "reasoning_content": "hm"}, "stop", ""),
+        ({"content": "42", "reasoning": "hm"}, "stop", ""),
+        ({"content": "<think>hm</think>42"}, "stop", ""),
+        ({"content": "hm</think>42"}, "stop", ""),
+        ({"content": "<think>hm</think>42", "reasoning_content": "hm"}, "stop", "think tag"),
+        ({"content": "hm</think>42", "reasoning_content": "hm"}, "stop", "think tag"),
+        ({"content": "<think>hm 42", "reasoning_content": "hm"}, "stop", "think tag"),
+        ({"content": "", "reasoning_content": "hm"}, "stop", "empty answer"),
+        ({"content": "42"}, "stop", "no reasoning field"),
+        ({"content": "42", "reasoning_content": " "}, "stop", "no reasoning field"),
+        ({"content": "<think>hm 42"}, "stop", "no closed think block"),
+        ({"content": "<think>hm</think><think>hm</think>42"}, "stop", "repeated"),
+        ({"content": "<think>hm</think>  "}, "stop", "no answer"),
+        ({"content": "42", "reasoning_content": "hm"}, "length", "not stop"),
+    ],
+)
+def test_preset_reasoning_step_needs_a_clean_split(
+    tmp_path: Path, message: dict[str, Any], finish: str, fault: str
+) -> None:
+    outcome = _reasoning_outcome(tmp_path, message, finish)
+    assert outcome.ok is (fault == ""), outcome.detail
+    assert fault in outcome.detail
+
+
+@pytest.mark.parametrize(
+    ("step", "text", "ok"),
+    [
+        ("json_object", _GOOD, True),
+        ("json_object", "Paris.", False),
+        ("json_schema", _GOOD, True),
+        ("json_schema", '{"city": "Paris"}', False),
+    ],
+)
+def test_preset_json_steps_read_the_answer(
+    monkeypatch: pytest.MonkeyPatch, step: str, text: str, ok: bool
+) -> None:
+    assert _outcome(monkeypatch, step, chat=_result(text)) is ok
+
+
+def test_preset_vision_step_needs_the_blue_image_not_called_red(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _outcome(monkeypatch, "vision", vision=["red", "blue"]) is True
+    assert _outcome(monkeypatch, "vision", vision=["red", "red"]) is False
+
+
+@pytest.mark.parametrize(
+    ("answers", "ok"),
+    [
+        (["red", "blue"], True),
+        (["Red.", "Blue"], True),
+        (["the colour is red", "blue"], False),
+        (["red", "the colour is blue"], False),
+        (["red", "bored"], False),
+        (["red red", "blue"], False),
+    ],
+)
+def test_preset_vision_step_uses_the_one_word_rule(
+    monkeypatch: pytest.MonkeyPatch, answers: list[str], ok: bool
+) -> None:
+    assert _outcome(monkeypatch, "vision", vision=answers) is ok
+
+
+def test_the_non_strict_preset_vision_step_uses_the_one_word_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(preset_check, "create_sdk_provider", lambda: _Provider(vision=["red"]))
+    plain = Setup(("vision",), {"vision": "m"})
+    assert preset_check._STEP_FUNCTIONS["vision"](plain).ok is True
+    monkeypatch.setattr(
+        preset_check, "create_sdk_provider", lambda: _Provider(vision=["it is red"])
+    )
+    assert preset_check._STEP_FUNCTIONS["vision"](plain).ok is False
+
+
+def _recorded_colour_answers(exchanges: list[Any]) -> list[tuple[str, str]]:
+    """The (colour, answer text) of each answered image request; the run asks red, then blue."""
+    texts = []
+    for exchange in exchanges:
+        if "image_url" in json.dumps(exchange.request) and exchange.status == 200:
+            texts.append(json.loads(exchange.body)["choices"][0]["message"]["content"])
+    return list(zip(("red", "blue"), texts, strict=False))
+
+
+def test_every_recorded_vision_answer_passes_the_one_word_rule() -> None:
+    """The one-word rule gives each recorded vision step the verdict its fixture stores."""
+    checked = 0
+    for path in [*sorted(FIXTURES.glob("*.json")), *harness_recordings()]:
+        setup, recorded, exchanges, _doc = load_fixture(path)
+        pairs = _recorded_colour_answers(exchanges)
+        if "vision" not in recorded or not pairs:
+            continue
+        checked += 1
+        faults = [colour_fault(answer, colour) for colour, answer in pairs]
+        assert len(pairs) == (2 if setup.strict else 1), path.name
+        assert recorded["vision"].ok == (not any(faults)), path.name
+    assert checked > 0
+
+
+def test_every_recorded_answer_passes_the_stricter_checks() -> None:
+    """The stored exchanges of each preset fixture still satisfy the tool and embed checks."""
+    seen = {"tool": 0, "embed": 0}
+    for path in sorted(FIXTURES.glob("*.json")):
+        _setup, _recorded, exchanges, _doc_json = load_fixture(path)
+        for exchange in exchanges:
+            body = json.loads(exchange.body) if exchange.body.startswith("{") else {}
+            if exchange.path.endswith("/chat/completions") and body.get("choices"):
+                calls = body["choices"][0]["message"].get("tool_calls")
+                if calls:
+                    seen["tool"] += 1
+                    assert not tool_arguments_fault(calls[0]["function"]["arguments"]), path.name
+            if exchange.path.endswith("/embeddings") and len(body.get("data", [])) == 2:
+                seen["embed"] += 1
+                first, second = (item["embedding"] for item in body["data"])
+                assert cosine(first, second) < NEAR_COPY_COSINE, path.name
+    assert seen["tool"] > 0
+    assert seen["embed"] > 0
+
+
+def test_a_recording_without_the_strict_flag_keeps_its_steps() -> None:
+    plain = Setup(("chat", "vision"), {})
+    strict = Setup(("chat", "vision"), {}, strict=True)
+    assert steps_for(plain) == ["template", "tool", "overflow", "vision"]
+    assert steps_for(strict) == [
+        "template",
+        "tool",
+        "overflow",
+        "json_object",
+        "json_schema",
+        "reasoning",
+        "vision",
+        "named",
+    ]
+
+
+def _named_outcome(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, roles: tuple[str, ...], **answers: Any
+) -> preset_check.Outcome:
+    own = _own(answers)
+    monkeypatch.setattr(RoutingProvider, "_get_sdk_provider", lambda _self: _Provider(**own))
+    setup = Setup(roles, dict(_MODELS), embed_dim=2, strict=True)
+    with preset_check.configured("http://127.0.0.1:1", setup, tmp_path):
+        return preset_check._STEP_FUNCTIONS["named"](setup)
+
+
+@pytest.mark.parametrize(
+    ("roles", "answers"),
+    [
+        (("chat", "embed"), {"chat": _result("Rome")}),
+        (("embed",), {"embed": [[1.0, 0.0]]}),
+        (("vision",), {"vision": ["red"]}),
+    ],
+)
+def test_named_step_reads_the_log_line_and_the_status_of_the_first_role(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, roles: tuple[str, ...], answers: dict[str, Any]
+) -> None:
+    outcome = _named_outcome(monkeypatch, tmp_path, roles, **answers)
+    assert outcome.ok, outcome.detail
+    want = f"engine=check version=preset build=none role={roles[0]} model=check/m"
+    assert want in outcome.detail
+
+
+def test_named_step_reads_the_engine_of_the_recording(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        RoutingProvider, "_get_sdk_provider", lambda _s: _Provider(chat=_result("R"))
+    )
+    setup = Setup(("chat",), dict(_MODELS), strict=True, server="llama.cpp-cpu")
+    with preset_check.configured("http://127.0.0.1:1", setup, tmp_path):
+        outcome = preset_check._STEP_FUNCTIONS["named"](setup)
+    assert outcome.ok, outcome.detail
+    want = "engine=llama-cpp-cpu version=preset build=none role=chat model=llama-cpp-cpu/m"
+    assert want in outcome.detail
+    assert "engine=check" not in outcome.detail
+
+
+def test_named_step_fails_when_status_names_no_engine(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(preset_check, "serving_roles", lambda: [])
+    outcome = _named_outcome(monkeypatch, tmp_path, ("chat",), chat=_result("Rome"))
+    assert not outcome.ok
+
+
+def test_the_preset_is_named_after_the_recorded_engine() -> None:
+    assert Setup(("chat",), {}).preset == "check"
+    assert Setup(("chat",), {}, server="llama.cpp-cpu").preset == "llama-cpp-cpu"
+
+
+@pytest.mark.parametrize("path", harness_recordings(), ids=lambda path: path.stem)
+def test_a_recording_names_its_own_engine(path: Path) -> None:
+    setup, recorded, _exchanges, doc = load_fixture(path)
+    head = dict(
+        line.split(": ", 1)
+        for line in path.with_suffix(".log").read_text(encoding="utf-8").splitlines()[:2]
+    )
+    assert doc["server"] == path.stem
+    assert head == {"engine": doc["server"], "version": doc["version"]}
+    assert doc["version"]
+    assert f"engine={setup.preset} version=preset" in recorded["named"].detail
+    assert "engine=check" not in recorded["named"].detail
+
+
+_ARGS = [
+    "--server", "e", "--version", "1", "--url", "http://x", "--roles", "chat,embed",
+    "--models", "chat=a,embed=b", "--out", "o.json",
+]  # fmt: skip
+
+
+def test_the_recorder_sets_strict_only_when_asked() -> None:
+    parser = record_presets.build_parser()
+    assert record_presets.setup_from(parser.parse_args([*_ARGS, "--strict"])).strict is True
+    assert record_presets.setup_from(parser.parse_args(_ARGS)).strict is False
+
+
+@pytest.mark.parametrize("path", harness_recordings(), ids=lambda path: path.stem)
+def test_every_engine_recording_sets_strict(path: Path) -> None:
+    assert json.loads(path.read_text(encoding="utf-8")).get("strict") is True
+
+
+def test_the_engine_recordings_folder_is_not_empty() -> None:
+    assert harness_recordings()
+
+
+def test_the_recorder_log_names_the_front_only_when_one_is_set(tmp_path: Path) -> None:
+    parser = record_presets.build_parser()
+    out = ["--out", str(tmp_path / "e.json")]
+    results = {"chat": preset_check.Outcome(True, "Rome")}
+    none = record_presets.DeviceSource.NONE
+    plain = record_presets.run_log(parser.parse_args([*_ARGS, *out]), results, [], none)
+    fronted = record_presets.run_log(
+        parser.parse_args([*_ARGS, "--front", "llama-swap v267", *out]), results, [], none
+    )
+    assert "front:" not in plain
+    assert fronted.splitlines()[8] == "front: llama-swap v267"
+
+
+def test_a_failed_step_names_the_harness_address_not_its_random_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refused(_setup: Setup) -> preset_check.Outcome:
+        raise ValueError("no route at http://127.0.0.1:54321 or http://127.0.0.1:7")
+
+    monkeypatch.setitem(preset_check._STEP_FUNCTIONS, "embed", refused)
+    results = preset_check.run_steps(Setup(roles=("embed",), models={"embed": "m"}))
+    assert results["embed"] == preset_check.Outcome(
+        False, "ValueError: no route at http://harness or http://harness"
+    )
+
+
+@pytest.mark.parametrize("name", ["tei-rerank-v1", "mlxlm-vision", "vllmmlx-rerank"])
+def test_a_404_fixture_detail_is_the_text_lilbee_prints(name: str, tmp_path: Path) -> None:
+    """The recorded detail of a 404 failure is what a run prints for a 404 answer."""
+    setup, recorded, exchanges, _doc = load_fixture(FIXTURES / f"{name}.json")
+    assert recorded
+    sdk = fakes.FakeSdk()
+    sdk.chat_error = sdk.embed_error = sdk.rerank_error = sdk.error("NotFoundError", "x")
+    with (
+        fakes.installed(sdk),
+        preset_check.replaying(exchanges) as url,
+        preset_check.configured(url, setup, tmp_path),
+    ):
+        replayed = preset_check.run_steps(setup)
+    assert replayed == recorded
+
+
+def test_the_recorder_log_names_the_run(tmp_path: Path) -> None:
+    args = record_presets.build_parser().parse_args(
+        [*_ARGS[:-2], "--backend", "cuda", "--out", str(tmp_path / "e.json")]
+    )
+    results = {"chat": preset_check.Outcome(True, "Rome")}
+    log = record_presets.run_log(args, results, ["CUDA0"], record_presets.DeviceSource.MEMORY)
+    assert log.splitlines()[:2] == ["engine: e", "version: 1"]
+    assert "backend: cuda" in log
+    assert "reported-backend: cuda" in log
+    assert "devices: CUDA0" in log
+    assert "devices-from: memory" in log
+    assert "models: chat=a,embed=b" in log
+    assert "STEP e chat ok=True Rome" in log
+    assert "server-flags" not in log
+
+
+def test_the_recorder_log_names_the_server_flags(tmp_path: Path) -> None:
+    flags = "--jinja --reasoning-format none"
+    args = record_presets.build_parser().parse_args(
+        [*_ARGS[:-2], "--server-flags", flags, "--out", str(tmp_path / "e.json")]
+    )
+    results = {"chat": preset_check.Outcome(True, "Rome")}
+    log = record_presets.run_log(args, results, [], record_presets.DeviceSource.NONE)
+    assert f"server-flags: {flags}" in log.splitlines()

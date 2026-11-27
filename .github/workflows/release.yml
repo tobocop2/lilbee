@@ -95,6 +95,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
+      - uses: ./.github/actions/checkout-engine-packs
       - uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
@@ -267,7 +268,8 @@ jobs:
 
       # Intel Mac: `uv sync` can't run here -- stock lancedb 0.40.0 ships no
       # macosx_x86_64 wheel. One install resolves the whole cell: lancedb comes
-      # from the +compat index (PEP 440 drop-in) and every other package is held
+      # from the +compat index (PEP 440 drop-in; pyproject binds that explicit
+      # index to lancedb on this platform) and every other package is held
       # to uv.lock through a constraints file that `uv export` writes from the
       # lock, so this cell installs what every other cell installs. Resolving
       # lancedb in a step of its own leaves its closure (numpy, pyarrow,
@@ -276,7 +278,7 @@ jobs:
       #
       # lancedb is the one package left out of the constraints, because the
       # locked version is the one with no wheel here. nuitka and pip are build
-      # tools, unpinned on every cell. lilbee-engine leaves the export as well,
+      # tools, unpinned on every cell. lilbee-engine-llama-cpp leaves the export as well,
       # for a different reason: it is a local path, and uv rejects an unnamed
       # requirement as a constraint.
       #
@@ -293,12 +295,11 @@ jobs:
           set -euxo pipefail
           uv venv
           uv export --frozen --extra release --no-hashes \
-            --no-emit-project --no-emit-package lilbee-engine \
+            --no-emit-project --no-emit-package lilbee-engine-llama-cpp \
             --no-emit-package lancedb \
             --format requirements-txt -o intel-constraints.txt
           uv pip install --python-platform x86_64-apple-darwin \
             --constraint intel-constraints.txt \
-            --extra-index-url https://lilbee.sh/compat/ \
             lancedb==0.40.0+compat '.[release]' 'nuitka[onefile]==4.3.1' pip
 
       - name: Verify extras installed in build venv
@@ -315,11 +316,11 @@ jobs:
         shell: bash
         run: |
           uv pip install --reinstall --no-deps \
-            --extra-index-url https://lilbee.sh/compat/ \
+            --default-index https://lilbee.sh/compat/ \
             lancedb==0.40.0+compat
 
       # Build the self-contained llama-server (binary + ggml/llama/mtmd libs with a
-      # baked rpath) and install lilbee_engine so Nuitka bundles the whole
+      # baked rpath) and install lilbee_engine_llama_cpp so Nuitka bundles the whole
       # engine into this executable.
       - name: Bundle llama-server
         uses: ./.github/actions/bundle-llama-server
@@ -381,11 +382,11 @@ jobs:
       # for the key, and that guarantee should not rest on an implicit default.
       #
       # continue-on-error because this is a pure optimisation sitting between a
-      # finished compile and the artifact upload. ci_mirror.sh soft-fails on its
-      # own errors, but mktemp and wc run under set -euo pipefail and can still
-      # hard-exit; on a soft cell that would go green with the asset missing.
+      # finished compile and the artifact upload. ci_mirror.sh exits non-zero
+      # when the upload does not happen, so the step shows red and the build
+      # goes on.
       - name: Publish the Nuitka cache to the mirror
-        if: success() && runner.os == 'Windows' && steps.nuitka-mirror.outputs.restored != 'true' && inputs.only_asset == ''
+        if: success() && runner.os == 'Windows' && steps.nuitka-mirror.outputs.current != 'true' && inputs.only_asset == ''
         continue-on-error: true
         uses: ./.github/actions/nuitka-object-cache
         with:
@@ -405,6 +406,19 @@ jobs:
           dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
           dnf install -y gh
           gh --version
+
+      # The engine wheel is checked on its own build; the executable rebundles the
+      # engine through Nuitka, so check the standalone tree it leaves under dist/
+      # before the step below deletes it.
+      - name: The executable bundles the engine it links
+        shell: bash
+        env:
+          BACKEND: ${{ matrix.backend }}
+        run: |
+          set -euo pipefail
+          bin_dir=$(bash tools/qa/find_engine_bin.sh dist)
+          uv run --no-sync python tools/qa/assert_engine_bundle.py \
+            --backend "${BACKEND}" --platform "${RUNNER_OS}" "${bin_dir}"
 
       # The onefile build leaves multi-GB intermediates beside the final binary,
       # and a runner has died of a full disk while restoring the smoke models

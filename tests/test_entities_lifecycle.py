@@ -7,8 +7,9 @@ from unittest import mock
 import pytest
 
 import lilbee.app.services as svc_mod
-from lilbee.core.config import cfg
+from lilbee.core.config import ENTITY_SCHEMA_TABLE, cfg
 from lilbee.data.store import Store
+from lilbee.data.store.schema import _entity_schema_state_schema
 from lilbee.retrieval.entities import (
     EntitySchema,
     EntityType,
@@ -243,6 +244,28 @@ class TestEnsureEntities:
         assert store.entity_value_counts("part_number") == (1, 1)  # regex still ran
         assert any("spaCy model unavailable" in r.message for r in caplog.records)
 
+    def test_spacy_types_skipped_when_concepts_unavailable(self, isolated):
+        store, _services = isolated
+        _index_chunks(store, ["part PX4471"])
+        save_schema(
+            EntitySchema(
+                types=[
+                    EntityType(name="person", kind=ExtractorKind.SPACY, pattern="PERSON"),
+                    EntityType(name="part_number", kind=ExtractorKind.REGEX, pattern=r"PX\d{4}"),
+                ]
+            ),
+            store,
+            applied=False,
+            source_count=1,
+        )
+        with (
+            mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=False),
+            mock.patch("lilbee.retrieval.concepts.nlp.load_spacy_pipeline") as load,
+        ):
+            ensure_entities()
+        load.assert_not_called()
+        assert store.entity_value_counts("part_number") == (1, 1)  # regex still ran
+
     def test_provider_failure_during_full_pass_leaves_schema_unapplied(self, isolated, caplog):
         """A pass whose LLM batches fail (chat model down) must not mark the
         schema applied: applied=True with zero rows would make every later
@@ -426,6 +449,26 @@ class TestSchemaEvolution:
         assert _applied(store)
         state = store.entity_schema_state()
         assert state["source_count"] == 20  # drift baseline moved to the new size
+
+    def test_schema_row_without_source_count_revisits_the_taxonomy(self, isolated):
+        """An index from before the document count was recorded loads, and its
+        unknown corpus size makes the first sync re-induce once."""
+        store, services = isolated
+        _index_sources(store, 3, text="part PX9001 near dock D-77")
+        current = _entity_schema_state_schema()
+        older = current.remove(current.get_field_index("source_count"))
+        store.get_db().create_table(ENTITY_SCHEMA_TABLE, schema=older).add(
+            [{"schema_json": _INDUCED_JSON, "applied": True, "updated_at": "2026-07-13T00:00:00"}]
+        )
+        services.provider.chat.return_value = SimpleNamespace(text=_REINDUCED_JSON)
+
+        ensure_entities()
+
+        assert [t.name for t in load_schema(store).types] == ["part_number", "dock"]
+        assert store.entity_value_counts("dock") == (3, 1)
+        state = store.entity_schema_state()
+        assert state is not None
+        assert (state["applied"], state["source_count"]) == (True, 3)
 
     def test_growth_without_new_types_skips_reextraction(self, isolated):
         """Re-induction that proposes nothing new must not pay for a pass."""

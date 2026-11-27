@@ -15,7 +15,14 @@ from textual.app import App
 
 from lilbee.catalog.formatting import download_task_name
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.task_queue import CancelOrigin, Task, TaskQueue, TaskStatus, TaskType
+from lilbee.cli.tui.task_queue import (
+    CancelOrigin,
+    Task,
+    TaskQueue,
+    TaskReport,
+    TaskStatus,
+    TaskType,
+)
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.crawler import bootstrap_chromium, chromium_installed
 from lilbee.runtime import asyncio_loop
@@ -33,14 +40,24 @@ _DOWNLOAD_CONCURRENCY = 4
 _BYTES_PER_MB = 1024 * 1024
 # Seconds the running tasks get, together, to unwind and end their workers at app exit.
 _EXIT_STOP_BUDGET_S = 5.0
+_EXIT_POLL_S = 0.01
+_WARNING_TOAST_S = 10.0
 
 
 class TaskOutcome(StrEnum):
     """How a task terminated. Passed from worker thread to finalizer."""
 
     DONE = "done"
+    PARTIAL = "partial"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+# The queue status a task takes when its worker returned normally.
+_COMPLETED_STATUS: dict[TaskOutcome, TaskStatus] = {
+    TaskOutcome.DONE: TaskStatus.DONE,
+    TaskOutcome.PARTIAL: TaskStatus.PARTIAL,
+}
 
 
 class ProgressReporter:
@@ -87,6 +104,15 @@ class ProgressReporter:
         self._controller.queue.update_task(
             self._task.task_id, progress, detail, indeterminate=indeterminate
         )
+
+    def warn(self, message: str) -> None:
+        """Show *message* as a warning toast on the main thread."""
+        app = self._controller.app
+        call_from_thread(app, app.notify, message, severity="warning", timeout=_WARNING_TOAST_S)
+
+    def set_report(self, report: TaskReport) -> None:
+        """Attach the files this task did not fully index to its row."""
+        self._controller.queue.set_report(self._task.task_id, report)
 
 
 TaskTarget = Callable[[ProgressReporter], None]
@@ -147,6 +173,9 @@ class TaskBarController:
         self._task_targets: dict[str, tuple[TaskTarget, Callable[[], None] | None]] = {}
         # task_id -> its started worker thread, joined by stop_all at exit.
         self._workers: dict[str, _TaskWorker] = {}
+        # Workers that left _workers and have not returned yet: each still has its last
+        # call into the app to make. Guarded by _lock; a finished thread is dropped on read.
+        self._unwinding: set[threading.Thread] = set()
         # Held to enqueue a task with its target, to promote a row with the start of its
         # worker, to start a detection, to begin the stop, and for every use of _workers.
         self._lock = threading.Lock()
@@ -156,8 +185,11 @@ class TaskBarController:
         # Atomic int writes are safe under the GIL; the bar polls at 10 Hz.
         self.pending_sync_count: int = 0
         self._detect_thread: threading.Thread | None = None
-        # Set once, by stop_all, in a lock hold; read only by _admission.
+        # Set once, by begin_stop, in a lock hold; read only by _admission.
         self._stopped = False
+        # The monotonic time by which the exit has spent its one budget; None until the
+        # app starts its unmount wait. stop_all ends its drain and joins by it as well.
+        self._exit_deadline: float | None = None
         # Roles whose worker is currently in the spawn window (1-3 s cold
         # start). Surfaced as a single TaskBar hint instead of one toast
         # per role so the chat screen isn't drowned in implementation
@@ -410,9 +442,10 @@ class TaskBarController:
         It should periodically call ``reporter.update(percent, detail)`` and
         may call ``reporter.check_cancelled()`` to cooperatively abort.
 
-        On success (target returns normally) the queue marks the task DONE
-        and ``on_success`` (if provided) runs after on the same worker
-        thread. On ``TaskCancelledError`` the task is marked CANCELLED. On any
+        On success (target returns normally) the queue marks the task DONE,
+        or PARTIAL when the target reported files it did not fully index, and
+        ``on_success`` (if provided) runs after on the same worker thread. On
+        ``TaskCancelledError`` the task is marked CANCELLED. On any
         other exception the task is marked FAILED with ``str(exc)`` as
         detail. Rows linger in the Task Center under their final status
         until the user presses capital ``C`` to clear; the bottom bar
@@ -483,18 +516,52 @@ class TaskBarController:
         a model page runs its cleanup now, while the executors still accept work.
         The drain and the joins spend from the one *budget_s*.
         """
-        # Every start is whole before this hold or sees the stop after it.
-        with self._lock:
-            self._stopped = True
+        self.begin_stop()
         deadline = time.monotonic() + budget_s
-        for task in [*self.queue.queued_tasks, *self.queue.active_tasks]:
-            self._cancel(task.task_id, CancelOrigin.EXIT)
-        asyncio_loop.shutdown(budget_s)
+        if self._exit_deadline is not None:
+            # The unmount already spent part of the exit budget: the exit costs it once.
+            deadline = min(deadline, self._exit_deadline)
+        asyncio_loop.shutdown(max(0.0, deadline - time.monotonic()))
         with self._lock:
             threads = [*self._workers.values(), self._detect_thread]
         for thread in threads:
             if thread is not None:
                 thread.join(max(0.0, deadline - time.monotonic()))
+
+    def begin_stop(self) -> None:
+        """Refuse new tasks and cancel every row as an exit; harmless to call again."""
+        # Every start is whole before this hold or sees the stop after it.
+        with self._lock:
+            self._stopped = True
+        for task in [*self.queue.queued_tasks, *self.queue.active_tasks]:
+            self._cancel(task.task_id, CancelOrigin.EXIT)
+
+    async def wait_for_exit(self) -> None:
+        """Cancel every task, drain the loop, and wait for the started workers to return.
+
+        The app calls this at its unmount, so no worker is left calling into a stopped app.
+        It starts the one budget of the exit: ``stop_all`` stops at the same deadline, so a
+        worker that ignores its cancel costs the quit the budget once and not twice. The
+        drain runs off the app's loop, which keeps running the workers' calls into the app.
+        """
+        self.begin_stop()
+        with self._lock:
+            if self._exit_deadline is None:
+                self._exit_deadline = time.monotonic() + _EXIT_STOP_BUDGET_S
+            deadline = self._exit_deadline
+        await asyncio.to_thread(asyncio_loop.shutdown, max(0.0, deadline - time.monotonic()))
+        while self.has_running_workers() and time.monotonic() < deadline:
+            await asyncio.sleep(_EXIT_POLL_S)
+
+    def has_running_workers(self) -> bool:
+        """True while a started worker has not returned, including one past its task.
+
+        A worker that left the worker map has ended its task but still makes one call
+        into the app, so the app must stay up until it returns.
+        """
+        with self._lock:
+            self._unwinding = {thread for thread in self._unwinding if thread.is_alive()}
+            return bool(self._unwinding) or any(w.is_alive() for w in self._workers.values())
 
     def _run_task_worker(self, task: Task) -> None:
         """Body of the daemon worker thread."""
@@ -514,7 +581,7 @@ class TaskBarController:
             log.warning("Task %s failed: %s", task_id, exc)
             self._post_finalize(task_id, TaskOutcome.FAILED, str(exc), task_type)
         else:
-            self._post_finalize(task_id, TaskOutcome.DONE, "", task_type)
+            self._post_finalize(task_id, self._success_outcome(task_id), "", task_type)
             if on_success is not None:
                 try:
                     on_success()
@@ -523,9 +590,17 @@ class TaskBarController:
         finally:
             self._task_targets.pop(task_id, None)
             with self._lock:
-                self._workers.pop(task_id, None)
+                if self._workers.pop(task_id, None) is not None:
+                    self._unwinding.add(threading.current_thread())
             # After the pop, so a listener that asks has_live_work sees this worker gone.
             call_from_thread(self.app, self._work_ended, task_id)
+
+    def _success_outcome(self, task_id: str) -> TaskOutcome:
+        """``PARTIAL`` when the worker reported files it did not fully index, else ``DONE``."""
+        task = self.queue.get_task(task_id)
+        report = task.report if task is not None else None
+        partial = report is not None and report.is_partial
+        return TaskOutcome.PARTIAL if partial else TaskOutcome.DONE
 
     def _post_finalize(
         self, task_id: str, outcome: TaskOutcome, detail: str, task_type: str | None
@@ -549,8 +624,9 @@ class TaskBarController:
         history; the bottom bar flash expires on its own. Users clear
         finished rows from the Task Center manually.
         """
-        if outcome is TaskOutcome.DONE:
-            self.queue.complete_task(task_id)
+        completed = _COMPLETED_STATUS.get(outcome)
+        if completed is not None:
+            self.queue.complete_task(task_id, completed)
             self._after_done_hooks(task_type)
         elif outcome is TaskOutcome.FAILED:
             self.queue.fail_task(task_id, detail)
@@ -623,7 +699,7 @@ class TaskBarController:
 
 def download_key(model: CatalogModel) -> str:
     """Identity of a pull: repo plus filename, since one repo ships several quants."""
-    return f"{model.hf_repo}::{model.gguf_filename}"
+    return f"{model.pull_ref}::{model.gguf_filename}"
 
 
 def _download_target(
@@ -631,7 +707,7 @@ def _download_target(
 ) -> None:
     """``start_task`` target for a HuggingFace model download.
 
-    Translates ``PermissionError`` into the gated-repo friendly message and
+    Re-raises ``PermissionError`` as a ``RuntimeError`` with the shared gated-repo text and
     ``UnsupportedArchError`` into a user-facing arch-mismatch message so
     every call site gets consistent error UX.
     """
@@ -639,20 +715,33 @@ def _download_target(
     from lilbee.catalog import DownloadProgress
     from lilbee.catalog.compat import UnsupportedArchError
     from lilbee.catalog.types import ModelSource
+    from lilbee.providers.fleet.engines.choice import NoEngineError
+
+    percent = 0.0
 
     def _on_progress(p: DownloadProgress) -> None:
+        nonlocal percent
+        percent = p.percent
         reporter.update(p.percent, f"{model.display_name}: {p.detail}")
 
+    def _on_retry(text: str) -> None:
+        reporter.update(percent, f"{model.display_name}: {text}")
+
     try:
-        pull_model_data(
-            model.ref,
+        result = pull_model_data(
+            model.pull_ref,
             ModelSource.NATIVE,
             on_update=_on_progress,
+            on_retry=_on_retry,
             allow_unsupported=allow_unsupported,
             cancel=reporter,
         )
+        if result.warning is not None:
+            reporter.warn(result.warning)
     except PermissionError as exc:
-        raise RuntimeError(msg.CATALOG_GATED_REPO.format(name=model.display_name)) from exc
+        raise RuntimeError(str(exc)) from exc
+    except NoEngineError as exc:
+        raise RuntimeError(str(exc)) from exc
     except UnsupportedArchError as exc:
         raise RuntimeError(
             f"Architecture {exc.architecture!r} not supported by this lilbee build."

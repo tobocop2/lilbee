@@ -20,7 +20,7 @@ from lilbee.app.ingest import (
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.data.ingest import sync
-from lilbee.data.store import REMOVED_REASON, HeldOut, SourceType, Store
+from lilbee.data.store import REMOVED_REASON, HeldOut, SourceMove, SourceType, Store
 from lilbee.runtime.lock import (
     LibraryUnlockableError,
     LockingUnsupportedError,
@@ -163,7 +163,15 @@ def _write_wiki_page(store: Store, keys: list[str], subdir: str = "entities") ->
     wiki_root = cfg.data_root / cfg.wiki_dir
     source_ids = store.source_ids(keys, SourceType.DOCUMENT)
     return write_page(
-        wiki_root, subdir, "boeing", content, 1.0, keys, "entities", source_ids=source_ids
+        wiki_root,
+        subdir,
+        "boeing",
+        content,
+        1.0,
+        keys,
+        "entities",
+        source_ids=source_ids,
+        live_ids=None,
     )
 
 
@@ -955,45 +963,188 @@ class TestWhatIsNotAbsorbed:
         assert _keys(library) == ["notes/work/budget.md", "notes/work/plan.md"]
 
 
+def _snapshot(store: Store) -> dict[str, object]:
+    """Everything an add can change: the index, wiki and records, and every persisted setting."""
+    return {"everything": _everything(store), "settings": settings.load(cfg.data_root)}
+
+
+def _cancel_the_add(paths: list[Path], registration) -> None:
+    """Cancel the sync of an add whose registration is *registration*, as the TUI rollback does."""
+    import asyncio
+    import threading
+
+    cancel = threading.Event()
+    with (
+        pytest.raises(asyncio.CancelledError),
+        forget_unfinished_on_cancel(paths, registration, cancel, lambda: True),
+    ):
+        cancel.set()
+        raise asyncio.CancelledError
+
+
 class TestACancelledAdd:
-    async def test_a_cancelled_add_keeps_a_parent_that_absorbed(self, library, notes):
+    async def test_a_cancelled_add_restores_the_source_the_parent_took_in(self, library, notes):
+        await _add(notes / "work")
+        before = _snapshot(library.store)
+
+        result = register_sources([notes])
+        assert result.absorbed == ["work"]
+        _cancel_the_add([notes], result)
+
+        assert _snapshot(library.store) == before
+        assert _registry() == {"work": str((notes / "work").resolve())}
+        assert _keys(library) == ["work/budget.md", "work/plan.md"]
+        assert library.store.get_chunks_by_source("work/plan.md")
+
+    async def test_the_restored_source_keeps_its_rows_records_and_wiki_pages(self, library, notes):
+        _seeded_child(library.store, notes)
+        before = _snapshot(library.store)
+
+        _cancel_the_add([notes], register_sources([notes]))
+
+        assert _snapshot(library.store) == before
+
+    async def test_every_source_the_parent_took_in_is_restored(self, library, notes):
+        _write(notes / "home" / "list.md", "# List\n\nThe list for the market.\n")
+        register_sources([notes / "work", notes / "home"])
+        await sync(quiet=True)
+        before = _snapshot(library.store)
+
+        result = register_sources([notes])
+        assert result.absorbed == ["home", "work"]
+        _cancel_the_add([notes], result)
+
+        assert _snapshot(library.store) == before
+
+    async def test_a_cancel_leaves_an_unrelated_registered_root_as_it_was(
+        self, library, notes, tmp_path
+    ):
+        other = _write(tmp_path / "src" / "other" / "o.md", "# O\n\nAnother page.\n").parent
+        register_sources([other])
+        await _add(notes / "work")
+        before = _snapshot(library.store)
+
+        _cancel_the_add([notes], register_sources([notes]))
+
+        assert _snapshot(library.store) == before
+        assert sorted(_registry()) == ["other", "work"]
+
+    async def test_a_cancel_after_the_parent_indexed_a_file_keeps_the_parent(self, library, notes):
+        await _add(notes / "work")
         import asyncio
         import threading
 
-        await _add(notes / "work")
         result = register_sources([notes])
         cancel = threading.Event()
 
         with (
             pytest.raises(asyncio.CancelledError),
-            forget_unfinished_on_cancel([notes], result.revocable, cancel, lambda: True),
+            forget_unfinished_on_cancel([notes], result, cancel, lambda: True),
         ):
+            await sync(quiet=True)
             cancel.set()
             raise asyncio.CancelledError
 
-        assert result.registered == ["notes"] and result.revocable == []
         assert _registry() == {"notes": str(notes.resolve())}
-        assert _keys(library) == ["notes/work/budget.md", "notes/work/plan.md"]
+        assert _keys(library) == ["notes/loose.md", "notes/work/budget.md", "notes/work/plan.md"]
 
-    async def test_the_rollback_would_unregister_the_parent_if_it_were_handed_over(
+    async def test_a_parent_named_like_its_source_gives_the_label_back(self, library, tmp_path):
+        outer = tmp_path / "src" / "work"
+        inner = outer / "work"
+        _write(inner / "README.md", "# Inner\n\nThe inner readme about the spring release.\n")
+        _write(outer / "README.md", "# Outer\n\nThe outer readme about the harbour schedule.\n")
+        await _add(inner)
+        before = _snapshot(library.store)
+
+        result = register_sources([outer])
+        assert result.absorbed_into == {"work": ["work"]}
+        _cancel_the_add([outer], result)
+
+        assert _snapshot(library.store) == before
+        assert _registry() == {"work": str(inner.resolve())}
+
+    async def test_a_label_another_root_took_meanwhile_is_not_overwritten(
+        self, library, notes, tmp_path
+    ):
+        await _add(notes / "work")
+        result = register_sources([notes])
+        elsewhere = _write(tmp_path / "src" / "else" / "e.md", "# E\n\nAnother page.\n").parent
+        _register_as({**{k: Path(v) for k, v in _registry().items()}, "work": elsewhere})
+
+        _cancel_the_add([notes], result)
+
+        assert _registry() == {"work": str(elsewhere.resolve())}
+
+    async def test_a_path_that_holds_another_path_of_the_call_passes_on_what_it_took(
         self, library, notes
     ):
-        """The control for the test above: the same cancel with the parent's label."""
+        await _add(notes / "work")
+        before = _snapshot(library.store)
+
+        result = register_sources([notes, notes.parent])
+        assert result.registered == ["src"] and result.absorbed_into == {"src": ["work"]}
+        _cancel_the_add([notes.parent], result)
+
+        assert _snapshot(library.store) == before
+
+    async def test_the_cli_cancel_restores_the_source_the_parent_took_in(self, library, notes):
         import asyncio
         import threading
 
+        from lilbee.app.ingest import AddRollback, leave_as_cancel
+        from lilbee.cli.commands import ingest_sync
+
         await _add(notes / "work")
-        result = register_sources([notes])
+        before = _snapshot(library.store)
+        rollback = AddRollback(paths=[notes], at_sync=False)
         cancel = threading.Event()
 
-        with (
-            pytest.raises(asyncio.CancelledError),
-            forget_unfinished_on_cancel([notes], result.registered, cancel, lambda: True),
-        ):
+        def _cancelled(_cancel, before_sync, started_by, analyze_tip=False):
+            before_sync()
             cancel.set()
-            raise asyncio.CancelledError
+            raise KeyboardInterrupt
 
-        assert _registry() == {}
+        with (
+            mock.patch.object(ingest_sync, "_run_sync", _cancelled),
+            pytest.raises(asyncio.CancelledError),
+            leave_as_cancel(rollback, cancel, lambda: True),
+        ):
+            ingest_sync._register_and_sync(
+                [notes],
+                [],
+                force=False,
+                cancel_event=cancel,
+                rollback=rollback,
+                sync_results=[],
+            )
+
+        assert _snapshot(library.store) == before
+        assert rollback.absorbed_into == {}
+
+    async def test_the_tui_cancel_restores_the_source_the_parent_took_in(self, library, notes):
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        await _add(notes / "work")
+        before = _snapshot(library.store)
+        screen = ChatScreen.__new__(ChatScreen)
+        reporter = MagicMock(spec=ProgressReporter)
+        reporter.is_set.return_value = True
+        reporter.cancelled_by_user.return_value = True
+
+        def _run(coro):
+            coro.close()
+            raise TaskCancelledError
+
+        with (
+            mock.patch("lilbee.cli.tui.screens.chat.call_from_thread"),
+            mock.patch("lilbee.runtime.asyncio_loop.run", side_effect=_run),
+            pytest.raises(TaskCancelledError),
+        ):
+            screen._do_add([notes], reporter)
+
+        assert _snapshot(library.store) == before
 
     def test_a_parent_that_absorbed_nothing_is_revocable(self, library, notes):
         assert register_sources([notes]).revocable == ["notes"]
@@ -1018,7 +1169,7 @@ class TestEveryEntryPoint:
         assert "Registered 1 source(s); notes now includes work" in capsys.readouterr().out
         assert rollback_labels == [[]]
 
-    async def test_the_cli_command_hands_the_rollback_no_absorbing_parent(self, library, notes):
+    async def test_the_cli_command_hands_the_rollback_the_absorbing_parent(self, library, notes):
         import threading
 
         from lilbee.app.ingest import AddRollback
@@ -1028,7 +1179,7 @@ class TestEveryEntryPoint:
         rollback = AddRollback(paths=[notes], at_sync=False)
         cfg.json_mode = True
 
-        def _run_sync(_cancel, before_sync, started_by):
+        def _run_sync(_cancel, before_sync, started_by, analyze_tip=False):
             assert started_by == "lilbee add"
             before_sync()
             return MagicMock()
@@ -1043,17 +1194,17 @@ class TestEveryEntryPoint:
                 force=False,
                 cancel_event=threading.Event(),
                 rollback=rollback,
+                sync_results=[],
             )
 
         assert payload is not None
         assert payload["copied"] == ["notes"] and payload["absorbed"] == ["work"]
         assert payload["overlapping"] == []
         assert json.loads(json.dumps(payload)) == payload
-        assert rollback._roots == []
+        assert rollback._registration.registered == ["notes"]
+        assert rollback._registration.absorbed_roots == {"work": str((notes / "work").resolve())}
 
-    async def test_the_tui_names_the_source_and_its_rollback_spares_the_parent(
-        self, library, notes
-    ):
+    async def test_the_tui_names_the_source_and_its_rollback_restores_it(self, library, notes):
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
@@ -1075,7 +1226,7 @@ class TestEveryEntryPoint:
         assert "notes now includes the source work." in toasts
         assert msg.CMD_ADD_ABSORBED.format(parent="notes", children="work") in toasts
         assert msg.CMD_ADD_CONTAINING.format(names="notes") not in toasts
-        assert rollback.call_args.args[1] == []
+        assert rollback.call_args.args[1].absorbed_into == {"notes": ["work"]}
 
     async def test_a_failed_tui_sync_keeps_a_parent_that_absorbed(self, library, notes):
         from lilbee.cli.tui.screens.chat import ChatScreen
@@ -1504,7 +1655,7 @@ class TestACancelledJsonAdd:
         rollback = AddRollback(paths=[notes], at_sync=False)
         cfg.json_mode = True
 
-        def _cancelled(_cancel, before_sync, started_by):
+        def _cancelled(_cancel, before_sync, started_by, analyze_tip=False):
             raise KeyboardInterrupt
 
         with (
@@ -1517,6 +1668,7 @@ class TestACancelledJsonAdd:
                 force=False,
                 cancel_event=threading.Event(),
                 rollback=rollback,
+                sync_results=[],
             )
         with pytest.raises(SystemExit):
             ingest_sync._exit_cancelled(rollback)
@@ -1539,3 +1691,165 @@ class TestACancelledJsonAdd:
         payload = json.loads(capsys.readouterr().out)
         assert payload["not_added"] == ["notes"]
         assert "copied" not in payload and "absorbed" not in payload
+
+
+def _page_text(sources: list[str], body: str, score: float = 0.9) -> str:
+    """A generated page as the wiki's own writers assemble it, citing *sources*."""
+    from lilbee.wiki.page import assemble_content, build_frontmatter
+
+    return assemble_content(build_frontmatter(cfg, sources, score), body, "")
+
+
+def _generate(store: Store, subdir: str, sources: list[str], body: str) -> Path:
+    """Generate the page ``boeing`` again from *sources*, as the wiki build does."""
+    from lilbee.wiki.page import write_page
+
+    return write_page(
+        cfg.data_root / cfg.wiki_dir,
+        subdir,
+        "boeing",
+        _page_text(sources, body),
+        0.0,
+        sources,
+        "entities",
+        source_ids=store.source_ids(sources, SourceType.DOCUMENT),
+        live_ids=store.source_paths,
+    )
+
+
+def _drafts() -> list[str]:
+    drafts = cfg.data_root / cfg.wiki_dir / "drafts"
+    return sorted(path.name for path in drafts.glob("*.md")) if drafts.is_dir() else []
+
+
+_OLD_BODY = "# Boeing\n\nBoeing builds aircraft for airlines.\n"
+_FIRST = "# Boeing\n\nA first proposal about something else entirely.\n"
+_SECOND = "# Boeing\n\nA second proposal about yet another unrelated topic.\n"
+
+
+class TestADraftSurvivesAMoveOfItsSources:
+    """A page generated again after its sources changed path replaces its own pending draft."""
+
+    @pytest.fixture
+    def pending(self, library, notes):
+        """``work`` registered, a published page about its two files, and a drift draft."""
+        store = library.store
+        register_sources([notes / "work"])
+        for name in ("plan.md", "budget.md"):
+            _seed(store, f"work/{name}")
+        keys = ["work/budget.md", "work/plan.md"]
+        _generate(store, "entities", keys, _OLD_BODY)
+        assert _generate(store, "entities", keys, _FIRST).parent.name == "drafts"
+        assert _drafts() == ["boeing.md"]
+        return store, keys
+
+    def test_an_absorb_keeps_one_draft_after_the_page_is_generated_again(
+        self, library, notes, pending
+    ):
+        store, _keys_before = pending
+
+        register_sources([notes])
+        renamed = ["notes/work/budget.md", "notes/work/plan.md"]
+        assert sorted(store.source_ids(renamed, SourceType.DOCUMENT)) == renamed
+        _generate(store, "entities", renamed, _SECOND)
+
+        assert _drafts() == ["boeing.md"]
+        draft = (cfg.data_root / cfg.wiki_dir / "drafts" / "boeing.md").read_text(encoding="utf-8")
+        assert "second proposal" in draft
+
+    def test_a_move_keeps_one_draft_after_the_page_is_generated_again(
+        self, library, notes, pending
+    ):
+        store, _keys_before = pending
+        ids = store.source_ids(["work/plan.md"], SourceType.DOCUMENT)
+        store.relocate_sources([SourceMove(("work/plan.md",), "work/sub/plan.md", None)])
+        assert store.source_ids(["work/sub/plan.md"], SourceType.DOCUMENT) == {
+            "work/sub/plan.md": ids["work/plan.md"]
+        }
+
+        _generate(store, "entities", ["work/budget.md", "work/sub/plan.md"], _SECOND)
+
+        assert _drafts() == ["boeing.md"]
+
+    def test_a_draft_held_by_the_quality_gate_is_replaced_after_a_move(
+        self, library, notes, pending
+    ):
+        store, _keys_before = pending
+        held = _generate(store, "drafts", ["work/budget.md", "work/plan.md"], _FIRST)
+        store.relocate_sources([SourceMove(("work/plan.md",), "work/sub/plan.md", None)])
+
+        again = _generate(store, "drafts", ["work/budget.md", "work/sub/plan.md"], _SECOND)
+
+        assert again == held
+        assert _drafts() == ["boeing.md"]
+
+    def test_publishing_after_a_move_removes_the_superseded_drift_draft(
+        self, library, notes, pending
+    ):
+        from lilbee.wiki.page import write_page
+
+        store, _keys_before = pending
+        store.relocate_sources([SourceMove(("work/plan.md",), "work/sub/plan.md", None)])
+        names = ["work/budget.md", "work/sub/plan.md"]
+
+        write_page(
+            cfg.data_root / cfg.wiki_dir,
+            "entities",
+            "boeing",
+            _page_text(names, _OLD_BODY),
+            1.0,
+            names,
+            "entities",
+            source_ids=store.source_ids(names, SourceType.DOCUMENT),
+            live_ids=None,
+        )
+
+        assert _drafts() == []
+
+    def test_a_rebuild_keeps_one_draft_after_the_page_is_generated_again(
+        self, library, notes, pending
+    ):
+        store, keys = pending
+        before = store.source_ids(keys, SourceType.DOCUMENT)
+        store.drop_all()
+        for name in keys:
+            _seed(store, name)
+        assert set(store.source_ids(keys, SourceType.DOCUMENT).values()).isdisjoint(before.values())
+
+        _generate(store, "entities", keys, _SECOND)
+
+        assert _drafts() == ["boeing.md"]
+
+    def test_a_collision_draft_for_the_same_sources_keeps_its_name_after_a_move(
+        self, library, notes, pending
+    ):
+        from lilbee.wiki.persistence import divert_concept_collision
+
+        store, _keys_before = pending
+
+        def collide(names: list[str]) -> Path:
+            return divert_concept_collision(
+                slug="boeing",
+                source=", ".join(names),
+                source_names=names,
+                first_source="wiki/entities/boeing.md",
+                content=_page_text(names, _SECOND),
+                drafts_dir=cfg.data_root / cfg.wiki_dir / "drafts",
+                origin_subdir="entities",
+                source_ids=store.source_ids(names, SourceType.DOCUMENT),
+            )
+
+        first = collide(["work/budget.md", "work/plan.md"])
+        store.relocate_sources([SourceMove(("work/plan.md",), "work/sub/plan.md", None)])
+        second = collide(["work/budget.md", "work/sub/plan.md"])
+
+        assert second == first
+        assert [name for name in _drafts() if "-collision-" in name] == [first.name]
+
+    def test_another_pages_sources_still_collide(self, library, notes, pending):
+        store, _keys_before = pending
+        _seed(store, "work/other.md")
+
+        _generate(store, "entities", ["work/other.md"], _SECOND)
+
+        assert len(_drafts()) == 2

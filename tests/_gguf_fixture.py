@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import struct
+from pathlib import Path
+
+import pytest
+
+from tests._stated_sizes import state_size
 
 GGUF_MAGIC = b"GGUF"
 GGUF_VERSION = 3
@@ -30,18 +35,27 @@ def make_minimal_gguf(architecture: str, file_type: str | None = None) -> bytes:
     return head + struct.pack("<Q", len(entries)) + b"".join(entries)
 
 
-def has_gguf_parser() -> bool:
-    """Whether a gguf-parser binary resolves here.
+def cut_file_of(path: Path, declared_bytes: int, size: int) -> Path:
+    """A one-tensor F32 GGUF that declares *declared_bytes* of data and states *size* bytes.
 
-    The unit lane installs no engine helpers; the integration lane does. Tests
-    that hand real GGUF bytes to the parser are gated on this, and the mapping
-    from a parsed table onto lilbee's fields is covered against a stubbed parser
-    so the unit lane still exercises it.
+    Request the ``stated_sizes`` fixture first.
     """
-    from lilbee.providers.fleet.binary import resolve_gguf_parser
+    name = b"t0"
+    infos = (
+        struct.pack("<Q", len(name))
+        + name
+        + struct.pack("<I", 1)
+        + struct.pack("<Q", declared_bytes // 4)
+        + struct.pack("<I", 0)
+        + struct.pack("<Q", 0)
+    )
+    head = GGUF_MAGIC + struct.pack("<IQQ", GGUF_VERSION, 1, 0) + infos
+    path.write_bytes(head + b"\0" * (-len(head) % 32))
+    state_size(path, size)
+    return path
 
-    try:
-        resolve_gguf_parser()
-    except Exception:
-        return False
-    return True
+
+# Tests that hand real GGUF bytes to the parser carry this. The mapping from a
+# parsed table onto lilbee's fields is covered against a stubbed parser, so a
+# host with no parser still exercises it.
+needs_gguf_parser = pytest.mark.usefixtures("real_gguf_parser")

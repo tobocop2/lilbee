@@ -190,9 +190,12 @@ def test_more_already_committed_never_turns_a_refusal_into_an_admission(
         mp.setattr(cfg, "cpu_moe", True, raising=False)
         mp.setattr(planning, "_host_bytes_must_be_resident", lambda *_a: True)
         mp.setattr(planning, "total_system_memory", lambda: 64 * _GB)
-        mp.setattr(planning, "free_system_memory", lambda: 32 * _GB)
-        refused_at = planning._host_memory_refuses(WorkerRole.CHAT, "m", ram, committed)
-        refused_more = planning._host_memory_refuses(WorkerRole.CHAT, "m", ram, committed + extra)
+        refused_at = planning._host_memory_refuses(
+            WorkerRole.CHAT, "m", ram, committed, lambda: 32 * _GB
+        )
+        refused_more = planning._host_memory_refuses(
+            WorkerRole.CHAT, "m", ram, committed + extra, lambda: 32 * _GB
+        )
     assert not (refused_at and not refused_more)
 
 
@@ -210,8 +213,7 @@ def test_the_refusal_is_the_plan_total_against_the_machine(ram: int, committed: 
         mp.setattr(cfg, "cpu_moe", True, raising=False)
         mp.setattr(planning, "_host_bytes_must_be_resident", lambda *_a: True)
         mp.setattr(planning, "total_system_memory", lambda: total)
-        mp.setattr(planning, "free_system_memory", lambda: total)
-        refused = planning._host_memory_refuses(WorkerRole.CHAT, "m", ram, committed)
+        refused = planning._host_memory_refuses(WorkerRole.CHAT, "m", ram, committed, lambda: total)
     assert refused == (committed + ram > total)
 
 
@@ -223,7 +225,7 @@ def test_nothing_offloading_is_never_refused(ram: int) -> None:
         mp.setattr(cfg, "cpu_moe", False, raising=False)
         mp.setattr(cfg, "n_cpu_moe", None, raising=False)
         mp.setattr(cfg, "n_gpu_layers", None, raising=False)
-        assert not planning._host_memory_refuses(WorkerRole.CHAT, "m", ram, 0)
+        assert not planning._host_memory_refuses(WorkerRole.CHAT, "m", ram, 0, lambda: 0)
 
 
 # The estimate plausibility band: a floor is a lower bound. It must not reject

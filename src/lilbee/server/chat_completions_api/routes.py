@@ -20,7 +20,9 @@ from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ReasoningMode
+from lilbee.providers.fleet.engines.choice import loadable_refs
 from lilbee.providers.model_ref import default_first
+from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.reasoning import effective_reasoning_cap
 from lilbee.server.auth import auth_checked_in_handler, session_manager
 from lilbee.server.chat_completions_api.errors import (
@@ -40,7 +42,10 @@ from lilbee.server.chat_completions_api.translate import (
     canonical_to_completions_response,
     completions_to_canonical_request,
 )
-from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest, images_dropped_headers
+from lilbee.server.chat_dispatch.canonical import (
+    CanonicalChatRequest,
+    images_dropped_response_headers,
+)
 from lilbee.server.chat_dispatch.concurrency import (
     ChatBusyError,
     ChatSlotGuard,
@@ -52,6 +57,7 @@ from lilbee.server.chat_dispatch.dispatch import (
 )
 from lilbee.server.chat_dispatch.reasoning_cap import cap_aware_chat, cap_aware_chat_stream
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
+from lilbee.server.routes.engines import NO_LIBRARY_KEY
 from lilbee.server.validation_format import format_validation
 
 log = logging.getLogger(__name__)
@@ -59,7 +65,7 @@ log = logging.getLogger(__name__)
 _MULTI_CHOICE_MESSAGE = "lilbee serves one choice per request; set n to 1 or omit it."
 
 
-@get("/v1/models")
+@get("/v1/models", opt={NO_LIBRARY_KEY: True})
 @auth_checked_in_handler
 async def list_models_endpoint(request: Request) -> Response:
     """Return installed chat models in the ``/v1/models`` shape, the configured one leading."""
@@ -84,7 +90,8 @@ def _build_models_list_payload() -> ModelsListResponse:
     # concurrency instead of assuming the configured target.
     served_ctx = services.provider.served_chat_ctx()
     served_slots = services.provider.served_chat_slots()
-    installed = {m.ref: m for m in services.registry.list_installed() if m.task == ModelTask.CHAT}
+    chat = {m.ref: m for m in services.registry.list_installed() if m.task == ModelTask.CHAT}
+    installed = {ref: chat[ref] for ref in loadable_refs(chat, WorkerRole.CHAT)}
     # A remote or path-configured chat model has no registry entry but is still
     # listed, configured model first (the launcher's picker order).
     listed = with_configured_chat(sorted(installed), cfg.chat_model)
@@ -175,7 +182,7 @@ async def chat_completions_endpoint(
             ),
             media_type=SSE_MEDIA_TYPE,
             background=BackgroundTask(guard.release),
-            headers=images_dropped_headers(req),
+            headers=images_dropped_response_headers(req),
         )
     return await _run_non_stream(req, guard, canonical_model=resolved_model, mode=mode)
 
@@ -184,7 +191,7 @@ def _reject_before_dispatch(request: Request, data: CompletionsRequest) -> Respo
     """Multi-choice and unsupported-param checks before any dispatch work.
 
     Returns a 4xx Response to short-circuit, or None to proceed. Unmapped OpenAI
-    params (``response_format``, ``logprobs``, and any other unknown field) are
+    params (``logprobs``, and any other unknown field) are
     accepted but logged at debug so a client learns they had no effect. Auth is
     not checked here: it runs in the before_request hook, ahead of body parsing.
     """
@@ -214,7 +221,9 @@ async def _preflight_resolved_model(req: CanonicalChatRequest) -> str | Response
             # Mirror _run_non_stream: an unclassified failure still rides the
             # OpenAI error envelope, not a bare framework 500.
             return _internal_error_response()
-        return _error_response(classified.http_status, classified.code, classified.message)
+        return _error_response(
+            classified.http_status, classified.code, classified.message, headers=classified.headers
+        )
 
 
 _INTERNAL_ERROR_MESSAGE = "Internal server error. Check the server logs for details."
@@ -248,7 +257,9 @@ async def _run_non_stream(
         classified = classify_provider_error(exc)
         if classified is None:
             return _internal_error_response()
-        return _error_response(classified.http_status, classified.code, classified.message)
+        return _error_response(
+            classified.http_status, classified.code, classified.message, headers=classified.headers
+        )
     finally:
         await guard.release()
     body: CompletionsResponse = canonical_to_completions_response(
@@ -257,7 +268,7 @@ async def _run_non_stream(
     return Response(
         body.model_dump(exclude_none=True),
         media_type="application/json",
-        headers=images_dropped_headers(req),
+        headers=images_dropped_response_headers(req),
     )
 
 

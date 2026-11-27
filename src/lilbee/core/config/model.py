@@ -5,13 +5,16 @@ The settings sources and the TOML parser live here too. Every
 to the same instance defined at module bottom.
 """
 
+import json
 import logging
 import os
 import re
-from collections.abc import Mapping
+import threading
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextvars import ContextVar
 from enum import Enum
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar, cast
 
 from pydantic import Field, ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_core import ErrorDetails
@@ -39,6 +42,7 @@ from .enums import (
     ChatMode,
     ClustererBackend,
     CrawlRenderMode,
+    EngineSetting,
     FtsLanguage,
     KvCacheType,
     LlmProvider,
@@ -106,17 +110,31 @@ _EXPECTED_BY_ERROR: dict[str, str] = {
 _VALUE_ERROR_PREFIX = "Value error, "
 _USES_ITS_DEFAULT = "uses its default"
 
+# An address can hold a user name and a password, so a refusal does not repeat its value.
+_ADDRESS_SETTINGS = frozenset({"ollama_base_url", "lm_studio_base_url"})
+_VALUE_NOT_SHOWN = "(value not shown)"
+
+
+def shown_value(key: str, value: Any) -> str:
+    """*value* as a refusal prints it: its repr, or a note for a setting that can hold a secret."""
+    return _VALUE_NOT_SHOWN if key in _ADDRESS_SETTINGS else repr(value)
+
+
 # A variable its setting refuses stops the command and a write of one is refused,
 # except on these: each takes its default, automatic or off, with a warning.
 _TAKES_DEFAULT_WHEN_REFUSED = frozenset(
     {"flash_attention", "n_gpu_layers", "gpu_devices", "semantic_chunking"}
 )
 
+# Only their own service writes these: no variable and no general settings path sets them.
+SERVICE_ONLY_FIELDS = frozenset({"server_presets", "preferred_engine", "engine_choices"})
+
 # A key that is not a setting, by name, and what to use instead. A stored or
 # exported one is refused out loud rather than silently ignored.
 _NOT_SETTINGS: dict[str, str] = {
     # llama-server reads it only under split mode none, which no fleet launch uses.
     "main_gpu": "choose the cards with gpu_devices or placement",
+    "token_sizing": "chunk_size always counts the embedding model's tokens",
 }
 
 # A field no environment string parses into, by name, and what to use instead.
@@ -161,7 +179,7 @@ def _page_number(item: Any) -> int:
 
 
 class Config(BaseSettings):
-    """Runtime configuration: one singleton instance, mutated by CLI overrides."""
+    """Runtime configuration; the process reads the one published through ``cfg``."""
 
     model_config = SettingsConfigDict(
         env_prefix=ENV_PREFIX,
@@ -176,7 +194,10 @@ class Config(BaseSettings):
         description=(
             "Root directory for this library. Resolved at start from LILBEE_DATA, "
             "then a .lilbee/ directory walked up from the working directory, then "
-            "the platform default. Every other path below hangs off it"
+            "the platform default. The documents, index, config file and logs live "
+            "under it. The models folder (also the Hugging Face cache), the engines "
+            "folder, the machine engine slot and the gguf metadata cache stay in the "
+            "platform folders. LILBEE_MODELS_DIR and LILBEE_ENGINE_DIR move the first three"
         ),
     )
     # Writable so plugin-managed servers can pivot storage to a vault path on
@@ -302,7 +323,10 @@ class Config(BaseSettings):
     max_embed_chars: int = Field(
         default=2000,
         ge=1,
-        description="Maximum characters sent to the embedding model per chunk. Longer text is cut",
+        description=(
+            "Maximum characters sent to a remote embedding model per input. Longer text is cut. "
+            "A local embedder cuts by its own token limit instead"
+        ),
     )
     top_k: int = ConfigField(default=12, ge=1, writable=True, profile=ProfileScope.RETRIEVAL)
     max_distance: float = ConfigField(
@@ -342,7 +366,8 @@ class Config(BaseSettings):
     # Outer wall-clock budget for the streamed pool drain: load grace plus
     # per_page * pages. Tune up for slow hardware (M1 Pro vision is
     # ~5min/page) or down for fast hardware. ocr_timeout still governs the
-    # per-page expectation that drives the total budget.
+    # per-page expectation that drives the total budget. With ocr_timeout 0 it also
+    # bounds a page's wait for a reload to bring vision back (0: no wait).
     vision_load_budget_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
     # Hard cap on tokens generated per OCR page. A real page is well under this;
     # the vision request's repeat penalty stops a page looping one line, and the cap
@@ -383,11 +408,6 @@ class Config(BaseSettings):
     # Boundary-similarity threshold; only applied when semantic_chunking is on.
     topic_threshold: float = ConfigField(
         default=0.75, ge=0.0, le=1.0, writable=True, profile=ProfileScope.INGEST, reindex=True
-    )
-    # Size chunks in real tokens via the embedder's tokenizer backend, not the
-    # chars-per-token heuristic. Plain/heading chunkers only; semantic sizes by chars.
-    token_sizing: bool = ConfigField(
-        default=False, writable=True, profile=ProfileScope.INGEST, reindex=True
     )
     # Index each recognized table as its own markdown-serialized chunk.
     table_extraction: bool = ConfigField(
@@ -457,9 +477,13 @@ class Config(BaseSettings):
             "Emit structured JSON from CLI commands. The --json flag sets it for one invocation"
         ),
     )
-    temperature: float | None = ConfigField(default=0.1, ge=0.0, writable=True)
-    top_p: float | None = ConfigField(default=0.9, ge=0.0, le=1.0, writable=True)
-    top_k_sampling: int | None = ConfigField(default=40, ge=1, writable=True)
+    # None sends no value and leaves the choice to the engine: the model's values
+    # when the file carries them (GGUF general.sampling keys, generation_config.json),
+    # else the engine's defaults. A near-greedy default here kept thinking models
+    # thinking until the token cap.
+    temperature: float | None = ConfigField(default=None, ge=0.0, writable=True)
+    top_p: float | None = ConfigField(default=None, ge=0.0, le=1.0, writable=True)
+    top_k_sampling: int | None = ConfigField(default=None, ge=1, writable=True)
     # 1.1 is llama.cpp's default. Leaving this at None caused n-gram loops
     # ("tire tire tire...") on some open-weights models.
     repeat_penalty: float | None = ConfigField(default=1.1, ge=0.0, writable=True)
@@ -469,22 +493,30 @@ class Config(BaseSettings):
     max_tokens: int | None = ConfigField(default=None, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
-    # Path to a llama-server binary. Empty = use the bundled lilbee-engine
-    # wheel binary, else a llama-server on PATH.
+    # Path to a llama-server binary. Empty = the bundled lilbee-engine-llama-cpp wheel
+    # binary, else a llama-server on PATH, else the llama.cpp pack installed on first use.
     llama_server_path: str = ConfigField(default="", writable=True)
     # Per-server local model-manager URLs. Blank means "use the server's spec
     # default" (resolved in providers.local_servers.config_urls); the default
     # URL literal lives only in the spec, which core must not import.
     ollama_base_url: str = ConfigField(default="", writable=True)
     lm_studio_base_url: str = ConfigField(default="", writable=True)
-    llm_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    openrouter_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    gemini_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    anthropic_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    openai_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    mistral_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    deepseek_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    hf_token: str = ConfigField(default="", writable=True, write_only=True)
+    llm_api_key: str = ConfigField(default="", writable=True, write_only=True, header_value=True)
+    openrouter_api_key: str = ConfigField(
+        default="", writable=True, write_only=True, header_value=True
+    )
+    gemini_api_key: str = ConfigField(default="", writable=True, write_only=True, header_value=True)
+    anthropic_api_key: str = ConfigField(
+        default="", writable=True, write_only=True, header_value=True
+    )
+    openai_api_key: str = ConfigField(default="", writable=True, write_only=True, header_value=True)
+    mistral_api_key: str = ConfigField(
+        default="", writable=True, write_only=True, header_value=True
+    )
+    deepseek_api_key: str = ConfigField(
+        default="", writable=True, write_only=True, header_value=True
+    )
+    hf_token: str = ConfigField(default="", writable=True, write_only=True, header_value=True)
 
     # Retrieval quality knobs.
 
@@ -697,8 +729,10 @@ class Config(BaseSettings):
     )
 
     # Reranker model ref. Empty disables reranking. Native GGUFs run on
-    # llama-server (rank pooling or LLM logprob scoring); hosted refs
-    # (cohere/voyage/jina/together/hf-tei) need the backend extra.
+    # llama-server (rank pooling or LLM logprob scoring). A ref runs hosted only
+    # when its prefix is a built-in provider (openrouter, openai, ...) or a
+    # stored server preset; any other ref, such as cohere/x, runs locally, as
+    # for the embedding model.
     reranker_model: str = ConfigField(default="", public=True)
 
     # auto detects cross-encoder vs LLM reranker by GGUF arch; override forces one.
@@ -970,6 +1004,15 @@ class Config(BaseSettings):
     # The profile tools over MCP, off by default for the same schema cost.
     mcp_profiles_enabled: bool = ConfigField(default=False, writable=True)
 
+    # The four server preset tools, off by default: a preset decides where
+    # requests and keys go, which most agents never need, and the tools cost
+    # schema on every request. REST, the CLI and the slash command are unchanged.
+    mcp_presets_enabled: bool = ConfigField(default=False, writable=True)
+
+    # The engine tools, off by default: the default tool list has a byte
+    # budget. REST, the CLI and the slash command are unchanged.
+    mcp_engines_enabled: bool = ConfigField(default=False, writable=True)
+
     # Explicit ceiling for the dynamic n_ctx picker. ``None`` (default)
     # lets the model's training_ctx from GGUF metadata be the ceiling,
     # so a 128K-context model can reach for it on a host with the RAM
@@ -1029,8 +1072,9 @@ class Config(BaseSettings):
 
     # Manual GPU placement override stored as a JSON scalar (the config.toml store
     # is flat, and core must not depend on the provider PlacementSpec type). When
-    # set, it fully replaces the automatic placement planner: each active role pins
-    # to the listed device indices, with an optional tensor_split and replica count.
+    # set, it fully replaces the automatic placement planner: each active role names
+    # a target (cpu, or gpu with device indices), with an optional tensor_split and
+    # replica count. A role with no target key runs on the listed device indices.
     # Edited via the placement CLI/MCP/HTTP/TUI surfaces rather than the generic
     # settings list, so public=False. None hands off to the VRAM-aware auto planner.
     placement: str | None = ConfigField(
@@ -1040,8 +1084,68 @@ class Config(BaseSettings):
         derived=True,
         description=(
             "Manual multi-GPU placement spec. It fully replaces the automatic planner: "
-            "each active role pins to the listed device indices. Edit it with the "
-            "placement commands, not the settings list. Empty uses the VRAM-aware planner"
+            "each active role runs on the CPU or pins to the listed device indices. "
+            "Edit it with the placement commands, not the settings list. "
+            "Empty uses the VRAM-aware planner"
+        ),
+    )
+
+    # The user's OpenAI-compatible servers as a JSON scalar, as placement is stored. Only the
+    # preset service writes it; it holds API keys, so it stays out of every read and repr.
+    server_presets: str | None = ConfigField(
+        default=None,
+        writable=True,
+        public=False,
+        from_env=False,
+        repr=False,
+        description=(
+            "User-defined OpenAI-compatible servers, with their API keys. "
+            "Edit them with the preset commands, not the settings list"
+        ),
+    )
+
+    # Only the engine service writes these two; the general settings paths refuse them.
+    preferred_engine: EngineSetting = ConfigField(
+        default=EngineSetting.AUTO,
+        writable=True,
+        public=False,
+        from_env=False,
+        description=(
+            "The engine for every model that has no engine of its own: "
+            f"{', '.join(EngineSetting)}. auto picks one "
+            "from the model format and the host. Change it with the engine commands, "
+            "not the settings list"
+        ),
+    )
+
+    choose_engine_on_pick: bool = ConfigField(
+        default=True,
+        writable=True,
+        description=(
+            "Ask which engine runs a model when you pick it in the model picker. "
+            "Off means the picked model uses its saved engine, or auto"
+        ),
+    )
+
+    # The per-model engine override, a JSON scalar {model_ref: engine_name}, stored as placement is.
+    engine_choices: str | None = ConfigField(
+        default=None,
+        writable=True,
+        public=False,
+        from_env=False,
+        description=(
+            "The engine chosen for each model, by model reference. Change it with "
+            "the engine commands, not the settings list"
+        ),
+    )
+
+    # Gates the HTTP routes that change engines and presets, not the preset service itself.
+    allow_http_engines: bool = Field(
+        default=False,
+        description=(
+            "Let the HTTP server change engines and presets. Off by default because a "
+            "preset sets where requests and API keys go. Turn it on only for a deployment "
+            "you alone use"
         ),
     )
 
@@ -1326,8 +1430,13 @@ class Config(BaseSettings):
         """
         if isinstance(v, str):
             v = v.replace("+", ",").replace("\n", ",").split(",")
-        items = v or []
-        langs = [s.strip() for s in items if isinstance(s, str) and s.strip()]
+        items = [] if v is None else v
+        if not isinstance(items, (list, tuple)) or not all(isinstance(s, str) for s in items):
+            raise ValueError(
+                f"ocr_language: {v!r} is not a list of Tesseract language codes "
+                "(examples: eng, deu, chi_sim, jpn_vert)"
+            )
+        langs = [s.strip() for s in items if s.strip()]
         for lang in langs:
             if not _TESSERACT_LANGUAGE_CODE.fullmatch(lang):
                 raise ValueError(
@@ -1374,7 +1483,10 @@ class Config(BaseSettings):
                 return parse_optional_int(v, aliases={"cpu": 0})
             except ValueError:
                 raise ValueError("use a whole number, cpu or auto") from None
-        return int(v)
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            raise ValueError("use a whole number, cpu or auto") from None
 
     @field_validator("gpu_devices", mode="before")
     @classmethod
@@ -1388,6 +1500,18 @@ class Config(BaseSettings):
             except ValueError:
                 raise ValueError("use GPU indexes separated by commas, or auto") from None
         return str(v)
+
+    @field_validator("server_presets", mode="before")
+    @classmethod
+    def _server_presets_as_text(cls, v: Any) -> Any:
+        """Text for any TOML type: a refused value is printed, and this one holds API keys."""
+        return v if v is None or isinstance(v, str) else json.dumps(v, default=str)
+
+    @field_validator("engine_choices", mode="before")
+    @classmethod
+    def _engine_choices_as_text(cls, v: Any) -> Any:
+        """Text for any TOML type, so a refused value is printed."""
+        return v if v is None or isinstance(v, str) else json.dumps(v, default=str)
 
     @field_validator("placement", mode="before")
     @classmethod
@@ -1427,12 +1551,36 @@ class Config(BaseSettings):
     @classmethod
     def _normalize_model_tag(cls, v: str, info: ValidationInfo) -> str:
         """Validate and canonicalize a model ref; blank means the role is unconfigured."""
-        return canonical_model_ref(v)
+        ref = canonical_model_ref(v)
+        refusal = mlx_role_refusal(info.field_name or "", ref)
+        if refusal is not None:
+            raise ValueError(refusal)
+        return ref
 
     @field_validator("ollama_base_url", "lm_studio_base_url", mode="after")
     @classmethod
-    def _strip_trailing_slash(cls, v: str) -> str:
-        """Canonicalize a local-server URL once at the write boundary."""
+    def _strip_trailing_slash(cls, v: str, info: ValidationInfo) -> str:
+        """Canonicalize a local-server URL once at the write boundary.
+
+        Every request to a local server builds its URL from this value, so an address that
+        httpx cannot parse is refused here, before any request raises a raw URL error.
+        """
+        v = v.strip()
+        if not v:
+            return v
+        import httpx
+
+        try:
+            httpx.Request("GET", v)
+        except (httpx.InvalidURL, ValueError):
+            from lilbee.providers.local_servers import LOCAL_SERVERS
+
+            # The setting is "<server key>_base_url"; the example is that server's own default.
+            spec = next(s for s in LOCAL_SERVERS if f"{s.key}_base_url" == info.field_name)
+            raise ValueError(
+                "The address is not a valid web address. "
+                f"Write it with a scheme and a host, for example {spec.default_base_url}"
+            ) from None
         return v.rstrip("/")
 
     @field_validator("cors_origins", mode="before")
@@ -1490,6 +1638,8 @@ class Config(BaseSettings):
             extra = frozenset(name.strip() for name in v.split(",") if name.strip())
             return DEFAULT_IGNORE_DIRS | extra
         if isinstance(v, (set, frozenset, list)):
+            if not all(isinstance(name, str) for name in v):
+                raise ValueError("ignore_dirs: every entry must be a directory name")
             return DEFAULT_IGNORE_DIRS | frozenset(v)
         return DEFAULT_IGNORE_DIRS
 
@@ -1626,6 +1776,14 @@ def _not_a_setting(name: str, key: str) -> str:
     return f"{name} is not a setting and is ignored; {(_NOT_SETTINGS | _NOT_FROM_ENV)[key]}"
 
 
+def ignore_not_settings(label: str, keys: Iterable[str]) -> set[str]:
+    """The keys in *keys* that are not settings, each reported under *label* as ignored."""
+    found = _NOT_SETTINGS.keys() & set(keys)
+    for key in sorted(found):
+        warn_on_load(f"{label}: {_not_a_setting(key, key)}")
+    return found
+
+
 def _expected(error: ErrorDetails) -> str:
     """What one validation error says about the value, in the words of a settings file."""
     words = _EXPECTED_BY_ERROR.get(error["type"])
@@ -1673,14 +1831,14 @@ class _PlainEnvSource:
             if field_name in _NOT_FROM_ENV:
                 continue
             raw = os.environ.get(_variable(self._settings_cls, field_name))
-            if value_is_set(field_name, raw):
+            if field_name not in SERVICE_ONLY_FIELDS and value_is_set(field_name, raw):
                 values[field_name] = raw
         return values, _refusals(self._settings_cls, values)
 
     def _stop(self, values: dict[str, Any], refused: dict[str, str]) -> None:
         """Refuse the variables in *refused*, less the ones that take their default."""
         lines = [
-            f"{_variable(self._settings_cls, key)} = {values[key]!r} {reason}"
+            f"{_variable(self._settings_cls, key)} = {shown_value(key, values[key])} {reason}"
             for key, reason in refused.items()
             if key not in _TAKES_DEFAULT_WHEN_REFUSED
         ]
@@ -1752,7 +1910,7 @@ class _TomlSource:
         fallback = f"{key} {otherwise}"
         if env_value(key) is not None:
             fallback = f"{_variable(self._settings_cls, key)} sets {key}"
-        return f"{label}: {key} = {values[key]!r} {reason}; {fallback}"
+        return f"{label}: {key} = {shown_value(key, values[key])} {reason}; {fallback}"
 
     def _refuse_not_settings(self, data: dict[str, Any]) -> None:
         """Report each key in *data* that is not a setting, as a refused value is reported."""
@@ -1762,6 +1920,12 @@ class _TomlSource:
             if f"{CONFIG_FILE_NAME}: {_not_a_setting(key, key)}" not in self._reported:
                 self._warn(f"{self._label}: {_not_a_setting(key, key)}")
 
+    def report_unreadable(self) -> None:
+        """Report, once, that the file does not open or parse."""
+        unreadable = f"Failed to read {self._path}, ignoring"
+        if unreadable not in self._reported:
+            self._warn(unreadable)
+
     def __call__(self) -> dict[str, Any]:
         import tomllib
 
@@ -1769,10 +1933,12 @@ class _TomlSource:
             with self._path.open("rb") as f:
                 data = tomllib.load(f)
         except (ValueError, OSError):
-            unreadable = f"Failed to read {self._path}, ignoring"
-            if unreadable not in self._reported:
-                self._warn(unreadable)
+            self.report_unreadable()
             return {}
+        return self.accept(data)
+
+    def accept(self, data: dict[str, Any]) -> dict[str, Any]:
+        """The values in *data*, the parsed file, that Config accepts; reports each it refuses."""
         self._refuse_not_settings(data)
         # A blank string is unset (the field default applies, since pydantic
         # cannot coerce "" to int|None), except on a clearable model role,
@@ -1804,14 +1970,15 @@ class _ProfileSource:
             name = read_profile_table(root).name
             label = f"the {name!r} profile" if name else "the applied profile"
             for key, reason in refused.items():
-                warn_on_load(
-                    f"{label}: {key} = {values[key]!r} {reason}; {key} {_USES_ITS_DEFAULT}"
-                )
+                shown = shown_value(key, values[key])
+                warn_on_load(f"{label}: {key} = {shown} {reason}; {key} {_USES_ITS_DEFAULT}")
         return {key: value for key, value in values.items() if key not in refused}
 
 
 def env_value(field_name: str) -> str | None:
-    """What LILBEE_<FIELD_NAME> holds, or None when it is unset or blank."""
+    """What LILBEE_<FIELD_NAME> holds, or None when it is unset, blank or read from no variable."""
+    if field_name in SERVICE_ONLY_FIELDS:
+        return None
     raw = os.environ.get(_variable(Config, field_name))
     return raw if value_is_set(field_name, raw) else None
 
@@ -1838,16 +2005,36 @@ def hard_refusals(values: Mapping[str, Any]) -> dict[str, str]:
 def refusal_sentence(key: str, value: Any) -> str:
     """One plain sentence for a *value* that *key* refuses, with no validator dump."""
     reason = _refusals(Config, {key: value}).get(key, "is not a value it accepts")
-    return f"{key} = {value!r} {reason}"
+    return f"{key} = {shown_value(key, value)} {reason}"
 
 
 def canonical_model_ref(ref: str) -> str:
-    """The form a model ref takes in cfg; a blank ref stays blank."""
+    """The form a model ref takes in cfg, decided from the text alone; a blank ref stays blank."""
     if not ref or not ref.strip():
         return ""
-    from lilbee.providers.model_ref import parse_model_ref
+    from lilbee.providers import model_ref
 
-    return parse_model_ref(ref).for_openai_prefix()
+    return model_ref.canonical_model_ref(ref)
+
+
+def mlx_role_refusal(field: str, ref: str) -> str | None:
+    """Why the mlx engine cannot serve *ref* for the role that *field* sets, or None.
+
+    A blank ref names no format, so it returns before the catalog loads: the config
+    builds at import with blank refs, and the catalog pulls in httpx.
+    """
+    if not ref:
+        return None
+    from lilbee.catalog.refs import model_format
+    from lilbee.catalog.types import ModelFormat
+
+    if model_format(ref) is not ModelFormat.MLX:
+        return None
+    from lilbee.providers.fleet.engines import mlx
+    from lilbee.providers.roles import MODEL_FIELD_TO_ROLE
+
+    role = MODEL_FIELD_TO_ROLE.get(field)
+    return None if role is None else mlx.role_refusal(role, ref)
 
 
 def checked_write(key: str, value: Any) -> Any:
@@ -1878,6 +2065,11 @@ def toml_values(path: Path, only: str | None = None) -> dict[str, Any]:
     and a refused value are each reported once per change of the file, less
     what the load reported when the file is the one cfg is built from.
     """
+    return overlay_source(path, only)()
+
+
+def overlay_source(path: Path, only: str | None = None) -> _TomlSource:
+    """The reader ``toml_values`` runs, to feed it a table that is already parsed."""
     return _TomlSource(
         Config,
         path,
@@ -1886,7 +2078,7 @@ def toml_values(path: Path, only: str | None = None) -> dict[str, Any]:
         reported=load_warnings if path == loaded_config_file else (),
         only=only,
         per_change=True,
-    )()
+    )
 
 
 def toml_value(path: Path, key: str) -> Any:
@@ -1906,9 +2098,134 @@ def _build_cfg() -> tuple[Config, tuple[str, ...]]:
     return built, tuple(found)
 
 
+class ConfigPin:
+    """The Config one scope reads: a library call's own, or the one a request started with.
+
+    A request pin *follows_writes*: a write the request makes moves the pin to the
+    Config that write published, so the request reads its own write. The pin is a
+    mutable cell, so a thread the request starts (it copies the context) moves the
+    request's pin too.
+    """
+
+    __slots__ = ("config", "follows_writes")
+
+    def __init__(self, config: Config, *, follows_writes: bool) -> None:
+        self.config = config
+        self.follows_writes = follows_writes
+
+
+# The pin of the running scope; None reads the published Config.
+active_pin: ContextVar[ConfigPin | None] = ContextVar("lilbee_active_config", default=None)
+
+_T = TypeVar("_T")
+_NO_VALUE = object()
+
+
+class LiveConfig:
+    """The process config ``cfg``: a handle over the published Config.
+
+    A read goes to the running request's pin, else to the published Config. The
+    published Config never changes in place: a write builds a new Config and
+    publishes it by one reference store, so a request keeps reading the Config it
+    started with while another request takes a change. Every attribute, ``__dict__``
+    and ``__class__`` included, is the read Config's, so ``mock.patch.object``
+    restores a field and ``isinstance(cfg, Config)`` holds.
+    """
+
+    __slots__ = ("__weakref__", "_live_published")
+    model_fields: ClassVar[dict[str, Any]] = Config.model_fields
+
+    def __init__(self, config: Config) -> None:
+        object.__setattr__(self, "_live_published", config)
+
+    def __getattribute__(self, name: str) -> Any:
+        pin = active_pin.get()
+        if pin is not None and pin.follows_writes:
+            return getattr(pin.config, name)
+        return getattr(_published_of(self), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        published = _published_of(self)
+        if _current_of(self) is published and value is published.__dict__.get(name, _NO_VALUE):
+            return  # the value this scope reads already: nothing to publish
+        commit_config(lambda draft: setattr(draft, name, value))
+
+    def __repr__(self) -> str:
+        return repr(_current_of(self))
+
+    def __iter__(self) -> Iterator[tuple[str, Any]]:
+        return iter(_current_of(self))
+
+
+_published_of: Callable[[LiveConfig], Config] = LiveConfig.__dict__["_live_published"].__get__
+
+
+def _current_of(live: LiveConfig) -> Config:
+    """The Config *live* reads in this scope: the request's pin, else the published one."""
+    pin = active_pin.get()
+    if pin is not None and pin.follows_writes:
+        return pin.config
+    return _published_of(live)
+
+
 # The config.toml that cfg is built from; a later read of it reports only what is new.
 loaded_config_file = _config_file()
-cfg, load_warnings = _build_cfg()
+_built, load_warnings = _build_cfg()
+_live = LiveConfig(_built)
+_publish_lock = threading.Lock()
+cfg = cast("Config", _live)
+
+
+def published_config() -> Config:
+    """The Config published last, whatever the running scope pins."""
+    return _published_of(_live)
+
+
+def commit_config(change: Callable[[Config], _T]) -> _T:
+    """Make *change* on a copy of the published Config, then publish what it moved.
+
+    Each assignment validates on the copy, so a refusal raises before anything is
+    published. The fields *change* moved are compared by value against the copy's
+    source, because the model validator can re-derive a field the change does not
+    name. Only they go onto a copy of the Config published at the time of the store:
+    a field another thread wrote meanwhile keeps its new value, and a field the
+    validator re-derived to an equal value keeps its object. A request pin moves to
+    the new Config, or to the published one when the write moved nothing, so the
+    request reads its own write either way. ``model_copy`` is shallow, so *change*
+    must assign a field and never mutate a mutable value in place.
+    """
+    source = published_config()
+    draft = source.model_copy()
+    result = change(draft)
+    before = source.__dict__
+    moved = {
+        key: value
+        for key, value in draft.__dict__.items()
+        if value is not before[key] and value != before[key]
+    }
+    if not moved:
+        _move_pin(published_config())
+        return result
+    with _publish_lock:
+        published = published_config().model_copy()
+        published.__dict__.update(moved)
+        published.__pydantic_fields_set__.update(moved)
+        object.__setattr__(_live, "_live_published", published)
+    _move_pin(published)
+    return result
+
+
+def follow_published_config() -> None:
+    """Move a request's pin to the Config published last: the request reads the newest."""
+    _move_pin(published_config())
+
+
+def _move_pin(config: Config) -> None:
+    pin = active_pin.get()
+    if pin is not None and pin.follows_writes:
+        pin.config = config
+
+
 # Once, at import on the main thread: a later warning stays in this process, because
 # a write from a loading thread would race native readers of the environment.
 if shown := shown_marks():

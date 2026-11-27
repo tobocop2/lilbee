@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import re
 import shutil
 import subprocess
+import threading
+import time
+from collections.abc import Callable
 from enum import StrEnum
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
+
+from cachetools import TTLCache
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.engine_install import engine_install_hint
@@ -17,15 +23,33 @@ from lilbee.providers.fleet.engine_install import engine_install_hint
 # generous; a binary that cannot even print usage in this time is not one the
 # fleet should silently trust either way.
 _HELP_PROBE_TIMEOUT_S = 15.0
+# A cold disk or a GPU runtime start can make the first probe slow. A minute is long
+# enough that a slow engine does not pay the probe time on every call, and short enough
+# that the next launch after the engine warms up probes again.
+_HELP_TIMEOUT_MEMORY_S = 60.0
+# llama-swap prints its release on this flag, as "version: v272 (802f1c4), built at ...".
+_ROUTER_VERSION_FLAG = "--version"
+_ROUTER_VERSION_LINE = re.compile(r"^version: v?(\d+)\b", re.MULTILINE)
+# What _binary_signature returns for a path it cannot stat.
+_UNSTATABLE = "unstatable"
 
 
 class EngineTool(StrEnum):
-    """A bundled engine executable resolved from the ``lilbee-engine`` wheel."""
+    """A bundled engine executable resolved from the ``lilbee-engine-llama-cpp`` wheel."""
 
     LLAMA_SERVER = "llama-server"
     LLAMA_SWAP = "llama-swap"
     GGUF_PARSER = "gguf-parser"
 
+
+ROUTER_GO_INSTALL = "go install github.com/mostlygeek/llama-swap@latest"
+"""The command that builds the newest llama-swap router from source."""
+
+_HELPER_INSTALL = {
+    EngineTool.LLAMA_SWAP: ROUTER_GO_INSTALL,
+    EngineTool.GGUF_PARSER: "go install github.com/gpustack/gguf-parser-go/cmd/gguf-parser@latest",
+}
+"""The command that installs a helper tool next to a llama-server the user supplies."""
 
 _BUNDLED_ACCESSORS = {
     EngineTool.LLAMA_SERVER: "get_llama_server_path",
@@ -35,12 +59,12 @@ _BUNDLED_ACCESSORS = {
 
 
 def _bundled_tool(tool: EngineTool) -> Path | None:
-    """Path to *tool* from the ``lilbee-engine`` wheel, or ``None`` if absent."""
+    """Path to *tool* from the ``lilbee-engine-llama-cpp`` wheel, or ``None`` if absent."""
     try:
-        import lilbee_engine
+        import lilbee_engine_llama_cpp
     except ImportError:
         return None
-    accessor = getattr(lilbee_engine, _BUNDLED_ACCESSORS[tool], None)
+    accessor = getattr(lilbee_engine_llama_cpp, _BUNDLED_ACCESSORS[tool], None)
     if accessor is None:  # a wheel that predates this tool lacks the accessor
         return None
     path = Path(accessor())
@@ -66,10 +90,13 @@ def engine_pin() -> str:
 
 
 def engine_build_id() -> str:
-    """The engine build's identity: configured path, wheel pin, PATH, or unpinned.
+    """The identity of the llama-server ``resolve_engine_tool`` returns, or unpinned.
+
+    The order is the launch order: configured path, wheel pin (only for a wheel
+    that carries a llama-server file), PATH, the installed pack.
 
     A BYO (``custom:``) or PATH-resolved (``path:``) binary is identified by its
-    location AND a cheap build fingerprint (size + mtime), so replacing the binary
+    location AND a cheap build fingerprint (size, mtime, inode, ctime), so replacing the binary
     in place (a brew upgrade, a re-download) changes the pin and never binds a new
     process to an engine spawned from the old build. The bundled wheel needs no
     fingerprint: its pin already encodes the build.
@@ -78,50 +105,66 @@ def engine_build_id() -> str:
 
     if cfg.llama_server_path:
         return f"custom:{cfg.llama_server_path}@{_binary_signature(Path(cfg.llama_server_path))}"
-    try:
-        import lilbee_engine
-    except ImportError:
-        lilbee_engine = None
-    if lilbee_engine is not None:
+    if _bundled_tool(EngineTool.LLAMA_SERVER) is not None:
+        import lilbee_engine_llama_cpp
+
         try:
-            return str(lilbee_engine.get_engine_pin())
+            return str(lilbee_engine_llama_cpp.get_engine_pin())
         except AttributeError:  # pre-pin wheels lack the accessor
             return f"wheel:{_engine_wheel_version()}"
     found = shutil.which(EngineTool.LLAMA_SERVER.value)
     if found is not None:
         return f"path:{found}@{_binary_signature(Path(found))}"
+    packed = _installed_pack_tool(EngineTool.LLAMA_SERVER)
+    if packed is not None:
+        return f"pack:{packed}@{_binary_signature(packed)}"
     return "unpinned"
+
+
+def _installed_pack_tool(tool: EngineTool) -> Path | None:
+    """*tool* from the installed pack, or ``None``; total, as the pin runs on each state write."""
+    # circular: first_use -> engines.llama -> binary
+    from lilbee.providers.fleet import first_use
+
+    try:
+        return first_use.installed_tool(tool.value)
+    except (OSError, ValueError):
+        return None
 
 
 def _engine_wheel_version() -> str:
     """The engine wheel's version, or a marker when it has no distribution metadata.
 
-    ``lilbee_engine`` can be importable with nothing to look up: an extracted
+    ``lilbee_engine_llama_cpp`` can be importable with nothing to look up: an extracted
     wheel on sys.path, a vendored copy, or a distribution registered under a name
-    that does not normalize to ``lilbee-engine``. Since this feeds the pin, and
+    that does not normalize to ``lilbee-engine-llama-cpp``. Since this feeds the pin, and
     the pin is computed on every state write, a missing version degrades to a
     marker rather than raising out of ``engine_pin``.
     """
     from importlib.metadata import PackageNotFoundError
 
     try:
-        return _pkg_version("lilbee-engine")
+        return _pkg_version("lilbee-engine-llama-cpp")
     except PackageNotFoundError:
         return "unknown"
 
 
 def _binary_signature(path: Path) -> str:
-    """A cheap build fingerprint of the binary at *path*: size and mtime.
+    """A cheap build fingerprint of the binary at *path*: size, mtime, inode and ctime.
 
-    An in-place replacement changes both, so the pin stops matching the old build.
+    A replacement changes some of these, so the pin stops matching the old build. Tar
+    extraction and OCI layers restore whole-second mtimes, so two builds of equal size
+    can share size and mtime; the inode tells a swapped file apart, and the change time,
+    which no caller can set, tells an in-place rewrite apart. On Windows the ctime is the
+    creation time, so only a swapped file (new inode) is told apart there.
     Best-effort and total (engine_pin runs on every state write): an unstatable
     path degrades to a fixed marker rather than raising.
     """
     try:
         st = path.stat()
     except OSError:
-        return "unstatable"
-    return f"{st.st_size}-{st.st_mtime_ns}"
+        return _UNSTATABLE
+    return f"{st.st_size}-{st.st_mtime_ns}-{st.st_ino}-{st.st_ctime_ns}"
 
 
 def engine_binary_identity(binary: Path) -> str:
@@ -144,30 +187,46 @@ def engine_binary_identity(binary: Path) -> str:
         return f"{binary}@unreadable"
 
 
-def resolve_engine_tool(tool: EngineTool) -> Path:
-    """Resolve *tool*: configured llama-server path, then bundled wheel, then PATH.
+def resolve_engine_tool(tool: EngineTool, *, install: bool = True) -> Path:
+    """Resolve *tool*: configured llama-server path, then bundled wheel, then PATH, then the pack.
 
-    Never downloads anything; the binaries arrive via the bundled ``lilbee-engine``
-    wheel or bring-your-own. Only llama-server honors ``LILBEE_LLAMA_SERVER_PATH``
-    (an explicit setting beats the bundled wheel); the other tools resolve from the
-    wheel, then ``PATH``.
+    A helper (llama-swap, gguf-parser) reads the installed router (llama-swap) and the
+    installed pack before PATH, so the lookup does not depend on which llama-server the host
+    has. When none of those has the tool, the router (llama-swap) or the llama.cpp pack
+    installs on first use (unless *install* is false). A user who has a llama-server (a
+    configured path, the bundled wheel or one on PATH) never gets a pack or router installed:
+    a missing helper raises an error that names the helper and the command that installs it.
+    Only llama-server honors ``LILBEE_LLAMA_SERVER_PATH`` (an explicit setting beats the
+    bundled wheel).
     """
     if tool is EngineTool.LLAMA_SERVER:
-        from lilbee.core.config import cfg
+        server = _find_llama_server(_first_use_tool if install else _no_pack)
+        if server is not None:
+            return server
+    else:
+        bundled = _bundled_tool(tool)
+        if bundled is not None:
+            return bundled
 
-        if cfg.llama_server_path:
-            configured = Path(cfg.llama_server_path)
-            if not configured.is_file():
-                raise ProviderError(f"LILBEE_LLAMA_SERVER_PATH is not a file: {configured}")
-            return configured
+        packed = _installed_helper(tool)
+        if packed is not None:
+            return packed
 
-    bundled = _bundled_tool(tool)
-    if bundled is not None:
-        return bundled
+        found = shutil.which(tool.value)
+        if found is not None:
+            return Path(found)
 
-    found = shutil.which(tool.value)
-    if found is not None:
-        return Path(found)
+        if _has_server():
+            raise ProviderError(
+                f"{tool.value} binary not found. lilbee already has a llama-server, so it "
+                f"installs no engine pack. Install {tool.value} with '{_HELPER_INSTALL[tool]}' "
+                f"and put it on PATH.",
+                kind=ProviderErrorKind.UNKNOWN,
+            )
+
+        packed = _first_use_tool(tool) if install else None
+        if packed is not None:
+            return packed
 
     # Only llama-server carries NOT_FOUND: it marks the engine-less host that
     # legitimately serves nothing. A missing sibling tool (gguf-parser) must not
@@ -181,6 +240,129 @@ def resolve_engine_tool(tool: EngineTool) -> Path:
     raise ProviderError(f"{tool.value} binary not found. {engine_install_hint()}", kind=kind)
 
 
+def _has_server() -> bool:
+    """True when a llama-server is at hand: a configured path, the bundled wheel, or PATH."""
+    from lilbee.core.config import cfg
+
+    return (
+        bool(cfg.llama_server_path)
+        or _bundled_tool(EngineTool.LLAMA_SERVER) is not None
+        or shutil.which(EngineTool.LLAMA_SERVER.value) is not None
+    )
+
+
+def _installed_helper(tool: EngineTool) -> Path | None:
+    """*tool* from the installed router or the installed pack, the router first."""
+    if tool is EngineTool.LLAMA_SWAP:
+        router = _installed_router()
+        if router is not None:
+            return router
+    return _installed_pack_tool(tool)
+
+
+def _no_pack(_tool: EngineTool) -> Path | None:
+    """The pack step of a lookup that never reads the pack."""
+    return None
+
+
+def _find_llama_server(pack: Callable[[EngineTool], Path | None]) -> Path | None:
+    """The llama-server in launch order: configured file, wheel, PATH, then *pack*'s answer.
+
+    A configured path that is not a file raises ``ProviderError``.
+    """
+    from lilbee.core.config import cfg
+
+    if cfg.llama_server_path:
+        configured = Path(cfg.llama_server_path)
+        if not configured.is_file():
+            raise ProviderError(f"LILBEE_LLAMA_SERVER_PATH is not a file: {configured}")
+        return configured
+    bundled = _bundled_tool(EngineTool.LLAMA_SERVER)
+    if bundled is not None:
+        return bundled
+    found = shutil.which(EngineTool.LLAMA_SERVER.value)
+    if found is not None:
+        return Path(found)
+    return pack(EngineTool.LLAMA_SERVER)
+
+
+def installed_llama_server() -> Path:
+    """The llama-server a launch finds with no install; raises ENGINE_MISSING when there is none.
+
+    A launch itself raises NOT_FOUND for the same absence, the kind planning reads as "serve
+    nothing". This lookup serves error text, so it carries the kind that answers 503.
+    """
+    server = _find_llama_server(_known_pack_tool)
+    if server is None:
+        raise ProviderError(
+            f"llama-server binary not found. {engine_install_hint()}",
+            kind=ProviderErrorKind.ENGINE_MISSING,
+        )
+    return server
+
+
+def llama_server_ready() -> bool:
+    """True when a launch finds a llama-server with no install; a bad configured path is not."""
+    try:
+        return _find_llama_server(_installed_pack_tool) is not None
+    except ProviderError:
+        return False
+
+
+def _known_pack_tool(tool: EngineTool) -> Path | None:
+    """*tool* from the installed pack; raises naming an install this process saw refused."""
+    # circular: first_use -> engines.llama -> binary
+    from lilbee.providers.fleet import first_use
+
+    try:
+        return first_use.known_tool(tool.value)
+    except first_use.INSTALL_REFUSALS as exc:
+        raise _refused(tool, exc) from exc
+
+
+def _refused(tool: EngineTool, exc: Exception) -> ProviderError:
+    """The error for a *tool* whose install was refused with *exc*."""
+    kind = (
+        ProviderErrorKind.NOT_FOUND
+        if tool is EngineTool.LLAMA_SERVER
+        else ProviderErrorKind.UNKNOWN
+    )
+    # The router refusal already names the router; llama-server's names the pack.
+    from_pack = tool not in (EngineTool.LLAMA_SERVER, EngineTool.LLAMA_SWAP)
+    source = f" {tool.value} comes from the llama.cpp pack." if from_pack else ""
+    return ProviderError(
+        f"{tool.value} binary not found.{source} {exc} {engine_install_hint()}", kind=kind
+    )
+
+
+def _installed_router() -> Path | None:
+    """The installed router, or ``None``; total, as the pin runs on each state write."""
+    # circular: router_install -> first_use -> engines.llama -> binary
+    from lilbee.providers.fleet import router_install
+
+    try:
+        return router_install.installed_router()
+    except (OSError, ValueError):
+        return None
+
+
+def _first_use_tool(tool: EngineTool) -> Path | None:
+    """The router, or the tool from the llama.cpp pack, installed on first use; raises if not.
+
+    Nothing is installed when the release is not published, or when the install fails: the
+    error names the fix, and carries the kind of a missing engine.
+    """
+    # circular: first_use -> engines.llama -> binary
+    from lilbee.providers.fleet import first_use, router_install
+
+    try:
+        if tool is EngineTool.LLAMA_SWAP:
+            return router_install.router_on_first_use()
+        return first_use.first_use_tool(tool.value)
+    except (*first_use.INSTALL_REFUSALS, *router_install.ROUTER_REFUSALS) as exc:
+        raise _refused(tool, exc) from exc
+
+
 def resolve_llama_server() -> Path:
     """Resolve the ``llama-server`` executable."""
     return resolve_engine_tool(EngineTool.LLAMA_SERVER)
@@ -189,6 +371,47 @@ def resolve_llama_server() -> Path:
 def resolve_llama_swap() -> Path:
     """Resolve the ``llama-swap`` executable."""
     return resolve_engine_tool(EngineTool.LLAMA_SWAP)
+
+
+def router_release(router: Path) -> int | None:
+    """The release number the llama-swap at *router* reports, or None when it has none.
+
+    A release build prints its tag (``version: v272 (802f1c4), built at ...``). A
+    ``go build`` from source, as the engine wheel and ``go install`` make, prints
+    ``version: 0``, so it has no number to compare. A router that does not answer
+    the probe has no number either; its own start then reports what is wrong with it.
+    The probe runs once per router file: a changed fingerprint reads again, and a file
+    that cannot be statted is read each time.
+    """
+    signature = _binary_signature(router)
+    if signature == _UNSTATABLE:
+        return _probe_router_release(router)
+    return _router_release_of(router, signature)
+
+
+@functools.lru_cache(maxsize=8)
+def _router_release_of(router: Path, _signature: str) -> int | None:
+    """:func:`_probe_router_release`, kept per router file; a changed fingerprint reads again."""
+    return _probe_router_release(router)
+
+
+def _probe_router_release(router: Path) -> int | None:
+    """Run the router's version probe once."""
+    try:
+        probe = subprocess.run(  # noqa: S603 - argv is the resolved router binary and a literal
+            [str(router), _ROUTER_VERSION_FLAG],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_HELP_PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = _ROUTER_VERSION_LINE.search(probe.stdout)
+    if match is None:
+        return None
+    return int(match.group(1)) or None
 
 
 def resolve_gguf_parser() -> Path:
@@ -210,13 +433,63 @@ def llama_server_runtime_env() -> dict[str, str]:
     return cuda_runtime_env()
 
 
-@functools.lru_cache(maxsize=8)
+class _NoHelpTextError(Exception):
+    """The binary printed no ``--help`` text, so nothing is cached for it."""
+
+
+class _HelpTimedOutError(Exception):
+    """The binary did not print ``--help`` text in time."""
+
+
+class _TimeoutMemory:
+    """The binaries whose ``--help`` probe timed out lately; each is forgotten after *ttl_s*."""
+
+    def __init__(self, ttl_s: float) -> None:
+        self.clock: Callable[[], float] = time.monotonic
+        self._seen: TTLCache[Path, None] = TTLCache(
+            maxsize=8, ttl=ttl_s, timer=lambda: self.clock()
+        )
+        self._lock = threading.Lock()
+
+    def holds(self, binary: Path) -> bool:
+        with self._lock:
+            return binary in self._seen
+
+    def add(self, binary: Path) -> None:
+        with self._lock:
+            self._seen[binary] = None
+
+    def clear(self) -> None:
+        with self._lock:
+            self._seen.clear()
+
+
+_help_timeouts = _TimeoutMemory(_HELP_TIMEOUT_MEMORY_S)
+
+
 def engine_help(binary: Path) -> str:
     """The usage text *binary* prints for ``--help``, stdout then stderr, read once per path.
 
-    Empty when the binary cannot run or answer in time: every caller reads an
-    absent flag as unsupported, so a launch never carries a flag it did not see.
+    Empty when the binary cannot run, cannot answer in time or prints nothing. A
+    timeout is remembered for ``_HELP_TIMEOUT_MEMORY_S``, so a slow binary does not cost
+    the probe time on every call; any other empty result is not cached, so the next
+    call reads again. The optional flags are all written meanwhile, since no help text
+    proves them missing.
     """
+    if _help_timeouts.holds(binary):
+        return ""
+    try:
+        return _read_help(binary)
+    except _HelpTimedOutError:
+        _help_timeouts.add(binary)
+        return ""
+    except _NoHelpTextError:
+        return ""
+
+
+@functools.lru_cache(maxsize=8)
+def _read_help(binary: Path) -> str:
+    """The ``--help`` text of *binary*, cached per path; raises when a retry may succeed."""
     from lilbee.providers.fleet.gpu_env import engine_environ
 
     try:
@@ -229,23 +502,35 @@ def engine_help(binary: Path) -> str:
             timeout=_HELP_PROBE_TIMEOUT_S,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return f"{done.stdout}\n{done.stderr}"
+    except subprocess.TimeoutExpired as exc:
+        raise _HelpTimedOutError from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise _NoHelpTextError from exc
+    text = f"{done.stdout}\n{done.stderr}"
+    if not text.strip():
+        raise _NoHelpTextError
+    return text
+
+
+# Option lines start at the margin or a few columns in; wrapped descriptions start further right.
+_MAX_OPTION_INDENT = 12
 
 
 def help_lists_option(help_text: str, flag: str) -> bool:
     """Whether an option line of *help_text* names *flag*.
 
-    An option line starts with ``-`` and names its flags up to the first word
-    that is not one, so a flag quoted in another option's description does not count.
+    An option line starts with ``-`` within the first few columns and names its flags
+    up to the first word that is not one, so a flag quoted in a description does not
+    count. A flag written ``--name(s)`` names both ``--name`` and ``--names``.
     """
     for line in help_text.splitlines():
-        if not line.startswith("-"):
+        text = line.lstrip()
+        if not text.startswith("-") or len(line) - len(text) > _MAX_OPTION_INDENT:
             continue
-        for token in line.split():
+        for token in text.split():
             if not token.startswith("-"):
                 break
-            if token.rstrip(",") == flag:
+            name = token.rstrip(",")
+            if flag in (name.replace("(s)", ""), name.replace("(s)", "s")):
                 return True
     return False

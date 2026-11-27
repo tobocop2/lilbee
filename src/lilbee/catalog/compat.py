@@ -7,26 +7,29 @@ from typing import TYPE_CHECKING
 from huggingface_hub import hf_hub_url
 from huggingface_hub.utils import HFValidationError
 
-from lilbee._generated.engine_archs import SUPPORTED_ARCHS
 from lilbee.catalog.header_probe import GgufHeader, probe_header
 from lilbee.catalog.refs import (
-    GGUF_SUFFIX,
-    NATIVE_GGUF_REF_MIN_SLASHES,
     WILDCARD,
     gguf_filename_from_ref,
     hf_repo_from_ref,
+    is_native_gguf_shape,
 )
 from lilbee.catalog.types import ModelCompat
 
 if TYPE_CHECKING:
     from lilbee.catalog.hf_client import HfClient
+    from lilbee.providers.fleet.engines.base import EngineAdapter
 
 
-def classify(architecture: str) -> ModelCompat:
-    """Map a `general.architecture` string to a `ModelCompat` verdict."""
+def classify(architecture: str, engine: EngineAdapter) -> ModelCompat:
+    """Map a `general.architecture` string to *engine*'s `ModelCompat` verdict."""
     if not architecture:
         return ModelCompat.UNKNOWN
-    return ModelCompat.SUPPORTED if architecture in SUPPORTED_ARCHS else ModelCompat.UNSUPPORTED
+    return (
+        ModelCompat.SUPPORTED
+        if engine.supports_architecture(architecture)
+        else ModelCompat.UNSUPPORTED
+    )
 
 
 def resolve_arch_for_pull(ref: str, hf_client: HfClient) -> str:
@@ -70,7 +73,7 @@ def _resolve_blob_url(ref: str) -> str:
     (the filename may add subdirs for a quant), so the repo and filename are split
     on that shape; an ollama-style ``repo:tag`` ref is split on the colon.
     """
-    if ref.endswith(GGUF_SUFFIX) and ref.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES:
+    if is_native_gguf_shape(ref):
         repo, filename = hf_repo_from_ref(ref), gguf_filename_from_ref(ref)
     elif ":" in ref:
         repo, filename = ref.split(":", 1)
@@ -91,7 +94,7 @@ class UnsupportedArchError(Exception):
         self.ref = ref
         self.architecture = architecture
         super().__init__(
-            f"Model {ref!r} uses architecture {architecture!r}, not supported by this lilbee build."
+            f"Model '{ref}' uses architecture {architecture!r}, not supported by this lilbee build."
         )
 
 
@@ -108,6 +111,6 @@ class UnsupportedQuantError(RuntimeError):
         self.ref = ref
         self.quant = quant
         super().__init__(
-            f"Model {ref!r} is quantized as {quant}, which this lilbee build cannot load. "
+            f"Model '{ref}' is quantized as {quant}, which this lilbee build cannot load. "
             "Pass --allow-unsupported to download it anyway."
         )

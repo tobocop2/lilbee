@@ -89,13 +89,13 @@ def test_run_smi_returns_stdout_on_success(monkeypatch: pytest.MonkeyPatch) -> N
     assert run_smi("nvidia-smi", ["--version"]) == "output\n"
 
 
-def test_run_smi_returns_empty_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_smi_keeps_the_output_of_a_non_zero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_run(*_a: object, **_k: object) -> tuple[str, int]:
         return "output\n", 1
 
     monkeypatch.setattr(base_mod, "run_bounded", _fake_run)
     monkeypatch.setattr(base_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-    assert run_smi("nvidia-smi", []) == ""
+    assert run_smi("nvidia-smi", []) == "output\n"
 
 
 def test_run_smi_returns_empty_on_oserror(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -105,6 +105,21 @@ def test_run_smi_returns_empty_on_oserror(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(base_mod, "run_bounded", _boom)
     monkeypatch.setattr(base_mod.shutil, "which", lambda _: None)
     assert run_smi("missing-tool", []) == ""
+
+
+def test_run_tool_keeps_the_exit_code_and_its_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(base_mod, "run_bounded", lambda *_a, **_k: ("Failed\n", 18))
+    assert base_mod.run_tool("nvidia-smi", [], 5.0) == ("Failed\n", 18)
+
+
+def test_run_tool_has_no_exit_code_when_the_tool_cannot_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(*_a: object, **_k: object) -> tuple[str, int]:
+        raise FileNotFoundError("nvidia-smi")
+
+    monkeypatch.setattr(base_mod, "run_bounded", _boom)
+    assert base_mod.run_tool("nvidia-smi", [], 5.0) == ("", None)
 
 
 def test_run_smi_resolves_which_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:

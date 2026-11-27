@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,10 +14,19 @@ from rich.text import Text
 
 from lilbee.app.ingest import RegisterResult, register_sources
 from lilbee.app.settings import SCANNED_PAGES_LABEL
-from lilbee.app.status import StatusResult
+from lilbee.app.status import IndexStatus, StatusResult
 from lilbee.cli import theme
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import HealthWarning
 from lilbee.core.text import strip_control_characters
+from lilbee.data.types import (
+    PARTLY_READ_FILE_COLUMN,
+    PARTLY_READ_PAGES_COLUMN,
+    PARTLY_READ_TITLE,
+    failed_page_lines,
+    rebuild_advice,
+)
+from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.lock import LibraryUnlockableError
 
@@ -68,8 +76,11 @@ def announce_ready(err: PlainConsole | None, role: object) -> None:
 
     A token arriving is not evidence the chat model came up: in RAG mode a grounded
     refusal streams without it. When warm-up recorded a load failure, that reason is
-    printed instead of a readiness line.
+    printed instead of a readiness line. A model of unknown size is logged and named
+    after it, unless the log already prints on the terminal.
     """
+    from lilbee.app.placement import size_unknown_notices
+    from lilbee.cli.log_routing import warnings_reach_terminal
     from lilbee.providers.roles import WorkerRole
 
     if err is None or not isinstance(role, WorkerRole):
@@ -79,12 +90,24 @@ def announce_ready(err: PlainConsole | None, role: object) -> None:
         err.print(failure, style=theme.ERROR, soft_wrap=True)
         return
     err.print(f"{role.value} engine ready.", style=theme.MUTED)
+    notices = size_unknown_notices(role)
+    if warnings_reach_terminal():
+        return  # the log already printed the sentences
+    for notice in notices:
+        err.print(notice, style=theme.WARNING, soft_wrap=True)
 
 
 def announce_retrieval_query(query: str) -> None:
     """Print the "Searching for: <query>" stderr line for a rewritten follow-up."""
     line = SEARCHING_FOR.format(query=query)
     PlainConsole(stderr=True).print(line, style=theme.MUTED, soft_wrap=True)
+
+
+def announce_degraded(warnings: Iterable[HealthWarning]) -> None:
+    """Print one stderr line per failed search step."""
+    err = PlainConsole(stderr=True)
+    for warning in warnings:
+        err.print(warning.line, style=theme.WARNING, soft_wrap=True)
 
 
 def _chat_warm_error(role: object) -> str | None:
@@ -115,6 +138,15 @@ def _label_line(label: str, value: object) -> Text:
     return Text.assemble((f"{label}:", theme.LABEL), gap, str(value))
 
 
+def _index_lines(index: IndexStatus) -> Iterator[Text]:
+    """The lines that describe the persisted index: its embedder, and any drift from cfg."""
+    yield _label_line("Index built with", f"{index.embedding_model} ({index.embedding_dim} dims)")
+    if index.engine_mismatch is not None:
+        yield _label_line("Index mismatch", index.engine_mismatch)
+    if index.chunk_drift:
+        yield _label_line("Rebuild advised", rebuild_advice(index.chunk_drift))
+
+
 def render_status_result(status: StatusResult) -> Generator[RenderableType, None, None]:
     """Yield Rich renderables for a :class:`StatusResult`."""
     yield _label_line("Documents", status.config.documents_dir)
@@ -122,14 +154,15 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
     yield _label_line("Chat model", status.config.chat_model)
     yield _label_line("Embeddings", status.config.embedding_model)
     if status.index is not None:
-        yield _label_line(
-            "Index built with",
-            f"{status.index.embedding_model} ({status.index.embedding_dim} dims)",
-        )
+        yield from _index_lines(status.index)
     vision = status.config.vision_model or "(disabled)"
     reranker = status.config.reranker_model or "(disabled)"
     yield _label_line("Vision", vision)
     yield _label_line("Reranker", reranker)
+    for served in status.serving:
+        yield _label_line(
+            f"{served.role.value.capitalize()} engine", f"{served.engine} {served.version}"
+        )
     yield _label_line(SCANNED_PAGES_LABEL, status.ocr_note)
     if status.entities is not None:
         names = ", ".join(status.entities.types) or "schema pending (induced on next sync)"
@@ -150,6 +183,8 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
             f" held out{more}; 'lilbee sync --retry-skipped' retries failed files",
         )
         yield ""
+
+    yield from _render_partly_read(status)
 
     if not status.document_count:
         yield (
@@ -194,6 +229,25 @@ def print_source_listing() -> None:
         print(json.dumps(head) if cfg.json_mode else strip_control_characters(head["filename"]))
 
 
+def _render_partly_read(status: StatusResult) -> Generator[RenderableType, None, None]:
+    """Yield the table of indexed sources with pages whose OCR failed, when there are any."""
+    if not status.partly_read:
+        return
+    table = Table(title=PARTLY_READ_TITLE)
+    table.add_column(PARTLY_READ_FILE_COLUMN, style=theme.ACCENT)
+    table.add_column(PARTLY_READ_PAGES_COLUMN, style=theme.MUTED)
+    for source in status.partly_read:
+        table.add_row(
+            Text(strip_control_characters(source.name)),
+            Text("\n".join(failed_page_lines(source.pages))),
+        )
+    yield table
+    shown = len(status.partly_read)
+    more = f" ({shown} of {status.partial_total} shown)" if status.partial_total > shown else ""
+    yield styled((str(status.partial_total), theme.LABEL), PARTLY_READ_RETRY_HINT.format(more=more))
+    yield ""
+
+
 def render_status(con: PlainConsole) -> None:
     """Print status info (documents, paths, chunk counts)."""
     from lilbee.app.status import gather_status
@@ -215,6 +269,8 @@ NOW_INCLUDES = "{parent} now includes {children}"
 """Said of a new source that took in the registered sources inside it."""
 SEARCHING_FOR = "Searching for: {query}"
 """The stderr line ``ask`` prints when retrieval ran on a rewritten follow-up."""
+PARTLY_READ_RETRY_HINT = " partly read{more}; 'lilbee sync --retry-skipped' reads them again"
+"""Follows the count under the partly read table of ``status``."""
 
 
 def print_prefixed(con: PlainConsole, prefix: str, detail: object, *, style: str) -> None:
@@ -276,7 +332,7 @@ def add_paths(
     and this function returns immediately after registering. *run_sync*
     overrides the foreground sync call and receives the registration result
     (the CLI passes a Ctrl+C-cancellable runner); it defaults to a plain
-    ``asyncio.run(sync(started_by="lilbee add"))``. The sync runs when a path reached the corpus, or
+    ``run_main(sync(started_by="lilbee add"))``. The sync runs when a path reached the corpus, or
     when *sync_anyway* says the caller has other new content to index.
     """
     registration = register_paths(paths, con, force=force)
@@ -302,7 +358,7 @@ def _run_foreground_sync() -> object:
     """Run a blocking sync with no cancellation hook (default for non-CLI callers)."""
     from lilbee.data.ingest import sync
 
-    return asyncio.run(sync(started_by="lilbee add"))
+    return run_main(sync(started_by="lilbee add"))
 
 
 def sync_result_to_json(result: object) -> dict:

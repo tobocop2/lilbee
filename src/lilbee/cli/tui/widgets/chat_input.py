@@ -6,13 +6,13 @@ newline, paste preserves newlines so multi-line content (logs, code,
 message on Enter so the screen handler can stay shaped like the previous
 ``Input.Submitted`` flow.
 
-The completion overlay listens to :class:`textual.widgets.TextArea.Changed`
-events from this widget; no additional event plumbing is required here.
+The completion overlay listens to ``ChatInput.Changed``, a
+:class:`textual.widgets.TextArea.Changed` that also holds the text of its edit.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar
 
 from textual import events, on
@@ -42,6 +42,20 @@ class ChatInput(TextArea):
     # Pin the visual height to a single row while the content fits one row;
     # flip to auto-grow once it wraps or holds a newline. The CSS hook is the
     # ``-multiline`` class added by :meth:`_track_multiline`.
+
+    @dataclass
+    class Changed(TextArea.Changed):
+        """TextArea's ``Changed``, holding the text of the edit that posted it.
+
+        A handler runs after later edits may have landed, so the widget's text can
+        already belong to a newer edit; ``text`` is the text this edit made.
+        """
+
+        text: str = field(init=False)
+
+        def __post_init__(self) -> None:
+            super().__post_init__()
+            self.text = self.text_area.text
 
     @dataclass
     class Submitted(Message):

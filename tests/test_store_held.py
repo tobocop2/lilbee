@@ -125,6 +125,49 @@ class TestHoldFailed:
         assert _listed(store) == ["a.md"]
 
 
+class TestRetryRecords:
+    """A retry is recorded like a failure: its row keeps the document it holds."""
+
+    _RETRY = HeldRecord(HeldOut.RETRY, "new", "the engine is down")
+
+    def test_a_retry_with_no_document_is_recorded_and_not_listed(self, store):
+        store.hold_failed({"scan.pdf": self._RETRY})
+        assert store.held_records() == {"scan.pdf": self._RETRY}
+        assert _listed(store) == []
+
+    def test_a_retried_edit_keeps_the_indexed_document_listed(self, store):
+        _index(store, "a.md", file_hash="old")
+        store.hold_failed({"a.md": self._RETRY})
+        assert store.held_records() == {"a.md": self._RETRY}
+        assert _listed(store) == ["a.md"]
+        assert [source["file_hash"] for source in store.get_sources()] == ["old"]
+
+    def test_a_retried_edit_moves_with_its_folder(self, store):
+        _index(store, "a/doc.md", file_hash="old")
+        store.hold_failed({"a/doc.md": self._RETRY})
+        step = store.relocate_sources([SourceMove(("a/doc.md",), "c/doc.md", None)])
+        assert step.taken == {"c/doc.md": "a/doc.md"}
+        assert store.held_records() == {"c/doc.md": self._RETRY}
+
+    def test_release_failed_leaves_a_retry(self, store):
+        store.hold_failed({"a.pdf": _failed("h1"), "b.pdf": self._RETRY})
+        assert store.release_failed() == ["a.pdf"]
+        assert store.held_records() == {"b.pdf": self._RETRY}
+
+    def test_release_retries_keeps_only_the_named_retries(self, store):
+        _index(store, "edit.md", file_hash="old")
+        records = {"keep.pdf": self._RETRY, "gone.pdf": self._RETRY, "edit.md": self._RETRY}
+        store.hold_failed({**records, "bad.pdf": _failed("h1")})
+        assert store.release_retries(["keep.pdf"]) == ["edit.md", "gone.pdf"]
+        assert store.held_records() == {"keep.pdf": self._RETRY, "bad.pdf": _failed("h1")}
+        assert _listed(store) == ["edit.md"]
+
+    def test_release_retries_touches_only_the_paths_a_slice_owns(self, store):
+        store.hold_failed({"a.pdf": self._RETRY, "b.pdf": self._RETRY})
+        assert store.release_retries([], owns=lambda path: path == "a.pdf") == ["a.pdf"]
+        assert store.held_records() == {"b.pdf": self._RETRY}
+
+
 class TestRemoveWithRecords:
     def test_a_removal_drops_the_chunks_and_holds_the_path(self, store):
         _index(store, "a.md", "b.md")
@@ -279,8 +322,10 @@ class TestImportOfTheOlderFiles:
 
         db = lancedb.connect(str(held_config.lancedb_dir))
         schema = _sources_schema()
-        older = schema.remove(schema.get_field_index("held_reason")).remove(
-            schema.get_field_index("held_hash")
+        older = (
+            schema.remove(schema.get_field_index("held_inputs"))
+            .remove(schema.get_field_index("held_reason"))
+            .remove(schema.get_field_index("held_hash"))
         )
         ensure_table(db, SOURCES_TABLE, older)
         assert _held_unmigrated(db, tmp_path)
@@ -288,6 +333,30 @@ class TestImportOfTheOlderFiles:
         store.hold_failed({"a.pdf": _failed("h")})
         assert store.held_records() == {"a.pdf": _failed("h")}
         assert not _held_unmigrated(store.get_db(), tmp_path)
+
+    def test_an_index_with_only_the_inputs_column_missing_gains_it(self, held_config, tmp_path):
+        import lancedb
+
+        db = lancedb.connect(str(held_config.lancedb_dir))
+        schema = _sources_schema()
+        ensure_table(db, SOURCES_TABLE, schema.remove(schema.get_field_index("held_inputs")))
+        assert _held_unmigrated(db, tmp_path)
+        store = Store(held_config)
+        store.hold_failed({"a.pdf": HeldRecord(HeldOut.FAILED, "h", _REASON, "chunk_size=64")})
+        assert store.held_records()["a.pdf"].inputs == "chunk_size=64"
+        assert not _held_unmigrated(store.get_db(), tmp_path)
+
+    def test_a_hold_keeps_the_settings_it_was_written_under(self, held_config):
+        store = Store(held_config)
+        store.hold_failed(
+            {
+                "a.pdf": HeldRecord(HeldOut.FAILED, "h1", _REASON, "chunk_size=64"),
+                "b.pdf": _failed("h2"),
+            }
+        )
+        records = store.held_records()
+        assert records["a.pdf"].inputs == "chunk_size=64"
+        assert records["b.pdf"].inputs == ""
 
     def test_a_new_library_has_nothing_to_import(self, held_config, tmp_path):
         import lancedb

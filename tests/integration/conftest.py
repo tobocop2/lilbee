@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,8 @@ from huggingface_hub import constants as hf_constants
 from lilbee.catalog import CatalogModel
 from lilbee.core.config import cfg
 from lilbee.core.system import canonical_models_dir
+from lilbee.providers.fleet.engines import LLAMA
+from tests.integration._engine_logs import STALL_SHARE, emit, failure_section, log_roots
 
 _DEFAULT_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _DEFAULT_CHAT_FILE = "Qwen3-0.6B-Q8_0.gguf"
@@ -82,6 +85,58 @@ def pytest_collection_modifyitems(items):
             item.add_marker(pytest.mark.timeout(_INTEGRATION_TIMEOUT_SECONDS))
 
 
+_BASETEMP_KEY = pytest.StashKey[Path]()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _remember_basetemp(request, tmp_path_factory):
+    """Record the pytest temp root: fixtures that start an engine log under it."""
+    request.config.stash[_BASETEMP_KEY] = tmp_path_factory.getbasetemp()
+    yield
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Print the engine log tails the moment a test fails, so a timeout shows its engine.
+
+    pytest-timeout fails the test body, so a timeout reaches this hook as an
+    ordinary failed report. The tails go to stderr at once: report sections
+    print only at the end of the session, which a job that GitHub cancels never reaches.
+    """
+    outcome = yield
+    if outcome.get_result().failed:
+        emit(failure_section(log_roots(item.config.stash.get(_BASETEMP_KEY, None))))
+
+
+def _timeout_seconds(item) -> float:
+    marker = item.get_closest_marker("timeout")
+    raw = marker.args[0] if marker and marker.args else None
+    return float(raw or 0)
+
+
+@pytest.fixture(autouse=True)
+def _print_engine_logs_when_stalled(request):
+    """Print the engine log tails while a test is still running, 75% into its timeout.
+
+    A test that wedges in a native call may never reach the timeout, so the
+    failure hook never runs. This timer prints while the test is stuck.
+    """
+    seconds = _timeout_seconds(request.node) * STALL_SHARE
+    basetemp = request.config.stash.get(_BASETEMP_KEY, None)
+    capman = request.config.pluginmanager.getplugin("capturemanager")
+
+    def print_tails() -> None:
+        # Capture would hold the text until the test ends; suspend it so it reaches the log now.
+        with capman.global_and_fixture_disabled():
+            emit(failure_section(log_roots(basetemp)))
+
+    timer = threading.Timer(seconds, print_tails)
+    timer.daemon = True
+    timer.start()
+    yield
+    timer.cancel()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _hub_online():
     """Switch the hub back on: the suite module sets it offline for unit runs.
@@ -149,7 +204,7 @@ def run_async(_integration_loop):
 
 
 @pytest.fixture(scope="session")
-def rag_pipeline(tmp_path_factory, _integration_loop):
+def rag_pipeline(tmp_path_factory, _integration_loop, code_parsers_ready):
     """Set up a real RAG pipeline with downloaded models and test documents.
     Session-scoped: downloads models once, creates documents, runs sync,
     yields pipeline data, then restores config.
@@ -189,11 +244,11 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     reset_provider()
 
     embed_entry = EMBED_ENTRY
-    download_model(embed_entry)
+    download_model(embed_entry, engine=LLAMA)
     cfg.embedding_model = _resolve_installed_ref(embed_entry.hf_repo)
 
     chat_entry = CHAT_ENTRY
-    download_model(chat_entry)
+    download_model(chat_entry, engine=LLAMA)
     cfg.chat_model = _resolve_installed_ref(_CI_CHAT_REPO)
 
     result = _integration_loop.run_until_complete(sync(quiet=True))
@@ -255,11 +310,11 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     reset_provider()
 
     embed_entry = EMBED_ENTRY
-    download_model(embed_entry)
+    download_model(embed_entry, engine=LLAMA)
     cfg.embedding_model = _resolve_installed_ref(embed_entry.hf_repo)
 
     chat_entry = CHAT_ENTRY
-    download_model(chat_entry)
+    download_model(chat_entry, engine=LLAMA)
     cfg.chat_model = _resolve_installed_ref(_CI_CHAT_REPO)
 
     result = _integration_loop.run_until_complete(sync(quiet=True))

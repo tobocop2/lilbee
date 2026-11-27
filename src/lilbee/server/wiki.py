@@ -42,6 +42,7 @@ from lilbee.server.models import (
     WikiStatusResult,
     WikiWipeResult,
 )
+from lilbee.server.routes.engines import NO_LIBRARY_KEY
 from lilbee.wiki import lint as lint_mod
 from lilbee.wiki import prune as prune_mod
 from lilbee.wiki import wipe as wipe_mod
@@ -61,6 +62,7 @@ from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
     WIKI_DISABLED_ERROR,
     WikiSubdir,
+    count_pages_in,
     total_wiki_pages,
 )
 from lilbee.wiki.stubs import load_stub_index, shown_sources, ungenerated_stubs
@@ -86,7 +88,7 @@ def _find_page(slug: str) -> Path | None:
     return find_page(_wiki_root(), slug)
 
 
-@get("/api/wiki")
+@get("/api/wiki", opt={NO_LIBRARY_KEY: True})
 async def wiki_list_route() -> list[dict[str, Any]]:
     """List all wiki pages across subdirectories.
 
@@ -101,7 +103,7 @@ async def wiki_list_route() -> list[dict[str, Any]]:
     return [p.to_dict() for p in pages]
 
 
-@get("/api/wiki/drafts")
+@get("/api/wiki/drafts", opt={NO_LIBRARY_KEY: True})
 async def wiki_drafts_route() -> list[DraftInfoResponse]:
     """List pending wiki drafts with drift, faithfulness, and pending-marker info."""
     _require_wiki()
@@ -409,6 +411,15 @@ async def wiki_synthesize_route() -> Stream:
     return Stream(handlers.wiki_synthesize_stream(), media_type=SSE_MEDIA_TYPE)
 
 
+def _count_wiki_pages(root: Path) -> tuple[int, int, int]:
+    """Count summary, draft and published pages under the wiki tree."""
+    return (
+        count_pages_in(root, [WikiSubdir.SUMMARIES]),
+        count_pages_in(root, [WikiSubdir.DRAFTS]),
+        total_wiki_pages(root),
+    )
+
+
 @get("/api/wiki/status")
 async def wiki_status_route() -> WikiStatusResult:
     """Wiki layer status: page counts and recent lint counts.
@@ -422,10 +433,7 @@ async def wiki_status_route() -> WikiStatusResult:
         # build; report the disabled state rather than linting it.
         return WikiStatusResult(wiki_enabled=cfg.wiki)
 
-    summaries_dir = root / WikiSubdir.SUMMARIES
-    drafts_dir = root / WikiSubdir.DRAFTS
-    summaries = list(summaries_dir.rglob("*.md")) if summaries_dir.exists() else []
-    drafts = list(drafts_dir.rglob("*.md")) if drafts_dir.exists() else []
+    summaries, drafts, pages = await asyncio.to_thread(_count_wiki_pages, root)
 
     # record_log=False: a status poll is a read, and appending a LINT entry to
     # log.md on every poll is what that flag exists to avoid. The MCP and CLI
@@ -435,9 +443,9 @@ async def wiki_status_route() -> WikiStatusResult:
     )
     return WikiStatusResult(
         wiki_enabled=cfg.wiki,
-        summaries=len(summaries),
-        drafts=len(drafts),
-        pages=total_wiki_pages(root),
+        summaries=summaries,
+        drafts=drafts,
+        pages=pages,
         lint_errors=report.error_count,
         lint_warnings=report.warning_count,
     )

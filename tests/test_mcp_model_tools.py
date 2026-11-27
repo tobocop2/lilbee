@@ -26,6 +26,7 @@ from lilbee.mcp_server import (
     model_show,
 )
 from lilbee.modelhub.model_manager import ModelNotFoundError
+from lilbee.server.route_names import name_tools
 
 
 class TestMcpList:
@@ -114,6 +115,38 @@ class TestMcpPull:
         ctx = MagicMock()
         ctx.report_progress = AsyncMock()
         return ctx
+
+    @pytest.mark.asyncio
+    async def test_bare_safetensors_repo_error_names_the_ref_and_the_route(self, monkeypatch):
+        """The tool returns the refusal text that names the ref and the pull route."""
+        from types import SimpleNamespace
+
+        from huggingface_hub import HfApi
+        from huggingface_hub.hf_api import RepoSibling
+
+        from lilbee.catalog import build_adhoc_entry, resolve_filename
+        from lilbee.providers.fleet.engines import LLAMA
+
+        monkeypatch.setattr(
+            HfApi,
+            "model_info",
+            lambda self, repo_id, **_kw: SimpleNamespace(
+                siblings=[RepoSibling(rfilename="model.safetensors")], tags=["safetensors"]
+            ),
+        )
+
+        def fake_pull(model, source, *, on_update, allow_unsupported=False, cancel=None):
+            resolve_filename(build_adhoc_entry(model), LLAMA)
+
+        with patch("lilbee.app.models.pull_model_data", side_effect=fake_pull):
+            result = await model_pull("org/embedder", source="native", ctx=None)
+        refusal = (
+            "No GGUF model weights found in org/embedder. It holds safetensors weights: "
+            "pull them with 'lilbee model pull org/embedder#safetensors' "
+            "(or POST /api/models/pull)."
+        )
+        assert result == {"error": name_tools(refusal)}
+        assert "the model_pull tool" in result["error"]
 
     @pytest.mark.asyncio
     async def test_streams_progress_and_returns_final_dict(self):

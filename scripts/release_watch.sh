@@ -50,6 +50,10 @@ verify-release.yml|Verify release|no'
 state_dir="$(mktemp -d "${TMPDIR:-/tmp}/release-watch.XXXXXX")"
 trap 'rm -rf "${state_dir}"' EXIT
 
+# Set when the candidate's dropped cells could not be established. The legs may
+# all be green while a build cell is missing, so the report cannot claim success.
+candidate_unread=0
+
 note() { echo "$*"; }
 now() { date +%s; }
 
@@ -70,6 +74,7 @@ defer_to_selfheal() {
   rc=$(gh api "repos/${REPO}/actions/runs/${RC_RUN_ID}" \
          -q '"\(.run_attempt) \(.conclusion)"') || {
     note "could not read candidate ${RC_RUN_ID}; watching the legs rather than assuming a heal"
+    candidate_unread=1
     return 1
   }
   rc_attempt="${rc%% *}"
@@ -78,11 +83,30 @@ defer_to_selfheal() {
   rc_cells=$(RUN_ID="${RC_RUN_ID}" REPO="${REPO}" \
                bash "$(dirname "$0")/release_dropped_cells.sh") || {
     note "could not read candidate ${RC_RUN_ID} jobs; watching the legs"
+    candidate_unread=1
     return 1
   }
   rc_failed=$(printf '%s' "${rc_cells}" | grep -c .)
 
   if [ "${rc_conclusion}" = "success" ] && [ "${rc_failed:-0}" -eq 0 ]; then
+    return 1
+  fi
+  # Self-heal refuses a run whose tag moved (scripts/release_selfheal.sh), so
+  # deferring to it would leave the run with no owner. Same test, same inputs.
+  local built built_ref built_sha tag_sha
+  built=$(gh api "repos/${REPO}/actions/runs/${RC_RUN_ID}" -q '.head_branch + " " + .head_sha') || {
+    note "could not read candidate ${RC_RUN_ID} commit; watching the legs"
+    candidate_unread=1
+    return 1
+  }
+  read -r built_ref built_sha <<< "${built}"
+  tag_sha=$(gh api "repos/${REPO}/commits/${built_ref}" -q .sha) || {
+    note "cannot tell which commit ${built_ref} points at; candidate ${RC_RUN_ID} is not handed to release-selfheal"
+    candidate_unread=1
+    return 1
+  }
+  if [ "${tag_sha}" != "${built_sha}" ]; then
+    note "candidate ${RC_RUN_ID} is stale: it built ${built_sha}, but ${built_ref} points at ${tag_sha} now. Skipping it; release-selfheal refuses a superseded run. Nothing is rerun or deleted for it."
     return 1
   fi
   if [ "${rc_attempt:-1}" -lt "${MAX_ATTEMPTS}" ]; then
@@ -236,12 +260,17 @@ report() {  # -> 0 when everything shipped
     echo "| (release) | red | ${TAG} is not promoted (isPrerelease=${prerelease}) |" >> "${SUMMARY}"
   fi
 
+  if [ "${candidate_unread}" -eq 1 ]; then
+    failed=1
+    echo "| (candidate) | unknown | ${RC_RUN_ID} could not be read, so its dropped cells are unknown |" >> "${SUMMARY}"
+  fi
+
   echo >> "${SUMMARY}"
   if [ "${failed}" -eq 0 ]; then
     echo "Every channel published and ${TAG} is latest. Nothing was left for a person." >> "${SUMMARY}"
     return 0
   fi
-  echo "A leg above did not reach green. Each failing leg was retried once; read its logs before rerunning, because a second failure is a defect until proven otherwise." >> "${SUMMARY}"
+  echo "A row above did not reach green. An unknown candidate means a build cell may be missing. Each failing leg was retried once; read its logs before rerunning, because a second failure is a defect until proven otherwise." >> "${SUMMARY}"
   return 1
 }
 

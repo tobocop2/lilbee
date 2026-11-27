@@ -298,9 +298,9 @@ class TestChatSyncCallback:
 
 
 class TestRunSyncBackground:
-    @patch("lilbee.cli.sync.asyncio.run", side_effect=lambda coro: coro.close())
+    @patch("lilbee.cli.sync.run_main", side_effect=lambda coro: coro.close())
     @patch("lilbee.cli.sync.sync", new_callable=AsyncMock)
-    def test_non_chat_mode(self, mock_sync, mock_asyncio_run, monkeypatch):
+    def test_non_chat_mode(self, mock_sync, mock_run_main, monkeypatch):
         mock_executor = MagicMock(spec=ThreadPoolExecutor)
         mock_future = MagicMock(spec=Future)
         mock_executor.submit.return_value = mock_future
@@ -313,9 +313,9 @@ class TestRunSyncBackground:
         mock_executor.submit.assert_called_once()
         mock_future.add_done_callback.assert_called_once()
 
-    @patch("lilbee.cli.sync.asyncio.run", side_effect=lambda coro: coro.close())
+    @patch("lilbee.cli.sync.run_main", side_effect=lambda coro: coro.close())
     @patch("lilbee.cli.sync.sync", new_callable=AsyncMock)
-    def test_chat_mode_increments_pending(self, mock_sync, mock_asyncio_run, monkeypatch):
+    def test_chat_mode_increments_pending(self, mock_sync, mock_run_main, monkeypatch):
         mock_executor = MagicMock(spec=ThreadPoolExecutor)
         mock_future = MagicMock(spec=Future)
         mock_executor.submit.return_value = mock_future
@@ -327,9 +327,9 @@ class TestRunSyncBackground:
 
         assert status.pending == 1
 
-    @patch("lilbee.cli.sync.asyncio.run", side_effect=lambda coro: coro.close())
+    @patch("lilbee.cli.sync.run_main", side_effect=lambda coro: coro.close())
     @patch("lilbee.cli.sync.sync", new_callable=AsyncMock)
-    def test_submitted_callable_runs_sync(self, mock_sync, mock_asyncio_run, monkeypatch):
+    def test_submitted_callable_runs_sync(self, mock_sync, mock_run_main, monkeypatch):
         mock_executor = MagicMock(spec=ThreadPoolExecutor)
         mock_future = MagicMock(spec=Future)
         mock_executor.submit.return_value = mock_future
@@ -341,16 +341,16 @@ class TestRunSyncBackground:
         submitted_fn = mock_executor.submit.call_args[0][0]
         submitted_fn()
 
-        mock_asyncio_run.assert_called_once()
+        mock_run_main.assert_called_once()
         # Verify sync was called with correct kwargs (on_progress is the callback)
         mock_sync.assert_called_once()
         call_kwargs = mock_sync.call_args[1]
         assert call_kwargs["quiet"] is True
         assert callable(call_kwargs["on_progress"])
 
-    @patch("lilbee.cli.sync.asyncio.run", side_effect=lambda coro: coro.close())
+    @patch("lilbee.cli.sync.run_main", side_effect=lambda coro: coro.close())
     @patch("lilbee.cli.sync.sync", new_callable=AsyncMock)
-    def test_chat_mode_decrements_pending_on_run(self, mock_sync, mock_asyncio_run, monkeypatch):
+    def test_chat_mode_decrements_pending_on_run(self, mock_sync, mock_run_main, monkeypatch):
         mock_executor = MagicMock(spec=ThreadPoolExecutor)
         mock_future = MagicMock(spec=Future)
         mock_executor.submit.return_value = mock_future
@@ -365,9 +365,9 @@ class TestRunSyncBackground:
         submitted_fn()
         assert status.pending == 0
 
-    @patch("lilbee.cli.sync.asyncio.run", side_effect=lambda coro: coro.close())
+    @patch("lilbee.cli.sync.run_main", side_effect=lambda coro: coro.close())
     @patch("lilbee.cli.sync.sync", new_callable=AsyncMock)
-    def test_non_chat_mode_no_pending_change(self, mock_sync, mock_asyncio_run, monkeypatch):
+    def test_non_chat_mode_no_pending_change(self, mock_sync, mock_run_main, monkeypatch):
         mock_executor = MagicMock(spec=ThreadPoolExecutor)
         mock_future = MagicMock(spec=Future)
         mock_executor.submit.return_value = mock_future
@@ -383,9 +383,9 @@ class TestRunSyncBackground:
         submitted_fn()
         assert status.pending == 0
 
-    @patch("lilbee.cli.sync.asyncio.run", side_effect=lambda coro: coro.close())
+    @patch("lilbee.cli.sync.run_main", side_effect=lambda coro: coro.close())
     @patch("lilbee.cli.sync.sync", new_callable=AsyncMock)
-    def test_default_sync_status_created(self, mock_sync, mock_asyncio_run, monkeypatch):
+    def test_default_sync_status_created(self, mock_sync, mock_run_main, monkeypatch):
         mock_executor = MagicMock(spec=ThreadPoolExecutor)
         mock_future = MagicMock(spec=Future)
         mock_executor.submit.return_value = mock_future
@@ -396,9 +396,9 @@ class TestRunSyncBackground:
 
         assert result is mock_future
 
-    @patch("lilbee.cli.sync.asyncio.run", side_effect=lambda coro: coro.close())
+    @patch("lilbee.cli.sync.run_main", side_effect=lambda coro: coro.close())
     @patch("lilbee.cli.sync.sync", new_callable=AsyncMock)
-    def test_done_callback_wired(self, mock_sync, mock_asyncio_run, monkeypatch):
+    def test_done_callback_wired(self, mock_sync, mock_run_main, monkeypatch):
         mock_executor = MagicMock(spec=ThreadPoolExecutor)
         mock_future = MagicMock(spec=Future)
         mock_executor.submit.return_value = mock_future
@@ -414,3 +414,18 @@ class TestRunSyncBackground:
         with patch.object(sync_mod, "_on_sync_done") as mock_osd:
             done_cb(mock_future)
             mock_osd.assert_called_once_with(con, mock_future, chat_mode=True)
+
+
+def test_format_sync_summary_names_partly_read_files() -> None:
+    summary = sync_mod._format_sync_summary(2, 0, 0, 1, partial=1)
+    assert summary == "2 added, 1 partly read, 1 failed"
+
+
+def test_sync_done_printers_show_the_partly_read_count(capsys) -> None:
+    done = SyncDoneEvent(added=1, updated=0, removed=0, failed=0, partial=1)
+    printed = MagicMock()
+    sync_mod._print_done(printed, done)
+    assert printed.print.call_args.args[0] == "Synced: 1 added, 1 partly read"
+
+    sync_mod._chat_sync_callback(sync_mod.SyncStatus())(EventType.SYNC_DONE, done)
+    assert "1 added, 1 partly read" in capsys.readouterr().out

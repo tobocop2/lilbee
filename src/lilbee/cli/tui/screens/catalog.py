@@ -5,7 +5,8 @@ from __future__ import annotations
 import contextlib
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import partial
 from typing import ClassVar, NamedTuple
 
 from textual import getters, on, work
@@ -15,9 +16,10 @@ from textual.containers import Container, Horizontal, VerticalScroll
 from textual.css.query import NoMatches
 from textual.events import Click, Key, MouseScrollDown
 from textual.message import Message
+from textual.notifications import SeverityLevel
 from textual.screen import Screen
 from textual.timer import Timer
-from textual.widget import AwaitMount
+from textual.widget import Widget
 from textual.widgets import Footer, Input, Static, TabbedContent, TabPane
 from textual.worker import Worker, WorkerState
 
@@ -29,13 +31,23 @@ from lilbee.catalog import (
     disk_shortfall,
     get_catalog,
     get_families,
-    resolve_filename,
 )
-from lilbee.catalog.download import _BYTES_PER_GB, download_bytes
-from lilbee.catalog.models import estimate_min_ram_gb
-from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
+from lilbee.catalog.download import (
+    _BYTES_PER_GB,
+    ListingFailedError,
+    ListingOfflineError,
+    plan_pull,
+    preflight,
+)
+from lilbee.catalog.hf_client import hf_token
+from lilbee.catalog.models import CatalogResult, estimate_min_ram_gb
+from lilbee.catalog.refs import canonical_ref, is_gguf_filename
+from lilbee.catalog.runnable import hidden_summary
+from lilbee.catalog.types import ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
+from lilbee.cli.tui.engine_install_flow import install_then
+from lilbee.cli.tui.format_rows import FormatRow, format_rows
 from lilbee.cli.tui.screens.catalog_grouping import (
     GridSection,
     flatten_sections,
@@ -76,6 +88,7 @@ from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.catalog_detail import CatalogDetailDrawer
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.cli.tui.widgets.discover_rails import DiscoverRails
+from lilbee.cli.tui.widgets.format_picker import FormatPicker
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -122,12 +135,39 @@ def _model_field_for_task(task: ModelTask | str) -> str:
     return _TASK_TO_MODEL_FIELD.get(ModelTask(task), "chat_model")
 
 
+def _pull_refusal(model: CatalogModel) -> tuple[str, SeverityLevel] | None:
+    """Why the pull of *model* should not be enqueued, or None when it should.
+
+    Charges the pull plan the download itself runs. It asks the Hub, so it
+    runs on a worker thread, never the UI thread.
+    """
+    try:
+        engine = None
+        if model.format is ModelFormat.GGUF:
+            engine = get_services().engines.for_ref(model.pull_ref)
+        plan = plan_pull(model, cfg.models_dir, engine, hf_token())
+        if plan.files and not plan.missing:
+            return msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name), "information"
+        shortfall = preflight(plan, cfg.models_dir)
+    except (ListingOfflineError, ListingFailedError):
+        # No listing, no file set: the row's own approximation is the only figure.
+        log.debug("Could not list %s", model.hf_repo, exc_info=True)
+        shortfall = disk_shortfall(
+            cfg.models_dir, model.hf_repo, int(model.size_gb * _BYTES_PER_GB)
+        )
+    except Exception as exc:
+        # The download would fail the same way, so say why and enqueue nothing.
+        return str(exc), "error"
+    return None if shortfall is None else (shortfall, "warning")
+
+
 _WORKER_FETCH_HF = "fetch_hf_models"
 _WORKER_FETCH_MORE_HF = "fetch_more_hf"
 _WORKER_FETCH_REMOTE = "fetch_remote_models"
 _WORKER_FETCH_SEARCH = "fetch_hf_search"
 _WORKER_FETCH_FRONTIER = "fetch_frontier_models"
 _WORKER_FETCH_FAMILIES = "fetch_families"
+_WORKER_CHECK_PULL = "check_pull"
 
 _GRID_PAGE_ROWS = 3
 _LIST_PAGE_ROWS = 10
@@ -170,6 +210,19 @@ class _GridCacheKey(NamedTuple):
     data_version: int
     rows: tuple[tuple[str, bool], ...]
     search: str
+
+
+def _shown_sections(container: Widget) -> tuple[list[ModelGrid], list[Static]]:
+    """The grids and section headings of *container* that are not being removed.
+
+    Textual keeps a removed widget among the children until its removal ends,
+    with display False; a query would still count it.
+    """
+    shown = container.displayed_children
+    # isinstance: the children mix headings, grids and CTA lines
+    grids = [w for w in shown if isinstance(w, ModelGrid)]
+    headings = [w for w in shown if isinstance(w, Static) and w.has_class("section-heading")]
+    return grids, headings
 
 
 class CatalogScreen(Screen[None]):
@@ -327,6 +380,7 @@ class CatalogScreen(Screen[None]):
         self._search_offset: int = 0
         self._search_has_more: bool = False
         self._search_truncated: bool = False
+        self._hidden_texts: dict[str, str] = {}
         self._frontier_rows: list[FrontierCatalogRow] = []
         # Bumped on every worker callback so the _all_*_rows caches
         # invalidate even when collection lengths happen to coincide.
@@ -608,9 +662,7 @@ class CatalogScreen(Screen[None]):
             self.set_focus(self._grid_container.query(GridSelect).first())
 
     def _initial_focus_first_grid(self) -> None:
-        """on_mount initial focus: skip if a later refresh-tick has already
-        landed focus elsewhere (e.g. a test focused #catalog-search before
-        the streaming-section mount drained its scheduled callbacks)."""
+        """Focus the first grid on open, unless something already holds focus."""
         if self.focused is not None:
             return
         self._focus_first_grid()
@@ -655,6 +707,15 @@ class CatalogScreen(Screen[None]):
         result set on screen.
         """
         return self._active_listing_flag(self._search_has_more, self._hf_has_more_by_task)
+
+    def _note_hidden(self, result: CatalogResult) -> None:
+        """Remember the rows the listing hid, keyed by repo, with the reason text."""
+        self._hidden_texts.update({h.hf_repo: h.text for h in result.hidden})
+
+    def _hidden_note(self) -> str:
+        """The hidden-row count and reasons, worded as the server lists them; empty when none."""
+        summary = hidden_summary(list(self._hidden_texts.values()))
+        return msg.CATALOG_HIDDEN_NOTE.format(summary=summary) if summary else ""
 
     def _active_task_truncated(self) -> bool:
         """True iff the active task tab's listing stopped at the scan bound with rows unread."""
@@ -875,9 +936,11 @@ class CatalogScreen(Screen[None]):
             featured=False,
             limit=_HF_PAGE_SIZE,
             offset=offset,
+            hf_client=get_services().hf_client,
         )
         self._hf_has_more_by_task[task] = result.has_more
         self._hf_truncated_by_task[task] = result.truncated
+        self._note_hidden(result)
         existing_repos = {m.hf_repo for m in self._hf_models}
         return [m for m in result.models if not m.featured and m.hf_repo not in existing_repos]
 
@@ -899,7 +962,7 @@ class CatalogScreen(Screen[None]):
         catalog on open for as long as HuggingFace took to answer.
         """
         try:
-            return get_families()
+            return get_families(hf_client=get_services().hf_client)
         except Exception:
             log.debug("get_families failed in worker", exc_info=True)
             return []
@@ -948,9 +1011,11 @@ class CatalogScreen(Screen[None]):
             search=query,
             limit=_HF_SEARCH_LIMIT,
             offset=offset,
+            hf_client=get_services().hf_client,
         )
         self._search_has_more = result.has_more
         self._search_truncated = result.truncated
+        self._note_hidden(result)
         return [m for m in result.models if not m.featured and m.hf_repo not in existing_repos]
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
@@ -1400,10 +1465,7 @@ class CatalogScreen(Screen[None]):
         Returns True iff the in-place path applied; the caller falls
         through to a teardown + remount on False.
         """
-        existing_grids = list(self._grid_container.query(ModelGrid))
-        existing_headings = [
-            w for w in self._grid_container.query(".section-heading") if isinstance(w, Static)
-        ]
+        existing_grids, existing_headings = _shown_sections(self._grid_container)
         if not existing_grids or len(existing_grids) != len(sections):
             return False
         # Heading + grid mounts each compose on their own frame, so a
@@ -1420,30 +1482,27 @@ class CatalogScreen(Screen[None]):
         return True
 
     def _remount_grid_sections(self, sections: list[GridSection], hf_count: int) -> None:
-        """Teardown + remount the grid for a section-count change.
+        """Replace every section in one step, keeping the scroll offset and the focused section.
 
-        Captures the user's current cursor + scroll position before the
-        teardown so both can be restored after remount; otherwise the
-        ``_focus_first_grid`` fallback snaps the cursor back to the top
-        of the catalog mid-keypress, and the layout shift from extra
-        sections drifts the visible window away from where the user was
-        looking.
+        Focus moves to a new grid only when the tab strip shows this pane: the teardown
+        has already reset focus, and a focus inside a hidden pane would switch the tab.
         """
         focus_anchor = self._capture_focused_section()
         container = self._grid_container
         prior_scroll_y = container.scroll_y
         container.remove_children()
-        self._mount_grid_section(sections[0], container)
-        # Pass the container itself; the deferred callback must not re-query
-        # by id because the pane can be unmounted before it runs.
-        self.call_after_refresh(
-            self._mount_remaining_grid_sections,
-            container,
-            sections[1:],
-            hf_count=hf_count,
-            focus_anchor=focus_anchor,
-            prior_scroll_y=prior_scroll_y,
-        )
+        grids = [self._mount_grid_section(section, container) for section in sections]
+        self._mount_grid_ctas(hf_count=hf_count)
+        if prior_scroll_y:
+            # scroll_to applies after the next refresh, once the new sections have a layout.
+            container.scroll_to(y=prior_scroll_y, animate=False)
+        if self._grid_view and not self._search_focused and self._pane_is_shown(container):
+            self._restore_focused_section(grids, focus_anchor)
+
+    def _pane_is_shown(self, container: VerticalScroll) -> bool:
+        """Whether *container* sits in the tab pane the tab strip shows right now."""
+        pane = container.parent
+        return pane is not None and pane.id == self.query_one("#catalog-tabs", TabbedContent).active
 
     def _capture_focused_section(self) -> tuple[str, int | None] | None:
         """Return ``(heading, highlighted_index)`` for the focused grid.
@@ -1458,91 +1517,34 @@ class CatalogScreen(Screen[None]):
             return None
         return (focused.name, focused.highlighted)
 
-    def _restore_focused_section(self, anchor: tuple[str, int | None] | None) -> bool:
-        """Refocus the grid whose ``name`` matches the captured anchor.
+    def _restore_focused_section(
+        self, grids: list[ModelGrid], anchor: tuple[str, int | None] | None
+    ) -> None:
+        """Focus the grid of *grids* named by *anchor* at its cursor, else the first grid."""
+        heading, highlighted = anchor if anchor is not None else (None, None)
+        match = next((grid for grid in grids if grid.name == heading), None)
+        if match is None:
+            self.set_focus(next(iter(grids)))
+            return
+        if highlighted is not None:
+            match.highlighted = min(highlighted, len(match.rows) - 1)
+        self.set_focus(match)
 
-        Returns True when the previous focus position was successfully
-        restored; False when no anchor was given or the matching section
-        no longer exists (caller falls back to ``_focus_first_grid``).
-        """
-        if anchor is None:
-            return False
-        target_heading, target_highlighted = anchor
-        for grid in self._grid_container.query(ModelGrid):
-            if grid.name != target_heading:
-                continue
-            grid.focus()
-            if target_highlighted is not None and grid.rows:
-                grid.highlighted = min(target_highlighted, len(grid.rows) - 1)
-            return True
-        return False
-
-    def _mount_grid_section(self, section: GridSection, container: VerticalScroll) -> AwaitMount:
-        # ``name=section.heading`` doubles as the section identity used by
-        # ``_capture_focused_section`` / ``_restore_focused_section`` to
-        # preserve the cursor across teardown + remount.
-        #
-        # Returns mount_all's awaitable so a caller that needs the widgets to
-        # exist can wait for them. Pilot.pause only waits on the widgets that
-        # were present when it was called, so it never covers these.
+    def _mount_grid_section(self, section: GridSection, container: VerticalScroll) -> ModelGrid:
+        """Mount the heading and grid of *section*; the grid's name is the section identity."""
         grid = ModelGrid(section.rows, name=section.heading, classes="catalog-section")
-        return container.mount_all(
-            [
-                Static(section.heading, classes="section-heading"),
-                grid,
-            ]
-        )
-
-    def _mount_remaining_grid_sections(
-        self,
-        container: VerticalScroll,
-        remaining: list[GridSection],
-        hf_count: int,
-        focus_anchor: tuple[str, int | None] | None = None,
-        prior_scroll_y: float = 0.0,
-    ) -> list[AwaitMount]:
-        # Runs one refresh after _remount_grid_sections; the pane can be
-        # unmounted by then (screen teardown, tab remount). Returns one
-        # awaitable per mounted section (empty when the pane is gone) so a
-        # caller can wait for the sections to exist; the production caller
-        # runs from call_after_refresh and ignores it.
-        if not container.is_running:
-            return []
-        mounts = [self._mount_grid_section(section, container) for section in remaining]
-        self._mount_grid_ctas(hf_count=hf_count)
-        # Restore the prior viewport position; mounting fresh sections shifts
-        # the layout and ``focus()`` below would otherwise overshoot.
-        if prior_scroll_y:
-            container.scroll_to(y=prior_scroll_y, animate=False)
-        # Lock focus onto a grid once mount completes so j / k / PgDn /
-        # PgUp dispatch correctly. Without this, on first paint the focus
-        # race can leave nothing focused and the catalog feels frozen
-        # until the user toggles to list view and back. When the previous
-        # paint had a focused grid, restore the cursor to the same
-        # section + highlighted index instead of jumping to the top.
-        if not self._grid_view or self._focused_grid() is not None:
-            return mounts
-        # ...but "no grid has focus" is not "nothing has focus". This runs from
-        # call_after_refresh, so the user may have pressed `/` since the mount
-        # was scheduled; _focused_grid() is None while the filter Input owns the
-        # cursor, so the check above would let a repaint yank it out of the
-        # field they just opened. Same invariant _initial_focus_first_grid keeps.
-        if self._search_focused:
-            return mounts
-        if self._restore_focused_section(focus_anchor):
-            return mounts
-        self._focus_first_grid()
-        return mounts
+        container.mount_all([Static(section.heading, classes="section-heading"), grid])
+        return grid
 
     def _grid_scroll_hint_text(self, hf_count: int) -> str:
         """Pick the bottom scroll-hint text based on fetch state."""
         if self._loading_more:
             return msg.CATALOG_GRID_LOADING_MORE.format(frame=SPINNER_FRAMES[self._spinner_frame])
         if self._active_task_has_more():
-            return msg.CATALOG_GRID_LOAD_MORE.format(count=hf_count)
+            return msg.CATALOG_GRID_LOAD_MORE.format(count=hf_count) + self._hidden_note()
         if self._active_task_truncated():
-            return msg.CATALOG_GRID_CUT_SHORT.format(count=hf_count)
-        return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count)
+            return msg.CATALOG_GRID_CUT_SHORT.format(count=hf_count) + self._hidden_note()
+        return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count) + self._hidden_note()
 
     def _mount_grid_ctas(self, *, hf_count: int) -> None:
         try:
@@ -1627,7 +1629,14 @@ class CatalogScreen(Screen[None]):
             return
         rows = grid.rows
         row = rows[index] if 0 <= index < len(rows) else None
-        drawer.update_for_row(row)
+        drawer.update_for_row(row, self._installed_ref_of(row))
+
+    def _installed_ref_of(self, row: CatalogRow | None) -> str | None:
+        """The installed file name of an installed local row, or None for any other row."""
+        if not isinstance(row, LocalCatalogRow) or not row.installed:
+            return None
+        ref = self._resolve_delete_ref(row.ref)
+        return ref if ref in self._installed_names else None
 
     def on_key(self, event: Key) -> None:
         """Intercept 1-6 to jump tabs even when a focused widget owns digits.
@@ -1958,6 +1967,7 @@ class CatalogScreen(Screen[None]):
             count = msg.CATALOG_LIST_CUT_SHORT.format(count=n_total)
         else:
             count = msg.CATALOG_LIST_COUNT.format(count=n_total)
+        count += self._hidden_note()
         hint = msg.CATALOG_SEARCHING_HF if self._search_in_flight else msg.CATALOG_VIEW_TOGGLE_LIST
         label.update(f"Sort: {self._sort_column} ({direction})  |  {count}  |  {hint}")
 
@@ -2153,31 +2163,70 @@ class CatalogScreen(Screen[None]):
         self._install_model(entry)
 
     def _install_model(self, model: CatalogModel) -> None:
-        if self.app.task_bar.pending_download(model) is not None:
-            self.notify(msg.CATALOG_ALREADY_DOWNLOADING.format(name=model.display_name))
+        if len(model.formats) > 1:
+            self.run_worker(lambda: self._offer_formats(model), thread=True)
             return
-        # The row's own size is an approximation off the parameter count; one
-        # file is named here, so the check asks HuggingFace what it really costs.
-        needed = int(model.size_gb * _BYTES_PER_GB)
-        try:
-            filename = resolve_filename(model)
-            dest = cfg.models_dir / filename
-            if dest.exists():
-                self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name))
+        self._install_format(model)
+
+    def _offer_formats(self, model: CatalogModel) -> None:
+        """Work out the format rows off the UI thread (a safetensors row reads the Hub)."""
+        rows = format_rows(model, self._available_memory_bytes)
+        call_from_thread(self, self._pick_format, model, rows)
+
+    def _pick_format(self, model: CatalogModel, rows: list[FormatRow]) -> None:
+        """Ask which format to install; a format whose engine is missing installs it first."""
+        by_format = {row.fmt: row for row in rows}
+
+        def _after_pick(chosen: ModelFormat | None) -> None:
+            if chosen is None:
                 return
-            needed = download_bytes(model.hf_repo, filename)
-        except Exception:
-            log.debug("Could not resolve filename", exc_info=True)
+            picked = replace(model, format=chosen)
+            missing = by_format[chosen].missing
+            if missing is None:
+                self._install_format(picked)
+            else:
+                install_then(self.app, missing.name, lambda: self._install_format(picked))
 
-        # After the already-installed check, which needs no space, and before
-        # the enqueue: a task that fails instantly is terminal, so dedupe would
-        # not stop a second row.
-        shortfall = disk_shortfall(cfg.models_dir, model.hf_repo, needed)
-        if shortfall is not None:
-            self.notify(shortfall, severity="warning")
+        self.app.push_screen(FormatPicker(model.display_name, rows), _after_pick)
+
+    def _install_format(self, model: CatalogModel) -> None:
+        if self._is_pending(model):
             return
+        # The pull is the app's task, so the check is an app worker: closing the
+        # catalog during the check must not cancel it or drop its verdict.
+        app = self.app
+        app.run_worker(partial(self._check_pull, app, model), thread=True, name=_WORKER_CHECK_PULL)
 
-        self._enqueue_download(model)
+    def _is_pending(self, model: CatalogModel) -> bool:
+        """Say so and return True when a pull of *model* is queued or running."""
+        if self.app.task_bar.pending_download(model) is None:
+            return False
+        self.notify(msg.CATALOG_ALREADY_DOWNLOADING.format(name=model.display_name))
+        return True
+
+    def _enqueue_unless_pending(self, model: CatalogModel) -> None:
+        """Enqueue *model* unless a check that ended first already queued it.
+
+        A second press while the first check runs starts a second check, so
+        the queue is read again when each check ends.
+        """
+        if not self._is_pending(model):
+            self._enqueue_download(model)
+
+    def _check_pull(self, app: LilbeeApp, model: CatalogModel) -> None:
+        """Run the pull plan off the UI thread, then enqueue *model* or say why not.
+
+        The plan asks the Hub, so the UI thread must not wait on it. The check
+        refuses before the enqueue: a task that fails instantly is terminal, so
+        dedupe would not stop a second row. The verdict goes through *app*,
+        which a closed catalog cannot detach.
+        """
+        refusal = _pull_refusal(model)
+        if refusal is None:
+            call_from_thread(app, self._enqueue_unless_pending, model)
+            return
+        text, severity = refusal
+        call_from_thread(app, self.notify, text, severity=severity)
 
     def _on_chat_ready_changed(self, ready: bool) -> None:
         """Show the first-run welcome only while no chat model resolves."""
@@ -2234,7 +2283,9 @@ class CatalogScreen(Screen[None]):
             if field == "chat_model":
                 self.app.notify(msg.CHAT_READY_TOAST)
 
-        apply_model_pick(self, key=field, ref=model.ref, on_done=_announce, reload_worker=False)
+        apply_model_pick(
+            self, key=field, ref=model.pull_ref, on_done=_announce, reload_worker=False
+        )
 
     def action_go_back(self) -> None:
         # An open filter collapses to hidden (restoring grid/list focus);
@@ -2329,9 +2380,11 @@ class CatalogScreen(Screen[None]):
         Featured / HF browse rows surface a bare hf_repo while the
         registry deletes by ``<hf_repo>/<file>.gguf``. Bare repos
         resolve to the lexicographically-first matching installed
-        manifest; full refs and remote names pass through.
+        manifest; full refs and remote names pass through. A ``#gguf``
+        qualifier reads as the plain ref.
         """
-        if "/" in identity and identity.endswith(".gguf"):
+        identity = canonical_ref(identity)
+        if "/" in identity and is_gguf_filename(identity):
             return identity
         prefix = identity + "/"
         matches = sorted(n for n in self._installed_names if n.startswith(prefix))
@@ -2407,9 +2460,8 @@ class CatalogScreen(Screen[None]):
             return
         clamped = max(0, min(index, count - 1))
         self._list_widget.highlighted = clamped
-        # Same invariant as _mount_remaining_grid_sections: this is reached from
-        # call_after_refresh, so it can run after the user has opened the filter
-        # with `/`, and taking the cursor back would strand them mid-keystroke.
+        # Reached from call_after_refresh, so it can run after the user has opened
+        # the filter with `/`; taking the cursor back would strand them mid-keystroke.
         if self._search_focused:
             return
         self.set_focus(self._list_widget)

@@ -474,12 +474,12 @@ class TestCompletionsToCanonicalRequest:
                 "model": "m",
                 "messages": [{"role": "user", "content": "x"}],
                 "frequency_penalty": 0.3,
-                "response_format": {"type": "json_object"},
+                "logprobs": True,
                 "user": "tobias",
             }
         )
         assert req.frequency_penalty == 0.3
-        assert set(req.model_extra) == {"response_format", "user"}
+        assert set(req.model_extra) == {"logprobs", "user"}
 
     def test_unknown_extra_message_fields_are_ignored(self) -> None:
         # Same tolerance applies to the nested ``CompletionsMessage``.
@@ -1303,6 +1303,16 @@ class TestReasoningModePresentation:
         )
         assert body.choices[0].message.content == "all thought, no answer"
 
+    def test_inline_response_without_thinking_passes_the_answer_through(self) -> None:
+        body = canonical_to_completions_response(
+            self._resp("Just the answer."),
+            response_id=_RESPONSE_ID,
+            mode=ReasoningMode.INLINE,
+        )
+        message = body.choices[0].message
+        assert message.content == "Just the answer."
+        assert message.reasoning_content is None
+
     def test_off_response_still_splits_leaked_thinking(self) -> None:
         # A template that ignores enable_thinking still thinks; presentation
         # falls back to the separate split so content stays clean.
@@ -1352,6 +1362,30 @@ class TestReasoningModePresentation:
         deltas = await self._inline_deltas(["<think>", "partial thought"])
         content = "".join(d.content or "" for d in deltas)
         assert content == "partial thought"
+
+
+class TestResponseFormatRequestField:
+    @staticmethod
+    def _canonical(**extra: Any) -> CanonicalChatRequest:
+        body = {"model": "m", "messages": [{"role": "user", "content": "hi"}], **extra}
+        return completions_to_canonical_request(CompletionsRequest.model_validate(body))
+
+    @pytest.mark.parametrize(
+        "response_format",
+        [
+            {"type": "json_object"},
+            {"type": "json_schema", "json_schema": {"name": "b", "schema": True}},
+            {"type": "bogus"},
+            {"type": "json_schema", "json_schema": {"schema": {"type": "object"}}},
+        ],
+    )
+    def test_the_field_reaches_the_canonical_request_unchanged(
+        self, response_format: dict[str, Any]
+    ) -> None:
+        assert self._canonical(response_format=response_format).response_format == response_format
+
+    def test_a_request_without_the_field_carries_none(self) -> None:
+        assert self._canonical().response_format is None
 
 
 class TestReasoningRequestField:

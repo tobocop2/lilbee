@@ -1,0 +1,81 @@
+"""The request and result types of a memory estimate, shared by the estimators and the engines."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+
+from lilbee.core.config.enums import KvCacheType
+from lilbee.providers.roles import WorkerRole
+
+
+class MemoryKind(StrEnum):
+    """How much an engine's memory figures can be trusted."""
+
+    SIZED = "sized"
+    FIXED_RESERVE = "fixed_reserve"
+
+
+@dataclass(frozen=True)
+class MemoryRequest:
+    """What the memory estimate needs to know about one instance."""
+
+    model_path: Path
+    ctx: int
+    slots: int
+    gpu_layers: int
+    flash_attn: bool
+    kv_cache_type: KvCacheType
+    mmproj_path: Path | None = None
+    tensor_split: tuple[int, ...] = ()
+    batch_size: int | None = None
+    expert_offload: tuple[str, ...] = ()
+    on_cpu: bool = False
+    """True when the weights load into the CPU backend, not onto a card."""
+    cpu_repack: bool = True
+    """True when the engine's CPU backend keeps a repacked copy of the weights it loads."""
+    role: WorkerRole | None = None
+    """The role the instance serves. An engine that charges by task reads it; none means chat."""
+
+
+@dataclass(frozen=True)
+class MemoryEstimate:
+    """One instance's memory footprint under both memory models.
+
+    A tensor-split instance fails on its busiest device, so the planner fits
+    ``peak_footprint`` (the largest device), never the sum.
+    """
+
+    kind: MemoryKind
+    device_bytes: int
+    """Discrete-GPU model: bytes resident in device memory, summed over devices."""
+    host_bytes: int
+    """Discrete-GPU model: bytes held in host memory."""
+    shared_bytes: int
+    """Unified-memory model: the footprint without the mapped weights."""
+    mapped_weights_bytes: int = 0
+    """Unified-memory model: the weight bytes that ``shared_bytes`` leaves out.
+
+    The mapped file, plus the repacked copy of it that a CPU load keeps."""
+    per_device: tuple[int, ...] = ()
+    """Discrete-GPU model: bytes on each device."""
+    per_device_shared: tuple[int, ...] = ()
+    """Unified-memory model: bytes on each device."""
+    size_known: bool = True
+    """False when the figures are a stated reserve because the model's size could not be read."""
+    checkpoint_bytes: int = 0
+    """Host bytes of one context checkpoint of one sequence; 0 for a model that makes none."""
+
+    def footprint(self, *, unified: bool) -> int:
+        """Total bytes to charge against a shared budget for this memory model."""
+        return self.shared_bytes if unified else self.device_bytes
+
+    def resident_footprint(self, *, unified: bool) -> int:
+        """Bytes a shared pool must back: the unified figure plus the mapped weights."""
+        return self.shared_bytes + self.mapped_weights_bytes if unified else self.device_bytes
+
+    def peak_footprint(self, *, unified: bool) -> int:
+        """The busiest single device's bytes, or the total without a per-device breakdown."""
+        per_device = self.per_device_shared if unified else self.per_device
+        return max(per_device) if per_device else self.footprint(unified=unified)

@@ -163,6 +163,42 @@ class TestOneShotSwapUnconfigured:
         assert "''" not in err
 
 
+class TestUnavailableModelNotice:
+    def test_each_notice_names_its_role_the_old_model_the_reason_and_the_new_model(self) -> None:
+        from lilbee.app.settings import use_installed_models_for_this_run
+        from lilbee.modelhub.model_manager import CanonicalRef, ValidationResult
+
+        stale_chat = CanonicalRef(
+            original="gone-chat",
+            effective="installed/chat-GGUF/chat.gguf",
+            status=ValidationResult.NOT_INSTALLED,
+            reason="no file for it",
+        )
+        stale_embed = CanonicalRef(
+            original="gone-embed",
+            effective="installed/embed-GGUF/embed.gguf",
+            status=ValidationResult.NOT_INSTALLED,
+            reason="its folder was removed",
+        )
+        with (
+            mock.patch(
+                "lilbee.modelhub.model_manager.canonicalize_chat_model", return_value=stale_chat
+            ),
+            mock.patch(
+                "lilbee.modelhub.model_manager.canonicalize_embedding_model",
+                return_value=stale_embed,
+            ),
+            mock.patch("lilbee.app.settings.apply_ephemeral_model_swap"),
+        ):
+            notices = use_installed_models_for_this_run(chat_overridden=False)
+        assert notices == [
+            "Chat model 'gone-chat' is unavailable (no file for it); "
+            "using installed 'installed/chat-GGUF/chat.gguf' for this run.",
+            "Embedding model 'gone-embed' is unavailable (its folder was removed); "
+            "using installed 'installed/embed-GGUF/embed.gguf' for this run.",
+        ]
+
+
 class TestSdkProviderUnconfigured:
     def _provider(self):
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider

@@ -13,19 +13,21 @@ a spawn:
   :func:`_watch_via_death_pipe`).
 
 ``processfamily`` covers only prctl+job (needs pywin32, skips macOS), so the
-syscalls stay custom; the executor is the stdlib's.
+syscalls stay custom; the thread and queue are the stdlib's.
 """
 
 from __future__ import annotations
 
 import contextlib
 import ctypes
+import functools
 import logging
 import os
+import queue
 import subprocess
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -92,35 +94,72 @@ def _make_pdeathsig_preexec(parent_pid: int) -> Callable[[], None] | None:
 
 
 class _LifetimeSpawner:
-    """Runs spawns on one process-lifetime thread so PR_SET_PDEATHSIG binds to it.
+    """Runs every spawn on one process-lifetime daemon thread.
 
-    The death signal binds to the forking thread, so a one-worker
-    ``ThreadPoolExecutor`` (reused for every spawn, stopped only at exit or the
-    test-only ``close``) keeps that thread alive for the process.
+    The death signal binds to the thread that forks the child, so a single thread
+    forks them all and serves requests from a queue until the process ends. The
+    thread keeps serving through atexit handlers. A spawn made once interpreter
+    teardown has begun raises ``RuntimeError``. A forked child starts its own thread.
     """
 
     def __init__(self) -> None:
-        self._executor: ThreadPoolExecutor | None = None
+        self._requests: queue.SimpleQueue[
+            tuple[Future[subprocess.Popen[Any]], Callable[[], subprocess.Popen[Any]]] | None
+        ] = queue.SimpleQueue()
+        self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
 
     def spawn(self, *args: Any, **kwargs: Any) -> subprocess.Popen[Any]:
+        if sys.is_finalizing():
+            raise RuntimeError("cannot schedule new futures after interpreter shutdown")
+        done: Future[subprocess.Popen[Any]] = Future()
         with self._lock:
-            if self._executor is None:
-                self._executor = ThreadPoolExecutor(
-                    max_workers=1, thread_name_prefix="fleet-spawner"
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._serve, name="fleet-spawner", daemon=True
                 )
-            executor = self._executor
-        return executor.submit(subprocess.Popen, *args, **kwargs).result()
+                self._thread.start()
+            self._requests.put((done, functools.partial(subprocess.Popen, *args, **kwargs)))
+        return done.result()
+
+    def _serve(self) -> None:
+        while (request := self._requests.get()) is not None:
+            done, start = request
+            try:
+                done.set_result(start())
+            except BaseException as exc:
+                done.set_exception(exc)
+
+    def _reset_in_forked_child(self) -> None:
+        """Drop the parent's worker, which a fork does not copy, so the next spawn starts one."""
+        self._requests = queue.SimpleQueue()
+        self._thread = None
+        self._lock = threading.Lock()
 
     def close(self) -> None:
-        """Stop the spawner thread. Test-only; in production it lives forever."""
+        """Stop the spawner thread after it serves every queued spawn. Test-only."""
         with self._lock:
-            executor, self._executor = self._executor, None
-        if executor is not None:
-            executor.shutdown(wait=True)
+            thread, self._thread = self._thread, None
+            if thread is not None:
+                self._requests.put(None)
+                thread.join()
 
 
 _spawner = _LifetimeSpawner()
+
+
+def _close_death_pipes_in_forked_child() -> None:
+    """Close the parent's death-pipe write ends in a forked child."""
+    held = list(_death_pipe_write_fds.values())
+    _death_pipe_write_fds.clear()
+    for write_fd in held:
+        with contextlib.suppress(OSError):
+            os.close(write_fd)
+
+
+if hasattr(os, "register_at_fork"):  # pragma: no cover - absent on Windows
+    os.register_at_fork(after_in_child=_spawner._reset_in_forked_child)
+    os.register_at_fork(after_in_child=_close_death_pipes_in_forked_child)
 
 
 def _assign_to_kill_on_close_job(pid: int) -> None:  # pragma: no cover - Windows only
@@ -185,8 +224,7 @@ def _watch_via_death_pipe(pid: int) -> None:
     Portable stand-in for prctl/job objects: we hold the pipe's write end until the
     child stops or we die, and the watcher (reading the read end as its stdin)
     signals *pid* at EOF. The write end is O_CLOEXEC, so exec'd children never
-    inherit it; a fork-without-exec child would keep the pipe open past our death,
-    so a bound child's owner must not fork workers (serve is single-process).
+    inherit it, and a forked child closes its copy at the fork.
 
     The read end is passed as the watcher's stdin rather than redirected with
     ``<&N``: dash mis-dups a multi-digit fd there, silently binding the wrong one.

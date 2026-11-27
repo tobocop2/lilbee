@@ -87,10 +87,9 @@ class TestSchemaPersistence:
     def test_emptied_state_table_reads_none(self, store):
         """A state table whose row was deleted reads as never-induced."""
         from lilbee.core.config import ENTITY_SCHEMA_TABLE
-        from lilbee.data.store.types import ENTITY_SCHEMA_DELETE_ALL_PREDICATE
 
         save_schema(EntitySchema(types=[PART]), store, applied=False, source_count=1)
-        store.clear_table(ENTITY_SCHEMA_TABLE, ENTITY_SCHEMA_DELETE_ALL_PREDICATE)
+        store.clear_table(ENTITY_SCHEMA_TABLE, "updated_at IS NOT NULL")
         assert store.entity_schema_state() is None
 
     def test_save_overwrites_the_single_row(self, store):
@@ -377,6 +376,21 @@ class TestExtractEntities:
         )
         assert rows and rows[0]["type"] == "person"
         assert rows[0]["confidence"] == pytest.approx(0.8)
+
+    def test_spacy_labels_outside_the_schema_are_ignored(self):
+        def nlp(text):
+            return SimpleNamespace(
+                ents=[
+                    SimpleNamespace(label_="GPE", text="Oslo"),
+                    SimpleNamespace(label_="PERSON", text="E. Larsen"),
+                ]
+            )
+
+        rows = extract_entities(
+            [_chunk("E. Larsen sailed from Oslo")], EntitySchema(types=[PERSON]), nlp=nlp
+        )
+        assert [r["type"] for r in rows] == ["person"]
+        assert all("oslo" not in r["entity"].lower() for r in rows)
 
     def test_spacy_kind_skipped_without_nlp(self):
         rows = extract_entities(

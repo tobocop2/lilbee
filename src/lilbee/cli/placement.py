@@ -11,6 +11,7 @@ from rich.table import Table
 from rich.text import Text
 
 from lilbee.app.placement import (
+    PLACEMENT_READ_ERRORS,
     PlacementView,
     get_placement,
     preview_placement,
@@ -19,20 +20,18 @@ from lilbee.app.placement import (
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
 from lilbee.cli.helpers import json_output
+from lilbee.cli.tui.messages import backend_line
 from lilbee.core.config import cfg
-from lilbee.providers.base import ProviderError
-from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
-from lilbee.runtime.console import styled
-
-_PLACEMENT_ERRORS = (PlacementError, ProviderError, OSError)
+from lilbee.providers.fleet.groups import swap_summary
+from lilbee.providers.fleet.model_memory import memory_size_text
+from lilbee.providers.fleet.placement_spec import PlacementSpec
+from lilbee.providers.roles import EngineBackend
 
 placement_app = typer.Typer(
     name="placement",
     help="Inspect and override multi-GPU model placement.",
     no_args_is_help=True,
 )
-
-_GIB = 1024**3
 
 
 def _read_spec(spec: str | None) -> PlacementSpec | None:
@@ -48,11 +47,22 @@ def _read_spec(spec: str | None) -> PlacementSpec | None:
     return PlacementSpec.from_json(raw)
 
 
+def _apply_placement_overrides(*, data_dir: Path | None, use_global: bool) -> None:
+    """Apply CLI overrides for a placement command, with the fleet left cold.
+
+    Planning reads the model registry through the services container, which would
+    start a fleet warm-up in this short-lived process. That warm races the command
+    and its exit, and reports a load failure after a placement that was applied.
+    """
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    cfg.worker_pool_eager_start = False
+
+
 def _guard(action: Callable[[], PlacementView]) -> None:
     """Run a placement action and render it, turning known failures into a clean exit."""
     try:
         view = action()
-    except _PLACEMENT_ERRORS as exc:
+    except PLACEMENT_READ_ERRORS as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
@@ -65,6 +75,10 @@ def _guard(action: Callable[[], PlacementView]) -> None:
         json_output(PlacementResponse.from_view(view).model_dump(mode="json"))
     else:
         _render_view(view)
+
+
+def _backend_style(view: PlacementView) -> str:
+    return theme.WARNING if view.engine_backend is EngineBackend.UNKNOWN else theme.MUTED
 
 
 def _render_view(view: PlacementView) -> None:
@@ -82,29 +96,31 @@ def _render_view(view: PlacementView) -> None:
             placed.setdefault(idx, []).append(role_view.role.value)
 
     for g in view.gpus:
-        free_gib = g.free_bytes / _GIB
-        total_gib = g.total_bytes / _GIB
         table.add_row(
             g.label,
             g.name or "(unnamed)",
-            f"{free_gib:.0f} / {total_gib:.0f} GiB",
+            f"{memory_size_text(g.free_bytes)} / {memory_size_text(g.total_bytes)}",
             Text(", ".join(placed.get(g.index, [])) or "-"),
         )
     console.print(table)
+    console.print(Text(f"  {backend_line(view.engine_backend)}"), style=_backend_style(view))
 
     for role_view in view.roles:
         split_info = f" split={list(role_view.tensor_split)}" if role_view.tensor_split else ""
+        charged = role_view.charge_bytes
+        charge = "none" if charged is None else memory_size_text(charged)
         console.print(
             Text(
-                f"  {role_view.role.value}: devices={list(role_view.devices)}"
-                f" replicas={role_view.replicas}{split_info}  {role_view.model}"
+                f"  {role_view.role.value}: target={role_view.target.value}"
+                f" devices={list(role_view.devices)}"
+                f" replicas={role_view.replicas}{split_info}"
+                f" charge={charge}  {role_view.model}"
             ),
             soft_wrap=True,
         )
 
-    if view.co_tenants:
-        names = ", ".join(role.value for role in view.co_tenants)
-        console.print(f"  {names}: share memory, one loaded at a time", style=theme.MUTED)
+    if view.swap_classes:
+        console.print(f"  {swap_summary(view.swap_classes)}", style=theme.MUTED)
 
     for role in view.unplaceable:
         console.print(f"  {role.value}: does not fit, no server", style=theme.ERROR)
@@ -119,17 +135,40 @@ def _render_view(view: PlacementView) -> None:
             soft_wrap=True,
         )
 
-    if view.rejected_spec_json:
+    _render_model_notices(view)
+
+    if view.hidden_note:
+        console.print(Text(f"  {view.hidden_note}"), style=theme.MUTED, soft_wrap=True)
+
+    _render_rejected(view)
+
+
+def _render_model_notices(view: PlacementView) -> None:
+    """Print a line for each role left out for want of an engine, and each of unknown size."""
+    for no_engine in view.skipped_no_engine:
         console.print(
-            styled(
-                "  ",
-                (
-                    "a saved placement does not fit this hardware and is being "
-                    "ignored; run 'lilbee placement clear' or set a new one",
-                    theme.WARNING,
-                ),
-            )
+            Text.assemble(
+                (f"  {no_engine.role.value}: ", theme.WARNING),
+                (no_engine.notice, theme.WARNING),
+            ),
+            soft_wrap=True,
         )
+
+    for unknown in view.size_unknown:
+        console.print(Text(f"  {unknown.notice}", style=theme.WARNING), soft_wrap=True)
+
+    for tight in view.tight:
+        console.print(Text(f"  {tight.notice}", style=theme.WARNING), soft_wrap=True)
+
+
+def _render_rejected(view: PlacementView) -> None:
+    """Print why a saved placement is not in use, when it is not."""
+    if view.refusal:
+        console.print(Text(f"  {view.refusal}", style=theme.ERROR), soft_wrap=True)
+        if view.pins_dropped:
+            console.print(Text(f"  {view.pins_dropped}", style=theme.WARNING), soft_wrap=True)
+        if view.clear_instruction:
+            console.print(Text(f"  {view.clear_instruction}", style=theme.WARNING), soft_wrap=True)
 
 
 @placement_app.command("show")
@@ -138,7 +177,7 @@ def show(
     use_global: bool = global_option,
 ) -> None:
     """Show the current effective placement."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_placement_overrides(data_dir=data_dir, use_global=use_global)
     _guard(get_placement)
 
 
@@ -151,7 +190,7 @@ def preview(
     use_global: bool = global_option,
 ) -> None:
     """Preview what a spec (or auto) would place, without applying it."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_placement_overrides(data_dir=data_dir, use_global=use_global)
     _guard(lambda: preview_placement(_read_spec(spec)))
 
 
@@ -162,7 +201,7 @@ def set_cmd(
     use_global: bool = global_option,
 ) -> None:
     """Validate, persist, and apply a manual placement spec."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_placement_overrides(data_dir=data_dir, use_global=use_global)
     _guard(lambda: set_placement(_read_spec(spec)))
 
 
@@ -172,5 +211,5 @@ def clear(
     use_global: bool = global_option,
 ) -> None:
     """Clear the manual placement and return to automatic placement."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_placement_overrides(data_dir=data_dir, use_global=use_global)
     _guard(lambda: set_placement(None))

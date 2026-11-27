@@ -23,7 +23,7 @@ from tests.test_ingest_fanout import _CANCEL_BOUND_S, FakeContext
 
 @pytest.fixture(autouse=True)
 def restored_environ():
-    """The fan-out gate applies the fleet's GPU env; siblings must not inherit it."""
+    """The fan-out gate sets the GPU env; siblings do not inherit it."""
     snapshot = dict(os.environ)
     yield
     os.environ.clear()
@@ -42,6 +42,8 @@ def services(monkeypatch):
     store.get_sources.return_value = []
     store.has_chunks.return_value = False
     store.index_mismatch.return_value = None
+    store.embedding_mismatch.return_value = None
+    store.canary_mismatch.return_value = None
     set_services(make_mock_services(store=store))
     return store
 
@@ -201,6 +203,34 @@ class TestSyncDispatch:
                 pipeline_mod.sync(quiet=True, cancel=cancel), timeout=_CANCEL_BOUND_S
             )
         assert [worker.terminated for worker in context.processes] == [True, True]
+
+    async def test_a_worker_s_refusal_is_the_sync_s_own_error_with_no_wrapper(
+        self, corpus, monkeypatch, services
+    ):
+        """Every entry point catches the sync refusals, so a fan-out raises the same one."""
+        from lilbee.data.extract.chunk import EmbedWarmError
+
+        context = FakeContext()
+        monkeypatch.setattr(fanout.multiprocessing, "get_context", lambda _kind: context)
+        monkeypatch.setattr(pipeline_mod, "plan_fanout", lambda: fanout.shard_specs(cfg, 2, 1))
+        refusal = EmbedWarmError("nomic-ai/nomic-embed-text-v1.5#safetensors", 8064, 120.0)
+
+        def refusing_shard(spec, options, messages, stop):
+            if spec.shard.index == 0:
+                verdict = fanout.ShardDone(
+                    kind="done", index=0, result=None, error=str(refusal), refusal=refusal
+                )
+                messages.put(verdict)
+            else:
+                # A worker busy in its sync leaves on the TERM, not on the stop event.
+                context.processes[spec.shard.index].wait_terminated()
+
+        monkeypatch.setattr(fanout, "run_shard", refusing_shard)
+        with pytest.raises(EmbedWarmError) as raised:
+            await asyncio.wait_for(pipeline_mod.sync(quiet=True), timeout=_CANCEL_BOUND_S)
+        assert str(raised.value) == str(refusal)
+        assert "worker(s) failed" not in str(raised.value)
+        assert context.processes[1].terminated
 
 
 class TestSyncAcrossWorkers:
@@ -414,3 +444,57 @@ class TestSyncAcrossWorkers:
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(run, timeout=_CANCEL_BOUND_S)
         assert [worker.terminated for worker in context.processes] == [True, True]
+
+
+class TestFanOutPartlyRead:
+    async def test_the_parent_tells_its_workers_to_retry(self, corpus, monkeypatch, services):
+        taken = {}
+
+        async def fake_fanout(specs, store, *, options, **_kw):
+            taken["options"] = options
+            return SyncResult()
+
+        monkeypatch.setattr(pipeline_mod, "plan_fanout", lambda: ["spec"])
+        monkeypatch.setattr(pipeline_mod, "_sync_across_workers", fake_fanout)
+
+        await pipeline_mod.sync(quiet=True, retry_skipped=True)
+        assert taken["options"].retry_skipped is True
+
+        await pipeline_mod.sync(quiet=True)
+        assert taken["options"].retry_skipped is False
+
+    async def test_the_fan_out_sync_done_counts_partly_read_files(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from lilbee.data.store import FailedPage
+        from lilbee.data.types import PartialFile
+
+        worker_result = SyncResult(
+            added=["scan.pdf"],
+            partial=[
+                PartialFile("scan.pdf", [FailedPage(page=3, error="timed out", recovered=False)])
+            ],
+        )
+        verdicts = [fanout.ShardDone(kind="done", index=0, result=worker_result, error=None)]
+
+        async def fake_run_workers(*args, **kwargs):
+            return verdicts
+
+        async def fake_passes(store, **kwargs):
+            return None
+
+        monkeypatch.setattr(pipeline_mod, "run_workers", fake_run_workers)
+        monkeypatch.setattr(pipeline_mod, "_run_post_ingest_passes", fake_passes)
+        events = {}
+
+        result = await pipeline_mod._sync_across_workers(
+            [],
+            store=MagicMock(),
+            options=fanout.ShardOptions(parent_pid=1),
+            quiet=True,
+            on_progress=events.__setitem__,
+            cancel=None,
+        )
+
+        assert [partial.name for partial in result.partial] == ["scan.pdf"]
+        assert events[EventType.SYNC_DONE].partial == 1

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 
 import pytest
 
@@ -53,12 +52,11 @@ async def test_waits_then_succeeds_when_a_slot_frees() -> None:
         await release_chat_slot()
 
     task = asyncio.create_task(_release_after(0.05))
-    start = time.monotonic()
-    await acquire_chat_slot_or_busy(1, timeout=1.0)
-    elapsed = time.monotonic() - start
+    # The release must wake the waiter. A waiter that outlasted its own timeout would
+    # raise ChatBusyError here, so a return is the proof; no stopwatch is read.
+    await acquire_chat_slot_or_busy(1, timeout=5.0)
     await task
     assert chat_gate().in_flight == 1
-    assert 0.04 < elapsed < 0.5
     await release_chat_slot()
 
 
@@ -153,6 +151,24 @@ async def test_wakeup_consumed_by_cancelled_waiter_passes_to_next() -> None:
     with pytest.raises(asyncio.CancelledError):
         await first
     await asyncio.wait_for(second, timeout=1)
+    assert chat_gate().in_flight == 1
+    await release_chat_slot()
+
+
+async def test_a_stray_release_never_drives_the_count_below_zero_on_abandon() -> None:
+    """A woken waiter that bails out after an extra release leaves the count at zero."""
+    await acquire_chat_slot_or_busy(1, timeout=0.5)
+    waiter = asyncio.create_task(acquire_chat_slot_or_busy(1, timeout=5))
+    await asyncio.sleep(0)
+
+    await release_chat_slot()  # hands the slot to the waiter
+    await release_chat_slot()  # stray extra release takes the count to zero
+    waiter.cancel()  # cancelled before it resumes; abandoning must not go negative
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert chat_gate().in_flight == 0
+
+    await acquire_chat_slot_or_busy(1, timeout=0.5)
     assert chat_gate().in_flight == 1
     await release_chat_slot()
 

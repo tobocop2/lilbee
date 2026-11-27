@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
-from xberg import ConcurrencyConfig, ExtractionConfig, ProgressEvent
+from xberg import (
+    ConcurrencyConfig,
+    ExtractedDocument,
+    ExtractionConfig,
+    ProcessingWarning,
+    ProgressEvent,
+)
 
 from lilbee.core.config import cfg
 from lilbee.core.config.context import config_scope
 from lilbee.data.extract import xberg as xberg_extract
+from lilbee.data.store import FailedPage
 
 
 class _FakeResult:
@@ -115,6 +123,55 @@ async def test_aextract_batch_passes_per_file_ocr_override():
     assert captured["configs"][1] is None
 
 
+@pytest.mark.asyncio
+async def test_aextract_batch_gives_xberg_each_inputs_bytes_mime_and_filename():
+    captured = {}
+
+    async def fake_batch(inputs, _config, _on_progress):
+        captured["inputs"] = [(i.bytes, i.mime_type, i.filename) for i in inputs]
+        return _FakeResult([object() for _ in inputs])
+
+    items = [
+        xberg_extract.BatchItem(b"a", "text/plain", "a.txt", None),
+        xberg_extract.BatchItem(b"b", "application/pdf", "b.pdf", None),
+    ]
+    with mock.patch("xberg.progress.extract_batch", fake_batch):
+        await xberg_extract.aextract_batch(items, ExtractionConfig())
+    assert captured["inputs"] == [
+        (b"a", "text/plain", "a.txt"),
+        (b"b", "application/pdf", "b.pdf"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_aextract_batch_refuses_a_result_count_that_differs_from_the_successes():
+    """A document lost between xberg and the caller is an error, not a missing slot."""
+
+    async def fake_batch(_inputs, _config, _on_progress):
+        return _FakeResult([object(), object()])
+
+    with (
+        mock.patch("xberg.progress.extract_batch", fake_batch),
+        pytest.raises(ValueError, match="shorter"),
+    ):
+        await xberg_extract.aextract_batch(_items(3), ExtractionConfig())
+
+
+@pytest.mark.asyncio
+async def test_aextract_document_gives_xberg_the_bytes_mime_and_filename():
+    captured = {}
+
+    async def fake_extract(inp, _config, _on_progress):
+        captured["input"] = (inp.bytes, inp.mime_type, inp.filename)
+        return _FakeResult([object()])
+
+    with mock.patch("xberg.progress.extract", fake_extract):
+        await xberg_extract.aextract_document(
+            b"data", "text/markdown", filename="notes.md", config=ExtractionConfig()
+        )
+    assert captured["input"] == (b"data", "text/markdown", "notes.md")
+
+
 def _page_event(page, input_index=None):
     return ProgressEvent("ocr_page", page, 9, page, "tesseract", input_index)
 
@@ -168,6 +225,7 @@ async def test_aextract_batch_sends_no_progress_callback_when_no_item_has_one():
     assert captured["on_progress"] is None
 
 
+@pytest.mark.usefixtures("tessdata_ready")
 @pytest.mark.asyncio
 async def test_real_xberg_batch_reports_ocr_pages_per_input_under_per_file_ocr_overrides():
     """Real xberg: two PDFs with their own OCR configs each get only their own page events."""
@@ -255,3 +313,40 @@ async def test_extract_document_in_a_running_loop_reads_the_scoped_config():
     with mock.patch("xberg.progress.extract", _capture_extract(captured)), config_scope(scoped):
         xberg_extract.extract_document(b"x", "text/plain", config=ExtractionConfig())
     assert captured["config"].concurrency == ConcurrencyConfig(max_threads=3)
+
+
+def _doc(failures):
+    """A stand-in for xberg's ExtractedDocument carrying only its failed-page list."""
+    return SimpleNamespace(ocr_page_failures=failures)
+
+
+def _failure(page, error, recovered):
+    """A stand-in for one xberg OcrPageFailure record."""
+    return SimpleNamespace(page=page, error=error, recovered=recovered)
+
+
+def test_failed_ocr_pages_copies_each_record_of_the_document_in_order():
+    doc = _doc([_failure(3, "backend timed out", False), _failure(7, "no content", True)])
+    assert xberg_extract.failed_ocr_pages(doc) == (
+        FailedPage(page=3, error="backend timed out", recovered=False),
+        FailedPage(page=7, error="no content", recovered=True),
+    )
+
+
+def test_failed_ocr_pages_is_empty_when_the_document_lists_no_failed_page():
+    assert xberg_extract.failed_ocr_pages(_doc(None)) == ()
+
+
+def test_failed_ocr_pages_is_empty_for_a_real_document_with_only_ocr_warnings():
+    doc = ExtractedDocument(
+        content="x",
+        mime_type="text/plain",
+        processing_warnings=[ProcessingWarning(source="ocr", message="OCR of page 3 failed")],
+    )
+    assert xberg_extract.failed_ocr_pages(doc) == ()
+
+
+def test_failed_ocr_pages_keeps_every_record_of_a_long_list():
+    failures = [_failure(number, "boom", False) for number in range(1, 201)]
+    pages = xberg_extract.failed_ocr_pages(_doc(failures))
+    assert [page.page for page in pages] == list(range(1, 201))

@@ -18,7 +18,11 @@ def _mid(role: WorkerRole, replica: int = 0) -> str:
 
 
 def _launch(
-    role: WorkerRole, argv: list[str], env: dict[str, str] | None = None, replica: int = 0
+    role: WorkerRole,
+    argv: list[str],
+    env: dict[str, str] | None = None,
+    replica: int = 0,
+    swap_class: str = "",
 ) -> InstanceLaunch:
     return InstanceLaunch(
         role=role,
@@ -26,6 +30,7 @@ def _launch(
         argv=argv,
         env_overrides=env or {},
         model=f"{role.value}-model",
+        swap_class=swap_class,
     )
 
 
@@ -34,7 +39,7 @@ _BASE_PORT = 5900
 
 def _config(launches: list[InstanceLaunch]) -> dict:
     ports = {launch.model_id: _BASE_PORT + i for i, launch in enumerate(launches)}
-    return json.loads(build_swap_config(launches, ports))
+    return json.loads(build_swap_config(launches, ports, engine_logs={}))
 
 
 def test_instance_launch_rerank_mode_defaults_none() -> None:
@@ -92,8 +97,8 @@ class TestBuildSwapConfig:
             _mid(WorkerRole.RERANK),
         }
 
-    def test_co_tenant_group_evicts_between_its_members(self) -> None:
-        # swap=True is what makes llama-swap unload chat to load vision, and back.
+    def test_launches_without_a_class_each_evict_the_others(self) -> None:
+        # Exclusive groups make llama-swap unload chat to load vision, and back.
         cfg = json.loads(
             build_swap_config(
                 [
@@ -102,10 +107,43 @@ class TestBuildSwapConfig:
                 ],
                 {_mid(WorkerRole.CHAT): 1, _mid(WorkerRole.VISION): 2},
                 swap=True,
+                engine_logs={},
             )
         )
+        assert {name: group["members"] for name, group in cfg["groups"].items()} == {
+            f"lilbee-{_mid(WorkerRole.CHAT)}": [_mid(WorkerRole.CHAT)],
+            f"lilbee-{_mid(WorkerRole.VISION)}": [_mid(WorkerRole.VISION)],
+        }
+        for group in cfg["groups"].values():
+            assert (group["swap"], group["exclusive"], group["persistent"]) == (False, True, False)
+
+    def test_launches_of_one_class_stay_in_one_group(self) -> None:
+        cfg = json.loads(
+            build_swap_config(
+                [
+                    _launch(WorkerRole.CHAT, ["/bin/llama-server"], swap_class="0"),
+                    _launch(WorkerRole.RERANK, ["/bin/llama-server"], swap_class="0"),
+                    _launch(WorkerRole.VISION, ["/bin/llama-server"], swap_class="1"),
+                ],
+                {_mid(WorkerRole.CHAT): 1, _mid(WorkerRole.RERANK): 2, _mid(WorkerRole.VISION): 3},
+                swap=True,
+                engine_logs={},
+            )
+        )
+        assert {name: group["members"] for name, group in cfg["groups"].items()} == {
+            "lilbee-0": [_mid(WorkerRole.CHAT), _mid(WorkerRole.RERANK)],
+            "lilbee-1": [_mid(WorkerRole.VISION)],
+        }
+        assert all(group["exclusive"] is True for group in cfg["groups"].values())
+
+    def test_a_class_does_not_split_the_group_of_a_process_without_swap(self) -> None:
+        launches = [
+            _launch(WorkerRole.CHAT, ["/bin/llama-server"], swap_class="0"),
+            _launch(WorkerRole.VISION, ["/bin/llama-server"], swap_class="1"),
+        ]
+        ports = {_mid(WorkerRole.CHAT): 1, _mid(WorkerRole.VISION): 2}
+        cfg = json.loads(build_swap_config(launches, ports, engine_logs={}))
         (group,) = cfg["groups"].values()
-        assert group["swap"] is True
         assert set(group["members"]) == {_mid(WorkerRole.CHAT), _mid(WorkerRole.VISION)}
 
     def test_command_carries_explicit_port_and_role_argv(self) -> None:
@@ -159,6 +197,43 @@ class TestBuildSwapConfig:
         cfg = _config([_launch(WorkerRole.CHAT, ["/bin/llama-server"])])
         assert "env" not in cfg["models"][_mid(WorkerRole.CHAT)]
 
+    def test_a_member_with_its_own_log_keeps_its_output_out_of_the_group_log(
+        self, tmp_path
+    ) -> None:
+        launch = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
+        log_path = tmp_path / "engine-chat-0.log"
+        ports = {launch.model_id: _BASE_PORT}
+        cfg = json.loads(
+            build_swap_config([launch], ports, engine_logs={launch.model_id: log_path})
+        )
+        assert cfg["logToStdout"] == "proxy"
+        assert f"LLAMA_LOG_FILE={log_path}" in cfg["models"][launch.model_id]["env"]
+
+    def test_a_member_without_its_own_log_has_its_output_in_the_group_log(self) -> None:
+        cfg = _config([_launch(WorkerRole.EMBED, ["/bin/text-embeddings-router"])])
+        assert cfg["logToStdout"] == "proxy,upstream"
+        assert "env" not in cfg["models"][_mid(WorkerRole.EMBED)]
+
+    def test_one_member_without_its_own_log_copies_the_output_of_the_group(self, tmp_path) -> None:
+        chat = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
+        embed = _launch(WorkerRole.EMBED, ["/bin/text-embeddings-router"])
+        ports = {chat.model_id: _BASE_PORT, embed.model_id: _BASE_PORT + 1}
+        engine_logs = {chat.model_id: tmp_path / "engine-chat-0.log"}
+        cfg = json.loads(build_swap_config([chat, embed], ports, engine_logs=engine_logs))
+        assert cfg["logToStdout"] == "proxy,upstream"
+
+    def test_a_router_that_reads_no_stream_list_gets_the_proxy_stream_alone(self) -> None:
+        launch = _launch(WorkerRole.EMBED, ["/bin/text-embeddings-router"])
+        rendered = build_swap_config(
+            [launch], {launch.model_id: _BASE_PORT}, engine_logs={}, router_reads_streams=False
+        )
+        assert json.loads(rendered)["logToStdout"] == "proxy"
+
+    def test_the_engine_logs_are_required(self) -> None:
+        launch = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
+        with pytest.raises(TypeError, match="engine_logs"):
+            build_swap_config([launch], {launch.model_id: _BASE_PORT})  # type: ignore[call-arg]
+
     def test_member_never_times_out(self) -> None:
         cfg = _config([_launch(WorkerRole.CHAT, ["/bin/llama-server"])])
         assert cfg["models"][_mid(WorkerRole.CHAT)]["ttl"] == 0
@@ -167,7 +242,7 @@ class TestBuildSwapConfig:
         """llama-swap's ttl is in seconds; a warm fleet unloads idle weights after it."""
         launches = [_launch(WorkerRole.CHAT, ["/bin/llama-server"])]
         ports = {launch.model_id: _BASE_PORT + i for i, launch in enumerate(launches)}
-        cfg = json.loads(build_swap_config(launches, ports, ttl_seconds=900))
+        cfg = json.loads(build_swap_config(launches, ports, ttl_seconds=900, engine_logs={}))
         assert cfg["models"][_mid(WorkerRole.CHAT)]["ttl"] == 900
 
 
@@ -229,17 +304,80 @@ class TestHealthCheckTimeoutScaling:
         # The shared per-member helper; the provider's client timeout derives from it.
         from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 
-        assert cold_load_timeout_s(0, WorkerRole.CHAT) == 600
-        assert cold_load_timeout_s(4 * 1024**3, WorkerRole.CHAT) == 600
-        assert cold_load_timeout_s(0, WorkerRole.EMBED) == 120
-        assert cold_load_timeout_s(4 * 1024**3, WorkerRole.EMBED) == 120
+        assert cold_load_timeout_s(0, WorkerRole.CHAT, 0) == 600
+        assert cold_load_timeout_s(4 * 1024**3, WorkerRole.CHAT, 0) == 600
+        assert cold_load_timeout_s(0, WorkerRole.EMBED, 0) == 120
+        assert cold_load_timeout_s(4 * 1024**3, WorkerRole.EMBED, 0) == 120
 
     def test_cold_load_timeout_scales_giant_weights(self) -> None:
         from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 
         weights = 300 * 1024**3
-        assert cold_load_timeout_s(weights, WorkerRole.CHAT) == 2048
-        assert cold_load_timeout_s(weights, WorkerRole.EMBED) == 2048
+        assert cold_load_timeout_s(weights, WorkerRole.CHAT, 0) == 2048
+        assert cold_load_timeout_s(weights, WorkerRole.EMBED, 0) == 2048
+
+    @pytest.mark.parametrize(("weights_gib", "expected"), [(20, 1638), (60, 3600)])
+    def test_a_slow_measured_volume_stretches_the_cold_load(
+        self, weights_gib: int, expected: int
+    ) -> None:
+        # A 25 MiB/s volume, scaled at half its measured rate: a 20 GiB load that
+        # needs about 819 s at that rate is not given up on at the 600 s floor.
+        from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+
+        rate = 25 * 1024**2
+        assert cold_load_timeout_s(weights_gib * 1024**3, WorkerRole.CHAT, rate) == expected
+
+    def test_a_fast_measured_volume_keeps_the_conservative_rate(self) -> None:
+        # A sample that hit the page cache reads far above any disk; it must not
+        # shorten the wait below the conservative rate.
+        from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+
+        weights = 300 * 1024**3
+        assert cold_load_timeout_s(weights, WorkerRole.CHAT, 8 * 1024**3) == 2048
+
+    @pytest.mark.parametrize(
+        ("rate", "expected"),
+        [
+            pytest.param(8738, 2048, id="stalled-sample"),
+            pytest.param(1, 2048, id="rate-of-one"),
+            pytest.param(0, 600, id="unmeasured"),
+        ],
+    )
+    def test_a_slow_reading_is_floored_at_the_slowest_believable_rate(
+        self, rate: int, expected: int
+    ) -> None:
+        # One 1 MiB chunk that stalls 120 s inside the sample reads as 8738 B/s.
+        # The wait uses 10 MiB/s at the slowest: 20 GiB gives 2048 s, not 57 days.
+        from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+
+        assert cold_load_timeout_s(20 * 1024**3, WorkerRole.CHAT, rate) == expected
+
+    @pytest.mark.parametrize("rate", [1, 8738, 25 * 1024**2])
+    def test_a_stretched_wait_stops_at_the_cap(self, rate: int) -> None:
+        from lilbee.providers.fleet.swap_config import _MEASURED_WAIT_CAP_S, cold_load_timeout_s
+
+        assert cold_load_timeout_s(60 * 1024**3, WorkerRole.CHAT, rate) == _MEASURED_WAIT_CAP_S
+        assert cold_load_timeout_s(60 * 1024**3, WorkerRole.EMBED, rate) == _MEASURED_WAIT_CAP_S
+
+    def test_a_model_whose_base_wait_passes_the_cap_keeps_its_base_wait(self) -> None:
+        # The cap bounds what a measurement adds; it never cuts the base wait.
+        from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+
+        weights = 1024 * 1024**3
+        assert cold_load_timeout_s(weights, WorkerRole.CHAT, 0) == 6990
+        assert cold_load_timeout_s(weights, WorkerRole.CHAT, 1) == 6990
+
+    def test_the_slowest_measured_member_sets_the_proxy_global_timeout(self) -> None:
+        member = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
+        member.weights_bytes = 20 * 1024**3
+        member.read_bytes_per_s = 25 * 1024**2
+        assert _config([member])["healthCheckTimeout"] == 1638
+
+    def test_a_stalled_member_sets_the_proxy_global_timeout_at_the_cap(self) -> None:
+        member = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
+        member.weights_bytes = 60 * 1024**3
+        member.read_bytes_per_s = 1
+        assert _config([member])["healthCheckTimeout"] == 3600
 
 
 class TestWarmTtlSeconds:
@@ -352,24 +490,26 @@ class TestWarmTtlSeconds:
 
 
 @pytest.mark.parametrize(
-    ("role", "slots", "ingest_workers", "expected"),
+    ("role", "slots"),
     [
-        (WorkerRole.CHAT, 4, 14, 56),
-        (WorkerRole.CHAT, 40, 14, 160),
-        (WorkerRole.VISION, 8, 14, 56),
-        (WorkerRole.EMBED, 1, 32, 128),
-        (WorkerRole.RERANK, 8, 6, 32),
+        (WorkerRole.CHAT, 4),
+        (WorkerRole.CHAT, 40),
+        (WorkerRole.VISION, 8),
+        (WorkerRole.EMBED, 1),
+        (WorkerRole.RERANK, 8),
     ],
-    ids=["chat", "chat-slots-past-pool", "vision", "embed", "rerank"],
+    ids=["chat", "chat-many-slots", "vision", "embed", "rerank"],
 )
-def test_every_model_carries_a_concurrency_limit_for_several_processes(
-    monkeypatch, role: WorkerRole, slots: int, ingest_workers: int, expected: int
-) -> None:
-    # llama-swap answers 429 past the limit (default 10) and lilbee no longer
-    # waits a 429 out, so the limit covers four processes at their own ceiling.
-    monkeypatch.setattr(swap_config_mod, "max_workers", lambda: ingest_workers)
+def test_every_model_carries_the_same_fixed_concurrency_limit(role: WorkerRole, slots: int) -> None:
+    # llama-swap answers 429 past the limit (default 10) and never queues. The limit is
+    # one number for every model: it reads no slot count, pool size or other process.
     launch = InstanceLaunch(
         role=role, replica=0, argv=["/bin/llama-server"], env_overrides={}, model="m", slots=slots
     )
     entry = _config([launch])["models"][launch.model_id]
-    assert entry["concurrencyLimit"] == expected
+    assert entry["concurrencyLimit"] == 1024
+    assert swap_config_mod.CONCURRENCY_LIMIT == 1024
+
+
+def test_the_config_reads_no_ingest_pool_size() -> None:
+    assert not hasattr(swap_config_mod, "max_workers")

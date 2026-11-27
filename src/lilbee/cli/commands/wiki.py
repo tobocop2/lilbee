@@ -24,21 +24,25 @@ from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
 from lilbee.core.text import strip_control_characters
 from lilbee.runtime.cancellation import sigint_cancel
-from lilbee.runtime.console import PlainConsole, styled
+from lilbee.runtime.console import PlainConsole, live_progress, styled
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhaseEvent
 from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
     WikiSubdir,
     total_wiki_pages,
 )
-from lilbee.wiki.stats import format_summary_line
+from lilbee.wiki.stats import WikiBuildError, format_summary_line, model_failures_message
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
     from lilbee.data.store import CitationRecord
     from lilbee.runtime.progress import DetailedProgressCallback, ProgressEvent
-    from lilbee.wiki.generation import WikiEntityCandidate
+    from lilbee.wiki.generation import (
+        WikiBuildSummary,
+        WikiEntityCandidate,
+        WikiSynthesizeSummary,
+    )
     from lilbee.wiki.stats import BuildStatsDict
 
 
@@ -70,6 +74,20 @@ def _print_build_stats(stats: BuildStatsDict) -> None:
     console.print(f"  Gates: {format_summary_line(stats)}")
 
 
+def _exit_if_model_calls_failed(stats: BuildStatsDict) -> None:
+    """Exit 1 when the run lost pages or concepts to failed model calls, after its output.
+
+    The JSON document already carries the counts in its stats, so only the
+    text output prints the counts and the last cause.
+    """
+    message = model_failures_message(stats)
+    if message is None:
+        return
+    if not cfg.json_mode:
+        print_prefixed(console, "Error: ", message, style=theme.ERROR)
+    raise SystemExit(1)
+
+
 def _wiki_progress_line(event_type: EventType, data: ProgressEvent) -> str | None:
     """Progress description for a wiki run event, or None when it carries no line.
 
@@ -91,11 +109,11 @@ def _wiki_progress() -> Iterator[DetailedProgressCallback]:
     the same events the HTTP and TUI surfaces consume. Disabled in json_mode so
     stdout stays a single JSON document.
     """
-    from rich.progress import Progress, SpinnerColumn
+    from rich.progress import SpinnerColumn
 
     from lilbee.runtime.progress.columns import literal_text_column
 
-    with Progress(
+    with live_progress(
         SpinnerColumn(),
         literal_text_column("{task.description}"),
         transient=True,
@@ -114,12 +132,12 @@ def _wiki_progress() -> Iterator[DetailedProgressCallback]:
 
 @contextmanager
 def _library_refusal_exits() -> Iterator[None]:
-    """Exit 1 with the refusal as the error when a wiki write cannot lock the library."""
+    """Exit 1 with the error when a wiki write is refused or every model call fails."""
     from lilbee.app.ingest import LIBRARY_REFUSALS
 
     try:
         yield
-    except LIBRARY_REFUSALS as exc:
+    except (*LIBRARY_REFUSALS, WikiBuildError) as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
@@ -430,13 +448,18 @@ def wiki_synthesize(
         _fail_wiki_disabled()
     from lilbee.wiki import run_full_synthesize
 
-    with _library_refusal_exits(), _wiki_progress() as on_progress, sigint_cancel() as cancel:
+    with sigint_cancel() as cancel, _library_refusal_exits(), _wiki_progress() as on_progress:
         result = run_full_synthesize(cfg, on_progress, cancel)
 
     if cfg.json_mode:
         json_output({"command": "wiki_synthesize", **result})
-        return
+    else:
+        _print_synthesize_result(result)
+    _exit_if_model_calls_failed(result["stats"])
 
+
+def _print_synthesize_result(result: WikiSynthesizeSummary) -> None:
+    """Print the pages a synthesize run wrote and what its gates did."""
     paths = result["paths"]
     if paths:
         console.print(
@@ -627,13 +650,18 @@ def _run_wiki_build(command_name: str) -> None:
     """Run the full build and render its result under *command_name*."""
     from lilbee.wiki import run_full_build
 
-    with _library_refusal_exits(), _wiki_progress() as on_progress, sigint_cancel() as cancel:
+    with sigint_cancel() as cancel, _library_refusal_exits(), _wiki_progress() as on_progress:
         result = run_full_build(cfg, on_progress, cancel)
 
     if cfg.json_mode:
         json_output({"command": command_name, **result})
-        return
+    else:
+        _print_build_result(result)
+    _exit_if_model_calls_failed(result["stats"])
 
+
+def _print_build_result(result: WikiBuildSummary) -> None:
+    """Print the pages a build wrote and what its gates did."""
     pages = result["paths"]
     if pages:
         console.print(

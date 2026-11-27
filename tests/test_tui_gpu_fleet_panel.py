@@ -133,6 +133,28 @@ async def test_panel_holds_probing_until_devices_probed(
 
 
 @pytest.mark.asyncio
+async def test_panel_settles_on_the_empty_text_when_set_with_no_devices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty device list paints the empty text at once, with no stat tick between."""
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {})
+
+    app = _PanelHost()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        assert msg.FLEET_GPU_PROBING in str(panel.render())
+        panel.set_devices([], labels={})
+        rendered = str(panel.render())
+        assert msg.FLEET_NO_GPUS in rendered
+        assert msg.FLEET_GPU_PROBING not in rendered
+
+
+@pytest.mark.asyncio
 async def test_panel_renders_probe_failure_and_pauses_ticks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -184,7 +206,7 @@ async def test_panel_keeps_the_failure_when_an_in_flight_probe_lands_late(
         panel = app.query_one(GpuFleetPanel)
         panel.set_probe_failed("GPU driver did not respond")
         # Simulate the racing worker's completion callback arriving afterwards.
-        panel._apply_stats({}, {}, {})
+        panel._apply_stats({}, {}, {}, None)
         rendered = str(panel.render())
         assert "GPU driver did not respond" in rendered
         assert "no GPUs detected" not in rendered
@@ -295,6 +317,124 @@ async def test_panel_shows_intel_install_hint_when_tool_absent(
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert "igt-gpu-tools" in str(panel.render())
+
+
+@pytest.mark.asyncio
+async def test_panel_stays_responsive_while_the_intel_hint_probe_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blocking Intel hint probe must not freeze the UI thread; the hint shows once it returns."""
+    import asyncio
+    import threading
+    import time
+
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+    from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+
+    release = threading.Event()
+    stat = _make_stat(0, utilization_pct=None)
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {0: stat})
+
+    def _blocking_hint(devices: object, stats: object) -> IntelUtilHint:
+        # Bounded so a regression fails the test instead of hanging it.
+        release.wait(timeout=3)
+        return IntelUtilHint(IntelHintKind.INSTALL, None)
+
+    monkeypatch.setattr(panel_mod, "intel_util_hint", _blocking_hint)
+
+    app = _PanelHost()
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        panel.set_devices([_make_device(0, backend="SYCL")], labels={0: "SYCL0"})
+        panel._request_stats()
+        worst_gap = 0.0
+        last = time.monotonic()
+        for _ in range(6):
+            await asyncio.sleep(0.05)
+            now = time.monotonic()
+            worst_gap = max(worst_gap, now - last)
+            last = now
+        assert worst_gap < 1.0
+        assert "igt-gpu-tools" not in str(panel.render())
+        release.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "igt-gpu-tools" in str(panel.render())
+
+
+@pytest.mark.asyncio
+async def test_panel_renders_stats_when_the_intel_hint_probe_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raising hint probe loses only the hint; the stats still render."""
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    stat = _make_stat(0, utilization_pct=None)
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {0: stat})
+
+    def _boom(devices: object, stats: object) -> None:
+        raise RuntimeError("hint probe exploded")
+
+    monkeypatch.setattr(panel_mod, "intel_util_hint", _boom)
+
+    app = _PanelHost()
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        panel.set_devices([_make_device(0, backend="SYCL")], labels={0: "SYCL0"})
+        panel._request_stats()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = str(panel.render())
+        assert "SYCL0" in rendered
+        assert "igt-gpu-tools" not in rendered
+        assert panel._probing is False
+
+
+@pytest.mark.asyncio
+async def test_panel_removed_while_the_probe_runs_gets_no_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A panel removed while its worker runs stays quiet: no repaint, no error.
+
+    Textual cancels the worker when the panel is removed, and the worker's
+    callback is then dropped because the removed node has no app. A callback
+    already queued before the removal is not dropped that way, so the test
+    also delivers one to the removed panel by hand.
+    """
+    import threading
+
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    release = threading.Event()
+    stat = _make_stat(0, utilization_pct=None)
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {0: stat})
+
+    def _slow(devices: object, stats: object) -> None:
+        release.wait(timeout=3)
+
+    monkeypatch.setattr(panel_mod, "intel_util_hint", _slow)
+
+    app = _PanelHost()
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        panel.set_devices([_make_device(0, backend="SYCL")], labels={0: "SYCL0"})
+        panel._request_stats()
+        await panel.remove()
+        updates: list[object] = []
+        monkeypatch.setattr(panel, "update", updates.append)
+        release.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert updates == []
+        # A callback queued before the removal still lands on the removed panel.
+        panel._apply_stats({0: stat}, {0: "SYCL0"}, {}, None)
+        assert updates == []
 
 
 @pytest.mark.asyncio
@@ -661,7 +801,7 @@ async def test_update_fleet_panel_noop_when_panel_not_mounted(
 
     view = PlacementView(
         gpus=(GpuInfo(0, "CUDA", "CUDA0", "A40", 44 * GIB, 44 * GIB),),
-        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1),),
+        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp"),),
         unplaceable=(),
         manual=False,
         spec_json=None,

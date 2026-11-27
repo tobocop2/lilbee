@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import TYPE_CHECKING, Any, cast
 
 from textual.command import CommandInput, Hit, Hits, Provider
@@ -15,8 +14,6 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import COMMANDS, SlashCommand, get_command
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.runtime.lock import LockTimeoutError
-
-log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from textual.screen import Screen
@@ -57,6 +54,10 @@ class LilbeeCommandProvider(Provider):
         because a fresh search moves the highlight back to the first row.
         """
         if lookup.cancelled():
+            return
+        error = lookup.exception()
+        if error is not None:
+            self._app.notify(msg.MODEL_REGISTRY_UNREADABLE.format(error=error), severity="error")
             return
         self._models = lookup.result()
         if self.app.screen is not palette:
@@ -157,23 +158,20 @@ class LilbeeCommandProvider(Provider):
             chat.run_command(cmd.name)
 
     def _model_commands(self) -> list[tuple[str, str, Any]]:
-        """Generate commands for installed models."""
-        commands: list[tuple[str, str, Any]] = []
-        try:
-            from lilbee.modelhub.models import list_installed_models
+        """Generate commands for installed models.
 
-            for name in list_installed_models():
-                commands.append(
-                    (
-                        f"Set chat model → {name}",
-                        "Switch chat model",
-                        lambda n=name: self._set_model("chat_model", n),
-                    )
-                )
-        except Exception:
-            log.debug("Failed to list installed models", exc_info=True)
+        Raises ``OSError`` when the model registry cannot be read.
+        """
+        from lilbee.modelhub.models import list_installed_models
 
-        return commands
+        return [
+            (
+                f"Set chat model → {name}",
+                "Switch chat model",
+                lambda n=name: self._set_model("chat_model", n),
+            )
+            for name in list_installed_models()
+        ]
 
     def _set_model(self, attr: str, value: str) -> None:
         # Route through LilbeeApp.set_active_model so model-bar / scope chip
@@ -193,7 +191,7 @@ class LilbeeCommandProvider(Provider):
         self._app.action_run_sync()
 
     def _action_retry_skipped(self) -> None:
-        """Release the failed files and start a sync, like ``lilbee sync --retry-skipped``."""
+        """Start a sync that retries failed and partly read files, like ``sync --retry-skipped``."""
         self._app.run_worker(self._retry_skipped, thread=True, exit_on_error=False)
 
     def _retry_skipped(self) -> None:
@@ -205,7 +203,7 @@ class LilbeeCommandProvider(Provider):
             call_from_thread(app, app.notify, str(exc), severity="error")
             return
         call_from_thread(app, app.notify, msg.retry_skipped_message(len(cleared)))
-        call_from_thread(app, app.action_run_sync)
+        call_from_thread(app, app.action_run_sync, True)
 
     def _action_prune_ignored(self) -> None:
         """Sync with pruning on, the TUI equivalent of ``lilbee sync --prune-ignored``."""

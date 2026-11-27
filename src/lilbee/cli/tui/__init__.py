@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from lilbee.app.services import exit_when_stragglers_would_hang, reset_services_on_exit
+from lilbee.app.services import (
+    exit_code_of,
+    exit_when_stragglers_would_hang,
+    loop_takes_signals,
+    reset_services_on_exit,
+)
+from lilbee.cli.log_routing import detach_rotating_file_handler
 from lilbee.cli.tui.log_routing import setup_tui_log_file
 from lilbee.core.security import OWNER_ONLY_MODE
+from lilbee.runtime.asyncio_loop import run_without_join
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
 
 
 def _silence_stderr_log_handlers() -> None:
@@ -109,11 +121,24 @@ def _prestart_mp_resource_tracker() -> None:
         pass
 
 
+async def _run_app(app: LilbeeApp) -> None:
+    """Run *app* while its loop takes the routed signals.
+
+    A plain handler raises the exit inside whatever task step runs, such as a
+    timer's tick, and that task keeps it as an exception nobody reads. A loop
+    callback runs between steps, so the exit leaves the loop and no task holds it.
+    """
+    with loop_takes_signals(asyncio.get_running_loop()):
+        await app.run_async()
+
+
 def run_tui(*, initial_view: str | None = None) -> None:
     """Launch the full-screen Textual TUI.
 
     *initial_view* deep-links to a named view (e.g. ``"Catalog"``) after
     the default chat screen is mounted. Used by ``lilbee model browse``.
+    A non-zero ``return_code`` of the app ends the process with that status, and a
+    signal's SystemExit keeps its status through the forced exit for stuck threads.
     """
     # heavy: cli.sync transitively imports ingest -> store -> pyarrow (~1.8s
     # cold-start on bare runners); only needed at TUI shutdown. (bb-oae5)
@@ -126,14 +151,29 @@ def run_tui(*, initial_view: str | None = None) -> None:
     stderr_redirect = _redirect_native_stderr_to(log_path)
 
     app = LilbeeApp(initial_view=initial_view)
+    status = 0
     try:
-        app.run()
+        # Textual's run would use asyncio.run, which joins a stuck worker with no bound on
+        # 3.11; this leaves it to the straggler exit below.
+        run_without_join(_run_app(app))
+        # None means the app never reached its exit.
+        status = app.return_code or 0
     except KeyboardInterrupt:
         pass  # Ctrl-C exits the TUI; cleanup runs in the finally block
+    except SystemExit as stop:
+        # A SIGTERM ends the run with 128 + signum; the codes map as Python maps them.
+        status = exit_code_of(stop)
+        raise
     finally:
-        # Tasks stop through their own cancel while the executors and services live.
-        app.task_bar.stop_all()
-        _restore_native_stderr(stderr_redirect)
-        shutdown_executor()
-        reset_services_on_exit()
-        exit_when_stragglers_would_hang()
+        try:
+            # Tasks stop through their own cancel while the executors and services live.
+            app.task_bar.stop_all()
+            _restore_native_stderr(stderr_redirect)
+            shutdown_executor()
+            reset_services_on_exit()
+            exit_when_stragglers_would_hang(status)
+        finally:
+            # The tui.log handler lives to the end of the session, the straggler wait included.
+            detach_rotating_file_handler(log_path)
+    if status:
+        raise SystemExit(status)

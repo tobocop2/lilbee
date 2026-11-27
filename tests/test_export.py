@@ -1,6 +1,8 @@
 """Tests for the per-page text dataset export/import (lilbee.data.export)."""
 
 import io
+import stat
+import sys
 from pathlib import Path
 
 import pyarrow as pa
@@ -8,6 +10,7 @@ import pytest
 
 from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
+from lilbee.core.security import sibling_temp_path
 from lilbee.data import export as export_mod
 from lilbee.data.export import (
     DatasetFormat,
@@ -46,8 +49,6 @@ def services(store):
 
 class _StubEmbedder:
     """Deterministic embedder: every chunk maps to a fixed-dim vector."""
-
-    truncated_total = 0
 
     def embed_batch(self, texts, **_kwargs):
         return [[0.1] * cfg.embedding_dim for _ in texts]
@@ -125,6 +126,27 @@ class TestWriteRoundTrip:
             "Alpha Paper",
             "Ada, Bob",
             "2020-01-01",
+        )
+
+    @pytest.mark.parametrize("folder_at_the_name", [False, True], ids=["no-folder", "a-folder"])
+    def test_an_unwritable_output_names_the_output_path(self, tmp_path, folder_at_the_name):
+        # The user gave the output path; the error must not name the temporary file.
+        if folder_at_the_name:
+            path = tmp_path / "pages.jsonl"
+            path.mkdir()
+        else:
+            path = tmp_path / "no-such-folder" / "pages.jsonl"
+        table = pa.Table.from_pylist([_page("a.pdf", 1, "hello")])
+        with pytest.raises(OSError) as caught:
+            write_dataset(table, path, DatasetFormat.JSONL)
+        assert caught.value.filename == str(path)
+        assert caught.value.filename2 is None
+        assert f".{path.name}." not in str(caught.value)
+        # A folder at the name fails the rename, not the write: the error says so.
+        said_rename = "Could not put the finished export there" in str(caught.value)
+        assert said_rename is folder_at_the_name
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+            [path.name] if folder_at_the_name else []
         )
 
     def test_load_missing_file(self, tmp_path):
@@ -554,6 +576,234 @@ class TestWriteCancellation:
             write_dataset(self._big_table(), path, fmt, cancel)
 
         assert not path.exists(), "a cancelled export left a partial file behind"
+
+    @staticmethod
+    def _interrupt_after(batches: int):
+        """A token whose poll raises KeyboardInterrupt, as a second Ctrl-C does, after *batches*."""
+
+        class _SecondCtrlC:
+            polls = 0
+
+            def is_set(self) -> bool:
+                self.polls += 1
+                if self.polls > batches:
+                    raise KeyboardInterrupt
+                return False
+
+        return _SecondCtrlC()
+
+    @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
+    def test_an_interrupt_mid_write_leaves_nothing_under_the_final_name(self, tmp_path, fmt):
+        path = tmp_path / f"pages.{fmt}"
+
+        with pytest.raises(KeyboardInterrupt):
+            write_dataset(self._big_table(), path, fmt, self._interrupt_after(2))
+
+        assert not path.exists(), "an interrupted export left a partial file under its name"
+        assert list(tmp_path.iterdir()) == [], "an interrupted export left its temporary file"
+
+    @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
+    def test_two_concurrent_exports_to_one_path_leave_one_whole_export(self, tmp_path, fmt):
+        # The MCP server runs sync tools in threads, so two exports can target one
+        # path at once. The barrier holds both after their first batch, so both
+        # temporary files are open and half written before either finishes.
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        barrier = threading.Barrier(2, timeout=30)
+
+        class _MeetAfterBatchOne:
+            polls = 0
+
+            def is_set(self) -> bool:
+                self.polls += 1
+                if self.polls == 2:
+                    barrier.wait()
+                return False
+
+        rows = 30_000
+        tables = {
+            tag: pa.Table.from_pylist([_page(f"{tag}.pdf", i, f"{tag} {i}") for i in range(rows)])
+            for tag in ("a", "b")
+        }
+        path = tmp_path / f"pages.{fmt}"
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(write_dataset, table, path, fmt, _MeetAfterBatchOne())
+                for table in tables.values()
+            ]
+            for future in futures:
+                future.result()
+
+        sources = {r["source"] for r in load_page_dataset(path, fmt)}
+        assert len(load_page_dataset(path, fmt)) == rows
+        assert sources in ({"a.pdf"}, {"b.pdf"})
+        assert list(tmp_path.iterdir()) == [path]
+
+    def _refuse_renames(self, monkeypatch, platform: str, refusals: int) -> tuple[list, list]:
+        """Make the first *refusals* renames fail as Windows fails one onto a held file."""
+        real_replace = export_mod.os.replace
+        attempts: list[str] = []
+        waits: list[float] = []
+
+        def _replace(src, dst):
+            attempts.append(str(src))
+            if len(attempts) <= refusals:
+                raise PermissionError(13, "Access is denied", src, 5, dst)
+            real_replace(src, dst)
+
+        monkeypatch.setattr(export_mod.sys, "platform", platform)
+        monkeypatch.setattr(export_mod.os, "replace", _replace)
+        monkeypatch.setattr(export_mod.time, "sleep", waits.append)
+        return attempts, waits
+
+    def test_a_rename_another_handle_blocks_on_windows_is_tried_again(self, tmp_path, monkeypatch):
+        attempts, waits = self._refuse_renames(monkeypatch, "win32", refusals=2)
+        path = tmp_path / "pages.jsonl"
+        write_dataset(self._big_table(3), path, DatasetFormat.JSONL, None)
+        assert len(attempts) == 3
+        assert waits == [export_mod._RENAME_RETRY_WAIT_S] * 2
+        assert len(load_page_dataset(path, DatasetFormat.JSONL)) == 3
+        assert list(tmp_path.iterdir()) == [path]
+
+    def test_a_rename_blocked_past_the_bound_names_the_export(self, tmp_path, monkeypatch):
+        attempts, waits = self._refuse_renames(monkeypatch, "win32", refusals=99)
+        path = tmp_path / "pages.jsonl"
+        with pytest.raises(PermissionError, match="Could not put the finished export there"):
+            write_dataset(self._big_table(3), path, DatasetFormat.JSONL, None)
+        assert len(attempts) == export_mod._RENAME_ATTEMPTS
+        assert len(waits) == export_mod._RENAME_ATTEMPTS - 1
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_refused_rename_off_windows_fails_at_once(self, tmp_path, monkeypatch):
+        attempts, waits = self._refuse_renames(monkeypatch, "linux", refusals=99)
+        path = tmp_path / "pages.jsonl"
+        with pytest.raises(PermissionError, match="Could not put the finished export there"):
+            write_dataset(self._big_table(3), path, DatasetFormat.JSONL, None)
+        assert len(attempts) == 1
+        assert waits == []
+        assert list(tmp_path.iterdir()) == []
+
+    def test_each_retry_waits_before_the_next_attempt(self, tmp_path, monkeypatch):
+        attempts, waits = self._refuse_renames(monkeypatch, "win32", refusals=2)
+        write_dataset(self._big_table(3), tmp_path / "pages.jsonl", DatasetFormat.JSONL, None)
+        assert len(attempts) == 3
+        assert len(waits) == 2
+        assert all(wait > 0 for wait in waits)
+
+    def test_a_rename_that_fails_for_another_reason_on_windows_is_not_tried_again(
+        self, tmp_path, monkeypatch
+    ):
+        attempts: list[str] = []
+
+        def _replace(src, dst):
+            attempts.append(str(src))
+            raise OSError(28, "No space left on device", src, None, dst)
+
+        monkeypatch.setattr(export_mod.sys, "platform", "win32")
+        monkeypatch.setattr(export_mod.os, "replace", _replace)
+        monkeypatch.setattr(export_mod.time, "sleep", lambda _s: None)
+        with pytest.raises(OSError, match="No space left"):
+            write_dataset(self._big_table(3), tmp_path / "pages.jsonl", DatasetFormat.JSONL, None)
+        assert len(attempts) == 1
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need a privilege on Windows")
+    def test_the_partial_file_is_written_beside_the_real_target_of_a_symlink(
+        self, tmp_path, monkeypatch
+    ):
+        target = tmp_path / "real" / "pages.jsonl"
+        target.parent.mkdir()
+        link_dir = tmp_path / "links"
+        link_dir.mkdir()
+        link = link_dir / "pages.jsonl"
+        link.symlink_to(target)
+        real_replace = export_mod.os.replace
+        partial_dirs: list[Path] = []
+
+        def _replace(src, dst):
+            partial_dirs.append(Path(src).parent)
+            real_replace(src, dst)
+
+        monkeypatch.setattr(export_mod.os, "replace", _replace)
+        write_dataset(self._big_table(3), link, DatasetFormat.JSONL, None)
+        assert partial_dirs == [target.parent.resolve()]
+
+    def test_a_re_export_replaces_the_file_at_the_name(self, tmp_path):
+        # Runs on every platform: the mode test below skips Windows, and this is
+        # the run that reaches the copy of the old file's mode there.
+        path = tmp_path / "pages.jsonl"
+        write_dataset(self._big_table(3), path, DatasetFormat.JSONL, None)
+        write_dataset(self._big_table(5), path, DatasetFormat.JSONL, None)
+        assert len(load_page_dataset(path, DatasetFormat.JSONL)) == 5
+        assert list(tmp_path.iterdir()) == [path]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits")
+    def test_a_re_export_keeps_the_mode_of_the_file_it_replaces(self, tmp_path):
+        path = tmp_path / "pages.jsonl"
+        write_dataset(self._big_table(3), path, DatasetFormat.JSONL, None)
+        path.chmod(0o600)
+        write_dataset(self._big_table(5), path, DatasetFormat.JSONL, None)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert len(load_page_dataset(path, DatasetFormat.JSONL)) == 5
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need a privilege on Windows")
+    @pytest.mark.parametrize("target_exists", [True, False], ids=["link", "dangling-link"])
+    def test_an_export_over_a_symlink_writes_through_it(self, tmp_path, target_exists):
+        # Opening the path followed the link, also a dangling one, and created or
+        # replaced its target; the link must stay a link.
+        target = tmp_path / "real" / "pages.jsonl"
+        target.parent.mkdir()
+        if target_exists:
+            write_dataset(self._big_table(3), target, DatasetFormat.JSONL, None)
+        link = tmp_path / "pages.jsonl"
+        link.symlink_to(target)
+        write_dataset(self._big_table(5), link, DatasetFormat.JSONL, None)
+        assert link.is_symlink()
+        assert link.resolve() == target.resolve()
+        assert len(load_page_dataset(target, DatasetFormat.JSONL)) == 5
+        assert sorted(p.name for p in target.parent.iterdir()) == ["pages.jsonl"]
+
+    def test_an_export_over_a_symlink_loop_fails_with_eloop(self, tmp_path):
+        # Opening the path failed with ELOOP; the export must too, not crash or
+        # replace a link in the loop. Windows makes a link only with the right to.
+        import errno
+
+        path, other = tmp_path / "pages.jsonl", tmp_path / "other.jsonl"
+        try:
+            path.symlink_to(other)
+            other.symlink_to(path)
+        except OSError:
+            pytest.skip("this host grants no right to make a symlink")
+        with pytest.raises(OSError) as caught:
+            write_dataset(self._big_table(3), path, DatasetFormat.JSONL, None)
+        assert (caught.value.errno, caught.value.filename) == (errno.ELOOP, str(path))
+        assert path.is_symlink() and other.is_symlink()
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["other.jsonl", "pages.jsonl"]
+
+    def test_the_temporary_file_is_opened_exclusive(self, tmp_path, monkeypatch):
+        # Pin the random name, then put another writer's file there first: the
+        # export must refuse it, not truncate it, and must not remove it.
+        monkeypatch.setattr("lilbee.core.security.secrets.token_hex", lambda n: "ab" * n)
+        path = tmp_path / "pages.jsonl"
+        theirs = sibling_temp_path(path)
+        theirs.write_text("another writer's file", encoding="utf-8")
+        with pytest.raises(FileExistsError) as caught:
+            write_dataset(self._big_table(3), path, DatasetFormat.JSONL, None)
+        assert caught.value.filename == str(path)
+        assert theirs.read_text(encoding="utf-8") == "another writer's file"
+        assert not path.exists()
+
+    @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
+    def test_an_interrupt_mid_write_keeps_the_previous_export(self, tmp_path, fmt):
+        path = tmp_path / f"pages.{fmt}"
+        write_dataset(self._big_table(3), path, fmt, None)
+        previous = path.read_bytes()
+
+        with pytest.raises(KeyboardInterrupt):
+            write_dataset(self._big_table(), path, fmt, self._interrupt_after(2))
+
+        assert path.read_bytes() == previous
+        assert list(tmp_path.iterdir()) == [path]
 
     @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
     def test_an_unset_token_writes_the_whole_dataset(self, tmp_path, fmt):

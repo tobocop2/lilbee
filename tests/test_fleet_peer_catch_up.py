@@ -9,6 +9,7 @@ health probe are the fakes of test_fleet_settings_bind.py. The order is set with
 from __future__ import annotations
 
 import dataclasses
+import json
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -22,13 +23,17 @@ from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
+from lilbee.providers.fleet import swap_manager as swap_mod
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines.base import EngineAdapter
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.fleet.swap_manager import PlanOrigin, SwapState
-from lilbee.providers.reload_keys import FLEET_RELOAD_KEYS
+from lilbee.providers.reload_keys import ENGINE_TUNING_KEYS, FLEET_RELOAD_KEYS
 from lilbee.runtime.engine_lock import private_engine_dir
+from tests._fleet_engines import engines_for_all_roles
 from tests.test_fleet_provider import _FakeSwap
-from tests.test_fleet_reload_plan import real_planner
+from tests.test_fleet_reload_plan import _OTHER_CHAT_REF, real_planner
 from tests.test_fleet_settings_bind import (
     _call_failing_once_then_binding,
     _peer_mid_call_over_an_owner_restart,
@@ -50,13 +55,22 @@ class _Gap:
     old: _States
 
 
-def _gap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, root: str | None = None) -> _Gap:
-    """Owner and peer on flash_attention on; the slot records the origin of that file."""
+def _gap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    root: str | None = None,
+    followed: frozenset[str] = FLEET_RELOAD_KEYS,
+) -> _Gap:
+    """Owner and peer on flash_attention on; the slot records the origin of that file.
+
+    The owner follows *followed*, every reload key by default, as serve does.
+    """
     persistent_settings.update_values(cfg.data_root, {"flash_attention": True})
     peer, states, built = _peer_mid_call_over_an_owner_restart(
         monkeypatch, tmp_path, flash_attention=True
     )
-    origin = prov_mod._plan_origin()
+    origin = prov_mod._plan_origin(followed)
     if root is not None:
         origin = dataclasses.replace(origin, config_root=root)
     for group, state in list(states.items()):
@@ -77,11 +91,13 @@ def _gap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, root: str | None = 
             return True
 
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, group: _Swap(group))
-    owner = FleetProvider()
+    owner = FleetProvider(followed_keys=lambda: followed)
     monkeypatch.setattr(owner, "_preload_roles", lambda roles=None: None)
     monkeypatch.setattr(owner, "_reload_dir", lambda: tmp_path)
     with owner._lock:
-        for group, launches in _launches_by_group(planning_mod.plan_all_launches()).items():
+        for group, launches in _launches_by_group(
+            planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
+        ).items():
             owner._adopt_group(group, _FakeSwap(), list(launches))
             owner._group_dirs[group] = tmp_path
     waits = threading.Event()
@@ -116,20 +132,19 @@ def _owner_held_until(monkeypatch: pytest.MonkeyPatch, release: threading.Event)
     held = threading.Event()
     refresh = planning_mod.refresh_plan_devices
 
-    def gated_refresh() -> None:
-        if threading.current_thread().name == "owner-reload":
+    def gated_refresh(engine: EngineAdapter) -> None:
+        # The owner reloads first: the peer starts only after held is set.
+        if not held.is_set():
             held.set()
             release.wait(_WAIT_S)
-        refresh()
+        refresh(engine)
 
     monkeypatch.setattr(planning_mod, "refresh_plan_devices", gated_refresh)
     return held
 
 
 def _start_owner(gap: _Gap) -> threading.Thread:
-    thread = threading.Thread(
-        target=gap.owner.replan_fleet, kwargs={"wait": True}, name="owner-reload"
-    )
+    thread = threading.Thread(target=gap.owner.replan_fleet, kwargs={"wait": True})
     thread.start()
     return thread
 
@@ -187,12 +202,71 @@ def test_control_an_owner_that_dies_in_the_wait_has_its_slot_replaced_at_once(
     assert gap.built == [tmp_path]  # replaced in place; no private fleet
 
 
-def test_control_an_owner_that_never_takes_the_change_lets_the_peer_overflow_after_the_bound(
+def test_control_an_owner_that_holds_the_changed_key_lets_the_peer_overflow_at_once(
     real_planner, monkeypatch, tmp_path: Path
 ) -> None:
-    gap = _gap(monkeypatch, tmp_path)
+    """The stamp says the owner never takes flash_attention, so no rebuild comes."""
+    gap = _gap(monkeypatch, tmp_path, followed=FLEET_RELOAD_KEYS - {"flash_attention"})
+    _write_flash_attention_off(monkeypatch)
+    _peer_takes_the_value(monkeypatch, gap.peer, "follow")
+    assert not gap.waits.is_set()
+    assert gap.built == [private_engine_dir(cfg.data_root)]
+
+
+def test_a_one_off_owner_on_a_chat_model_write_lets_the_peer_overflow_at_once(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    """A one-off owner takes only the tuning keys; a chat_model write moves no fleet of it."""
+    gap = _gap(monkeypatch, tmp_path, followed=ENGINE_TUNING_KEYS)
+    persistent_settings.update_values(cfg.data_root, {"chat_model": _OTHER_CHAT_REF})
+    _bind_fails_in_memory(monkeypatch)
+    _peer_takes_the_value(monkeypatch, gap.peer, "follow")
+    assert not gap.waits.is_set()
+    assert gap.built == [private_engine_dir(cfg.data_root)]
+
+
+def test_a_one_off_owner_on_a_tuning_write_keeps_the_peer_waiting(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    """A one-off owner takes flash_attention, so a peer waits for its rebuild."""
+    gap = _gap(monkeypatch, tmp_path, followed=ENGINE_TUNING_KEYS)
     monkeypatch.setattr(prov_mod, "_OWNER_CATCH_UP_WAIT_S", 0.02)
     _write_flash_attention_off(monkeypatch)
+    _peer_takes_the_value(monkeypatch, gap.peer, "follow")
+    assert gap.waits.is_set()
+    assert gap.built == [private_engine_dir(cfg.data_root)]
+
+
+def _old_form_origin(tmp_path: Path) -> PlanOrigin:
+    """The origin of a state file in the 0267482 form: a root and a file view, nothing more."""
+    old_state = tmp_path / "old.json"
+    old_state.write_text(
+        json.dumps(
+            {
+                "pid": 1,
+                "config_root": str(cfg.data_root),
+                "fleet_view": prov_mod._file_origin().fleet_view,
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = swap_mod._load_state(old_state)
+    assert loaded is not None and loaded.origin is not None
+    assert (loaded.origin.planned_view, loaded.origin.followed) == (None, None)
+    return loaded.origin
+
+
+def test_a_stamp_of_an_older_version_that_differs_from_the_file_makes_the_peer_wait(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    """Mixed versions, old owner and new peer: the whole file view decides, as at 0267482."""
+    gap = _gap(monkeypatch, tmp_path)
+    loaded = _old_form_origin(tmp_path)
+    for group, state in list(gap.states.items()):
+        gap.states[group] = dataclasses.replace(state, origin=loaded)
+    monkeypatch.setattr(prov_mod, "_OWNER_CATCH_UP_WAIT_S", 0.02)
+    persistent_settings.update_values(cfg.data_root, {"chat_model": _OTHER_CHAT_REF})
+    _bind_fails_in_memory(monkeypatch)
     _peer_takes_the_value(monkeypatch, gap.peer, "follow")
     assert gap.waits.is_set()
     assert gap.built == [private_engine_dir(cfg.data_root)]
@@ -238,10 +312,10 @@ def test_a_placement_write_leaves_a_same_root_peer_with_no_wait(
     """An owner that adopts a placement write does not rebuild, so the peer must not wait."""
     assert "placement" not in FLEET_RELOAD_KEYS
     gap = _gap(monkeypatch, tmp_path)
-    before = prov_mod._plan_origin()
+    before = prov_mod._file_origin()
     persistent_settings.update_values(cfg.data_root, {"placement": '{"chat": {"devices": [0]}}'})
     _bind_fails_in_memory(monkeypatch)
-    assert prov_mod._plan_origin() == before
+    assert prov_mod._file_origin() == before
     _peer_takes_the_value(monkeypatch, gap.peer, "follow")
     assert not gap.waits.is_set()
     assert gap.built == [private_engine_dir(cfg.data_root)]
@@ -282,11 +356,11 @@ def test_a_key_is_in_the_plan_view_iff_a_change_makes_the_owner_rebuild(
     monkeypatch, key: str
 ) -> None:
     assert _RELOAD_KEY_VALUES.keys() == FLEET_RELOAD_KEYS
-    before = prov_mod._plan_origin()
+    before = prov_mod._file_origin()
     value = (_RELOAD_KEY_VALUES | _OTHER_KEY_VALUES)[key]
     persistent_settings.update_values(cfg.data_root, {key: value})
     assert key in (persistent_settings.persisted_values(cfg.data_root) or {})  # the write took
-    view_moved = prov_mod._plan_origin() != before
+    view_moved = prov_mod._file_origin() != before
     rebuilds = _owner_rebuilds_on(monkeypatch, key)
     assert view_moved is rebuilds is (key in FLEET_RELOAD_KEYS)
 
@@ -295,10 +369,10 @@ def test_a_write_of_a_key_no_plan_reads_leaves_the_peer_with_no_wait(
     real_planner, monkeypatch, tmp_path: Path
 ) -> None:
     gap = _gap(monkeypatch, tmp_path)
-    before = prov_mod._plan_origin()
+    before = prov_mod._file_origin()
     persistent_settings.update_values(cfg.data_root, {"top_k": 3})
     _bind_fails_in_memory(monkeypatch)
-    assert prov_mod._plan_origin() == before
+    assert prov_mod._file_origin() == before
     _peer_takes_the_value(monkeypatch, gap.peer, "follow")
     assert not gap.waits.is_set()
     assert gap.built == [private_engine_dir(cfg.data_root)]
@@ -321,12 +395,12 @@ def test_one_bind_attempt_waits_within_one_bound_over_both_dirs(
     monkeypatch.setattr(
         prov_mod,
         "_placeable_demand",
-        lambda: SimpleNamespace(skipped_not_installed={}, skipped_unusable_ctx={}),
+        lambda _engine, _engines: SimpleNamespace(skipped_not_installed={}, refused_roles={}),
     )
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path / "slot")
     monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _dir: True)
     monkeypatch.setattr(prov_mod, "live_users_exist", lambda _dir, **_kw: True)
-    monkeypatch.setattr(prov_mod, "_healthy_states", lambda _dir: {})
+    monkeypatch.setattr(prov_mod, "_healthy_states", lambda _dir, **_kw: {})
     peer = FleetProvider()
     passes: list[tuple[Path, bool]] = []
 
@@ -349,9 +423,10 @@ def test_a_reload_that_keeps_every_group_restamps_them_with_the_file(
     # A plan key the reload finds no launch change for: only the file moves.
     persistent_settings.update_values(cfg.data_root, {"kv_cache_type": "f16"})
     gap.owner.replan_fleet(wait=True)
-    now = prov_mod._plan_origin()
+    now = prov_mod._file_origin()
     assert gap.owner._swaps == kept  # nothing restarted
     assert all(swap.origin == now for swap in kept.values())
+    assert all(swap.origin.followed == FLEET_RELOAD_KEYS for swap in kept.values())
     assert isinstance(now, PlanOrigin) and '"kv_cache_type": "f16"' in (now.fleet_view or "")
 
 
@@ -379,6 +454,6 @@ def test_a_restamp_that_fails_to_write_does_not_fail_the_reload(
     assert "Could not record the new config" in caplog.text
     persistent_settings.update_values(cfg.data_root, {"kv_cache_type": "q8_0"})
     gap.owner.replan_fleet(wait=True)
-    now = prov_mod._plan_origin()
+    now = prov_mod._file_origin()
     assert all(swap.origin == now for swap in kept.values())
     assert '"kv_cache_type": "q8_0"' in (now.fleet_view or "")

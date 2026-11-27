@@ -20,8 +20,8 @@ def _make_view(*, manual: bool = False):  # type: ignore[no-untyped-def]
             GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(2)
         ),
         roles=(
-            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),
-            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1,), None, 1),
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1,), None, 1, "llama.cpp"),
         ),
         unplaceable=(),
         manual=manual,
@@ -308,8 +308,8 @@ def _make_view3():  # type: ignore[no-untyped-def]
             GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(3)
         ),
         roles=(
-            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),
-            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1, 2), None, 1),
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1, 2), None, 1, "llama.cpp"),
         ),
         unplaceable=(),
         manual=False,
@@ -434,8 +434,8 @@ async def test_chat_input_enter_yields_when_unfocused() -> None:
         inp.action_submit()
 
 
-async def test_single_gpu_collapses_editor_to_a_note(monkeypatch) -> None:
-    """One card means nothing to arrange: no grid, no commands, just the note."""
+async def test_single_gpu_keeps_the_grid_for_the_cpu_choice(monkeypatch) -> None:
+    """One card leaves only the cpu choice to arrange: the note, the grid and the commands show."""
     from textual.widgets import Label
 
     import lilbee.cli.tui.widgets.fleet_body as fbm
@@ -447,8 +447,8 @@ async def test_single_gpu_collapses_editor_to_a_note(monkeypatch) -> None:
     view = PlacementView(
         gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A40", 44 * GIB, 44 * GIB),),
         roles=(
-            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),
-            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1),
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp"),
         ),
         manual=False,
         unplaceable=(),
@@ -461,8 +461,15 @@ async def test_single_gpu_collapses_editor_to_a_note(monkeypatch) -> None:
         await pilot.press("ctrl+g")
         await pilot.pause()
         body = app.query_one(fbm.FleetBody)
-        assert not body.query(".dev-toggle")  # no grid chips to toggle
-        assert body.query_one("#placement-commands").display is False
-        assert body.query_one("#placement-hint").display is False
+        # The card pill and the cpu and auto choices of both roles stay on offer.
+        assert sorted(str(pill.render()) for pill in body.query(".dev-toggle")) == [
+            " 0 ",
+            " 0 ",
+            " auto ",
+            " auto ",
+            " cpu ",
+            " cpu ",
+        ]
+        assert body.query_one("#placement-commands").display is True
         note = body.query_one(".single-gpu-note", Label)
         assert "One graphics card" in str(note.render())

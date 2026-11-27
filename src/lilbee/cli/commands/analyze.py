@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -21,8 +22,9 @@ from lilbee.cli.commands.profile import render_changes
 from lilbee.cli.helpers import json_output
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import ProfileFolder, ProfileStore
+from lilbee.runtime.asyncio_loop import run_interruptible
 from lilbee.runtime.cancellation import sigint_cancel
-from lilbee.runtime.console import PlainConsole
+from lilbee.runtime.console import PlainConsole, live_progress
 from lilbee.runtime.progress import AnalyzeEvent, EventType
 
 if TYPE_CHECKING:
@@ -59,22 +61,34 @@ _target_option = typer.Option(
 _off_option = typer.Option(False, "--off", help="Hide the analyze tip; reads no files.")
 
 
-def print_tip_if_shown(root: Path) -> None:
-    """Print the analyze tip in text mode when the project at *root* should see it."""
+def print_tip_if_shown(root: Path, *, above_live_display: bool = False) -> None:
+    """Print the analyze tip in text mode when the project at *root* should see it.
+
+    *above_live_display* is for a caller inside a live Rich display with its own console, such
+    as the ingest bar. That display redirects ``sys.stdout``, so a write through it prints above
+    the bar; a write through this console would land on the bar's line.
+    """
     from lilbee.app.analyze import TIP_TEXT, tip_shows
 
-    if not cfg.json_mode and tip_shows(root):
-        console.print(Text(TIP_TEXT, style=theme.MUTED), soft_wrap=True)
+    if cfg.json_mode or not tip_shows(root):
+        return
+    tip = Text(TIP_TEXT, style=theme.MUTED)
+    if not above_live_display:
+        console.print(tip, soft_wrap=True)
+        return
+    with console.capture() as captured:
+        console.print(tip, soft_wrap=True)
+    sys.stdout.write(captured.get())
 
 
 @contextmanager
 def _progress() -> Iterator[DetailedProgressCallback]:
     """A progress bar over the files analyze extracts; off in JSON mode."""
-    from rich.progress import BarColumn, MofNCompleteColumn, Progress
+    from rich.progress import BarColumn, MofNCompleteColumn
 
     from lilbee.runtime.progress.columns import literal_text_column
 
-    with Progress(
+    with live_progress(
         literal_text_column("{task.description}"),
         BarColumn(),
         MofNCompleteColumn(),
@@ -110,7 +124,7 @@ def _render_reading(report: AnalyzeResponse) -> None:
     pdf = report.pdf
     line(f"Code files: {report.code_share:.0%}")
     line(f"Scanned pages: {pdf.scanned_pages} of {pdf.pages} PDF pages")
-    line(f"Scanned share, image files included: {pdf.scanned_share:.0%}")
+    line(f"Scanned share of pages: {pdf.scanned_share:.0%} (a non-PDF file counts as one page)")
     line(f"PDFs with tables: {pdf.files_with_tables} of {pdf.files}")
     if pdf.median_pages is not None:
         line(f"Median PDF length: {pdf.median_pages:g} pages")
@@ -183,11 +197,14 @@ def _analyze(request: AnalyzeRequest) -> AnalyzeResponse:
     from lilbee.server.models import AnalyzeResponse
 
     try:
-        with _progress() as on_progress, sigint_cancel() as cancel:
-            report = asyncio.run(
-                run_analysis(ProfileStore(), request, on_progress=on_progress, cancel=cancel)
+        # The scope of Ctrl+C is the outer one: its force quit runs after the bar closes.
+        with sigint_cancel() as cancel, _progress() as on_progress:
+            report = run_interruptible(
+                run_analysis(ProfileStore(), request, on_progress=on_progress, cancel=cancel),
+                cancel,
             )
-    except TaskCancelledError:
+    # Ctrl+C cancels the run's task as it sets the token, so either one ends the run.
+    except (TaskCancelledError, asyncio.CancelledError):
         fail(CANCELLED_MESSAGE)
     except ValueError as exc:
         fail(str(exc))

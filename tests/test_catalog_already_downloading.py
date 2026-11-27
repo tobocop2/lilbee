@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import dataclasses
+import threading
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from textual.app import ComposeResult
 from textual.widgets import Static
 
+from lilbee.catalog.download import ListingFailedError, ListingOfflineError
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui.task_queue import TaskQueue, TaskType
 from lilbee.cli.tui.widgets.task_bar_controller import download_key
+from tests._async_wait import wait_for_pull_check, wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 
@@ -64,10 +68,17 @@ async def test_install_of_a_pending_model_notifies_and_does_not_enqueue(
         monkeypatch.setattr(screen, "_enqueue_download", lambda m: enqueued.append(m.hf_repo))
         notices: list[str] = []
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(str(message)))
+        planned: list[str] = []
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.catalog.plan_pull",
+            lambda entry, *_a: planned.append(entry.hf_repo),
+        )
 
         screen._install_model(model)
+        await wait_for_pull_check(screen.app)
 
         assert enqueued == []
+        assert planned == [], "a queued pull asked the Hub again"
         assert any("already downloading" in n for n in notices)
 
 
@@ -93,6 +104,7 @@ async def test_install_of_an_unqueued_model_still_enqueues(
         )
 
         screen._install_model(_model())
+        await wait_for_pull_check(screen.app)
 
         assert enqueued == ["acme/already-GGUF"]
 
@@ -121,7 +133,7 @@ async def test_a_pull_too_big_for_the_disk_never_becomes_a_task(
         notices: list[str] = []
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(str(message)))
         monkeypatch.setattr(
-            "lilbee.cli.tui.screens.catalog.disk_shortfall",
+            "lilbee.cli.tui.screens.catalog.preflight",
             lambda *_a, **_kw: (
                 "Not enough disk space for acme/already-GGUF: needs 24.2 GB, 0.2 GB free."
             ),
@@ -129,6 +141,7 @@ async def test_a_pull_too_big_for_the_disk_never_becomes_a_task(
 
         screen._install_model(big)
         screen._install_model(big)
+        await wait_for_pull_check(screen.app)
 
         assert enqueued == []
         assert _live(pilot.app.task_bar.queue) == 0
@@ -136,14 +149,15 @@ async def test_a_pull_too_big_for_the_disk_never_becomes_a_task(
         assert all("Not enough disk space" in n for n in notices)
 
 
-async def test_the_disk_check_asks_the_hub_what_the_file_really_costs(
+async def test_the_disk_check_charges_the_pull_plan_not_the_row(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The row's size approximates off the parameter count; one file is named here.
+    """The row's size approximates off the parameter count.
 
     A refusal is a decision, so it runs against the bytes HuggingFace reports
-    for the resolved file rather than against the browse column's figure.
+    for the files the download itself fetches, rather than the browse figure.
     """
+    from lilbee.catalog import download
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     async with _App().run_test(size=(120, 40)) as pilot:
@@ -152,29 +166,29 @@ async def test_the_disk_check_asks_the_hub_what_the_file_really_costs(
         await pilot.pause()
         pilot.app.task_bar.queue = TaskQueue()
 
+        plan = download.PullPlan(
+            "acme/already-GGUF",
+            (download.PlannedFile("acme-Q4_K_M.gguf", 9_000_000_000, None, None),),
+        )
+        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.plan_pull", lambda *_a: plan)
         asked: list[int] = []
         monkeypatch.setattr(
-            "lilbee.cli.tui.screens.catalog.resolve_filename", lambda _m: "acme-Q4_K_M.gguf"
-        )
-        monkeypatch.setattr(
-            "lilbee.cli.tui.screens.catalog.download_bytes", lambda _repo, _name: 9_000_000_000
-        )
-        monkeypatch.setattr(
-            "lilbee.cli.tui.screens.catalog.disk_shortfall",
-            lambda _dir, _repo, needed: asked.append(needed) or None,
+            download, "disk_shortfall", lambda _dir, _repo, needed: asked.append(needed) or None
         )
         monkeypatch.setattr(screen, "_enqueue_download", lambda _m: None)
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: None)
 
         screen._install_model(dataclasses.replace(_model(), size_gb=4.3))
+        await wait_for_pull_check(screen.app)
 
         assert asked == [9_000_000_000]
 
 
-async def test_an_unresolvable_file_leaves_the_rows_own_figure(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("error", [ListingOfflineError, ListingFailedError])
+async def test_an_unlistable_repo_leaves_the_rows_own_figure(
+    monkeypatch: pytest.MonkeyPatch, error: type[Exception]
 ) -> None:
-    """Offline, the approximation is the only figure there is, and it still guards."""
+    """Without the listing, the approximation is the only figure there is, and it still guards."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     async with _App().run_test(size=(120, 40)) as pilot:
@@ -183,21 +197,83 @@ async def test_an_unresolvable_file_leaves_the_rows_own_figure(
         await pilot.pause()
         pilot.app.task_bar.queue = TaskQueue()
 
-        def _unreachable(_model_arg: object) -> str:
-            raise RuntimeError("offline")
+        def _unlistable(*_a: object) -> object:
+            raise error("offline")
 
         asked: list[int] = []
-        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.resolve_filename", _unreachable)
+        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.plan_pull", _unlistable)
         monkeypatch.setattr(
             "lilbee.cli.tui.screens.catalog.disk_shortfall",
             lambda _dir, _repo, needed: asked.append(needed) or None,
         )
-        monkeypatch.setattr(screen, "_enqueue_download", lambda _m: None)
+        enqueued: list[str] = []
+        monkeypatch.setattr(screen, "_enqueue_download", lambda m: enqueued.append(m.hf_repo))
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: None)
 
         screen._install_model(dataclasses.replace(_model(), size_gb=4.0))
+        await wait_for_pull_check(screen.app)
 
         assert asked == [int(4.0 * 1024**3)]
+        assert enqueued == ["acme/already-GGUF"]
+
+
+async def test_a_plan_the_download_would_refuse_is_shown_and_not_enqueued(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gated repo, an empty selection or a missing shard fails the download at once."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+        pilot.app.task_bar.queue = TaskQueue()
+
+        def _gated(*_a: object) -> object:
+            raise PermissionError("acme/already-GGUF requires HuggingFace authentication.")
+
+        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.plan_pull", _gated)
+        enqueued: list[str] = []
+        notices: list[tuple[str, str]] = []
+        monkeypatch.setattr(screen, "_enqueue_download", lambda m: enqueued.append(m.hf_repo))
+        monkeypatch.setattr(
+            screen,
+            "notify",
+            lambda message, severity="information", **_kw: notices.append((message, severity)),
+        )
+
+        screen._install_model(_model())
+        await wait_for_pull_check(screen.app)
+
+        assert enqueued == []
+        assert notices == [("acme/already-GGUF requires HuggingFace authentication.", "error")]
+
+
+async def test_a_plan_the_disk_already_holds_reports_installed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from lilbee.catalog import download
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+        pilot.app.task_bar.queue = TaskQueue()
+
+        held = download.PlannedFile("model.gguf", 1, None, tmp_path / "model.gguf")
+        plan = download.PullPlan("acme/already-GGUF", (held,))
+        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.plan_pull", lambda *_a: plan)
+        enqueued: list[str] = []
+        notices: list[str] = []
+        monkeypatch.setattr(screen, "_enqueue_download", lambda m: enqueued.append(m.hf_repo))
+        monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(message))
+
+        screen._install_model(_model())
+        await wait_for_pull_check(screen.app)
+
+        assert enqueued == []
+        assert len(notices) == 1 and "already installed" in notices[0].lower()
 
 
 async def test_enqueue_download_notifies_a_bracketed_name_literally() -> None:
@@ -249,3 +325,131 @@ async def test_unsupported_confirm_enqueue_notifies_a_bracketed_name_literally()
 
         assert len(notified) == 1
         assert "note[draft]" in notified[0]
+
+
+async def test_the_screen_keeps_serving_events_while_the_hub_is_slow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The plan asks the Hub, so the UI thread must not wait for its answer."""
+    from lilbee.catalog import download
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    release = threading.Event()
+    answered = threading.Event()
+
+    def _slow_plan(model: CatalogModel, *_a: object) -> download.PullPlan:
+        release.wait(timeout=5)
+        answered.set()
+        return download.PullPlan(model.hf_repo)
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+        pilot.app.task_bar.queue = TaskQueue()
+        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.plan_pull", _slow_plan)
+        enqueued: list[str] = []
+        monkeypatch.setattr(screen, "_enqueue_download", lambda m: enqueued.append(m.hf_repo))
+        monkeypatch.setattr(screen, "notify", lambda message, **_kw: None)
+        served: list[bool] = []
+
+        screen._install_model(_model())
+        pilot.app.call_later(lambda: served.append(answered.is_set()))
+        assert await wait_until(pilot, lambda: bool(served))
+        release.set()
+        await wait_for_pull_check(screen.app)
+
+    assert served == [False], "the UI thread waited for the Hub before it served the next event"
+    assert enqueued == ["acme/already-GGUF"]
+
+
+async def test_a_second_press_during_the_check_does_not_queue_the_pull_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both presses start a check; the one that ends second finds the pull already queued."""
+    from lilbee.catalog import download
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    release = threading.Event()
+
+    def _slow_plan(model: CatalogModel, *_a: object) -> download.PullPlan:
+        release.wait(timeout=5)
+        return download.PullPlan(model.hf_repo)
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+        queue = TaskQueue()
+        pilot.app.task_bar.queue = queue
+        started: list[str] = []
+
+        def _start(model: CatalogModel, **_kw: object) -> None:
+            started.append(model.hf_repo)
+            queue.enqueue(
+                lambda: None,
+                model.display_name,
+                TaskType.DOWNLOAD.value,
+                dedupe_key=download_key(model),
+            )
+
+        monkeypatch.setattr(pilot.app.task_bar, "start_download", _start)
+        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.plan_pull", _slow_plan)
+        notices: list[str] = []
+        monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(str(message)))
+
+        screen._install_model(_model())
+        screen._install_model(_model())
+        release.set()
+        await wait_for_pull_check(screen.app)
+
+    assert started == ["acme/already-GGUF"]
+    assert any("already downloading" in n for n in notices)
+
+
+@pytest.mark.parametrize("refused", [False, True], ids=["fits", "refused"])
+async def test_closing_the_catalog_during_the_check_keeps_the_verdict(
+    monkeypatch: pytest.MonkeyPatch, refused: bool
+) -> None:
+    """The pull is the app's task: a press must queue it, or say why not, after the screen goes."""
+    from lilbee.catalog import download
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _slow_plan(model: CatalogModel, *_a: object) -> download.PullPlan:
+        entered.set()
+        release.wait(timeout=5)
+        if refused:
+            raise PermissionError("acme/already-GGUF requires HuggingFace authentication.")
+        return download.PullPlan(model.hf_repo)
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+        pilot.app.task_bar.queue = TaskQueue()
+        started: list[str] = []
+        notices: list[str] = []
+        monkeypatch.setattr(
+            pilot.app.task_bar, "start_download", lambda m, **_kw: started.append(m.hf_repo)
+        )
+        monkeypatch.setattr(
+            pilot.app, "notify", lambda message, **_kw: notices.append(str(message))
+        )
+        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.plan_pull", _slow_plan)
+
+        screen._install_model(_model())
+        assert await wait_until(pilot, entered.is_set)
+        await pilot.app.pop_screen()
+        await pilot.pause()
+        release.set()
+        await wait_for_pull_check(pilot.app)
+
+        if refused:
+            assert started == []
+            assert notices == ["acme/already-GGUF requires HuggingFace authentication."]
+        else:
+            assert started == ["acme/already-GGUF"]
+            assert any("Queued download" in n for n in notices), notices

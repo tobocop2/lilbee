@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,6 +27,22 @@ _PORT = 8888
 def _write_server_session() -> None:
     server_json_path().write_text(json.dumps({"token": _TOKEN}))
     (cfg.data_dir / "server.port").write_text(str(_PORT))
+
+
+@pytest.fixture
+def posix_stop(monkeypatch):
+    """Pin the platform so the launcher stops serve with terminate(), as on POSIX.
+
+    Windows stops serve with CTRL_BREAK instead; that stop has its own tests. The pin
+    holds for the whole process, so a test that runs a command does not take it: the
+    command's own signal setup would ask Windows for POSIX signals.
+    """
+    monkeypatch.setattr(sys, "platform", "linux")
+
+
+def _stop_of(proc: MagicMock) -> MagicMock:
+    """The call that stops serve on this platform: CTRL_BREAK on Windows, else terminate()."""
+    return proc.send_signal if sys.platform == "win32" else proc.terminate
 
 
 @pytest.fixture(autouse=True)
@@ -162,7 +180,7 @@ def test_launch_opencode_spawns_fresh_server_when_session_files_are_stale(tmp_pa
         result = runner.invoke(app, ["launch", "opencode"])
 
     assert result.exit_code == 0
-    fake_proc.terminate.assert_called_once()
+    _stop_of(fake_proc).assert_called_once()
 
 
 @pytest.mark.no_health_default
@@ -538,7 +556,7 @@ def test_launch_opencode_spawns_server_when_none_running():
         result = runner.invoke(app, ["launch", "opencode"])
 
     assert result.exit_code == 0
-    fake_proc.terminate.assert_called_once()
+    _stop_of(fake_proc).assert_called_once()
 
 
 def test_launch_opencode_health_timeout_terminates_spawn_and_exits_1():
@@ -557,7 +575,7 @@ def test_launch_opencode_health_timeout_terminates_spawn_and_exits_1():
     assert result.exit_code == 1
     assert "failed to start" in result.stderr
     # Every bounded attempt spawned a server and then stopped it.
-    assert fake_proc.terminate.call_count == _SPAWN_ATTEMPTS
+    assert _stop_of(fake_proc).call_count == _SPAWN_ATTEMPTS
 
 
 def test_launch_opencode_health_ok_but_session_missing_exits_1():
@@ -574,7 +592,7 @@ def test_launch_opencode_health_ok_but_session_missing_exits_1():
         result = runner.invoke(app, ["launch", "opencode"])
     assert result.exit_code == 1
     assert "did not write a session file" in result.stderr
-    fake_proc.terminate.assert_called_once()
+    _stop_of(fake_proc).assert_called_once()
 
 
 def test_free_port_returns_open_port():
@@ -743,6 +761,7 @@ def test_spawn_server_returns_popen(monkeypatch):
     assert out is fake
 
 
+@pytest.mark.usefixtures("posix_stop")
 def test_stop_spawned_server_kills_on_terminate_timeout():
     import subprocess as _subprocess
 
@@ -810,6 +829,23 @@ def test_record_setup_leaves_existing_marker_intact_on_failure(tmp_path, monkeyp
     with pytest.raises(OSError):
         setup_gate._record_setup("opencode-setup.json")
     assert json.loads(marker.read_text()) == {"accepted": True}
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_record_setup_propagates_a_failure_to_create_the_temp_file(tmp_path, monkeypatch):
+    """No temp file exists yet when its creation fails: the error reaches the caller, no marker."""
+    from lilbee.cli.launchers import setup_gate
+
+    marker = tmp_path / "opencode-setup.json"
+
+    def _boom(*_a, **_k):
+        raise OSError("no space for a temp file")
+
+    monkeypatch.setattr(setup_gate, "_marker_path", lambda _name: marker)
+    monkeypatch.setattr(setup_gate.tempfile, "NamedTemporaryFile", _boom)
+    with pytest.raises(OSError, match="no space"):
+        setup_gate._record_setup("opencode-setup.json")
+    assert not marker.exists()
     assert not list(tmp_path.glob("*.tmp"))
 
 
@@ -1017,8 +1053,71 @@ def test_chat_warm_budget_scales_with_split_giant_weights(tmp_path):
 
     budget = launch_mod.chat_warm_budget_s()
     assert budget == max(
-        launch_mod._WARM_TIMEOUT_S, float(cold_load_timeout_s(total, WorkerRole.CHAT))
+        launch_mod._WARM_TIMEOUT_S, float(cold_load_timeout_s(total, WorkerRole.CHAT, 0))
     )
+
+
+class _SizedShard:
+    """A model file that reports *size* bytes without holding them on disk."""
+
+    def __init__(self, size: int) -> None:
+        self._size = size
+
+    def stat(self) -> SimpleNamespace:
+        return SimpleNamespace(st_size=self._size)
+
+
+def _registry_of(first: object, shards: list) -> type:
+    """A model registry that resolves any ref to *first* and lists *shards*."""
+
+    class _Registry:
+        def __init__(self, _models_dir) -> None:
+            pass
+
+        def resolve(self, _ref: str):
+            return first
+
+        def shard_paths(self, _ref: str) -> list:
+            return shards
+
+    return _Registry
+
+
+def test_chat_warm_budget_follows_the_measured_read_rate(monkeypatch):
+    """On a slow volume the launcher waits as long as the engine's own cold-load wait."""
+    from lilbee.cli.launchers import server as launch_mod
+
+    shards = [_SizedShard(10 * 1024**3), _SizedShard(10 * 1024**3)]
+    measured: list = []
+
+    def _rate(path) -> int:
+        measured.append(path)
+        return 25 * 1024**2  # scaled at half: the 20 GiB take 1638 s
+
+    monkeypatch.setattr(launch_mod, "ModelRegistry", _registry_of(shards[0], shards))
+    monkeypatch.setattr(launch_mod, "measured_read_rate", _rate)
+    assert launch_mod.chat_warm_budget_s() == 1638.0
+    assert measured == [shards[0]]
+
+
+def test_chat_warm_budget_stops_at_the_cap_on_a_stalled_reading(monkeypatch):
+    """A rate of 1 B/s is floored and capped: the launcher waits one hour, not centuries."""
+    from lilbee.cli.launchers import server as launch_mod
+
+    blob = _SizedShard(60 * 1024**3)
+    monkeypatch.setattr(launch_mod, "ModelRegistry", _registry_of(blob, [blob]))
+    monkeypatch.setattr(launch_mod, "measured_read_rate", lambda _path: 1)
+    assert launch_mod.chat_warm_budget_s() == 3600.0
+
+
+def test_chat_warm_budget_sizes_a_single_file_model_by_its_blob(monkeypatch):
+    """A single file has no shard beside its blob; its own size still scales the wait."""
+    from lilbee.cli.launchers import server as launch_mod
+
+    blob = _SizedShard(20 * 1024**3)
+    monkeypatch.setattr(launch_mod, "ModelRegistry", _registry_of(blob, []))
+    monkeypatch.setattr(launch_mod, "measured_read_rate", lambda _path: 25 * 1024**2)
+    assert launch_mod.chat_warm_budget_s() == 1638.0
 
 
 class TestOpencodeConfigDir:

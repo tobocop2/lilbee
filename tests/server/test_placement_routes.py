@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from unittest import mock
+
+import pytest
+
 import lilbee.server.handlers as handlers
 from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
 from lilbee.providers.roles import EngineBackend, WorkerRole
@@ -21,7 +25,7 @@ GIB = 1024**3
 def _view(manual=False):
     return PlacementView(
         gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * GIB, 72 * GIB),),
-        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1),),
+        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp"),),
         unplaceable=(),
         manual=manual,
         spec_json=None,
@@ -37,6 +41,38 @@ def test_get_placement(monkeypatch):
         r = client.get("/api/placement")
         assert r.status_code == 200
         assert r.json()["gpus"][0]["label"] == "CUDA0"
+
+
+def test_get_placement_reports_each_roles_charge(monkeypatch):
+    view = PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * GIB, 72 * GIB),),
+        roles=(
+            RolePlacementView(
+                WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp", charge_bytes=7 * GIB
+            ),
+        ),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+    )
+
+    async def _placement():
+        return view
+
+    monkeypatch.setattr(handlers, "placement", _placement)
+    with create_test_client([placement_route]) as client:
+        body = client.get("/api/placement").json()
+    assert body["roles"][0]["charge_bytes"] == 7 * GIB
+
+
+def test_the_charge_field_states_its_unit_and_meaning_in_the_schema():
+    from lilbee.server.models import RolePlacementResponse
+
+    field = RolePlacementResponse.model_json_schema()["properties"]["charge_bytes"]
+    assert "Bytes" in field["description"]
+    assert "card memory for a GPU role" in field["description"]
+    assert "system memory for a CPU role" in field["description"]
+    assert {"type": "null"} in field["anyOf"]
 
 
 def test_put_refused_on_daemon():
@@ -99,6 +135,39 @@ def test_get_gpus_provider_error_returns_503(monkeypatch):
     with create_test_client([gpus_route]) as client:
         r = client.get("/api/gpus")
         assert r.status_code == 503
+
+
+def test_get_placement_os_error_returns_503(monkeypatch):
+    async def boom():
+        raise OSError("device node unreadable")
+
+    monkeypatch.setattr(handlers, "placement", boom)
+    with create_test_client([placement_route]) as client:
+        r = client.get("/api/placement")
+        assert r.status_code == 503
+        assert "device node unreadable" in r.text
+
+
+def test_get_gpus_os_error_returns_503(monkeypatch):
+    async def boom():
+        raise OSError("device node unreadable")
+
+    monkeypatch.setattr(handlers, "gpus", boom)
+    with create_test_client([gpus_route]) as client:
+        r = client.get("/api/gpus")
+        assert r.status_code == 503
+        assert "device node unreadable" in r.text
+
+
+def test_gpu_stream_os_error_returns_503(monkeypatch):
+    def boom():
+        raise OSError("device node unreadable")
+
+    monkeypatch.setattr("lilbee.app.placement.get_planned_placement", boom)
+    with create_test_client([gpu_stats_stream_route]) as client:
+        r = client.get("/api/gpus/stream")
+        assert r.status_code == 503
+        assert "device node unreadable" in r.text
 
 
 def test_preview_unfit_returns_422(monkeypatch):
@@ -176,7 +245,9 @@ def test_put_missing_spec_returns_422_when_enabled(monkeypatch):
     with create_test_client([placement_set_route]) as client:
         r = client.put("/api/placement", json={})
         assert r.status_code == 422
-        assert "spec is required" in r.text
+        assert r.json()["detail"] == (
+            "spec is required to apply placement; send DELETE to /api/placement to clear it."
+        )
 
 
 def test_put_unfit_spec_returns_422_when_enabled(monkeypatch):
@@ -240,6 +311,78 @@ def test_delete_provider_error_returns_503_when_enabled(monkeypatch):
         assert r.status_code == 503
 
 
+def test_delete_probe_oserror_is_service_unavailable_when_enabled(monkeypatch):
+    """DELETE answers a failed GPU probe with the same 503 PUT gives."""
+    _enable_http_placement(monkeypatch)
+
+    async def _boom():
+        raise PermissionError(13, "Permission denied", "/dev/nvidia0")
+
+    monkeypatch.setattr(handlers, "placement_clear", _boom)
+    with create_test_client([placement_clear_route]) as client:
+        r = client.delete("/api/placement")
+    assert r.status_code == 503
+    assert "Could not probe the GPUs" in r.json()["detail"]
+
+
+def test_delete_input_error_returns_422_when_enabled(monkeypatch):
+    """DELETE answers a placement error with the 422 PUT gives."""
+    from lilbee.providers.fleet.placement_spec import PlacementError
+
+    _enable_http_placement(monkeypatch)
+
+    async def _boom():
+        raise PlacementError("chat needs 70 GiB but device 0 has 40 GiB free")
+
+    monkeypatch.setattr(handlers, "placement_clear", _boom)
+    with create_test_client([placement_clear_route]) as client:
+        r = client.delete("/api/placement")
+    assert r.status_code == 422
+    assert "40 GiB free" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("method", ["put", "delete"])
+def test_a_read_only_config_is_not_reported_as_a_probe_failure(method, monkeypatch):
+    """A config.toml the owner made read-only answers 503 with the file's own message."""
+    from lilbee.core.settings import ReadOnlyConfigError
+    from lilbee.server.app import _config_read_only_response
+
+    _enable_http_placement(monkeypatch)
+    message = "/data/config.toml is read-only; make it writable and try again"
+
+    async def _boom(*_args):
+        raise ReadOnlyConfigError(message)
+
+    handler = "placement_set" if method == "put" else "placement_clear"
+    route = placement_set_route if method == "put" else placement_clear_route
+    kwargs = {"json": {"spec": {"chat": {"devices": [0]}}}} if method == "put" else {}
+    monkeypatch.setattr(handlers, handler, _boom)
+    handlers_by_error = {ReadOnlyConfigError: _config_read_only_response}
+    with create_test_client([route], exception_handlers=handlers_by_error) as client:
+        r = getattr(client, method)("/api/placement", **kwargs)
+    assert r.status_code == 503
+    assert r.json()["detail"] == f"{message}."
+
+
+@pytest.mark.parametrize("method", ["put", "delete"])
+def test_an_unreadable_config_answers_503_with_the_read_text(method, monkeypatch):
+    from lilbee.core.settings import ConfigReadFailedError
+
+    _enable_http_placement(monkeypatch)
+
+    async def _boom(*_args):
+        raise ConfigReadFailedError(13, "Permission denied", "/data/config.toml")
+
+    handler = "placement_set" if method == "put" else "placement_clear"
+    route = placement_set_route if method == "put" else placement_clear_route
+    kwargs = {"json": {"spec": {"chat": {"devices": [0]}}}} if method == "put" else {}
+    monkeypatch.setattr(handlers, handler, _boom)
+    with create_test_client([route]) as client:
+        r = getattr(client, method)("/api/placement", **kwargs)
+    assert r.status_code == 503
+    assert r.json()["detail"].startswith("Could not read config.toml")
+
+
 def test_get_gpus(monkeypatch):
     from lilbee.server.models import GpuInfoResponse, GpusResponse
 
@@ -274,7 +417,7 @@ def test_gpu_stats_stream_provider_error_returns_503(monkeypatch):
     def _boom():
         raise ProviderError("llama-server binary not found")
 
-    monkeypatch.setattr(placement_mod, "get_placement", _boom)
+    monkeypatch.setattr(placement_mod, "get_planned_placement", _boom)
     with create_test_client([gpu_stats_stream_route]) as client:
         r = client.get("/api/gpus/stream")
         assert r.status_code == 503
@@ -291,7 +434,7 @@ def test_gpu_stats_stream_streams_events(monkeypatch):
     async def _fake_stream(devices):
         yield 'event: gpu_stats\ndata: {"gpus": []}\n\n'
 
-    monkeypatch.setattr(placement_mod, "get_placement", lambda: view)
+    monkeypatch.setattr(placement_mod, "get_planned_placement", lambda: view)
     monkeypatch.setattr(handlers, "gpu_stats_stream", _fake_stream)
     with create_test_client([gpu_stats_stream_route]) as client:
         r = client.get("/api/gpus/stream")
@@ -320,7 +463,7 @@ def test_gpu_stats_stream_probes_off_the_event_loop(monkeypatch):
         loop_tid.append(threading.get_ident())
         yield "event: gpu_stats\ndata: {}\n\n"
 
-    monkeypatch.setattr(placement_mod, "get_placement", _probe)
+    monkeypatch.setattr(placement_mod, "get_planned_placement", _probe)
     monkeypatch.setattr(handlers, "gpu_stats_stream", _fake_stream)
     with create_test_client([gpu_stats_stream_route]) as client:
         r = client.get("/api/gpus/stream")
@@ -422,3 +565,61 @@ class TestThePayloadReportsTheEngineBackend:
         response = PlacementResponse.from_view(view)
 
         assert response.engine_backend is EngineBackend.UNKNOWN
+
+
+class TestPlacementWriteOnAHeldConfigLock:
+    """A placement write that cannot take the config lock answers the lock error."""
+
+    @staticmethod
+    def _client(route, monkeypatch, tmp_path):
+        from lilbee.app import placement as app_placement
+        from lilbee.core import settings
+        from lilbee.core.security import FileLockUnavailableError
+        from lilbee.server.app import _config_locked_response
+
+        _enable_http_placement(monkeypatch)
+        monkeypatch.setattr(app_placement.cfg, "data_root", tmp_path)
+        monkeypatch.setattr(settings, "_CONFIG_LOCK_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(app_placement, "_planning_engines", lambda: mock.MagicMock())
+        monkeypatch.setattr(app_placement, "_resolve", lambda *a, **k: mock.MagicMock())
+        return create_test_client(
+            [route], exception_handlers={FileLockUnavailableError: _config_locked_response}
+        )
+
+    @pytest.mark.parametrize("method", ["put", "delete"])
+    def test_the_route_answers_the_lock_error(self, method, monkeypatch, tmp_path):
+        from lilbee.core.security import file_lock
+
+        route = placement_set_route if method == "put" else placement_clear_route
+        kwargs = {"json": {"spec": {"chat": {"devices": [0]}}}} if method == "put" else {}
+        with (
+            self._client(route, monkeypatch, tmp_path) as client,
+            file_lock(tmp_path / "config.toml", 1),
+        ):
+            r = getattr(client, method)("/api/placement", **kwargs)
+        assert r.status_code == 503
+        detail = r.json()["detail"]
+        assert detail.startswith("Could not write config.toml: another lilbee process")
+        assert "Nothing was changed." in detail
+        assert "probe" not in detail.lower()
+
+    @pytest.mark.parametrize("method", ["put", "delete"])
+    def test_a_disk_full_write_names_the_config(self, method, monkeypatch, tmp_path):
+        import errno
+
+        from lilbee.app import placement as app_placement
+
+        def _full(*_args):
+            raise OSError(errno.ENOSPC, "No space left on device", str(tmp_path / "config.toml"))
+
+        monkeypatch.setattr(app_placement.settings, "update_values", _full)
+        monkeypatch.setattr(app_placement.settings, "delete_values", _full)
+        route = placement_set_route if method == "put" else placement_clear_route
+        kwargs = {"json": {"spec": {"chat": {"devices": [0]}}}} if method == "put" else {}
+        with self._client(route, monkeypatch, tmp_path) as client:
+            r = getattr(client, method)("/api/placement", **kwargs)
+        assert r.status_code == 503
+        detail = r.json()["detail"]
+        assert detail.startswith("Could not write config.toml: ")
+        assert "No space left on device" in detail
+        assert "probe" not in detail.lower()

@@ -1,0 +1,25 @@
+{
+  "id": "E6",
+  "rows": [
+    6,
+    26,
+    48,
+    50,
+    51,
+    59,
+    61,
+    71,
+    81,
+    84
+  ],
+  "request": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Say ok."
+      }
+    ],
+    "max_tokens": 64
+  },
+  "assert": "message.reasoning_content, message.reasoning or inline <think> in content."
+}

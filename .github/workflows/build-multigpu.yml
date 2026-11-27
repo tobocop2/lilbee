@@ -1,6 +1,6 @@
 name: Build multi-GPU server wheels and executables
 
-# Opt-in lilbee[multi-gpu] artifacts: the per-backend lilbee-engine wheel
+# Opt-in lilbee[multi-gpu] artifacts: the per-backend lilbee-engine-llama-cpp wheel
 # (bundles the compiled llama.cpp llama-server). Built across the multi-GPU
 # backend matrix (CUDA / Vulkan / ROCm) plus metal/cpu fallbacks.
 #
@@ -35,9 +35,19 @@ on:
         description: "Fail the run when a backend cell fails, instead of dropping that artifact."
         type: boolean
         default: false
+      mirror:
+        description: "Upload each engine this run compiles to the mirror release. The caller job must grant contents: write."
+        type: boolean
+        default: false
 
-permissions:
-  contents: write  # publish freshly built engines to the engine-binaries mirror release
+# No permissions here: the token is the caller's. A called workflow that asks
+# for contents: write fails at startup when the caller's token is read-only,
+# as on a fork or Dependabot pull request, and then ci-result never reports.
+# The job reads the repo (checkout, mirror fetch) and, when the caller passes
+# `mirror: true`, writes the mirror release; each such caller job grants
+# contents: write. A dispatch of this workflow alone has no `mirror` input and
+# the repo's read-only default token, so it builds and skips the mirror step;
+# dispatch warm-engine-cache to mirror.
 
 jobs:
   build-multigpu:
@@ -99,7 +109,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "key=engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_ref }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/bundle_rocm_runtime.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}" >> "$GITHUB_OUTPUT"
+          echo "key=engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_ref }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/bundle_rocm_runtime.sh', 'tools/wheel-build/bundle_windows_runtime.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}" >> "$GITHUB_OUTPUT"
 
       # The mirror first, same as the executable builds. This job publishes to it
       # but used to never read it, so every warm run rebuilt engines the mirror
@@ -110,7 +120,7 @@ jobs:
         run: |
           set -uo pipefail
           if bash tools/wheel-build/ci_mirror.sh fetch \
-            "${{ steps.engine-key.outputs.key }}" packaging/engine-wheel/lilbee_engine/bin; then
+            "${{ steps.engine-key.outputs.key }}" packaging/engine-wheel/lilbee_engine_llama_cpp/bin; then
             echo "restored=true" >> "$GITHUB_OUTPUT"
           else
             echo "restored=false" >> "$GITHUB_OUTPUT"
@@ -121,7 +131,7 @@ jobs:
         if: steps.engine-mirror.outputs.restored != 'true'
         uses: actions/cache/restore@v6
         with:
-          path: packaging/engine-wheel/lilbee_engine/bin
+          path: packaging/engine-wheel/lilbee_engine_llama_cpp/bin
           key: ${{ steps.engine-key.outputs.key }}
 
       - name: Decide whether the engine still needs building
@@ -209,19 +219,40 @@ jobs:
       - name: The ROCm bundle resolves on a machine with no ROCm
         if: matrix.backend == 'rocm'
         shell: bash
-        run: bash tools/qa/assert_rocm_bundle_loads.sh "${PKG_DIR}/lilbee_engine/bin"
+        run: bash tools/qa/assert_rocm_bundle_loads.sh "${PKG_DIR}/lilbee_engine_llama_cpp/bin"
 
       # The mirror is the only place a built engine is stored. Writing it to the
       # Actions cache as well cost ~2.5 GiB of a 10 GiB cap to duplicate what the
       # mirror already holds durably, and that cap is what the Nuitka object
       # caches need: those cannot live on a release, engines can.
+      #
+      # Never from a pull request. The mirror keeps the first upload under a
+      # key, and main and the release fetch it without compiling, so an
+      # unreviewed tree must not write one. A merged engine change compiles
+      # again on the main push and uploads from there.
+      #
+      # Only when the caller asks for it and grants the write token. A run
+      # without that token would fail the upload, so the step is skipped
+      # instead of red. A failed upload turns the step red, and
+      # continue-on-error keeps the build going.
       - name: Mirror the built engine
-        if: steps.engine.outputs.needs-build == 'true' && github.ref_type != 'tag'
+        if: inputs.mirror && steps.engine.outputs.needs-build == 'true' && github.ref_type != 'tag' && github.event_name != 'pull_request'
         continue-on-error: true
         uses: ./.github/actions/publish-engine-asset
         with:
           engine-key: ${{ steps.engine-key.outputs.key }}
           token: ${{ github.token }}
+
+      # After the mirror, so the mirror keeps the whole engine and the executable folder
+      # keeps all four runtime DLLs. The wheel drops the ones no file imports, as the
+      # pack scripts do. `python`, not `python3`: setup-python leaves no python3 on Windows.
+      - name: Prune the runtime DLLs that nothing imports (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python -m pip install "pefile>=2024.8.26"
+          python tools/qa/assert_engine_bundle.py --prune-runtime "${PKG_DIR}/lilbee_engine_llama_cpp/bin"
+          python tools/qa/assert_engine_bundle.py --imports-only "${PKG_DIR}/lilbee_engine_llama_cpp/bin"
 
       - name: Set wheel version to the lilbee version
         shell: bash
@@ -235,10 +266,15 @@ jobs:
           path.write_text(text)
           PY
 
-      - name: Build the lilbee-engine wheel
+      # The pin is written here and not by the engine build, because a mirror or
+      # cache hit skips that build and the wheel must carry its backend either way.
+      - name: Build the lilbee-engine-llama-cpp wheel
         shell: bash
         working-directory: ${{ env.PKG_DIR }}
         run: |
+          # The build and the retag stamp every entry with the commit time of this checkout.
+          export "$(bash "${GITHUB_WORKSPACE}/tools/wheel-build/source_date_epoch.sh" "${GITHUB_WORKSPACE}")"
+          bash "${GITHUB_WORKSPACE}/tools/wheel-build/write_engine_pin.sh"
           python -m build --wheel
           python -m wheel tags --remove --platform-tag "${{ matrix.wheel-plat }}" dist/*.whl
 
@@ -248,7 +284,9 @@ jobs:
       # `python`, not `python3`: setup-python leaves no python3 on PATH on Windows.
       - name: The wheel carries the backend it claims
         shell: bash
-        run: python tools/qa/assert_engine_bundle.py --backend "${{ matrix.backend }}" "${PKG_DIR}"/dist/*.whl
+        run: |
+          python -m pip install "pefile>=2024.8.26"
+          python tools/qa/assert_engine_bundle.py --backend "${{ matrix.backend }}" --tool llama-server --library ggml-base "${PKG_DIR}"/dist/*.whl
 
       # Hard gate: a lib-less bundle fails at exec with a loader error. This
       # step swallowing failures (continue-on-error) is how a broken metal
@@ -257,11 +295,11 @@ jobs:
       # runner; their closure is identical to the CPU/Vulkan/Metal cells that
       # do run this gate.
       - name: Smoke test the bundled binary
-        if: ${{ !startsWith(matrix.backend, 'cu') && matrix.backend != 'rocm' && matrix.backend != 'sycl' }}
+        if: ${{ !startsWith(matrix.backend, 'cu') && matrix.backend != 'rocm' }}
         shell: bash
         run: |
           set -x
-          bin_dir="${PKG_DIR}/lilbee_engine/bin"
+          bin_dir="${PKG_DIR}/lilbee_engine_llama_cpp/bin"
           # Exact names only: llama-server* also matches the Windows engine's
           # llama-server-impl.dll, which is not executable.
           exe=$(find "${bin_dir}" -maxdepth 1 -type f \( -name 'llama-server' -o -name 'llama-server.exe' \) | head -1)

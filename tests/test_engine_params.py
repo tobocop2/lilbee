@@ -15,6 +15,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers import engine_params as ep
 from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.engines import LLAMA
 
 
 @pytest.fixture(autouse=True)
@@ -89,7 +90,7 @@ class TestResolveChatCtx:
         from lilbee.providers.fleet import planning
 
         def _unavailable(*_a: object, **_k: object) -> int:
-            raise ProviderError("gguf-parser is not installed", provider="llama-server")
+            raise ProviderError("gguf-parser is not installed")
 
         monkeypatch.setattr(planning, "fit_chat_ctx", _unavailable)
 
@@ -102,7 +103,7 @@ class TestResolveChatCtx:
         model.write_bytes(b"x" * 100)
         seen: dict = {}
 
-        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int) -> int:
+        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int, engine) -> int:
             seen.update(available_bytes=available_bytes, ctx_ceiling=ctx_ceiling)
             return 249856
 
@@ -111,7 +112,10 @@ class TestResolveChatCtx:
         monkeypatch.setattr(ep, "compute_dynamic_ctx", lambda **_k: 131072)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 262144)
-        assert ep.resolve_chat_ctx(model, {"arch": "x"}, available_bytes=40 * 1024**3) == 249856
+        assert (
+            ep.resolve_chat_ctx(model, {"arch": "x"}, available_bytes=40 * 1024**3, engine=LLAMA)
+            == 249856
+        )
         assert seen == {"available_bytes": 40 * 1024**3, "ctx_ceiling": 262144}
 
     def test_the_fit_is_capped_by_num_ctx_max_and_the_target(self, tmp_path, monkeypatch) -> None:
@@ -121,7 +125,7 @@ class TestResolveChatCtx:
         model.write_bytes(b"x" * 100)
         seen: dict = {}
 
-        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int) -> int:
+        def _fit(_path, _meta, *, available_bytes: int, ctx_ceiling: int, engine) -> int:
             seen["ctx_ceiling"] = ctx_ceiling
             return ctx_ceiling
 
@@ -129,7 +133,7 @@ class TestResolveChatCtx:
         monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 262144)
         monkeypatch.setattr(cfg, "num_ctx_max", 65536)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 131072)
-        assert ep.resolve_chat_ctx(model, None, available_bytes=40 * 1024**3) == 65536
+        assert ep.resolve_chat_ctx(model, None, available_bytes=40 * 1024**3, engine=LLAMA) == 65536
         assert seen["ctx_ceiling"] == 65536
 
     def test_uses_dynamic_sizing(self, tmp_path, monkeypatch) -> None:
@@ -141,7 +145,7 @@ class TestResolveChatCtx:
         monkeypatch.setattr(ep, "compute_dynamic_ctx", lambda **_k: 6000)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 8192)
-        assert ep.resolve_chat_ctx(model, {"arch": "x"}) == 6000
+        assert ep.resolve_chat_ctx(model, {"arch": "x"}, engine=LLAMA) == 6000
 
     def test_honors_num_ctx_max_ceiling(self, tmp_path, monkeypatch) -> None:
         model = tmp_path / "m.gguf"
@@ -158,7 +162,7 @@ class TestResolveChatCtx:
         monkeypatch.setattr(ep, "compute_dynamic_ctx", _capture)
         monkeypatch.setattr(cfg, "num_ctx_max", 4096)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 8192)
-        ep.resolve_chat_ctx(model, None)
+        ep.resolve_chat_ctx(model, None, engine=LLAMA)
         assert seen["ceiling"] == 4096  # explicit num_ctx_max caps below training_ctx
 
     def test_quantized_kv_widens_the_grant(self, monkeypatch, tmp_path) -> None:
@@ -185,14 +189,14 @@ class TestResolveChatCtx:
         monkeypatch.setattr(cfg, "flash_attention", True)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 200000)
-        assert ep.resolve_chat_ctx(model, meta, available_bytes=10**9) == 17920
+        assert ep.resolve_chat_ctx(model, meta, available_bytes=10**9, engine=LLAMA) == 17920
 
     def test_falls_back_to_static_cap_on_stat_error(self, monkeypatch) -> None:
         monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 8192)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 4096)
         # A nonexistent path makes .stat() raise OSError -> static min(training, target).
-        assert ep.resolve_chat_ctx(Path("/nonexistent/x.gguf"), None) == 4096
+        assert ep.resolve_chat_ctx(Path("/nonexistent/x.gguf"), None, engine=LLAMA) == 4096
 
 
 class TestChatKvElemBytes:
@@ -201,7 +205,7 @@ class TestChatKvElemBytes:
 
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q4_0)
         monkeypatch.setattr(cfg, "flash_attention", True)
-        assert ep.chat_kv_elem_bytes() == 18 / 32
+        assert ep.chat_kv_elem_bytes(engine=LLAMA) == 18 / 32
 
     def test_q8_0_costs_more_than_a_byte(self, monkeypatch) -> None:
         # 34-byte block per 32 elements: rounding down to 1 over-grants.
@@ -209,7 +213,7 @@ class TestChatKvElemBytes:
 
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
         monkeypatch.setattr(cfg, "flash_attention", True)
-        assert ep.chat_kv_elem_bytes() == 34 / 32
+        assert ep.chat_kv_elem_bytes(engine=LLAMA) == 34 / 32
 
     def test_kv_cache_charged_f16_when_flash_attention_is_off(self, monkeypatch) -> None:
         """The launch sends f16 for K and V without flash attention; budgeting
@@ -218,7 +222,7 @@ class TestChatKvElemBytes:
 
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q4_0)
         monkeypatch.setattr(cfg, "flash_attention", False)
-        assert ep.chat_kv_elem_bytes() == 2.0
+        assert ep.chat_kv_elem_bytes(engine=LLAMA) == 2.0
 
 
 class TestChatCtxCeiling:
@@ -320,79 +324,54 @@ class TestEmbedTokenCap:
     def test_cap_never_drops_below_one(self) -> None:
         assert ep.embed_token_cap(1) == 1
 
-    def test_no_warning_when_the_cap_covers_the_chunk_budget(self, monkeypatch) -> None:
-        from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 
+class TestResolveEmbedCtx:
+    @pytest.mark.parametrize("semantic", [False, True])
+    def test_the_window_is_a_chunk_of_tokens_plus_the_headroom(self, monkeypatch, semantic) -> None:
+        """No chunker emits more than chunk_size tokens, so no character count sizes the window."""
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        assert ep.embed_window_warning(512 * CHARS_PER_TOKEN) is None
+        monkeypatch.setattr(cfg, "semantic_chunking", semantic)
+        meta = {"context_length": "8192"}
+        ctx = ep.resolve_embed_ctx(meta, Path("/m/e.gguf"))
+        assert ctx == 512 + ep.INPUT_HEADROOM_TOKENS + ep._EMBED_CTX_MARGIN
+        assert ep.embed_token_cap(ctx) == 512 + ep.INPUT_HEADROOM_TOKENS
 
-    def test_no_warning_when_token_sizing_self_corrects(self, monkeypatch) -> None:
-        """cap below chunk_size*4 with token_sizing off already makes the chunker
-        switch to token sizing on its own, so there is nothing left to warn about."""
+    def test_a_trained_context_below_the_window_caps_it(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "token_sizing", False)
-        monkeypatch.setattr(cfg, "semantic_chunking", False)
-        assert ep.embed_window_warning(2040) is None
-        assert ep.embed_window_warning(504) is None
+        assert ep.resolve_embed_ctx({"context_length": "512"}, Path("/m/e.gguf")) == 512
 
-    def test_no_warning_right_at_the_self_correcting_boundary(self, monkeypatch) -> None:
-        from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "token_sizing", False)
-        monkeypatch.setattr(cfg, "semantic_chunking", False)
-        assert ep.embed_window_warning(512 * CHARS_PER_TOKEN) is None
-
-    def test_warning_under_token_sizing_names_the_chunk_size_that_matches(
-        self, monkeypatch
-    ) -> None:
+class TestEmbedWindowWarning:
+    def test_a_cap_below_the_chunk_size_is_named(self, monkeypatch) -> None:
         from lilbee.core.health_warnings import WarningCode
 
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "token_sizing", True)
-        monkeypatch.setattr(cfg, "semantic_chunking", False)
-        assert ep.embed_window_warning(512) is None
         warning = ep.embed_window_warning(504)
         assert warning is not None
         assert warning.code is WarningCode.EMBED_WINDOW_BELOW_CHUNK
-        assert "504 tokens per input" in warning.message
-        assert "chunk_size 512" in warning.message
-        assert warning.remedy == "Set chunk_size to 504 to match the window."
+        assert warning.message == (
+            "The embedding model accepts 504 tokens per input; chunk_size 512 does not fit."
+        )
+        assert warning.remedy == "Set chunk_size to 376 or lower."
 
-    def test_semantic_chunking_warns_when_the_window_binds(self, monkeypatch) -> None:
-        """The semantic chunker sizes by characters and ignores token_sizing, so a
-        bound cap loses text there even though the plain path would self-correct."""
-        from lilbee.core.health_warnings import WarningCode
-
+    def test_the_prefix_and_newline_count_against_the_window(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "semantic_chunking", True)
-        monkeypatch.setattr(cfg, "token_sizing", False)
-        warning = ep.embed_window_warning(2040)
+        monkeypatch.setattr(cfg, "embedding_model", "nomic-ai/nomic-embed-text-v1.5-GGUF")
+        # "search_document: " is 17 characters; with the newline the reserve is 18.
+        assert ep.embed_input_reserve() == 18
+        assert ep.embed_window_warning(529) is not None
+        assert ep.embed_window_warning(530) is None
+
+    def test_the_remedy_never_names_a_size_below_one(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        warning = ep.embed_window_warning(100)
         assert warning is not None
-        assert warning.code is WarningCode.EMBED_WINDOW_BELOW_CHUNK
-        assert "2040 tokens per input" in warning.message
-        assert "2048 characters" in warning.message
-        assert "semantic" in warning.message.lower()
-        assert "loses text" in warning.message
-        assert warning.remedy == "Turn off semantic_chunking or lower chunk_size."
+        assert warning.remedy == "Set chunk_size to 1 or lower."
 
-    def test_semantic_chunking_ignores_token_sizing_when_deciding_to_warn(
-        self, monkeypatch
+    @pytest.mark.parametrize("cap", [513, 640])
+    def test_a_cap_that_holds_the_chunk_and_newline_gives_no_warning(
+        self, monkeypatch, cap
     ) -> None:
-        """token_sizing=True does not save semantic chunking from losing text: the
-        semantic chunker never consults it."""
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "semantic_chunking", True)
-        monkeypatch.setattr(cfg, "token_sizing", True)
-        warning = ep.embed_window_warning(504)
-        assert warning is not None
-        assert warning.remedy == "Turn off semantic_chunking or lower chunk_size."
-
-    def test_no_warning_when_semantic_chunking_cap_covers_the_char_budget(
-        self, monkeypatch
-    ) -> None:
-        from lilbee.data.extract.chunk import CHARS_PER_TOKEN
-
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "semantic_chunking", True)
-        assert ep.embed_window_warning(512 * CHARS_PER_TOKEN) is None
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/e.gguf")  # no document prefix
+        assert ep.embed_window_warning(cap) is None

@@ -56,6 +56,7 @@ def test_rocm_build_enumerating_nothing_on_an_amd_host_fails_loud(monkeypatch, t
     with pytest.raises(ProviderError) as err:
         assert_rocm_devices_usable(tmp_path / "llama-server", [], "rocBLAS error\n")
     assert "/dev/kfd" in str(err.value)
+    assert "this computer has an AMD GPU" in str(err.value)
 
 
 def test_rocm_build_is_silent_when_the_host_has_no_amd_gpu(monkeypatch, tmp_path) -> None:
@@ -131,6 +132,24 @@ class TestAmdPresenceReadsTheKernelNotRocmTooling:
         _root_paths(monkeypatch, tmp_path, "/dev/kfd", "/sys/class/drm")
 
         assert rocm_runtime._amd_gpu_present() is False
+
+    @pytest.mark.parametrize(("vendor", "expected"), [("0x1002", True), ("0x10de", False)])
+    def test_a_kfd_node_that_cannot_be_stat_ed_is_present_and_sysfs_decides(
+        self, monkeypatch, tmp_path, vendor: str, expected: bool
+    ) -> None:
+        """A node the user may not stat still exists: the ROCm warning names that
+        case, so the check goes on to the sysfs vendor read instead of raising."""
+        self._fake_sysfs(monkeypatch, tmp_path, kfd=True, vendors=[vendor])
+        real_exists = Path.exists
+
+        def _denied(self: Path, *a: object, **k: object) -> bool:
+            if self.name == "kfd":
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_exists(self, *a, **k)
+
+        monkeypatch.setattr(Path, "exists", _denied)
+
+        assert rocm_runtime._amd_gpu_present() is expected
 
 
 class TestAnApuLaptopIsNotRefusedTheEngine:

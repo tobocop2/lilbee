@@ -17,17 +17,27 @@ from litestar.middleware import ASGIMiddleware
 from litestar.middleware.base import DefineMiddleware
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.spec import Components, SecurityScheme
+from litestar.status_codes import HTTP_503_SERVICE_UNAVAILABLE
 
-from lilbee.app.config_follow import ConfigFileFollower
+from lilbee.app import services as app_services
 from lilbee.app.endpoints import MCP_PATH
 from lilbee.app.services import (
+    ServicesStoppingError,
+    follow_config_long_running,
     get_services,
+    logged_services_build,
     peek_services,
-    set_config_refresh,
     wait_for_opens,
 )
+from lilbee.app.settings import config_write_failure_message, fill_empty_chat_model
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
+from lilbee.core.config.context import request_config_scope
+from lilbee.core.config.keys import PROVIDER_SWITCHING_KEYS
+from lilbee.core.security import FileLockUnavailableError
+from lilbee.core.settings import ReadOnlyConfigError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.server_registry import ConfigReadError
 from lilbee.runtime.progress import LibraryUpgradeEvent
 from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.routes import anthropic_router
@@ -36,6 +46,10 @@ from lilbee.server.chat_completions_api.errors import CompletionsErrorCode, comp
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.content_disposition import CONTENT_DISPOSITION
 from lilbee.server.mcp_mount import build_mcp_mount
+from lilbee.server.provider_status import APP_ERROR_STATUSES, retry_after_headers
+from lilbee.server.route_names import name_routes
+from lilbee.server.routes import engines as engine_routes
+from lilbee.server.routes import presets as preset_routes
 from lilbee.server.routes.agent_config import (
     agent_config_index_route,
     agent_config_route,
@@ -43,6 +57,7 @@ from lilbee.server.routes.agent_config import (
 from lilbee.server.routes.analyze import analyze_router
 from lilbee.server.routes.crawl import crawl_route
 from lilbee.server.routes.documents import (
+    add_cancel_route,
     add_route,
     add_upload_route,
     documents_list_route,
@@ -93,6 +108,7 @@ from lilbee.server.routes.placement import (
 )
 from lilbee.server.routes.profiles import profiles_router
 from lilbee.server.routes.search import (
+    SEARCH_WARNINGS_HEADER,
     ask_route,
     ask_stream_route,
     chat_route,
@@ -240,21 +256,24 @@ _UPGRADE_WAIT_SECONDS = 10.0
 _OPEN_EXIT_WAIT_SECONDS = 5.0
 _UPGRADE_RETRY_AFTER_SECONDS = 10
 _UPGRADING_MESSAGE = "lilbee is upgrading the library. Try again in a few seconds."
+_OPENING_MESSAGE = "lilbee is opening the library. Try again in a few seconds."
 
 
 def _upgrading_response(path: str, upgrade: LibraryUpgradeEvent | None) -> Response:
     """The 503 for a request that waited out the limit, in the error shape of its API.
 
-    Every shape also carries the upgrade's progress, as health reports it.
+    The text names the upgrade only when one runs. Every shape also carries the upgrade's
+    progress, as health reports it.
     """
     code = CompletionsErrorCode.INTERNAL_ERROR
+    message = _OPENING_MESSAGE if upgrade is None else _UPGRADING_MESSAGE
     body: dict[str, Any]
     if path.startswith("/v1/messages"):
-        body = anthropic_error_body(anthropic_error_type(code), _UPGRADING_MESSAGE)
+        body = anthropic_error_body(anthropic_error_type(code), message)
     elif path.startswith("/v1/"):
-        body = completions_error_body(code, _UPGRADING_MESSAGE)
+        body = completions_error_body(code, message)
     else:
-        body = {"status_code": 503, "detail": _UPGRADING_MESSAGE}
+        body = {"status_code": 503, "detail": message}
     body["upgrade"] = None if upgrade is None else upgrade.model_dump(mode="json")
     return Response(
         body,
@@ -269,7 +288,8 @@ class _LibraryOpenWait(ASGIMiddleware):
 
     The wait runs off the loop, so an upgrade never blocks it. The limit sits under the
     15 s timeout of the Obsidian plugin, so the plugin shows the reason. Health, the warm
-    stream and shutdown pass at once: health reports the upgrade. MCP tool calls wait
+    stream and shutdown pass at once: health reports the upgrade. The engine list and
+    roles routes never read the library, so they pass too. MCP tool calls wait
     for the library where they use it. A process with no services has no open to wait
     for, and the request passes without building them.
     """
@@ -280,6 +300,7 @@ class _LibraryOpenWait(ASGIMiddleware):
         "^/api/shutdown$",
         f"^{MCP_PATH}(/.*)?$",
     )
+    exclude_opt_key = engine_routes.NO_LIBRARY_KEY
 
     async def handle(self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp) -> None:
         services = peek_services()
@@ -300,17 +321,36 @@ class _LibraryOpenWait(ASGIMiddleware):
 class _ConfigFileReload(ASGIMiddleware):
     """Take what another process changed in config.toml before each request runs.
 
-    The MCP mount is served by this middleware too, so its server does not follow the
-    file itself.
+    The request then reads the Config published by its check, plus its own writes,
+    while another request's check takes a later change. The MCP mount is served by
+    this middleware too, so its server does not follow the file itself.
     """
 
     def __init__(self) -> None:
-        self._follower = ConfigFileFollower()
-        set_config_refresh(self._follower.take_now)
+        # Built with the app; the engine's retry takes through it too.
+        self._follower = follow_config_long_running(PROVIDER_SWITCHING_KEYS, keeper="the server")
 
     async def handle(self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp) -> None:
         await self._follower.take()
-        await next_app(scope, receive, send)
+        with request_config_scope():
+            await next_app(scope, receive, send)
+
+
+def _start_services() -> None:
+    """Build the services before the server serves; a failed build ends the startup.
+
+    An empty chat model is filled first, so the services and the chat routes see the
+    same model. The fill takes the first cloud model with an accepted API key, or else
+    the first installed local model. A chat model that is set stays as set, and the
+    embedding model is never swapped.
+    """
+    with logged_services_build(log):
+        for notice in fill_empty_chat_model():
+            log.info("%s", notice)
+        services = get_services()
+    log.info("LLM provider pre-loaded")
+    _log_embedding_model_state(services.embedder)
+    services.store.open_in_background()
 
 
 @asynccontextmanager
@@ -322,34 +362,31 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     session_manager.load_or_generate()
 
     try:
-        services = get_services()  # pre-load all services (provider, embedder, etc.)
-        log.info("LLM provider pre-loaded")
-    except Exception:
-        log.warning("Failed to pre-load LLM provider", exc_info=True)
-    else:
-        _log_embedding_model_state(services.embedder)
-        services.store.open_in_background()
-    try:
+        _start_services()
         yield
     finally:
         _server_loop.set(None)
         session_manager.cleanup()
         # Terminate the provider's worker/fleet subprocesses so they don't
-        # outlive the server (e.g. on parent-death shutdown in managed mode).
-        # The open wait runs beside it, so its bound counts from the same start.
-        svc = peek_services()
-        stops = [_wait_for_the_opens()]
-        if svc is not None:
-            stops.append(asyncio.to_thread(svc.provider.shutdown))
-        # A failed shutdown must not leave the open wait unawaited.
-        for outcome in await asyncio.gather(*stops, return_exceptions=True):
-            if isinstance(outcome, BaseException):
-                log.warning("A server shutdown step failed", exc_info=outcome)
+        # outlive the server (e.g. on parent-death shutdown in managed mode). The reset
+        # clears the container, so the teardown at interpreter exit does not repeat this
+        # and a stuck engine start is waited for once. The open wait starts first and runs
+        # on its own thread beside it, so its bound counts from the same start. The reset
+        # runs on this thread, so a second Ctrl-C ends a stuck teardown.
+        opens = asyncio.get_running_loop().run_in_executor(
+            None, wait_for_opens, _OPEN_EXIT_WAIT_SECONDS
+        )
+        try:
+            app_services.reset_services()
+        except Exception:
+            # A failed shutdown must not leave the open wait unawaited.
+            log.warning("A server shutdown step failed", exc_info=True)
+        await _report_the_opens(opens)
 
 
-async def _wait_for_the_opens() -> None:
+async def _report_the_opens(opens: asyncio.Future[bool]) -> None:
     """Wait, within one bound, for every open; an open in LanceDB at exit aborts 3.12 on Linux."""
-    if not await asyncio.to_thread(wait_for_opens, _OPEN_EXIT_WAIT_SECONDS):
+    if not await opens:
         log.warning(
             "The library is still opening after %.0f s; the server exits anyway.",
             _OPEN_EXIT_WAIT_SECONDS,
@@ -361,7 +398,16 @@ def _json_error_response(request: Request, exc: Exception) -> Response:
 
     Litestar builds an error response with the route handler's media type, so a
     streaming route would label a JSON error body text/event-stream.
+
+    An HTTP caller has no command line, so a command in the detail gets its route beside it.
     """
+    if isinstance(exc, HTTPException):
+        exc = HTTPException(
+            status_code=exc.status_code,
+            detail=name_routes(exc.detail),
+            headers=exc.headers,
+            extra=exc.extra,
+        )
     response = create_exception_response(request, exc)
     response.media_type = MediaType.JSON
     return response
@@ -394,6 +440,62 @@ def _unhandled_error_response(request: Request, exc: Exception) -> Response:
     return _json_error_response(request, exc)
 
 
+def _provider_error_response(request: Request, exc: ProviderError) -> Response:
+    """Answer an engine that is starting, missing or slow to start as 503.
+
+    A bad request is 400 and a missing model is 404. Only a starting engine gets a
+    Retry-After: another request to a slow engine starts the same launch again.
+    """
+    if exc.kind in (
+        ProviderErrorKind.STARTING,
+        ProviderErrorKind.WARM_TIMEOUT,
+        ProviderErrorKind.ENGINE_MISSING,
+    ):
+        unavailable = HTTPException(
+            status_code=HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+            headers=retry_after_headers(exc.kind),
+        )
+        return _json_error_response(request, unavailable)
+    status = APP_ERROR_STATUSES.get(exc.kind)
+    if status is not None:
+        return _json_error_response(request, HTTPException(status_code=status, detail=str(exc)))
+    return _unhandled_error_response(request, exc)
+
+
+def _config_locked_response(request: Request, exc: FileLockUnavailableError) -> Response:
+    """Answer a config write that could not take its lock as a 503 with a plain message."""
+    unavailable = HTTPException(
+        status_code=HTTP_503_SERVICE_UNAVAILABLE,
+        detail=config_write_failure_message(exc),
+        headers=retry_after_headers(),
+    )
+    return _json_error_response(request, unavailable)
+
+
+def _config_read_only_response(request: Request, exc: ReadOnlyConfigError) -> Response:
+    """Answer a write to a read-only config.toml as a 503 with the shared refusal text.
+
+    One handler for every route, so a route that writes config.toml cannot forget the arm.
+    """
+    unavailable = HTTPException(
+        status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=config_write_failure_message(exc)
+    )
+    return _json_error_response(request, unavailable)
+
+
+def _services_stopping_response(request: Request, exc: ServicesStoppingError) -> Response:
+    """Answer a request that lands after the engine stop began as a 503."""
+    unavailable = HTTPException(status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    return _json_error_response(request, unavailable)
+
+
+def _config_unreadable_response(request: Request, exc: ConfigReadError) -> Response:
+    """Answer a config.toml that cannot be read as a 503 with its text."""
+    unavailable = HTTPException(status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    return _json_error_response(request, unavailable)
+
+
 def create_app() -> Litestar:
     """Create the Litestar application instance."""
     cors = CORSConfig(
@@ -401,7 +503,7 @@ def create_app() -> Litestar:
         allow_origin_regex=cfg.cors_origin_regex,
         allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
         allow_headers=["Content-Type", "Authorization"],
-        expose_headers=[CONTENT_DISPOSITION],
+        expose_headers=[CONTENT_DISPOSITION, SEARCH_WARNINGS_HEADER],
     )
     mcp_route, mcp_session_lifespan = build_mcp_mount()
     return Litestar(
@@ -412,6 +514,11 @@ def create_app() -> Litestar:
         exception_handlers={
             HTTPException: _json_error_response,
             ValidationException: _validation_error_response,
+            FileLockUnavailableError: _config_locked_response,
+            ConfigReadError: _config_unreadable_response,
+            ReadOnlyConfigError: _config_read_only_response,
+            ServicesStoppingError: _services_stopping_response,
+            ProviderError: _provider_error_response,
             Exception: _unhandled_error_response,
         },
         route_handlers=[
@@ -437,6 +544,7 @@ def create_app() -> Litestar:
             sync_route,
             add_route,
             add_upload_route,
+            add_cancel_route,
             models_list_route,
             models_external_route,
             models_set_chat_route,
@@ -474,6 +582,16 @@ def create_app() -> Litestar:
             placement_clear_route,
             gpus_route,
             gpu_stats_stream_route,
+            engine_routes.engine_builds_route,
+            engine_routes.engine_remove_route,
+            engine_routes.engine_roles_route,
+            engine_routes.engine_use_route,
+            engine_routes.engine_prefer_route,
+            engine_routes.engine_install_route,
+            preset_routes.presets_list_route,
+            preset_routes.presets_add_route,
+            preset_routes.presets_edit_route,
+            preset_routes.presets_remove_route,
             crawl_route,
             agent_config_index_route,
             agent_config_route,

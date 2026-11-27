@@ -45,16 +45,15 @@ def _row(compat: ModelCompat, *, arch: str = "") -> LocalCatalogRow:
 
 
 def test_supported_sentence() -> None:
-    assert _compat_sentence(_row(ModelCompat.SUPPORTED, arch="llama")) == (
-        msg.COMPAT_DETAIL_SENTENCE_SUPPORTED
-    )
+    out = _compat_sentence(_row(ModelCompat.SUPPORTED, arch="llama"))
+    assert out.plain == msg.COMPAT_DETAIL_SENTENCE_SUPPORTED
 
 
 def test_unsupported_sentence_includes_arch() -> None:
     out = _compat_sentence(_row(ModelCompat.UNSUPPORTED, arch="kimi_k2"))
-    assert "kimi_k2" in out
+    assert "kimi_k2" in out.plain
 
 
 def test_unknown_sentence_uses_unknown_label_when_no_arch() -> None:
     out = _compat_sentence(_row(ModelCompat.UNKNOWN))
-    assert out == msg.COMPAT_DETAIL_SENTENCE_UNKNOWN
+    assert out.plain == msg.COMPAT_DETAIL_SENTENCE_UNKNOWN

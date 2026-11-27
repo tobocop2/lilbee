@@ -114,6 +114,176 @@ def _seed_hf_cache(
     return blob
 
 
+def _seed_shared_store(
+    models_dir: Path, filename: str, content: bytes, *, repo: str = _REPO
+) -> Path:
+    """Lay down the cache huggingface_hub 2.x writes for a Xet download; return the snapshot link.
+
+    The bytes sit in the shared store at the cache root (``blobs/<2 hex>/<xet hash>``).
+    The repo's ``blobs/<sha256>`` entry links to them, and the snapshot file links to
+    that entry, both by relative links, as measured on a real download.
+    """
+    etag = hashlib.sha256(content).hexdigest()
+    xet_hash = hashlib.sha256(b"xet" + content).hexdigest()
+    store = models_dir / "blobs" / xet_hash[:2] / xet_hash
+    store.parent.mkdir(parents=True, exist_ok=True)
+    (models_dir / "blobs" / ".huggingface-shared-blobs").write_text("1\n", encoding="utf-8")
+    store.write_bytes(content)
+    cache = models_dir / f"models--{repo_to_dir(repo)}"
+    entry = cache / "blobs" / etag
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.symlink_to(Path("..") / ".." / "blobs" / xet_hash[:2] / xet_hash)
+    link = cache / "snapshots" / _FAKE_REV / filename
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(Path("..") / ".." / "blobs" / etag)
+    (cache / "refs").mkdir(parents=True, exist_ok=True)
+    (cache / "refs" / "main").write_text(_FAKE_REV, encoding="utf-8")
+    return link
+
+
+class TestSharedBlobStore:
+    """A model whose bytes live in the shared store resolves inside its own repo folder."""
+
+    _VL_REPO = "ggml-org/SmolVLM-256M-Instruct-GGUF"
+    _VL_FILE = "SmolVLM-256M-Instruct-Q8_0.gguf"
+    _VL_REF = f"{_VL_REPO}/{_VL_FILE}"
+
+    def _seed_vision(self, models_dir: Path) -> Path:
+        _seed_shared_store(models_dir, self._VL_FILE, b"GGUF model", repo=self._VL_REPO)
+        return _seed_shared_store(
+            models_dir, "mmproj-SmolVLM-256M-Instruct-f16.gguf", b"GGUF proj", repo=self._VL_REPO
+        )
+
+    def test_a_recovered_model_finds_the_projector_beside_it(self, tmp_path: Path) -> None:
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
+
+        projector = self._seed_vision(tmp_path)
+        registry = ModelRegistry(tmp_path)
+
+        path = registry.resolve(self._VL_REF)
+
+        assert path.parent == tmp_path / f"models--{repo_to_dir(self._VL_REPO)}" / "blobs"
+        assert path.read_bytes() == b"GGUF model"
+        assert find_mmproj_for_model(path) == projector
+        assert registry.has_vision_projector(self._VL_REF)
+
+    def test_a_bare_repo_ref_finds_the_projector_beside_it(self, tmp_path: Path) -> None:
+        self._seed_vision(tmp_path)
+        assert ModelRegistry(tmp_path).has_vision_projector(self._VL_REPO)
+
+    def test_recovery_records_the_repo_blob_name(self, tmp_path: Path) -> None:
+        self._seed_vision(tmp_path)
+        registry = ModelRegistry(tmp_path)
+        registry.resolve(self._VL_REF)
+        manifest = registry.get_manifest(self._VL_REF)
+        assert manifest.blob == hashlib.sha256(b"GGUF model").hexdigest()
+
+    def test_a_split_gguf_recovery_records_the_repo_blob_name(self, tmp_path: Path) -> None:
+        first = "m-Q4_K_M-00001-of-00002.gguf"
+        _seed_shared_store(tmp_path, first, b"GGUF one")
+        _seed_shared_store(tmp_path, "m-Q4_K_M-00002-of-00002.gguf", b"GGUF two")
+        registry = ModelRegistry(tmp_path)
+        registry.resolve(f"{_REPO}/{first}")
+        manifest = registry.get_manifest(f"{_REPO}/{first}")
+        assert manifest.blob == hashlib.sha256(b"GGUF one").hexdigest()
+        assert manifest.shard_blobs == [hashlib.sha256(b"GGUF two").hexdigest()]
+
+    def test_a_repo_subfolder_named_blobs_still_reaches_the_repo_blob(self, tmp_path: Path) -> None:
+        from lilbee.modelhub.registry import repo_blob_entry
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
+
+        content = b"GGUF model"
+        top = _seed_shared_store(tmp_path, "m.gguf", content, repo=self._VL_REPO)
+        etag = hashlib.sha256(content).hexdigest()
+        cache = tmp_path / f"models--{repo_to_dir(self._VL_REPO)}"
+        # The same file one folder down, in a repo subfolder that is named blobs.
+        top.unlink()
+        nested = cache / "snapshots" / _FAKE_REV / "blobs" / "m.gguf"
+        nested.parent.mkdir()
+        nested.symlink_to(Path("..") / ".." / ".." / "blobs" / etag)
+        # The projector lookup reads the top of the snapshot folder, as at the base.
+        projector = cache / "snapshots" / _FAKE_REV / "mmproj-f16.gguf"
+        projector.symlink_to(Path("..") / ".." / "blobs" / etag)
+
+        assert repo_blob_entry(nested) == cache / "blobs" / etag
+        registry = ModelRegistry(tmp_path)
+        resolved = registry.resolve(f"{self._VL_REPO}/blobs/m.gguf")
+        assert registry.get_manifest(f"{self._VL_REPO}/blobs/m.gguf").blob == etag
+        assert resolved.parent == cache / "blobs"
+        assert find_mmproj_for_model(resolved) == projector
+
+    def test_a_link_loop_ends(self, tmp_path: Path) -> None:
+        from lilbee.modelhub.registry import repo_blob_entry
+
+        one, two = tmp_path / "one.gguf", tmp_path / "two.gguf"
+        one.symlink_to(two)
+        two.symlink_to(one)
+        assert repo_blob_entry(one) in {one, two}
+
+    def test_an_absolute_link_resolves_to_the_plain_path_of_its_target(
+        self, tmp_path: Path
+    ) -> None:
+        from lilbee.modelhub.registry import repo_blob_entry
+
+        blob = tmp_path / "blobs" / ("a" * 64)
+        blob.parent.mkdir()
+        blob.write_bytes(b"GGUF")
+        link = tmp_path / "snapshots" / "m.gguf"
+        link.parent.mkdir()
+        link.symlink_to(blob)
+        assert repo_blob_entry(link) == blob
+        assert str(repo_blob_entry(link)) == str(blob)
+
+    @pytest.mark.parametrize(
+        ("target", "plain"),
+        [
+            ("\\\\?\\C:\\cache\\blobs\\x", "C:\\cache\\blobs\\x"),
+            ("\\\\?\\UNC\\server\\share\\blobs\\x", "\\\\server\\share\\blobs\\x"),
+            ("..\\..\\blobs\\x", "..\\..\\blobs\\x"),
+            ("\\\\server\\share\\blobs\\x", "\\\\server\\share\\blobs\\x"),
+            ("C:\\cache\\blobs\\x", "C:\\cache\\blobs\\x"),
+        ],
+    )
+    def test_a_windows_link_target_drops_the_extended_prefix(
+        self, monkeypatch: pytest.MonkeyPatch, target: str, plain: str
+    ) -> None:
+        from lilbee.modelhub import registry as registry_mod
+
+        monkeypatch.setattr(registry_mod, "_STRIP_EXTENDED_PREFIX", True)
+        monkeypatch.setattr(registry_mod.os, "readlink", lambda _p: target)
+        assert registry_mod._link_target(Path("link")) == plain
+
+    @pytest.mark.parametrize("target", ["\\\\?\\C:\\cache", "../a/./b", "a/../b"])
+    def test_a_posix_link_target_is_kept_as_written(
+        self, monkeypatch: pytest.MonkeyPatch, target: str
+    ) -> None:
+        from lilbee.modelhub import registry as registry_mod
+
+        monkeypatch.setattr(registry_mod, "_STRIP_EXTENDED_PREFIX", False)
+        monkeypatch.setattr(registry_mod.os, "readlink", lambda _p: target)
+        assert registry_mod._link_target(Path("link")) == target
+
+    def test_the_cache_walk_reads_a_link_through_the_prefix_stripping_helper(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.modelhub import registry as registry_mod
+
+        blob = tmp_path / "blobs" / ("a" * 64)
+        blob.parent.mkdir()
+        blob.write_bytes(b"GGUF")
+        link = tmp_path / "snapshots" / "m.gguf"
+        link.parent.mkdir()
+        link.symlink_to(blob)
+        monkeypatch.setattr(registry_mod, "_STRIP_EXTENDED_PREFIX", True)
+        monkeypatch.setattr(registry_mod.os, "readlink", lambda _p: "\\\\?\\" + str(blob))
+        assert registry_mod.repo_blob_entry(link) == blob
+
+    def test_the_prefix_is_dropped_only_on_windows(self) -> None:
+        from lilbee.modelhub import registry as registry_mod
+
+        assert registry_mod._STRIP_EXTENDED_PREFIX is (sys.platform == "win32")
+
+
 class TestParseHfRef:
     def test_canonical_shape(self) -> None:
         repo, filename = parse_hf_ref(_REF)
@@ -294,20 +464,28 @@ class TestModelRegistryInstall:
         second = registry.install(_REPO, _FILENAME, src, manifest)
         assert first == second
 
-    def test_install_from_a_sharded_blob_store_creates_the_shard_dir(self, tmp_path: Path) -> None:
-        """A source in a sharded cache (blobs/a0/<sha>) installs into a fresh models dir."""
-        sharded = tmp_path / "other" / "blobs" / "a0"
-        sharded.mkdir(parents=True)
-        payload = b"GGUF\x00\x00sharded"
-        digest = hashlib.sha256(payload).hexdigest()
-        src = sharded / digest
-        src.write_bytes(payload)
-        registry = ModelRegistry(tmp_path / "models")
+    def test_install_from_the_shared_blob_store_copies_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pull into the shared store records the repo's blob, unhashed, and makes no copy."""
+        from lilbee.modelhub import registry as registry_mod
 
-        blob_path = registry.install(_REPO, _FILENAME, src, _make_manifest())
+        snapshot = _seed_shared_store(tmp_path, _FILENAME, b"GGUF\x00\x00shared")
+        registry = ModelRegistry(tmp_path)
 
-        assert blob_path.read_bytes() == payload
-        assert blob_path.parent.name == "a0"
+        def _boom(path: Path) -> str:
+            raise AssertionError("must not hash a cache blob")
+
+        monkeypatch.setattr(registry_mod, "_sha256_file", _boom)
+
+        blob_path = registry.install(_REPO, _FILENAME, snapshot, _make_manifest())
+
+        etag = hashlib.sha256(b"GGUF\x00\x00shared").hexdigest()
+        assert blob_path == tmp_path / f"models--{repo_to_dir(_REPO)}" / "blobs" / etag
+        assert blob_path.is_symlink()
+        assert registry.get_manifest(_REF).blob == etag
+        repo_blobs = (tmp_path / f"models--{repo_to_dir(_REPO)}" / "blobs").rglob("*")
+        assert all(p.is_symlink() for p in repo_blobs)
 
     def test_install_blob_copy_is_atomic(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -780,24 +958,22 @@ class TestModelRegistryResolve:
             assert registry.resolve(_REF) == blob.resolve()
         assert not registry.list_installed()  # the write failed, so still no manifest
 
-    def test_recovery_keeps_the_shard_prefix_of_a_sharded_blob_store(self, tmp_path: Path) -> None:
-        """Newer huggingface_hub shards blobs as blobs/<2 chars>/<sha>; the manifest keeps it."""
+    def test_a_copy_an_earlier_install_made_keeps_its_projector(self, tmp_path: Path) -> None:
+        """A manifest naming a ``blobs/<2 hex>/<hash>`` copy in the repo still serves vision."""
         content = b"GGUF\x00\x00"
-        digest = hashlib.sha256(content).hexdigest()
-        cache = tmp_path / f"models--{repo_to_dir(_REPO)}"
-        blob = cache / "blobs" / digest[:2] / digest
-        blob.parent.mkdir(parents=True)
-        blob.write_bytes(content)
-        link = cache / "snapshots" / _FAKE_REV / _FILENAME
-        link.parent.mkdir(parents=True)
-        link.symlink_to(blob)
+        snapshot = _seed_shared_store(tmp_path, _FILENAME, content)
+        _seed_shared_store(tmp_path, "mmproj-f16.gguf", b"GGUF proj")
+        store = snapshot.resolve()
+        copy = tmp_path / f"models--{repo_to_dir(_REPO)}" / "blobs" / store.parent.name / store.name
+        copy.parent.mkdir()
+        copy.write_bytes(content)
         registry = ModelRegistry(tmp_path)
+        registry._write_manifest(
+            _make_manifest(size_bytes=len(content), blob=f"{store.parent.name}/{store.name}")
+        )
 
-        assert registry.resolve(_REF) == blob.resolve()
-
-        [manifest] = registry.list_installed()
-        assert manifest.blob == f"{digest[:2]}/{digest}"
-        assert registry.resolve(_REF) == blob.resolve()  # now served through the manifest
+        assert registry.resolve(_REF) == copy
+        assert registry.has_vision_projector(_REF)
 
     def test_has_vision_projector_finds_a_projector_beside_a_cached_model(
         self, tmp_path: Path
@@ -869,6 +1045,77 @@ class TestModelRegistryResolve:
         blob_path = registry.install(_REPO, _FILENAME, src, _make_manifest())
         assert registry.resolve(_REPO) == blob_path
 
+    def test_a_gguf_qualified_repo_ref_reads_as_the_bare_repo(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        blob_path = registry.install(_REPO, _FILENAME, _write_source(tmp_path), _make_manifest())
+        qualified = f"{_REPO}#gguf"
+        assert registry.resolve(qualified) == blob_path
+        assert registry.is_installed(qualified)
+        assert registry.has_manifest(qualified)
+
+    def test_a_gguf_qualified_ref_of_an_uninstalled_repo_is_not_installed(
+        self, tmp_path: Path
+    ) -> None:
+        registry = ModelRegistry(tmp_path)
+        qualified = f"{_REPO}#gguf"
+        with pytest.raises(KeyError, match="not installed"):
+            registry.resolve(qualified)
+        assert not registry.has_manifest(qualified)
+
+    def test_a_malformed_format_qualifier_has_no_manifest(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        registry.install(_REPO, _FILENAME, _write_source(tmp_path), _make_manifest())
+        assert registry.has_manifest(f"{_REPO}#nope") is False
+
+    def test_the_projector_check_reads_a_gguf_qualified_ref_like_the_bare_repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``#gguf`` pull finds the model it installed, so the projector check passes."""
+        from lilbee.app.models import _vision_projector_missing
+        from lilbee.app.services import set_services
+
+        registry = ModelRegistry(tmp_path)
+        registry.install(_REPO, _FILENAME, _write_source(tmp_path), _make_manifest())
+        set_services(mock.MagicMock(registry=registry))
+        monkeypatch.setattr("lilbee.providers.gguf_meta.needs_sidecar_projector", lambda _p: False)
+        assert _vision_projector_missing(_REPO) is False
+        assert _vision_projector_missing(f"{_REPO}#gguf") is False
+
+    def test_a_gguf_qualified_pull_of_an_installed_repo_fetches_no_projector(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.app.models import ensure_vision_projector
+        from lilbee.app.services import set_services
+
+        registry = ModelRegistry(tmp_path)
+        registry.install(_REPO, _FILENAME, _write_source(tmp_path), _make_manifest())
+        set_services(mock.MagicMock(registry=registry))
+        monkeypatch.setattr("lilbee.providers.gguf_meta.needs_sidecar_projector", lambda _p: False)
+        fetched: list[object] = []
+        monkeypatch.setattr(
+            "lilbee.catalog.download_mmproj", lambda e, **_: fetched.append(e) or tmp_path / "p"
+        )
+        assert ensure_vision_projector(f"{_REPO}#gguf", warn_unreadable=True) is None
+        assert fetched == []
+
+    def test_a_gguf_qualified_exact_file_ref_reads_as_the_bare_file(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        blob_path = registry.install(_REPO, _FILENAME, _write_source(tmp_path), _make_manifest())
+        qualified = f"{_REPO}/{_FILENAME}#gguf"
+        assert registry.resolve(qualified) == blob_path
+        assert registry.has_manifest(qualified)
+
+    def test_a_missing_split_shard_names_the_ref_without_the_gguf_qualifier(
+        self, tmp_path: Path
+    ) -> None:
+        registry = ModelRegistry(tmp_path)
+        ref = f"{_REPO}/Qwen3-0.6B-Q4_K_M-00001-of-00002.gguf"
+        with pytest.raises(KeyError) as excinfo:
+            registry.resolve(f"{ref}#gguf")
+        assert excinfo.value.args[0] == (
+            f"Split GGUF {ref} is missing shards; re-pull to fetch the full set"
+        )
+
     def test_resolve_bare_repo_ref_skips_unparseable_manifest(self, tmp_path: Path) -> None:
         """A bare repo ref skips an unreadable per-repo manifest and falls back to the cache."""
         registry = ModelRegistry(tmp_path)
@@ -877,6 +1124,28 @@ class TestModelRegistryResolve:
         bad.parent.mkdir(parents=True, exist_ok=True)
         bad.write_text("not valid json at all")
         assert registry.resolve(_REPO) == blob.resolve()
+
+    def test_resolve_bare_repo_ref_skips_a_manifest_whose_file_is_truncated(
+        self, tmp_path: Path
+    ) -> None:
+        """A manifest whose bytes are not on disk in full does not hide the cached file."""
+        registry = ModelRegistry(tmp_path)
+        blob = _seed_hf_cache(tmp_path)
+        registry._write_manifest(_make_manifest(size_bytes=1000))
+        assert registry.resolve(_REPO) == blob.resolve()
+
+    def test_resolve_bare_repo_ref_ignores_a_cached_file_that_links_outside_the_cache(
+        self, tmp_path: Path
+    ) -> None:
+        models_dir = tmp_path / "models"
+        _seed_hf_cache(models_dir)
+        outside = tmp_path / "outside.gguf"
+        outside.write_bytes(b"GGUF\x00\x00")
+        link = next((models_dir / f"models--{repo_to_dir(_REPO)}" / "snapshots").rglob("*.gguf"))
+        link.unlink()
+        link.symlink_to(outside)
+        with pytest.raises(KeyError, match="not installed"):
+            ModelRegistry(models_dir).resolve(_REPO)
 
     def test_resolve_bare_repo_ref_not_installed(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
@@ -1377,6 +1646,21 @@ class TestModelRegistryWriteManifestErrors:
         repo_dir = tmp_path / "manifests" / repo_to_dir(_REPO)
         leftovers = [p for p in repo_dir.iterdir() if p.suffix == ".tmp"]
         assert leftovers == []
+
+    def test_a_temp_file_that_cannot_be_created_raises_and_leaves_no_manifest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.modelhub import registry as registry_mod
+
+        def no_temp_file(*_args: object, **_kwargs: object) -> None:
+            raise OSError("no space for a temp file")
+
+        monkeypatch.setattr(registry_mod.tempfile, "NamedTemporaryFile", no_temp_file)
+        with pytest.raises(OSError, match="no space for a temp file"):
+            ModelRegistry(tmp_path)._write_manifest(_make_manifest())
+
+        repo_dir = tmp_path / "manifests" / repo_to_dir(_REPO)
+        assert list(repo_dir.iterdir()) == []
 
 
 class TestInstalledRefForRepo:

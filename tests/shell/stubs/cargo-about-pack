@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Stand-in for cargo-about: it writes a report of three crates to the file after -o.
+#
+# Reads:
+#   ABOUT_LOG   a file that receives the arguments, one line per call (required)
+#   ABOUT_FAIL  when set, the call fails
+
+set -euo pipefail
+
+echo "$*" >> "${ABOUT_LOG:?}"
+[ -z "${ABOUT_FAIL-}" ] || { echo "stub cargo-about: failed" >&2; exit 1; }
+out=
+config=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    -c) config="$2"; shift ;;
+  esac
+  shift
+done
+[ -s "${config}" ] || { echo "stub cargo-about: no config at ${config}" >&2; exit 1; }
+cat > "${out}" <<'JSON'
+{"licenses": [
+  {"id": "OpenSSL", "name": "OpenSSL", "text": "ssl", "used_by": [{"crate": {"name": "aws-lc-sys", "version": "1.0.0", "repository": null}}]},
+  {"id": "Apache-2.0", "name": "Apache", "text": "apache", "used_by": [{"crate": {"name": "rand", "version": "1.0.0", "repository": null}}]},
+  {"id": "MIT", "name": "MIT", "text": "mit", "used_by": [{"crate": {"name": "serde", "version": "1.0.0", "repository": null}}]},
+  {"id": "MPL-2.0", "name": "MPL", "text": "mpl", "used_by": [{"crate": {"name": "selectors", "version": "0.26.0", "repository": null}}]}
+]}
+JSON

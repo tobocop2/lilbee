@@ -113,6 +113,21 @@ class TestRecall:
         app_memory.recall("q", top_k=2)
         assert svc.store.search_memories.call_args.kwargs["top_k"] == 2
 
+    def test_a_switched_embedder_names_the_mismatch_before_it_embeds(self, svc):
+        from lilbee.data.store import EmbeddingModelMismatchError
+
+        svc.store.ensure_servable.side_effect = EmbeddingModelMismatchError(
+            persisted_model="orgA/repoA/built.gguf",
+            persisted_dim=768,
+            current_model="orgB/repoB/configured.gguf",
+            current_dim=1024,
+        )
+
+        with pytest.raises(EmbeddingModelMismatchError, match="rebuild the index"):
+            app_memory.recall("where is auth")
+
+        svc.embedder.embed_query.assert_not_called()
+
 
 class TestListForgetFlags:
     def test_list_local_is_owner_scoped(self, svc):
@@ -173,6 +188,17 @@ class TestAutoExtract:
         assert stored[0].kind is MemoryKind.FACT
         record = svc.store.add_memory.call_args.args[0]
         assert record.source is MemorySource.EXTRACTED
+
+    def test_reasoning_text_is_not_stored(self, svc):
+        """A JSON array inside the reasoning block never becomes a memory."""
+        cfg.memory_enabled = True
+        cfg.memory_auto_extract = True
+        svc.provider.chat.return_value = _chat_result(
+            '<think>[{"text": "a draft", "kind": "fact"}]</think>'
+            '[{"text": "the user prefers rust", "kind": "fact"}]'
+        )
+        stored = app_memory.auto_extract("I love rust", "Rust is great.")
+        assert [m.text for m in stored] == ["the user prefers rust"]
 
     def test_extraction_is_an_auxiliary_call(self, svc):
         """The extraction call carries the auxiliary cap and thinking off."""

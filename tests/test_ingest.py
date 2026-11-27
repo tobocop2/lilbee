@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import os
 import sys
@@ -19,10 +20,20 @@ import lilbee.app.services as svc_mod
 from lilbee.app.ingest import RegisterResult
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
-from lilbee.data.store import REMOVED_REASON, HeldOut, HeldRecord
+from lilbee.data.store import REMOVED_REASON, FailedPage, HeldOut, HeldRecord
 from lilbee.data.types import ExtractMode, OcrBackendName
 from lilbee.runtime.progress import OcrBackendUsed
-from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
+from tests._held import (
+    ENGINE_ERROR,
+    FAILED_ANSWER,
+    FAILED_NAMES,
+    fail_every_ingest,
+    held_hashes,
+    held_kinds,
+    held_reasons,
+    hold_failed,
+    hold_removed,
+)
 from tests._unreadable import deny_listing
 from tests.conftest import make_pdf
 
@@ -69,7 +80,7 @@ class _FakeIndex:
             "source_type": source_type,
         }
 
-    def write_batch(self, items, present=None):
+    def write_batch(self, items, present=None, chunk_settings=None):
         # Each batched doc upserts a source record so multi-sync tests see it via
         # get_sources(); the new row holds nothing out.
         items = [it for it in items if present is None or present(it.source)]
@@ -135,7 +146,12 @@ def mock_svc():
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.source_summary.return_value = SourceSummary(0, 0, {}, [])
+    store.partly_read_sources.return_value = ({}, 0)
     store.get_sources.side_effect = lambda: list(index.sources.values())
+    store.iter_source_heads.side_effect = lambda: iter(
+        [{"filename": name} for name in list(index.sources)]
+    )
+    store.missing_sources.side_effect = lambda names: {n for n in names if n not in index.sources}
     store.add_chunks.side_effect = len
     store.upsert_source.side_effect = index.upsert
     store.write_chunks_batch.side_effect = index.write_batch
@@ -152,16 +168,40 @@ def mock_svc():
     store.get_meta.return_value = None
     store.count_chunks.return_value = 0
     store.index_mismatch.return_value = None
+    store.embedding_mismatch.return_value = None
+    store.canary_mismatch.return_value = None
     embedder = MagicMock()
     embedder.embed.side_effect = lambda text, **kw: np.full(768, 0.1, dtype=np.float32)
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
-    # Real int so sync()'s truncated_total delta is 0, not a coerced MagicMock.
-    embedder.truncated_total = 0
     searcher = MagicMock()
     services = make_mock_services(store=store, embedder=embedder, searcher=searcher)
     svc_mod.set_services(services)
     yield services
     svc_mod.set_services(None)
+
+
+# What a fleet engine says for an overflow: chat wording, wrong for a file.
+_CHAT_OVERFLOW_TEXT = (
+    "The conversation exceeds this model's context window. Start a new conversation or shorten "
+    "the input."
+)
+
+
+def _raised_for(error: str) -> Exception:
+    """The failure a file's extraction raises for each case of the held-out tests."""
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    if error == "embed-overflow":
+        from lilbee.providers.base import EmbeddingOverflowError
+
+        return EmbeddingOverflowError(_CHAT_OVERFLOW_TEXT, kind=ProviderErrorKind.CONTEXT_OVERFLOW)
+    if error == "overflow":
+        return ProviderError("too long", kind=ProviderErrorKind.CONTEXT_OVERFLOW)
+    if error == "gateway":
+        return ProviderError("HTTP 503", kind=ProviderErrorKind.SERVER)
+    if error == "file":
+        return ValueError("bad file")
+    return ProviderError("engine crashed")
 
 
 def _install_real_store():
@@ -406,7 +446,7 @@ class TestSync:
         from lilbee.data.ingest import sync
         from lilbee.data.store import EmbeddingModelMismatchError
 
-        mock_svc.store.index_mismatch.return_value = EmbeddingModelMismatchError(
+        mock_svc.store.embedding_mismatch.return_value = EmbeddingModelMismatchError(
             persisted_model="old/embed-GGUF/old.gguf",
             persisted_dim=768,
             current_model="new/embed-GGUF/new.gguf",
@@ -437,6 +477,234 @@ class TestSync:
 
         mock_svc.store.drop_all.assert_not_called()
         mock_svc.embedder.embed_batch.assert_not_called()
+
+    async def test_two_syncs_in_one_process_each_warn_once_about_cut_embed_inputs(
+        self, mock_extract_file, isolated_env, mock_svc, caplog
+    ):
+        """Every embed of a sync reports to the sync's scope, which warns at its end."""
+        from lilbee.data.ingest import sync
+        from lilbee.providers.truncation import note_truncated
+
+        def embed_and_cut(texts, **kw):
+            note_truncated(1, len(texts), 8)
+            return [[0.1] * 768 for _ in texts]
+
+        mock_svc.embedder.embed_batch.side_effect = embed_and_cut
+        with caplog.at_level("WARNING", logger="lilbee.providers.truncation"):
+            for names in (("a1.txt", "a2.txt"), ("b1.txt", "b2.txt")):
+                for name in names:
+                    (isolated_env / name).write_text(
+                        f"Hello world. The document {name}.", encoding="utf-8"
+                    )
+                await sync()
+        assert mock_svc.embedder.embed_batch.call_count == 4
+        assert len(caplog.records) == 2
+
+    async def test_the_sync_summary_counts_inputs_the_fleet_client_cuts_to_its_token_cap(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        """A local embedder cuts by tokens in the fleet client; the summary still counts it."""
+        import base64
+
+        import httpx
+
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+        from lilbee.providers.fleet.client import LlamaServerClient
+        from lilbee.providers.fleet.engines import LLAMA
+        from lilbee.providers.roles import WorkerRole
+        from lilbee.retrieval.embedder import Embedder
+
+        vector = base64.b64encode(np.full(cfg.embedding_dim, 0.1, dtype="<f4").tobytes()).decode()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/tokenize"):
+                return httpx.Response(200, json={"tokens": [1, 2, 3, 4, 5]})  # past the cap of 3
+            if request.url.path.endswith("/detokenize"):
+                return httpx.Response(200, json={"content": "cut"})
+            inputs = json.loads(request.content)["input"]
+            data = [
+                {
+                    "embedding": vector,
+                    "index": i,
+                    "object": "embedding",
+                    "encoding_format": "base64",
+                }
+                for i, _ in enumerate(inputs)
+            ]
+            return httpx.Response(200, json={"data": data, "object": "list", "model": "m"})
+
+        client = LlamaServerClient(
+            "http://gpu0",
+            "m",
+            http=httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0"),
+            token_cap=3,
+            profile=LLAMA.request_profile(WorkerRole.EMBED),
+        )
+        provider = MagicMock()
+        # The provider reports no window, so ingest does not refuse; the server still cuts at 3.
+        provider.embed_token_cap.return_value = None
+        provider.embed.side_effect = client.embed
+        embedder = Embedder(cfg, provider)
+        monkeypatch.setattr(embedder, "embedding_available", lambda: True)
+        svc_mod.set_services(dataclasses.replace(mock_svc, embedder=embedder))
+        (isolated_env / "long.txt").write_text("A long document. " * 40, encoding="utf-8")
+
+        result = await sync()
+
+        assert "long.txt" in result.added
+        assert result.truncated >= 1
+
+    async def test_a_sync_refuses_a_window_below_one_chunk_before_it_chunks_a_file(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        """A window of 400 cannot hold a chunk of 512: the sync stops and names the size."""
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import EmbedWindowError
+        from lilbee.data.ingest import sync
+
+        model = "nomic-ai/nomic-embed-text-v1.5-GGUF"
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "embedding_model", model)
+        mock_svc.provider.embed_token_cap.return_value = 400
+        (isolated_env / "doc.txt").write_text("A document. " * 40, encoding="utf-8")
+
+        with pytest.raises(EmbedWindowError) as raised:
+            await sync()
+
+        assert str(raised.value) == (
+            f"{model}: The embedding model accepts 400 tokens per input; "
+            "chunk_size 512 does not fit. Set chunk_size to 272 or lower."
+        )
+        mock_extract_file.assert_not_called()
+
+    async def test_a_sync_reads_the_window_the_warm_embed_engine_serves(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        """TEI's planned cap is a guess (chunk_size + 128) until its engine is up and /info
+        reports 512: the sync starts the engine first, then refuses on the served window."""
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import EmbedWindowError
+        from lilbee.data.ingest import sync
+
+        warm = {"up": False}
+
+        def _count(text: str) -> int:
+            warm["up"] = True  # any call on the embed role starts its engine
+            return len(text)
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "embedding_model", "BAAI/bge-base-en-v1.5")
+        mock_svc.provider.count_tokens.side_effect = _count
+        mock_svc.provider.embed_token_cap.side_effect = lambda *, known_only: (
+            512 if warm["up"] else 640
+        )
+        (isolated_env / "doc.txt").write_text("A document. " * 40, encoding="utf-8")
+
+        with pytest.raises(EmbedWindowError, match="accepts 512 tokens per input"):
+            await sync()
+
+        mock_extract_file.assert_not_called()
+
+    @pytest.mark.parametrize(("wait_s", "within"), [(120.0, "within 120 s"), (None, "in time")])
+    async def test_a_sync_refuses_when_the_embed_engine_cannot_warm_at_the_chunk_size(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch, wait_s, within
+    ):
+        """The window holds the chunk, but the engine did not finish starting at that size:
+        one plain refusal that names the model, the chunk size and the fix."""
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import EmbedWarmError, EmbedWindowError
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import WarmTimeoutError
+
+        model = "nomic-ai/nomic-embed-text-v1.5#safetensors"
+        monkeypatch.setattr(cfg, "chunk_size", 8064)
+        monkeypatch.setattr(cfg, "embedding_model", model)
+        mock_svc.provider.count_tokens.side_effect = WarmTimeoutError("slow", wait_s=wait_s)
+        mock_svc.provider.embed_token_cap.return_value = None
+        # A safetensors model needs a TEI install to pick its engine; the fan-out
+        # plan is not under test, and the sync runs in this process.
+        monkeypatch.setattr("lilbee.data.ingest.pipeline.plan_fanout", list)
+        (isolated_env / "doc.txt").write_text("A document. " * 40, encoding="utf-8")
+
+        with pytest.raises(EmbedWindowError) as raised:
+            await sync()
+
+        assert isinstance(raised.value, EmbedWarmError)
+        assert str(raised.value) == (
+            f"{model} cannot embed chunks of 8064 tokens on this machine: its engine did not "
+            f"finish starting {within} at that size. Set chunk_size to a smaller value, "
+            "or run the embedding model on a GPU."
+        )
+        assert mock_svc.provider.count_tokens.call_count == 1
+        # No window read after the warm failure sends a request to the engine.
+        reads = mock_svc.provider.embed_token_cap.call_args_list
+        assert reads
+        assert all(read == mock.call(known_only=True) for read in reads)
+        mock_extract_file.assert_not_called()
+
+    async def test_a_window_below_one_chunk_refuses_first_when_the_warm_also_failed(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import EmbedWarmError, EmbedWindowError
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import WarmTimeoutError
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "embedding_model", "BAAI/bge-base-en-v1.5")
+        mock_svc.provider.count_tokens.side_effect = WarmTimeoutError("slow", wait_s=120.0)
+        mock_svc.provider.embed_token_cap.return_value = 400
+        (isolated_env / "doc.txt").write_text("A document. " * 40, encoding="utf-8")
+
+        with pytest.raises(EmbedWindowError, match="accepts 400 tokens per input") as raised:
+            await sync()
+
+        assert not isinstance(raised.value, EmbedWarmError)
+        mock_extract_file.assert_not_called()
+
+    async def test_the_sync_summary_counts_each_cut_of_the_run_once(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        """Two files that each have one input cut give a summary of two cut inputs."""
+        from lilbee.data.ingest import sync
+        from lilbee.providers.truncation import note_truncated
+
+        def embed_and_cut_one(texts, **kw):
+            note_truncated(1, len(texts), 8)
+            return [[0.1] * 768 for _ in texts]
+
+        mock_svc.embedder.embed_batch.side_effect = embed_and_cut_one
+        for name in ("a.txt", "b.txt"):
+            (isolated_env / name).write_text(f"Hello world. The document {name}.", encoding="utf-8")
+
+        result = await sync()
+
+        assert mock_svc.embedder.embed_batch.call_count == 2
+        assert result.truncated == 2
+
+    async def test_the_sync_summary_does_not_count_a_cut_made_outside_the_run(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        """A search or memory write cut on another thread, during the sync, is not its cut."""
+        import threading
+
+        from lilbee.data.ingest import sync
+        from lilbee.providers.truncation import note_truncated
+
+        def embed_while_another_thread_cuts(texts, **kw):
+            other = threading.Thread(target=note_truncated, args=(1, 1, 8))
+            other.start()
+            other.join()
+            return [[0.1] * 768 for _ in texts]
+
+        mock_svc.embedder.embed_batch.side_effect = embed_while_another_thread_cuts
+        (isolated_env / "doc.txt").write_text("A short document.", encoding="utf-8")
+
+        result = await sync()
+
+        assert "doc.txt" in result.added
+        assert result.truncated == 0
 
     async def test_ingest_text_file(self, mock_extract_file, isolated_env):
         (isolated_env / "test.txt").write_text("Hello world. This is a test document.")
@@ -526,7 +794,7 @@ class TestSync:
 
         monkeypatch.setenv("LILBEE_INGEST_CONCURRENCY", "adaptive-conservative")
         # A fake fleet + sampler so the adaptive path engages without real GPU probing.
-        monkeypatch.setattr(pipeline, "enumerate_fleet_devices", lambda: [object()])
+        monkeypatch.setattr(pipeline, "enumerate_fleet_devices", lambda engine: [object()])
         monkeypatch.setattr(
             pipeline,
             "make_signal_sampler",
@@ -564,6 +832,34 @@ class TestSync:
         rows = {s["filename"]: s["chunk_count"] for s in get_services().store.get_sources()}
         assert rows == {"docs.zip": 0, "docs.zip/report.pdf": 2, "docs.zip/notes.txt": 1}
         assert not any("reconciliation" in r.getMessage().lower() for r in caplog.records)
+
+    async def test_an_archive_member_keeps_the_pages_its_extraction_lists_as_failed(
+        self, mock_extract_file, isolated_env
+    ):
+        """The failed pages of a member come from the member's own extraction result."""
+        from lilbee.data.ingest import sync
+        from lilbee.data.store import FailedPage, failed_pages
+
+        store = _install_real_store()
+        report = _make_xberg_result(num_chunks=2, has_pages=True)
+        report.ocr_page_failures = [mock.MagicMock(page=3, error="timed out", recovered=False)]
+        notes = _make_xberg_result(num_chunks=1)
+        notes.ocr_page_failures = None
+        mock_extract_file.return_value = _make_archive_result(
+            [
+                _member("report.pdf", "application/pdf", report),
+                _member("notes.txt", "text/plain", notes),
+            ]
+        )
+        (isolated_env / "docs.zip").write_bytes(b"PK\x03\x04")
+
+        result = await sync(quiet=True)
+
+        page = FailedPage(page=3, error="timed out", recovered=False)
+        assert [(p.name, p.pages) for p in result.partial] == [("docs.zip/report.pdf", [page])]
+        rows = {s["filename"]: failed_pages(s) for s in store.get_sources()}
+        assert rows["docs.zip/report.pdf"] == [page]
+        assert rows["docs.zip/notes.txt"] == []
 
     async def test_member_past_the_chunk_cap_holds_the_archive_out_and_names_it(
         self, mock_extract_file, isolated_env, monkeypatch, mock_svc
@@ -1062,6 +1358,7 @@ class TestSync:
 
         assert any("nested.txt" in f for f in (await sync()).added)
 
+    @pytest.mark.usefixtures("code_parsers_ready")
     async def test_code_file_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "example.py").write_text("def hello():\n    print('hi')\n")
         from lilbee.data.ingest import sync
@@ -1159,12 +1456,12 @@ class TestSync:
         added: dict[str, None] = {"a.txt": None}
         updated: dict[str, None] = {}
         failed: dict[str, None] = {}
-        retry_next: set[str] = set()
+        retry_next: dict[str, str] = {}
         pipeline._flush_writes(buffer, added, updated, failed, {}, retry_next)
 
         assert added == {}
         assert list(failed) == ["a.txt"]
-        assert retry_next == {"a.txt"}
+        assert retry_next == {"a.txt": "the write to the index failed"}
         assert buffer == []
 
     def test_flush_failure_drops_page_text_only_file_from_skipped(self, _mock_extract_file):
@@ -1187,7 +1484,7 @@ class TestSync:
         )
         skipped: dict[str, None] = {"blank.pdf": None}
         failed: dict[str, None] = {}
-        pipeline._flush_writes([result], {}, {}, failed, skipped, set())
+        pipeline._flush_writes([result], {}, {}, failed, skipped, {})
 
         assert list(failed) == ["blank.pdf"]
         assert "blank.pdf" not in skipped  # not double-listed
@@ -1216,14 +1513,14 @@ class TestSync:
 
         added: dict[str, None] = {"a.txt": None}
         failed: dict[str, None] = {}
-        retry_next: set[str] = set()
+        retry_next: dict[str, str] = {}
         pipeline._flush_writes([result], added, {}, failed, {}, retry_next)
 
         assert store.write_chunks_batch.call_count == 2
         assert sleeps == [pipeline._FLUSH_RETRY_DELAY_SECONDS]
         assert list(added) == ["a.txt"]
         assert failed == {}
-        assert retry_next == set()
+        assert retry_next == {}
 
     def test_flush_writes_lock_timeout_twice_marks_retry_next(
         self, _mock_extract_file, monkeypatch
@@ -1249,15 +1546,15 @@ class TestSync:
 
         added: dict[str, None] = {"a.txt": None}
         failed: dict[str, None] = {}
-        retry_next: set[str] = set()
+        retry_next: dict[str, str] = {}
         pipeline._flush_writes([result], added, {}, failed, {}, retry_next)
 
         assert list(failed) == ["a.txt"]
-        assert retry_next == {"a.txt"}
+        assert retry_next == {"a.txt": "the write to the index failed"}
 
     async def test_flush_failure_does_not_hold_the_file_out(self, _mock_extract_file, isolated_env):
-        # End-to-end: a hard flush failure records the file as failed but writes
-        # no held-out record, so the next sync re-plans it.
+        # End-to-end: a hard flush failure records the file as failed and as a retry,
+        # never as held out, so the next sync re-plans it.
         from lilbee.app.services import get_services
         from lilbee.data.ingest import sync
 
@@ -1266,9 +1563,9 @@ class TestSync:
 
         result = await sync(quiet=True)
         assert "doc.txt" in result.failed
-        assert "doc.txt" not in held_hashes()
+        assert held_kinds() == {"doc.txt": HeldOut.RETRY}
 
-        # Next sync re-plans the file (no record, hash unchanged but never stored).
+        # Next sync re-plans the file (a retry, hash unchanged but never stored).
         get_services().store.write_chunks_batch.side_effect = None
         retry = await sync(quiet=True)
         assert "doc.txt" in retry.added
@@ -1281,11 +1578,11 @@ class TestSync:
 
         store = _install_real_store()
         result = _real_ingest_result("a.pdf", file_hash="h1")
-        pipeline._flush_writes([result], {"a.pdf": None}, {}, {}, {}, set())
+        pipeline._flush_writes([result], {"a.pdf": None}, {}, {}, {}, {})
         assert [row["text"] for row in store.get_page_texts("a.pdf")] == ["page one of a.pdf"]
 
         replanned = _real_ingest_result("a.pdf", file_hash="h2", page_text="page one, edited")
-        pipeline._flush_writes([replanned], {"a.pdf": None}, {}, {}, {}, set())
+        pipeline._flush_writes([replanned], {"a.pdf": None}, {}, {}, {}, {})
         assert [row["text"] for row in store.get_page_texts("a.pdf")] == ["page one, edited"]
         sources = {s["filename"]: s for s in store.get_sources()}
         assert sources["a.pdf"]["file_hash"] == "h2"
@@ -1303,7 +1600,7 @@ class TestSync:
         store = _install_real_store()
         old_stat = SourceStat(11, 22, 33)
         first = _real_ingest_result("a.pdf", file_hash="h1", stat=old_stat)
-        pipeline._flush_writes([first], {"a.pdf": None}, {}, {}, {}, set())
+        pipeline._flush_writes([first], {"a.pdf": None}, {}, {}, {}, {})
 
         real_ensure = core_mod.ensure_table
 
@@ -1317,13 +1614,13 @@ class TestSync:
         )
         added: dict[str, None] = {"a.pdf": None}
         failed: dict[str, None] = {}
-        retry_next: set[str] = set()
+        retry_next: dict[str, str] = {}
         with mock.patch.object(core_mod, "ensure_table", _failing_ensure):
             pipeline._flush_writes([replanned], added, {}, failed, {}, retry_next)
 
         assert added == {}
         assert list(failed) == ["a.pdf"]
-        assert retry_next == {"a.pdf"}
+        assert retry_next == {"a.pdf": "the write to the index failed"}
         record = {s["filename"]: s for s in store.get_sources()}["a.pdf"]
         assert record["file_hash"] == "h1"
         assert source_stat(record) == old_stat
@@ -1677,6 +1974,95 @@ class TestSyncCancellation:
         with pytest.raises(asyncio.CancelledError):
             await ingest_stream(one_plan_batch(files), added, {}, {}, {}, quiet=True, cancel=cancel)
 
+    async def test_the_admission_is_sized_off_the_event_loop(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        """Sizing probes the GPUs, so ingest_stream asks for it on a worker thread."""
+        import threading
+
+        from lilbee.data.ingest import ingest_stream, pipeline
+        from tests.conftest import one_plan_batch
+
+        sized_on: list[threading.Thread] = []
+
+        def sizing() -> tuple[int, list[object], int]:
+            sized_on.append(threading.current_thread())
+            return 1, [], 1
+
+        monkeypatch.setattr(pipeline, "_admission_sizing", sizing)
+        await ingest_stream(one_plan_batch([]), {}, {}, {}, {}, quiet=True)
+        assert sized_on
+        assert sized_on[0] is not threading.main_thread()
+
+    async def test_the_adaptive_admission_reads_the_worker_count_off_the_event_loop(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        """The pool's worker count can probe, so only the sizing thread may read it."""
+        import threading
+        import types
+
+        from lilbee.data.ingest import ingest_stream, pipeline
+        from tests.conftest import one_plan_batch
+
+        read_on: list[threading.Thread] = []
+
+        def workers() -> int:
+            read_on.append(threading.current_thread())
+            return 7
+
+        class _IdleController:
+            def __init__(self, *_a: object, **kwargs: object) -> None:
+                self.permit_max = kwargs["permit_max"]
+
+            async def run(self) -> None:
+                return None
+
+        monkeypatch.setattr(
+            pipeline, "profile_for", lambda _model: types.SimpleNamespace(name="adaptive")
+        )
+        monkeypatch.setattr(pipeline, "enumerate_fleet_devices", lambda _engine: [object()])
+        monkeypatch.setattr(pipeline, "make_signal_sampler", lambda _devices: lambda: None)
+        monkeypatch.setattr(pipeline, "AdaptiveController", _IdleController)
+        monkeypatch.setattr(pipeline, "max_workers", workers)
+        await ingest_stream(one_plan_batch([]), {}, {}, {}, {}, quiet=True)
+        assert read_on
+        assert threading.main_thread() not in read_on
+
+    async def test_the_sizing_result_reaches_the_adaptive_admission(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        """The baseline starts the gate; the ceiling and the devices go to the controller."""
+        import types
+
+        from lilbee.data.ingest import ingest_stream, pipeline
+        from tests.conftest import one_plan_batch
+
+        card = object()
+        built: dict[str, object] = {}
+        sampled: list[list[object]] = []
+
+        class _RecordingController:
+            def __init__(self, gate, _profile, _sampler, _completed, **kwargs):
+                built.update(kwargs, gate=gate)
+
+            async def run(self) -> None:
+                return None
+
+        monkeypatch.setattr(pipeline, "_admission_sizing", lambda: (3, [card], 7))
+        monkeypatch.setattr(
+            pipeline, "profile_for", lambda _mode: types.SimpleNamespace(name="adaptive")
+        )
+        monkeypatch.setattr(
+            pipeline,
+            "make_signal_sampler",
+            lambda devices: sampled.append(list(devices)) or (lambda: None),
+        )
+        monkeypatch.setattr(pipeline, "AdaptiveController", _RecordingController)
+        await ingest_stream(one_plan_batch([]), {}, {}, {}, {}, quiet=True)
+        assert built["permit_max"] == 7
+        assert built["gate"].limit == 3
+        assert sampled == [[card]]
+
     async def test_cancel_in_batch_still_flushes_completed_sibling(self, isolated_env, mock_svc):
         """A cancel landing in the same done-batch as a genuinely completed file must
         not drop that file: it is buffered and flushed before the cancel propagates
@@ -1789,7 +2175,7 @@ class TestIngestHelpers:
 
         f = isolated_env / "empty.txt"
         f.write_text("   ")
-        result, _, _ = await ingest_document(f, "empty.txt", "text")
+        result, _, _, _ = await ingest_document(f, "empty.txt", "text")
         assert result == []
 
     async def test_ingest_code_empty_chunks(self, isolated_env, mock_svc):
@@ -1849,7 +2235,7 @@ class TestIngestHelpers:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        result, _, _ = await ingest_document(f, "test.pdf", "pdf")
+        result, _, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(result) == 2
         assert result[0]["page_start"] == 1
         assert result[1]["page_start"] == 2
@@ -1879,6 +2265,44 @@ class TestCancellation:
             )
             with pytest.raises(asyncio.CancelledError):
                 await ingest_stream(one_plan_batch([entry]), added, {}, {}, {}, quiet=True)
+
+    @pytest.mark.parametrize("shutdown", [False, True])
+    async def test_file_error_after_cancel_is_logged_unless_executor_shutdown(
+        self, isolated_env, caplog, shutdown
+    ):
+        """A real file error after the cancel is set is logged; a pool-shutdown race is not."""
+        from lilbee.data.ingest import ingest_stream
+        from lilbee.data.types import FileToProcess
+        from tests.conftest import one_plan_batch
+
+        cancel = threading.Event()
+        error = (
+            RuntimeError("cannot schedule new futures after shutdown")
+            if shutdown
+            else ValueError("corrupt page tree")
+        )
+
+        async def _fail_after_cancel(*args, **kwargs):
+            cancel.set()
+            raise error
+
+        entry = FileToProcess("bad.pdf", isolated_env / "bad.pdf", "pdf", "abc123", False)
+        with (
+            mock.patch(
+                "lilbee.data.ingest.pipeline.produce_records", side_effect=_fail_after_cancel
+            ),
+            caplog.at_level("WARNING", logger="lilbee.data.ingest.pipeline"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await ingest_stream(
+                one_plan_batch([entry]), {"bad.pdf": None}, {}, {}, {}, quiet=True, cancel=cancel
+            )
+        logged = [r.getMessage() for r in caplog.records if "bad.pdf" in r.getMessage()]
+        if shutdown:
+            assert logged == []
+        else:
+            assert len(logged) == 1
+            assert "corrupt page tree" in logged[0]
 
     @mock.patch(
         "lilbee.data.extract.xberg.aextract_document",
@@ -2150,28 +2574,173 @@ class TestHeldOutRecordLifecycle:
         assert [held.filename for held in result.held_out] == []
 
     @pytest.mark.parametrize(
-        ("error", "held"),
+        ("error", "kind", "retried"),
         [
-            pytest.param("engine", {}, id="engine-failure"),
-            pytest.param("file", {"doc.txt": HeldOut.FAILED}, id="file-failure"),
+            pytest.param("engine", HeldOut.RETRY, True, id="engine-failure"),
+            pytest.param("file", HeldOut.FAILED, False, id="file-failure"),
+            pytest.param("overflow", HeldOut.FAILED, False, id="context-overflow"),
+            pytest.param("embed-overflow", HeldOut.FAILED, False, id="embedding-overflow"),
         ],
     )
     async def test_an_engine_failure_is_not_held_out_and_ingests_next_sync(
-        self, isolated_env, mock_svc, error, held
+        self, isolated_env, mock_svc, error, kind, retried
     ):
-        """A ProviderError is the model engine failing, so the file is planned again next sync."""
+        """A transient ProviderError plans the file again; an overflow or file error holds it."""
         from lilbee.data.ingest import sync
-        from lilbee.providers.base import ProviderError
 
-        raised = ProviderError("engine crashed") if error == "engine" else ValueError("bad file")
         (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
-        with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=raised):
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=_raised_for(error)
+        ):
             first = await sync(quiet=True)
 
         assert first.failed == ["doc.txt"]
-        assert held_kinds() == held
+        assert held_kinds() == {"doc.txt": kind}
         second = await sync(quiet=True)
-        assert ("doc.txt" in second.added) is not held
+        assert ("doc.txt" in second.added) is retried
+        assert ("doc.txt" in held_kinds()) is not retried
+        if error == "embed-overflow":
+            from lilbee.data.ingest.errors import OVERFLOW_REASON
+
+            [held_file] = second.held_out
+            assert held_file.filename == "doc.txt"
+            assert held_file.reason == OVERFLOW_REASON
+            assert "chunk_size" in held_file.reason
+            assert "conversation" not in held_file.reason
+        if error == "overflow":
+            [held_file] = second.held_out
+            assert held_file.reason == "ProviderError: too long"
+
+    @pytest.mark.parametrize(
+        ("error", "expected", "absent"),
+        [
+            pytest.param("engine", "doc.txt: engine crashed", "chunk_size", id="engine-failure"),
+            pytest.param("overflow", "doc.txt: too long", "chunk_size", id="chat-overflow"),
+            pytest.param("embed-overflow", "chunk_size", "ProviderError", id="embedding-overflow"),
+        ],
+    )
+    async def test_the_failed_file_warning_names_the_file_and_the_cause(
+        self, isolated_env, mock_svc, caplog, error, expected, absent
+    ):
+        """An embedding overflow logs the way out, not chat text; others keep their text."""
+        import logging
+
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
+        with (
+            caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"),
+            mock.patch(
+                "lilbee.data.ingest.pipeline.produce_records", side_effect=_raised_for(error)
+            ),
+        ):
+            await sync(quiet=True)
+
+        [line] = [r.getMessage() for r in caplog.records if "Failed to ingest" in r.getMessage()]
+        assert "doc.txt" in line
+        assert expected in line
+        assert absent not in line
+        if error == "embed-overflow":
+            from lilbee.data.ingest.errors import OVERFLOW_REASON
+
+            assert OVERFLOW_REASON in line
+            assert "conversation" not in line
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            pytest.param("chunk_size", 64, id="chunk-size"),
+            pytest.param("max_embed_chars", 99999, id="embed-chars"),
+            pytest.param("embedding_model", "other/model", id="embedding-model"),
+            pytest.param("num_ctx", 4096, id="context-size"),
+        ],
+    )
+    async def test_an_overflow_hold_is_released_when_a_deciding_setting_changes(
+        self, isolated_env, mock_svc, monkeypatch, field, value
+    ):
+        """Each setting that decides an overflow replans the held file; unchanged, it stays held."""
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import EmbeddingOverflowError, ProviderErrorKind
+
+        raised = EmbeddingOverflowError("too long", kind=ProviderErrorKind.CONTEXT_OVERFLOW)
+        (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
+        with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=raised):
+            await sync(quiet=True)
+        assert held_kinds() == {"doc.txt": HeldOut.FAILED}
+        assert "doc.txt" not in (await sync(quiet=True)).added
+
+        monkeypatch.setattr(cfg, field, value)
+        changed = await sync(quiet=True)
+
+        assert "doc.txt" in changed.added
+        assert held_kinds() == {}
+
+    async def test_an_overflow_hold_ignores_the_char_limit_of_a_token_capped_embedder(
+        self, isolated_env, mock_svc, monkeypatch
+    ):
+        """A token-capped embedder never reads max_embed_chars, so changing it keeps the hold."""
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import EmbeddingOverflowError, ProviderErrorKind
+
+        mock_svc.provider.embed_token_cap.return_value = 4096
+        raised = EmbeddingOverflowError("too long", kind=ProviderErrorKind.CONTEXT_OVERFLOW)
+        (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
+        with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=raised):
+            await sync(quiet=True)
+
+        monkeypatch.setattr(cfg, "max_embed_chars", 99999)
+        changed = await sync(quiet=True)
+
+        assert "doc.txt" not in changed.added
+        assert held_kinds() == {"doc.txt": HeldOut.FAILED}
+
+    async def test_a_file_failure_hold_ignores_a_changed_setting(
+        self, isolated_env, mock_svc, monkeypatch
+    ):
+        """A failure that is not an embedding overflow stays held when a setting changes."""
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=ValueError("bad file")
+        ):
+            await sync(quiet=True)
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        second = await sync(quiet=True)
+
+        assert "doc.txt" not in second.added
+        assert held_kinds() == {"doc.txt": HeldOut.FAILED}
+
+    async def test_a_file_whose_token_count_failed_is_added_by_the_next_sync(
+        self, isolated_env, mock_svc
+    ):
+        """A count route that is down fails the files; the sync after it recovers adds them."""
+        from lilbee.data.extract.chunk import build_chunking_config
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import ProviderError
+
+        route = {"down": False}
+
+        def _count(text: str) -> int:
+            if route["down"]:
+                raise ProviderError("The embedding server stopped")
+            return max(1, len(text) // 4)
+
+        mock_svc.provider.count_tokens.side_effect = _count
+        names = ["a.txt", "b.txt", "c.txt"]
+        for name in names:
+            (isolated_env / name).write_text(
+                f"{name} holds plenty of text. " * 40, encoding="utf-8"
+            )
+        build_chunking_config()  # the registration probe, while the route is up
+        route["down"] = True
+        first = await sync(quiet=True)
+        assert sorted(first.failed) == names
+
+        route["down"] = False
+        second = await sync(quiet=True)
+        assert sorted(second.added) == names
+        assert held_kinds() == {}
 
     async def _fail_then_move_folder(self, isolated_env):
         """Fail old/bad.pdf on a real store, rename old/ to new/, and sync with no extraction."""
@@ -2237,6 +2806,266 @@ class TestHeldOutRecordLifecycle:
             return await orig(path, name, content_type, **kwargs)
 
         return _produce
+
+
+class TestAnswerAfterEveryIngestFailed:
+    """The embed engine fails every file: each row records a retry, and ask names the failure."""
+
+    _NAMES = FAILED_NAMES
+    _QUESTION = "what do bees eat?"
+
+    def _answer(self) -> str | None:
+        return svc_mod.get_services().searcher.pre_retrieval_answer(self._QUESTION)
+
+    async def test_ask_names_the_failed_ingest_and_its_cause(self):
+        result = await fail_every_ingest(self._NAMES)
+
+        assert sorted(result.failed) == sorted(self._NAMES)
+        assert held_kinds() == dict.fromkeys(self._NAMES, HeldOut.RETRY)
+        answer = svc_mod.get_services().searcher.ask_raw(self._QUESTION)
+        assert answer.answer == FAILED_ANSWER
+        assert answer.sources == []
+
+    async def test_a_sync_that_indexes_the_files_clears_the_retries(self):
+        from lilbee.data.ingest import sync
+
+        await fail_every_ingest(self._NAMES)
+        result = await sync(quiet=True)
+
+        assert result.failed == []
+        assert sorted(result.added) == sorted(self._NAMES)
+        assert held_kinds() == {}
+
+    @staticmethod
+    async def _sync_with_the_engine_down():
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import ProviderError
+
+        failure = ProviderError(ENGINE_ERROR)
+        with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=failure):
+            return await sync(quiet=True)
+
+    async def test_a_moved_file_that_fails_again_is_counted_once(self):
+        """The retry follows the file to its new folder; the old path keeps no record."""
+        await fail_every_ingest(self._NAMES)
+        (cfg.documents_dir / "moved").mkdir()
+        (cfg.documents_dir / "bees.txt").rename(cfg.documents_dir / "moved" / "bees.txt")
+        await self._sync_with_the_engine_down()
+
+        moved = ["ants.txt", "moved/bees.txt", "wasps.txt"]
+        assert held_kinds() == dict.fromkeys(moved, HeldOut.RETRY)
+        assert self._answer() == FAILED_ANSWER
+
+    async def test_a_moved_file_leaves_no_record_once_the_engine_is_back(self):
+        from lilbee.data.ingest import sync
+
+        await fail_every_ingest(self._NAMES)
+        (cfg.documents_dir / "moved").mkdir()
+        (cfg.documents_dir / "bees.txt").rename(cfg.documents_dir / "moved" / "bees.txt")
+        result = await sync(quiet=True)
+
+        assert sorted(result.added) == ["ants.txt", "moved/bees.txt", "wasps.txt"]
+        assert held_kinds() == {}
+
+    async def test_a_deleted_file_is_no_longer_counted(self):
+        await fail_every_ingest(self._NAMES)
+        (cfg.documents_dir / "wasps.txt").unlink()
+        await self._sync_with_the_engine_down()
+
+        assert held_kinds() == dict.fromkeys(["ants.txt", "bees.txt"], HeldOut.RETRY)
+        assert self._answer() == FAILED_ANSWER.replace("3 documents", "2 documents")
+
+    async def test_deleting_every_failed_file_leaves_an_empty_library(self):
+        from lilbee.data.ingest import sync
+        from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
+
+        await fail_every_ingest(self._NAMES)
+        for name in self._NAMES:
+            (cfg.documents_dir / name).unlink()
+        await sync(quiet=True)
+
+        assert held_kinds() == {}
+        assert self._answer() == EMPTY_LIBRARY
+
+    async def test_a_worker_keeps_the_retries_of_the_other_slice(self):
+        """A worker of two releases only its own slice's retries; the sibling's survive."""
+        from lilbee.data.store import Store
+        from lilbee.data.types import ShardId
+
+        shard = ShardId(index=0, count=2, corpus_root=cfg.data_root)
+        names = [f"file{number}.txt" for number in range(32)]
+        mine, stale = [name for name in names if shard.owns(name)][:2]
+        sibling = next(name for name in names if not shard.owns(name))
+        retry = HeldRecord(HeldOut.RETRY, "h", "the engine is down")
+        Store(cfg).hold_failed({sibling: retry, stale: retry})
+        result = await fail_every_ingest([mine], shard=shard)
+
+        assert result.failed == [mine]
+        assert held_kinds() == {mine: HeldOut.RETRY, sibling: HeldOut.RETRY}
+
+    def test_a_busy_lock_on_the_release_is_logged_as_a_release(self, monkeypatch, caplog):
+        import logging
+
+        from lilbee.data.ingest import pipeline
+        from lilbee.runtime.lock import LockTimeoutError
+
+        monkeypatch.setattr(pipeline.time, "sleep", lambda _s: None)
+        store = mock.MagicMock()
+        store.release_retries.side_effect = LockTimeoutError("busy")
+        with caplog.at_level(logging.ERROR, logger="lilbee.data.ingest.pipeline"):
+            pipeline._persist_failures(store, {"a.txt": "h"}, {}, [], {"a.txt": "down"}, None)
+
+        store.hold_failed.assert_called_once()
+        assert "Could not release the retry records this sync did not renew" in caplog.text
+        assert "Could not hold" not in caplog.text
+
+    def test_a_failed_page_text_write_names_the_write(self):
+        """A page-text-only file whose write failed keeps the write as its cause."""
+        from lilbee.data.ingest import pipeline
+
+        store = _install_real_store()
+        reasons = {"scan.pdf": "stored page text only (0 searchable chunks)"}
+        retry = {"scan.pdf": "the write to the index failed"}
+        pipeline._persist_failures(store, {"scan.pdf": "h1"}, reasons, [], retry, None)
+
+        assert held_reasons() == {"scan.pdf": "the write to the index failed"}
+
+    async def test_removing_the_failed_files_leaves_an_empty_library(self):
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
+
+        await fail_every_ingest(self._NAMES)
+        result = remove_documents_durably(self._NAMES)
+
+        assert sorted(result.removed) == sorted(self._NAMES)
+        assert held_kinds() == dict.fromkeys(self._NAMES, HeldOut.REMOVED)
+        assert self._answer() == EMPTY_LIBRARY
+
+    async def test_removing_one_failed_file_keeps_naming_the_others(self):
+        from lilbee.app.ingest import remove_documents_durably
+
+        await fail_every_ingest(self._NAMES)
+        remove_documents_durably([self._NAMES[0]])
+
+        assert self._answer() == FAILED_ANSWER.replace("3 documents", "2 documents")
+
+    async def test_a_reset_leaves_an_empty_library(self):
+        from lilbee.app.reset import perform_reset
+        from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
+
+        await fail_every_ingest(self._NAMES)
+        assert self._answer() == FAILED_ANSWER
+        perform_reset()
+
+        assert held_kinds() == {}
+        assert self._answer() == EMPTY_LIBRARY
+
+    async def test_a_deleted_data_dir_leaves_an_empty_library(self):
+        import shutil
+
+        from lilbee.data.store import Store
+        from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
+        from tests.conftest import make_mock_services
+
+        await fail_every_ingest(self._NAMES)
+        assert self._answer() == FAILED_ANSWER
+        svc_mod.get_services().store.close()
+        shutil.rmtree(cfg.data_dir)
+        svc_mod.set_services(make_mock_services(store=Store(cfg)))
+
+        assert self._answer() == EMPTY_LIBRARY
+
+    async def test_a_library_no_sync_filled_is_empty(self):
+        from lilbee.data.store import Store
+        from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
+        from tests.conftest import make_mock_services
+
+        svc_mod.set_services(make_mock_services(store=Store(cfg)))
+
+        assert self._answer() == EMPTY_LIBRARY
+
+    async def test_a_file_that_fails_to_parse_points_at_status(self):
+        """A parse error holds the file out at its hash; the answer names no engine error."""
+        from lilbee.retrieval.query.searcher import ingest_failed_message
+
+        result = await fail_every_ingest(self._NAMES, error=ValueError("not a document"))
+
+        assert sorted(result.failed) == sorted(self._NAMES)
+        assert held_kinds() == dict.fromkeys(self._NAMES, HeldOut.FAILED)
+        assert self._answer() == ingest_failed_message(len(self._NAMES))
+
+    async def test_a_worker_records_its_retries_in_the_store_and_nothing_else(self):
+        """A fan-out worker leaves the same rows a single sync does, and no other file."""
+        from lilbee.data.types import ShardId
+
+        def _entries() -> set[str]:
+            # Two levels: the data root's folders and what each holds, not the table files.
+            found = [*cfg.data_root.glob("*"), *cfg.data_root.glob("*/*")]
+            return {str(path.relative_to(cfg.data_root)) for path in found}
+
+        await fail_every_ingest(self._NAMES)
+        single = _entries()
+        shard = ShardId(index=0, count=1, corpus_root=cfg.data_root)
+        result = await fail_every_ingest(self._NAMES, shard=shard)
+
+        assert sorted(result.failed) == sorted(self._NAMES)
+        assert _entries() - single == set()
+        assert held_kinds() == dict.fromkeys(self._NAMES, HeldOut.RETRY)
+        assert self._answer() == FAILED_ANSWER
+
+    async def test_a_worker_result_crosses_the_spawn_queue_whole(self):
+        """The worker's result reaches the parent through a real spawn queue unchanged."""
+        import multiprocessing
+
+        from lilbee.data.ingest.fanout import ShardDone, aggregate_results
+        from lilbee.data.types import ShardId
+
+        shard = ShardId(index=0, count=1, corpus_root=cfg.data_root)
+        result = await fail_every_ingest(self._NAMES, shard=shard)
+        messages = multiprocessing.get_context("spawn").Queue()
+        messages.put(ShardDone(kind="done", index=0, result=result, error=None))
+        received = messages.get(timeout=30)
+        messages.close()
+
+        assert received.result == result
+        assert sorted(aggregate_results([received]).failed) == sorted(self._NAMES)
+        assert self._answer() == FAILED_ANSWER
+
+    @pytest.mark.parametrize(
+        ("reason", "kept"),
+        [
+            pytest.param("ProviderError: first line\nsecond line", "first line", id="one-line"),
+            pytest.param("ProviderError: no colon: here", "no colon: here", id="class-name-only"),
+            pytest.param("the engine said: no", "the engine said: no", id="no-class-name"),
+            pytest.param("x" * 250, "x" * 200, id="long-reason"),
+            pytest.param(
+                "ProviderError: ", "the model engine failed without a message", id="empty-message"
+            ),
+            pytest.param("the engine is down.", "the engine is down", id="no-doubled-period"),
+            pytest.param(
+                "ProviderError: .\n\nthe engine stopped", "the engine stopped", id="text-later"
+            ),
+            pytest.param(
+                "ProviderError: ...", "the model engine failed without a message", id="dots-only"
+            ),
+        ],
+    )
+    def test_the_kept_cause_is_plain_one_line_and_bounded(self, reason, kept):
+        from lilbee.data.ingest.pipeline import _retry_reason
+
+        assert _retry_reason(reason) == kept
+
+    async def test_an_engine_error_without_a_message_names_no_empty_cause(self):
+        """The answer never reads "The error was: ." for an engine error with no message."""
+        from lilbee.providers.base import ProviderError
+
+        await fail_every_ingest(self._NAMES, error=ProviderError(""))
+
+        answer = self._answer()
+        assert answer == FAILED_ANSWER.replace(
+            ENGINE_ERROR, "the model engine failed without a message"
+        )
+        assert "The error was: ." not in answer
 
 
 class TestSyncKeepsConcurrentHeldRecords:
@@ -3429,6 +4258,18 @@ class TestClassifyResult:
         _classify_result(result, {}, {}, {}, {}, reasons)
         assert reasons["scan.pdf"] == reason
 
+    def test_a_refused_file_is_skipped_without_a_reasons_map(self):
+        from lilbee.data.ingest.pipeline import _classify_result
+        from lilbee.data.types import _IngestResult
+        from lilbee.runtime.progress import BatchStatus
+
+        skipped: dict = {}
+        result = _IngestResult(
+            "big.pdf", Path("big.pdf"), chunk_count=0, error=None, skip_reason="too large"
+        )
+        assert _classify_result(result, {}, {}, {}, skipped) is BatchStatus.SKIPPED
+        assert "big.pdf" in skipped
+
     def test_zero_chunks_not_recorded_as_added(self):
         from lilbee.data.ingest.pipeline import _classify_result
         from lilbee.data.types import _IngestResult
@@ -3917,7 +4758,7 @@ class TestCancelDuringThresholdFlush:
         monkeypatch.setattr(pipeline, "_WRITE_FLUSH_CHUNKS", flush_at)
         monkeypatch.setattr(pipeline, "_flush_batch", _disk_full)
         failed: dict[str, None] = {}
-        retry_next: set[str] = set()
+        retry_next: dict[str, str] = {}
         collect = pipeline._collect_results(
             _feed([_done()]), {}, {}, failed, {}, window=1, retry_next=retry_next, cancel=cancel
         )
@@ -3929,7 +4770,7 @@ class TestCancelDuringThresholdFlush:
             else:
                 await collect  # a failed write with no cancel is tracked, and the sync goes on
         assert failed == {"a.txt": None}
-        assert retry_next == {"a.txt"}
+        assert retry_next == {"a.txt": "the write to the index failed"}
         # The tracked failure is logged once, where it was tracked.
         assert [r.getMessage() for r in caplog.records] == ["Failed to write a.txt: disk full"]
 
@@ -5042,7 +5883,7 @@ class TestBatchExtractionRouting:
             try:
                 f = isolated_env / "d.pdf"
                 f.write_bytes(b"fake")
-                records, _, _ = await ingest_document(f, "d.pdf", "pdf")
+                records, _, _, _ = await ingest_document(f, "d.pdf", "pdf")
             finally:
                 await batcher.close()
                 reset_active_batcher(token)
@@ -5067,7 +5908,7 @@ class TestBatchExtractionRouting:
         f.write_bytes(make_pdf(pages=1))
         token = set_active_batcher(batcher)
         try:
-            records, _, _ = await ingest_document(f, "doc.pdf", "pdf")
+            records, _, _, _ = await ingest_document(f, "doc.pdf", "pdf")
         finally:
             await batcher.close()
             reset_active_batcher(token)
@@ -5086,7 +5927,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
+        records, _, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 1
         assert all(r["chunk_type"] == ChunkType.RAW for r in records)
 
@@ -5106,7 +5947,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
+        records, _, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 3
         table_records = [r for r in records if r["chunk_type"] == ChunkType.TABLE]
         assert len(table_records) == 2
@@ -5118,6 +5959,104 @@ class TestTableChunks:
         assert [r["chunk_index"] for r in records] == [0, 1, 2]
         assert all(r["vector"] for r in table_records)
         assert all(r["content_type"] == "pdf" for r in table_records)
+
+    async def test_a_semantic_chunk_over_chunk_size_tokens_is_cut_and_keeps_its_page(
+        self, isolated_env, monkeypatch, mock_svc
+    ):
+        """The semantic chunker sizes by characters, so each chunk is counted in the
+        embedder's tokens and an oversize one is cut; every piece keeps its page."""
+        from lilbee.core.config import cfg
+        from lilbee.data.extract import xberg as xberg_mod
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        monkeypatch.setattr(cfg, "chunk_overlap", 0)
+        mock_svc.provider.embed_token_cap.return_value = None
+        mock_svc.provider.count_tokens.side_effect = len
+        text = "".join(f"line {i:02d}\n" for i in range(24))
+        document = _make_xberg_result(text=text, num_chunks=2, has_pages=True)
+        real_extract = xberg_mod.aextract_document
+
+        async def _extract(data, *args, **kwargs):
+            # Only the file is faked: the cut of each chunk runs through the real xberg.
+            if data == b"fake":
+                return document
+            return await real_extract(data, *args, **kwargs)
+
+        monkeypatch.setattr(xberg_mod, "aextract_document", _extract)
+        from lilbee.data.ingest import ingest_document
+
+        f = isolated_env / "test.pdf"
+        f.write_bytes(b"fake")
+        records, _, _, _ = await ingest_document(f, "test.pdf", "pdf")
+
+        assert len(records) > 2
+        assert max(len(r["chunk"]) for r in records) <= 64
+        assert [r["chunk_index"] for r in records] == list(range(len(records)))
+        pages = [r["page_start"] for r in records]
+        assert pages == sorted(pages)
+        assert set(pages) == {1, 2}
+        assert all(r["page_end"] == r["page_start"] for r in records)
+
+    async def test_a_table_over_the_token_budget_is_embedded_whole_in_pieces(
+        self, isolated_env, monkeypatch, mock_svc
+    ):
+        """A table past the budget is cut at its rows, each piece with the header, so
+        no row is lost to the embedder's cut; every piece keeps the table's page."""
+        from lilbee.core.config import cfg
+        from lilbee.data.extract import xberg as xberg_mod
+        from lilbee.data.store import ChunkType
+
+        monkeypatch.setattr(cfg, "table_extraction", True)
+        monkeypatch.setattr(cfg, "chunk_size", 128)
+        monkeypatch.setattr(cfg, "chunk_overlap", 0)
+        mock_svc.provider.embed_token_cap.return_value = None
+        mock_svc.provider.count_tokens.side_effect = len
+        header = "| id | city |\n|---|---|"
+        rows = [f"| {i:03d} | Lisbon |" for i in range(40)]
+        table = _make_table(markdown="\n".join([header, *rows]), page_number=3)
+        document = _make_xberg_result(tables=[table])
+        real_extract = xberg_mod.aextract_document
+
+        async def _extract(data, *args, **kwargs):
+            # Only the file is faked: the cut of the table runs through the real xberg.
+            if data == b"fake":
+                return document
+            return await real_extract(data, *args, **kwargs)
+
+        monkeypatch.setattr(xberg_mod, "aextract_document", _extract)
+        from lilbee.data.ingest import ingest_document
+
+        f = isolated_env / "test.pdf"
+        f.write_bytes(b"fake")
+        records, _, _, _ = await ingest_document(f, "test.pdf", "pdf")
+
+        pieces = [r for r in records if r["chunk_type"] == ChunkType.TABLE]
+        assert len(pieces) > 1
+        assert max(len(r["chunk"]) for r in pieces) <= 128
+        assert all(r["chunk"].startswith(header) for r in pieces)
+        assert [line for r in pieces for line in r["chunk"].splitlines()[2:]] == rows
+        assert {(r["page_start"], r["page_end"]) for r in pieces} == {(3, 3)}
+        assert [r["chunk_index"] for r in records] == list(range(len(records)))
+
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_chunks_are_not_counted_without_semantic_chunking(
+        self, mock_kf, isolated_env, monkeypatch, mock_svc
+    ):
+        """The other chunkers already cut by the embedder's tokens, so nothing recounts them."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        mock_kf.return_value = _make_xberg_result(num_chunks=2)
+        from lilbee.data.ingest import ingest_document
+
+        f = isolated_env / "test.pdf"
+        f.write_bytes(b"fake")
+        records, _, _, _ = await ingest_document(f, "test.pdf", "pdf")
+
+        assert len(records) == 2
+        counted = [c.args[0] for c in mock_svc.provider.count_tokens.call_args_list]
+        assert not {r["chunk"] for r in records} & set(counted)
 
     @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
     async def test_spanning_cell_markdown_passes_through_verbatim(
@@ -5134,7 +6073,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
+        records, _, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert records[-1]["chunk_type"] == ChunkType.TABLE
         assert records[-1]["chunk"] == spanned
 
@@ -5150,7 +6089,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
+        records, _, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 1
         assert records[0]["chunk_type"] == ChunkType.RAW
 
@@ -5170,7 +6109,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
+        records, _, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 1
         assert records[0]["chunk_type"] == ChunkType.TABLE
         assert records[0]["chunk_index"] == 0
@@ -5595,6 +6534,16 @@ class TestPageTextAccumulator:
         assert {p["page"] for p in pages} == {1, 2}
         assert all(p["content_type"] == "pdf" for p in pages)
 
+    def test_blank_unpaginated_doc_records_no_page(self):
+        from xberg import ExtractedDocument
+
+        from lilbee.data.extract.document import _capture_result_page_texts
+
+        pages: list = []
+        doc = ExtractedDocument(content="  \n\t ", mime_type="text/plain")
+        _capture_result_page_texts(doc, "blank.txt", "text", pages)
+        assert pages == []
+
 
 class TestIngestDocumentEdgeCases:
     async def test_empty_extraction_returns_empty(self, isolated_env):
@@ -5605,7 +6554,7 @@ class TestIngestDocumentEdgeCases:
         empty_result = mock.MagicMock(chunks=[], metadata=Metadata())
         mock_extract = mock.AsyncMock(return_value=empty_result)
         with mock.patch("lilbee.data.extract.xberg.aextract_document", mock_extract):
-            result, _, _ = await ingest_document(isolated_env / "e.xml", "e.xml", "xml")
+            result, _, _, _ = await ingest_document(isolated_env / "e.xml", "e.xml", "xml")
         assert result == []
 
     async def test_no_chunks_returns_empty(self, isolated_env):
@@ -5615,7 +6564,7 @@ class TestIngestDocumentEdgeCases:
         no_chunks_result = mock.MagicMock(chunks=[], metadata=Metadata())
         mock_extract = mock.AsyncMock(return_value=no_chunks_result)
         with mock.patch("lilbee.data.extract.xberg.aextract_document", mock_extract):
-            result, _, _ = await ingest_document(isolated_env / "s.xml", "s.xml", "xml")
+            result, _, _, _ = await ingest_document(isolated_env / "s.xml", "s.xml", "xml")
         assert result == []
 
 
@@ -5780,7 +6729,7 @@ class TestConceptIndexing:
     async def test_concepts_unavailable_skips_rebuild(
         self, mock_extract_file, isolated_env, mock_svc
     ):
-        """When concepts_available() returns False, _rebuild_concept_clusters is a no-op."""
+        """When concepts_available() returns False, the concept graph update is a no-op."""
         cfg.concept_graph = True
         (isolated_env / "unavail_rebuild.txt").write_text("Content for unavailable test.")
 
@@ -5993,7 +6942,7 @@ class TestForgetMissingFromWikiIndex:
 
         monkeypatch.setattr(cfg, "wiki", True)
         mock_svc.store.source_paths.return_value = {"kept-id": "kept.txt"}
-        mock_svc.store.missing_sources.return_value = set()
+        mock_svc.store.missing_sources.side_effect = lambda names: set()
         read = mock.MagicMock(return_value={"ford": _stub_of("kept-id")})
         written = mock.MagicMock()
         monkeypatch.setattr("lilbee.wiki.stubs.load_stub_index", read)
@@ -6012,7 +6961,7 @@ class TestForgetMissingFromWikiIndex:
 
         monkeypatch.setattr(cfg, "wiki", True)
         mock_svc.store.source_paths.return_value = {"kept-id": "kept.txt"}
-        mock_svc.store.missing_sources.return_value = set()
+        mock_svc.store.missing_sources.side_effect = lambda names: set()
         mock_svc.store.wiki_mention_rows.return_value = []
         asked = mock.MagicMock()
         written = mock.MagicMock()
@@ -6283,11 +7232,77 @@ class TestRemovingHeldOutFiles:
     def test_removable_names_lists_indexed_then_failures(self, isolated_env, mock_svc):
         from lilbee.app.ingest import removable_names
 
+        hold_failed({"a.txt": "h0", "b.pdf": "h1"})
+        hold_removed({"gone.txt": "h2"})
+
+        assert removable_names(["a.txt"]) == ["a.txt", "b.pdf"]
+
+    def test_iter_removable_names_streams_indexed_then_failures(self, isolated_env, mock_svc):
+        from lilbee.app.ingest import iter_removable_names
+
         mock_svc.store.upsert_source("a.txt", "hash", 1)
         hold_failed({"a.txt": "h0", "b.pdf": "h1"})
         hold_removed({"gone.txt": "h2"})
 
-        assert removable_names() == ["a.txt", "b.pdf"]
+        assert list(iter_removable_names()) == ["a.txt", "b.pdf"]
+
+    def test_removable_among_keeps_indexed_and_failed_names_only(self, isolated_env, mock_svc):
+        from lilbee.app.ingest import removable_among
+
+        mock_svc.store.upsert_source("a.txt", "hash", 1)
+        hold_failed({"b.pdf": "h1"})
+        hold_removed({"gone.txt": "h2"})
+
+        names = ["a.txt", "b.pdf", "gone.txt", "nope.txt"]
+        assert removable_among(names) == {"a.txt", "b.pdf"}
+
+    def test_expand_remove_targets_reads_the_names_once_and_keeps_the_rules(self):
+        from lilbee.app.ingest import expand_remove_targets
+
+        known = iter(["docs/a.md", "docs/b.md", "docs-2/c.md", "top.md", "exact.md"])
+        targets = expand_remove_targets(
+            ["exact.md", "docs", "*.md", "docs/a.md", "nope.md"], known=known
+        )
+
+        assert targets == [
+            "exact.md",
+            "docs/a.md",
+            "docs/b.md",
+            "docs-2/c.md",
+            "top.md",
+            "nope.md",
+        ]
+
+    def test_expand_remove_targets_keeps_a_name_matching_a_folder_and_no_source(self):
+        from lilbee.app.ingest import expand_remove_targets
+
+        assert expand_remove_targets(["docs-2", "g*"], known=iter(["docs/a.md"])) == [
+            "docs-2",
+            "g*",
+        ]
+
+    def test_a_removal_by_glob_and_folder_never_loads_every_source(
+        self, isolated_env, mock_svc, monkeypatch
+    ):
+        """The names stream and the matches are checked by name: no full source read."""
+        from lilbee.app.ingest import remove_documents_durably
+
+        for name in ("docs/a.md", "docs/b.md", "keep.md", "other/c.md"):
+            mock_svc.store.upsert_source(name, "h", 1)
+        loaded: list[str] = []
+
+        def _counted(*args, **kwargs):
+            loaded.append("get_sources")
+            raise AssertionError("a removal must not load every source")
+
+        monkeypatch.setattr(mock_svc.store, "get_sources", _counted)
+
+        result = remove_documents_durably(["docs", "other/*", "nope.md"])
+
+        assert sorted(result.removed) == ["docs/a.md", "docs/b.md", "other/c.md"]
+        assert result.not_found == ["nope.md"]
+        assert loaded == []
+        assert [h["filename"] for h in mock_svc.store.iter_source_heads()] == ["keep.md"]
 
 
 class TestOcrConfigSelection:
@@ -6615,6 +7630,11 @@ class TestTesseractUnderRealXberg:
         assert _non_blank(_page_line(2, line)) == chars
         assert self._ocr_pages(_layout_pdf("STS", (line,)), OcrMode.AUTO) == expected
 
+    def test_ocr_reads_the_run_language_data_and_downloads_none(self):
+        """Each test has its own HOME, so a download lands in this test's own cache."""
+        assert self._ocr_pages(_mixed_pdf(), OcrMode.AUTO) == [2]
+        assert list(Path.home().glob("**/tessdata/*.traineddata")) == []
+
     def test_ocr_text_replaces_a_text_layer_too_short_to_be_usable(self):
         line = "x" * (_USABLE_TEXT_CHARS - 1 - _non_blank(_page_line(2, "")))
         usable = "y" * (_USABLE_TEXT_CHARS - _non_blank(_page_line(3, "")))
@@ -6659,6 +7679,54 @@ class TestTesseractUnderRealXberg:
         assert records.records  # the text pages are indexed either way
         expected = "Indexed mixed.pdf without its scanned pages 2: OCR is off (ocr = off)"
         assert (expected in caplog.text) is warned
+
+
+class _FirstPageOnlyVisionBackend(_CountingVisionBackend):
+    """A 'lilbee-vision' backend that reads the first page it gets and raises on the rest."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._first = threading.Lock()
+
+    def process_image(self, image_bytes, config):
+        if not self._first.acquire(blocking=False):
+            raise RuntimeError("the model is gone")
+        return super().process_image(image_bytes, config)
+
+
+class TestFailedOcrPagesFromXberg:
+    """The adapter reads the records real xberg writes when a page's OCR raises."""
+
+    def test_each_page_whose_ocr_raised_becomes_a_failed_page(self, isolated_env):
+        from xberg import register_ocr_backend, unregister_ocr_backend
+
+        from lilbee.data.extract.xberg import extract_document, failed_ocr_pages
+        from lilbee.data.ingest import ExtractMode, extraction_config
+        from lilbee.data.store import FailedPage
+
+        cfg.ocr = OcrMode.ALL
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        config = extraction_config(ExtractMode.PAGINATED)
+        register_ocr_backend(_FirstPageOnlyVisionBackend())
+        try:
+            doc = extract_document(
+                make_pdf(pages=3), "application/pdf", filename="born.pdf", config=config
+            )
+        finally:
+            unregister_ocr_backend(OcrBackendName.LILBEE_VISION)
+
+        records = doc.ocr_page_failures
+        assert [type(record).__name__ for record in records] == ["OcrPageFailure"] * 2
+        read = [page.page_number for page in doc.pages if "OCR-TEXT" in page.content]
+        assert len(read) == 1
+        error = (
+            "Plugin 'lilbee-vision' method 'process_image' failed: RuntimeError: the model is gone"
+        )
+        assert failed_ocr_pages(doc) == tuple(
+            FailedPage(page=number, error=error, recovered=False)
+            for number in (1, 2, 3)
+            if number not in read
+        )
 
 
 class TestVisionOcrStopsOnCancel:
@@ -6716,9 +7784,41 @@ class TestVisionOcrStopsOnCancel:
         cancel = threading.Event()
         cancel.set()
         calls: list[bytes] = []
-        with pytest.raises(RuntimeError, match="TaskCancelledError"):
+        with pytest.raises(asyncio.CancelledError) as raised:
             await self._extract(tmp_path, cancel, calls)
         assert calls == []
+        # xberg's error for the refused pages stays as the cause, for the DEBUG trace.
+        assert "TaskCancelledError" in str(raised.value.__cause__)
+
+    @pytest.mark.parametrize("when", ["file_start", "first_page"])
+    async def test_a_user_cancel_during_vision_ocr_logs_no_failure(
+        self, isolated_env, mock_svc, caplog, when
+    ):
+        """A cancel is not a file failure, whether no page or one page reached the model."""
+        from lilbee.data.ingest import sync
+        from lilbee.runtime.progress import EventType
+
+        mock_svc.provider.vision_slot_capacity.return_value = 1
+        (isolated_env / "scan.pdf").write_bytes(make_pdf(pages=self._PAGES))
+        cancel = threading.Event()
+
+        def _on_progress(event_type, _data) -> None:
+            if when == "file_start" and event_type is EventType.FILE_START:
+                cancel.set()
+
+        calls: list[bytes] = []
+        with (
+            self._vision_backend(calls, cancel if when == "first_page" else None),
+            mock.patch(
+                "lilbee.data.extract.backends.vision_ocr.resolve_ocr_prompt",
+                return_value="OCR",
+            ),
+            caplog.at_level("WARNING"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await sync(quiet=True, force_rebuild=True, on_progress=_on_progress, cancel=cancel)
+        assert bool(calls) is (when == "first_page")
+        assert [r.getMessage() for r in caplog.records if "scan.pdf" in r.getMessage()] == []
 
     @pytest.mark.parametrize("archived", [False, True])
     async def test_a_cancelled_sync_sends_no_page_to_the_model(
@@ -6789,6 +7889,89 @@ class TestChunkAndEmbedPagesEmpty:
         assert await chunk_and_embed_pages([(1, "   ")], "s", "pdf", noop_callback) == []
 
 
+_LONG_TITLE = "Annual report of the river authority " * 60
+
+
+def _assert_each_chunk_follows_a_bounded_head(mock_svc, chunks: list[str]) -> None:
+    """Every embed input ends with its whole chunk after a head within the headroom."""
+    from lilbee.providers.engine_params import INPUT_HEADROOM_TOKENS
+
+    inputs = mock_svc.embedder.embed_batch.call_args.args[0]
+    assert len(inputs) == len(chunks)
+    for sent, chunk in zip(inputs, chunks, strict=True):
+        assert sent.endswith(f"\n{chunk}")
+        head = sent[: -len(chunk) - 1]
+        assert head
+        assert mock_svc.provider.count_tokens(head) <= INPUT_HEADROOM_TOKENS
+
+
+class TestEmbedInputsKeepTheChunkAtEachCaller:
+    """A long title or situating sentence is cut to the headroom on every ingest path."""
+
+    async def test_dataset_import_cuts_a_long_scoped_title(self, mock_svc, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.document import _title_scope, chunk_and_embed_pages
+        from lilbee.runtime.progress import noop_callback
+
+        monkeypatch.setattr(cfg, "embed_titles", True)
+        with _title_scope(_LONG_TITLE):
+            records = await chunk_and_embed_pages(
+                [(1, "Flow rates rose every spring.")], "s", "pdf", noop_callback
+            )
+        _assert_each_chunk_follows_a_bounded_head(mock_svc, [r["chunk"] for r in records])
+
+    async def test_dataset_import_embeds_the_situating_sentence_with_the_chunk(
+        self, mock_svc, monkeypatch
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.document import chunk_and_embed_pages
+        from lilbee.providers.base import ChatResult, FinishReason
+        from lilbee.runtime.progress import noop_callback
+
+        sentence = "This chunk covers spring flow rates."
+        monkeypatch.setattr(cfg, "contextual_enrichment", True)
+        mock_svc.provider.chat.return_value = ChatResult(
+            text=sentence, tool_calls=(), finish_reason=FinishReason.STOP
+        )
+        records = await chunk_and_embed_pages(
+            [(1, "Flow rates rose every spring.")], "s", "pdf", noop_callback
+        )
+        inputs = mock_svc.embedder.embed_batch.call_args.args[0]
+        assert inputs == [f"{sentence}\n{r['chunk']}" for r in records]
+
+    async def test_markdown_ingest_cuts_a_long_heading_title(
+        self, isolated_env, mock_svc, monkeypatch
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+
+        monkeypatch.setattr(cfg, "embed_titles", True)
+        (isolated_env / "notes.md").write_text(
+            f"# {_LONG_TITLE}\n\nSome content here.", encoding="utf-8"
+        )
+        await sync(quiet=True)
+        items = mock_svc.store.write_chunks_batch.call_args.args[0]
+        item = next(it for it in items if it.source == "notes.md")
+        _assert_each_chunk_follows_a_bounded_head(mock_svc, [r["chunk"] for r in item.records])
+
+    async def test_document_ingest_cuts_a_long_situating_sentence(
+        self, isolated_env, mock_svc, monkeypatch
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import ChatResult, FinishReason
+
+        monkeypatch.setattr(cfg, "contextual_enrichment", True)
+        mock_svc.provider.chat.return_value = ChatResult(
+            text=_LONG_TITLE, tool_calls=(), finish_reason=FinishReason.STOP
+        )
+        (isolated_env / "notes.txt").write_text("Flow rates rose every spring.", encoding="utf-8")
+        await sync(quiet=True)
+        items = mock_svc.store.write_chunks_batch.call_args.args[0]
+        item = next(it for it in items if it.source == "notes.txt")
+        _assert_each_chunk_follows_a_bounded_head(mock_svc, [r["chunk"] for r in item.records])
+
+
 class TestIngestDocumentOcrPath:
     @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
     async def test_empty_pdf_warns_no_usable_text(self, mock_kf, isolated_env, mock_svc, caplog):
@@ -6797,7 +7980,7 @@ class TestIngestDocumentOcrPath:
 
         f = isolated_env / "scan.pdf"
         f.write_bytes(b"x")
-        result, _, _ = await ingest_document(f, "scan.pdf", "pdf")
+        result, _, _, _ = await ingest_document(f, "scan.pdf", "pdf")
         assert result == []
         assert "no usable text" in caplog.text
 
@@ -7036,7 +8219,7 @@ class TestOcrCancel:
         mock_kf.side_effect = fake_extract
         f = isolated_env / "scan.pdf"
         f.write_bytes(b"x")
-        records, _, _ = await ingest_document(f, "scan.pdf", "pdf", cancel=threading.Event())
+        records, _, _, _ = await ingest_document(f, "scan.pdf", "pdf", cancel=threading.Event())
         assert len(calls) == 5
         assert len(records) == 1
 
@@ -7441,6 +8624,13 @@ class TestDetectMoves:
         moves = pipeline._detect_moves(files, added, pool)
         assert [move.new for move in moves] == ["new/a.txt", "new/b.txt"]
         assert {move.candidates for move in moves} == {("old/a.txt", "old/b.txt")}
+
+    def test_an_absent_name_with_no_source_record_offers_no_candidate(self):
+        from lilbee.data.ingest import pipeline
+
+        existing = {"old/a.txt": self._record("old/a.txt", "h1")}
+        pool = pipeline._MovePool(["old/a.txt", "old/unrecorded.txt"], existing)
+        assert pool.candidates("h1") == ("old/a.txt",)
 
     def test_files_of_one_hash_share_one_tuple_of_candidates(self):
         """The plan holds the old names of a content once, however many new files have it."""
@@ -9404,3 +10594,343 @@ class TestSyncLoadsThePersistedRegistry:
         assert result.added == ["notes/plan.txt"]
         assert scoped.linked_roots == {"notes": str(notes)}
         assert cfg.linked_roots == {"work": str(work)}
+
+
+_PAGE_3_FAILED = FailedPage(page=3, error="vision backend timed out", recovered=False)
+_PAGE_5_FAILED = FailedPage(page=5, error="returned no text", recovered=True)
+_PAGE_3_ROW = {"page": 3, "error": "vision backend timed out", "recovered": False}
+_PAGE_5_ROW = {"page": 5, "error": "returned no text", "recovered": True}
+_PAGE_3_LINE = "page 3: vision backend timed out"
+
+
+def _partly_read_doc(*pages: FailedPage, num_chunks: int = 2):
+    """An xberg document that lists *pages* as its failed OCR pages; None when there are none."""
+    import types
+
+    doc = _make_xberg_result(text="Readable page text. " * 20, num_chunks=num_chunks)
+    doc.ocr_page_failures = [
+        types.SimpleNamespace(page=page.page, error=page.error, recovered=page.recovered)
+        for page in pages
+    ] or None
+    return doc
+
+
+class TestPartlyReadFiles:
+    """A file whose OCR failed on some pages is indexed and reported as partly read."""
+
+    async def _sync_scan(self, isolated_env, doc, **sync_kwargs):
+        from lilbee.data.ingest import sync
+
+        events: list[tuple[object, object]] = []
+        (isolated_env / "scan.pdf").write_bytes(b"%PDF-1.4 scanned")
+        with mock.patch(
+            "lilbee.data.extract.xberg.aextract_document",
+            new_callable=mock.AsyncMock,
+            return_value=doc,
+        ) as extract:
+            result = await sync(
+                quiet=True, on_progress=lambda et, data: events.append((et, data)), **sync_kwargs
+            )
+        return result, events, extract
+
+    async def test_the_file_is_indexed_and_its_failed_pages_are_reported(self, isolated_env):
+        from lilbee.data.types import PartialFile
+        from lilbee.runtime.progress import BatchStatus, EventType, FileStatus
+
+        store = _install_real_store()
+        result, events, _ = await self._sync_scan(
+            isolated_env, _partly_read_doc(_PAGE_3_FAILED, _PAGE_5_FAILED)
+        )
+
+        assert result.added == ["scan.pdf"]
+        assert result.partial == [PartialFile("scan.pdf", [_PAGE_3_FAILED, _PAGE_5_FAILED])]
+        by_type = {event_type: data for event_type, data in events}
+        assert by_type[EventType.FILE_DONE].status is FileStatus.PARTIAL
+        assert by_type[EventType.BATCH_PROGRESS].status is BatchStatus.PARTIAL
+        assert by_type[EventType.SYNC_DONE].partial == 1
+        [row] = store.get_sources()
+        assert row["chunk_count"] == 2
+        assert row["ocr_page_failures"] == [_PAGE_3_ROW, _PAGE_5_ROW]
+
+    async def test_a_file_whose_only_failed_page_was_recovered_is_partly_read(self, isolated_env):
+        from lilbee.data.types import PartialFile
+
+        store = _install_real_store()
+        result, _, _ = await self._sync_scan(isolated_env, _partly_read_doc(_PAGE_5_FAILED))
+
+        assert result.partial == [PartialFile("scan.pdf", [_PAGE_5_FAILED])]
+        assert store.get_sources()[0]["ocr_page_failures"] == [_PAGE_5_ROW]
+
+    async def test_a_fully_read_file_reports_no_partial_and_stores_no_pages(self, isolated_env):
+        from lilbee.runtime.progress import EventType, FileStatus
+
+        store = _install_real_store()
+        result, events, _ = await self._sync_scan(isolated_env, _partly_read_doc())
+
+        assert result.added == ["scan.pdf"]
+        assert result.partial == []
+        by_type = {event_type: data for event_type, data in events}
+        assert by_type[EventType.FILE_DONE].status is FileStatus.OK
+        assert by_type[EventType.SYNC_DONE].partial == 0
+        assert store.get_sources()[0]["ocr_page_failures"] is None
+
+    async def test_a_normal_sync_does_not_read_a_partly_read_file_again(self, isolated_env):
+        _install_real_store()
+        doc = _partly_read_doc(_PAGE_3_FAILED)
+        await self._sync_scan(isolated_env, doc)
+
+        again, _, extract = await self._sync_scan(isolated_env, doc)
+
+        extract.assert_not_called()
+        assert (again.unchanged, again.updated, again.partial) == (1, [], [])
+
+    async def test_retry_skipped_reads_it_again_and_a_full_read_clears_the_pages(
+        self, isolated_env
+    ):
+        store = _install_real_store()
+        await self._sync_scan(isolated_env, _partly_read_doc(_PAGE_3_FAILED))
+
+        retried, _, extract = await self._sync_scan(
+            isolated_env, _partly_read_doc(), retry_skipped=True
+        )
+
+        assert extract.await_count > 0
+        assert (retried.updated, retried.partial) == (["scan.pdf"], [])
+        assert store.get_sources()[0]["ocr_page_failures"] is None
+
+    async def test_retry_skipped_leaves_a_fully_read_file_alone(self, isolated_env):
+        _install_real_store()
+        await self._sync_scan(isolated_env, _partly_read_doc())
+
+        retried, _, extract = await self._sync_scan(
+            isolated_env, _partly_read_doc(), retry_skipped=True
+        )
+
+        extract.assert_not_called()
+        assert (retried.unchanged, retried.updated) == (1, [])
+
+    async def test_a_file_with_failed_pages_and_no_chunks_is_skipped_not_partial(
+        self, isolated_env
+    ):
+        from lilbee.runtime.progress import EventType, FileStatus
+
+        result, events, _ = await self._sync_scan(
+            isolated_env, _partly_read_doc(_PAGE_3_FAILED, num_chunks=0)
+        )
+
+        assert (result.skipped, result.partial, result.added) == (["scan.pdf"], [], [])
+        assert result.reasons == {"scan.pdf": f"no text extracted (0 chunks); {_PAGE_3_LINE}"}
+        by_type = {event_type: data for event_type, data in events}
+        assert by_type[EventType.FILE_DONE].status is FileStatus.OK
+
+    async def test_a_partly_read_file_whose_write_fails_is_failed_not_partial(
+        self, isolated_env, mock_svc
+    ):
+        mock_svc.store.write_chunks_batch.side_effect = RuntimeError("disk full")
+
+        result, _, _ = await self._sync_scan(isolated_env, _partly_read_doc(_PAGE_3_FAILED))
+
+        assert (result.failed, result.partial, result.added) == (["scan.pdf"], [], [])
+
+    async def test_the_result_names_why_each_failed_and_skipped_file_was_not_indexed(
+        self, isolated_env
+    ):
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "broken.pdf").write_bytes(b"%PDF-1.4 broken")
+        (isolated_env / "blank.md").write_text("   ", encoding="utf-8")
+        (isolated_env / "fine.md").write_text("# Fine\n\nReadable text.", encoding="utf-8")
+
+        async def _extract(data, *_args, filename, **_kwargs):
+            if filename == "broken.pdf":
+                raise RuntimeError("the file is encrypted")
+            return _make_xberg_result(text=data.decode(), num_chunks=1 if data.strip() else 0)
+
+        with mock.patch("lilbee.data.extract.xberg.aextract_document", side_effect=_extract):
+            result = await sync(quiet=True)
+
+        assert result.added == ["fine.md"]
+        assert result.reasons == {
+            "broken.pdf": "RuntimeError: the file is encrypted",
+            "blank.md": "no text extracted (0 chunks)",
+        }
+
+    def test_an_archive_reports_each_partly_read_member_under_its_own_name(self):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.store import SourceMeta
+        from lilbee.data.types import MemberRecords, PartialFile, _IngestResult
+        from lilbee.runtime.progress import BatchStatus
+
+        record = {"chunk": "readable"}
+        members = [
+            MemberRecords("box.zip/a.pdf", "pdf", [record], [], SourceMeta(), (_PAGE_3_FAILED,)),
+            MemberRecords("box.zip/b.pdf", "pdf", [record], [], SourceMeta()),
+            MemberRecords("box.zip/c.pdf", "pdf", [], [], SourceMeta(), (_PAGE_5_FAILED,)),
+        ]
+        result = _IngestResult("box.zip", Path("box.zip"), 2, error=None, members=members)
+        partial: dict[str, list[PartialFile]] = {}
+
+        status = pipeline._classify_result(result, {"box.zip": None}, {}, {}, {}, None, partial)
+
+        assert status is BatchStatus.PARTIAL
+        assert partial == {"box.zip": [PartialFile("box.zip/a.pdf", [_PAGE_3_FAILED])]}
+
+    def test_an_archive_member_with_failed_pages_and_no_records_is_not_partly_read(self):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.store import SourceMeta
+        from lilbee.data.types import MemberRecords, PartialFile, _IngestResult
+        from lilbee.runtime.progress import BatchStatus, FileStatus
+
+        members = [
+            MemberRecords("box.zip/a.pdf", "pdf", [], [], SourceMeta(), (_PAGE_3_FAILED,)),
+            MemberRecords("box.zip/b.pdf", "pdf", [{"chunk": "readable"}], [], SourceMeta()),
+        ]
+        result = _IngestResult("box.zip", Path("box.zip"), 1, error=None, members=members)
+        partial: dict[str, list[PartialFile]] = {}
+
+        batch = pipeline._classify_result(result, {"box.zip": None}, {}, {}, {}, None, partial)
+        file_done = pipeline._done_status(any(m.failed_pages and m.records for m in members))
+
+        assert (batch, file_done) == (BatchStatus.INGESTED, FileStatus.OK)
+        assert partial == {}
+        assert pipeline._member_write(members[0], "h1", None).ocr_page_failures == []
+
+    def test_a_file_with_page_text_only_is_skipped_with_its_failed_pages_and_stores_none(self):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.types import PartialFile, _IngestResult
+        from lilbee.runtime.progress import BatchStatus
+
+        result = _IngestResult(
+            "scan.pdf",
+            Path("scan.pdf"),
+            0,
+            error=None,
+            file_hash="h",
+            records=[],
+            page_texts=[{"source": "scan.pdf", "page": 1, "text": "x"}],
+            failed_pages=[_PAGE_3_FAILED],
+        )
+        partial: dict[str, list[PartialFile]] = {}
+        reasons: dict[str, str] = {}
+        skipped: dict = {}
+
+        status = pipeline._classify_result(
+            result, {"scan.pdf": None}, {}, {}, skipped, reasons, partial
+        )
+        store = MagicMock()
+        with mock.patch("lilbee.data.ingest.pipeline.get_services") as services:
+            services.return_value.store = store
+            pipeline._flush_batch([result])
+
+        assert status is BatchStatus.INGESTED
+        assert (partial, list(skipped)) == ({}, ["scan.pdf"])
+        assert reasons == {
+            "scan.pdf": f"stored page text only (0 searchable chunks); {_PAGE_3_LINE}"
+        }
+        [write] = store.write_chunks_batch.call_args.args[0]
+        assert write.ocr_page_failures == []
+
+    def test_a_skipped_file_s_reason_lists_at_most_the_display_cap_of_pages(self):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.types import _IngestResult
+
+        pages = [FailedPage(page=number, error="boom", recovered=False) for number in range(1, 8)]
+        result = _IngestResult("scan.pdf", Path("scan.pdf"), 0, error=None, failed_pages=pages)
+        reasons: dict[str, str] = {}
+
+        pipeline._classify_result(result, {}, {}, {}, {}, reasons)
+
+        shown = [f"page {number}: boom" for number in range(1, 6)]
+        assert reasons["scan.pdf"] == "; ".join(
+            ["no text extracted (0 chunks)", *shown, "and 2 more"]
+        )
+
+    def test_a_partly_read_file_is_classified_partial_without_a_collector(self):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.types import _IngestResult
+        from lilbee.runtime.progress import BatchStatus
+
+        result = _IngestResult("a.pdf", Path("a.pdf"), 1, error=None, failed_pages=[_PAGE_3_FAILED])
+
+        assert pipeline._classify_result(result, {}, {}, {}, {}) is BatchStatus.PARTIAL
+
+    def test_an_archive_member_write_carries_the_member_s_failed_pages(self):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.store import SourceMeta
+        from lilbee.data.types import MemberRecords
+
+        member = MemberRecords(
+            "box.zip/a.pdf", "pdf", [{"chunk": "readable"}], [], SourceMeta(), (_PAGE_3_FAILED,)
+        )
+
+        assert pipeline._member_write(member, "h1", None).ocr_page_failures == [_PAGE_3_FAILED]
+
+    async def test_an_archive_with_a_partly_read_member_is_reported_partial(
+        self, isolated_env, mock_svc
+    ):
+        from lilbee.data.ingest import sync
+        from lilbee.data.store import SourceMeta
+        from lilbee.data.types import MemberRecords, PartialFile
+        from lilbee.runtime.progress import EventType, FileStatus
+
+        (isolated_env / "box.zip").write_bytes(b"PK archive bytes")
+        record = {"chunk": "readable", "chunk_index": 0, "vector": [0.1] * 768}
+        members = [
+            MemberRecords("box.zip/a.pdf", "pdf", [record], [], SourceMeta(), (_PAGE_3_FAILED,)),
+            MemberRecords("box.zip/b.pdf", "pdf", [record], [], SourceMeta()),
+        ]
+        events: list[tuple[object, object]] = []
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.ingest_archive",
+            new_callable=mock.AsyncMock,
+            return_value=members,
+        ):
+            result = await sync(quiet=True, on_progress=lambda et, data: events.append((et, data)))
+
+        assert result.added == ["box.zip"]
+        assert result.partial == [PartialFile("box.zip/a.pdf", [_PAGE_3_FAILED])]
+        file_done = next(data for event_type, data in events if event_type is EventType.FILE_DONE)
+        assert file_done.status is FileStatus.PARTIAL
+        written = {
+            item.source: item.ocr_page_failures
+            for call in mock_svc.store.write_chunks_batch.call_args_list
+            for item in call.args[0]
+        }
+        assert written["box.zip/a.pdf"] == [_PAGE_3_FAILED]
+        assert written["box.zip/b.pdf"] == []
+
+    def test_retry_rereads_the_archive_of_a_partly_read_member_and_only_files_on_disk(self):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.store import SOURCE_STAT_UNKNOWN
+
+        def _row(name, pages=None):
+            return {
+                "filename": name,
+                "file_hash": "h",
+                "ingested_at": "",
+                "chunk_count": 1,
+                "source_type": "document",
+                "size_bytes": 10,
+                "ocr_page_failures": pages,
+            }
+
+        existing = {
+            name: _row(name, pages)
+            for name, pages in (
+                ("box.zip", None),
+                ("box.zip/inner/a.pdf", [_PAGE_3_ROW]),
+                ("scan.pdf", [_PAGE_5_ROW]),
+                ("gone.pdf", [_PAGE_5_ROW]),
+                ("fine.pdf", None),
+            )
+        }
+        disk = {name: Path(name) for name in ("box.zip", "scan.pdf", "fine.pdf")}
+
+        planned = pipeline._sources_to_plan(existing, disk, reread_partial=True)
+
+        changed = {name for name, row in planned.items() if row["file_hash"] == ""}
+        assert changed == {"box.zip", "scan.pdf"}
+        assert planned["scan.pdf"]["size_bytes"] == SOURCE_STAT_UNKNOWN
+        assert planned["gone.pdf"] is existing["gone.pdf"]
+        assert existing["scan.pdf"]["file_hash"] == "h"
+        assert pipeline._sources_to_plan(existing, disk, reread_partial=False) is existing

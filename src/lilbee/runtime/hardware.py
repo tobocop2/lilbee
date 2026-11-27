@@ -18,7 +18,7 @@ _BYTES_PER_GB = 1024**3
 _FITS_HEADROOM_BYTES = 1 * _BYTES_PER_GB
 _MEMORY_PROBE_TTL_S = 60.0
 
-# The probe is an nvidia-smi subprocess without pynvml; the catalog stamps a fit
+# The probe is an nvidia-smi subprocess; the catalog stamps a fit
 # chip on every page, so repeated requests share one probe per fraction.
 _available_memory_cache: TTLCache[Any, int] = TTLCache(maxsize=8, ttl=_MEMORY_PROBE_TTL_S)
 _available_memory_lock = threading.Lock()

@@ -89,9 +89,11 @@ if sys.argv[5] != "none":
     cfg.num_ctx = int(sys.argv[5])
 from lilbee.providers import engine_params
 from lilbee.providers.fleet import planning
-plan = planning.plan_all_launches()
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.roles import ROLE_REGISTRY
+plan = planning.plan_all_launches(engines=dict.fromkeys(ROLE_REGISTRY, LLAMA))
 chat = next((l for l in plan.launches if l.role.value == "chat"), None)
-devices = planning.resolve_devices(planning.resolve_llama_server())
+devices = planning.resolve_devices(LLAMA.binary(), LLAMA)
 out = {
     "refusal": next((v for k, v in plan.skipped_unusable_ctx.items() if k.value == "chat"), None),
     "min_usable_ctx": engine_params.min_usable_chat_ctx(),
@@ -206,8 +208,8 @@ def _serve_and_measure(
         parse_device_buffers,
     )
 
-    env = {**env, **engine_log_env(log_dir, model_id)}
     report_path = engine_log_path(log_dir, model_id)
+    env = {**env, **engine_log_env(report_path)}
     was_idle = _wait_for_idle_vram()
     with (log_dir / f"{model_id}.stdout.log").open("wb") as log:
         proc = subprocess.Popen(
@@ -289,6 +291,8 @@ def _sustains_full_window(ctx: int) -> tuple[bool, int, int]:
 
 def run_cell(cell: Cell, *, workdir: Path, available_cards: int) -> Observation:
     """Plan, launch and measure one cell, or record why it was skipped."""
+    from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR
+
     base = Observation(
         cell_id=cell.id,
         model_key=cell.model.key,
@@ -304,7 +308,7 @@ def run_cell(cell: Cell, *, workdir: Path, available_cards: int) -> Observation:
 
     env = {
         **os.environ,
-        "CUDA_VISIBLE_DEVICES": ",".join(str(i) for i in range(cell.cards)),
+        CUDA_VISIBLE_VAR: ",".join(str(i) for i in range(cell.cards)),
         "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
     }
     decision = _plan(cell, env)

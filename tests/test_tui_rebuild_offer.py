@@ -23,7 +23,7 @@ from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
 from lilbee.core.config import cfg
 from lilbee.data.store.types import HeldOut, HeldRecord
 from tests import test_tui_embed_swap as embed_swap
-from tests._async_wait import press_widget, wait_until
+from tests._async_wait import ABSENCE_SECONDS, press_widget, wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost
 from tests._profile_fixtures import (
     gate_releases_at_once,  # noqa: F401 -- autouse fixture, applied by import
@@ -84,13 +84,25 @@ class _Visit:
         self._push = mock.patch.object(self.app, "push_screen", _push)
         self._push.start()
         self.screen = await _loaded(self.app, self.pilot, "Default")
-        self.screen.populate_all_panes()
-        assert await _until(
-            self.pilot,
-            lambda: bool(
+
+        used = {_REBUILD_KEY, _PLAIN_KEY, _LIMIT_KEY}
+        panes = [
+            pane_id
+            for pane_id, group in self.screen._pane_groups.items()
+            if used & {key for key, _ in group.items}
+        ]
+
+        def _editors_mounted() -> bool:
+            # Mounting every pane is thousands of widgets that every wait must visit, which a
+            # loaded host cannot do in time; the visit needs only the panes of the keys it edits.
+            # A pane body that is not mounted yet is skipped, so ask again on every poll.
+            for pane_id in panes:
+                self.screen._populate_pane(pane_id)
+            return bool(
                 self.screen.query(f"#ed-{_REBUILD_KEY}") and self.screen.query(f"#ed-{_PLAIN_KEY}")
-            ),
-        )
+            )
+
+        assert await _until(self.pilot, _editors_mounted)
         return self
 
     async def __aexit__(self, *exc: object) -> None:
@@ -124,7 +136,10 @@ class _Visit:
     async def no_dialog(self, shown: int = 0) -> bool:
         """True when no ConfirmDialog past the *shown* ones comes within the wait."""
         return not await wait_until(
-            self.pilot, lambda: len(self.dialogs) > shown, max_pauses=_ABSENT_PAUSES
+            self.pilot,
+            lambda: len(self.dialogs) > shown,
+            max_pauses=_ABSENT_PAUSES,
+            timeout=ABSENCE_SECONDS,
         )
 
     async def answer_offer(self, pill_id: str, text: str = msg.SETTINGS_REINDEX_MESSAGE) -> None:

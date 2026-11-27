@@ -39,10 +39,12 @@ Every code change MUST be tracked as a beads task. Create tasks before starting 
 
 ## Commands
 ```bash
-uv sync                       # Install dependencies
-make check                    # Run all checks: lint, format, typecheck, test (same as CI)
+uv sync --extra providers     # Install dependencies; make check needs the providers extra
+make check                    # Run all checks: lint, license-check, format, typecheck, test, test-presets (same as CI)
 make test                     # Tests with coverage
+make test-presets             # Preset fixture replay
 make lint                     # Ruff linting
+make license-check            # Fail on a GPL or AGPL package in uv.lock (needs the network and Python 3.12)
 make typecheck                # Mypy
 make format                   # Auto-format code
 uv run lilbee init            # Create .lilbee/ in current dir (per-project DB)
@@ -222,7 +224,7 @@ The codebase has a small set of `try: import X except ImportError:` patterns for
 | provider SDK | `lilbee.providers.availability.provider_sdk_available()` | `lilbee[providers]` | SDK provider, settings TUI |
 | `crawlberg`, `ada_url` | `lilbee.crawler.crawler_available()` | `lilbee[crawler]` | Web crawler, saved page names |
 | `graspologic_native` | `lilbee.retrieval.concepts.nlp.concepts_available()` | `lilbee[graph]` | Concept-graph clustering |
-| `lilbee_engine` | resolved in `lilbee.providers.fleet.binary.resolve_engine_tool()` | bundled wheel | The local inference engine binaries (llama-server + llama-swap + gguf-parser) |
+| `lilbee_engine_llama_cpp` | resolved in `lilbee.providers.fleet.binary.resolve_engine_tool()` | bundled wheel | The local inference engine binaries (llama-server + llama-swap + gguf-parser) |
 
 Any other `try: import X` should be either added to this table or refactored. CLI command bodies that branch on extras dispatch through these `*_available()` helpers, not via `importlib.import_module(name)`.
 
@@ -397,7 +399,7 @@ work; the greps below remain the full set a reviewer still runs by eye.
 - `grep -rnE "def \w+\(.*\) -> .*:\s*$" src/ | xargs -I{} awk 'def_lines>20'` (proxy: scan modules >700 LOC) — functions over ~20 lines need a split into named sub-helpers.
 - `grep -rn "from lilbee\.\(modelhub\|providers\|data\|retrieval\|wiki\|crawler\)" src/lilbee/catalog src/lilbee/core` — upward imports from foundation layers. catalog and core never import from anything above them.
 - `grep -rn "from lilbee\.\(retrieval\|wiki\|crawler\|cli\|server\)" src/lilbee/data src/lilbee/modelhub src/lilbee/providers` — Layer-2 modules importing Layer-3+. Invert via callback or move the helper down.
-- `grep -rn "include-package-data=lilbee_engine" tools/wheel-build/` — Nuitka `--include-package-data` for a native-lib or opaque-data closure. Its heuristics silently drop `.dylib`/`.bin`; use `--include-data-dir` (verbatim). See Build & Release Artifacts.
+- `grep -rn "include-package-data=lilbee_engine_llama_cpp" tools/wheel-build/` — Nuitka `--include-package-data` for a native-lib or opaque-data closure. Its heuristics silently drop `.dylib`/`.bin`; use `--include-data-dir` (verbatim). See Build & Release Artifacts.
 - `grep -rn "continue-on-error" .github/workflows/ | grep -iE "smoke|verify|self-check|artifact"` — a swallowed correctness gate. A smoke/verify step must fail the job; `continue-on-error` on one is how a broken artifact ships.
 
 ### Self-Review Checklist (before every push)
@@ -444,6 +446,8 @@ closure. These rules exist because each one shipped a broken artifact once.
   here — a driverless runner never loads the CUDA backend — so read the artifact
   instead: `tools/qa/assert_engine_bundle.py` checks the wheel in the build cells and
   again in `verify-release`, which also asserts every CUDA asset reached the release.
+  Every executable cell runs the same check on the Nuitka tree's `lilbee_engine_llama_cpp/bin`
+  (`--platform`) before the step that deletes the tree.
 - **A ROCm build bundles its ROCm runtime too, discovered not listed.**
   `bundle_rocm_runtime.sh` walks `DT_NEEDED` and keeps what resolves inside the ROCm
   tree, because SONAMEs move between releases. It also carries `rocblas/library`,
@@ -488,8 +492,9 @@ closure. These rules exist because each one shipped a broken artifact once.
   annotation list that cannot be read is unknown, not clean. The script names
   the job id and exits non-zero, so `release_selfheal.sh` stops instead of
   reporting a clean run: a clean report there is the failure this gate removes.
-  `release_watch.sh` falls back to watching the legs. Its exit code follows the
-  legs, so an unreadable list there can still exit 0 with every leg green.
+  `release_watch.sh` falls back to watching the legs. It adds an unknown
+  candidate row and exits 1, so an unreadable list never reads as every channel
+  published.
   This is the one place a GitHub string is matched. The blind-retry rule above
   still holds: there the text would only refine a decision whose wrong answer
   costs one rebuild. Here it is the only signal that separates a cell past its
@@ -511,7 +516,9 @@ closure. These rules exist because each one shipped a broken artifact once.
   and re-issues a dispatch that never landed.
   It defers while the candidate still has failed cells: `release-selfheal` reruns a
   dropped build cell, and retrying `verify-release` before the healed asset is
-  attached would spend both its attempts on the same missing file.
+  attached would spend both its attempts on the same missing file. It does not defer
+  to a candidate whose tag now points at another commit: `release-selfheal` refuses
+  that run, so the watch names it as stale and watches the legs instead.
 - **Release shell lives in `scripts/*.sh`, not inline in a workflow.** Inline
   `run:` blocks cannot be run, linted or tested off a runner. `make lint-shell`
   shellchecks the scripts and runs actionlint over every workflow; `make test-shell`
@@ -566,8 +573,13 @@ closure. These rules exist because each one shipped a broken artifact once.
   reason; do not blanket it in `continue-on-error`.
 - **Engine build cache** is keyed on backend + build-env + toolkit + the hash of
   the build scripts, so editing a build script busts it. Tag-ref cache saves are
-  not restorable by later runs, so `warm-engine-cache.yml` builds the matrix on
-  `main`; release runs restore. Bust manually by touching a build script.
+  not restorable by later runs, so the `engine` job of `ci.yml` builds the
+  matrix when an engine path changes, and `warm-engine-cache.yml` rebuilds it
+  weekly; release runs restore. The `engine` job sits under `ci-result`, so a
+  backend that does not compile blocks the merge. A pull request run never
+  uploads to the mirror, so an engine pull request compiles again on the main
+  push after it merges; the bot bump runs on a push and uploads directly. Bust
+  manually by touching a build script.
 - **The Nuitka object cache is keyed on the dependency set, not on `uv.lock` as
   it stands.** `scripts/release.sh` rewrites lilbee's own version inside the
   lock on every release commit, so hashing the file directly rotates the key

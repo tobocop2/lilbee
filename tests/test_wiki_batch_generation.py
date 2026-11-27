@@ -30,7 +30,7 @@ from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_PARSE,
     WikiSubdir,
 )
-from lilbee.wiki.stats import BuildStats
+from lilbee.wiki.stats import BuildStats, model_failures_message
 from lilbee.wiki.synthesis import (
     _MAX_REUSE_CONCEPT_LABELS,
     _existing_concept_labels,
@@ -95,6 +95,13 @@ def _mock_batch_provider(text: str, *, truncated: bool = False) -> MagicMock:
     )
     provider.get_capabilities.return_value = []
     return provider
+
+
+def _store_without_ids() -> MagicMock:
+    """A store whose sources have no ids yet, so a draft keys them by name."""
+    store = MagicMock()
+    store.source_ids.return_value = {}
+    return store
 
 
 def _mock_store_for_source(source: str, chunks: list[SearchChunk]) -> MagicMock:
@@ -389,7 +396,7 @@ class TestGenerateSourceBatchEdgeCases:
             written_concept_slugs={},
         )
         assert pages == []
-        assert any("Batched LLM call failed" in r.message for r in caplog.records)
+        assert any("Model call failed for s.txt" in r.message for r in caplog.records)
         marker = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS / "henry.md"
         assert PENDING_MARKER_KEYWORD_PARSE in marker.read_text()
 
@@ -773,7 +780,7 @@ class TestBuildStatsForABatch:
             entities=[],
             chunks=[_chunk("second.txt", 0, _EXCERPT)],
             provider=_mock_batch_provider(text),
-            store=MagicMock(),
+            store=_store_without_ids(),
             config=cfg,
             extract_concepts=True,
             written_concept_slugs={"brake-system": "first.txt"},
@@ -796,6 +803,7 @@ class TestBuildStatsForABatch:
             WikiSubdir.ENTITIES,
             ["s.txt"],
             source_ids={},
+            live_ids=None,
         )
         stats = BuildStats()
         pages = generate_source_batch(
@@ -854,7 +862,7 @@ class TestBuildStatsForABatch:
                     entities=[],
                     chunks=[_chunk(source, 0, "Brake system details.")],
                     provider=_mock_batch_provider(_batch_text(source)),
-                    store=MagicMock(),
+                    store=_store_without_ids(),
                     config=cfg,
                     extract_concepts=True,
                     written_concept_slugs=written,
@@ -1227,7 +1235,7 @@ class TestBatchGeneration:
                 entities=[],
                 chunks=[_chunk(src, 0, "Brake system details.")],
                 provider=_mock_batch_provider(_batch_text(src)),
-                store=MagicMock(),
+                store=_store_without_ids(),
                 config=cfg,
                 extract_concepts=True,
                 written_concept_slugs=written,
@@ -1296,3 +1304,250 @@ class TestBatchGeneration:
             written_concept_slugs={},
         )
         assert not marker.exists()
+
+
+def _run_full_build_with(monkeypatch, provider: MagicMock):
+    """Run the real full build over one source holding one entity, with *provider* as its model."""
+    from lilbee.wiki.generation import run_full_build
+
+    chunks = [_chunk("s.txt", 0, _EXCERPT)]
+    store = _mock_store_for_source("s.txt", chunks)
+    services = MagicMock()
+    services.store = store
+    services.provider = provider
+    extractor = MagicMock()
+    extractor.extract.return_value = [_entity("henry-ford", "Henry Ford", ["s.txt"])]
+    monkeypatch.setattr("lilbee.wiki.generation.get_services", lambda: services)
+    monkeypatch.setattr("lilbee.wiki.generation.get_entity_extractor", lambda *a, **kw: extractor)
+    return run_full_build(cfg)
+
+
+_LOST_EXCERPT = "Edsel Ford ran Ford Motor."
+
+
+def _run_build_losing_source_t(monkeypatch, extracted: list[ExtractedEntity]):
+    """Run the real full build over s.txt and t.txt; every model call for t.txt fails."""
+    from lilbee.providers.base import ChatResult, FinishReason
+    from lilbee.wiki.generation import run_full_build
+
+    written = (
+        _section("Henry Ford", "> Henry Ford founded Ford Motor. [^src1]\n")
+        + _valid_citation_block()
+    )
+
+    def chat(messages, **kwargs):
+        if any(_LOST_EXCERPT in str(m["content"]) for m in messages):
+            raise ConnectionError("The chat model is not running.")
+        return ChatResult(text=written, tool_calls=(), finish_reason=FinishReason.STOP)
+
+    chunks = {
+        "s.txt": [_chunk("s.txt", 0, _EXCERPT)],
+        "t.txt": [_chunk("t.txt", 0, _LOST_EXCERPT)],
+    }
+    services = MagicMock()
+    services.provider.chat.side_effect = chat
+    services.provider.get_capabilities.return_value = []
+    services.store.get_chunks_by_source.side_effect = lambda name: chunks.get(name, [])
+    services.store.get_sources.return_value = [
+        {"filename": name, "chunk_count": 1} for name in chunks
+    ]
+    extractor = MagicMock()
+    extractor.extract.return_value = extracted
+    monkeypatch.setattr("lilbee.wiki.generation.get_services", lambda: services)
+    monkeypatch.setattr("lilbee.wiki.generation.get_entity_extractor", lambda *a, **kw: extractor)
+    return run_full_build(cfg)
+
+
+class TestModelCallOutcomes:
+    def test_a_raised_call_is_counted_with_its_message(self, stub_embedder):
+        provider = MagicMock()
+        provider.chat.side_effect = RuntimeError("engine down")
+        provider.get_capabilities.return_value = []
+        stats = BuildStats()
+        generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=[_chunk("s.txt", 0, "body")],
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert (stats.model_calls, stats.model_calls_failed) == (1, 1)
+        assert stats.last_model_failure == "engine down"
+        assert stats.every_model_call_failed
+
+    def test_an_exception_without_a_message_is_counted_by_its_type(self, stub_embedder):
+        provider = MagicMock()
+        provider.chat.side_effect = TimeoutError()
+        provider.get_capabilities.return_value = []
+        stats = BuildStats()
+        generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=[_chunk("s.txt", 0, "body")],
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert stats.last_model_failure == "TimeoutError"
+
+    def test_an_empty_reply_is_a_failed_call(self, stub_embedder):
+        stats = BuildStats()
+        generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=[_chunk("s.txt", 0, "body")],
+            provider=_mock_batch_provider("   "),
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert stats.every_model_call_failed
+        assert stats.last_model_failure == "the model returned no text"
+
+    def test_a_reply_with_text_is_not_a_failure(self, stub_embedder):
+        stats = BuildStats()
+        generate_source_batch(
+            source="s.txt",
+            entities=[_entity("henry-ford", "Henry Ford", ["s.txt"])],
+            chunks=[_chunk("s.txt", 0, "body")],
+            provider=_mock_batch_provider("some text"),
+            store=_store_without_ids(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert (stats.model_calls, stats.model_calls_failed) == (1, 0)
+        assert not stats.every_model_call_failed
+
+    def test_a_run_with_no_calls_did_not_fail(self):
+        assert not BuildStats().every_model_call_failed
+
+    @pytest.mark.parametrize("cause", [" ", "...", ". .", ""])
+    def test_a_direct_blank_cause_is_recorded_as_unknown_error(self, cause):
+        stats = BuildStats()
+        stats.record_model_call(cause)
+        with pytest.raises(RuntimeError) as err:
+            stats.raise_if_nothing_written(0)
+        assert "Last error: unknown error. Check that" in str(err.value)
+
+    def test_a_direct_blank_cause_falls_back_to_the_given_type_name(self):
+        stats = BuildStats()
+        stats.record_model_call("...", error_type="TimeoutError")
+        assert stats.last_model_failure == "TimeoutError"
+
+    @pytest.mark.parametrize(
+        ("cause", "named"),
+        [
+            ("engine down", "engine down"),
+            ("engine down.", "engine down"),
+            ("engine down...", "engine down"),
+            (" ", "RuntimeError"),
+            ("...", "RuntimeError"),
+            (". .", "RuntimeError"),
+            ("", "RuntimeError"),
+        ],
+    )
+    def test_the_cause_in_the_message_is_named_and_ends_with_one_period(self, cause, named):
+        from lilbee.wiki.page import request_wiki_text
+
+        provider = MagicMock()
+        provider.chat.side_effect = RuntimeError(cause)
+        provider.get_capabilities.return_value = []
+        stats = BuildStats()
+        assert request_wiki_text("s.txt", "prompt", provider, cfg, stats) is None
+        with pytest.raises(RuntimeError) as err:
+            stats.raise_if_nothing_written(0)
+        assert f"Last error: {named}. Check that" in str(err.value)
+
+    def test_failed_calls_with_a_page_written_do_not_raise(self):
+        stats = BuildStats()
+        stats.record_model_call("engine down")
+        stats.raise_if_nothing_written(1)
+
+
+class TestFullBuildWhenTheModelFails:
+    def test_a_build_where_every_call_fails_raises_with_the_cause(self, stub_embedder, monkeypatch):
+        provider = MagicMock()
+        provider.chat.side_effect = ConnectionError("The chat model is not running.")
+        provider.get_capabilities.return_value = []
+        with pytest.raises(RuntimeError) as err:
+            _run_full_build_with(monkeypatch, provider)
+        message = str(err.value)
+        assert "No wiki pages were written" in message
+        assert "every model call failed (1)" in message
+        assert "The chat model is not running." in message
+
+    def test_a_build_that_lost_every_page_counts_them_all(self, stub_embedder):
+        provider = MagicMock()
+        provider.chat.side_effect = ConnectionError("The chat model is not running.")
+        provider.get_capabilities.return_value = []
+        stats = BuildStats()
+        generate_source_batch(
+            source="s.txt",
+            entities=[
+                _entity("henry-ford", "Henry Ford", ["s.txt"]),
+                _entity("edsel-ford", "Edsel Ford", ["s.txt"]),
+            ],
+            chunks=[_chunk("s.txt", 0, _EXCERPT)],
+            provider=provider,
+            store=MagicMock(),
+            config=cfg,
+            extract_concepts=False,
+            written_concept_slugs={},
+            stats=stats,
+        )
+        assert model_failures_message(stats.as_dict()) == (
+            "2 of 2 pages could not be written.\nLast error: The chat model is not running."
+        )
+
+    def test_a_build_that_lost_some_pages_counts_them_and_names_the_cause(
+        self, stub_embedder, monkeypatch
+    ):
+        monkeypatch.setattr(cfg, "wiki_extract_concepts", False)
+        result = _run_build_losing_source_t(
+            monkeypatch,
+            [
+                _entity("henry-ford", "Henry Ford", ["s.txt"]),
+                _entity("edsel-ford", "Edsel Ford", ["t.txt"]),
+            ],
+        )
+        assert result["count"] == 1
+        assert result["stats"]["pages_failed"] == 1
+        assert model_failures_message(result["stats"]) == (
+            "1 of 2 pages could not be written.\nLast error: The chat model is not running."
+        )
+
+    def test_a_failed_call_for_a_concept_only_source_is_counted(self, stub_embedder, monkeypatch):
+        """t.txt has no entity, so its call only asks for concepts; that call fails."""
+        monkeypatch.setattr(cfg, "wiki_extract_concepts", True)
+        result = _run_build_losing_source_t(
+            monkeypatch, [_entity("henry-ford", "Henry Ford", ["s.txt"])]
+        )
+        stats = result["stats"]
+        assert result["count"] == 1
+        assert (stats["pages_failed"], stats["concept_sources"]) == (0, 2)
+        assert stats["concept_sources_failed"] == 1
+        assert model_failures_message(stats) == (
+            "Concepts could not be extracted from 1 of 2 sources.\n"
+            "Last error: The chat model is not running."
+        )
+        log = (cfg.data_root / cfg.wiki_dir / "log.md").read_text(encoding="utf-8")
+        assert "concepts could not be extracted from 1 of 2 sources" in log
+
+    def test_a_build_that_wrote_a_page_does_not_raise(self, stub_embedder, monkeypatch):
+        text = (
+            _section("Henry Ford", "> Henry Ford founded Ford Motor. [^src1]\n")
+            + _valid_citation_block()
+        )
+        result = _run_full_build_with(monkeypatch, _mock_batch_provider(text))
+        assert result["count"] == 1

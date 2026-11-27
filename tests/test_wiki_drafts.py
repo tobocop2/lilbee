@@ -31,6 +31,8 @@ from lilbee.wiki.shared import (
     WikiSubdir,
 )
 
+pytestmark = pytest.mark.usefixtures("counting_provider")
+
 
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -309,6 +311,7 @@ class TestAcceptDraft:
             source_names=["manual.pdf"],
             page_type=WikiSubdir.CONCEPTS,
             source_ids={},
+            live_ids=None,
         )
         store = MagicMock()
         with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
@@ -734,6 +737,7 @@ class TestUnpairedCollisionAccept:
         path = divert_concept_collision(
             slug="brakes",
             source="b.md",
+            source_names=["b.md"],
             first_source="a.md",
             content=_cited_draft(),
             drafts_dir=wiki_root / WikiSubdir.DRAFTS,
@@ -818,6 +822,7 @@ def _stacked_drift_collision_draft(wiki_root: Path) -> str:
         WikiSubdir.CONCEPTS,
         ["a.md"],
         source_ids={},
+        live_ids=None,
     )
     return path.stem
 

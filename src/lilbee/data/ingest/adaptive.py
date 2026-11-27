@@ -35,6 +35,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from lilbee.providers.fleet.engines.base import EngineAdapter
     from lilbee.providers.fleet.gpu_stats import DeviceLike
 
 log = logging.getLogger(__name__)
@@ -386,17 +387,16 @@ class AdaptiveController:
                 log.debug("adaptive ingest: tuning tick failed; skipping", exc_info=True)
 
 
-def enumerate_fleet_devices() -> Sequence[DeviceLike]:
+def enumerate_fleet_devices(engine: EngineAdapter) -> Sequence[DeviceLike]:
     """The GPU devices to read telemetry from, or empty when none can be enumerated.
 
     Any failure (no engine binary, probe error) degrades to an empty list, which the
     caller treats as "no fleet to feed" and falls back to the static limit.
     """
     try:
-        from lilbee.providers.fleet.binary import resolve_llama_server
         from lilbee.providers.fleet.planning import resolve_devices
 
-        return resolve_devices(resolve_llama_server())
+        return resolve_devices(engine.binary(), engine)
     except Exception:
         log.debug("adaptive ingest: device enumeration failed; using static limit", exc_info=True)
         return []
@@ -410,17 +410,15 @@ def make_signal_sampler(devices: Sequence[DeviceLike]) -> Callable[[float], Sign
     """
     import psutil
 
-    from lilbee.providers.fleet.gpu_stats import probe_gpu_stats
+    from lilbee.providers.fleet.gpu_stats import probe_throttle_signal
 
     def sample(throughput: float) -> Signals:
-        stats = probe_gpu_stats(devices)
-        utils = [g.utilization_pct for g in stats.values() if g.utilization_pct is not None]
-        temps = [g.temperature_c for g in stats.values() if g.temperature_c is not None]
+        gpu = probe_throttle_signal(devices)
         vm = psutil.virtual_memory()
         return Signals(
             throughput=throughput,
-            gpu_util_pct=(sum(utils) / len(utils)) if utils else None,
-            gpu_temp_c=float(max(temps)) if temps else None,
+            gpu_util_pct=gpu.load_pct,
+            gpu_temp_c=gpu.temperature_c,
             cpu_pct=psutil.cpu_percent(interval=None),
             ram_free_frac=vm.available / vm.total,  # psutil total is always positive
         )

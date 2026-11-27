@@ -5,6 +5,8 @@ Every route needs the token: these return the user's own documents.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from collections.abc import AsyncGenerator
 from typing import Annotated, NoReturn
@@ -13,12 +15,15 @@ from litestar import get, post
 from litestar.background_tasks import BackgroundTask
 from litestar.exceptions import HTTPException, ValidationException
 from litestar.params import FromQuery, QueryParameter
-from litestar.response import Stream
+from litestar.response import Response, Stream
 
+from lilbee.app.services import server_is_stopping
+from lilbee.core.health_warnings import warnings_payload
 from lilbee.core.results import DocumentResult
-from lilbee.data.store import EmbeddingModelMismatchError
-from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.data.store import EmbeddingEngineChangedError, EmbeddingModelMismatchError
+from lilbee.providers.base import SERVER_STOPPING_MESSAGE, ProviderError, ProviderErrorKind
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
+from lilbee.runtime.progress import SseErrorCode
 from lilbee.server import handlers
 from lilbee.server.chat_completions_api.errors import classify_provider_error
 from lilbee.server.chat_dispatch.concurrency import (
@@ -38,13 +43,19 @@ from lilbee.server.models import (
     ChatRequest,
     decode_chunk_type,
 )
+from lilbee.server.provider_status import CLIENT_FAULT_STATUSES, retry_after_headers
+from lilbee.server.route_names import name_routes, name_warnings
 
 _BAD_REQUEST_STATUS = 400
 _NOT_FOUND_STATUS = 404
 _SERVICE_UNAVAILABLE_STATUS = 503
 
+SEARCH_WARNINGS_HEADER = "X-Lilbee-Warnings"
+"""Response header on ``GET /api/search``: a JSON list of the search steps that failed."""
+
 # Shipped clients read /api 401/429 as lilbee-session signals, so upstream kinds stay 503.
 _API_PROVIDER_KIND_STATUSES: dict[ProviderErrorKind, int] = {
+    **CLIENT_FAULT_STATUSES,
     ProviderErrorKind.CONTEXT_OVERFLOW: _BAD_REQUEST_STATUS,
     ProviderErrorKind.NOT_FOUND: _NOT_FOUND_STATUS,
 }
@@ -57,8 +68,13 @@ def _embedding_mismatch_http(exc: EmbeddingModelMismatchError) -> HTTPException:
 
     The client renders its own confirm-to-adopt prompt from ``extra`` and, on
     confirm, sets the embedder via ``PUT /api/models/embedding`` then retries.
-    The server never switches embedder unprompted.
+    The server never switches embedder unprompted. An engine change carries the
+    ``embedding_mismatch`` code and no adopt facts.
     """
+    if isinstance(exc, EmbeddingEngineChangedError):
+        return HTTPException(
+            status_code=409, detail=str(exc), extra={"code": SseErrorCode.EMBEDDING_MISMATCH}
+        )
     return HTTPException(
         status_code=409,
         detail=str(exc),
@@ -80,7 +96,10 @@ def _raise_chat_http_error(exc: Exception) -> NoReturn:
     """
     if isinstance(exc, ValueError):
         raise ValidationException(str(exc)) from exc
-    raise HTTPException(status_code=_api_chat_error_status(exc), detail=str(exc)) from exc
+    headers = retry_after_headers(exc.kind) if isinstance(exc, ProviderError) else {}
+    raise HTTPException(
+        status_code=_api_chat_error_status(exc), detail=str(exc), headers=headers
+    ) from exc
 
 
 def _api_chat_error_status(exc: Exception) -> int:
@@ -116,11 +135,16 @@ async def _gated_stream(
     never enters this body, so the route also releases *guard* from the
     response's after-send hook. A failure inside the generator becomes an
     SSE error event; raising after the 201 headers would drop the connection
-    with no body for the client to read.
+    with no body for the client to read. When a stopping server cancels the
+    response, the stream ends with the stop error event before the cut.
     """
     try:
         async for chunk in generator:
             yield chunk
+    except asyncio.CancelledError:
+        if server_is_stopping():
+            yield sse_error(SERVER_STOPPING_MESSAGE)
+        raise
     except Exception as exc:
         log.exception("streaming chat handler failed")
         # Same mapper as the non-streaming sibling: without a code the stream
@@ -150,15 +174,27 @@ async def search_route(
     q: FromQuery[str],
     top_k: Annotated[int | None, QueryParameter(ge=1, le=100)] = None,
     chunk_type: FromQuery[str | None] = None,
-) -> list[DocumentResult]:
+) -> Response[list[DocumentResult]]:
     """Search indexed documents by semantic similarity. No LLM call required."""
     try:
         parsed_chunk_type = decode_chunk_type(chunk_type)
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     try:
-        return await handlers.search(q, top_k=top_k, chunk_type=parsed_chunk_type)
+        outcome = await handlers.search(q, top_k=top_k, chunk_type=parsed_chunk_type)
+        headers = (
+            {
+                SEARCH_WARNINGS_HEADER: json.dumps(
+                    warnings_payload(name_warnings(outcome.warnings, name_routes))
+                )
+            }
+            if outcome.warnings
+            else {}
+        )
+        return Response(outcome.documents, headers=headers)
     except EmbeddingModelMismatchError as exc:
+        if isinstance(exc, EmbeddingEngineChangedError):
+            raise _embedding_mismatch_http(exc) from exc
         # ``adoptable`` is a bare yes/no on whether switching embedder alone
         # fixes the index, which is what a client renders its hint from. The
         # embedder names stay out of the generic 503.
@@ -170,11 +206,19 @@ async def search_route(
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     except Exception as exc:
+        if isinstance(exc, ProviderError) and (
+            exc.kind in CLIENT_FAULT_STATUSES or exc.kind is ProviderErrorKind.ENGINE_MISSING
+        ):
+            # The app's provider-error handler answers it: a 400 with the reason, or the
+            # 503 whose text names the missing engine and the install step.
+            raise
         # str(exc) here routinely carries data-root paths, LanceDB table names,
         # and model ids. Log the real cause for the operator; return a generic
         # message on the wire.
         log.exception("Search failed")
-        raise HTTPException(status_code=503, detail="Search is temporarily unavailable.") from exc
+        starting = isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.STARTING
+        detail = str(exc) if starting else "Search is temporarily unavailable."
+        raise HTTPException(status_code=503, detail=detail) from exc
 
 
 @post("/api/ask")

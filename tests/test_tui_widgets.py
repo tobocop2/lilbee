@@ -39,6 +39,10 @@ from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
 
+def _no_late_pick(_ref: str) -> None:
+    """The model picker in these tests never changes an engine, so no pick comes late."""
+
+
 def _refs(*sources: str) -> list[SourceRef]:
     """A Sources list of local files, each labelled by its path and numbered by its position."""
     return [SourceRef(s, s, i) for i, s in enumerate(sources, 1)]
@@ -302,11 +306,12 @@ class TestAssistantMessageAsync:
             am = app._am
             am.append_reasoning("a ")
             assert am._reasoning_static is not None
+            # The first append fired an update on its own. Keep the debounce
+            # window open for the burst, so a slow host cannot let it lapse.
+            am._last_reasoning_update = float("inf")
             with mock.patch.object(am._reasoning_static, "update") as mock_update:
                 am.append_reasoning("b ")
                 am.append_reasoning("c ")
-                # The first append fired an update on its own; subsequent
-                # bursts inside the 0.1 s debounce window do not.
                 assert mock_update.call_count == 0
                 am.finish()
                 # finish() flushes the buffered tail.
@@ -1219,8 +1224,10 @@ class TestModelBar:
                 await pilot.pause()
                 chat_btn = app.query_one("#model-pick-chat", ModelPickerButton)
                 embed_btn = app.query_one("#model-pick-embed", ModelPickerButton)
-                assert chat_btn.tooltip == msg.MODEL_PICKER_CHAT_TOOLTIP
-                assert embed_btn.tooltip == msg.MODEL_PICKER_EMBED_TOOLTIP
+                assert chat_btn.tooltip == f"{msg.MODEL_PICKER_CHAT_TOOLTIP} {msg.ENGINE_KEY_HINT}"
+                assert (
+                    embed_btn.tooltip == f"{msg.MODEL_PICKER_EMBED_TOOLTIP} {msg.ENGINE_KEY_HINT}"
+                )
 
 
 class TestCloudProviderLabel:
@@ -1274,7 +1281,7 @@ class TestModelPickerButton:
                     "lilbee.app.settings.persistent_settings.update_values",
                     wraps=persistent_settings.update_values,
                 ),
-                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+                mock.patch("lilbee.app.services.reset_services"),
             ):
                 btn._on_picker_dismissed(new_ref)
                 await pilot.pause()
@@ -1332,7 +1339,7 @@ class TestModelPickerButton:
                     "lilbee.app.settings.persistent_settings.update_values",
                     wraps=persistent_settings.update_values,
                 ),
-                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+                mock.patch("lilbee.app.services.reset_services"),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
@@ -1562,7 +1569,7 @@ class TestModelPickerButton:
             services_mock = mock.MagicMock()
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
-                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services") as mock_reset,
+                mock.patch("lilbee.app.services.reset_services") as mock_reset,
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
@@ -1595,7 +1602,7 @@ class TestModelPickerButton:
             services_mock = mock.MagicMock()
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
-                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+                mock.patch("lilbee.app.services.reset_services"),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
@@ -1984,7 +1991,9 @@ class TestModelPickerModal:
             def _capture(value: str | None) -> None:
                 results.append(value)
 
-            app.push_screen(ModelPickerModal(scope="chat", options=opts), _capture)
+            app.push_screen(
+                ModelPickerModal(scope="chat", options=opts, pick_later=_no_late_pick), _capture
+            )
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, ModelPickerModal)
@@ -2009,7 +2018,7 @@ class TestModelPickerModal:
         app = _App()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.push_screen(ModelPickerModal(scope="chat", options=opts))
+            app.push_screen(ModelPickerModal(scope="chat", options=opts, pick_later=_no_late_pick))
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, ModelPickerModal)
@@ -2040,7 +2049,7 @@ class TestModelPickerModal:
         app = _App()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.push_screen(ModelPickerModal(scope="chat", options=opts))
+            app.push_screen(ModelPickerModal(scope="chat", options=opts, pick_later=_no_late_pick))
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, ModelPickerModal)
@@ -2069,7 +2078,9 @@ class TestModelPickerModal:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.push_screen(
-                ModelPickerModal(scope="embed", options=[ModelOption("X", "x")]),
+                ModelPickerModal(
+                    scope="embed", options=[ModelOption("X", "x")], pick_later=_no_late_pick
+                ),
                 _capture,
             )
             await pilot.pause()
@@ -2093,7 +2104,7 @@ class TestModelPickerModal:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.push_screen(
-                ModelPickerModal(scope="chat", options=opts),
+                ModelPickerModal(scope="chat", options=opts, pick_later=_no_late_pick),
                 lambda v: results.append(v),
             )
             await pilot.pause()
@@ -2118,7 +2129,7 @@ class TestModelPickerModal:
         app = _App()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.push_screen(ModelPickerModal(scope="chat", options=[]))
+            app.push_screen(ModelPickerModal(scope="chat", options=[], pick_later=_no_late_pick))
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, ModelPickerModal)
@@ -2141,7 +2152,11 @@ class TestModelPickerModal:
         app = _App()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.push_screen(ModelPickerModal(scope="embed", options=[ModelOption("X", "x")]))
+            app.push_screen(
+                ModelPickerModal(
+                    scope="embed", options=[ModelOption("X", "x")], pick_later=_no_late_pick
+                )
+            )
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, ModelPickerModal)
@@ -2390,6 +2405,18 @@ def _classify_chat_embed():
 
 @pytest.mark.real_model_classify
 class TestClassifyInstalledModels:
+    def test_an_unreadable_registry_raises_instead_of_an_empty_picker(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import classify_installed_models_full
+
+        with (
+            mock.patch(
+                "lilbee.modelhub.registry.ModelRegistry.list_installed",
+                side_effect=OSError("manifests unreadable"),
+            ),
+            pytest.raises(OSError, match="manifests unreadable"),
+        ):
+            classify_installed_models_full()
+
     def test_native_models_classified_by_task(self, tmp_path) -> None:
         from lilbee.modelhub.registry import ModelManifest
 
@@ -2708,17 +2735,24 @@ class TestArgSources:
         assert "wiki_dir" not in names  # read-only: would be refused by /set
         assert "chat_model" in names
 
-    def test_model_and_document_lookups_log_and_return_empty_on_error(self) -> None:
+    def test_model_lookup_lets_an_unreadable_registry_through(self) -> None:
         from unittest.mock import patch
 
         from lilbee.cli.tui.widgets.autocomplete import ARG_SOURCES
 
-        with patch(
-            "lilbee.modelhub.models.list_installed_models", side_effect=RuntimeError("boom")
+        with (
+            patch("lilbee.modelhub.models.list_installed_models", side_effect=OSError("boom")),
+            pytest.raises(OSError, match="boom"),
         ):
-            assert ARG_SOURCES["/model"]() == []
+            ARG_SOURCES["/model"]()
+
+    def test_document_lookup_logs_and_returns_empty_on_error(self) -> None:
+        from unittest.mock import patch
+
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SEARCHES
+
         with patch("lilbee.cli.tui.widgets.autocomplete.get_services", side_effect=RuntimeError):
-            assert ARG_SOURCES["/delete"]() == []
+            assert ARG_SEARCHES["/delete"]("") == []
 
 
 class TestGetCompletions:
@@ -2979,13 +3013,17 @@ class TestModelOptions:
         with mock.patch("lilbee.modelhub.models.list_installed_models", return_value=["a", "b"]):
             assert list_model_options() == ["a", "b"]
 
-    def test_returns_empty_on_error(self) -> None:
+    def test_an_unreadable_registry_raises_instead_of_listing_nothing(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import list_model_options
 
-        with mock.patch(
-            "lilbee.modelhub.models.list_installed_models", side_effect=Exception("err")
+        with (
+            mock.patch(
+                "lilbee.modelhub.models.list_installed_models",
+                side_effect=OSError("manifests unreadable"),
+            ),
+            pytest.raises(OSError, match="manifests unreadable"),
         ):
-            assert list_model_options() == []
+            list_model_options()
 
 
 class TestSettingOptions:
@@ -2997,15 +3035,15 @@ class TestSettingOptions:
 
 
 class TestDocumentOptions:
-    """``_document_options`` lists every ``/delete`` target from an uncached read."""
+    """``_document_options`` asks the store for the typed text, never for every source."""
 
     def test_returns_filenames(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import _document_options
 
         mock_svc = mock.MagicMock()
-        mock_svc.store.get_sources.return_value = [{"filename": "a.txt", "source": "a.txt"}]
+        mock_svc.store.source_names.return_value = ["a.txt"]
         with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
-            assert _document_options() == ["a.txt"]
+            assert _document_options("") == ["a.txt"]
 
     def test_returns_empty_on_error(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import _document_options
@@ -3013,15 +3051,17 @@ class TestDocumentOptions:
         with mock.patch(
             "lilbee.cli.tui.widgets.autocomplete.get_services", side_effect=Exception("err")
         ):
-            assert _document_options() == []
+            assert _document_options("") == []
 
-    def test_falls_back_to_source_key(self) -> None:
-        from lilbee.cli.tui.widgets.autocomplete import _document_options
+    def test_the_typed_text_and_a_bounded_limit_reach_the_store(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import _NAME_CANDIDATES, _document_options
 
         mock_svc = mock.MagicMock()
-        mock_svc.store.get_sources.return_value = [{"source": "b.pdf"}]
+        mock_svc.store.source_names.return_value = []
         with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
-            assert _document_options() == ["b.pdf"]
+            _document_options("note")
+        mock_svc.store.source_names.assert_called_once_with("note", limit=_NAME_CANDIDATES)
+        mock_svc.store.get_sources.assert_not_called()
 
     def test_held_out_sources_follow_indexed_ones(self, held_store) -> None:
         """A held-out file is a ``/delete`` target; one also indexed is listed once."""
@@ -3030,22 +3070,89 @@ class TestDocumentOptions:
 
         hold_failed({"scan.pdf": "h1", "a.txt": "h2"}, store=held_store)
         mock_svc = mock.MagicMock()
-        mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}]
+        mock_svc.store.source_names.return_value = ["a.txt"]
         with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
-            assert _document_options() == ["a.txt", "scan.pdf"]
+            assert _document_options("") == ["a.txt", "scan.pdf"]
 
     def test_delete_completion_reflects_a_store_change_at_once(self) -> None:
         """A source added after a completion is offered by the next Tab, with no invalidation."""
         from lilbee.cli.tui.widgets.autocomplete import get_completions
 
         mock_svc = mock.MagicMock()
-        mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}]
+        mock_svc.store.source_names.return_value = ["a.txt"]
         with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
             assert get_completions("/delete ") == ["a.txt"]
-            mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}, {"filename": "b.md"}]
+            mock_svc.store.source_names.return_value = ["a.txt", "b.md"]
             assert get_completions("/delete ") == ["a.txt", "b.md"]
-            mock_svc.store.get_sources.return_value = []
+            mock_svc.store.source_names.return_value = []
             assert get_completions("/delete ") == []
+
+    def test_a_delete_completion_ranks_prefix_matches_first(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        mock_svc = mock.MagicMock()
+        mock_svc.store.source_names.return_value = ["old-notes.md", "notes.md"]
+        with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
+            assert get_completions("/delete notes") == ["notes.md", "old-notes.md"]
+
+
+class TestDocumentOptionsOnALargeLibrary:
+    """On a real store the dropdown reads a bounded page of names and never every source."""
+
+    def _fill(self, store, count: int) -> None:
+        for i in range(count):
+            store.upsert_source(f"corpus/doc-{i:04d}.txt", f"h{i}", 1)
+
+    def test_a_keystroke_reads_a_bounded_page(self, held_store) -> None:
+        """The names-only rule is guarded by tests/test_store.py::TestSourceNames."""
+        from lilbee.cli.tui.widgets.autocomplete import _NAME_CANDIDATES, get_completions
+
+        self._fill(held_store, 3 * _NAME_CANDIDATES)
+        with (
+            mock.patch.object(held_store, "get_sources", side_effect=AssertionError("full read")),
+            mock.patch.object(
+                held_store, "iter_source_heads", side_effect=AssertionError("full scan")
+            ),
+        ):
+            empty = get_completions("/delete ")
+            typed = get_completions("/delete doc-00")
+
+        assert 0 < len(empty) <= _NAME_CANDIDATES
+        assert typed and all("doc-00" in name for name in typed)
+        assert len(typed) <= _NAME_CANDIDATES
+
+    def test_a_short_prefix_finds_its_match_among_many_contains_matches(self, held_store) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import _MAX_VISIBLE, get_completions
+
+        for i in range(40):
+            held_store.upsert_source(f"zz/{i:02d}-rep.md", f"h{i}", 1)
+        held_store.upsert_source("report.md", "hr", 1)
+        held_store.upsert_source("reports/q1.md", "hq", 1)
+
+        shown = get_completions("/delete rep")[:_MAX_VISIBLE]
+
+        assert shown[:2] == ["report.md", "reports/q1.md"]
+
+
+class TestRemoveOnALargeLibrary:
+    """A remove by name, folder or glob on a real store reads no full source record."""
+
+    def test_a_removal_reads_no_full_record(self, held_store) -> None:
+        from lilbee.app.ingest import remove_documents_durably
+
+        for name in ("docs/a.md", "docs/b.md", "keep.md", "other/c.md", "other/d.txt", "z.zip"):
+            held_store.upsert_source(name, f"h-{name}", 1)
+        held_store.upsert_source("z.zip/inner.txt", "hz", 1)
+        with mock.patch.object(held_store, "get_sources", side_effect=AssertionError("full read")):
+            by_folder = remove_documents_durably(["docs"])
+            by_glob = remove_documents_durably(["other/*.txt"])
+            by_name = remove_documents_durably(["z.zip", "nope.md"])
+
+        assert sorted(by_folder.removed) == ["docs/a.md", "docs/b.md"]
+        assert by_glob.removed == ["other/d.txt"]
+        assert sorted(by_name.removed) == ["z.zip", "z.zip/inner.txt"]
+        assert by_name.not_found == ["nope.md"]
+        assert sorted(s["filename"] for s in held_store.get_sources()) == ["keep.md", "other/c.md"]
 
 
 class TestThemeOptions:
@@ -3152,16 +3259,20 @@ class TestPathOptions:
         r = _path_options(str(tmp_path / "KEEP"))
         assert r == [f"keep{i:02d}" for i in range(20)]
 
-    def test_mixed_case_names_keep_the_case_folded_order_of_a_case_folding_platform(self, tmp_path):
-        """On Windows normcase folds case; the 20 rows and their order follow the folded names."""
+    def test_mixed_case_names_sort_case_folded_on_every_platform(self, tmp_path):
+        """One rule everywhere: names sort case-folded, with the exact name breaking ties."""
         from lilbee.cli.tui.widgets.autocomplete import _path_options
 
         for i in range(15):
             (tmp_path / f"U{i:02d}").touch()
             (tmp_path / f"l{i:02d}").touch()
-        with mock.patch("os.path.normcase", new=str.lower):
-            r = _path_options(str(tmp_path) + "/")
+        r = _path_options(str(tmp_path) + "/")
         assert r == [f"l{i:02d}" for i in range(15)] + [f"U{i:02d}" for i in range(5)]
+
+    def test_names_that_differ_only_in_case_have_a_fixed_order(self):
+        from lilbee.cli.tui.widgets.autocomplete import _path_order
+
+        assert sorted(["b", "B", "a"], key=_path_order) == ["a", "B", "b"]
 
     def test_limits_results_to_20(self, tmp_path):
         from lilbee.cli.tui.widgets.autocomplete import _path_options
@@ -3728,7 +3839,8 @@ class TestLoginCommandRegistered:
 class TestRunTuiKeyboardInterrupt:
     def test_keyboard_interrupt_does_not_raise(self) -> None:
         with mock.patch("lilbee.cli.tui.app.LilbeeApp") as MockApp:
-            MockApp.return_value.run.side_effect = KeyboardInterrupt
+            MockApp.return_value.run_async.side_effect = KeyboardInterrupt
+            MockApp.return_value.return_code = None
             with (
                 mock.patch("lilbee.cli.sync.shutdown_executor"),
                 mock.patch("lilbee.cli.tui.reset_services_on_exit"),
@@ -3737,11 +3849,12 @@ class TestRunTuiKeyboardInterrupt:
                 from lilbee.cli.tui import run_tui
 
                 run_tui()
-            MockApp.return_value.run.assert_called_once()
+            MockApp.return_value.run_async.assert_called_once()
 
     def test_cleanup_called_on_interrupt(self) -> None:
         with mock.patch("lilbee.cli.tui.app.LilbeeApp") as MockApp:
-            MockApp.return_value.run.side_effect = KeyboardInterrupt
+            MockApp.return_value.run_async.side_effect = KeyboardInterrupt
+            MockApp.return_value.return_code = None
             with (
                 mock.patch("lilbee.cli.sync.shutdown_executor") as mock_shutdown,
                 mock.patch("lilbee.cli.tui.reset_services_on_exit") as mock_reset,
@@ -4543,7 +4656,7 @@ class TestModelCardSelected:
 
 
 class TestCollectNativeModelsError:
-    def test_exception_suppressed(self, tmp_path) -> None:
+    def test_an_unreadable_registry_is_not_suppressed(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _collect_native_models
 
         cfg.models_dir = tmp_path / "models"
@@ -4554,9 +4667,12 @@ class TestCollectNativeModelsError:
             "vision": [],
         }
         seen: set[str] = set()
-        with mock.patch(
-            "lilbee.modelhub.registry.ModelRegistry",
-            side_effect=RuntimeError("boom"),
+        with (
+            mock.patch(
+                "lilbee.modelhub.registry.ModelRegistry",
+                side_effect=OSError("boom"),
+            ),
+            pytest.raises(OSError, match="boom"),
         ):
             _collect_native_models(buckets, seen)
         assert buckets["chat"] == []
@@ -5540,7 +5656,7 @@ class TestConfirmDialog:
             await pilot.pause()
             yes = app.screen.query_one("#confirm-yes", ConfirmPill)
             no = app.screen.query_one("#confirm-no", ConfirmPill)
-            for key, pill in (("right", no), ("left", yes)):
+            for key, pill in (("left", yes), ("right", no)):
                 resting = pill.styles.background
                 await pilot.press(key)
                 await pilot.pause()
@@ -5559,13 +5675,13 @@ class TestConfirmDialog:
             await pilot.pause()
             yes = app.screen.query_one("#confirm-yes", ConfirmPill)
             no = app.screen.query_one("#confirm-no", ConfirmPill)
-            assert yes.has_focus
-            await pilot.press("right")
-            await pilot.pause()
             assert no.has_focus
             await pilot.press("left")
             await pilot.pause()
             assert yes.has_focus
+            await pilot.press("right")
+            await pilot.pause()
+            assert no.has_focus
 
     async def test_rebuild_offer_leaves_room_for_the_pills(self) -> None:
         """The dialog grows with its message; the pill row must stay inside it."""
@@ -5649,6 +5765,7 @@ class TestConfirmDialog:
         app = _App()
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
+            await pilot.press("left")
             await pilot.press("enter")
             await pilot.pause()
 
@@ -5688,8 +5805,8 @@ class TestConfirmDialog:
 
         assert results == [False]
 
-    async def test_tab_to_no_then_enter_cancels(self) -> None:
-        """Enter presses the focused No button instead of blanket-confirming."""
+    async def test_enter_on_the_dialog_as_opened_cancels(self) -> None:
+        """The dialog opens on No, so Enter presses No instead of blanket-confirming."""
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
         results: list[bool] = []
@@ -5701,7 +5818,6 @@ class TestConfirmDialog:
         app = _App()
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
-            await pilot.press("tab")
             await pilot.press("enter")
             await pilot.pause()
 
@@ -7674,6 +7790,32 @@ class TestModelBarScanRaces:
             bar._populate({"chat": [ModelOption(label="m", ref="a/b/c.gguf")]})
         assert bar._options_cache == {}  # nothing cached; the next scan retries
         refresh.assert_called_once()
+
+    def test_a_scan_that_cannot_read_the_registry_reports_it_and_populates_nothing(self) -> None:
+        from unittest import mock
+
+        from lilbee.cli.tui.widgets import model_bar
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        bar = mock.MagicMock()
+        error = OSError("manifests unreadable")
+        with (
+            mock.patch.object(model_bar, "classify_installed_models_full", side_effect=error),
+            mock.patch.object(model_bar, "call_from_thread") as post,
+        ):
+            ModelBar._scan_models.__wrapped__(bar)
+        post.assert_called_once_with(bar, bar._scan_failed, error)
+        bar._populate.assert_not_called()
+
+    def test_a_failed_scan_notifies_with_an_error(self) -> None:
+        from unittest import mock
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        bar = mock.MagicMock()
+        ModelBar._scan_failed(bar, OSError("manifests unreadable"))
+        assert "manifests unreadable" in bar.notify.call_args.args[0]
+        assert bar.notify.call_args.kwargs["severity"] == "error"
 
     def test_cloud_warning_refresh_survives_an_unmounted_bar(self) -> None:
         from unittest import mock

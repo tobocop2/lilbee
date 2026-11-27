@@ -27,7 +27,6 @@ from lilbee.core.config import Config
 from lilbee.core.text import clean_label_for_display, make_slug
 from lilbee.data.store import CitationRecord, SearchChunk, Store
 from lilbee.providers.base import LLMProvider
-from lilbee.retrieval.reasoning import strip_reasoning
 from lilbee.wiki.batch import (
     finalize_section,
     hash_existing_sources,
@@ -40,11 +39,10 @@ from lilbee.wiki.citations import (
 )
 from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity
 from lilbee.wiki.page import (
-    build_wiki_messages,
     chunks_to_text,
     generate_page,
+    request_wiki_text,
     truncate_chunks_to_budget,
-    wiki_generation_options,
 )
 from lilbee.wiki.persistence import write_pending_marker
 from lilbee.wiki.shared import (
@@ -348,8 +346,11 @@ def generate_source_batch(
     # entity list are per-call substitutions the raw template does not carry.
     budgeted = truncate_chunks_to_budget(chunks, config, len(render("")))
     prompt = render(chunks_to_text(budgeted))
-    text = _request_batch_sections(source, prompt, provider, config)
+    text = _request_batch_sections(source, prompt, provider, config, stats)
+    if extract_concepts:
+        stats.record_concept_call(failed=text is None)
     if text is None:
+        stats.record_failed_pages(len(entities))
         _write_pending_markers(entities, set(), source, drafts_dir, stats)
         return []
 
@@ -411,19 +412,14 @@ def _request_batch_sections(
     prompt: str,
     provider: LLMProvider,
     config: Config,
+    stats: BuildStats,
 ) -> str | None:
-    """Issue the batched LLM call; None when it raised or came back empty."""
-    messages = build_wiki_messages(prompt, provider, config)
-    try:
-        response = provider.chat(messages, stream=False, options=wiki_generation_options(config))
-    except Exception as exc:
-        log.warning("Batched LLM call failed for source %s: %s", source, exc)
-        return None
-    text = strip_reasoning(response.text).strip()
-    if not text:
-        log.warning("Batched LLM call returned empty response for source %s", source)
-        return None
-    return text
+    """Issue the batched LLM call; None when it raised or came back empty.
+
+    Each outcome is counted in *stats* so the run can tell a build that wrote
+    nothing because every call failed from one that had nothing to write.
+    """
+    return request_wiki_text(source, prompt, provider, config, stats)
 
 
 def _finalize_sections(

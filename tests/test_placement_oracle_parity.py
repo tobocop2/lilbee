@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from lilbee.providers.fleet.groups import class_roles
 from lilbee.providers.fleet.placement import ModelPlacementInput, plan_placement
 from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION
 from lilbee.providers.roles import WorkerRole
@@ -86,7 +87,7 @@ def _working_set_servable(sc: Scenario) -> set[WorkerRole]:
 
 def _planner_servable(
     sc: Scenario,
-) -> tuple[set[WorkerRole], frozenset[WorkerRole], dict[WorkerRole, int]]:
+) -> tuple[set[WorkerRole], tuple[frozenset[WorkerRole], ...], dict[WorkerRole, int]]:
     models = [
         ModelPlacementInput(role=role, est_vram_bytes=vram) for role, vram in sc.footprints.items()
     ]
@@ -97,7 +98,7 @@ def _planner_servable(
         unified_budget=sc.unified_budget,
     )
     servable = set(sc.footprints) - set(placement.unplaceable_roles)
-    return servable, placement.co_tenants, placement.tight_roles
+    return servable, placement.swap_classes, placement.tight_roles
 
 
 # Footprints modeled on the friend's stack: a ~4B chat, nomic embed, a small
@@ -147,18 +148,53 @@ SCENARIOS = [
 ]
 
 
-def _charged_total(sc: Scenario, servable: set[WorkerRole], swap: frozenset[WorkerRole]) -> int:
-    """The VRAM the plan reserves: every persistent role, plus one swap-group member.
+def _charged_total(
+    sc: Scenario, servable: set[WorkerRole], classes: tuple[frozenset[WorkerRole], ...]
+) -> int:
+    """The VRAM the plan reserves: every persistent role, plus the largest swap class.
 
-    Swap-group members never co-reside (llama-swap loads one at a time), so the group
-    is charged its largest member; every other served role is charged in full.
+    The roles of one class stay loaded together and the classes evict each other
+    (llama-swap exclusive groups), so the swap group is charged its largest class sum;
+    every other served role is charged in full.
     """
-    persistent = [r for r in servable if r not in swap]
+    persistent = [r for r in servable if r not in class_roles(classes)]
     total = sum(sc.footprints[r] for r in persistent)
-    members = [sc.footprints[r] for r in swap if r in servable]
-    if members:
-        total += max(members)
-    return total
+    peaks = [sum(sc.footprints[r] for r in members if r in servable) for members in classes]
+    return total + max(peaks, default=0)
+
+
+# The residency classes of the swap process in each scenario. Chat and rerank share the
+# query phase, so they stay loaded together when the pair fits beside the vision slot;
+# where it does not fit, or a role is tight, every role is a class of its own.
+_C, _R, _V = "chat", "rerank", "vision"
+_EXPECTED_CLASSES: dict[str, tuple[tuple[str, ...], ...]] = {
+    "gpu-24gb-roomy": (),
+    "gpu-12gb-cusp": (),
+    "gpu-8gb-one-big-at-a-time": ((_C,), (_V,)),
+    "gpu-6gb-embed-rerank-vision-overflow": ((_C,), (_R,), (_V,)),
+    "gpu-8gb-big-vision": ((_C, _R), (_V,)),
+    "gpu-6gb-llm-rerank": ((_C,), (_R,), (_V,)),
+    "gpu-6gb-small-chat-big-vision": ((_C, _R), (_V,)),
+    "gpu-16gb-inflated-vision-estimate": ((_C, _R), (_V,)),
+    "unified-6gb-llm-rerank": ((_C,), (_R,), (_V,)),
+    "unified-6gb-embed-rerank-vision-overflow": ((_C,), (_V,)),
+    "unified-8gb": ((_C,), (_V,)),
+    "unified-12gb": (),
+    "unified-8gb-big-vision": ((_C, _R), (_V,)),
+    "unified-6gb-big-vision": (),
+}
+
+
+def test_every_scenario_names_its_expected_classes() -> None:
+    assert SCENARIOS
+    assert {sc.name for sc in SCENARIOS} == set(_EXPECTED_CLASSES)
+
+
+@pytest.mark.parametrize("sc", SCENARIOS, ids=lambda s: s.name)
+def test_the_swap_process_splits_into_the_expected_residency_classes(sc: Scenario) -> None:
+    _servable, classes, _tight = _planner_servable(sc)
+    named = tuple(tuple(sorted(r.value for r in members)) for members in classes)
+    assert named == _EXPECTED_CLASSES[sc.name]
 
 
 @pytest.mark.parametrize("sc", SCENARIOS, ids=lambda s: s.name)
@@ -194,7 +230,8 @@ def test_plan_fits_its_own_budget(sc: Scenario) -> None:
     budget = _budget(sc)
     assert reserved <= budget, (
         f"{sc.name}: plan reserves {reserved / GB:.2f}GB > budget {budget / GB:.2f}GB "
-        f"(served={sorted(r.value for r in servable)}, swap-group={sorted(r.value for r in swap)})"
+        f"(served={sorted(r.value for r in servable)}, "
+        f"swap-group={sorted(r.value for r in class_roles(swap))})"
     )
 
 
@@ -215,7 +252,7 @@ def _print_diff_table() -> int:
         print(f"        oracle  : {sorted(r.value for r in oracle)}")
         print(
             f"        planner : {sorted(r.value for r in servable)}"
-            f"  swap-group={sorted(r.value for r in co)}"
+            f"  swap-group={sorted(r.value for r in class_roles(co))}"
             f"  tight={sorted(r.value for r in tight)}"
         )
         if refused:

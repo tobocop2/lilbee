@@ -2,8 +2,39 @@
 
 from __future__ import annotations
 
-from lilbee.app.services import get_services
+from unittest import mock
+
+from lilbee.app.services import get_services, set_services
+from lilbee.core.config import cfg
 from lilbee.data.store import REMOVED_REASON, HeldOut, HeldRecord, Store
+from lilbee.data.types import ShardId, SyncResult
+from lilbee.providers.base import ProviderError
+
+ENGINE_ERROR = "the embed engine did not start in 2 minutes"
+FAILED_NAMES = ["bees.txt", "ants.txt", "wasps.txt"]
+# What a search answers after ``fail_every_ingest(FAILED_NAMES)``.
+FAILED_ANSWER = (
+    "Nothing is indexed: 3 documents failed to ingest. "
+    f"The error was: {ENGINE_ERROR}. Run `lilbee sync` to try again."
+)
+
+
+async def fail_every_ingest(
+    names: list[str], error: Exception | None = None, shard: ShardId | None = None
+) -> SyncResult:
+    """Sync *names* on a real store, as one *shard* when given, with every file failing.
+
+    The failure is an embed engine error unless *error* says otherwise.
+    """
+    from lilbee.data.ingest import sync
+    from tests.conftest import make_mock_services
+
+    set_services(make_mock_services(store=Store(cfg)))
+    for name in names:
+        (cfg.documents_dir / name).write_text(f"{name} holds plenty of text", encoding="utf-8")
+    failure = error if error is not None else ProviderError(ENGINE_ERROR)
+    with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=failure):
+        return await sync(quiet=True, shard=shard)
 
 
 def _store(store: Store | None) -> Store:

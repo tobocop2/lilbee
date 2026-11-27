@@ -1,5 +1,7 @@
 """Shared test helpers."""
 
+import gc
+import importlib.util
 import io
 import os
 import shutil
@@ -7,6 +9,7 @@ import signal
 import sys
 import tempfile
 import threading
+import time
 import warnings
 from collections.abc import Callable, Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -22,6 +25,7 @@ from filelock import Timeout as FileLockTimeout
 from PIL import Image, ImageDraw
 
 import tests._suite_data_root  # noqa: F401  # must run before lilbee and huggingface_hub load
+from tests import _stated_sizes as stated_sizes_module
 
 # Opt tests out of the per-role catalog-task validator at import time so
 # the many ``cfg.chat_model = "test-model"``-style fixtures don't trip
@@ -48,14 +52,18 @@ from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.app import clear_overrides
 from lilbee.core import profile_files
 from lilbee.core.config import cfg
+from lilbee.core.config.defaults import ENV_PREFIX
 from lilbee.core.profile_files import profile_folders
-from lilbee.core.system import default_data_dir
+from lilbee.core.system import canonical_models_dir, default_data_dir
 from lilbee.data.extract import xberg as _xberg_extract
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, SourceSummary
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.providers.availability import provider_sdk_available as _real_provider_sdk_available
-from lilbee.providers.fleet.binary import EngineTool
+from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.binary import EngineTool, resolve_engine_tool
+from lilbee.providers.fleet.engine_install import engine_install_hint
+from lilbee.providers.fleet.first_use import installed_tool
 from lilbee.runtime.lock import _no_sync_running
 
 # The literal name, not read from the code under test: a wrong name must fail the tests.
@@ -65,12 +73,14 @@ SDK_DIST = "liter-llm"
 _PRISTINE_EXTRACT_DOCUMENT = _xberg_extract.extract_document
 _PRISTINE_AEXTRACT_DOCUMENT = _xberg_extract.aextract_document
 # Stack-dump watchdog for wedged tests (opt-in via LILBEE_TEST_HANG_DUMP_S).
-pytest_plugins = ["tests._hang_watchdog"]
+pytest_plugins = ["tests._hang_watchdog", "pytester"]
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 # The developer's platform data root, read before any test redirects it.
 REAL_GLOBAL_ROOT = default_data_dir()
+# The developer's models folder; the engine pack installs beside it.
+REAL_MODELS_DIR = canonical_models_dir()
 # The package's own profiles folder; the suite reads a session copy of it.
 REAL_PACKAGE_PROFILES_DIR = profile_files.PACKAGE_PROFILES_DIR
 # The variables that root derives from, with their real values.
@@ -152,6 +162,48 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
+def pytest_collection_finish() -> None:
+    """Freeze the objects of import and collection, which live until the session ends."""
+    gc.collect()
+    gc.freeze()
+
+
+@pytest.fixture
+def stated_sizes(monkeypatch) -> Generator[None]:
+    """Switch on ``tests._stated_sizes.state_size`` for one test."""
+    stated_sizes_module.install(monkeypatch)
+    yield
+    stated_sizes_module.uninstall()
+
+
+CALLER_THREAD = "work-order-caller"
+
+
+@pytest.fixture
+def joined(fleet, monkeypatch) -> Callable[[], None]:
+    """Blocks until two callers have joined the fleet work, each after it set what it wants.
+
+    A caller thread is one named ``CALLER_THREAD``. The product sets the counter that
+    a write wants before it joins, so the join is the event a test waits on.
+    """
+    local = fleet.provider._local
+    entered = threading.Semaphore(0)
+    real = local._join_fleet_work
+
+    def _entered(work, **kwargs) -> None:
+        if threading.current_thread().name == CALLER_THREAD:
+            entered.release()
+        real(work, **kwargs)
+
+    monkeypatch.setattr(local, "_join_fleet_work", _entered)
+
+    def _both() -> None:
+        entered.acquire()
+        entered.acquire()
+
+    return _both
+
+
 @pytest.fixture(autouse=True)
 def _serve_never_ends_the_test_process(monkeypatch):
     """Keep ``serve`` from reaching the real process exit while a library open runs.
@@ -162,6 +214,66 @@ def _serve_never_ends_the_test_process(monkeypatch):
     from lilbee.cli.commands import servers
 
     monkeypatch.setattr(servers, "exit_if_opens_remain", lambda status: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_browser(monkeypatch):
+    """Stop a test from opening a page on the machine that runs the suite."""
+    monkeypatch.setattr("webbrowser.open", MagicMock())
+
+
+@pytest.fixture(autouse=True)
+def _no_held_install_warnings() -> Generator[None]:
+    """Start and end each test with no install warning held, so one test's warning never leaks."""
+    from lilbee.providers.fleet import first_use
+
+    first_use.take_install_warnings()
+    yield
+    first_use.take_install_warnings()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_nvidia_probes() -> Generator[None]:
+    """Start and end each test with no cached nvidia-smi answer, so one test's fake never leaks."""
+    from lilbee.providers.fleet.gpu_backends import nvidia
+
+    probes = (nvidia._cache, nvidia._cards_probe, nvidia._compute_probe, nvidia._cuda_probe)
+    for probe in probes:
+        probe.reset()
+    yield
+    for probe in probes:
+        probe.reset()
+
+
+@pytest.fixture(autouse=True)
+def _sealed_host_cards(request, monkeypatch, tmp_path_factory) -> Generator[None]:
+    """Run each test on a host with no card: no nvidia-smi, no NVLink topology, no PCI device.
+
+    Every read of the host's cards answers "none", so no count depends on the machine that
+    runs the test. A test that needs cards patches the same reader itself, which wins over
+    this seal. ``real_nvidia_smi`` opts out for a test that drives ``run_tool`` for real, and
+    ``real_windows_registry`` for a test that injects its own registry module.
+    """
+    from lilbee.providers.fleet import devices, gpu_hardware
+    from lilbee.providers.fleet.gpu_backends import nvidia
+
+    if not request.node.get_closest_marker("real_nvidia_smi"):
+        monkeypatch.setattr(nvidia, "run_tool", lambda tool, args, timeout: ("", None))
+
+    run_bounded = devices.run_bounded
+
+    def _without_topology(argv, **kwargs):
+        if list(argv[:3]) == ["nvidia-smi", "topo", "-m"]:
+            return "", None
+        return run_bounded(argv, **kwargs)
+
+    monkeypatch.setattr(devices, "run_bounded", _without_topology)
+    monkeypatch.setattr(
+        gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path_factory.getbasetemp() / "no-pci-bus"
+    )
+    if not request.node.get_closest_marker("real_windows_registry"):
+        monkeypatch.setattr(gpu_hardware, "_windows_adapters", lambda: iter(()))
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -178,33 +290,98 @@ def _download_without_a_child_process(request, monkeypatch):
     from lilbee.catalog import download_process
     from lilbee.runtime.cancellation import TaskCancelledError
 
-    def _in_process(entry, models_dir, token, *, on_progress, cancel):
+    def _in_process(entry, models_dir, token, engine, *, on_progress, on_retry=None, cancel):
         from lilbee.catalog.download import fetch_model_files
 
         if cancel.is_set():
             raise TaskCancelledError
-        return fetch_model_files(entry, models_dir, token, on_progress=on_progress)
+        return fetch_model_files(
+            entry, models_dir, token, on_progress=on_progress, engine=engine, on_retry=on_retry
+        )
 
     monkeypatch.setattr(download_process, "download_in_subprocess", _in_process)
 
 
 @pytest.fixture(autouse=True)
 def _restore_interactive_intent():
-    """Snapshot the interactive flag, the upgrade reporter and the config refresh per test.
+    """Snapshot the interactive flag, the upgrade reporter and the config follower per test.
 
     mark_interactive_session flips process state; a leak arms the TUI's
     straggler exit inside a test worker, which then exits the worker. The CLI
     callback installs its stderr reporter, which must not reach a later test.
+    A follower holds the reading of one test's config.toml, so each test builds its own.
     """
     from lilbee.app import services as services_mod
 
     before = services_mod._state.interactive
     reporter = services_mod._state.on_upgrade
-    config_refresh = services_mod._state.config_refresh
+    follower = services_mod._state.follower
+    watchers = list(services_mod._state.pool_watchers)
     yield
     services_mod._state.interactive = before
     services_mod._state.on_upgrade = reporter
-    services_mod._state.config_refresh = config_refresh
+    services_mod._state.follower = follower
+    services_mod._state.pool_watchers[:] = watchers
+
+
+_RESTORED_SIGNALS = tuple(
+    getattr(signal, name) for name in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, name)
+)
+
+
+@pytest.fixture(autouse=True)
+def _restore_signal_handlers():
+    """Give every test the worker's SIGINT, SIGTERM and SIGHUP handlers back.
+
+    An in-process serve or mcp command routes these signals to the engine stop for
+    the life of the process, and an xdist worker runs many tests. A leaked handler
+    turns a later test's Ctrl-C into an engine stop, and a leaked ignore reaches
+    every child the later tests start.
+    """
+    saved = {sig: signal.getsignal(sig) for sig in _RESTORED_SIGNALS}
+    yield
+    for sig, handler in saved.items():
+        signal.signal(sig, handler)
+
+
+@pytest.fixture(autouse=True)
+def _restore_server_stop_flag():
+    """Snapshot the flag that says the server is stopping around every test.
+
+    A serve teardown sets it and only the next serve clears it, so a leak makes
+    a later test's cancelled chat stream end with the stop error.
+    """
+    from lilbee.app import services as services_mod
+
+    before = services_mod._server_exit.stopping
+    yield
+    services_mod._server_exit.stopping = before
+
+
+@pytest.fixture(autouse=True)
+def _forget_engine_stop(_restore_server_stop_flag):
+    """Clear every engine stop request after each test.
+
+    A stop runs once per process and refuses new containers, so a leak breaks
+    every later test that builds the services. A stop still running would set
+    its done event during the next test, so it fails this test instead.
+
+    The stop thread sets the server-stopping flag before it sets its done
+    event. Asking for the flag fixture makes this teardown run first, so the
+    flag is restored after the wait and not before a late stop sets it.
+
+    The fixture holds the process's own lifecycle from before the test. Fixture
+    teardown order depends on which autouse fixture asks for ``monkeypatch``
+    first, and a test that swaps in a lifecycle of its own must not become the
+    one this fixture waits on.
+    """
+    from lilbee.app import services as services_mod
+
+    lifecycle = services_mod._lifecycle
+    yield
+    if lifecycle.stop_requested:
+        assert lifecycle.wait_stopped(5.0), "the test left an engine stop running"
+    lifecycle.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -226,6 +403,39 @@ def _suppress_model_scan(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _cli_command_keeps_the_services(request, monkeypatch):
+    """Keep a CLI command that routes diagnostics from stopping the services at its end.
+
+    The command stops them under cli.log so the process-exit teardown logs there. A stop
+    runs once per process and refuses new containers, so a test that runs two commands
+    would fail on the second. Tests of the stop use ``@pytest.mark.real_cli_teardown``.
+    """
+    if "real_cli_teardown" not in {m.name for m in request.node.iter_markers()}:
+        monkeypatch.setattr("lilbee.cli.log_routing.reset_services_on_exit", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_engine_model_lists(request, monkeypatch):
+    """Keep a catalog browse from reading an engine's published model list over the network.
+
+    Tests of that read use ``@pytest.mark.real_engine_model_lists`` and patch ``httpx.get``.
+    """
+    if "real_engine_model_lists" in {m.name for m in request.node.iter_markers()}:
+        return
+    from lilbee.catalog.hf_client import HfClient
+
+    monkeypatch.setattr(HfClient, "fetch_engine_models", lambda self, engine: [])
+
+
+@pytest.fixture(autouse=True)
+def _no_router_download(monkeypatch, tmp_path):
+    """Keep an engine install from downloading the router; a test of that step patches it back."""
+    monkeypatch.setattr(
+        "lilbee.app.engine_service.install_router", lambda **_signals: tmp_path / "llama-swap"
+    )
+
+
+@pytest.fixture(autouse=True)
 def _assume_provider_sdk_available(request, monkeypatch):
     """Assume the SDK extra is installed for unit tests.
 
@@ -242,7 +452,7 @@ def _assume_provider_sdk_available(request, monkeypatch):
 
 def _only_providers_installed(dist: str) -> str:
     if dist == SDK_DIST:
-        return "2.4.1"
+        return "2.5.0"
     raise PackageNotFoundError(dist)
 
 
@@ -267,30 +477,144 @@ def _record_toasts(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _fresh_engine_help():
-    """Read each engine binary's --help afresh per test; a cached text would leak across tests."""
-    from lilbee.providers.fleet.binary import engine_help
+def _fresh_session_host(request, monkeypatch):
+    """Give each test a fixed Linux x86-64 host with no GPU; ``real_host_read`` reads the live one.
 
-    engine_help.cache_clear()
+    The live read starts a child process for the CPU probe, so a read per test is slow. The cache
+    is cleared around each test, so an engine install that refreshes the host reads it afresh.
+    The remembered device probe is dropped on entry only: a test may still hold a fake cache in
+    its place when teardown runs.
+    """
+    from lilbee.catalog import runnable
+    from lilbee.providers.fleet import engine_manifest, planning
+    from lilbee.providers.fleet.host_caps import collect
+
+    planning._read_device_cache.clear()
+    session_host = runnable._read_host
+    session_host.cache_clear()
+    if "real_host_read" not in {m.name for m in request.node.iter_markers()}:
+        fixed = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
+        monkeypatch.setattr(runnable, "detect", lambda: fixed)
+        # The OS floor reads the OS version live; a fixed host meets every floor on any runner.
+        monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     yield
-    engine_help.cache_clear()
+    session_host.cache_clear()
 
 
 @pytest.fixture(autouse=True)
-def _sealed_engine_resolution(request, monkeypatch):
+def _fresh_ingest_pool_size():
+    """Size the ingest pool afresh per test; a cached count would fix it for later tests."""
+    from lilbee.data.offload import reset_max_workers
+
+    reset_max_workers()
+    yield
+    reset_max_workers()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_block_bar_answer():
+    """Probe the terminal afresh per test; a cached block bar answer would leak a fake terminal."""
+    from lilbee.cli.tui.color_compat import draws_block_bars
+
+    draws_block_bars.cache_clear()
+    yield
+    draws_block_bars.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_engine_help():
+    """Read each engine binary's --help afresh per test; a cached text would leak across tests."""
+    from lilbee.providers.fleet.adapters import _warn_once
+    from lilbee.providers.fleet.binary import _help_timeouts, _read_help, _router_release_of
+
+    _read_help.cache_clear()
+    _router_release_of.cache_clear()
+    _help_timeouts.clear()
+    _warn_once.cache_clear()
+    yield
+    _read_help.cache_clear()
+    _router_release_of.cache_clear()
+    _help_timeouts.clear()
+    _warn_once.cache_clear()
+
+
+@pytest.fixture(scope="session")
+def _engine_free_path(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """The ``PATH`` of this session with every engine tool hidden and the other tools kept.
+
+    A folder that holds an engine tool is swapped for a scratch folder of links to
+    the other files in it, so a child finds no engine on ``PATH`` and still finds
+    ``git`` or ``pdfseparate`` from the same folder.
+    """
+    sealed = {tool.value for tool in EngineTool}
+    scratch = tmp_path_factory.mktemp("engine-free-path")
+    folders = []
+    for index, folder in enumerate(os.environ.get("PATH", "").split(os.pathsep)):
+        if not any(shutil.which(name, path=folder) for name in sealed):
+            folders.append(folder)
+            continue
+        shadow = scratch / str(index)
+        shadow.mkdir()
+        for entry in Path(folder).resolve().iterdir():
+            if entry.stem not in sealed:
+                _link_or_copy(entry, shadow / entry.name)
+        folders.append(str(shadow))
+    return os.pathsep.join(folders)
+
+
+def _link_or_copy(entry: Path, link: Path) -> None:
+    """Link *link* to *entry*; copy a file when the host grants no symlink right (Windows)."""
+    try:
+        os.symlink(entry, link, target_is_directory=entry.is_dir())
+    except OSError:
+        if entry.is_file():
+            shutil.copy2(entry, link)
+
+
+@pytest.fixture(scope="session")
+def _engine_free_pythonpath(tmp_path_factory: pytest.TempPathFactory) -> str | None:
+    """A folder with the engine wheel package minus its ``bin/``, or ``None`` with no wheel.
+
+    A child that finds this folder first on ``PYTHONPATH`` imports a wheel that holds no
+    engine, as the wheel is outside a release build.
+    """
+    spec = importlib.util.find_spec("lilbee_engine_llama_cpp")
+    if spec is None or spec.origin is None:
+        return None
+    shadow = tmp_path_factory.mktemp("engine-free-pythonpath")
+    shutil.copytree(
+        Path(spec.origin).parent,
+        shadow / spec.name,
+        ignore=shutil.ignore_patterns("bin", "__pycache__"),
+    )
+    return str(shadow)
+
+
+@pytest.fixture(autouse=True)
+def _sealed_engine_resolution(request, monkeypatch, _engine_free_path, _engine_free_pythonpath):
     """Seal engine-binary resolution so every machine behaves like CI.
 
     resolve_engine_tool falls back to PATH when the bundled wheel's bin/ is
     empty (always, outside a release build), so a developer with llama-server
-    installed resolves a real binary where CI raises ProviderError. Blocking
-    the three engine names in shutil.which and the LILBEE_LLAMA_SERVER_PATH
-    override forces a test that needs a binary to plant its own (a tmp-file
-    ``cfg.llama_server_path``, a fake ``lilbee_engine``, or a
-    ``shutil.which`` patch) or use ``@pytest.mark.real_engine_resolution``.
+    installed resolves a real binary where CI raises ProviderError. Resolution
+    reads the LILBEE_LLAMA_SERVER_PATH override, the bundled wheel and the engine
+    names on PATH. All three are sealed in the environment, which a child process
+    a test spawns inherits (the wheel through a copy without bin/ that comes first
+    on PYTHONPATH), and in shutil.which for this process. A test that needs a binary
+    plants its own (a tmp-file ``cfg.llama_server_path``, a fake
+    ``lilbee_engine_llama_cpp``, or a ``shutil.which`` patch) or uses
+    ``@pytest.mark.real_engine_resolution``.
     """
     if "real_engine_resolution" in {m.name for m in request.node.iter_markers()}:
         return
     monkeypatch.setattr(cfg, "llama_server_path", "")
+    monkeypatch.delenv("LILBEE_LLAMA_SERVER_PATH", raising=False)
+    monkeypatch.setenv("PATH", _engine_free_path)
+    if _engine_free_pythonpath is not None:
+        inherited = os.environ.get("PYTHONPATH")
+        monkeypatch.setenv(
+            "PYTHONPATH", os.pathsep.join(filter(None, [_engine_free_pythonpath, inherited]))
+        )
     sealed = {tool.value for tool in EngineTool}
     real_which = shutil.which
 
@@ -298,6 +622,31 @@ def _sealed_engine_resolution(request, monkeypatch):
         return None if cmd in sealed else real_which(cmd, *args, **kwargs)
 
     monkeypatch.setattr(shutil, "which", _engineless_which)
+
+
+@pytest.fixture
+def real_gguf_parser(monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the test at the developer's own engine store and return its gguf-parser.
+
+    The product lookup runs first, with no install: the bundled wheel, then PATH.
+    If it raises, the fixture reads the installed engine pack itself, in the real
+    engine store. Nothing is installed: a host with no gguf-parser skips, unless
+    LILBEE_REQUIRE_GGUF_PARSER is set, which turns the skip into a failure.
+    """
+    monkeypatch.setattr(cfg, "models_dir", REAL_MODELS_DIR)
+    try:
+        return resolve_engine_tool(EngineTool.GGUF_PARSER, install=False)
+    except ProviderError:
+        packed = installed_tool(EngineTool.GGUF_PARSER.value)
+    if packed is None:
+        message = (
+            "gguf-parser is not on PATH and the engine pack is not installed under "
+            f"{REAL_MODELS_DIR.parent}. {engine_install_hint()}"
+        )
+        if os.environ.get("LILBEE_REQUIRE_GGUF_PARSER"):
+            pytest.fail(message, pytrace=False)
+        pytest.skip(message)
+    return packed
 
 
 @pytest.fixture(autouse=True)
@@ -410,7 +759,7 @@ def _join_fleet_background_threads():
     fire-and-forget daemon threads that end on their own once joined; on a host
     without the engine binary they fail fast, and joining keeps that warning
     inside the test that started them. The child-guard spawner is different: its
-    ``fleet-spawner`` worker is a process-lifetime executor thread that a join
+    ``fleet-spawner`` thread is a process-lifetime daemon that a join
     never ends (it parks waiting for the next spawn), so any test that ran a real
     probe or launch must close it, or the leak guard flags it against whatever
     test happens to run next.
@@ -505,7 +854,9 @@ def pytest_sessionstart(session: pytest.Session) -> Iterator[None]:
     Stops when a profile folder escapes the redirected global root.
 
     Runs after xdist starts its workers, so each worker reads the real root at import.
+    Before that, it makes the run's shared cache folder.
     """
+    make_run_cache(session.config)
     yield
     scratch = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
     session.config.stash[_SESSION_SCRATCH] = scratch
@@ -641,53 +992,134 @@ def _no_leaked_task_workers():
         )
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _shutdown_ingest_pool():
-    """Join the shared ingest pool before coverage stops, so the total is stable.
+# Longer than the leak check's 2 s join, so a worker still in its final call fails the check.
+_FINAL_CALL_DELAY_S = 3.0
 
-    ``offload._ingest_executor`` is a cached pool of daemon ``lilbee-ingest``
-    workers. Left running, they are still tracing when ``coverage.stop()`` combines
-    thread data at process exit, and a worker mid-line during that combine
-    intermittently loses its lines -- the flake that reads the 100% gate as 99% on
-    an unlucky run. A session finalizer runs before coverage's atexit, so joining
-    the pool here removes those threads from the combine and makes coverage
-    deterministic. No-op when ingest never ran.
+
+@pytest.fixture
+def slow_worker_final_call() -> Iterator[list[str]]:
+    """Make each task-bar worker sleep 3 s before its last call into the app.
+
+    The worker pops itself from the worker map, then reports its end through
+    ``call_from_thread``. This delay widens that window, so a test that leaves the
+    app when the map is empty, or the work looks over, fails at once instead of
+    only on a loaded host. The fixture fails the test if no worker reached the delay.
     """
-    yield
-    _join_shared_ingest_pool()
+    from lilbee.cli.tui.widgets import task_bar_controller
+
+    real = task_bar_controller.call_from_thread
+    delayed: list[str] = []
+
+    def slow(node, fn, *args, **kwargs):
+        if getattr(fn, "__name__", "") == "_work_ended":
+            delayed.append(args[0])
+            time.sleep(_FINAL_CALL_DELAY_S)
+        return real(node, fn, *args, **kwargs)
+
+    with mock.patch.object(task_bar_controller, "call_from_thread", slow):
+        yield delayed
+    assert delayed, "no task-bar worker reached its final call, so the delay proved nothing"
+
+
+RUN_CACHE_DIRNAME = "run-cache"
+
+
+def make_run_cache(config: pytest.Config) -> None:
+    """Make the run's shared cache folder before any test of the run starts.
+
+    The folder sits beside the workers' temp folders. A test that watches the
+    names there sees this folder from its start, so a cache that another worker
+    fills while the test runs adds no name at that level. Under xdist the
+    controller makes the folder before it starts the workers.
+    """
+    if hasattr(config, "workerinput"):
+        return
+    basetemp = config._tmp_path_factory.getbasetemp()  # type: ignore[attr-defined]
+    shared = basetemp if config.pluginmanager.has_plugin("dsession") else basetemp.parent
+    (shared / RUN_CACHE_DIRNAME).mkdir(exist_ok=True)
+
+
+def run_cache(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The run's shared cache folder, which every worker of the run sees."""
+    return tmp_path_factory.getbasetemp().parent / RUN_CACHE_DIRNAME
 
 
 @pytest.fixture(scope="session")
-def tessdata_ready(tmp_path_factory):
-    """Have xberg fetch Tesseract's language data once, under a lock every worker shares.
+def tessdata_ready(tmp_path_factory) -> Iterator[None]:
+    """Fetch Tesseract's language data once per run, and point every OCR call at it.
 
     xberg downloads a missing language file on first use through one fixed temp
-    name and no lock, so workers that OCR at once on a cold cache can read a partial file.
+    name and no lock, so OCR calls that run at once on a cold cache can each fail
+    the download, and a page comes back without its OCR text. Each test has its
+    own HOME, so xberg's default cache is cold in every test. The cache sits in
+    the run's shared cache folder, is filled under a lock every worker shares,
+    and is named by TESSDATA_PREFIX, which xberg searches before its cache.
     """
     from xberg import ExtractionConfig, OcrConfig
 
+    shared = run_cache(tmp_path_factory)
+    cache = shared / "xberg-cache"
+    tessdata = cache / "tessdata"
     image = Image.new("RGB", (400, 100), "white")
     ImageDraw.Draw(image).text((10, 40), "tessdata ready", fill="black")
     png = io.BytesIO()
     image.save(png, format="PNG")
     config = ExtractionConfig(ocr=OcrConfig(backend="tesseract", language=["eng"]), force_ocr=True)
-    with FileLock(tmp_path_factory.getbasetemp().parent / "tessdata.lock"):
+    with FileLock(shared / "tessdata.lock"), pytest.MonkeyPatch.context() as env:
+        # xberg writes a download under XBERG_CACHE_DIR/tessdata.
+        env.setenv("XBERG_CACHE_DIR", str(cache))
         _PRISTINE_EXTRACT_DOCUMENT(png.getvalue(), "image/png", filename="ready.png", config=config)
+    with pytest.MonkeyPatch.context() as env:
+        env.setenv("TESSDATA_PREFIX", str(tessdata))
+        yield
 
 
-@pytest.fixture
-def joined_ingest_pool():
-    """Join the shared ingest pool after a test that drives ingest outside a sync."""
+CODE_PARSER_LANGUAGES = ("python", "javascript", "typescript", "go", "rust", "java", "c", "cpp")
+
+
+@pytest.fixture(scope="session")
+def code_parsers_ready(tmp_path_factory) -> Iterator[None]:
+    """Download the tree-sitter parsers once per run, and point every parse at them.
+
+    The parser pack caches its downloads under the home folder. Each test has its
+    own HOME, so that cache is cold in every test, and each test that parses code
+    downloads its parser from the network inside the test timeout. On a gate run
+    a stalled download timed out three sync tests, and on a loaded host it took
+    the worker down. The cache sits in the run's shared cache folder, is filled
+    under a lock every worker shares, and is the cache the pack reads.
+    """
+    from importlib.metadata import version
+
+    from tree_sitter_language_pack import PackConfig, ProcessConfig, configure, process
+
+    shared = run_cache(tmp_path_factory)
+    # The pack version is in the name: a run without xdist keeps this folder across runs.
+    cache = shared / f"parser-cache-{version('tree-sitter-language-pack')}"
+    configure(PackConfig(cache_dir=str(cache)))
+    with FileLock(shared / "parser-cache.lock"):
+        for language in CODE_PARSER_LANGUAGES:
+            # The pack fetches a parser on its first parse, not in has_language or init.
+            try:
+                process("x\n", ProcessConfig(language))  # type: ignore[arg-type]
+            except Exception as error:
+                pytest.fail(f"The {language} parser is not available in {cache}: {error}")
     yield
-    _join_shared_ingest_pool()
 
 
-def _join_shared_ingest_pool() -> None:
+def shutdown_ingest_pool() -> None:
+    """Shut down and clear the shared ingest pool, if one is cached."""
     from lilbee.data import offload
 
     if offload._ingest_executor.cache_info().currsize:
         offload._ingest_executor().shutdown(wait=True)
         offload._ingest_executor.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _shutdown_ingest_pool():
+    """Shut down and clear the shared ingest pool after every test, so none carries over."""
+    yield
+    shutdown_ingest_pool()
 
 
 @pytest.fixture(autouse=True)
@@ -799,7 +1231,7 @@ def _default_provider_mock():
     every downstream string consumer (regex, ``strip()``, etc.). Tests that
     care about the chat output override the return value explicitly.
     """
-    from lilbee.providers.base import ChatResult, FinishReason, LLMProvider
+    from lilbee.providers.base import ChatResult, FinishReason, LLMProvider, byte_token_estimate
 
     provider = MagicMock(spec=LLMProvider)
     provider.chat.return_value = ChatResult(text="", tool_calls=(), finish_reason=FinishReason.STOP)
@@ -815,8 +1247,15 @@ def _default_provider_mock():
     provider.chat_prefill_progress.return_value = None
     # The chunker bounds its budget to the embed cap; None keeps the configured budget.
     provider.embed_token_cap.return_value = None
-    # xberg probes a tokenizer binding with a one-character count at registration.
-    provider.count_tokens.return_value = 1
+    # Four characters to a token, as the chunker assumed before it counted tokens; the
+    # one-character registration probe xberg sends counts one.
+    provider.count_tokens.side_effect = lambda text: max(1, len(text) // 4)
+    # Retrieval budgets with the chat tokenizer when it answers; None keeps the character rule.
+    provider.count_chat_text_tokens.return_value = None
+    # The count route's estimate reads an int from here; the default counts bytes.
+    provider.estimate_chat_tokens.side_effect = lambda text, *, model=None: byte_token_estimate(
+        text
+    )
     provider.health_warnings.return_value = []
     # warm_progress feeds the /api/warm/stream handler (WarmProgress | None);
     # default to None (idle). Warm-stream tests override this.
@@ -839,6 +1278,7 @@ def _default_store_mock():
     store.get_sources.return_value = []
     store.web_titles.return_value = {}
     store.source_summary.return_value = SourceSummary(0, 0, {}, [])
+    store.partly_read_sources.return_value = ({}, 0)
     store.count_sources.return_value = 0
     store.get_page_texts.return_value = []
     store.add_chunks.side_effect = len
@@ -846,6 +1286,9 @@ def _default_store_mock():
     store.get_meta.return_value = None
     store.count_chunks.return_value = 0
     store.index_mismatch.return_value = None
+    store.embedding_mismatch.return_value = None
+    store.canary_mismatch.return_value = None
+    store.chunk_drift.return_value = []
     store.upgrade_progress.return_value = None
     return store
 
@@ -860,9 +1303,6 @@ def _default_embedder_mock():
     embedder.embed_query_batch.side_effect = lambda texts, **kw: [
         np.full(768, 0.1, dtype=np.float32) for _ in texts
     ]
-    # Production reads embedder.truncated_total to compute the per-sync delta; the
-    # mock never truncates, so it must report a real 0 rather than a MagicMock.
-    embedder.truncated_total = 0
     return embedder
 
 
@@ -875,6 +1315,10 @@ def _default_reranker_mock():
 def _default_concepts_mock():
     concepts = MagicMock()
     concepts.get_graph.return_value = False
+    # No spaCy model and no concept rows, so the post-sync concept backfill
+    # reads nothing and owes no recluster.
+    concepts.can_extract.return_value = False
+    concepts.sources_with_concepts.return_value = set()
     return concepts
 
 
@@ -1002,6 +1446,25 @@ def filesystem_without_locking() -> Generator[None, None, None]:
         yield
 
 
+@pytest.fixture
+def counting_provider():
+    """Services whose provider counts tokens, for tests that chunk text through the real chunker."""
+    import lilbee.app.services as svc_mod
+
+    svc_mod.set_services(make_mock_services())
+    yield
+    svc_mod.set_services(None)
+
+
+def make_hf_client(config=None):
+    """An HfClient with the engine lookup that the services container injects."""
+    from lilbee.app.engine_choice import engine_for_page
+    from lilbee.catalog.hf_client import HfClient
+
+    target = cfg if config is None else config
+    return HfClient(target, engine_for_format=lambda fmt: engine_for_page(fmt, target))
+
+
 def make_mock_services(**overrides):
     """Create a mock Services container. Override individual services via kwargs.
 
@@ -1010,11 +1473,12 @@ def make_mock_services(**overrides):
     chat/embed/rerank methods are all stubbed. Override ``provider`` with a real
     :class:`FleetProvider` for tests that need genuine fleet behaviour.
     """
+    from lilbee.app.engine_choice import EngineBook
     from lilbee.app.services import CrawlerSyncState, Services
-    from lilbee.catalog.hf_client import HfClient
     from lilbee.retrieval.query import Searcher
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
+    engines = overrides.pop("engines", None) or EngineBook(cfg)
     provider = overrides.pop("provider", None) or _default_provider_mock()
     store = overrides.pop("store", None) or _default_store_mock()
     embedder = overrides.pop("embedder", None) or _default_embedder_mock()
@@ -1025,7 +1489,7 @@ def make_mock_services(**overrides):
         cfg, provider, store, embedder, reranker, concepts
     )
     registry = overrides.pop("registry", None) or MagicMock()
-    hf_client = overrides.pop("hf_client", None) or HfClient()
+    hf_client = overrides.pop("hf_client", None) or make_hf_client(cfg)
     ingest_lock_registry = overrides.pop("ingest_lock_registry", None) or IngestLockRegistry()
     model_manager = overrides.pop("model_manager", None) or MagicMock()
     crawler_semaphore = overrides.pop("crawler_semaphore", None)
@@ -1041,6 +1505,7 @@ def make_mock_services(**overrides):
         clusterer=clusterer,
         searcher=searcher,
         registry=registry,
+        engines=engines,
         hf_client=hf_client,
         ingest_lock_registry=ingest_lock_registry,
         model_manager=model_manager,
@@ -1062,6 +1527,25 @@ def _default_known_models_mock():
     return cache
 
 
+def child_pythonpath(*folders: str | Path) -> str:
+    """PYTHONPATH for a child process: the sealed value, then *folders*.
+
+    The sealing fixture puts a wheel without an engine first on PYTHONPATH. A child
+    that gets its own PYTHONPATH from a test must start from it, or it imports the
+    host's engine wheel.
+    """
+    return os.pathsep.join(filter(None, [os.environ.get("PYTHONPATH"), *map(str, folders)]))
+
+
+def without_lilbee_env() -> dict[str, str]:
+    """Return os.environ without the variables the config layer reads.
+
+    The ambient environment is kept because the platform data directory
+    resolves through it, and dropping it leaves Windows with no home directory.
+    """
+    return {k: v for k, v in os.environ.items() if not k.startswith(ENV_PREFIX)}
+
+
 def clean_env(tmp_path: Path | None = None) -> dict[str, str]:
     """Return os.environ with all LILBEE_* vars removed.
 
@@ -1069,11 +1553,8 @@ def clean_env(tmp_path: Path | None = None) -> dict[str, str]:
     is accidentally picked up. Sets ``LILBEE_SKIP_MODEL_TASK_VALIDATION=1``
     so tests using placeholder model names don't trip the per-role
     catalog-task validator; pop it explicitly to exercise that validator.
-
-    The ambient environment is kept because the platform data directory
-    resolves through it, and dropping it leaves Windows with no home directory.
     """
-    env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}
+    env = without_lilbee_env()
     env["LILBEE_SKIP_MODEL_TASK_VALIDATION"] = "1"
     if tmp_path is not None:
         env["LILBEE_DATA"] = str(tmp_path)
@@ -1138,7 +1619,7 @@ def wiki_enabled():
 
 
 @pytest.fixture(autouse=False)
-def wiki_isolated_env(tmp_path: Path):
+def wiki_isolated_env(tmp_path: Path, counting_provider):
     """Shared fixture for wiki tests: snapshot cfg, set wiki-related paths, restore."""
     snapshot = cfg.model_copy()
     cfg.data_root = tmp_path
@@ -1399,3 +1880,38 @@ def index_is_empty() -> Iterator[None]:
         mock.patch("lilbee.app.profiles.index_has_chunks", return_value=False),
     ):
         yield
+
+
+BROKEN_CRAWLBERG_REASON = "libcrawlberg.so: cannot open shared object file"
+
+
+class _BrokenCrawlbergFinder:
+    """A meta-path finder whose ``crawlberg`` is found but raises ``OSError`` when it loads."""
+
+    def find_spec(self, name: str, path: object = None, target: object = None) -> object:
+        if name != "crawlberg":
+            return None
+        import importlib.abc
+        import importlib.machinery
+
+        class _Loader(importlib.abc.Loader):
+            def exec_module(self, module: object) -> None:
+                raise OSError(BROKEN_CRAWLBERG_REASON)
+
+        return importlib.machinery.ModuleSpec("crawlberg", _Loader())
+
+
+@pytest.fixture
+def broken_crawlberg(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """The crawler extra is installed, but crawlberg raises ``OSError`` on import.
+
+    Yields the error text. The availability probe starts empty before and after the test.
+    """
+    from lilbee.crawler import availability
+
+    for name in [n for n in sys.modules if n == "crawlberg" or n.startswith("crawlberg.")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(sys, "meta_path", [_BrokenCrawlbergFinder(), *sys.meta_path])
+    availability.crawler_unavailable_reason.cache_clear()
+    yield BROKEN_CRAWLBERG_REASON
+    availability.crawler_unavailable_reason.cache_clear()

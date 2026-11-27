@@ -1,0 +1,5 @@
+#!/bin/sh
+# The server of the mlx pack: the bundled interpreter runs mlx-lm's server, isolated from the
+# user's Python. tools/wheel-build/mlx_wheel.sh puts the interpreter in ../python.
+here="$(cd "$(dirname "$0")/.." && pwd)"
+exec "${here}/python/bin/python3" -I -m mlx_lm.server "$@"

@@ -13,10 +13,18 @@ from importlib.util import find_spec
 from pathlib import Path
 
 from lilbee.app.profiles import ProfileEffect, ProfileStatus, RebuildReason
+from lilbee.cli.tui.task_queue import TaskReport
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import NameProblem, ProfileFolder
-from lilbee.data.types import SyncResult
+from lilbee.data.types import (
+    PARTLY_READ_FILE_COLUMN,
+    PARTLY_READ_PAGES_COLUMN,
+    PARTLY_READ_TITLE,
+    SyncResult,
+    failed_page_line,
+)
 from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+from lilbee.providers.roles import EngineBackend
 from lilbee.runtime.progress import OcrBackendUsed
 from lilbee.wiki.shared import WIKI_TYPE_HEADINGS as _WIKI_TYPE_HEADINGS
 
@@ -50,26 +58,27 @@ CMD_CRAWL_PAGE = "Crawling [{current}/{total}]: {url}"
 CMD_CRAWL_PAGE_INDETERMINATE = "Crawling... ({current} pages so far): {url}"
 MODEL_REASON_DEFAULT = "it could not be resolved"
 MODEL_FALLBACK_NOTICE = (
-    "{label} model {original!r} is unavailable ({reason}); using {effective!r} for this session. "
+    "{label} model '{original}' is unavailable ({reason}); using '{effective}' for this session. "
     "Pick a different model or restore the original to clear this notice."
 )
 MODEL_FALLBACK_FAILED = (
-    "{label} model {original!r} is unavailable ({reason}) and the fallback {effective!r} was "
-    "rejected; keeping {original!r}. Pick a working {label} model in settings."
+    "{label} model '{original}' is unavailable ({reason}) and the fallback '{effective}' was "
+    "rejected; keeping '{original}'. Pick a working {label} model in settings."
 )
 MODEL_ENV_PIN_UNUSABLE = (
-    "{label} model {original!r} is unavailable ({reason}). {env_var} sets it, so lilbee keeps it. "
-    "Unset {env_var} or point it at an installed model."
+    "{label} model '{original}' is unavailable ({reason}). {env_var} sets it, so lilbee keeps "
+    "it. Unset {env_var} or point it at an installed model."
 )
 MODEL_CLI_PIN_UNUSABLE = (
-    "{label} model {original!r} is unavailable ({reason}). The --model flag sets it, so lilbee "
+    "{label} model '{original}' is unavailable ({reason}). The --model flag sets it, so lilbee "
     "keeps it. Pass a different model to --model or drop the flag."
 )
 MODEL_UNUSABLE_NO_FALLBACK = (
-    "{label} model {original!r} is unavailable ({reason}) and nothing is installed to fall back "
+    "{label} model '{original}' is unavailable ({reason}) and nothing is installed to fall back "
     "to. Pick one from the catalog."
 )
-MODEL_ADOPTED_LOG = "{label} model: using installed {effective!r}."
+MODEL_REGISTRY_UNREADABLE = "Could not read the installed models: {error}"
+MODEL_ADOPTED_LOG = "{label} model: using installed '{effective}'."
 CMD_CRAWL_SUCCESS = "Crawled {count} page(s) from {url}"
 CMD_CRAWL_PAGES_FAILED = "{count} page(s) failed; last: {reason}"
 CMD_CRAWL_FAILED = "Crawl failed: {error}"
@@ -110,8 +119,63 @@ SYNC_UNREADABLE_FOLDER = "Could not open folder: {folder}"
 STATUS_HELD_OUT_TITLE = "Held out of the index"
 STATUS_HELD_OUT_EMPTY = "No files are held out."
 STATUS_HELD_OUT_MORE = "{count} more held out"
-CMD_RETRY_SKIPPED_NONE = "No failed files to retry; running a normal sync."
-CMD_RETRY_SKIPPED_SOME = "Retrying {count} failed file(s); removed sources stay removed."
+STATUS_PARTLY_READ_TITLE = PARTLY_READ_TITLE
+STATUS_PARTLY_READ_SHOWN = "{shown} of {total} partly read files shown"
+STATUS_PARTLY_READ_EMPTY = "Every indexed file was read in full."
+STATUS_PARTLY_READ_FILE = PARTLY_READ_FILE_COLUMN
+STATUS_PARTLY_READ_PAGES = PARTLY_READ_PAGES_COLUMN
+SYNC_PARTLY_READ = "OCR failed on pages of {count} file(s). Open Tasks and press i for the details."
+TASK_REPORT_PARTIAL = "{count} partly read"
+TASK_REPORT_FAILED = "{count} failed"
+TASK_REPORT_SKIPPED = "{count} skipped"
+TASK_REPORT_HINT = "i for details"
+TASK_DETAIL_HINT = "Esc / i / q to close"
+TASK_DETAIL_CLOSE = "Close"
+TASK_DETAIL_NONE = "This task has no file details."
+TASK_DETAIL_FAILED_TITLE = "Failed"
+TASK_DETAIL_SKIPPED_TITLE = "Skipped"
+TASK_DETAIL_NO_REASON = "no reason recorded"
+
+
+def task_report_summary(report: TaskReport) -> str:
+    """The Task Center detail line counting what an ingest task did not fully index."""
+    counts = {
+        TASK_REPORT_PARTIAL: len(report.partial),
+        TASK_REPORT_FAILED: len(report.failed),
+        TASK_REPORT_SKIPPED: len(report.skipped),
+    }
+    parts = [label.format(count=count) for label, count in counts.items() if count]
+    return "  ·  ".join([*parts, TASK_REPORT_HINT])
+
+
+def _reason_section(title: str, reasons: dict[str, str]) -> list[str]:
+    """One detail section listing each file with its reason; empty when *reasons* is."""
+    if not reasons:
+        return []
+    lines = [title]
+    lines += [f"  {name}: {reason or TASK_DETAIL_NO_REASON}" for name, reason in reasons.items()]
+    return [*lines, ""]
+
+
+def task_report_text(report: TaskReport) -> str:
+    """The detail view body: partly read files with failed pages, then failed and skipped files."""
+    lines: list[str] = []
+    if report.partial:
+        lines.append(PARTLY_READ_TITLE)
+        for partial in report.partial:
+            lines.append(f"  {partial.name}")
+            lines += [f"    {failed_page_line(page)}" for page in partial.pages]
+        lines.append("")
+    lines += _reason_section(TASK_DETAIL_FAILED_TITLE, report.failed)
+    lines += _reason_section(TASK_DETAIL_SKIPPED_TITLE, report.skipped)
+    return "\n".join(lines).rstrip()
+
+
+CMD_RETRY_SKIPPED_NONE = "No failed files to retry; reading partly read files again."
+CMD_RETRY_SKIPPED_SOME = (
+    "Retrying {count} failed file(s) and reading partly read files again; "
+    "removed sources stay removed."
+)
 CMD_PRUNE_IGNORED_NONE = "Nothing indexed matches your ignore patterns."
 CMD_PRUNE_IGNORED_SOME = "Dropped {count} document(s) your ignore patterns exclude."
 
@@ -145,6 +209,7 @@ def prune_ignored_message(count: int) -> str:
 CMD_DELETE_NO_DOCS = "No documents indexed"
 CMD_DELETE_READ_FAILED = "Could not read the document list"
 CMD_DELETE_USAGE = "Documents: {names}\nUsage: /delete <filename>"
+CMD_DELETE_USAGE_MORE = ", and {count} more"
 CMD_DELETE_NOT_FOUND = "Not found: {name}"
 CMD_DELETE_SUGGESTION = "Did you mean {name}?"
 CMD_DELETE_SUCCESS = "Deleted {name}"
@@ -229,6 +294,46 @@ CMD_REMOVE_USAGE = "Usage: /remove <model_name>"
 CMD_REMOVE_NOT_FOUND = "{name} is not installed"
 CMD_REMOVE_SUCCESS = "Removed {name}"
 CMD_REMOVE_FAILED = "Failed to remove {name}"
+PRESET_USAGE = (
+    "Use /preset list, /preset add NAME URL --roles ROLES, /preset edit NAME, "
+    "or /preset remove NAME."
+)
+PRESET_KEY_IN_DIALOG = "Give the API key in the preset dialog. Run /preset edit NAME."
+PRESET_LIST_EMPTY = "No server presets."
+PRESET_ADDED = "Added server preset {name!r}."
+PRESET_UPDATED = "Updated server preset {name!r}."
+PRESET_REMOVED = "Removed server preset {name!r}."
+PRESET_REMOVE_CONFIRM_TITLE = "Remove server preset?"
+PRESET_REMOVE_CONFIRM_MESSAGE = "Remove the server preset {name!r}? Its stored key goes with it."
+PRESET_KEY_SET = "set"
+PRESET_KEY_NONE = "none"
+PRESET_NO_VALUE = "-"
+PRESET_INVALID_URL = "(invalid)"
+SETTINGS_PRESETS_TAB = "Presets"
+SETTINGS_PRESETS_EMPTY = "No server presets."
+SETTINGS_PRESETS_ADD = "Add preset"
+SETTINGS_PRESETS_EDIT = "Edit"
+SETTINGS_PRESETS_REMOVE = "Remove"
+PRESET_RESERVE_GIB = "{gib:g} GiB"
+SETTINGS_PRESETS_ROW = (
+    "{name}   {url}   roles: {roles}   wire: {wire}   reserve: {reserve}   key: {key}"
+)
+PRESET_DIALOG_ADD_TITLE = "Add server preset"
+PRESET_DIALOG_EDIT_TITLE = "Edit server preset {name!r}"
+PRESET_DIALOG_NAME_LABEL = "Name"
+PRESET_DIALOG_URL_LABEL = "URL"
+PRESET_DIALOG_URL_PLACEHOLDER = "http://127.0.0.1:8000/v1"
+PRESET_DIALOG_ROLES_LABEL = "Roles"
+PRESET_DIALOG_WIRE_LABEL = "Rerank wire"
+PRESET_DIALOG_RESERVE_LABEL = "Memory reserve (GiB)"
+PRESET_DIALOG_RESERVE_PLACEHOLDER = "Optional, for a server on this computer"
+PRESET_DIALOG_KEY_LABEL = "API key"
+PRESET_DIALOG_KEY_ADD_PLACEHOLDER = "Optional"
+PRESET_DIALOG_KEY_EDIT_PLACEHOLDER = "Blank keeps the stored key"
+PRESET_DIALOG_KEY_STATE = "Key: {state}"
+PRESET_DIALOG_SAVE = "Save"
+PRESET_DIALOG_CANCEL = "Cancel"
+PRESET_DIALOG_CLEAR_KEY = "Clear key"
 CMD_CANCEL = "Cancelled active operations"
 CMD_CLEAR = "Conversation cleared"
 SESSIONS_DISABLED_TITLE = "Sessions are turned off"
@@ -372,6 +477,21 @@ CATALOG_GRID_LOAD_MORE = "{count} loaded · keep scrolling for more"
 CATALOG_GRID_ALL_LOADED = "All {count} models loaded"
 CATALOG_GRID_CUT_SHORT = "{count} models loaded · the listing stops here, search to narrow it"
 CATALOG_LIST_COUNT = "{count} models"
+CATALOG_FORMATS_HEADING = "Formats"
+CATALOG_FORMAT_NO_ENGINE = "no engine"
+CATALOG_FORMAT_DOWNLOAD = "{size} download"
+CATALOG_HIDDEN_NOTE = " · {summary}"
+FORMAT_PICKER_TITLE = "Install {name} as"
+FORMAT_PICKER_HINT = "↑↓ select   Enter install   Esc close"
+FORMAT_ROW_DEFAULT = "(default)"
+FORMAT_ROW_SEPARATOR = "  ·  "
+FORMAT_SIZE_UNKNOWN = "size unknown"
+FORMAT_FIT_FITS = "fits"
+FORMAT_FIT_TIGHT = "tight"
+FORMAT_FIT_WONT_RUN = "won't run"
+FORMAT_NO_ENGINE = "no engine"
+FORMAT_ENGINE_DOWNLOAD = "engine download {size}"
+FORMAT_ENGINE_DOWNLOAD_NO_SIZE = "engine download"
 CATALOG_LIST_CUT_SHORT = "{count} models · listing cut short, search to narrow it"
 CATALOG_GRID_LOADING_MORE = "{frame} loading more models…"
 CATALOG_USING_FRONTIER = "Using {name} via the {provider} API"
@@ -389,11 +509,10 @@ CATALOG_QUEUED_DOWNLOAD = "Queued download: {name}"
 CATALOG_WELCOME = "Pick a model to start chatting. The fit chip shows what runs on this machine."
 CHAT_READY_TOAST = "Chat is ready. Press c."
 CATALOG_INSTALLED_OK = "{name} installed"
-CATALOG_GATED_REPO = "{name} requires login, run /login or lilbee login"
 CATALOG_DOWNLOAD_FAILED = "{name}: download failed"
 CATALOG_SELECT_FOR_INFO = "Select a model to view info"
 CATALOG_FRONTIER_NO_INFO = "Info modal is for downloadable models only"
-MODEL_INFO_HINT = "Esc / i / q to close"
+MODEL_INFO_HINT = "e to change the engine  ·  Esc / i / q to close"
 MODEL_INFO_HF_LINK = "View on HuggingFace: https://huggingface.co/{repo}"
 CATALOG_SELECT_TO_DELETE = "Select a model to delete"
 CATALOG_NOT_INSTALLED = "{name} is not installed"
@@ -457,7 +576,8 @@ CHAT_WELCOME_NO_MODEL_HINT = "No chat model installed yet. Press m to pick one f
 CHAT_INPUT_NO_MODEL = "No chat model. Press m to pick one"
 CHAT_LOGIN_PROMPT = "Paste your token with /login <token>"
 CHAT_LOGGED_IN = "Logged in to HuggingFace"
-CHAT_LOGIN_FAILED = "Login failed: {error}"
+CHAT_LOGIN_FAILED = "Login failed. Check the token and try again."
+CHAT_LOGIN_UNSENDABLE = "The token holds a character that cannot be sent. Copy it again."
 CHAT_VERSION = "lilbee {version}"
 CHAT_RENDERING = "Rendering: {label}"
 LINK_NOT_OPENED = "Link not opened: the file is outside your document folders"
@@ -657,7 +777,10 @@ COMPAT_PILL_UNSUPPORTED = "unsupported"
 COMPAT_PILL_UNKNOWN = "untested"
 
 # Architecture compatibility copy for the catalog detail view + confirm modal.
-COMPAT_DETAIL_SENTENCE_SUPPORTED = "Supported by your llama.cpp build."
+COMPAT_DETAIL_SENTENCE_SUPPORTED = "Supported by this lilbee build."
+CATALOG_DETAIL_ENGINE_LABEL = "Engine: "
+CATALOG_DETAIL_ENGINE_CHOSEN = " (chosen for this file)"
+CATALOG_DETAIL_ENGINE_NOT_INSTALLED = "not installed"
 COMPAT_DETAIL_SENTENCE_UNSUPPORTED = (
     "Architecture {arch} is not in the supported set. Pull may fail at load."
 )
@@ -679,19 +802,32 @@ FLEET_STATE_AUTO = "auto"
 FLEET_STATE_MANUAL = "manual"
 FLEET_STATE_EDITED = "edited · ctrl+s to apply"
 FLEET_STATE_REBUILDING = "rebuilding fleet…"
-FLEET_SINGLE_GPU_NOTE = "One graphics card: everything runs here."
+FLEET_SINGLE_GPU_NOTE = "One graphics card. Choose cpu to run a role on the processor."
 FLEET_GPU_PROBING = "probing GPUs…"
 FLEET_NO_GPUS = "(no GPUs detected)"
+# The backend the engine selected. UNKNOWN means the device probe never answered, which
+# is a broken engine install and not a CPU host, so it names the fix.
+FLEET_ENGINE_BACKEND = "Engine backend: {backend}"
+FLEET_ENGINE_BACKEND_UNKNOWN = (
+    "Engine backend: unknown. The device probe did not answer. "
+    "Run `lilbee engine list`. Then run `lilbee engine install` to repair the engine."
+)
+
+
+def backend_line(backend: EngineBackend) -> str:
+    """The line naming the engine backend, with a repair step when the probe never answered."""
+    if backend is EngineBackend.UNKNOWN:
+        return FLEET_ENGINE_BACKEND_UNKNOWN
+    return FLEET_ENGINE_BACKEND.format(backend=backend.value)
+
+
 # Shown when the device probe failed outright (e.g. a wedged GPU driver), so the
 # panel names the problem instead of sitting on the probing placeholder forever.
 FLEET_GPU_PROBE_FAILED = "GPU probe failed: {reason}"
 # Shown for a role that has no placement because its model isn't downloaded, so the
 # empty slot reads as a fixable state instead of "GPU placement is broken".
 FLEET_MODEL_NOT_DOWNLOADED = "{role}: {model} not downloaded, pull it to place it"
-FLEET_SAVED_PLACEMENT_IGNORED = (
-    "A saved placement does not fit this hardware and is being ignored. "
-    "Press the auto command to clear it, or set a new one."
-)
+FLEET_ROLE_WITHOUT_ENGINE = "{role}: {notice}"
 # Shown when an Intel GPU's utilization is unreadable only because intel_gpu_top
 # lacks the CAP_PERFMON grant, so the muted "--" reads as a fixable state.
 FLEET_INTEL_UTIL_GRANT = (
@@ -717,6 +853,8 @@ def intel_util_hint_text(hint: IntelUtilHint) -> str:
 FLEET_CMD_PREVIEW = "Preview"
 FLEET_CMD_APPLY = "Apply"
 FLEET_CMD_AUTO = "Auto"
+FLEET_ENGINE_HEADER = "Engine"
+FLEET_ENGINE_UNSET = "-"
 FLEET_TAG_SPLIT = "split"
 FLEET_TAG_SINGLE = "one card"
 FLEET_HELP_ICON = "?"
@@ -727,6 +865,7 @@ FLEET_HELP_TOOLTIP = (
     "  • chat is one model split across the highlighted cards (they work as one).\n"
     "  • embed/vision run as a full copy on each highlighted card.\n"
     "  • rerank runs on one card; pick a single GPU.\n"
+    "  • cpu runs a role on the processor; auto plans a role on the cards left.\n"
     "Click a cell to change it, then Apply. Auto lets lilbee choose."
 )
 # The full nav-view universe in order. Single source for the view set: the
@@ -778,14 +917,20 @@ TASKBAR_WARM_LOADING = "loading into VRAM"
 TASK_CENTER_TITLE = "Background Tasks"
 TASK_CENTER_COUNTS = "{active} running  ·  {queued} queued  ·  {done} done"
 TASK_CENTER_COUNTS_CANCELLING = "  ·  {cancelling} cancelling"
-TASK_CENTER_HINT = "r refresh   c cancel   C clear done   q back   j/k navigate"
+TASK_CENTER_HINT = "r refresh   c cancel   i details   C clear done   q back   j/k navigate"
 TASK_CENTER_EMPTY_HEADLINE = "✓ all caught up"
 TASK_CENTER_EMPTY_DETAIL = "no background tasks"
+TASK_CENTER_DETAILS = "Details"
+TASK_CENTER_HELP = (
+    "Background task monitor.\n\n"
+    "Press r to refresh, c to cancel the focused task, i for its file details."
+)
 TASKBAR_SINGLE = "{name}  [b]{pct:.1f}%[/b]"
 TASKBAR_MULTIPLE = "[b]{count} tasks running[/b]"
 TASKBAR_ONE = "[b]1 task running[/b]"
 TASKBAR_QUEUED_COUNT = "{count} queued"
 TASKBAR_ALL_DONE = "[b]Done[/b]"
+TASKBAR_PARTIAL = "[b]Done, some files not fully read[/b]"
 TASKBAR_FAILED = "[b]{count} task failed[/b]"
 TASKBAR_FAILED_PLURAL = "[b]{count} tasks failed[/b]"
 TASKBAR_SYNC_PENDING_ONE = "[b]1 doc to sync[/b] · S to sync"
@@ -824,6 +969,72 @@ MODEL_PICKER_TITLE_CHAT = "Pick a chat model"
 MODEL_PICKER_TITLE_EMBED = "Pick an embedding model"
 MODEL_PICKER_TITLE_VISION = "Pick a vision model"
 MODEL_PICKER_TITLE_RERANK = "Pick a reranker model"
+ENGINE_PICKER_TITLE = "Engine for the {role} model"
+ENGINE_PICKER_SUBTITLE = "{model} ({format})"
+ENGINE_PICKER_AUTO = "auto (let lilbee choose)"
+ENGINE_PICKER_AUTO_NOW = "auto (now {engine})"
+ENGINE_PICKER_CURRENT = "{name} (now)"
+ENGINE_PICKER_NOTE = "The engine is the program that runs the model file."
+ENGINE_STATE_BUNDLED = "bundled"
+ENGINE_STATE_INSTALLED = "installed"
+ENGINE_STATE_DOWNLOAD = "download {size}"
+ENGINE_STATE_NOT_INSTALLED = "not installed"
+ENGINE_STATE_DIFFERS_FROM_PIN = "differs from the pin"
+ENGINE_DOWNLOAD_TITLE = "Download {engine}?"
+ENGINE_DOWNLOAD_MESSAGE = "Download {engine} ({size}) and use it for this model?"
+ENGINE_DOWNLOAD_MESSAGE_NO_SIZE = "Download {engine} and use it for this model?"
+ENGINE_TASK_NAME = "Install engine {engine}"
+ENGINE_STATE_NO_DOWNLOAD = "no download yet"
+ENGINE_STATE_BY_HAND = "install it yourself"
+ENGINE_PICKER_HINT = "Enter to choose, Esc to cancel"
+ENGINE_KEY_HINT = "Press e to pick the engine for this model."
+ENGINE_CHIP = "{role}: {engine}"
+ENGINE_CHIP_NONE = "no engine"
+ENGINE_LINE_LABEL = "engine:"
+ENGINE_NEEDS = "▲ needs an engine"
+ENGINE_NO_MODEL = "No {role} model is set. Pick a {role} model before you choose its engine."
+ENGINE_USE_DONE = "{role} model {model} uses engine {engine}."
+ENGINE_PREFER_DONE = "The preferred engine is {engine}."
+ENGINE_CONFIRM_REFUSED = "{reason} Run the command again with {yes}."
+ENGINE_EMBED_CONFIRM_TITLE = "Change the embedding engine?"
+ENGINE_EMBED_CONFIRM_MESSAGE = (
+    "Library {library} holds {documents} documents. The new engine can make their vectors "
+    "unusable by the index. Continue?"
+)
+ENGINE_EMBED_CANCELLED = "The engine is unchanged."
+ENGINE_INSTALL_DONE = "Installed engine {build}."
+ENGINE_DOWNLOAD_ONLY_MESSAGE = "Download {engine} ({size})?"
+ENGINE_DOWNLOAD_ONLY_MESSAGE_NO_SIZE = "Download {engine}?"
+ENGINE_REMOVE_TITLE = "Remove {build}?"
+ENGINE_REMOVE_MESSAGE = "Remove {build} from this computer?"
+ENGINE_REMOVE_IN_USE_MESSAGE = "{build} is used by {roles}. Remove it anyway?"
+ENGINE_REMOVE_EMBED_MESSAGE = (
+    "Library {library} holds {documents} documents. {build} runs the embedding model. "
+    "Without it the vectors can become unusable by the index. Continue?"
+)
+SETTINGS_ENGINES_TAB = "Engines"
+ENGINES_TABLE_TITLE = "Engines"
+ENGINES_PREFERRED_LABEL = "Preferred engine"
+ENGINES_HINT = "Press Enter on a row to install or remove that engine."
+ENGINES_COL_ENGINE = "Engine"
+ENGINES_COL_VERSION = "Version"
+ENGINES_COL_BACKEND = "Backend"
+ENGINES_COL_SIZE = "Size"
+ENGINES_COL_STATE = "State"
+ENGINES_COL_USED_BY = "Used by"
+ENGINES_COL_ACTION = "Action"
+ENGINES_USED_BY = "used by {roles}"
+ENGINES_ACTION_INSTALL = "Install"
+ENGINES_ACTION_REMOVE = "Remove"
+ENGINES_NO_VALUE = "-"
+ENGINES_EXPERIMENTAL = "experimental"
+ENGINES_LOAD_FAILED = "The engine list could not be read: {error}"
+ENGINES_CHOOSE_ON_PICK_LABEL = "Choose the engine when picking a model"
+MODEL_INFO_ENGINE_HEADING = "Engine"
+MODEL_INFO_ENGINE_OTHERS = "Also loads it:"
+MODEL_INFO_PICKER_TITLE = "Engine for this model"
+MODEL_INFO_NO_ENGINE_CHOICE = "No other engine can load this model."
+ENGINE_MODEL_USE_DONE = "Model {model} uses engine {engine}."
 MODEL_VALUE_NONE = "(none)"
 MODEL_PICKER_DISABLE_LABEL = "(disabled, no model)"
 MODEL_PICKER_CHAT_TOOLTIP = "Model used to answer your questions. Click to pick a different one."
@@ -852,7 +1063,13 @@ MODEL_BAR_NOT_INSTALLED_TOOLTIP = (
     "or press m to open the Catalog and install it."
 )
 MODEL_PICKER_TURN_OFF = "Turn off this model"
-MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"
+MODEL_PICKER_HINT = "Enter use model · e or ctrl+l engine · Esc close · / search"
+MODEL_PICKER_LATE_PICK_SKIPPED = (
+    "The engine is saved. {model} is not used: you picked another model after it."
+)
+MODEL_PICKER_ENGINE_LABEL = "engine:"
+MODEL_PICKER_ENGINE_AUTO = "(auto)"
+MODEL_PICKER_ENGINE_NONE = "none"
 
 # Settings Profile tab, the profile line, and the Apply and Save-as dialogs
 PROFILE_TAB_LABEL = "Profile"
@@ -1023,7 +1240,7 @@ ANALYZE_FACT_PDF_LENGTH = "Typical PDF length"
 ANALYZE_FACT_TEXT_LENGTH = "Typical length"
 ANALYZE_TYPE_COUNT = "{count} {kind}"
 ANALYZE_SHARE_OF_FILES = "{share:.0%} of files"
-ANALYZE_SHARE_OF_PAGES = "{share:.0%} of pages"
+ANALYZE_SHARE_OF_PAGES = "{share:.0%} of pages (a non-PDF file counts as one page)"
 ANALYZE_TABLES_VALUE = "in {tables} of {files} PDFs"
 ANALYZE_LANGUAGE_SHARE = "{name} {share:.0%}"
 ANALYZE_LANGUAGES_TEXT = "{languages} (text files)"

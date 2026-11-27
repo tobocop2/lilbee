@@ -52,9 +52,13 @@ class SettingDef:
     outside that type declares one.
 
     ``hidden`` keeps the setting out of the TUI settings screen while
-    leaving it reachable via ``lilbee set`` and the ``LILBEE_*`` env
+    leaving it reachable via ``lilbee settings set`` and the ``LILBEE_*`` env
     var: use it for transport/server knobs that aren't relevant to a
     typical TUI session.
+
+    ``tab`` names the dedicated settings tab that shows a ``hidden``
+    setting with its own control (the Engines tab, for example). The
+    settings reference prints that tab in its TUI column.
 
     ``advanced`` keeps the setting shown, but folded into a collapsed
     section at the bottom of its tab: use it for a setting a normal
@@ -70,6 +74,7 @@ class SettingDef:
     help_text: str = ""
     choices: tuple[str, ...] | None = None
     hidden: bool = False
+    tab: str | None = None
     advanced: bool = False
     # List editors validate each line as a regex only when this is set; flag-style
     # lists (e.g. crawl_browser_extra_args) would be wrongly rejected otherwise.
@@ -80,6 +85,10 @@ class SettingDef:
 
 
 CHUNK_LIMIT_KEY = "max_chunks_per_file"
+_UNSET_SAMPLING = (
+    "Unset leaves it to the engine: the model's value when the model file has one,"
+    " else the engine's default"
+)
 
 SETTINGS_MAP: dict[str, SettingDef] = {
     "chat_model": SettingDef(
@@ -114,7 +123,10 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=False,
         group=SettingGroup.OCR_TUNING,
-        help_text="Per-page timeout in seconds for vision OCR (0 = no limit)",
+        help_text=(
+            "Per-page timeout in seconds for vision OCR (0 = no limit; a wait for a"
+            " reload of the vision model still ends at vision_load_budget_s)"
+        ),
         advanced=True,
     ),
     "vision_load_budget_s": SettingDef(
@@ -124,6 +136,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text=(
             "Wall-clock seconds reserved for the vision worker to load the"
             " model. Total PDF-OCR budget = load_budget + ocr_timeout * pages."
+            " With ocr_timeout 0, a page waits this long for a reload to bring the"
+            " vision model back (0 = no wait)."
         ),
         advanced=True,
     ),
@@ -212,15 +226,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "is on (changes invalidate the index)"
         ),
         advanced=True,
-    ),
-    "token_sizing": SettingDef(
-        bool,
-        nullable=False,
-        group=SettingGroup.INGEST,
-        help_text=(
-            "Size chunks by real embedder tokens, not chars; on by itself when the "
-            "embedder's window is below the character budget (changes invalidate the index)"
-        ),
     ),
     "table_extraction": SettingDef(
         bool,
@@ -325,19 +330,19 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=True,
         group=SettingGroup.GENERATION,
-        help_text="Sampling temperature (higher = more creative)",
+        help_text=f"Sampling temperature (higher = more creative). {_UNSET_SAMPLING}",
     ),
     "top_p": SettingDef(
         float,
         nullable=True,
         group=SettingGroup.GENERATION,
-        help_text="Nucleus sampling cutoff probability",
+        help_text=f"Nucleus sampling cutoff probability. {_UNSET_SAMPLING}",
     ),
     "top_k_sampling": SettingDef(
         int,
         nullable=True,
         group=SettingGroup.GENERATION,
-        help_text="Top-K sampling: number of tokens to consider",
+        help_text=f"Top-K sampling: number of tokens to consider. {_UNSET_SAMPLING}",
     ),
     "repeat_penalty": SettingDef(
         float,
@@ -447,7 +452,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=True,
         group=SettingGroup.GENERATION,
         help_text=(
-            "Restrict llama.cpp to specific GPU indexes on dual-GPU machines "
+            "Restrict the engine to specific GPU indexes on dual-GPU machines "
             "(e.g. NVIDIA dGPU + integrated). Comma-separated, like '0' or '0,1'. "
             "Applies to Vulkan, CUDA, and ROCm. Requires a restart to take effect."
         ),
@@ -529,6 +534,29 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "a project's settings through profiles."
         ),
     ),
+    "mcp_presets_enabled": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Off (default): the server preset tools are not offered over MCP, and a "
+            "connected agent cannot list or change presets. On: an agent can list, add, "
+            "edit and remove server presets. A preset decides where requests and API "
+            "keys go, and the tools cost context on every request, so this stays off "
+            "unless you want an agent managing presets."
+        ),
+    ),
+    "mcp_engines_enabled": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Off (default): the engine tools are not offered over MCP, and a connected "
+            "agent cannot read or change the engine of a model. On: an agent can list "
+            "the engine of each role and choose engines. The tools cost context on "
+            "every request, so this stays off unless you want an agent choosing engines."
+        ),
+    ),
     "chat_mode": SettingDef(
         str,
         nullable=False,
@@ -560,6 +588,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Drop candidates whose raw reranker score is below this (unset = off)",
         advanced=True,
+    ),
+    "choose_engine_on_pick": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.MODELS,
+        help_text=(
+            "Ask which engine runs a model when you pick it in the model picker "
+            "(off = the picked model uses its saved engine, or auto)"
+        ),
+        hidden=True,
+        tab="Engines",
     ),
     "show_reasoning": SettingDef(
         bool,
@@ -1218,7 +1257,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=False,
         group=SettingGroup.GENERATION,
-        help_text="Fraction of GPU memory the model is allowed to claim (0.1-1.0)",
+        help_text="Fraction of GPU memory used to size the context window (0.1-1.0)",
         advanced=True,
     ),
     "usable_vram_fraction": SettingDef(
@@ -1501,7 +1540,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.API_KEYS,
         help_text=(
-            "Inference provider: auto (default, runs models locally on llama-server) "
+            "Inference provider: auto (default, runs models locally on the managed engine) "
             "or remote (external OpenAI-compatible endpoint)"
         ),
     ),
@@ -1521,7 +1560,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
-        help_text="Path to a llama-server binary (empty: bundled wheel or PATH)",
+        help_text="llama-server path (empty: bundled wheel, PATH, then the engine pack)",
         advanced=True,
     ),
     "wiki_summary_max_tokens": SettingDef(

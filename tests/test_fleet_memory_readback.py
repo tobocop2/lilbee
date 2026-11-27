@@ -21,6 +21,7 @@ from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet import readback
 from lilbee.providers.fleet import swap_manager as sm
 from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.readback import (
@@ -32,6 +33,7 @@ from lilbee.providers.fleet.readback import (
 )
 from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import WorkerRole
+from tests._engine_logs import enrol_launch
 
 GIB = 1024**3
 
@@ -180,6 +182,43 @@ class TestHostSpillWarning:
             "smaller model."
         ]
 
+    def test_a_small_spill_reads_in_mib_and_not_as_zero_gib(self, caplog) -> None:
+        payload = {
+            "data": [
+                {"name": "CUDA0", "model": 4 * GIB},
+                {"name": "Host", "model": 40 * 1024**2},
+            ]
+        }
+        with caplog.at_level(logging.WARNING):
+            check_memory_report(
+                WorkerRole.CHAT, "qwen-8b", 0, None, payload, est_host_bytes=10 * 1024**2
+            )
+        spills = [r.getMessage() for r in caplog.records if "system memory" in r.getMessage()]
+        assert spills == [
+            "The chat model qwen-8b does not fit in GPU memory: the engine keeps 40 MiB "
+            "of it in system memory, where it runs slower. Free GPU memory or use a "
+            "smaller model."
+        ]
+
+    def test_a_small_spill_in_the_engine_log_reads_in_mib(self, tmp_path: Path, caplog) -> None:
+        readback.engine_log_path(tmp_path, "chat-0").write_text(
+            "load_tensors:   CPU_Mapped model buffer size =    40.00 MiB\n"
+            "load_tensors:        CUDA0 model buffer size = 4096.00 MiB\n",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            check_launch(
+                tmp_path,
+                "chat-0",
+                WorkerRole.CHAT,
+                "qwen-8b",
+                4 * GIB,
+                est_host_bytes=10 * 1024**2,
+            )
+        spills = [r.getMessage() for r in caplog.records if "system memory" in r.getMessage()]
+        assert len(spills) == 1
+        assert "keeps 40 MiB of it in system memory" in spills[0]
+
     def test_a_full_offload_host_row_is_quiet(self, caplog) -> None:
         # Every layer on the card still leaves the token embedding on the host.
         payload = {
@@ -188,6 +227,32 @@ class TestHostSpillWarning:
         with caplog.at_level(logging.WARNING):
             check_memory_report(WorkerRole.CHAT, "qwen-8b", 0, None, payload, est_host_bytes=GIB)
         assert not [r for r in caplog.records if "system memory" in r.getMessage()]
+
+    @pytest.mark.parametrize(
+        ("host_bytes", "warns"),
+        [
+            (5 * GIB - 1, False),
+            (5 * GIB, False),
+            (5 * GIB + 1, True),
+            (4 * GIB + GIB // 2, False),
+            (4 * GIB, False),
+            (3 * GIB, False),
+        ],
+    )
+    def test_the_warning_starts_just_past_a_quarter_over_the_estimate(
+        self, caplog, host_bytes: int, warns: bool
+    ) -> None:
+        # The estimate is 4 GiB, so the quarter tolerance puts the limit at 5 GiB.
+        payload = {
+            "data": [{"name": "CUDA0", "model": 4 * GIB}, {"name": "Host", "model": host_bytes}]
+        }
+        with caplog.at_level(logging.WARNING):
+            check_memory_report(
+                WorkerRole.CHAT, "qwen-8b", 0, None, payload, est_host_bytes=4 * GIB
+            )
+        spills = [r for r in caplog.records if "system memory" in r.getMessage()]
+        assert bool(spills) is warns
+        assert all(r.levelno == logging.WARNING for r in spills)
 
     def test_no_host_estimate_says_nothing(self, caplog) -> None:
         # 0 means the engine's fit does not run for the launch (a user layer count).
@@ -199,6 +264,52 @@ class TestHostSpillWarning:
         readback.engine_log_path(tmp_path, "chat-0").write_text(
             "load_tensors:   CPU_Mapped model buffer size =  5894.48 MiB\n"
             "load_tensors:        CUDA0 model buffer size = 10547.92 MiB\n",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            check_launch(
+                tmp_path, "chat-0", WorkerRole.CHAT, "qwen-32b", 10 * GIB, est_host_bytes=GIB
+            )
+        spills = [r.getMessage() for r in caplog.records if "system memory" in r.getMessage()]
+        assert len(spills) == 1
+        assert "keeps 5.8 GiB of it in system memory" in spills[0]
+
+    def test_host_kv_and_compute_buffers_are_not_a_weight_spill_in_the_memory_report(
+        self, caplog
+    ) -> None:
+        payload = {
+            "data": [
+                {"name": "CUDA0", "model": 10 * GIB},
+                {"name": "Host", "model": 0, "context": 8 * GIB, "compute": 2 * GIB, "mmproj": GIB},
+            ]
+        }
+        with caplog.at_level(logging.WARNING):
+            check_memory_report(WorkerRole.CHAT, "qwen-32b", 0, None, payload, est_host_bytes=GIB)
+        assert not [r for r in caplog.records if "system memory" in r.getMessage()]
+
+    def test_host_kv_and_compute_buffers_are_not_a_weight_spill_in_the_log(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        readback.engine_log_path(tmp_path, "chat-0").write_text(
+            "load_tensors:        CUDA0 model buffer size = 10547.92 MiB\n"
+            "llama_kv_cache:  CUDA_Host KV buffer size =  8192.00 MiB\n"
+            "sched_reserve:  CUDA_Host compute buffer size =  2048.00 MiB\n"
+            "llama_context:  CUDA_Host  output buffer size =     0.58 MiB\n",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            check_launch(
+                tmp_path, "chat-0", WorkerRole.CHAT, "qwen-32b", 10 * GIB, est_host_bytes=GIB
+            )
+        assert not [r for r in caplog.records if "system memory" in r.getMessage()]
+
+    def test_a_weight_spill_names_the_weights_and_not_the_host_kv_beside_them(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        readback.engine_log_path(tmp_path, "chat-0").write_text(
+            "load_tensors:   CPU_Mapped model buffer size =  5894.48 MiB\n"
+            "load_tensors:        CUDA0 model buffer size = 10547.92 MiB\n"
+            "llama_kv_cache:  CUDA_Host KV buffer size =  8192.00 MiB\n",
             encoding="utf-8",
         )
         with caplog.at_level(logging.WARNING):
@@ -259,6 +370,14 @@ class TestSupportsMemoryReadback:
     def test_false_when_help_lacks_the_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
         binary = self._binary_with_help(monkeypatch, "--metrics\n--slots")
         assert not supports_memory_readback(binary)
+
+    def test_true_when_an_indented_option_line_lists_the_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        binary = self._binary_with_help(
+            monkeypatch, "  -t,    --threads N   threads\n         --memory      memory endpoint"
+        )
+        assert supports_memory_readback(binary)
 
     def test_a_longer_flag_is_not_mistaken_for_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
         binary = self._binary_with_help(monkeypatch, "--memory-f32 use f32 for memory")
@@ -355,12 +474,20 @@ class TestArgvAndSwapConfig:
         launch = InstanceLaunch(
             role=WorkerRole.CHAT, argv=argv, env_overrides={}, model="chat-model"
         )
-        rendered = build_swap_config([launch], {launch.model_id: 5900}, engine_log_dir=tmp_path)
+        log_path = readback.engine_log_of(LLAMA, launch, tmp_path)
+        engine_logs = {} if log_path is None else {launch.model_id: log_path}
+        rendered = build_swap_config([launch], {launch.model_id: 5900}, engine_logs=engine_logs)
         return json.loads(rendered)["models"][launch.model_id]
 
-    def test_memory_mode_launch_gets_no_trace_log_env(self, tmp_path: Path) -> None:
+    def test_memory_mode_launch_gets_its_own_log_at_the_default_verbosity(
+        self, tmp_path: Path
+    ) -> None:
         entry = self._config(["/bin/llama-server", MEMORY_FLAG], tmp_path)
-        assert not any("LLAMA" in var for var in entry.get("env", []))
+        log_file = tmp_path / "engine-chat-0.log"
+        assert entry["env"] == [
+            f"{readback.ENV_LOG_FILE}={log_file}",
+            f"{readback.ENV_ARG_LOG_FILE}={log_file}",
+        ]
 
     def test_log_mode_launch_keeps_the_trace_log_env(self, tmp_path: Path) -> None:
         entry = self._config(["/bin/llama-server"], tmp_path)
@@ -389,7 +516,7 @@ def _manager_with_launch(
         est_vram_bytes=4 * GIB,
         est_vram_by_device={"CUDA0": 4 * GIB},
     )
-    manager._launch_by_model = {launch.model_id: launch}
+    enrol_launch(manager, launch)
     if port is not None:
         manager._member_port_by_model = {launch.model_id: port}
     return manager

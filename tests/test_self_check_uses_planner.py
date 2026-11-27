@@ -34,18 +34,18 @@ class TestTheSelfCheckAsksThePlanner:
         # that finds a llama-server on PATH and the test passes by accident; CI
         # has none, which is where it showed up.
         monkeypatch.setattr(
-            "lilbee.providers.fleet.planning.resolve_llama_server",
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
             lambda: Path("/bin/llama-server"),
         )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(
             "lilbee.providers.fleet.planning._plan_devices",
-            lambda _b: [FleetDevice("CUDA", 0, "gpu", 24 * 1024**3, 24 * 1024**3)],
+            lambda _b, engine: [FleetDevice("CUDA", 0, "gpu", 24 * 1024**3, 24 * 1024**3)],
         )
         captured: dict[str, object] = {}
 
         class _Swap:
-            def start(self, launches):
+            def start(self, launches, **_kw):
                 captured["launch"] = launches[0]
                 raise RuntimeError("stop here")
 

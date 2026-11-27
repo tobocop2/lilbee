@@ -6,9 +6,9 @@ import logging
 import platform
 from collections.abc import Callable
 from enum import StrEnum
-from pathlib import Path
 
-from lilbee.providers.fleet.gpu_env import gpu_environ
+from lilbee.providers.fleet.gpu_backends.nvidia import CardTotal, card_totals
+from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR, cuda_visible_cards, gpu_environ
 
 log = logging.getLogger(__name__)
 
@@ -28,9 +28,6 @@ _KV_BYTES_PER_CTX_TOKEN = 2048
 
 # Metal/CUDA buffer overhead as fraction of model weight memory
 _BUFFER_OVERHEAD_FRACTION = 0.10
-
-# Default context length for estimation when metadata unavailable
-_DEFAULT_CTX_LEN = 2048
 
 # Floor for the dynamic n_ctx computation (smaller is unusable for chat)
 _DYNAMIC_CTX_FLOOR = 512
@@ -71,20 +68,6 @@ def kv_bytes_per_token(
     except (KeyError, ValueError, ZeroDivisionError):
         return _KV_BYTES_PER_CTX_TOKEN
     return int(n_layers * head_count_kv * (k_dim * k_elem_bytes + v_dim * v_elem_bytes))
-
-
-def estimate_model_memory(
-    model_path: Path,
-    n_ctx: int = _DEFAULT_CTX_LEN,
-    kv_bytes_per_tok: int = _KV_BYTES_PER_CTX_TOKEN,
-) -> int:
-    """Estimate memory consumption for a GGUF model.
-    Approximation: file_size (weights) + KV cache + 10% buffer overhead.
-    """
-    file_bytes = model_path.stat().st_size if model_path.exists() else 0
-    kv_bytes = n_ctx * kv_bytes_per_tok
-    overhead = int(file_bytes * _BUFFER_OVERHEAD_FRACTION)
-    return file_bytes + kv_bytes + overhead
 
 
 def compute_dynamic_ctx(
@@ -132,7 +115,7 @@ def compute_dynamic_ctx(
 def get_available_memory(fraction: float, *, total: bool = False) -> int:
     """Return usable GPU/unified memory in bytes, scaled by *fraction*.
     - macOS (Apple Silicon): unified memory via psutil
-    - Linux with NVIDIA GPU: pynvml -> nvidia-smi -> psutil fallback
+    - Linux with NVIDIA GPU: nvidia-smi -> psutil fallback
     - Other: psutil system memory
 
     With multiple NVIDIA GPUs, *total* sums every card's memory (whole-fleet
@@ -164,19 +147,16 @@ def free_system_memory() -> int:
     The load-time counterpart to :func:`get_available_memory`, which scales total
     capacity for sizing rather than reporting what is free this instant.
 
-    Bounded by what this process's cgroup still has, for the reason in
-    :func:`lilbee.core.system.cgroup_memory_limit`.
+    Bounded by the room the cgroups on this process's path still have, for the
+    reason in :func:`lilbee.core.system.cgroup_memory_limit`.
     """
     import psutil
 
-    from lilbee.core.system import cgroup_memory_limit, cgroup_memory_used
+    from lilbee.core.system import cgroup_memory_room
 
     host_free = int(psutil.virtual_memory().available)
-    limit = cgroup_memory_limit()
-    if limit is None:
-        return host_free
-    used = cgroup_memory_used()
-    return min(host_free, limit if used is None else max(0, limit - used))
+    room = cgroup_memory_room()
+    return host_free if room is None else min(host_free, room)
 
 
 def total_system_memory() -> int:
@@ -192,7 +172,7 @@ def total_system_memory() -> int:
 
 
 def has_nvidia_gpu() -> bool:
-    """Whether an NVIDIA GPU is physically present on this host (NVML or nvidia-smi).
+    """Whether an NVIDIA GPU is physically present on this host (nvidia-smi lists a card).
 
     Deliberately unmasked. ``CUDA_VISIBLE_DEVICES`` says what a CUDA process may
     use, not what the machine has, and the callers of this ask the second
@@ -210,9 +190,9 @@ def _try_nvidia_memory(reducer: Callable[[list[int]], int] = min) -> int | None:
     which card it will run on. ``sum`` gives whole-fleet capacity, used only by
     the catalog fit chip to decide whether a model can run split across every card.
 
-    Restricted to the devices ``CUDA_VISIBLE_DEVICES`` exposes. Neither NVML nor
-    nvidia-smi applies that mask on its own: it is read by the CUDA runtime, and
-    both tools report every card the driver knows about. Unmasked, a container
+    Restricted to the devices ``CUDA_VISIBLE_DEVICES`` exposes. nvidia-smi does not
+    apply that mask: the CUDA runtime reads it, and the tool reports every card the
+    driver knows about. Unmasked, a container
     given one card of an eight-card host summed all eight and approved models
     eight times too large for the card it had, and a fleet whose smallest card
     was masked out sized every budget against a card the engine cannot see.
@@ -221,106 +201,28 @@ def _try_nvidia_memory(reducer: Callable[[list[int]], int] = min) -> int | None:
     if not totals:
         return None
     visible = _apply_cuda_visible_mask(totals)
-    return reducer([total for _uuid, total in visible]) if visible else None
+    if not visible or any(card.total_bytes is None for card in visible):
+        return None
+    return reducer([card.total_bytes for card in visible if card.total_bytes is not None])
 
 
-def _nvidia_device_totals() -> list[tuple[str, int]] | None:
-    """``[(uuid, total_bytes), ...]`` in driver enumeration order, or ``None``.
+def _nvidia_device_totals() -> list[CardTotal] | None:
+    """The cards in driver enumeration order, or ``None`` when no card's total reads.
 
     ``None`` means no NVIDIA GPU was detectable at all, which is the expected
     outcome on every non-NVIDIA host.
     """
-    try:
-        import pynvml  # type: ignore[import-untyped]
-
-        pynvml.nvmlInit()
-        totals = []
-        for i in range(pynvml.nvmlDeviceGetCount()):
-            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-            totals.append(
-                (
-                    _decoded(pynvml.nvmlDeviceGetUUID(handle)),
-                    int(pynvml.nvmlDeviceGetMemoryInfo(handle).total),
-                )
-            )
-        pynvml.nvmlShutdown()
-        if totals:
-            return totals
-    except Exception:  # noqa: S110 -- optional GPU detect; absence is expected on non-NVIDIA hosts
-        pass
-
-    try:
-        import subprocess
-
-        # nvidia-smi ships with the NVIDIA driver and is always on PATH when
-        # present; fully-qualifying it would break on every install layout.
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.total,uuid", "--format=csv,noheader,nounits"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-        )
-        if result.returncode == 0:
-            rows = [_parse_smi_row(line) for line in result.stdout.strip().splitlines()]
-            parsed = [row for row in rows if row is not None]
-            if parsed:
-                return parsed
-    except Exception:  # noqa: S110 -- optional GPU detect; same rationale as above
-        pass
-
-    return None
+    cards = card_totals()
+    return cards if any(card.total_bytes is not None for card in cards) else None
 
 
-def _decoded(value: str | bytes) -> str:
-    """pynvml returns ``str`` on recent versions and ``bytes`` on older ones."""
-    return value.decode() if isinstance(value, bytes) else value
-
-
-def _parse_smi_row(line: str) -> tuple[str, int] | None:
-    """One ``memory.total,uuid`` CSV row as ``(uuid, total_bytes)``.
-
-    The UUID column is optional so an older nvidia-smi that only echoes the
-    memory still yields a device; only a UUID-keyed mask needs it.
-    """
-    fields = [field.strip() for field in line.split(",")]
-    if not fields or not fields[0]:
-        return None
-    try:
-        mib = int(fields[0])
-    except ValueError:
-        return None
-    return (fields[1] if len(fields) > 1 else "", mib * 1024 * 1024)
-
-
-def _apply_cuda_visible_mask(devices: list[tuple[str, int]]) -> list[tuple[str, int]]:
+def _apply_cuda_visible_mask(devices: list[CardTotal]) -> list[CardTotal]:
     """The subset of *devices* ``CUDA_VISIBLE_DEVICES`` exposes, in its order.
 
-    Entries are driver indexes or ``GPU-``/``MIG-`` UUIDs. An unset variable
-    masks nothing; an empty one exposes nothing. CUDA stops enumerating at the
-    first entry that names no device, and so does this, which is what makes
-    ``0,9,1`` on a two-card host mean one card rather than two.
+    The mask is read by ``cuda_visible_cards``. An unset variable exposes every
+    card whose total reads. A named card whose total does not read stays in the
+    result, so the caller sees that the budget is unknown.
     """
-    raw = gpu_environ().get("CUDA_VISIBLE_DEVICES")
-    if raw is None:
-        return devices
-    visible: list[tuple[str, int]] = []
-    for entry in (part.strip() for part in raw.split(",")):
-        matched = _resolve_cuda_entry(entry, devices)
-        if matched is None:
-            break
-        visible.append(matched)
-    return visible
-
-
-def _resolve_cuda_entry(entry: str, devices: list[tuple[str, int]]) -> tuple[str, int] | None:
-    """The device an entry of ``CUDA_VISIBLE_DEVICES`` names, ``None`` if it names none."""
-    if entry.isdigit():
-        index = int(entry)
-        return devices[index] if index < len(devices) else None
-    # UUIDs may be abbreviated to any unique prefix.
-    if entry.startswith(("GPU-", "MIG-")):
-        matches = [device for device in devices if device[0].startswith(entry)]
-        return matches[0] if len(matches) == 1 else None
-    return None
+    if gpu_environ().get(CUDA_VISIBLE_VAR) is None:
+        return [card for card in devices if card.total_bytes is not None]
+    return cuda_visible_cards(devices)

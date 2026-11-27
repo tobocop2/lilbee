@@ -1,8 +1,12 @@
 """Tests for model_manager.py: model lifecycle management across sources."""
 
+import json
+import logging
+import re
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from unittest import mock
 
@@ -10,8 +14,11 @@ import httpx
 import pytest
 from cachetools import TTLCache
 
+from conftest import make_hf_client
 from lilbee.catalog.models import CatalogModel
-from lilbee.catalog.types import ModelSource, ModelTask
+from lilbee.catalog.refs import REPO_ID_HINT
+from lilbee.catalog.types import ModelFormat, ModelSource, ModelTask
+from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import (
     ModelManager,
     RemoteModel,
@@ -21,6 +28,7 @@ from lilbee.providers.factory import sdk_library
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.providers.sdk_backend import detect_backend_name
 from tests import _fake_sdk
+from tests._quiet_http_server import QuietHTTPServer
 from tests._sys_modules import inject_modules
 from tests._unreadable import POSIX_DENIES_READS, unreadable
 
@@ -57,7 +65,7 @@ class TestNativeIdentitiesCache:
     def test_returns_cached_within_ttl(self) -> None:
         from lilbee.modelhub.model_manager.core import ModelManager as MM
 
-        mgr = MM(Path("/nonexistent"))
+        mgr = MM(Path("/nonexistent"), cfg, hf_client=make_hf_client(cfg))
         fake_registry = mock.MagicMock()
         m = mock.MagicMock()
         m.ref = "test/m"
@@ -79,7 +87,7 @@ class TestNativeIdentitiesCache:
         models_dir = tmp_path / "models"
         _register_native(models_dir)
         repo_dir = models_dir / "manifests" / repo_to_dir(_NATIVE_REF.rsplit("/", 1)[0])
-        mgr = MM(models_dir)
+        mgr = MM(models_dir, cfg, hf_client=make_hf_client(cfg))
 
         with unreadable(repo_dir), pytest.raises(OSError):
             mgr.list_native_identities()
@@ -88,7 +96,7 @@ class TestNativeIdentitiesCache:
         from lilbee.modelhub.model_manager import core as mm_core
         from lilbee.modelhub.model_manager.core import ModelManager as MM
 
-        mgr = MM(Path("/nonexistent"))
+        mgr = MM(Path("/nonexistent"), cfg, hf_client=make_hf_client(cfg))
         fake_registry = mock.MagicMock()
         m = mock.MagicMock()
         m.ref = "test/m"
@@ -250,7 +258,7 @@ class TestModelManagerListInstalled:
             models_dir, tmp_path, "mistral-7b.gguf", b"mistral-data", repo="org/mistral-7b-GGUF"
         )
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         result = mgr.list_installed(ModelSource.NATIVE)
 
         assert set(result) == {ref_a, ref_b}
@@ -259,13 +267,13 @@ class TestModelManagerListInstalled:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         assert mgr.list_installed(ModelSource.NATIVE) == []
 
     def test_native_missing_dir(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "nonexistent"
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         assert mgr.list_installed(ModelSource.NATIVE) == []
 
     def test_remote_lists_models(self) -> None:
@@ -281,7 +289,7 @@ class TestModelManagerListInstalled:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ) as mock_get:
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             result = mgr.list_installed(ModelSource.REMOTE)
 
         # REMOTE now spans every configured server; Ollama is probed via /api/tags.
@@ -294,7 +302,7 @@ class TestModelManagerListInstalled:
             "lilbee.modelhub.model_manager.discovery._http_get",
             side_effect=httpx.ConnectError("Connection refused"),
         ):
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             result = mgr.list_installed(ModelSource.REMOTE)
 
         assert result == []
@@ -307,7 +315,7 @@ class TestModelManagerListInstalled:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             result = mgr.list_installed(ModelSource.REMOTE)
 
         assert result == []
@@ -326,7 +334,7 @@ class TestModelManagerListInstalled:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(models_dir)
+            mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
             result = mgr.list_installed(None)
 
         assert set(result) == {native_ref, "remote-model:latest"}
@@ -347,7 +355,7 @@ class TestModelManagerListInstalled:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(models_dir)
+            mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
             result = mgr.list_installed(None)
 
         assert result.count(native_ref) == 1
@@ -361,7 +369,7 @@ class TestModelManagerListInstalled:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ) as mock_get:
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             mgr.list_installed(ModelSource.REMOTE)
             after_first = mock_get.call_count
             mgr.list_installed(ModelSource.REMOTE)
@@ -381,7 +389,7 @@ class TestModelManagerListInstalled:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ) as mock_get:
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             # cachetools binds its timer at construction, so drive the cache clock.
             clock = {"t": 0.0}
             mgr._installed_cache = TTLCache(
@@ -406,7 +414,7 @@ class TestModelManagerListInstalled:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ) as mock_get:
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             # cachetools binds its timer at construction, so drive the cache clock.
             clock = {"t": 0.0}
             mgr._installed_cache = TTLCache(
@@ -431,7 +439,7 @@ class TestModelManagerListInstalled:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ) as mock_get:
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             # cachetools binds its timer at construction, so drive the cache clock.
             clock = {"t": 0.0}
             mgr._installed_cache = TTLCache(
@@ -459,7 +467,7 @@ class TestModelManagerListInstalled:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             # A short TTL expires entries mid-hammer, the same
             # expire-during-write path production hits at TTL boundaries.
             mgr._installed_cache = TTLCache(maxsize=8, ttl=0.002)
@@ -473,7 +481,7 @@ class TestModelManagerListInstalled:
         """Both production caches expire at the module TTL, not a literal."""
         from lilbee.modelhub.model_manager import core as mm_core
 
-        mgr = ModelManager(Path("/tmp"))
+        mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
         assert mgr._installed_cache.ttl == mm_core._INSTALLED_CACHE_TTL_SECONDS
         assert mgr._native_identities_cache.ttl == mm_core._INSTALLED_CACHE_TTL_SECONDS
 
@@ -492,7 +500,7 @@ class TestModelManagerListInstalled:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(models_dir)
+            mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
             mgr.list_installed(ModelSource.NATIVE)  # populate cache
             assert mgr._installed_cache
 
@@ -517,7 +525,7 @@ class TestModelManagerListInstalled:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(models_dir)
+            mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
             mgr.list_installed(None)  # populate cache
             assert mgr._installed_cache
 
@@ -531,7 +539,7 @@ class TestModelManagerIsInstalled:
         models_dir.mkdir()
         _register_native(models_dir)
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         assert mgr.is_installed(_NATIVE_REF, ModelSource.NATIVE) is True
 
     def test_unregistered_gguf_under_models_dir_is_not_installed(self, tmp_path: Path) -> None:
@@ -540,14 +548,14 @@ class TestModelManagerIsInstalled:
         models_dir.mkdir()
         (models_dir / "llama3-8b.gguf").touch()
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         assert mgr.is_installed("llama3-8b.gguf", ModelSource.NATIVE) is False
 
     def test_native_not_installed(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         assert mgr.is_installed("missing.gguf", ModelSource.NATIVE) is False
 
     def test_providers_installed(self) -> None:
@@ -558,7 +566,7 @@ class TestModelManagerIsInstalled:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             result = mgr.is_installed("llama3:latest", ModelSource.REMOTE)
 
         assert result is True
@@ -571,7 +579,7 @@ class TestModelManagerIsInstalled:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             result = mgr.is_installed("missing:latest", ModelSource.REMOTE)
 
         assert result is False
@@ -588,7 +596,7 @@ class TestModelManagerIsInstalled:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(models_dir)
+            mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
             assert mgr.is_installed(_NATIVE_REF, None) is True
             assert mgr.is_installed("remote-model:latest", None) is False
 
@@ -599,7 +607,7 @@ class TestModelManagerGetSource:
         models_dir.mkdir()
         _register_native(models_dir)
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         assert mgr.get_source(_NATIVE_REF) == ModelSource.NATIVE
 
     def test_bare_ollama_model_is_remote_source(self) -> None:
@@ -615,14 +623,14 @@ class TestModelManagerGetSource:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             result = mgr.get_source("llama3:latest")
 
         assert result == ModelSource.REMOTE
 
     def test_ollama_prefixed_ref_is_ollama_source_without_network(self) -> None:
         """An ``ollama/`` ref classifies on the prefix, no /api/tags call."""
-        mgr = ModelManager(Path("/tmp"))
+        mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
         with mock.patch("lilbee.modelhub.model_manager.discovery._http_get") as mock_get:
             result = mgr.get_source("ollama/llama3:latest")
         assert result == ModelSource.OLLAMA
@@ -630,7 +638,7 @@ class TestModelManagerGetSource:
 
     def test_api_prefixed_ref_is_frontier_source(self) -> None:
         """A hosted API ref classifies as FRONTIER without a network call."""
-        mgr = ModelManager(Path("/tmp"))
+        mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
         with mock.patch("lilbee.modelhub.model_manager.discovery._http_get") as mock_get:
             result = mgr.get_source("gemini/gemini-2.5-pro")
         assert result == ModelSource.FRONTIER
@@ -638,7 +646,7 @@ class TestModelManagerGetSource:
 
     def test_lm_studio_prefixed_ref_is_lm_studio_source_without_network(self) -> None:
         """An ``lm_studio/`` ref classifies on the prefix, no network call."""
-        mgr = ModelManager(Path("/tmp"))
+        mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
         with mock.patch("lilbee.modelhub.model_manager.discovery._http_get") as mock_get:
             result = mgr.get_source("lm_studio/qwen2.5-coder")
         assert result == ModelSource.LM_STUDIO
@@ -656,7 +664,7 @@ class TestModelManagerGetSource:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             result = mgr.get_source("qwen2.5-coder")
 
         assert result == ModelSource.REMOTE
@@ -670,7 +678,7 @@ class TestModelManagerGetSource:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             result = mgr.get_source("custom-model")
 
         assert result == ModelSource.REMOTE
@@ -688,7 +696,7 @@ class TestModelManagerGetSource:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(models_dir)
+            mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
             result = mgr.get_source(_NATIVE_REF)
 
         assert result == ModelSource.NATIVE
@@ -704,7 +712,7 @@ class TestModelManagerGetSource:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(models_dir)
+            mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
             result = mgr.get_source("nonexistent.gguf")
 
         assert result is None
@@ -728,16 +736,18 @@ class TestModelManagerPull:
 
         def fake_download(
             entry: object,
+            engine,
             *,
             on_progress: object = None,
             on_complete: object = None,
+            on_retry: object = None,
             cancel: object = None,
         ) -> Path:
             path = models_dir / entry.gguf_filename
             path.write_text("fake model")
             return path
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         with (
             mock.patch(
                 "lilbee.catalog.resolve_pull_target", return_value=fake_entry
@@ -749,7 +759,7 @@ class TestModelManagerPull:
         ):
             result = mgr.pull("test-model", ModelSource.NATIVE)
 
-        mock_resolve.assert_called_once_with("test-model")
+        mock_resolve.assert_called_once_with("test-model", hf_client=mgr._hf_client)
         mock_dl.assert_called_once()
         call = mock_dl.call_args
         # the pull resolves the file before handing the entry down
@@ -769,9 +779,11 @@ class TestModelManagerPull:
 
         def fake_download(
             entry: object,
+            engine,
             *,
             on_progress: object = None,
             on_complete: object = None,
+            on_retry: object = None,
             cancel: object = None,
         ) -> Path:
             captured.append(entry)
@@ -779,7 +791,7 @@ class TestModelManagerPull:
             path.write_text("fake model")
             return path
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         with (
             mock.patch("lilbee.catalog.download_model", side_effect=fake_download),
             mock.patch(
@@ -795,14 +807,143 @@ class TestModelManagerPull:
         assert entry.gguf_filename == "gemma-2-2b-it-Q4_K_M.gguf"
         assert entry.featured is False
 
+    @staticmethod
+    def _pull_entry(
+        tmp_path: Path,
+        fmt: ModelFormat,
+        task: ModelTask,
+        *,
+        size_known: bool = True,
+        on_notice: Callable[[str], None] | None = None,
+    ) -> list[object]:
+        """Pull one entry through ``_pull_native``; return the fit and download steps in order."""
+        from lilbee.catalog.pull_fit import PullFit
+
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        entry = CatalogModel(
+            hf_repo="acme/test-model",
+            gguf_filename="model.safetensors",
+            size_gb=0.0,
+            min_ram_gb=0.0,
+            description="",
+            featured=False,
+            downloads=0,
+            task=task,
+            format=fmt,
+        )
+        steps: list[object] = []
+
+        engine = mock.Mock()
+
+        def fit(repo: str, picked: object, *, token: object = None) -> PullFit:
+            steps.append(("fit", repo, picked is engine))
+            return PullFit(
+                device_bytes=5 * 1024**3, ctx=8192, size_known=size_known, upper_bound=False
+            )
+
+        def download(*_args: object, **_kwargs: object) -> Path:
+            steps.append("download")
+            return models_dir / "model.safetensors"
+
+        with (
+            mock.patch("lilbee.catalog.resolve_pull_target", return_value=entry),
+            mock.patch("lilbee.catalog.pull_fit.chat_pull_fit", side_effect=fit),
+            mock.patch("lilbee.catalog.download_model", side_effect=download),
+        ):
+            ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))._pull_native(
+                "acme/test-model", engine, on_notice=on_notice
+            )
+        return steps
+
+    @pytest.mark.parametrize("fmt", [ModelFormat.SAFETENSORS, ModelFormat.MLX])
+    def test_a_safetensors_chat_pull_works_out_the_memory_need_before_the_download(
+        self, fmt: ModelFormat, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.INFO, logger="lilbee.modelhub.model_manager.core"):
+            steps = self._pull_entry(tmp_path, fmt, ModelTask.CHAT)
+        assert steps == [("fit", "acme/test-model", True), "download"]
+        assert "acme/test-model: This model needs 5.0 GiB at a context of" in caplog.text
+        assert [r.levelno for r in caplog.records if "needs 5.0 GiB" in r.message] == [logging.INFO]
+
+    def test_an_unknown_size_goes_to_the_notice_callback(self, tmp_path: Path) -> None:
+        notices: list[str] = []
+        self._pull_entry(
+            tmp_path,
+            ModelFormat.SAFETENSORS,
+            ModelTask.CHAT,
+            size_known=False,
+            on_notice=notices.append,
+        )
+        assert notices == ["The size of this model is unknown, so 5.0 GiB is reserved for it."]
+
+    def test_a_pull_logs_an_unknown_size_once(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.DEBUG):
+            self._pull_entry(tmp_path, ModelFormat.SAFETENSORS, ModelTask.CHAT, size_known=False)
+        assert len([r for r in caplog.records if "is unknown" in r.getMessage()]) == 1
+
+    def test_a_known_size_sends_no_notice(self, tmp_path: Path) -> None:
+        notices: list[str] = []
+        self._pull_entry(
+            tmp_path, ModelFormat.SAFETENSORS, ModelTask.CHAT, on_notice=notices.append
+        )
+        assert notices == []
+
+    def test_an_unknown_size_pull_without_a_callback_still_downloads(self, tmp_path: Path) -> None:
+        steps = self._pull_entry(
+            tmp_path, ModelFormat.SAFETENSORS, ModelTask.CHAT, size_known=False
+        )
+        assert steps[-1] == "download"
+
+    def test_a_gguf_qualified_pull_downloads_what_the_bare_repo_downloads(
+        self, tmp_path: Path
+    ) -> None:
+        downloaded: list[CatalogModel] = []
+
+        def download(entry: CatalogModel, *_args: object, **_kwargs: object) -> Path:
+            downloaded.append(entry)
+            return tmp_path / "model.gguf"
+
+        manager = ModelManager(tmp_path, cfg, hf_client=make_hf_client(cfg))
+        with (
+            mock.patch("lilbee.catalog.download_model", side_effect=download),
+            mock.patch("lilbee.catalog.download.resolve_filename", return_value="m-Q4_K_M.gguf"),
+        ):
+            for ref in ("acme/Repo-GGUF", "acme/Repo-GGUF#gguf"):
+                manager._pull_native(ref, mock.Mock())
+        assert len(downloaded) == 2
+        assert downloaded[0] == downloaded[1]
+        assert (downloaded[1].hf_repo, downloaded[1].gguf_filename) == (
+            "acme/Repo-GGUF",
+            "m-Q4_K_M.gguf",
+        )
+
+    @pytest.mark.parametrize(
+        ("fmt", "task"),
+        [
+            (ModelFormat.GGUF, ModelTask.CHAT),
+            (ModelFormat.SAFETENSORS, ModelTask.EMBEDDING),
+            (ModelFormat.SAFETENSORS, ModelTask.RERANK),
+            (ModelFormat.OPENVINO, ModelTask.CHAT),
+        ],
+    )
+    def test_a_pull_that_is_not_a_safetensors_chat_model_reads_no_memory_need(
+        self, fmt: ModelFormat, task: ModelTask, tmp_path: Path
+    ) -> None:
+        with mock.patch("lilbee.catalog.download.resolve_filename", return_value="m.gguf"):
+            steps = self._pull_entry(tmp_path, fmt, task)
+        assert steps == ["download"]
+
     def test_native_pull_unknown_short_name_raises(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         with (
             mock.patch("lilbee.catalog.resolve_pull_target", return_value=None),
-            pytest.raises(RuntimeError, match="HuggingFace repo id"),
+            pytest.raises(RuntimeError, match=re.escape(REPO_ID_HINT)),
         ):
             mgr.pull("nonexistent-model", ModelSource.NATIVE)
 
@@ -811,7 +952,7 @@ class TestModelManagerPull:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         with (
             mock.patch("httpx.Client") as mock_client,
             pytest.raises(ValueError, match="Ollama"),
@@ -823,7 +964,7 @@ class TestModelManagerPull:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         with pytest.raises(ValueError, match="LM Studio"):
             mgr.pull("qwen2.5-7b-instruct", ModelSource.LM_STUDIO)
 
@@ -835,7 +976,7 @@ class TestModelManagerRemove:
         model_file = models_dir / "llama3-8b.gguf"
         model_file.write_text("fake model data")
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         removed = mgr.remove("llama3-8b.gguf", ModelSource.NATIVE)
         assert removed is True
         assert not model_file.exists()
@@ -844,7 +985,7 @@ class TestModelManagerRemove:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         removed = mgr.remove("missing.gguf", ModelSource.NATIVE)
         assert removed is False
 
@@ -855,7 +996,7 @@ class TestModelManagerRemove:
         victim = tmp_path / "victim.gguf"
         victim.write_bytes(b"GGUF-bytes")
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         removed = mgr.remove("../../victim.gguf", ModelSource.NATIVE)
 
         assert removed is False
@@ -864,7 +1005,7 @@ class TestModelManagerRemove:
     def test_remove_refuses_ollama_source(self) -> None:
         """Ollama is read-only: an explicit OLLAMA source is refused, never deleted."""
         with mock.patch("httpx.request") as mock_req:
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             with pytest.raises(ValueError, match="Ollama models but doesn't remove them"):
                 mgr.remove("ollama/llama3:latest", ModelSource.OLLAMA)
         mock_req.assert_not_called()
@@ -872,14 +1013,14 @@ class TestModelManagerRemove:
     def test_remove_refuses_lm_studio_source(self) -> None:
         """LM Studio is read-only: an explicit LM_STUDIO source is refused."""
         with mock.patch("httpx.request") as mock_req:
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             with pytest.raises(ValueError, match="LM Studio models but doesn't remove them"):
                 mgr.remove("lm_studio/qwen2.5-coder", ModelSource.LM_STUDIO)
         mock_req.assert_not_called()
 
     def test_remove_refuses_generic_remote_source(self) -> None:
         """A generic REMOTE source on an undetected backend is refused too."""
-        mgr = ModelManager(Path("/tmp"))
+        mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
         with pytest.raises(ValueError, match="doesn't remove them"):
             mgr.remove("custom-model", ModelSource.REMOTE)
 
@@ -889,7 +1030,7 @@ class TestModelManagerRemove:
             mock.patch("lilbee.modelhub.model_manager.discovery._http_get") as mock_get,
             mock.patch("httpx.request") as mock_req,
         ):
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             with pytest.raises(ValueError, match="doesn't remove them"):
                 mgr.remove("ollama/llama3:latest")
         mock_get.assert_not_called()
@@ -904,7 +1045,7 @@ class TestModelManagerRemove:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             with pytest.raises(ValueError, match="doesn't remove them"):
                 mgr.remove("llama3:latest")
 
@@ -916,7 +1057,7 @@ class TestModelManagerRemove:
         model_file.write_text("fake")
 
         with mock.patch("httpx.request") as mock_req:
-            mgr = ModelManager(models_dir)
+            mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
             result = mgr.remove("my-model.gguf", None)
 
         assert result is True
@@ -932,7 +1073,7 @@ class TestModelManagerRemove:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(Path("/tmp"))
+            mgr = ModelManager(Path("/tmp"), cfg, hf_client=make_hf_client(cfg))
             result = mgr.remove("nonexistent.gguf")
 
         assert result is False
@@ -992,7 +1133,7 @@ class TestRemoteEdgeCases:
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
-            mgr = ModelManager(models_dir=tmp_path)
+            mgr = ModelManager(models_dir=tmp_path, config=cfg, hf_client=make_hf_client(cfg))
             result = mgr.list_installed(ModelSource.REMOTE)
 
         assert result == []
@@ -1002,7 +1143,7 @@ class TestRemoteEdgeCases:
             "lilbee.modelhub.model_manager.discovery._http_get",
             side_effect=httpx.TimeoutException("timeout"),
         ):
-            mgr = ModelManager(models_dir=tmp_path)
+            mgr = ModelManager(models_dir=tmp_path, config=cfg, hf_client=make_hf_client(cfg))
             result = mgr.list_installed(ModelSource.REMOTE)
 
         assert result == []
@@ -1017,7 +1158,7 @@ class TestIsNativeRegistry:
             models_dir, tmp_path, "my-reg.gguf", b"data", repo="org/my-reg-GGUF"
         )
 
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         assert mgr._is_native(ref) is True
 
 
@@ -1033,7 +1174,7 @@ class TestRemoveNativeRegistry:
         )
 
         registry = ModelRegistry(models_dir)
-        mgr = ModelManager(models_dir)
+        mgr = ModelManager(models_dir, cfg, hf_client=make_hf_client(cfg))
         assert mgr._remove_native(ref) is True
         assert not registry.is_installed(ref)
 
@@ -1248,7 +1389,7 @@ class TestRemoteModelProvider:
         monkeypatch.setattr(cfg, "ollama_base_url", "")
         monkeypatch.setattr(cfg, "lm_studio_base_url", "")
 
-        def fake_get(url: str, timeout: float) -> mock.Mock:
+        def fake_get(url: str, timeout: float, headers: dict[str, str] | None = None) -> mock.Mock:
             resp = mock.Mock()
             resp.raise_for_status = mock.Mock()
             if "/api/tags" in url:
@@ -1671,9 +1812,113 @@ class TestDiscoveryHttpSeam:
         client = mock.Mock()
         with mock.patch.object(discovery, "_discovery_client", return_value=client):
             discovery._http_get("http://x/api/tags", timeout=1.5)
-        client.get.assert_called_once_with("http://x/api/tags", timeout=1.5)
+        client.get.assert_called_once_with("http://x/api/tags", timeout=1.5, headers=None)
+
+    def test_http_get_passes_headers_to_the_shared_client(self) -> None:
+        from lilbee.modelhub.model_manager import discovery
+
+        client = mock.Mock()
+        with mock.patch.object(discovery, "_discovery_client", return_value=client):
+            discovery._http_get("http://x/v1/models", timeout=1.5, headers={"A": "b"})
+        client.get.assert_called_once_with("http://x/v1/models", timeout=1.5, headers={"A": "b"})
 
     def test_discovery_client_is_shared(self) -> None:
         from lilbee.modelhub.model_manager.discovery import _discovery_client
 
         assert _discovery_client() is _discovery_client()
+
+
+_KEYED_MODELS = {"data": [{"id": "qwen3-8b"}, {"id": "nomic-embed-text-v1.5"}]}
+
+
+@pytest.fixture
+def keyed_lm_studio() -> Iterator[tuple[str, list[str | None]]]:
+    """A fake LM Studio that answers 401 unless the request carries ``Bearer sk-lms``.
+
+    Yields its ``/v1`` base URL and the list of Authorization headers it saw.
+    """
+    seen: list[str | None] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            auth = self.headers.get("Authorization")
+            seen.append(auth)
+            if self.path != "/v1/models" or auth != "Bearer sk-lms":
+                self.send_response(401)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            body = json.dumps(_KEYED_MODELS).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = QuietHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/v1", seen
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+class TestKeyedLmStudioDiscovery:
+    """Discovery sends the key the chat request sends, so a keyed LM Studio lists its models."""
+
+    def test_classify_sends_the_configured_key(
+        self, keyed_lm_studio: tuple[str, list[str | None]]
+    ) -> None:
+        from lilbee.modelhub.model_manager import classify_remote_models
+        from lilbee.providers.local_servers import LM_STUDIO
+
+        base_url, seen = keyed_lm_studio
+        cfg.llm_api_key = "sk-lms"
+        models = classify_remote_models(base_url, LM_STUDIO)
+        assert {m.name: m.task for m in models} == {
+            "qwen3-8b": ModelTask.CHAT,
+            "nomic-embed-text-v1.5": ModelTask.EMBEDDING,
+        }
+        assert seen == ["Bearer sk-lms"]
+
+    def test_classify_all_sends_the_configured_key(
+        self, keyed_lm_studio: tuple[str, list[str | None]]
+    ) -> None:
+        from lilbee.modelhub.model_manager import classify_all_remote_models
+
+        base_url, _seen = keyed_lm_studio
+        cfg.llm_api_key = "sk-lms"
+        cfg.lm_studio_base_url = base_url
+        cfg.ollama_base_url = "http://127.0.0.1:9"
+        assert {m.name for m in classify_all_remote_models()} == {
+            "qwen3-8b",
+            "nomic-embed-text-v1.5",
+        }
+
+    def test_without_a_key_the_server_refuses_and_nothing_is_listed(
+        self, keyed_lm_studio: tuple[str, list[str | None]]
+    ) -> None:
+        from lilbee.modelhub.model_manager import classify_remote_models
+        from lilbee.providers.local_servers import LM_STUDIO
+
+        base_url, seen = keyed_lm_studio
+        cfg.llm_api_key = ""
+        assert classify_remote_models(base_url, LM_STUDIO) == []
+        assert seen == [None]
+
+    def test_ollama_discovery_never_sends_the_key(
+        self, keyed_lm_studio: tuple[str, list[str | None]]
+    ) -> None:
+        from lilbee.modelhub.model_manager import classify_remote_models
+        from lilbee.providers.local_servers import OLLAMA
+
+        base_url, seen = keyed_lm_studio
+        cfg.llm_api_key = "sk-lms"
+        classify_remote_models(base_url.removesuffix("/v1"), OLLAMA)
+        assert seen == [None]

@@ -35,32 +35,72 @@ _POOL_THREAD_PREFIX = "lilbee-ingest"
 _EMBED_INFLIGHT_PER_REPLICA = 8
 
 
-def embed_inflight_target() -> int:
+def fleet_inflight_target() -> int:
     """Admission that keeps every embed replica fed, from the detected fleet size.
 
     ``embed replicas x _EMBED_INFLIGHT_PER_REPLICA`` when a multi-replica fleet is
     resolvable, else 0 (single card or no fleet: the CPU-bound sizing already
-    fits). Never raises -- a fleet that cannot be probed yet returns 0.
+    fits). A ``ProviderError`` propagates: no embed engine, or a device probe that
+    timed out or found an unusable GPU. Any other error propagates too.
     """
-    try:
-        from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
-        from lilbee.providers.roles import WorkerRole
+    from lilbee.app.services import get_services
+    from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
+    from lilbee.providers.roles import WorkerRole
 
-        slots = resolve_replica_count(WorkerRole.EMBED, gpu_device_count())
-    except Exception:
-        return 0
+    slots = resolve_replica_count(
+        WorkerRole.EMBED,
+        gpu_device_count(get_services().engines.for_role(WorkerRole.EMBED).adapter),
+    )
     return slots * _EMBED_INFLIGHT_PER_REPLICA if slots > 1 else 0
 
 
+def embed_inflight_target() -> int:
+    """The fleet's admission target, or 0 when the fleet cannot be sized.
+
+    A ``ProviderError`` returns 0: the embed call and the engine start raise it
+    again with the user text. Any other error propagates.
+    """
+    from lilbee.providers.base import ProviderError
+
+    try:
+        return fleet_inflight_target()
+    except ProviderError as exc:
+        log.debug("embed fleet not sizable (%s); sizing admission from the CPU quota", exc)
+        return 0
+
+
 @functools.cache
+def _fleet_sized_workers() -> int:
+    """The pool size from a successful fleet sizing; a failed probe raises and is not kept.
+
+    ``functools.cache`` keeps return values only, so the CPU default a failed probe
+    gives is never remembered. The next call asks the device probe cache again, which
+    holds the failure for its own window and then probes afresh.
+    """
+    from lilbee.core.config import active_config
+
+    inflight = active_config().ingest_max_inflight or fleet_inflight_target()
+    return max(_default_workers(), inflight)
+
+
+def reset_max_workers() -> None:
+    """Forget the fleet-sized pool count and the warned override values.
+
+    The next ``max_workers`` call sizes the pool again and warns again about a bad override.
+    """
+    _fleet_sized_workers.cache_clear()
+    _warn_ignored_override.cache_clear()
+
+
 def max_workers() -> int:
     """The ingest pool's worker count -- its hard concurrency ceiling.
 
     The adaptive-concurrency controller uses this as the upper bound on in-flight
     documents, since each one needs a pool thread to run its blocking extraction.
-    Resolved once and cached: the pool is built with this same value on first use,
-    so re-reading ``LILBEE_INGEST_MAX_WORKERS`` per call would let the reported
-    ceiling drift away from the pool that actually exists.
+    Inside an ingest run it is the size of that run's pool, so the reported ceiling
+    cannot drift away from the pool that actually exists. Outside a run, a fleet
+    sizing that succeeded is kept; a failed device probe gives the CPU default only
+    until the probe cache's failure window ends.
 
     Extraction rasterizes PDFs and drives OCR on this pool. The default caps at
     ``min(32, cpu_count + 4)``: a worker-count sweep on forced-OCR multi-page PDFs
@@ -72,40 +112,79 @@ def max_workers() -> int:
     override lifts the ceiling for genuinely CPU-bound work (e.g. bulk text
     extraction) that can use more threads; non-positive or unparseable values warn
     and fall back to the default.
+
+    It probes the embed fleet's devices, so call it off the event loop.
     """
-    override = os.environ.get(_MAX_WORKERS_ENV)
+    from lilbee.providers.base import ProviderError
+
+    run_workers = _run_workers.get()
+    if run_workers is not None:
+        return run_workers
+    override = _worker_override()
     if override is not None:
-        try:
-            value = int(override)
-            if value > 0:
-                return value
-        except ValueError:
-            pass  # bad override falls through to the warning + default below
-        log.warning(
-            "Ignoring %s=%r: must be a positive integer; using default.",
-            _MAX_WORKERS_ENV,
-            override,
-        )
-    default = min(32, (os.cpu_count() or 4) + 4)
+        return override
     # The pool (and thus the adaptive controller's permit_max, which is this
     # value) must be able to feed the admission ceiling, or in adaptive mode the
     # gate clamps back to 32 and a multi-GPU fleet stays starved. Size it to the
     # explicit ingest_max_inflight override, else auto-scale with the detected
     # embed fleet so no manual cap is needed on a multi-GPU box.
-    from lilbee.core.config import active_config
+    try:
+        return _fleet_sized_workers()
+    except ProviderError as exc:
+        log.debug("embed fleet not sizable (%s); sizing the pool from the CPU quota", exc)
+        return _default_workers()
 
-    inflight = active_config().ingest_max_inflight or embed_inflight_target()
-    return max(default, inflight)
+
+def _default_workers() -> int:
+    """The CPU-bound worker count: ``min(32, cpu_count + 4)``."""
+    return min(32, (os.cpu_count() or 4) + 4)
+
+
+def _worker_override() -> int | None:
+    """The ``LILBEE_INGEST_MAX_WORKERS`` count, or ``None`` when unset or not a positive int."""
+    override = os.environ.get(_MAX_WORKERS_ENV)
+    if override is None:
+        return None
+    try:
+        value = int(override)
+        if value > 0:
+            return value
+    except ValueError:
+        pass  # bad override falls through to the warning + default below
+    _warn_ignored_override(override)
+    return None
+
+
+@functools.cache
+def _warn_ignored_override(override: str) -> None:
+    """Warn about a bad ``LILBEE_INGEST_MAX_WORKERS`` value once per process.
+
+    ``max_workers`` reads the override on every call outside an ingest run, so the
+    warning is kept by value here and not by the caller's result.
+    """
+    log.warning(
+        "Ignoring %s=%r: must be a positive integer; using default.",
+        _MAX_WORKERS_ENV,
+        override,
+    )
 
 
 @functools.cache
 def _ingest_executor() -> ThreadPoolExecutor:
-    """The shared ingest pool for work outside an ingest run, created on first use."""
-    return ThreadPoolExecutor(max_workers=max_workers(), thread_name_prefix=_POOL_THREAD_PREFIX)
+    """The shared ingest pool for work outside an ingest run, created on first use.
+
+    It is built on the event loop, so its size never probes the devices: no ingest run
+    admits work onto it, so it needs no room for the embed fleet's admission ceiling.
+    """
+    workers = _worker_override() or _default_workers()
+    return ThreadPoolExecutor(max_workers=workers, thread_name_prefix=_POOL_THREAD_PREFIX)
 
 
 _run_pool: contextvars.ContextVar[ThreadPoolExecutor | None] = contextvars.ContextVar(
     "lilbee_ingest_run_pool", default=None
+)
+_run_workers: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "lilbee_ingest_run_workers", default=None
 )
 
 
@@ -116,11 +195,14 @@ def owns_ingest_pool(
 
     @functools.wraps(run)
     async def _with_pool(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        pool = ThreadPoolExecutor(max_workers=max_workers(), thread_name_prefix=_POOL_THREAD_PREFIX)
+        workers = await asyncio.to_thread(max_workers)
+        pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=_POOL_THREAD_PREFIX)
         token = _run_pool.set(pool)
+        workers_token = _run_workers.set(workers)
         try:
             return await run(*args, **kwargs)
         finally:
+            _run_workers.reset(workers_token)
             _run_pool.reset(token)
             pool.shutdown(wait=False, cancel_futures=True)
 

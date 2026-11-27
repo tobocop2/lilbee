@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from lilbee.modelhub.registry import ModelRegistry
+    from lilbee.providers.fleet.engines import EngineAdapter
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.core.health_warnings import HealthWarning, WarningCode
@@ -32,6 +33,7 @@ from lilbee.providers.model_cache import (
     kv_bytes_per_token,
 )
 from lilbee.providers.model_ref import is_loose_model_file
+from lilbee.retrieval.embedding_profiles import resolve_embedding_profile
 
 log = logging.getLogger(__name__)
 
@@ -42,22 +44,20 @@ EMBED_FALLBACK_CTX = 2048
 _EMBED_CTX_MARGIN = 8
 
 
+INPUT_HEADROOM_TOKENS = 128
+"""Tokens an embed or rerank input carries beyond its chunk: a rerank query, or the title,
+the situating sentence and the prefix of an embed input."""
+
+
 def resolve_embed_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
-    """Embed/rerank context: worst-case chunk tokenization, capped by trained context.
+    """Embed/rerank context: a full chunk plus its headroom, capped by trained context.
 
-    ``chunk_size`` is token-denominated but the chunker enforces a CHARACTER
-    budget (``chunk_size * CHARS_PER_TOKEN``). A BPE token is at least one
-    character, so that char budget is also the provable token ceiling for any
-    chunk the chunker can emit: size the context to it and embed-time
-    truncation becomes impossible. Token-dense text (numeric tables, dense
-    identifiers) otherwise reaches ~2x chunk_size tokens against a 1x cap and
-    silently loses its tail at embed time. A trained context below that budget
-    caps the window instead, and the chunker then sizes chunks in the embedder's
-    own tokens at the served cap (see :func:`embed_token_cap`)."""
-    from lilbee.data.extract.chunk import CHARS_PER_TOKEN
-
+    Every chunker cuts its chunks to ``chunk_size`` tokens of the embedder's own tokenizer,
+    so that count, not a character count, bounds the input. A trained context below it
+    caps the window: the title then gets only the room the window leaves after a full chunk,
+    and ingest refuses a window smaller than one chunk (see :func:`embed_window_warning`)."""
     train_ctx = train_ctx_from_meta(meta, fallback=EMBED_FALLBACK_CTX, model_path=model_path)
-    return min(train_ctx, cfg.chunk_size * CHARS_PER_TOKEN + _EMBED_CTX_MARGIN)
+    return min(train_ctx, cfg.chunk_size + INPUT_HEADROOM_TOKENS + _EMBED_CTX_MARGIN)
 
 
 def embed_token_cap(ctx: int) -> int:
@@ -65,41 +65,31 @@ def embed_token_cap(ctx: int) -> int:
     return max(1, ctx - _EMBED_CTX_MARGIN)
 
 
-def embed_window_warning(cap: int) -> HealthWarning | None:
-    """The embed-window warning for a real, actionable gap, else None.
+def embed_input_reserve() -> int:
+    """Tokens every embed input carries beside its chunk: the document prefix and the newline.
 
-    Plain chunking self-corrects to token sizing when *cap* binds, so it loses
-    no text and needs no warning. Semantic chunking ignores token sizing and
-    stays character-sized, so a bound *cap* loses text there regardless of the
-    ``token_sizing`` setting.
+    Counted at one token a character, which no tokenizer exceeds on the ASCII prefixes, so
+    the count needs no engine and the health route and ingest reach the same answer.
     """
-    from lilbee.data.extract.chunk import CHARS_PER_TOKEN
+    return len(resolve_embedding_profile(cfg.embedding_model).doc_prefix) + 1
 
-    if cfg.semantic_chunking:
-        chars = cfg.chunk_size * CHARS_PER_TOKEN
-        if cap >= chars:
-            return None
-        return HealthWarning(
-            code=WarningCode.EMBED_WINDOW_BELOW_CHUNK,
-            message=(
-                f"The embedding model accepts {cap} tokens per input, below the {chars} "
-                f"characters that chunk_size {cfg.chunk_size} allows. Semantic chunking "
-                f"sizes chunks by characters and ignores token sizing, so a chunk over "
-                f"{cap} tokens loses text at embedding time."
-            ),
-            remedy="Turn off semantic_chunking or lower chunk_size.",
-        )
-    if cfg.token_sizing and cap < cfg.chunk_size:
-        return HealthWarning(
-            code=WarningCode.EMBED_WINDOW_BELOW_CHUNK,
-            message=(
-                f"The embedding model accepts {cap} tokens per input, below the configured "
-                f"chunk_size {cfg.chunk_size} in tokens. Chunks are capped to {cap} tokens "
-                f"instead."
-            ),
-            remedy=f"Set chunk_size to {cap} to match the window.",
-        )
-    return None
+
+def embed_window_warning(cap: int) -> HealthWarning | None:
+    """The warning that one chunk and :func:`embed_input_reserve` do not fit *cap*, else None.
+
+    Ingest refuses on the same warning, so the health route shows it whenever ingest refuses.
+    The remedy names the chunk size that leaves the full headroom.
+    """
+    if cap >= cfg.chunk_size + embed_input_reserve():
+        return None
+    return HealthWarning(
+        code=WarningCode.EMBED_WINDOW_BELOW_CHUNK,
+        message=(
+            f"The embedding model accepts {cap} tokens per input; "
+            f"chunk_size {cfg.chunk_size} does not fit."
+        ),
+        remedy=f"Set chunk_size to {max(1, cap - INPUT_HEADROOM_TOKENS)} or lower.",
+    )
 
 
 _LLM_RERANK_HEADROOM = 512
@@ -158,7 +148,6 @@ def resolve_model_path(model: str, registry: ModelRegistry | None = None) -> Pat
         raise ProviderError(
             "No model is configured for this role. Pick one from the catalog "
             "or run 'lilbee model pull <model>'.",
-            provider="llama-server",
             kind=ProviderErrorKind.NOT_FOUND,
         )
     if registry is None:
@@ -176,18 +165,16 @@ def resolve_model_path(model: str, registry: ModelRegistry | None = None) -> Pat
     if Path(model).is_absolute():
         raise ProviderError(
             f"Model file not found: {model}",
-            provider="llama-server",
             kind=ProviderErrorKind.NOT_FOUND,
         )
 
     raise ProviderError(
-        f"Model {model!r} is not installed. Run 'lilbee model pull {model}' to download it.",
-        provider="llama-server",
+        f"Model '{model}' is not installed. Run 'lilbee model pull {model}' to download it.",
         kind=ProviderErrorKind.NOT_FOUND,
     )
 
 
-def chat_kv_elem_bytes() -> float:
+def chat_kv_elem_bytes(engine: EngineAdapter) -> float:
     """Per-element byte cost of the K and V cache a chat launch allocates.
 
     Reads the flag the launch passes for both K and V
@@ -197,7 +184,7 @@ def chat_kv_elem_bytes() -> float:
     # call-time import: planning imports this module at load
     from lilbee.providers.fleet.planning import chat_cache_type_flag
 
-    flag = chat_cache_type_flag()
+    flag = chat_cache_type_flag(engine)
     return KV_CACHE_TYPE_BYTES[KvCacheType(flag) if flag else KvCacheType.F16]
 
 
@@ -209,8 +196,17 @@ def chat_ctx_ceiling(meta: dict[str, str] | None, model_path: Path) -> int:
     return training_ctx
 
 
+def chat_ctx_bound(meta: dict[str, str] | None, model_path: Path) -> int:
+    """The unpinned chat context of a launch: the trained window and cap, within the target."""
+    return min(chat_ctx_ceiling(meta, model_path), cfg.chat_n_ctx_target)
+
+
 def resolve_chat_ctx(
-    model_path: Path, meta: dict[str, str] | None, *, available_bytes: int | None = None
+    model_path: Path,
+    meta: dict[str, str] | None,
+    *,
+    engine: EngineAdapter,
+    available_bytes: int | None = None,
 ) -> int:
     """Pick a single-GPU chat n_ctx aiming for ``cfg.chat_n_ctx_target``, clamped to model + host.
 
@@ -220,7 +216,8 @@ def resolve_chat_ctx(
     estimator cannot answer; it charges every layer as dense attention over the
     whole window, which under-grants linear-attention, sliding-window and MLA
     models. Either way the window stops at the smallest of the trained context,
-    ``cfg.num_ctx_max`` and the target.
+    ``cfg.num_ctx_max`` and the target. A fixed reserve takes that bound at once,
+    because its figure does not follow the window.
 
     A multi-GPU tensor-split chat is sized separately by the fleet against its
     per-device headroom (see :func:`lilbee.providers.fleet.ctx.fit_split_ctx`).
@@ -232,21 +229,27 @@ def resolve_chat_ctx(
     a reload sizes ctx like the boot did.
     """
     # call-time import: planning imports this module at load
+    from lilbee.providers.fleet.memory_types import MemoryKind
     from lilbee.providers.fleet.planning import fit_chat_ctx
 
     training_ctx = train_ctx_from_meta(meta, fallback=DEFAULT_NUM_CTX, model_path=model_path)
-    ceiling = cfg.num_ctx_max if cfg.num_ctx_max is not None else training_ctx
+    ceiling = chat_ctx_ceiling(meta, model_path)
+    upper = chat_ctx_bound(meta, model_path)
+    if engine.memory_kind is MemoryKind.FIXED_RESERVE:
+        return upper
     if available_bytes is None:
         available_bytes = get_available_memory(cfg.gpu_memory_fraction)
-    upper = min(training_ctx, ceiling, cfg.chat_n_ctx_target)
 
     try:
-        return fit_chat_ctx(model_path, meta, available_bytes=available_bytes, ctx_ceiling=upper)
+        return fit_chat_ctx(
+            model_path, meta, available_bytes=available_bytes, ctx_ceiling=upper, engine=engine
+        )
     except (ProviderError, OSError, ValueError):
         log.debug("gguf-parser ctx fit failed for %s, using header math", model_path, exc_info=True)
     return _header_math_chat_ctx(
         model_path,
         meta,
+        engine=engine,
         available_bytes=available_bytes,
         training_ctx=training_ctx,
         ceiling=ceiling,
@@ -257,6 +260,7 @@ def _header_math_chat_ctx(
     model_path: Path,
     meta: dict[str, str] | None,
     *,
+    engine: EngineAdapter,
     available_bytes: int,
     training_ctx: int,
     ceiling: int,
@@ -264,7 +268,7 @@ def _header_math_chat_ctx(
     """Window from GGUF header arithmetic: weights plus a dense-attention cache."""
     try:
         model_bytes = model_path.stat().st_size
-        elem_bytes = chat_kv_elem_bytes()
+        elem_bytes = chat_kv_elem_bytes(engine)
         kv_per_tok = kv_bytes_per_token(meta, elem_bytes, elem_bytes)
         return compute_dynamic_ctx(
             model_bytes=model_bytes,
@@ -276,7 +280,7 @@ def _header_math_chat_ctx(
         )
     except (OSError, ValueError):
         log.debug("dynamic ctx sizing failed for %s, using static cap", model_path, exc_info=True)
-        return min(training_ctx, cfg.chat_n_ctx_target)
+        return chat_ctx_bound(meta, model_path)
 
 
 # Tokens the minimum grounded prompt allows for the question plus the context

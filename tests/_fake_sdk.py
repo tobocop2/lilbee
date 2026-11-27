@@ -1,14 +1,15 @@
 """A stand-in for the ``liter_llm`` module, injected where the extra is not installed.
 
-It models the declared surface of liter-llm 2.4.1 (its type stub), never the adapter's
+It models the declared surface of liter-llm 2.5.0 (its type stub), never the adapter's
 reading of it: reply objects carry the documented accessors and nothing the stub omits.
 It has the async ``chat`` / ``chat_stream`` / ``embed`` / ``rerank`` functions, the
-request and options types, and the typed exception hierarchy. Each call
+sync ``count_tokens``, the request and options types, and the typed exception hierarchy. Each call
 records the fields it received so a test can assert what went on the wire.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import types
 from collections.abc import AsyncIterator, Iterator
@@ -32,12 +33,30 @@ ERROR_NAMES = (
     "LiterLlmTimeoutError",
     "NetworkError",
     "NotFoundError",
+    "OutboundForbiddenError",
     "ProviderQuotaExceededError",
     "RateLimitedError",
+    "SerializationError",
     "ServerError",
     "ServiceUnavailableError",
     "StreamingError",
 )
+
+
+# The classes whose stub declares ``message`` and ``status``; a raised one carries the
+# server's reply and its HTTP status.
+STATUS_ERROR_NAMES = ("BadRequestError",)
+
+
+def _status_error_init(self: Any, message: str, status: int = 400) -> None:
+    """Set the reply text and status.
+
+    The SDK sets ``message`` to the ``error.message`` of an OpenAI-style reply, as bare text,
+    and to the raw body for any other reply.
+    """
+    Exception.__init__(self, message)
+    self.message = message
+    self.status = status
 
 
 def _ns(**kwargs: Any) -> types.SimpleNamespace:
@@ -105,7 +124,7 @@ def finish_member(wire: str) -> FinishReason:
 
 
 class ReasoningEffort(_Enum):
-    """Mirrors ``liter_llm.ReasoningEffort`` 2.4.1."""
+    """Mirrors ``liter_llm.ReasoningEffort`` 2.5.0."""
 
     LOW: ReasoningEffort
     MEDIUM: ReasoningEffort
@@ -160,16 +179,18 @@ def text_response(
     finish: str = "stop",
     usage: Usage | None = None,
     parts: list[tuple[str, str]] | None = None,
+    reasoning: str | None = None,
 ) -> Any:
     """A chat response whose first choice carries *content* (``None`` for no content).
 
-    With *parts*, the reply is a parts reply and *content* is ignored.
+    With *parts*, the reply is a parts reply and *content* is ignored. *reasoning* is the
+    server-extracted reasoning text the message carries.
     """
     if parts is not None:
         body: Any = AssistantContent.from_parts(parts)
     else:
         body = None if content is None else AssistantContent.from_text(content)
-    message = _ns(content=body, tool_calls=None)
+    message = _ns(content=body, tool_calls=None, reasoning_content=reasoning)
     return _ns(
         model=model,
         choices=[_ns(message=message, finish_reason=finish_member(finish))],
@@ -180,7 +201,7 @@ def text_response(
 def tool_call_response(call_id: str, name: str, arguments: str) -> Any:
     """A chat response whose first choice asks for one tool call."""
     call = _ns(id=call_id, function=_ns(name=name, arguments=arguments))
-    message = _ns(content=None, tool_calls=[call])
+    message = _ns(content=None, tool_calls=[call], reasoning_content=None)
     return _ns(
         model="fake-model",
         choices=[_ns(message=message, finish_reason=FinishReason.TOOL_CALLS)],
@@ -193,9 +214,10 @@ def chunk(
     *,
     finish: str | None = None,
     tool_calls: list[Any] | None = None,
+    reasoning: str | None = None,
 ) -> Any:
-    """A streaming chunk with one choice."""
-    delta = _ns(content=content, tool_calls=tool_calls)
+    """A streaming chunk with one choice; *reasoning* is the extracted reasoning delta."""
+    delta = _ns(content=content, tool_calls=tool_calls, reasoning_content=reasoning)
     reason = finish_member(finish) if finish is not None else None
     return _ns(choices=[_ns(delta=delta, finish_reason=reason)], usage=None)
 
@@ -281,8 +303,13 @@ class FakeSdk:
     rerank_result: Any = None
     rerank_error: BaseException | None = None
     catalog: list[Any] = field(default_factory=list)
+    count_result: int = 0
+    count_error: BaseException | None = None
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     clients: list[dict[str, Any]] = field(default_factory=list)
+    # The address the endpoint resolves to; a chat call from a client that carries a
+    # blocked-network rule covering it fails like the real client's connect check.
+    server_address: str | None = None
     _module: types.ModuleType | None = field(default=None, repr=False)
 
     def last(self, name: str) -> dict[str, Any]:
@@ -295,7 +322,8 @@ class FakeSdk:
         base = type("LiterLlmError", (Exception,), {})
         mod.LiterLlmError = base  # type: ignore[attr-defined]
         for name in ERROR_NAMES:
-            setattr(mod, name, type(name, (base,), {}))
+            body = {"__init__": _status_error_init} if name in STATUS_ERROR_NAMES else {}
+            setattr(mod, name, type(name, (base,), body))
         for cls in (_ClientOptions, _ChatRequest, _EmbedRequest, _RerankRequest, _Tool):
             setattr(mod, cls.public_name, cls)
         mod.FinishReason = FinishReason  # type: ignore[attr-defined]
@@ -306,6 +334,7 @@ class FakeSdk:
         mod.embed = self._embed  # type: ignore[attr-defined]
         mod.rerank = self._rerank  # type: ignore[attr-defined]
         mod.list_catalog_models = self._list_catalog_models  # type: ignore[attr-defined]
+        mod.count_tokens = self._count_tokens  # type: ignore[attr-defined]
         return mod
 
     def _create_client(self, options: Any) -> Any:
@@ -318,14 +347,25 @@ class FakeSdk:
         if self.require_key and not options["api_key"] and options["base_url"] is None:
             raise self.error("AuthenticationError", "no API key provided")
 
+    def _check_connect(self, client: Any) -> None:
+        """Refuse the connect when the client's blocked-network rule covers the server."""
+        rule = client.options.get("blocked_networks")
+        if self.server_address is None or not rule:
+            return
+        address = ipaddress.ip_address(self.server_address)
+        if any(address in ipaddress.ip_network(network) for network in rule):
+            raise self.error("OutboundForbiddenError", f"{address} is blocked")
+
     async def _chat(self, client: Any, req: Any) -> Any:
         self._check_key(client)
+        self._check_connect(client)
         self.calls.append(("chat", req.fields))
         if self.chat_error is not None:
             raise self.chat_error
         return self.chat_result
 
     async def _chat_stream(self, client: Any, req: Any) -> AsyncIterator[Any]:
+        self._check_connect(client)
         self.calls.append(("chat_stream", req.fields))
         if self.stream_open_error is not None:
             raise self.stream_open_error
@@ -346,15 +386,29 @@ class FakeSdk:
             raise self.rerank_error
         return self.rerank_result
 
+    def _count_tokens(self, model: str, text: str) -> int:
+        self.calls.append(("count_tokens", {"model": model, "text": text}))
+        if self.count_error is not None:
+            raise self.count_error
+        return self.count_result
+
     def _list_catalog_models(self, provider: str | None = None) -> list[Any]:
         """Like the library: exact provider id, every provider when absent or empty."""
         self.calls.append(("list_catalog_models", {"provider": provider}))
         return [m for m in self.catalog if not provider or m.provider == provider]
 
-    def error(self, name: str, message: str = "boom") -> BaseException:
-        """Build an instance of the fake module's exception class *name*."""
+    def error(
+        self, name: str, message: str = "boom", *, status: int | None = None
+    ) -> BaseException:
+        """Build an instance of the fake module's exception class *name*.
+
+        *status* is the HTTP status of the reply, for a class that carries one.
+        """
         error_class: type[BaseException] = getattr(self.module_cached(), name)
-        return error_class(message)
+        if status is None:
+            return error_class(message)
+        assert name in STATUS_ERROR_NAMES, f"{name} carries no status"
+        return error_class(message, status)
 
     def module_cached(self) -> types.ModuleType:
         """The module injected by ``installed``; built once per fake."""

@@ -1,16 +1,20 @@
 """Tests for the `lilbee placement` CLI sub-app."""
 
 import json
+from dataclasses import replace
+from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 import lilbee.cli.placement as cli_placement
-from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+from lilbee.app.placement import GpuInfo, PlacementRefusal, PlacementView, RolePlacementView
 from lilbee.cli.placement import placement_app
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import EngineBackend, WorkerRole
+from tests._cli_text import plain_cli_text
 
 runner = CliRunner()
 _GIB = 1024**3
@@ -19,7 +23,7 @@ _GIB = 1024**3
 def _view(manual: bool = False) -> PlacementView:
     return PlacementView(
         gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100-SXM4-80GB", 80 * _GIB, 72 * _GIB),),
-        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1),),
+        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp"),),
         unplaceable=(),
         manual=manual,
         spec_json='{"chat": {"devices": [0]}}' if manual else None,
@@ -41,7 +45,7 @@ def _view_with_skipped() -> PlacementView:
 
     return PlacementView(
         gpus=(GpuInfo(0, "MTL", "MTL0", "Apple M3", 24 * _GIB, 20 * _GIB),),
-        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),),
+        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),),
         unplaceable=(),
         manual=False,
         spec_json=None,
@@ -61,11 +65,13 @@ def test_show_renders_not_downloaded_note(monkeypatch: object) -> None:
 def _view_with_rejected_spec() -> PlacementView:
     return PlacementView(
         gpus=(GpuInfo(0, "Vulkan", "Vulkan0", "Intel Iris Xe", 8 * _GIB, 6 * _GIB),),
-        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),),
+        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),),
         unplaceable=(),
         manual=False,
         spec_json=None,
         rejected_spec_json='{"embed": {"devices": [1]}}',
+        refusal="embed is pinned to device 1, and this computer has no device 1.",
+        refusal_kind=PlacementRefusal.REFUSED,
     )
 
 
@@ -74,7 +80,7 @@ def test_show_reports_a_saved_placement_that_is_being_ignored(monkeypatch: objec
     monkeypatch.setattr(cli_placement, "get_placement", _view_with_rejected_spec)
     result = runner.invoke(placement_app, ["show"])
     assert result.exit_code == 0
-    assert "does not fit this hardware" in result.stdout
+    assert "this computer has no device 1" in plain_cli_text(result.stdout)
     assert "placement clear" in result.stdout
 
 
@@ -97,6 +103,82 @@ def test_show_json_includes_skipped_not_installed(monkeypatch: object) -> None:
     assert data["skipped_not_installed"] == [{"role": "chat", "model": "org/Qwen3-4B.gguf"}]
 
 
+_HIDDEN_NOTE = (
+    "Intel GPU not used: lilbee runs the engine on the NVIDIA GPU. "
+    "To use the Intel GPU, set VK_LOADER_DRIVERS_DISABLE=nomatch* and start lilbee again."
+)
+
+
+def _view_with_hidden_gpu() -> PlacementView:
+    return replace(_view(), hidden_gpus=("Intel",), hidden_note=_HIDDEN_NOTE)
+
+
+def test_show_prints_the_note_for_a_hidden_gpu(monkeypatch: object) -> None:
+    """A GPU the launch hides from the engine gets a line that says how to use it."""
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_hidden_gpu)
+    result = runner.invoke(placement_app, ["show"], terminal_width=300)
+    assert result.exit_code == 0
+    assert _HIDDEN_NOTE in result.stdout
+
+
+_SIZE_NOTICE = "The size of the chat model org/chat.gguf is unknown, so 8.0 GiB is reserved for it."
+
+
+def _view_with_size_unknown() -> PlacementView:
+    from lilbee.app.placement import SizeUnknownRole
+
+    return replace(
+        _view(), size_unknown=(SizeUnknownRole(WorkerRole.CHAT, "org/chat.gguf", _SIZE_NOTICE),)
+    )
+
+
+def test_show_prints_a_line_for_a_model_of_unknown_size(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_size_unknown)
+    result = runner.invoke(placement_app, ["show"], terminal_width=300)
+    assert result.exit_code == 0
+    assert result.stdout.count(_SIZE_NOTICE) == 1
+
+
+def test_show_prints_no_size_line_when_every_size_is_known(monkeypatch: object) -> None:
+    monkeypatch.setattr(
+        cli_placement, "get_placement", lambda: replace(_view(), engine_backend=EngineBackend.CUDA)
+    )
+    result = runner.invoke(placement_app, ["show"], terminal_width=300)
+    assert "unknown" not in result.stdout
+
+
+def test_show_json_lists_the_model_of_unknown_size(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_size_unknown)
+    monkeypatch.setattr(cfg, "json_mode", True)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["size_unknown"] == [
+        {"role": "chat", "model": "org/chat.gguf", "notice": _SIZE_NOTICE}
+    ]
+
+
+def test_show_json_lists_nothing_when_every_size_is_known(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", lambda: _view())
+    monkeypatch.setattr(cfg, "json_mode", True)
+    result = runner.invoke(placement_app, ["show"])
+    assert json.loads(result.stdout)["size_unknown"] == []
+
+
+def test_show_prints_no_hidden_gpu_note_when_nothing_is_hidden(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", lambda: _view())
+    result = runner.invoke(placement_app, ["show"], terminal_width=300)
+    assert result.exit_code == 0
+    assert "not used" not in result.stdout
+
+
+def test_show_json_names_the_hidden_gpu(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_hidden_gpu)
+    monkeypatch.setattr(cfg, "json_mode", True)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["hidden_gpus"] == ["Intel"]
+
+
 def test_show_json_mode_emits_valid_json(monkeypatch: object) -> None:
     """--json (global flag -> cfg.json_mode) makes placement emit machine-readable
     JSON instead of a Rich table, so scripts can consume it."""
@@ -111,11 +193,112 @@ def test_show_json_mode_emits_valid_json(monkeypatch: object) -> None:
     assert data["spec_json"] == '{"chat": {"devices": [0]}}'
 
 
+def _view_with_charge() -> PlacementView:
+    return PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * _GIB, 72 * _GIB),),
+        roles=(
+            RolePlacementView(
+                WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp", charge_bytes=7 * _GIB
+            ),
+        ),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+    )
+
+
+def test_show_prints_each_roles_charge(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", lambda: _view_with_charge())
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert "charge=7.0 GiB" in result.stdout
+    assert "charge=none" not in result.stdout
+
+
+def _view_with_small_and_absent_charges() -> PlacementView:
+    return PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * _GIB, 72 * _GIB),),
+        roles=(
+            RolePlacementView(
+                WorkerRole.EMBED,
+                "org/embed.gguf",
+                (0,),
+                None,
+                1,
+                "llama.cpp",
+                charge_bytes=40 << 20,
+            ),
+            RolePlacementView(WorkerRole.RERANK, "org/rerank.gguf", (0,), None, 1, "llama.cpp"),
+        ),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+    )
+
+
+def test_show_prints_a_small_charge_in_mib_and_a_missing_charge_as_none(
+    monkeypatch: object,
+) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_small_and_absent_charges)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert "charge=40 MiB" in result.stdout
+    assert "charge=none" in result.stdout
+    assert " 0.0 GiB" not in result.stdout
+
+
+def test_show_prints_a_card_with_little_free_memory_in_mib_not_zero_gib(
+    monkeypatch: object,
+) -> None:
+    view = replace(
+        _view(), gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * _GIB, 300 * 1024**2),)
+    )
+    monkeypatch.setattr(cli_placement, "get_placement", lambda: view)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert "300 MiB / 80.0 GiB" in plain_cli_text(result.stdout)
+    assert "0 / 80" not in result.stdout
+
+
+def test_show_prints_a_zero_charge_as_zero_mib_not_none(monkeypatch: object) -> None:
+    view = PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * _GIB, 72 * _GIB),),
+        roles=(
+            RolePlacementView(
+                WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp", charge_bytes=0
+            ),
+        ),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+    )
+    monkeypatch.setattr(cli_placement, "get_placement", lambda: view)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert "charge=0 MiB" in result.stdout
+    assert "charge=none" not in result.stdout
+
+
+def test_show_json_reports_a_missing_charge_as_null(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_small_and_absent_charges)
+    monkeypatch.setattr(cfg, "json_mode", True)
+    result = runner.invoke(placement_app, ["show"])
+    roles = json.loads(result.stdout)["roles"]
+    assert [r["charge_bytes"] for r in roles] == [40 << 20, None]
+
+
+def test_show_json_reports_each_roles_charge(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", lambda: _view_with_charge())
+    monkeypatch.setattr(cfg, "json_mode", True)
+    result = runner.invoke(placement_app, ["show"])
+    assert json.loads(result.stdout)["roles"][0]["charge_bytes"] == 7 * _GIB
+
+
 def test_show_json_mode_error_emits_error_object(monkeypatch: object) -> None:
     """A known failure in --json mode emits {"error": ...}, not a Rich error line."""
 
     def _boom() -> PlacementView:
-        raise ProviderError("engine binary missing", provider="llama-server")
+        raise ProviderError("engine binary missing")
 
     monkeypatch.setattr(cli_placement, "get_placement", _boom)
     monkeypatch.setattr(cfg, "json_mode", True)
@@ -204,7 +387,7 @@ def test_show_reports_co_tenant_roles(monkeypatch: object) -> None:
         unplaceable=(),
         manual=False,
         spec_json=None,
-        co_tenants=(WorkerRole.CHAT, WorkerRole.VISION),
+        swap_classes=(frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION})),
     )
     monkeypatch.setattr(cli_placement, "get_placement", lambda: view)
     result = runner.invoke(placement_app, ["show"])
@@ -324,3 +507,50 @@ def test_set_inline_json_spec(monkeypatch: object) -> None:
     assert result.exit_code == 0
     assert isinstance(seen["spec"], PlacementSpec)
     assert seen["spec"].roles[WorkerRole.CHAT].devices == (0, 1)
+
+
+@pytest.mark.parametrize(
+    ("argv", "action"),
+    [
+        (["show"], "get_placement"),
+        (["preview"], "preview_placement"),
+        (["set", "--spec", '{"chat": {"devices": [0]}}'], "set_placement"),
+        (["clear"], "set_placement"),
+    ],
+)
+def test_placement_command_starts_no_fleet_warm_up(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], action: str
+) -> None:
+    """Planning builds the services container; no command may start a warm-up with it."""
+    from lilbee.app import services as services_mod
+    from tests.conftest import make_mock_services
+
+    mock_services = make_mock_services()
+    monkeypatch.setattr(services_mod, "build_services", lambda *a, **k: mock_services)
+    monkeypatch.setattr("lilbee.app.settings.reconcile_embedding_dim", lambda registry: None)
+    monkeypatch.setattr(cfg, "worker_pool_eager_start", True)  # the shipped default
+
+    def _plans_through_the_container(*_args: object) -> PlacementView:
+        services_mod.get_services()  # what resolving a model path does while planning
+        return _view()
+
+    monkeypatch.setattr(cli_placement, action, _plans_through_the_container)
+    result = runner.invoke(placement_app, argv)
+    assert result.exit_code == 0
+    mock_services.provider.warm_up_pool.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["show"],
+        ["preview"],
+        ["set", "--spec", '{"chat": {"devices": [0]}}'],
+        ["clear"],
+    ],
+)
+def test_placement_command_refuses_global_with_data_dir(tmp_path: Path, argv: list[str]) -> None:
+    """Each command passes --global and --data-dir on to the shared override check."""
+    result = runner.invoke(placement_app, [*argv, "--global", "--data-dir", str(tmp_path)])
+    assert result.exit_code == 2
+    assert "Cannot use --global with --data-dir" in plain_cli_text(result.output)

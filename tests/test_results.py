@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import json
 
-from lilbee.core.results import group, to_dicts
+from lilbee.core.results import DocumentResult, to_dicts
+from lilbee.core.results import group as _group
 from lilbee.data.store import SearchChunk
+
+
+def group(chunks: list[SearchChunk]) -> list[DocumentResult]:
+    """Group with a vault resolver that finds nothing, as an unset vault does."""
+    return _group(chunks, lambda source: None)
 
 
 def _chunk(
@@ -162,3 +168,8 @@ def test_hybrid_results_sorted_by_canonical_score() -> None:
     results = group(chunks)
     assert results[0].excerpts[0].content == "high"
     assert results[0].excerpts[1].content == "low"
+
+
+def test_group_stamps_the_path_the_given_resolver_returns() -> None:
+    results = _group([_chunk(source="a.md"), _chunk(source="b.md")], lambda s: f"vault/{s}")
+    assert {r.source: r.vault_path for r in results} == {"a.md": "vault/a.md", "b.md": "vault/b.md"}

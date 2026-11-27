@@ -8,8 +8,22 @@ import pytest
 
 from lilbee.app.services import get_services, set_services
 from lilbee.core.config import cfg
-from lilbee.data.store import ChunkType, MemoryRow, SearchChunk
-from lilbee.providers.base import ChatResult, FinishReason, estimate_budget_tokens
+from lilbee.data.store import (
+    ChunkType,
+    EmbeddingEngineChangedError,
+    HeldOut,
+    HeldRecord,
+    MemoryRow,
+    SearchChunk,
+    Store,
+)
+from lilbee.providers.base import (
+    ChatResult,
+    FinishReason,
+    ProviderError,
+    ProviderErrorKind,
+    estimate_budget_tokens,
+)
 from lilbee.retrieval.query import (
     SOURCES_BLOCK_MARKER,
     Searcher,
@@ -813,7 +827,9 @@ class TestExpandQuery:
         mock_svc.provider.chat.return_value = _text_result(
             "explain how X works in detail\nexplain the purpose of X"
         )
-        variants = get_services().searcher._expand_query("explain X in detail", self._QUESTION_VEC)
+        variants = get_services().searcher._expand_query(
+            "explain X in detail", self._QUESTION_VEC, []
+        )
         assert len(variants) == 2
         for text, vec in variants:
             assert isinstance(text, str)
@@ -842,7 +858,7 @@ class TestExpandQuery:
     def test_caps_at_three(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("A\nB\nC\nD\nE")
         variants = get_services().searcher._expand_query(
-            "explain how kubernetes pods schedule", self._QUESTION_VEC
+            "explain how kubernetes pods schedule", self._QUESTION_VEC, []
         )
         assert len(variants) == 3
 
@@ -877,14 +893,14 @@ class TestExpandQuery:
         mock_svc.provider.chat.side_effect = RuntimeError("no provider")
         assert (
             get_services().searcher._expand_query(
-                "explain how kubernetes pods schedule", self._QUESTION_VEC
+                "explain how kubernetes pods schedule", self._QUESTION_VEC, []
             )
             == []
         )
 
     def test_disabled_when_count_zero(self, mock_svc):
         cfg.query_expansion_count = 0
-        assert get_services().searcher._expand_query("anything", self._QUESTION_VEC) == []
+        assert get_services().searcher._expand_query("anything", self._QUESTION_VEC, []) == []
         cfg.query_expansion_count = 3
 
     def test_count_zero_still_runs_concept_expansion_when_enabled(self, mock_svc):
@@ -899,7 +915,7 @@ class TestExpandQuery:
         mock_svc.concepts.get_graph.return_value = True
         mock_svc.concepts.expand_query.return_value = ["kubernetes"]
         try:
-            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC)
+            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC, [])
             assert [text for text, _ in variants] == ["kubernetes"]
             mock_svc.provider.chat.assert_not_called()
         finally:
@@ -912,7 +928,7 @@ class TestExpandQuery:
         old = cfg.query_expansion_count
         cfg.query_expansion_count = 0
         try:
-            assert get_services().searcher._expand_query("q", self._QUESTION_VEC) == []
+            assert get_services().searcher._expand_query("q", self._QUESTION_VEC, []) == []
             mock_svc.provider.chat.assert_not_called()
             mock_svc.embedder.embed_query_batch.assert_not_called()
         finally:
@@ -922,7 +938,7 @@ class TestExpandQuery:
         mock_svc.provider.chat.return_value = iter(["stream"])
         assert (
             get_services().searcher._expand_query(
-                "kubernetes scheduling internals", self._QUESTION_VEC
+                "kubernetes scheduling internals", self._QUESTION_VEC, []
             )
             == []
         )
@@ -931,20 +947,20 @@ class TestExpandQuery:
         # 1-token query is below the default threshold of 2, so LLM expansion
         # should not fire. Concept-graph is off in this test, so the result is [].
         mock_svc.provider.chat.return_value = _text_result("should not be reached")
-        assert get_services().searcher._expand_query("k8s", self._QUESTION_VEC) == []
+        assert get_services().searcher._expand_query("k8s", self._QUESTION_VEC, []) == []
         mock_svc.provider.chat.assert_not_called()
 
     def test_skips_llm_at_threshold_boundary(self, mock_svc):
         # 2-token query == threshold; ≤ short_threshold means skip.
         mock_svc.provider.chat.return_value = _text_result("should not be reached")
-        assert get_services().searcher._expand_query("k8s pods", self._QUESTION_VEC) == []
+        assert get_services().searcher._expand_query("k8s pods", self._QUESTION_VEC, []) == []
         mock_svc.provider.chat.assert_not_called()
 
     def test_runs_llm_above_threshold(self, mock_svc):
         # 3-token query > threshold; LLM expansion runs.
         mock_svc.provider.chat.return_value = _text_result("v one\nv two")
         variants = get_services().searcher._expand_query(
-            "kubernetes scheduling internals", self._QUESTION_VEC
+            "kubernetes scheduling internals", self._QUESTION_VEC, []
         )
         assert len(variants) == 2
         mock_svc.provider.chat.assert_called_once()
@@ -953,7 +969,7 @@ class TestExpandQuery:
         # "R" is query content, so a 3-token query with a single-character
         # subject runs LLM expansion instead of skipping as short.
         mock_svc.provider.chat.return_value = _text_result("v one\nv two")
-        variants = get_services().searcher._expand_query("R intro guide", self._QUESTION_VEC)
+        variants = get_services().searcher._expand_query("R intro guide", self._QUESTION_VEC, [])
         assert len(variants) == 2
         mock_svc.provider.chat.assert_called_once()
 
@@ -962,7 +978,7 @@ class TestExpandQuery:
         cfg.expansion_short_query_tokens = 0
         mock_svc.provider.chat.return_value = _text_result("v one\nv two")
         try:
-            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC)
+            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC, [])
             assert len(variants) == 2
             mock_svc.provider.chat.assert_called_once()
         finally:
@@ -975,7 +991,7 @@ class TestExpandQuery:
         mock_svc.concepts.get_graph.return_value = True
         mock_svc.concepts.expand_query.return_value = ["kubernetes"]
         try:
-            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC)
+            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC, [])
             assert [text for text, _ in variants] == ["kubernetes"]
             mock_svc.provider.chat.assert_not_called()
         finally:
@@ -986,7 +1002,9 @@ class TestExpandQuery:
         mock_svc.provider.chat.return_value = _text_result(
             "variant one\nvariant two\nvariant three"
         )
-        get_services().searcher._expand_query("kubernetes scheduling internals", self._QUESTION_VEC)
+        get_services().searcher._expand_query(
+            "kubernetes scheduling internals", self._QUESTION_VEC, []
+        )
         assert mock_svc.embedder.embed_query_batch.call_count >= 1
         batch_call_args = mock_svc.embedder.embed_query_batch.call_args_list[0].args[0]
         assert len(batch_call_args) == 3
@@ -1004,7 +1022,7 @@ class TestExpandQuery:
         mock_svc.provider.chat.return_value = _text_result("restate one\nrestate two")
         try:
             get_services().searcher._expand_query(
-                "kubernetes scheduling internals", self._QUESTION_VEC
+                "kubernetes scheduling internals", self._QUESTION_VEC, []
             )
         finally:
             cfg.concept_graph = old_concept
@@ -1431,6 +1449,105 @@ class TestAskRaw:
         mock_svc.store.search.assert_not_called()
         mock_svc.provider.chat.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("names", "answer"),
+        [
+            (
+                ["bees.md"],
+                "Nothing is indexed: 1 document failed to ingest. "
+                "Run `lilbee status` to see why, then ask again.",
+            ),
+            (
+                ["bees.md", "ants.md", "wasps.md"],
+                "Nothing is indexed: 3 documents failed to ingest. "
+                "Run `lilbee status` to see why, then ask again.",
+            ),
+        ],
+    )
+    def test_empty_library_after_failed_ingests_names_the_failures(self, mock_svc, names, answer):
+        """Documents held out as failed are counted in the answer, which points at the
+        command that lists each reason; the store is not searched and the model is not called."""
+        mock_svc.store.has_chunks.return_value = False
+        mock_svc.store.held_records.return_value = {
+            name: HeldRecord(HeldOut.FAILED, "h", "dimension mismatch") for name in names
+        }
+        result = get_services().searcher.ask_raw("what do bees eat?")
+        assert result.answer == answer
+        assert result.sources == []
+        mock_svc.store.search.assert_not_called()
+        mock_svc.provider.chat.assert_not_called()
+
+    def test_empty_library_counts_only_failed_holds(self, mock_svc):
+        """A path the user removed is not a failed ingest: the guidance stays when the only
+        held records are removals, and the failed one alone is counted."""
+        mock_svc.store.has_chunks.return_value = False
+        mock_svc.store.held_records.return_value = {
+            "gone.md": HeldRecord(HeldOut.REMOVED, "h", "removed"),
+        }
+        assert get_services().searcher.ask_raw("hi").answer == EMPTY_LIBRARY
+        mock_svc.store.held_records.return_value = {
+            "gone.md": HeldRecord(HeldOut.REMOVED, "h", "removed"),
+            "bees.md": HeldRecord(HeldOut.FAILED, "h", "dimension mismatch"),
+        }
+        assert "1 document failed" in get_services().searcher.ask_raw("hi").answer
+
+    def test_real_store_with_failed_holds_answers_with_the_failure_count(self):
+        """Holds written by the sync's own writer reach the answer through the real store."""
+        from tests._held import hold_failed
+        from tests.conftest import make_mock_services
+
+        set_services(make_mock_services(store=Store(cfg)))
+        hold_failed({"bees.md": "h1", "ants.md": "h2"}, reason="dimension mismatch")
+        answer = get_services().searcher.pre_retrieval_answer("what do bees eat?")
+        assert answer is not None
+        assert "2 documents failed to ingest" in answer
+
+    @pytest.mark.parametrize(
+        ("held", "answer"),
+        [
+            pytest.param(
+                {
+                    "b.txt": HeldRecord(HeldOut.RETRY, "h", "the engine is down"),
+                    "a.txt": HeldRecord(HeldOut.RETRY, "h", "the engine timed out"),
+                },
+                "Nothing is indexed: 2 documents failed to ingest. "
+                "The error was: the engine timed out. Run `lilbee sync` to try again.",
+                id="retries-name-the-first-cause",
+            ),
+            pytest.param(
+                {
+                    "a.md": HeldRecord(HeldOut.FAILED, "h", "dimension mismatch"),
+                    "b.txt": HeldRecord(HeldOut.RETRY, "h", "the engine is down"),
+                    "gone.md": HeldRecord(HeldOut.REMOVED, "h", "removed"),
+                },
+                "Nothing is indexed: 2 documents failed to ingest. "
+                "The error was: the engine is down. Run `lilbee sync` to try again. "
+                "Run `lilbee status` to see why the others failed.",
+                id="counted-with-the-held-failures-and-pointing-at-status",
+            ),
+        ],
+    )
+    def test_retried_files_are_counted_and_their_cause_named(self, mock_svc, held, answer):
+        """A retry adds its file to the count and names its cause; a held failure keeps status."""
+        mock_svc.store.has_chunks.return_value = False
+        mock_svc.store.held_records.return_value = held
+        assert get_services().searcher.pre_retrieval_answer("what do bees eat?") == answer
+
+    def test_retried_files_do_not_hide_an_indexed_library(self, mock_svc):
+        mock_svc.store.has_chunks.return_value = True
+        mock_svc.store.held_records.return_value = {
+            "a.txt": HeldRecord(HeldOut.RETRY, "h", "the engine is down")
+        }
+        assert get_services().searcher.pre_retrieval_answer("what do bees eat?") is None
+
+    def test_failed_ingests_do_not_hide_an_indexed_library(self, mock_svc):
+        """A failed file beside indexed content leaves the question to retrieval."""
+        mock_svc.store.has_chunks.return_value = True
+        mock_svc.store.held_records.return_value = {
+            "bees.md": HeldRecord(HeldOut.FAILED, "h", "dimension mismatch"),
+        }
+        assert get_services().searcher.pre_retrieval_answer("what do bees eat?") is None
+
     def test_ask_raw_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
         mock_svc.provider.chat.return_value = _text_result("answer")
@@ -1508,6 +1625,17 @@ class TestAskStream:
             SourceRef("a.pdf", "a.pdf", 1, "page 1"),
             SourceRef("b.pdf", "b.pdf", 2, "page 1"),
         ]
+
+    def test_a_context_without_results_streams_the_answer_and_no_sources(self, mock_svc):
+        from lilbee.retrieval.query.searcher import RagContext
+
+        searcher = get_services().searcher
+        mock_svc.provider.chat.return_value = iter(["Plain answer."])
+        empty = RagContext([], [{"role": "user", "content": "q"}])
+        with mock.patch.object(searcher, "build_rag_context", return_value=empty):
+            events = list(searcher.ask_stream("q"))
+        assert _shown(events) == "Plain answer."
+        assert not any(isinstance(e, AnswerSources) for e in events)
 
     def test_an_answer_with_no_sources_has_no_sources_block(self):
         assert AnswerSources([], {}).block("Oil.") == ""
@@ -1633,8 +1761,6 @@ class TestGenerationOptions:
             get_services().searcher.ask_raw("q")
             assert mock_svc.provider.chat.call_args[1]["options"] == {
                 "temperature": 0.7,
-                "top_p": 0.9,
-                "top_k": 40,
                 "repeat_penalty": 1.1,
             }
         finally:
@@ -1844,6 +1970,22 @@ class TestApplyGuardrails:
 
     def test_empty_variants(self, mock_svc):
         assert get_services().searcher._apply_guardrails([], [1.0, 0.0, 0.0]) == []
+
+
+class TestGreedyCover:
+    def test_picks_by_idf_gain_without_relevance_weights(self):
+        from lilbee.retrieval.query.dedup import _greedy_cover
+
+        chunk_tokens = [{"alpha"}, {"beta"}]
+        picked = _greedy_cover(chunk_tokens, {"alpha", "beta"}, {"alpha": 1.0, "beta": 2.0}, 1)
+        assert picked == [1]
+
+    def test_budget_above_chunk_count_returns_every_chunk_in_retrieval_order(self):
+        from lilbee.retrieval.query.dedup import _greedy_cover
+
+        chunk_tokens = [{"alpha"}, {"unrelated"}, {"other"}]
+        picked = _greedy_cover(chunk_tokens, {"alpha"}, {"alpha": 1.0}, 10, [1.0, 1.0, 1.0])
+        assert picked == [0, 1, 2]
 
 
 class TestSelectContext:
@@ -2057,7 +2199,7 @@ class TestSearchAppliesConceptBoostOnExpansionSkip:
         monkeypatch.setattr(searcher, "_should_skip_expansion", lambda *a, **k: True)
         called: list[bool] = []
 
-        def _boost(results, question):
+        def _boost(results, question, degraded):
             called.append(True)
             return results
 
@@ -2106,6 +2248,12 @@ class TestParseStructuredQuery:
     def test_case_insensitive(self, mock_svc):
         mode, _ = get_services().searcher._parse_structured_query("TERM: test")
         assert mode == "term"
+
+
+def _engine_changed_error() -> EmbeddingEngineChangedError:
+    return EmbeddingEngineChangedError(
+        model="orgA/repoA/built.gguf", dim=768, distance=0.2, verified=True
+    )
 
 
 class TestHydeSearch:
@@ -2160,17 +2308,103 @@ class TestHydeSearch:
         get_services().searcher._hyde_search("explain X", top_k=5)
         assert mock_svc.provider.chat.call_args.kwargs["options"]["think"] is False
 
-    def test_returns_empty_on_error(self, mock_svc):
-        mock_svc.provider.chat.side_effect = RuntimeError("fail")
-        assert get_services().searcher._hyde_search("test", top_k=5) == []
+    def test_chat_failure_reaches_the_caller(self, mock_svc):
+        mock_svc.provider.chat.side_effect = ProviderError(
+            "chat engine is down", kind=ProviderErrorKind.CONNECTION
+        )
+        with pytest.raises(ProviderError, match="chat engine is down"):
+            get_services().searcher._hyde_search("test", top_k=5)
 
-    def test_returns_empty_on_non_string(self, mock_svc):
-        mock_svc.provider.chat.return_value = iter(["stream"])
-        assert get_services().searcher._hyde_search("test", top_k=5) == []
+    def test_embed_failure_reaches_the_caller(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.embedder.embed_query.side_effect = ProviderError("embedder refused the passage")
+        with pytest.raises(ProviderError, match="embedder refused the passage"):
+            get_services().searcher._hyde_search("test", top_k=5)
 
-    def test_returns_empty_on_blank(self, mock_svc):
+    def test_store_failure_reaches_the_caller(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.store.search.side_effect = _engine_changed_error()
+        with pytest.raises(EmbeddingEngineChangedError, match="rebuild"):
+            get_services().searcher._hyde_search("test", top_k=5)
+
+    def test_blank_passage_names_the_chat_model(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("   ")
-        assert get_services().searcher._hyde_search("test", top_k=5) == []
+        with (
+            mock.patch.object(cfg, "chat_model", "org/chat/quiet.gguf"),
+            pytest.raises(ProviderError, match=r"org/chat/quiet\.gguf"),
+        ):
+            get_services().searcher._hyde_search("test", top_k=5)
+        mock_svc.embedder.embed_query.assert_not_called()
+
+    def test_blank_passage_error_text_names_the_fix(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("   ")
+        with (
+            mock.patch.object(cfg, "chat_model", "org/chat/quiet.gguf"),
+            pytest.raises(ProviderError) as caught,
+        ):
+            get_services().searcher._hyde_search("test", top_k=5)
+        assert str(caught.value) == (
+            "The chat model org/chat/quiet.gguf returned no passage for the hyde search. "
+            "Pick another chat model or search without 'hyde:'."
+        )
+
+    def test_asks_the_chat_model_for_a_non_streamed_passage_about_the_question(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.store.search.return_value = []
+        get_services().searcher._hyde_search("explain X", top_k=5)
+        call = mock_svc.provider.chat.call_args
+        assert call.args == (
+            [{"role": "user", "content": cfg.hyde_prompt.format(question="explain X")}],
+        )
+        assert call.kwargs["stream"] is False
+
+    def test_searches_the_store_with_the_passage_vector_only(self, mock_svc):
+        passage_vec = [0.25, 0.75]
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.embedder.embed_query.return_value = passage_vec
+        mock_svc.store.search.return_value = []
+        get_services().searcher._hyde_search("explain X", top_k=7, chunk_type=ChunkType.RAW)
+        mock_svc.store.search.assert_called_once_with(
+            passage_vec, top_k=7, query_text=None, chunk_type=ChunkType.RAW
+        )
+
+    def test_blend_skip_logs_the_failure_at_warning_and_the_trace_at_debug(self, mock_svc, caplog):
+        mock_svc.provider.chat.side_effect = ProviderError("chat engine is down")
+        with caplog.at_level("DEBUG", logger="lilbee.retrieval.query.searcher"):
+            get_services().searcher._merge_hyde_results("vague question", [], set(), 5, None, [])
+        warning = next(r for r in caplog.records if r.levelname == "WARNING")
+        assert warning.getMessage() == ("HyDE widening disabled for this call: chat engine is down")
+        trace = next(r for r in caplog.records if r.levelname == "DEBUG")
+        assert trace.getMessage() == "HyDE widening exception"
+        assert trace.exc_info
+        assert trace.exc_info[1] is not None
+
+    def test_blend_asks_for_the_question_with_the_caller_depth(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.store.search.return_value = []
+        get_services().searcher._merge_hyde_results("vague question", [], set(), 9, None, [])
+        content = mock_svc.provider.chat.call_args.args[0][0]["content"]
+        assert content == cfg.hyde_prompt.format(question="vague question")
+        assert mock_svc.store.search.call_args.kwargs["top_k"] == 9
+
+    def test_blend_adds_each_unseen_hit_once_and_skips_seen_ones(self, mock_svc):
+        direct = _make_result(source="direct.md", chunk_index=0)
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.store.search.return_value = [
+            _make_result(source="direct.md", chunk_index=0),
+            _make_result(source="new.md", chunk_index=1),
+            _make_result(source="new.md", chunk_index=1),
+            _make_result(source="other.md", chunk_index=2),
+        ]
+        results = [direct]
+        seen = {("direct.md", 0)}
+        get_services().searcher._merge_hyde_results("vague question", results, seen, 5, None, [])
+        assert [(r.source, r.chunk_index) for r in results] == [
+            ("direct.md", 0),
+            ("new.md", 1),
+            ("other.md", 2),
+        ]
+        assert seen == {("direct.md", 0), ("new.md", 1), ("other.md", 2)}
 
     def test_strips_reasoning_before_embedding(self, mock_svc):
         """A reasoning model's deliberation must not be embedded as the
@@ -2182,9 +2416,80 @@ class TestHydeSearch:
         get_services().searcher._hyde_search("explain X", top_k=5)
         mock_svc.embedder.embed_query.assert_called_once_with("the actual passage")
 
-    def test_returns_empty_when_output_is_all_reasoning(self, mock_svc):
+    def test_output_that_is_all_reasoning_is_a_blank_passage(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("<think>only deliberation</think>")
-        assert get_services().searcher._hyde_search("test", top_k=5) == []
+        with pytest.raises(ProviderError, match="no passage"):
+            get_services().searcher._hyde_search("test", top_k=5)
+
+    def test_hyde_prefix_search_raises_the_chat_failure(self, mock_svc):
+        mock_svc.provider.chat.side_effect = ProviderError("chat engine is down")
+        with pytest.raises(ProviderError, match="chat engine is down"):
+            get_services().searcher.search("hyde: explain caching")
+
+    def test_hyde_prefix_search_raises_the_embed_failure(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.embedder.embed_query.side_effect = ProviderError("embedder refused the passage")
+        with pytest.raises(ProviderError, match="embedder refused the passage"):
+            get_services().searcher.search("hyde: explain caching")
+
+    def test_hyde_prefix_search_raises_the_store_failure(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.store.search.side_effect = _engine_changed_error()
+        with pytest.raises(EmbeddingEngineChangedError, match="rebuild"):
+            get_services().searcher.search("hyde: explain caching")
+
+    def test_cli_search_prints_the_chat_failure_and_exits_nonzero(self, mock_svc):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        mock_svc.provider.chat.side_effect = ProviderError("chat engine is down")
+        result = CliRunner().invoke(app, ["search", "hyde: explain caching"])
+        assert result.exit_code == 1
+        assert "chat engine is down" in result.output
+
+    def test_blend_keeps_the_direct_results_when_the_passage_fails(self, mock_svc, caplog):
+        """A failed HyDE widening on top of a real search is skipped with a warning."""
+        mock_svc.store.search.return_value = [_make_result(source="direct.md")]
+        mock_svc.provider.chat.side_effect = ProviderError("chat engine is down")
+        with (
+            mock.patch.object(cfg, "hyde", True),
+            mock.patch.object(cfg, "query_expansion_count", 0),
+            caplog.at_level("WARNING"),
+        ):
+            results = get_services().searcher.search("vague question")
+        assert [r.source for r in results] == ["direct.md"]
+        assert "chat engine is down" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("layer", "error", "cause"),
+        [
+            ("chat", ProviderError("chat engine is down"), "chat engine is down"),
+            ("chat", ConnectionError("socket closed by the engine"), "socket closed by the engine"),
+            ("store", _engine_changed_error(), "rebuild"),
+        ],
+        ids=["provider-error", "raw-connection-error", "store-engine-changed"],
+    )
+    def test_blend_skips_any_widening_failure_with_one_warning(
+        self, mock_svc, caplog, layer, error, cause
+    ):
+        direct = [_make_result(source="direct.md")]
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        if layer == "chat":
+            mock_svc.provider.chat.side_effect = error
+            mock_svc.store.search.return_value = direct
+        else:
+            mock_svc.store.search.side_effect = [direct, error]
+        with (
+            mock.patch.object(cfg, "hyde", True),
+            mock.patch.object(cfg, "query_expansion_count", 0),
+            caplog.at_level("WARNING"),
+        ):
+            results = get_services().searcher.search("vague question")
+        assert [r.source for r in results] == ["direct.md"]
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert cause in warnings[0].getMessage()
 
 
 class TestTemporalFilter:
@@ -2192,7 +2497,7 @@ class TestTemporalFilter:
         from datetime import UTC, datetime, timedelta
 
         recent = (datetime.now(UTC) - timedelta(days=5)).isoformat()
-        mock_svc.store.source_ingested_at_map.return_value = {
+        mock_svc.store.ingested_at_of.return_value = {
             "old.md": "2020-01-01T00:00:00+00:00",
             "new.md": recent,
         }
@@ -2206,7 +2511,7 @@ class TestTemporalFilter:
 
     def test_result_without_ingested_at_passes_through(self, mock_svc):
         """Sources absent from the ingested_at map are kept (no date info = don't filter)."""
-        mock_svc.store.source_ingested_at_map.return_value = {}
+        mock_svc.store.ingested_at_of.return_value = {}
         results = [_make_result(source="mystery.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "recent changes")
         assert [r.source for r in filtered] == ["mystery.md"]
@@ -2259,23 +2564,19 @@ class TestTemporalFilter:
             cfg.temporal_filtering = old
 
     def test_keeps_results_without_dates(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [{"filename": "a.md", "ingested_at": ""}]
+        mock_svc.store.ingested_at_of.return_value = {"a.md": ""}
         results = [_make_result(source="a.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "today's notes")
         assert len(filtered) == 1
 
     def test_falls_back_when_nothing_matches(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {"filename": "old.md", "ingested_at": "2020-01-01T00:00:00+00:00"},
-        ]
+        mock_svc.store.ingested_at_of.return_value = {"old.md": "2020-01-01T00:00:00+00:00"}
         results = [_make_result(source="old.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "today's notes")
         assert len(filtered) == 1
 
     def test_handles_invalid_date(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {"filename": "a.md", "ingested_at": "not-a-date"}
-        ]
+        mock_svc.store.ingested_at_of.return_value = {"a.md": "not-a-date"}
         results = [_make_result(source="a.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "recent")
         assert len(filtered) == 1
@@ -2625,6 +2926,20 @@ class TestSearchContextIntegration:
             cfg.hyde_weight = 0.7
 
 
+class TestHydeMergeLegacyScore:
+    def test_hit_without_a_score_is_appended_unchanged(self, mock_svc):
+        """A pre-score row has nothing to discount, so it joins the pool as it is."""
+        legacy = _make_result(source="legacy.md", score=None)
+        results: list = []
+        seen: set = set()
+        searcher = get_services().searcher
+        with mock.patch.object(searcher, "_hyde_search", return_value=[legacy]):
+            searcher._merge_hyde_results("q", results, seen, 5, None, [])
+        assert results == [legacy]
+        assert results[0].score is None
+        assert seen == {("legacy.md", 0)}
+
+
 class TestKnownItemTitleRoute:
     """Human titles resolve like filenames (repro: 'summarize Frankenstein'
     on a corpus of '<Title>.txt' novels ran topical top-k and pulled a stray
@@ -2807,7 +3122,7 @@ class TestKnownItemRoute:
             result = get_services().searcher.build_rag_context("wiki: survey_report.pdf")
         finally:
             cfg.wiki = True
-        assert result is None
+        assert result.refused
         mock_svc.store.get_chunks_by_source.assert_not_called()
 
     def test_named_document_bypasses_similarity_search(self, mock_svc):
@@ -2873,24 +3188,49 @@ class TestKnownItemRoute:
         # Document order preserved after trimming: the head survives.
         assert [r.chunk_index for r in results] == list(range(len(results)))
 
-    def test_dense_text_budgets_conservatively(self, mock_svc):
-        """The private-corpus overflow: text tokenizing at ~2.5 chars/token
-        passed a chars/4 budget untrimmed. Budgeting must assume dense text,
-        so the kept set stays well under the window even at 3 chars/token."""
-        mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
-        # Numeric-dense chunks: ~6000 chars each, real cost ~2400 tokens each.
-        dense = ("4471 0482 9001 " * 400).strip()
-        mock_svc.store.get_chunks_by_source.return_value = [
-            _make_result(source="survey_report.pdf", chunk=dense, chunk_index=i) for i in range(40)
+    # At the last four windows a budget that counts 16 tokens too few (the message
+    # overhead or the template) fits one more chunk, and the prompt passes the limit.
+    @pytest.mark.parametrize("window", [8192, 16384, 24576, 32768, 8256, 16440, 24624, 32808])
+    def test_dense_text_budgets_conservatively(self, mock_svc, window):
+        """A long document is trimmed so the prompt fills the window and no more.
+
+        Each chunk is small against the slack, so a miscount of the system
+        prompt, the message overhead, the template, the per-source cost, the
+        reserve or the neighbor widening changes the kept set. The prompt is
+        costed here with literals, not with the product's estimator: 3
+        characters per token, 8 tokens per message, and a window less 1024 for
+        the answer and 128 for the margin.
+        ``test_overflow_from_provider_retries_once_with_tighter_fit`` covers the
+        refit after an engine overflow, which this test does not.
+        """
+        # The long name makes each block's header cost what the budget reserves per source.
+        name = "survey_report_regional_household_panel_wave_two_v123.pdf"
+        mock_svc.store.get_sources.return_value = [self._source(name)]
+        body = ("4471 0482 9001 " * 20).strip()[:295]
+        given = 400
+        # Each chunk has 299 characters and differs from its neighbors, so widening
+        # cannot merge them.
+        document = [
+            _make_result(source=name, chunk=f"{i:03d} {body}", chunk_index=i) for i in range(given)
         ]
-        mock_svc.provider.served_chat_ctx.return_value = 24576
-        cfg.num_ctx = None
-        rag = get_services().searcher.build_rag_context("summarize survey_report.pdf")
+        chunk = document[0].chunk
+        mock_svc.store.get_chunks_by_source.return_value = document
+        mock_svc.store.get_chunks_by_indices.side_effect = lambda source, indices: [
+            document[i] for i in indices if i < given
+        ]
+        cfg.neighbor_expansion = 1
+        # The window is set here: without num_ctx the budget reads
+        # chat_n_ctx_target, whose default scales with the host's RAM.
+        cfg.num_ctx = window
+        mock_svc.provider.served_chat_ctx.return_value = window
+        rag = get_services().searcher.build_rag_context(f"summarize {name}")
         assert rag is not None
-        messages = rag.messages
-        # At 2.56 chars/token the real prompt cost must still fit the window.
-        real_tokens = sum(len(m["content"]) / 2.56 for m in messages)
-        assert real_tokens <= 24576 * 1.05
+        assert 0 < len(rag.results) < given
+        limit = window - 1024 - 128
+        prompt = sum(-(-len(m["content"]) // 3) + 8 for m in rag.messages)
+        # The budget may leave less than one chunk (and the 16-token template) unused.
+        one_chunk = -(-len(chunk) // 3) + 24
+        assert limit - one_chunk - 16 <= prompt <= limit, (prompt, limit, len(rag.results))
 
     def test_overflow_from_provider_retries_once_with_tighter_fit(self, mock_svc):
         """When the engine still reports overflow, ask refits and retries
@@ -3451,6 +3791,12 @@ class TestHistoryCondensation:
         assert rewritten == "standalone question"
         assert mock_svc.provider.chat.call_args.kwargs["options"]["think"] is False
 
+    def test_blank_rewrite_falls_back_to_the_raw_question(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("  \n ")
+        question = "and when was it written?"
+        rewritten = get_services().searcher._condense_question(question, list(self._HISTORY))
+        assert rewritten == question
+
     def test_repeats_the_rewrite_with_a_seed_and_no_prompt_cache(self, mock_svc):
         """An unseeded, cached rewrite gives other words, and so other rows, on a second run."""
         from lilbee.retrieval.query.expansion import SEARCH_SEED
@@ -3609,7 +3955,7 @@ class TestTypedRewriteFusion:
             [_make_result(source="rewrite.md", chunk="rewrite evidence")],
             [_make_result(source="typed.md", chunk="typed evidence")],
         )
-        assert rag is None
+        assert rag.refused
         rag = self._build(
             mock_svc,
             "and when was it written?",
@@ -3631,7 +3977,7 @@ class TestTypedRewriteFusion:
             history=list(self._HISTORY),
             chunk_type=ChunkType.WIKI,
         )
-        assert rag is None
+        assert rag.refused
         assert mock_svc.store.search.call_count == 0
 
 
@@ -3708,6 +4054,82 @@ class TestAskStreamWithReranker:
             cfg.reranker_model = old
 
 
+class TestConceptFailuresAreReported:
+    """The concept steps only widen a search that has rows: warn once, keep the rows."""
+
+    @pytest.mark.parametrize(
+        ("error", "cause"),
+        [
+            (ProviderError("graph provider is down"), "graph provider is down"),
+            (ConnectionError("socket closed by the engine"), "socket closed by the engine"),
+            (_engine_changed_error(), "rebuild"),
+        ],
+        ids=["provider-error", "raw-connection-error", "store-engine-changed"],
+    )
+    @pytest.mark.parametrize("path", ["boost", "expansion"])
+    def test_failure_keeps_the_rows_and_warns_once(self, mock_svc, caplog, path, error, cause):
+        mock_svc.store.search.return_value = [_make_result(source="direct.md")]
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts.return_value = ["python"]
+        mock_svc.concepts.boost_results.side_effect = lambda rows, concepts: rows
+        if path == "boost":
+            mock_svc.concepts.boost_results.side_effect = error
+        else:
+            mock_svc.concepts.expand_query.side_effect = error
+        with (
+            mock.patch.object(cfg, "concept_graph", True),
+            mock.patch.object(cfg, "query_expansion_count", 0),
+            caplog.at_level("WARNING"),
+        ):
+            results = get_services().searcher.search("python question")
+        assert [r.source for r in results] == ["direct.md"]
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert cause in warnings[0].getMessage()
+        assert ("boost" if path == "boost" else "query expansion") in warnings[0].getMessage()
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ProviderError("graph provider is down"),
+            ConnectionError("socket closed by the engine"),
+            _engine_changed_error(),
+        ],
+        ids=["provider-error", "raw-connection-error", "store-engine-changed"],
+    )
+    def test_failed_concept_expansion_keeps_the_model_variants(self, mock_svc, caplog, error):
+        vec = [1.0, 0.0]
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.expand_query.side_effect = error
+        mock_svc.provider.chat.return_value = _text_result("restate one\nrestate two")
+        mock_svc.embedder.embed_query_batch.side_effect = lambda texts: [vec] * len(texts)
+        with (
+            mock.patch.object(cfg, "concept_graph", True),
+            mock.patch.object(cfg, "expansion_short_query_tokens", 0),
+            caplog.at_level("WARNING"),
+        ):
+            variants = get_services().searcher._expand_query("kubernetes scheduling", vec, [])
+        assert [text for text, _ in variants] == ["restate one", "restate two"]
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "Concept query expansion disabled" in warnings[0].getMessage()
+
+    def test_cli_search_shows_the_rows_and_exits_zero_on_a_failed_boost(self, mock_svc, caplog):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        mock_svc.store.search.return_value = [_make_result(source="direct.md")]
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts.return_value = ["python"]
+        mock_svc.concepts.boost_results.side_effect = ConnectionError("socket closed")
+        with mock.patch.object(cfg, "concept_graph", True), caplog.at_level("WARNING"):
+            result = CliRunner().invoke(app, ["search", "python question"])
+        assert result.exit_code == 0
+        assert "direct.md" in result.output
+        assert "socket closed" in caplog.text
+
+
 class TestConceptBoosting:
     def test_boost_applied_when_enabled(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(distance=0.5)]
@@ -3746,7 +4168,9 @@ class TestConceptBoosting:
         old = cfg.concept_graph
         cfg.concept_graph = True
         try:
-            out = get_services().searcher._apply_concept_boost([weak, strong], "python question")
+            out = get_services().searcher._apply_concept_boost(
+                [weak, strong], "python question", []
+            )
             assert [r.source for r in out] == ["strong.md", "weak.md"]
         finally:
             cfg.concept_graph = old
@@ -3764,7 +4188,7 @@ class TestConceptBoosting:
         old = cfg.concept_graph
         cfg.concept_graph = True
         try:
-            out = get_services().searcher._apply_concept_boost([strong, weak, hyde], "python q")
+            out = get_services().searcher._apply_concept_boost([strong, weak, hyde], "python q", [])
             assert out[0].source == "strong.md"
         finally:
             cfg.concept_graph = old
@@ -3787,7 +4211,7 @@ class TestConceptBoosting:
         cfg.concept_graph = True
         try:
             results = [_make_result(source="a.md", distance=0.5)]
-            out = get_services().searcher._apply_concept_boost(results, "empty question")
+            out = get_services().searcher._apply_concept_boost(results, "empty question", [])
             assert out == results
             mock_svc.concepts.boost_results.assert_not_called()
         finally:
@@ -3852,7 +4276,7 @@ class TestConceptQueryExpansion:
                 mock_svc.reranker,
                 mock_svc.concepts,
             )
-            variants = searcher._expand_query("python frameworks", [0.1] * 768)
+            variants = searcher._expand_query("python frameworks", [0.1] * 768, [])
             texts = [text for text, _ in variants]
             assert "python web frameworks" in texts
         finally:
@@ -3862,7 +4286,7 @@ class TestConceptQueryExpansion:
         old = cfg.concept_graph
         cfg.concept_graph = False
         try:
-            result = get_services().searcher._concept_query_expansion("test query")
+            result = get_services().searcher._concept_query_expansion("test query", [])
             assert result == []
         finally:
             cfg.concept_graph = old
@@ -3880,7 +4304,7 @@ class TestConceptQueryExpansion:
                 mock_svc.reranker,
                 mock_svc.concepts,
             )
-            result = searcher._concept_query_expansion("test query")
+            result = searcher._concept_query_expansion("test query", [])
             assert result == []
         finally:
             cfg.concept_graph = old
@@ -3898,7 +4322,7 @@ class TestConceptQueryExpansion:
                 mock_svc.reranker,
                 mock_svc.concepts,
             )
-            result = searcher._concept_query_expansion("test query")
+            result = searcher._concept_query_expansion("test query", [])
             assert result == []
         finally:
             cfg.concept_graph = old
@@ -4550,11 +4974,13 @@ class TestBuildRagContextFilters:
         assert "close.pdf" in sources
         assert "far.pdf" not in sources
 
-    def test_returns_none_when_all_filtered(self, mock_svc):
+    def test_refuses_when_all_filtered(self, mock_svc):
         far = _make_result(source="far.pdf", distance=0.95, chunk="irrelevant")
         mock_svc.store.search.return_value = [far]
         result = get_services().searcher.build_rag_context("question")
-        assert result is None
+        assert result.refused
+        assert result.messages == []
+        assert result.results == []
 
 
 class TestNearDuplicateSuppression:

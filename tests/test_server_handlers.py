@@ -4,8 +4,9 @@ import asyncio
 import errno
 import json
 import logging
+import threading
 from dataclasses import replace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -16,9 +17,9 @@ from lilbee.app.services import set_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, OcrMode
 from lilbee.data.ingest import SyncResult
-from lilbee.data.store import SearchChunk
+from lilbee.data.store import FailedPage, SearchChunk
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.retrieval.query.searcher import RagContext
+from lilbee.retrieval.query.searcher import RagContext, SearchReport
 from lilbee.runtime.progress import OcrBackendUsed, SseErrorCode
 from lilbee.server import handlers
 from lilbee.server.handlers import (
@@ -30,6 +31,7 @@ from lilbee.server.handlers import (
 from lilbee.server.handlers import (
     sse as _sse_h,
 )
+from lilbee.server.route_names import name_routes
 from tests._held import held_kinds, hold_failed
 from tests.conftest import install_fake_model
 
@@ -76,9 +78,9 @@ def mock_svc():
     from tests.conftest import make_mock_services
 
     searcher = MagicMock()
-    searcher.search.return_value = []
+    searcher.search_report.return_value = SearchReport([])
     searcher.ask_raw.return_value = MagicMock(answer="", sources=[])
-    searcher.build_rag_context.return_value = None
+    searcher.build_rag_context.return_value = RagContext([], [], refused=True)
     # Default to the grounded retrieval path; mode/embedder tests flip these.
     searcher.skip_retrieval.return_value = False
     searcher.search_unavailable.return_value = False
@@ -164,13 +166,27 @@ class TestHealth:
         assert [w.code for w in result.warnings] == [WarningCode.FTS_UNAVAILABLE]
         assert result.warnings[0].remedy == "rebuild"
 
+    async def test_health_names_the_sync_route_beside_a_rebuild_remedy(self, mock_svc):
+        from lilbee.core.health_warnings import HealthWarning, WarningCode
+
+        mock_svc.store.health_warnings.return_value = [
+            HealthWarning(
+                code=WarningCode.FTS_UNAVAILABLE,
+                message="keyword search is down",
+                remedy="Run `lilbee rebuild` to rebuild the search index.",
+            )
+        ]
+        remedy = (await handlers.health()).warnings[0].remedy
+        assert remedy is not None
+        assert "Over HTTP, call POST /api/sync, with force_rebuild true in place of" in remedy
+
     async def test_health_reports_no_warnings_on_a_clean_store(self, mock_svc):
         mock_svc.store.health_warnings.return_value = []
         assert (await handlers.health()).warnings == []
 
     async def test_health_carries_the_embed_cap_and_the_engine_warnings(self, mock_svc):
-        """A small-window embedder is a serving degradation, so health reports the
-        cap the chunker bounds to and the engine's warning beside the store's."""
+        """Health reports the cap the chunker bounds to and the engine's warnings
+        beside the store's."""
         from lilbee.core.health_warnings import HealthWarning, WarningCode
 
         mock_svc.store.health_warnings.return_value = [
@@ -178,13 +194,13 @@ class TestHealth:
         ]
         mock_svc.provider.embed_token_cap.return_value = 504
         mock_svc.provider.health_warnings.return_value = [
-            HealthWarning(code=WarningCode.EMBED_WINDOW_BELOW_CHUNK, message="chunks are cut")
+            HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan")
         ]
         result = await handlers.health()
         assert result.embed_token_cap == 504
         assert [w.code for w in result.warnings] == [
             WarningCode.FTS_UNAVAILABLE,
-            WarningCode.EMBED_WINDOW_BELOW_CHUNK,
+            WarningCode.PLACEMENT_DIVERGED,
         ]
 
     async def test_chat_status_is_not_started_when_a_finished_warm_is_stale(self, mock_svc):
@@ -222,6 +238,25 @@ class TestHealth:
         result = await handlers.health()
         assert result.chat_status == "error"
         assert result.chat_error == "The GPU device probe did not respond within 60s"
+
+    async def test_chat_error_names_the_route_beside_a_command(self, mock_svc):
+        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        reason = "The engine is missing. Run 'lilbee engine list' to see the builds."
+        mock_svc.provider.role_ready.return_value = False
+        mock_svc.provider.warm_progress.return_value = WarmProgress(
+            phase=WarmPhase.ERROR, error=reason
+        )
+        result = await handlers.health()
+        assert result.chat_error == name_routes(reason)
+        assert "GET /api/engines" in result.chat_error
+
+    async def test_chat_error_with_no_reason_stays_empty(self, mock_svc):
+        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        mock_svc.provider.role_ready.return_value = False
+        mock_svc.provider.warm_progress.return_value = WarmProgress(phase=WarmPhase.ERROR)
+        assert (await handlers.health()).chat_error is None
 
     async def test_chat_error_absent_outside_the_error_state(self, mock_svc):
         mock_svc.provider.role_ready.return_value = True
@@ -382,6 +417,7 @@ class TestWarmStreamAfterSwap:
             phase=WarmPhase.ERROR, error="chat model Qwen3 4B is not installed"
         )
         local.role_ready.return_value = False
+        local.reload_notice.return_value = None
         routing._local = local
         return routing
 
@@ -560,16 +596,17 @@ class TestSearch:
             chunk_index=0,
             vector=[0.1],
         )
-        mock_svc.searcher.search.return_value = [chunk]
-        result = await handlers.search("test", top_k=3)
+        mock_svc.searcher.search_report.return_value = SearchReport([chunk])
+        result = (await handlers.search("test", top_k=3)).documents
         assert len(result) == 1
         assert result[0].source == "doc.pdf"
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=3, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with("test", top_k=3, chunk_type=None)
 
     async def test_empty_results(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         result = await handlers.search("nothing")
-        assert result == []
+        assert result.documents == []
+        assert result.warnings == ()
 
     async def test_empty_query_raises(self):
         with pytest.raises(ValueError, match="query must not be empty"):
@@ -580,27 +617,31 @@ class TestSearch:
             await handlers.search("   ")
 
     async def test_chunk_type_passed_to_searcher(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         await handlers.search("test", chunk_type="wiki")
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=cfg.top_k, chunk_type="wiki")
+        mock_svc.searcher.search_report.assert_called_once_with(
+            "test", top_k=cfg.top_k, chunk_type="wiki"
+        )
 
     async def test_chunk_type_defaults_to_none(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         await handlers.search("test")
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=cfg.top_k, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with(
+            "test", top_k=cfg.top_k, chunk_type=None
+        )
 
     async def test_omitted_top_k_uses_configured_value(self, mock_svc):
         """Omitting top_k resolves to cfg.top_k read at call time, not a hardcoded default."""
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         cfg.top_k = 7
         await handlers.search("test")
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=7, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with("test", top_k=7, chunk_type=None)
 
     async def test_explicit_top_k_wins_over_configured_value(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         cfg.top_k = 7
         await handlers.search("test", top_k=3)
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=3, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with("test", top_k=3, chunk_type=None)
 
 
 class TestAsk:
@@ -725,7 +766,7 @@ class TestAsk:
 
 class TestAskStream:
     async def test_no_results_yields_error(self, mock_svc):
-        mock_svc.searcher.build_rag_context.return_value = None
+        mock_svc.searcher.build_rag_context.return_value = RagContext([], [], refused=True)
         events = [e async for e in handlers.ask_stream("test")]
         non_empty = [e for e in events if e]
         assert len(non_empty) == 1
@@ -773,7 +814,7 @@ class TestAskStream:
         assert "warming" not in event_types
 
     async def test_forwards_chunk_type_to_build_rag_context(self, mock_svc):
-        mock_svc.searcher.build_rag_context.return_value = None
+        mock_svc.searcher.build_rag_context.return_value = RagContext([], [], refused=True)
         async for _ in handlers.ask_stream("q", chunk_type="wiki"):
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "wiki"
@@ -985,7 +1026,6 @@ class TestAskStream:
         mock_svc.provider.chat.side_effect = ProviderError(
             "gemini/m is rate-limited or out of quota. That's a limit on your "
             "provider API key, not a lilbee problem.",
-            provider="remote",
             kind=ProviderErrorKind.RATE_LIMIT,
         )
         events = [e async for e in handlers.ask_stream("question")]
@@ -999,12 +1039,24 @@ class TestAskStream:
         # The kind reaches the client as a machine-readable code to branch on.
         assert parsed["code"] == "rate_limit"
 
+    async def test_a_missing_engine_reaches_the_stream_client_with_its_own_code(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        text = "llama-server binary not found. Install it with lilbee engine install."
+        mock_svc.provider.chat.side_effect = ProviderError(
+            text, kind=ProviderErrorKind.ENGINE_MISSING
+        )
+        events = [e async for e in handlers.ask_stream("question")]
+
+        error_events = [e for e in events if e and e.startswith("event: error")]
+        assert len(error_events) == 1
+        parsed = json.loads(error_events[0].split("data: ")[1].strip())
+        assert parsed["code"] == "engine_missing"
+        assert parsed["message"] == name_routes(text)
+
     async def test_unclassified_provider_error_has_message_but_no_code(self, mock_svc):
         # An UNKNOWN-kind ProviderError still surfaces its message, with no code.
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.side_effect = ProviderError(
-            "Chat failed: something odd", provider="remote"
-        )
+        mock_svc.provider.chat.side_effect = ProviderError("Chat failed: something odd")
         events = [e async for e in handlers.ask_stream("question")]
 
         error_events = [e for e in events if e and e.startswith("event: error")]
@@ -1137,7 +1189,7 @@ class TestChat:
         surface instead of silently answering off-corpus."""
         from lilbee.retrieval.query.searcher import GROUNDED_REFUSAL
 
-        mock_svc.searcher.build_rag_context.return_value = None
+        mock_svc.searcher.build_rag_context.return_value = RagContext([], [], refused=True)
         result = await handlers.chat("q", [])
         assert result.answer == GROUNDED_REFUSAL
         assert result.sources == []
@@ -1372,6 +1424,33 @@ class TestChat:
         mock_svc.searcher.direct_messages.assert_called_once()
         assert result.sources == []
 
+    async def test_top_k_zero_answers_without_an_embedder(self, mock_svc, monkeypatch):
+        """A pure-LLM call needs no embedder, so it reaches the model instead of
+        the search-needs-embedder refusal."""
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        monkeypatch.setattr(
+            _rag_h,
+            "dispatch_chat",
+            lambda req: CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="direct")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            ),
+        )
+        mock_svc.searcher.search_unavailable.return_value = True
+        mock_svc.searcher.direct_messages.return_value = [{"role": "user", "content": "q"}]
+        result = await handlers.chat("q", [], top_k=0)
+        assert result.answer == "direct"
+        mock_svc.searcher.build_rag_context.assert_not_called()
+
     async def test_top_k_none_grounds_normally(self, mock_svc, monkeypatch):
         """Unspecified top_k (None) still runs retrieval -- only an explicit 0 skips."""
         from lilbee.server.chat_dispatch.canonical import (
@@ -1437,9 +1516,89 @@ class TestChat:
         assert extract_calls == []
 
 
+class TestChatTurnFields:
+    """What a one-shot chat turn carries from preparation into its response."""
+
+    @pytest.fixture(autouse=True)
+    def compacting(self, monkeypatch):
+        from lilbee.server.models import CompactionInfo
+
+        self.info = CompactionInfo(summary="notes", condensed=2, stranded=0)
+
+        def _managed(history, summary):
+            return history, self.info
+
+        monkeypatch.setattr(_rag_h, "_manage_history", _managed)
+        monkeypatch.setattr(_rag_h, "_persist_summary", lambda *args: None)
+
+    @staticmethod
+    def _answering(monkeypatch, text):
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        def _dispatch(req):
+            return CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text=text)],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            )
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat", _dispatch)
+
+    async def test_a_canned_answer_carries_the_compaction(self, mock_svc):
+        mock_svc.searcher.pre_retrieval_answer.return_value = "Exact scan: 3 documents."
+        result = await handlers.chat("how many?", [])
+        assert result.compaction == self.info
+
+    async def test_a_refusal_carries_the_compaction(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = RagContext([], [], refused=True)
+        result = await handlers.chat("q", [])
+        assert result.compaction == self.info
+
+    async def test_a_grounded_answer_carries_the_compaction(self, mock_svc, monkeypatch):
+        self._answering(monkeypatch, "ok")
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        result = await handlers.chat("q", [])
+        assert result.compaction == self.info
+
+    async def test_an_ungrounded_turn_sees_the_managed_history(self, mock_svc, monkeypatch):
+        self._answering(monkeypatch, "ok")
+        mock_svc.searcher.direct_messages.return_value = [{"role": "user", "content": "q"}]
+        history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
+        await handlers.chat("q", history, top_k=0)
+        assert mock_svc.searcher.direct_messages.call_args.args == ("q", history)
+
+    async def test_shown_reasoning_stays_in_the_answer(self, mock_svc, monkeypatch):
+        text = "<think>plan</think>done"
+        self._answering(monkeypatch, text)
+        monkeypatch.setattr(cfg, "show_reasoning", True)
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        result = await handlers.chat("q", [])
+        assert result.answer == text
+
+    async def test_memory_extraction_gets_the_question_and_the_answer(self, mock_svc, monkeypatch):
+        self._answering(monkeypatch, "ok")
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        extract_calls = []
+
+        async def _spy_extract(question, answer):
+            extract_calls.append((question, answer))
+            return []
+
+        monkeypatch.setattr(_rag_h, "_store_extracted_memories", _spy_extract)
+        await handlers.chat("what is x", [])
+        assert extract_calls == [("what is x", "ok")]
+
+
 class TestChatStream:
     async def test_no_results_yields_error(self, mock_svc):
-        mock_svc.searcher.build_rag_context.return_value = None
+        mock_svc.searcher.build_rag_context.return_value = RagContext([], [], refused=True)
         events = [e async for e in handlers.chat_stream("test", [])]
         non_empty = [e for e in events if e]
         assert any("error" in e for e in non_empty)
@@ -1466,7 +1625,7 @@ class TestChatStream:
         assert "done" in event_types
 
     async def test_forwards_chunk_type_to_build_rag_context(self, mock_svc):
-        mock_svc.searcher.build_rag_context.return_value = None
+        mock_svc.searcher.build_rag_context.return_value = RagContext([], [], refused=True)
         async for _ in handlers.chat_stream("q", [], chunk_type="raw"):
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
@@ -1484,6 +1643,26 @@ class TestChatStream:
         mock_svc.searcher.direct_messages.assert_called_once()
         sources_event = next(e for e in events if e and e.startswith("event: sources"))
         assert json.loads(sources_event.split("data: ")[1].strip()) == []
+
+    async def test_top_k_zero_streams_without_an_embedder(self, mock_svc, monkeypatch):
+        """A pure-LLM stream needs no embedder, so the model answers instead of
+        the search-needs-embedder refusal token."""
+        from lilbee.retrieval.query.searcher import SEARCH_NEEDS_EMBEDDER
+
+        mock_svc.searcher.search_unavailable.return_value = True
+        mock_svc.searcher.direct_messages.return_value = [{"role": "user", "content": "q"}]
+        monkeypatch.setattr(
+            _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["direct"])
+        )
+        events = [e async for e in handlers.chat_stream("q", [], top_k=0)]
+        tokens = [
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: token")
+        ]
+        assert SEARCH_NEEDS_EMBEDDER not in tokens
+        assert "direct" in "".join(tokens)
+        mock_svc.searcher.direct_messages.assert_called_once()
 
     async def test_reasoning_only_stream_emits_notice(self, mock_svc, monkeypatch):
         """bb-cpu: a reasoning-only stream (no final answer) emits the exhaustion
@@ -1622,7 +1801,6 @@ class TestChatStream:
             async def _gen():
                 raise ProviderError(
                     "gemini/m rejected your API key.",
-                    provider="remote",
                     kind=ProviderErrorKind.AUTH,
                 )
                 yield  # pragma: no cover
@@ -1798,6 +1976,81 @@ class TestMemoryExtractedEvent:
         ):
             events = [e async for e in handlers.ask_stream("q")]
         assert "memory_extracted" in _event_types(events)
+
+
+class TestDoneEndsTheAnswerStream:
+    """The answer stream ends at done; the memory trailer runs after done is sent."""
+
+    @pytest.fixture
+    def turn(self, mock_svc):
+        mock_svc.searcher.search_unavailable.return_value = False
+        mock_svc.searcher.skip_retrieval.return_value = False
+        mock_svc.searcher.pre_retrieval_answer.return_value = None
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.return_value = iter(["noted"])
+        with (
+            patch.object(
+                _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["noted"])
+            ),
+            patch.object(_rag_h, "_warming_frames", AsyncMock(return_value=[])),
+            patch.object(_rag_h, "auto_extract_enabled", return_value=True),
+        ):
+            yield mock_svc
+
+    def _saved(self):
+        from lilbee.app.memory import SavedMemory
+        from lilbee.data.store import MemoryKind
+
+        return [SavedMemory(id="m1", kind=MemoryKind.FACT, text="the user drives a crown vic")]
+
+    @pytest.mark.parametrize("kind", ["chat", "ask"])
+    @pytest.mark.parametrize(
+        ("setup", "answered"),
+        [
+            ({}, True),
+            ({"search_unavailable": True}, False),
+            ({"pre_retrieval_answer": "the library is empty"}, False),
+        ],
+        ids=["answered", "refusal", "direct_answer"],
+    )
+    async def test_the_answer_stream_ends_at_done_without_extracting(
+        self, turn, kind, setup, answered
+    ):
+        for name, value in setup.items():
+            getattr(turn.searcher, name).return_value = value
+        record = _rag_h._TurnRecord()
+        stream = (
+            _rag_h._stream_chat_response(record, "q", [], None, None, None)
+            if kind == "chat"
+            else _rag_h._stream_rag_response(record, "q")
+        )
+        with patch.object(_rag_h, "auto_extract") as extract:
+            frames = [frame async for frame in stream]
+        assert _event_types(frames)[-1] == "done"
+        extract.assert_not_called()
+        assert (record.answered is not None) is answered
+
+    @pytest.mark.parametrize("kind", ["chat", "ask"])
+    async def test_done_arrives_while_the_extraction_is_blocked(self, turn, kind):
+        release = threading.Event()
+        finished = threading.Event()
+        saved = self._saved()
+
+        def blocking_extract(_question, _answer):
+            release.wait(timeout=5)
+            finished.set()
+            return saved
+
+        stream = handlers.chat_stream("q", []) if kind == "chat" else handlers.ask_stream("q")
+        with patch.object(_rag_h, "auto_extract", blocking_extract):
+            async for frame in stream:
+                if frame.startswith("event: done"):
+                    break
+            extraction_blocked_at_done = not finished.is_set()
+            release.set()
+            after = [frame async for frame in stream]
+        assert extraction_blocked_at_done
+        assert _event_types(after) == ["memory_extracted"]
 
 
 class TestSyncStream:
@@ -2039,6 +2292,7 @@ class TestSyncStreamDoneDelivery:
             "failed": 0,
             "skipped": 0,
             "relocated": 0,
+            "partial": 0,
         }
         assert lists_done["added"] == ["fast.txt"]
 
@@ -2079,6 +2333,7 @@ class TestSyncStreamDoneDelivery:
             "failed": 0,
             "skipped": 0,
             "relocated": 0,
+            "partial": 0,
         }
 
     async def test_put_threadsafe_defers_enqueue_to_loop(self):
@@ -2158,6 +2413,23 @@ class TestSyncStreamDoneDelivery:
         assert "boom" in error_events[0]
         # No done frame should be emitted when sync failed.
         assert done_events == []
+
+    async def test_a_rebuild_the_embedder_cannot_serve_ends_in_the_plain_message(self):
+        """A ProviderError from the rebuild reaches the stream as an error frame with its text."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        refused = ProviderError(
+            "The embedding model is not available. Nothing was rebuilt.",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
+        with patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refused):
+            events = [e async for e in handlers.sync_stream(force_rebuild=True)]
+
+        error_events = [e for e in events if e.startswith("event: error")]
+        assert len(error_events) == 1
+        assert "The embedding model is not available" in error_events[0]
+        assert "Nothing was rebuilt" in error_events[0]
+        assert not [e for e in events if e.startswith("event: done")]
 
     async def test_force_rebuild_flag_reaches_sync(self):
         """sync_stream(force_rebuild=True) plumbs the flag through to ingest.sync."""
@@ -3360,6 +3632,7 @@ class TestModelsCatalog:
             offset=5,
         )
         mock_get_catalog.assert_called_once_with(
+            hf_client=mock_svc.hf_client,
             task=ModelTask.CHAT,
             search="qwen",
             size=CatalogSize.SMALL,
@@ -3398,6 +3671,12 @@ class TestModelsCatalog:
         ]
         result = await handlers.models_catalog()
         assert result.models[0].installed is True
+
+    @patch("lilbee.catalog.query.get_picks", return_value=[])
+    async def test_an_unreadable_registry_fails_the_installed_filter(self, _picks, mock_svc):
+        mock_svc.model_manager.list_installed.side_effect = OSError("manifests unreadable")
+        with pytest.raises(OSError, match="manifests unreadable"):
+            await handlers.models_catalog(installed=True)
 
     @patch("lilbee.server.handlers.models.get_catalog")
     async def test_has_more_propagated(self, mock_get_catalog, mock_svc):
@@ -4028,6 +4307,20 @@ class TestModelHandlersRunBlockingWorkOffLoop:
 
         assert threads and all(tid != loop_tid for tid in threads)
 
+    async def test_set_embedding_model_returns_the_settings_warnings(self, tmp_path, mock_svc):
+        from lilbee.app.settings import SettingsUpdateResult
+
+        mock_svc.provider.list_models.return_value = [_EMBED_REF]
+        update = SettingsUpdateResult(
+            updated=["embedding_model"],
+            reindex_required=False,
+            warnings=("No installed engine loads this model.",),
+        )
+        with patch("lilbee.server.handlers.models.apply_settings_update", return_value=update):
+            result = await handlers.set_embedding_model(_EMBED_REF)
+
+        assert result.warnings == ["No installed engine loads this model."]
+
 
 class TestPlacementHandlersRunOffTheLoop:
     """Placement actions and the Intel util notice shell out to GPU probes,
@@ -4041,7 +4334,9 @@ class TestPlacementHandlersRunOffTheLoop:
         gib = 1024**3
         return PlacementView(
             gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * gib, 72 * gib),),
-            roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1),),
+            roles=(
+                RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp"),
+            ),
             unplaceable=(),
             manual=False,
             spec_json=None,
@@ -4053,6 +4348,7 @@ class TestPlacementHandlersRunOffTheLoop:
         loop_tid = threading.get_ident()
         threads, stub = _thread_recorder(self._view())
         monkeypatch.setattr("lilbee.app.placement.get_placement", stub)
+        monkeypatch.setattr("lilbee.app.placement.get_planned_placement", stub)
 
         await handlers.placement()
         await handlers.gpus()
@@ -4086,8 +4382,11 @@ class TestPlacementHandlersRunOffTheLoop:
 class TestModelsPull:
     async def test_yields_progress_events_native(self):
         mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = False
 
-        def fake_pull(model, source, *, on_bytes=None, allow_unsupported=False, cancel=None):
+        def fake_pull(
+            model, source, *, on_bytes=None, on_notice=None, allow_unsupported=False, cancel=None
+        ):
             if on_bytes:
                 on_bytes(500, 1000)
                 on_bytes(1000, 1000)
@@ -4103,8 +4402,163 @@ class TestModelsPull:
         assert any('"current": 500' in e for e in non_empty)
         assert any('"total": 1000' in e for e in non_empty)
 
+    async def test_a_repeat_pull_ends_in_done_with_no_pull_notice(self):
+        mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = True
+        mock_manager.is_registered.return_value = True
+        with (
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
+            patch("lilbee.app.models.ensure_vision_projector", return_value=None),
+        ):
+            events = [
+                e async for e in handlers.models_pull("org/repo#safetensors", source="native")
+            ]
+        assert "on_notice" not in mock_manager.pull.call_args.kwargs
+        done = [e for e in events if e and "event: done" in e]
+        assert len(done) == 1
+        assert "warning" not in done[0]
+
+    async def test_a_repeat_safetensors_pull_streams_progress_before_done(self):
+        mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = True
+        mock_manager.is_registered.return_value = True
+
+        def refresh_pull(model, source, *, on_bytes=None, cancel=None):
+            on_bytes(500, 1000)
+
+        mock_manager.pull.side_effect = refresh_pull
+        with (
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
+            patch("lilbee.app.models.ensure_vision_projector", return_value=None),
+        ):
+            events = [
+                e async for e in handlers.models_pull("org/repo#safetensors", source="native")
+            ]
+        names = [line for e in events if e for line in e.splitlines() if line.startswith("event:")]
+        assert names == ["event: progress", "event: done"]
+        progress = next(e for e in events if e and "event: progress" in e)
+        assert '"current": 500' in progress and '"total": 1000' in progress
+
+    async def test_a_disconnect_aborts_a_repeat_safetensors_refresh(self):
+        import threading
+
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        barrier = threading.Event()
+        finished_whole_download = threading.Event()
+        aborted: list[bool] = []
+        mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = True
+        mock_manager.is_registered.return_value = True
+
+        def refresh_pull(model, source, *, on_bytes=None, cancel=None):
+            on_bytes(100, 1000)
+            barrier.wait(timeout=2)
+            try:
+                on_bytes(1000, 1000)
+            except TaskCancelledError:
+                aborted.append(True)
+                raise
+            finished_whole_download.set()
+
+        mock_manager.pull.side_effect = refresh_pull
+        with (
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
+            patch("lilbee.app.models.ensure_vision_projector", return_value=None),
+        ):
+            gen = handlers.models_pull("org/repo#safetensors", source="native")
+            async for event in gen:
+                if event and "current" in event:
+                    await gen.aclose()
+                    barrier.set()
+                    break
+            for _ in range(200):
+                if aborted or finished_whole_download.is_set():
+                    break
+                await asyncio.sleep(0.01)
+
+        assert aborted == [True]
+        assert not finished_whole_download.is_set()
+
+    @pytest.mark.parametrize(
+        ("ref", "registered", "sink_passed", "warn_unreadable"),
+        [
+            ("org/repo/model-Q4_K_M.gguf", False, True, True),
+            ("org/repo/model-Q4_K_M.gguf", True, None, False),
+            ("org/repo#safetensors", False, True, True),
+            ("org/repo#safetensors", True, False, False),
+        ],
+        ids=[
+            "gguf-cache-only",
+            "gguf-registered",
+            "safetensors-cache-only",
+            "safetensors-registered",
+        ],
+    )
+    async def test_the_pull_stream_follows_the_rule_of_the_cli_pull(
+        self, ref, registered, sink_passed, warn_unreadable
+    ):
+        mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = True
+        mock_manager.is_registered.return_value = registered
+        with (
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
+            patch(
+                "lilbee.server.handlers.models.ensure_vision_projector", return_value=None
+            ) as fresh_projector,
+            patch(
+                "lilbee.app.models.ensure_vision_projector", return_value=None
+            ) as repeat_projector,
+        ):
+            _ = [e async for e in handlers.models_pull(ref, source="native")]
+        # None: a repeat GGUF pull downloads nothing, so the stream does not pull.
+        call = mock_manager.pull.call_args
+        passed = None if call is None else call.kwargs.get("on_notice") is not None
+        assert passed is sink_passed
+        projector = repeat_projector if registered else fresh_projector
+        assert projector.call_args.kwargs["warn_unreadable"] is warn_unreadable
+
+    async def test_done_event_joins_the_size_notice_and_the_projector_warning(self):
+        mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = False
+
+        def fake_pull(model, source, *, on_notice=None, **_):
+            on_notice("The size of this model is unknown, so 8.0 GiB is reserved for it.")
+
+        mock_manager.pull.side_effect = fake_pull
+        with (
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
+            patch(
+                "lilbee.server.handlers.models.ensure_vision_projector",
+                return_value="no projector listed",
+            ),
+        ):
+            events = [e async for e in handlers.models_pull("test", source="native")]
+        done = [e for e in events if e and "event: done" in e]
+        assert len(done) == 1
+        assert (
+            '"warning": "The size of this model is unknown, so 8.0 GiB is reserved for it. '
+            'no projector listed"'
+        ) in done[0]
+
     async def test_error_yields_error_event(self):
         mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = False
         mock_manager.pull.side_effect = RuntimeError("fail")
         with patch(
             "lilbee.server.handlers.models.get_services",
@@ -4129,8 +4583,11 @@ class TestModelsPull:
         finished_whole_download = threading.Event()
         aborted: list[bool] = []
         mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = False
 
-        def blocking_pull(model, source, *, on_bytes=None, allow_unsupported=False, cancel=None):
+        def blocking_pull(
+            model, source, *, on_bytes=None, on_notice=None, allow_unsupported=False, cancel=None
+        ):
             on_bytes(100, 1000)
             barrier.wait(timeout=2)
             try:
@@ -4308,7 +4765,7 @@ class TestUpdateConfig:
         cfg.temperature = 0.5
         result = await handlers.update_config({"temperature": None})
         assert result.updated == ["temperature"]
-        assert cfg.temperature == 0.1  # the built-in, as a fresh Config() gives
+        assert cfg.temperature is None  # the built-in, as a fresh Config() gives
         # Verify delete_value was called (file should not contain temperature)
         from lilbee.core import settings as s
 
@@ -4685,6 +5142,24 @@ class TestListDocuments:
         assert result.documents[0].filename == "a.md"
         assert result.documents[0].chunk_count == 5
         assert result.has_more is False
+
+    async def test_each_document_lists_its_failed_ocr_pages(self, mock_svc):
+        _fake_source_store(
+            mock_svc,
+            [
+                {
+                    "filename": "scan.pdf",
+                    "chunk_count": 5,
+                    "ocr_page_failures": [{"page": 2, "error": "timed out", "recovered": False}],
+                },
+                {"filename": "a.md", "chunk_count": 1, "ocr_page_failures": None},
+            ],
+        )
+        result = await handlers.list_documents()
+        assert [doc.model_dump()["ocr_page_failures"] for doc in result.documents] == [
+            [{"page": 2, "error": "timed out", "recovered": False}],
+            [],
+        ]
 
     async def test_empty(self, mock_svc):
         _fake_source_store(mock_svc, [])
@@ -5330,6 +5805,14 @@ class TestListExternalModels:
         assert result.error is None
 
     @patch("lilbee.server.handlers.models.get_services")
+    async def test_a_stopping_server_raises_for_the_503(self, mock_svc):
+        from lilbee.app.services import ServicesStoppingError
+
+        mock_svc.side_effect = ServicesStoppingError()
+        with pytest.raises(ServicesStoppingError):
+            await handlers.list_external_models()
+
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_error_returns_empty_with_message(self, mock_svc):
         mock_svc.return_value.provider.list_models.side_effect = RuntimeError("connection refused")
         result = await handlers.list_external_models()
@@ -5637,10 +6120,13 @@ class TestModelPullProgressCancel:
         from lilbee.runtime.cancellation import TaskCancelledError
 
         mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = False
         progress_called = threading.Event()
         aborted = threading.Event()
 
-        def fake_pull(model, source, *, on_bytes=None, allow_unsupported=False, cancel=None):
+        def fake_pull(
+            model, source, *, on_bytes=None, on_notice=None, allow_unsupported=False, cancel=None
+        ):
             progress_called.set()
             try:
                 on_bytes(500, 1000)
@@ -5701,7 +6187,7 @@ class TestSearchRouteErrors:
 
         async with AsyncTestClient(create_app()) as client:
             with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
-                mock_svc.return_value.searcher.search.side_effect = RuntimeError("down")
+                mock_svc.return_value.searcher.search_report.side_effect = RuntimeError("down")
                 resp = await client.get(
                     "/api/search", params={"q": "test"}, headers=self._auth_headers()
                 )
@@ -6165,11 +6651,12 @@ class TestPlacementHandlers:
             unplaceable=(),
             manual=False,
             spec_json=None,
-            co_tenants=(WorkerRole.CHAT, WorkerRole.VISION),
+            swap_classes=(frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION})),
         )
         with patch("lilbee.app.placement.get_placement", return_value=view):
             resp = await handlers.placement()
         assert resp.co_tenants == ["chat", "vision"]
+        assert resp.swap_classes == [["chat"], ["vision"]]
         assert resp.unplaceable == []
 
     async def test_placement_preview_without_spec(self):
@@ -6210,7 +6697,7 @@ class TestPlacementHandlers:
             free_bytes=40 * 1024**3,
         )
         view = PlacementView(gpus=(gpu,), roles=(), unplaceable=(), manual=False, spec_json=None)
-        with patch("lilbee.app.placement.get_placement", return_value=view):
+        with patch("lilbee.app.placement.get_planned_placement", return_value=view):
             result = await handlers.gpus()
         assert len(result.gpus) == 1
         assert result.gpus[0].name == "A100"
@@ -6231,7 +6718,7 @@ class TestPlacementHandlers:
         view = PlacementView(gpus=(gpu,), roles=(), unplaceable=(), manual=False, spec_json=None)
         hint = IntelUtilHint(IntelHintKind.INSTALL, None)
         with (
-            patch("lilbee.app.placement.get_placement", return_value=view),
+            patch("lilbee.app.placement.get_planned_placement", return_value=view),
             patch("lilbee.providers.fleet.gpu_stats.probe_intel_util_hint", return_value=hint),
         ):
             result = await handlers.gpus()
@@ -6387,6 +6874,40 @@ class TestPlacementHandlers:
             if line.startswith("data:")
         ]
         assert "igt-gpu-tools" in events[0]["notice"]
+
+    async def test_gpu_stats_stream_runs_intel_tool_check_off_the_loop(self):
+        import threading
+
+        from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+        from lilbee.providers.fleet.gpu_stats import GpuStat
+
+        gpu = GpuInfo(
+            index=0,
+            backend="SYCL",
+            label="SYCL0",
+            name="Intel Arc",
+            total_bytes=200,
+            free_bytes=200,
+        )
+        check_threads: list[int] = []
+
+        def _tool_check() -> IntelUtilHint:
+            check_threads.append(threading.get_ident())
+            return IntelUtilHint(IntelHintKind.INSTALL, None)
+
+        with (
+            patch(
+                "lilbee.providers.fleet.gpu_stats.probe_gpu_stats",
+                return_value={0: GpuStat(0, None, 200, 200)},
+            ),
+            patch("lilbee.providers.fleet.gpu_stats._shared_sample", {}),
+            patch("lilbee.providers.fleet.gpu_stats._detect_intel_util_hint", _tool_check),
+        ):
+            chunks = [c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=1)]
+        assert "igt-gpu-tools" in chunks[0]
+        assert len(check_threads) == 1
+        assert check_threads[0] != threading.get_ident()
 
     async def test_gpu_stats_stream_emits_heartbeat_when_interval_elapsed(self):
         """A heartbeat event is emitted when the configured interval elapses."""
@@ -6707,12 +7228,153 @@ class TestSourceLabelsOnTheWire:
         ]
 
     async def test_search_results_carry_a_label_and_no_number(self, mock_svc):
-        mock_svc.searcher.search.return_value = list(_LABELLED)
+        mock_svc.searcher.search_report.return_value = SearchReport(list(_LABELLED))
         result = await handlers.search("q")
-        dumped = [r.model_dump(exclude_none=True) for r in result]
+        dumped = [r.model_dump(exclude_none=True) for r in result.documents]
         assert {r["source"]: r["label"] for r in dumped} == {
             "first.md": "first.md",
             "second.md": "second.md",
             _WEB_PAGE: "example.com · The Guide",
         }
         assert all("citation_number" not in r for r in dumped)
+
+
+class TestRefusedChatCarriesTheFailedSteps:
+    async def test_chat_refusal_lists_the_steps_that_failed(self, mock_svc):
+        from lilbee.core.health_warnings import HealthWarning, WarningCode
+        from lilbee.retrieval.query.searcher import GROUNDED_REFUSAL
+
+        warning = HealthWarning(
+            code=WarningCode.CONCEPT_EXPANSION_FAILED, message="Failed.", remedy="Retry."
+        )
+        mock_svc.searcher.build_rag_context.return_value = RagContext(
+            [], [], degraded=(warning,), refused=True
+        )
+        result = await handlers.chat("q", [])
+        assert result.answer == GROUNDED_REFUSAL
+        assert result.warnings == [warning]
+
+
+class TestPartlyReadOverHttp:
+    async def test_status_lists_the_partly_read_files_and_counts_them_all(self):
+        from lilbee.app.status import StatusConfig, StatusResult
+        from lilbee.data.types import PartialFile
+
+        gathered = StatusResult(
+            document_count=1,
+            config=StatusConfig(
+                documents_dir="docs", data_dir="data", chat_model="c", embedding_model="e"
+            ),
+            sources=[],
+            total_chunks=3,
+            partly_read=[
+                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
+            ],
+            partial_total=4,
+        )
+        with patch("lilbee.server.handlers.gather_status", return_value=gathered):
+            response = await handlers.status()
+
+        dumped = response.model_dump()
+        assert dumped["partial_total"] == 4
+        assert dumped["partly_read"] == [
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        ]
+
+    async def test_the_sync_stream_done_frame_names_partial_files_and_reasons(self):
+        from lilbee.data.types import PartialFile
+
+        result = SyncResult(
+            added=["scan.pdf"],
+            partial=[
+                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
+            ],
+            failed=["bad.pdf"],
+            reasons={"bad.pdf": "the file is encrypted"},
+        )
+
+        async def partly_read_sync(*, on_progress, **_kwargs):
+            from lilbee.runtime.progress import EventType, FileDoneEvent, FileStatus, SyncDoneEvent
+
+            on_progress(
+                EventType.FILE_DONE,
+                FileDoneEvent(file="scan.pdf", status=FileStatus.PARTIAL, chunks=3),
+            )
+            on_progress(
+                EventType.SYNC_DONE,
+                SyncDoneEvent(added=1, updated=0, removed=0, failed=1, partial=1),
+            )
+            return result
+
+        with patch("lilbee.data.ingest.sync", side_effect=partly_read_sync):
+            events = [event async for event in handlers.sync_stream()]
+
+        file_done = next(e for e in events if e.startswith("event: file_done"))
+        assert json.loads(file_done.split("data: ")[1])["status"] == "partial"
+        sync_done = next(e for e in events if e.startswith("event: sync_done"))
+        assert json.loads(sync_done.split("data: ")[1])["partial"] == 1
+        done = json.loads(next(e for e in events if e.startswith("event: done")).split("data: ")[1])
+        assert done["partial"] == [
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        ]
+        assert done["reasons"] == {"bad.pdf": "the file is encrypted"}
+
+    def test_the_add_summary_keeps_partial_files_and_reasons_of_its_sync(self):
+        from lilbee.data.types import PartialFile
+        from lilbee.server.models import AddSummary, SyncSummary
+
+        result = SyncResult(
+            added=["scan.pdf"],
+            partial=[
+                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
+            ],
+            skipped=["blank.pdf"],
+            reasons={"blank.pdf": "no text extracted (0 chunks)"},
+        )
+        summary = AddSummary(
+            copied=["scan.pdf"], errors=[], sync=SyncSummary(**result.model_dump())
+        )
+
+        dumped = summary.model_dump(mode="json")["sync"]
+        assert dumped["partial"] == [
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        ]
+        assert dumped["reasons"] == {"blank.pdf": "no text extracted (0 chunks)"}
+
+    async def _partly_read_sync(self, **_kwargs):
+        from lilbee.data.types import PartialFile
+
+        return SyncResult(
+            added=["scan.pdf"],
+            partial=[
+                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
+            ],
+            skipped=["blank.pdf"],
+            reasons={"blank.pdf": "no text extracted (0 chunks)"},
+        )
+
+    def _done_sync(self, events):
+        done = next(e for e in events if e.startswith("event: done"))
+        return json.loads(done.split("data: ")[1])["sync"]
+
+    async def test_the_add_stream_done_frame_names_partial_files_and_reasons(self, isolated_env):
+        scan = isolated_env / "documents" / "scan.pdf"
+        scan.write_bytes(b"%PDF-1.4")
+        with patch("lilbee.data.ingest.sync", side_effect=self._partly_read_sync):
+            events = [e async for e in handlers.add_files_stream([str(scan)])]
+
+        sync = self._done_sync(events)
+        assert sync["partial"] == [
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        ]
+        assert sync["reasons"] == {"blank.pdf": "no text extracted (0 chunks)"}
+
+    async def test_the_upload_stream_done_frame_names_partial_files_and_reasons(self, isolated_env):
+        with patch("lilbee.data.ingest.sync", side_effect=self._partly_read_sync):
+            events = [e async for e in handlers.add_uploads_stream([("scan.pdf", b"%PDF-1.4")])]
+
+        sync = self._done_sync(events)
+        assert sync["partial"] == [
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        ]
+        assert sync["reasons"] == {"blank.pdf": "no text extracted (0 chunks)"}

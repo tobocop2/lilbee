@@ -210,6 +210,19 @@ class TestLintChangedSources:
         # Should only lint the page once
         store.get_citations_for_wiki.assert_called_once()
 
+    def test_an_explicit_config_is_used_for_the_lint(self, tmp_path: Path):
+        other_root = tmp_path / "other"
+        write_wiki_page(other_root, "summaries", "doc", "# Title\n\nUnmarked claim here.\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_source.return_value = [make_citation(source_filename="doc.md")]
+        store.get_citations_for_wiki.return_value = []
+        explicit = cfg.model_copy(update={"data_root": other_root})
+        assert explicit.data_root != cfg.data_root
+        report = lint_changed_sources(["doc.md"], store, config=explicit)
+        # The page exists only under the explicit config's root, so a lint that read the
+        # global config would find nothing to flag.
+        assert any("unmarked" in i.message.lower() for i in report.issues)
+
     def test_empty_sources_returns_empty_report(self):
         store = MagicMock(spec=Store)
         report = lint_changed_sources([], store)
@@ -307,6 +320,19 @@ class TestLintWritesLogEntry:
 
 
 class TestOrphanDetection:
+    def test_links_with_a_blank_target_count_for_no_page(self, tmp_path: Path):
+        write_wiki_page(tmp_path, "concepts", "braking", "# Braking\n\nText.\n")
+        write_wiki_page(tmp_path, "summaries", "doc", "Blank [[ ]] and [[ |label]] links.\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        report = lint_all(store)
+        orphans = {
+            i.wiki_source
+            for i in report.issues
+            if i.issue_type is not None and i.issue_type.value == "orphan"
+        }
+        assert orphans == {"wiki/concepts/braking.md"}
+
     def test_orphan_concept_flagged(self, tmp_path: Path):
         write_wiki_page(tmp_path, "concepts", "braking", "# Braking\n\nText.\n")
         write_wiki_page(tmp_path, "concepts", "linked", "# Linked\n\nText.\n")

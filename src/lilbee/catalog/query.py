@@ -1,29 +1,37 @@
 """Catalog filtering, sorting, lookup, and ad-hoc HF resolution."""
 
 import heapq
-import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from dataclasses import replace
 from itertools import islice
 from typing import Any
 
 from huggingface_hub.utils import HFValidationError, validate_repo_id
 
-from lilbee.app.services import get_services
+from lilbee.catalog import runnable
+from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.models import (
     CatalogModel,
     CatalogResult,
+    HiddenModel,
+    ListsModels,
     page_window,
 )
 from lilbee.catalog.picks import get_picks
 from lilbee.catalog.refs import (
     GGUF_GLOB,
-    GGUF_SUFFIX,
-    NATIVE_GGUF_REF_MIN_SLASHES,
-    hf_repo_from_ref,
+    installed_keys,
+    parse_model_ref,
 )
-from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
-
-log = logging.getLogger(__name__)
+from lilbee.catalog.runnable import (
+    EngineOffer,
+    EngineState,
+    default_offers,
+    explain,
+    runnable_formats,
+)
+from lilbee.catalog.types import CatalogSize, CatalogSort, ModelFormat, ModelTask
+from lilbee.providers.fleet.host_caps import HostCaps
 
 
 def _search_blob(m: CatalogModel) -> str:
@@ -67,6 +75,7 @@ def size_bucket(params: int) -> CatalogSize | None:
 def get_catalog(
     task: ModelTask | None = None,
     *,
+    hf_client: HfClient,
     search: str = "",
     size: CatalogSize | None = None,
     installed: bool | None = None,
@@ -84,7 +93,10 @@ def get_catalog(
     makes no HuggingFace request. The browse total is unknown because
     HuggingFace exposes no count, so it is None.
     """
-    picks = get_picks()
+    all_picks = get_picks(hf_client=hf_client)
+    host, offers = runnable.session_host(), default_offers()
+    refused: list[tuple[CatalogModel, HiddenModel]] = []
+    picks = list(_runnable_rows(all_picks, host, offers, refused))
     keep = _row_filter(
         task=task,
         search=search,
@@ -94,12 +106,24 @@ def get_catalog(
         featured=featured,
     )
     leading = _sort_models([m for m in picks if keep(m)], sort)
+    if not featured:
+        engine_rows = _engine_rows(offers, hf_client=hf_client)
+        leading += [m for m in _runnable_rows(engine_rows, host, offers, refused) if keep(m)]
     wanted = offset + limit + 1 - len(leading)
     hf_matches: list[CatalogModel] = []
-    scan = _HfScan(task, search)
+    scan = _HfScan(
+        task,
+        search,
+        sorted({ModelFormat(f) for o in offers for f in o.adapter.formats} - {ModelFormat.XDNA}),
+        hf_client=hf_client,
+    )
     if not featured and wanted > 0:
-        pick_repos = {m.hf_repo for m in picks}
-        rows = (m for m in scan.rows() if m.hf_repo not in pick_repos)
+        pick_repos = {m.hf_repo for m in all_picks}
+        rows = (
+            m
+            for m in _runnable_rows(scan.rows(), host, offers, refused)
+            if m.hf_repo not in pick_repos
+        )
         hf_matches = list(islice(filter(keep, rows), wanted))
     window = page_window(len(leading), offset, limit)
     hf_page = hf_matches[window.rest_offset : window.rest_offset + window.rest_limit]
@@ -110,38 +134,76 @@ def get_catalog(
         models=leading[offset : offset + limit] + _sort_models(hf_page, sort),
         has_more=len(leading) + len(hf_matches) > offset + limit,
         truncated=scan.truncated,
+        hidden=tuple({h.hf_repo: h for m, h in refused if keep(m)}.values()),
     )
+
+
+def _engine_rows(offers: Sequence[EngineOffer], *, hf_client: HfClient) -> list[CatalogModel]:
+    """The rows of the model lists that the offered engines publish, in file order."""
+    # isinstance: only some engines publish a model list, so the offers are narrowed by capability
+    return [
+        m
+        for o in offers
+        if isinstance(o.adapter, ListsModels) and o.state is not EngineState.UNAVAILABLE
+        for m in hf_client.fetch_engine_models(o.adapter)
+    ]
+
+
+def _runnable_rows(
+    rows: Iterable[CatalogModel],
+    host: HostCaps,
+    offers: Sequence[EngineOffer],
+    refused: list[tuple[CatalogModel, HiddenModel]],
+) -> Iterator[CatalogModel]:
+    """Rows an engine can run here, with their runnable formats; the others go to *refused*."""
+    for model in rows:
+        why = explain(model.formats, host, offers)
+        if why is None:
+            yield replace(model, formats=runnable_formats(model.formats, host, offers))
+        else:
+            refused.append((model, HiddenModel(model.hf_repo, why.reason.value, why.text)))
 
 
 class _HfScan:
     """A lazy read of the HuggingFace rows for one browse, bounded per pipeline tag."""
 
-    def __init__(self, task: ModelTask | None, search: str) -> None:
+    def __init__(
+        self,
+        task: ModelTask | None,
+        search: str,
+        formats: Sequence[ModelFormat],
+        *,
+        hf_client: HfClient,
+    ) -> None:
+        self._hf_client = hf_client
         self._task = task
+        self._formats = formats
         self._search = search
         self.truncated = False
 
     def rows(self) -> Iterator[CatalogModel]:
         """Rows across the task's pipeline tags, most downloaded first, deduped."""
         hf_tags, hf_library = task_to_pipeline(self._task)
-        streams = [self._tag_rows(tag, hf_library) for tag in hf_tags]
+        streams = [self._tag_rows(tag, hf_library, fmt) for tag in hf_tags for fmt in self._formats]
         seen: set[str] = set()
         for model in heapq.merge(*streams, key=_by_downloads_desc):
             if model.hf_repo not in seen:
                 seen.add(model.hf_repo)
                 yield model
 
-    def _tag_rows(self, pipeline_tag: str, library: str | None) -> Iterator[CatalogModel]:
+    def _tag_rows(
+        self, pipeline_tag: str, library: str | None, fmt: ModelFormat
+    ) -> Iterator[CatalogModel]:
         """Rows for one pipeline tag; sets ``truncated`` when the bound leaves pages unread."""
-        hf_client = get_services().hf_client
         cursor: str | None = None
         for _ in range(_HF_SCAN_MAX_PAGES):
-            page = hf_client.fetch_models(
+            page = self._hf_client.fetch_models(
                 pipeline_tag=pipeline_tag,
                 limit=_HF_SCAN_PAGE_SIZE,
                 library=library,
                 search=self._search,
                 cursor=cursor,
+                fmt=fmt,
             )
             yield from page.models
             if page.next_cursor is None:
@@ -161,9 +223,11 @@ def _installed_filter(
     """Row predicate for the installed filter, or None when it is off."""
     if installed is None or model_manager is None:
         return None
-    # A repo is installed if any of its quants has a manifest.
-    installed_repos = {hf_repo_from_ref(ref) for ref in _get_installed_models(model_manager)}
-    return lambda m: (m.hf_repo in installed_repos) == installed
+    # An unreadable registry raises: "none installed" would answer "unknown" with "no".
+    refs = set(model_manager.list_installed())
+    # A row is installed if its repo has a manifest in the row's own format.
+    keys = installed_keys(refs)
+    return lambda m: ((m.hf_repo, m.format) in keys) == installed
 
 
 def _row_filter(
@@ -217,20 +281,6 @@ def pipeline_to_task(pipeline_tag: str) -> ModelTask:
     return _PIPELINE_TO_TASK.get(pipeline_tag, ModelTask.CHAT)
 
 
-def _get_installed_models(model_manager: Any) -> set[str]:
-    """Get set of installed model names from model_manager.
-
-    Treats a manager failure as "nothing installed" so the browse list still
-    renders, but logs it: silently swallowing would hide a broken registry that
-    makes every model look uninstalled.
-    """
-    try:
-        return set(model_manager.list_installed())
-    except Exception:
-        log.warning("Could not read installed models; treating as none installed", exc_info=True)
-        return set()
-
-
 _SORT_KEYS: dict[CatalogSort, tuple] = {
     CatalogSort.DOWNLOADS: (lambda m: m.downloads, True),
     CatalogSort.NAME: (lambda m: m.display_name.lower(), False),
@@ -269,6 +319,7 @@ def build_adhoc_entry(
     *,
     gguf_filename: str = GGUF_GLOB,
     task: ModelTask = ModelTask.CHAT,
+    fmt: ModelFormat = ModelFormat.GGUF,
 ) -> CatalogModel:
     """Minimal CatalogModel for a HuggingFace GGUF repo.
 
@@ -285,10 +336,26 @@ def build_adhoc_entry(
         featured=False,
         downloads=0,
         task=task,
+        format=fmt,
     )
 
 
-def resolve_pull_target(model: str) -> CatalogModel | None:
+def _format_pull_target(
+    hf_repo: str, fmt: ModelFormat, *, hf_client: HfClient
+) -> CatalogModel | None:
+    """The pullable entry for ``<repo>#<format>``, or None when the repo id is malformed."""
+    if fmt is not ModelFormat.XDNA and not _is_hf_repo_id(hf_repo):
+        return None
+    if fmt is ModelFormat.XDNA:
+        rows = _engine_rows(default_offers(), hf_client=hf_client)
+        listed = next((m for m in rows if m.hf_repo == hf_repo), None)
+        if listed is not None:
+            return listed
+    task = ModelTask(reclassify_by_name(hf_repo, ModelTask.CHAT))
+    return build_adhoc_entry(hf_repo, task=task, fmt=fmt)
+
+
+def resolve_pull_target(model: str, *, hf_client: HfClient) -> CatalogModel | None:
     """Resolve *model* to a pullable entry, HF-first.
 
     A ref naming a concrete ``.gguf`` file (flat or in a repo subdir) is honored
@@ -298,16 +365,23 @@ def resolve_pull_target(model: str) -> CatalogModel | None:
     # circular: modelhub.registry imports catalog.query at top
     from lilbee.modelhub.registry import parse_hf_ref
 
-    if model.endswith(GGUF_SUFFIX) and model.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES:
+    try:
+        parsed = parse_model_ref(model)
+    except ValueError:
+        return None
+    if parsed.format is not ModelFormat.GGUF:
+        return _format_pull_target(parsed.hf_repo, parsed.format, hf_client=hf_client)
+    if parsed.filename:
         try:
             hf_repo, gguf_filename = parse_hf_ref(model)
         except ValueError:
             return None
         task = ModelTask(reclassify_by_name(model, ModelTask.CHAT))
         return build_adhoc_entry(hf_repo, gguf_filename=gguf_filename, task=task)
-    if not _is_hf_repo_id(model):
+    if not _is_hf_repo_id(parsed.hf_repo):
         return None
-    return build_adhoc_entry(model, task=ModelTask(reclassify_by_name(model, ModelTask.CHAT)))
+    task = ModelTask(reclassify_by_name(parsed.hf_repo, ModelTask.CHAT))
+    return build_adhoc_entry(parsed.hf_repo, task=task)
 
 
 # Embedding detection by name, for servers (LM Studio) that report ids but no

@@ -6,6 +6,7 @@ the health probe are fake.
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 import time
 from collections.abc import Callable
@@ -17,16 +18,20 @@ import pytest
 from lilbee.app.settings import _reload_changed_roles
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
-from lilbee.providers import engine_params, gguf_meta
+from lilbee.providers import engine_params
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.binary import engine_pin
 from lilbee.providers.fleet.contract import contract_matches
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.fleet.swap_manager import SwapState
 from lilbee.providers.roles import RerankMode, WorkerRole
+from tests._fleet_engines import engines_for_all_roles
 from tests.test_fleet_provider import _connection_error, _fake_client, _FakeSwap
 from tests.test_fleet_reload_plan import (
     _CHAT_REF,
@@ -74,7 +79,9 @@ def _owner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[FleetProvid
     monkeypatch.setattr(provider, "_preload_roles", lambda roles=None: None)
     monkeypatch.setattr(provider, "_reload_dir", lambda: tmp_path)
     with provider._lock:
-        for group, launches in _launches_by_group(planning_mod.plan_all_launches()).items():
+        for group, launches in _launches_by_group(
+            planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
+        ).items():
             provider._adopt_group(group, _FakeSwap(), list(launches))
             provider._group_dirs[group] = tmp_path
             _record(states, group, list(launches))
@@ -85,11 +92,14 @@ def _new_process_ladder(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, states: _States
 ) -> tuple[bool | None, FleetProvider]:
     """Run the real ladder as a new process on the current config, with live users present."""
-    monkeypatch.setattr(prov_mod, "_healthy_states", lambda _dir: dict(states))
+    monkeypatch.setattr(prov_mod, "_healthy_states", lambda _dir, **_kw: dict(states))
     monkeypatch.setattr(prov_mod, "live_users_exist", lambda _dir, **_kw: True)
     monkeypatch.setattr(prov_mod, "_watch_bound_engine", lambda _dir: None)
-    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: True)
-    monkeypatch.setattr(prov_mod, "stop_engine", lambda _dir: pytest.fail("stopped the fleet"))
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted, _engine: True)
+    # The owner ran the reload, so it holds the dir and its shutdown at teardown stops
+    # the engine as the last user. Only a stop during the ladder is a defect.
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", stopped.append)
 
     class _BindingSwap(_FakeSwap):
         def bind(self, _state: SwapState) -> bool:
@@ -103,10 +113,11 @@ def _new_process_ladder(
     result = peer._acquire_in_dir(
         tmp_path,
         engine_pin(),
-        prov_mod._placeable_demand(),
+        prov_mod._placeable_demand(LLAMA, engines_for_all_roles(LLAMA)),
         overflow_dir=tmp_path / "private",
         wait_until=time.monotonic() + prov_mod._OWNER_CATCH_UP_WAIT_S,
     )
+    assert stopped == [], "stopped the fleet"
     return result, peer
 
 
@@ -225,7 +236,7 @@ def test_an_ocr_change_with_a_vision_model_stops_vision_and_keeps_the_rest_binda
     real_planner, monkeypatch, tmp_path: Path
 ) -> None:
     resolve = engine_params.resolve_model_path
-    read = gguf_meta.read_gguf_metadata
+    read = llama_mod.read_gguf_metadata
     vision_path = tmp_path / "vision.gguf"
     vision_path.write_bytes(b"weights")
     monkeypatch.setattr(
@@ -234,7 +245,7 @@ def test_an_ocr_change_with_a_vision_model_stops_vision_and_keeps_the_rest_binda
         lambda ref: vision_path if ref == _VISION_REF else resolve(ref),
     )
     monkeypatch.setattr(
-        gguf_meta,
+        llama_mod,
         "read_gguf_metadata",
         lambda path: {"general.architecture": "clip"} if Path(path) == vision_path else read(path),
     )
@@ -252,7 +263,7 @@ def test_an_ocr_change_with_a_vision_model_stops_vision_and_keeps_the_rest_binda
 
 
 def _settings(role: WorkerRole, rerank_mode: RerankMode | None, meta: dict[str, str] | None) -> str:
-    return planning_mod.launch_settings(role, rerank_mode, meta, Path("model.gguf"))
+    return planning_mod.launch_settings(role, rerank_mode, meta, Path("model.gguf"), engine=LLAMA)
 
 
 @pytest.mark.parametrize(
@@ -295,6 +306,18 @@ def test_a_chunk_size_the_trained_window_clamps_leaves_the_embed_settings(monkey
 def test_the_rerank_mode_moves_the_settings() -> None:
     role = WorkerRole.RERANK
     assert _settings(role, RerankMode.LLM, None) != _settings(role, None, None)
+
+
+def test_the_cross_encoder_pair_layout_moves_the_rerank_settings_only() -> None:
+    # A running reranker recorded with no pair layout must not bind: its client
+    # would have no layout to build pairs with.
+    bert = {"tokenizer_model": "bert", "bos_token_id": "101", "eos_token_id": "102"}
+    xlmr = {"tokenizer_model": "t5", "bos_token_id": "0", "eos_token_id": "2"}
+    rerank, cross = WorkerRole.RERANK, RerankMode.CROSS_ENCODER
+    assert "rerank_pair=RerankPair(" in _settings(rerank, cross, bert)
+    assert _settings(rerank, cross, bert) != _settings(rerank, cross, xlmr)
+    assert "rerank_pair=None" in _settings(rerank, RerankMode.LLM, xlmr)
+    assert "rerank_pair" not in _settings(WorkerRole.EMBED, None, xlmr)
 
 
 @pytest.mark.parametrize("role", list(WorkerRole))
@@ -341,6 +364,60 @@ def test_the_restart_log_names_each_launch_field_that_moved() -> None:
     assert prov_mod._launch_changes((), (after,)) == "replicas 0 -> 1"
 
 
+def test_the_restart_log_skips_a_field_outside_the_launch_plan() -> None:
+    before = InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m", ctx=2048, trained_ctx=0)
+    after = InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m", ctx=1536, trained_ctx=4096)
+    assert prov_mod._launch_changes((before,), (after,)) == "ctx 2048 -> 1536"
+    same_plan = InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m", ctx=2048, trained_ctx=4096)
+    assert prov_mod._launch_changes((before,), (same_plan,)) == "no launch field moved"
+
+
+def test_a_new_read_rate_reading_moves_no_launch() -> None:
+    # The rate is measured, and two readings of one volume differ. A reload that
+    # restarted on each new reading would drop a loaded model for nothing.
+    before = InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m", read_bytes_per_s=25 * 1024**2)
+    after = InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m", read_bytes_per_s=31 * 1024**2)
+    assert prov_mod._launch_moves((before,), (after,)) == []
+
+
+def test_the_read_rate_reaches_a_process_that_binds_to_the_engine() -> None:
+    # A guest's client timeout and the bind deadline read the launch from the state file.
+    launch = InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m", read_bytes_per_s=25 * 1024**2)
+    assert InstanceLaunch.from_state(launch.to_state()).read_bytes_per_s == 25 * 1024**2
+
+
+def test_a_reload_keeps_a_group_whose_launches_differ_only_outside_the_plan(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    provider, states = _owner(monkeypatch, tmp_path)
+    kept = dict(states)
+    with provider._lock:
+        for group, launches in list(provider._launches.items()):
+            provider._launches[group] = tuple(
+                dataclasses.replace(launch, trained_ctx=launch.trained_ctx + 4096)
+                for launch in launches
+            )
+        assert provider._launches
+    provider._reload_pass()
+    assert all(states[group] is kept[group] for group in kept)
+    assert set(states) == set(kept)
+    with provider._lock:
+        provider._launches[SwapGroup.CHAT] = tuple(
+            dataclasses.replace(launch, ctx=launch.ctx + 1)
+            for launch in provider._launches[SwapGroup.CHAT]
+        )
+    provider._reload_pass()
+    assert states[SwapGroup.CHAT] is not kept[SwapGroup.CHAT]
+
+
+def test_every_launch_field_but_the_plan_time_one_is_in_the_plan_record() -> None:
+    fields = {field.name for field in dataclasses.fields(InstanceLaunch)}
+    record = set(InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m").to_state())
+    assert fields
+    assert fields - record == {"trained_ctx"}
+    assert record <= fields
+
+
 @pytest.mark.parametrize(
     ("keys", "roles", "replans"),
     [
@@ -368,8 +445,25 @@ def test_a_thread_that_cannot_start_leaves_no_reload_in_flight(
     monkeypatch.setattr(threading.Thread, "start", refuse)
     with pytest.raises(RuntimeError, match="start new thread"):
         provider.replan_fleet()
-    assert provider._reloading is False
+    assert provider._fleet_work is None
     assert provider._reload_owed == frozenset()
+
+
+def test_a_request_never_waits_on_a_reload_that_could_not_start(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    provider, _states = _owner(monkeypatch, tmp_path)
+    monkeypatch.setattr(prov_mod, "_RELOAD_GAP_WAIT_S", 0.2)
+
+    def refuse(_thread: threading.Thread) -> None:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    with pytest.raises(RuntimeError, match="start new thread"):
+        provider.replan_fleet()
+    provider._clients[WorkerRole.CHAT] = []
+    with pytest.raises(ProviderError, match="No chat model server is running"):
+        provider._require_clients(WorkerRole.CHAT)
 
 
 def _peer_mid_call_over_an_owner_restart(
@@ -386,7 +480,9 @@ def _peer_mid_call_over_an_owner_restart(
     result, peer = _new_process_ladder(monkeypatch, tmp_path, states)
     assert result is True
     monkeypatch.setattr(cfg, "flash_attention", flash_attention)
-    for group, launches in _launches_by_group(planning_mod.plan_all_launches()).items():
+    for group, launches in _launches_by_group(
+        planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
+    ).items():
         _record(states, group, list(launches))
     monkeypatch.setattr(cfg, "flash_attention", True)
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path)
@@ -395,7 +491,7 @@ def _peer_mid_call_over_an_owner_restart(
     # bind builds there.
     monkeypatch.setattr(prov_mod, "live_users_exist", lambda d, **_kw: Path(d) == tmp_path)
     monkeypatch.setattr(
-        prov_mod, "_healthy_states", lambda d: dict(states) if Path(d) == tmp_path else {}
+        prov_mod, "_healthy_states", lambda d, **_kw: dict(states) if Path(d) == tmp_path else {}
     )
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d: None)
     monkeypatch.setattr(prov_mod, "engine_record_exists", lambda _d: False)

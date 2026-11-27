@@ -16,6 +16,7 @@ import pytest
 
 from lilbee.catalog import CatalogModel, download_model
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.engines import LLAMA
 from tests.integration.conftest import EMBED_ENTRY
 
 pytestmark = pytest.mark.slow
@@ -27,7 +28,7 @@ class TestRealDownloadProgress:
     def test_progress_fires_on_download(self) -> None:
         """Download the featured embedding model and verify progress callback fires."""
         calls: list[tuple[int, int]] = []
-        download_model(_TINY_MODEL, on_progress=lambda d, t: calls.append((d, t)))
+        download_model(_TINY_MODEL, on_progress=lambda d, t: calls.append((d, t)), engine=LLAMA)
 
         assert len(calls) >= 1, "Expected at least one progress callback"
         final_downloaded, final_total = calls[-1]
@@ -36,7 +37,7 @@ class TestRealDownloadProgress:
     def test_already_downloaded_reports_100(self) -> None:
         """Cached model reports 100% in a single callback."""
         calls: list[tuple[int, int]] = []
-        download_model(_TINY_MODEL, on_progress=lambda d, t: calls.append((d, t)))
+        download_model(_TINY_MODEL, on_progress=lambda d, t: calls.append((d, t)), engine=LLAMA)
 
         assert len(calls) == 1
         assert calls[0][0] == calls[0][1]
@@ -64,4 +65,4 @@ class TestDownloadFailureMessages:
             task="chat",
         )
         with pytest.raises((RuntimeError, PermissionError)):
-            download_model(bad_model)
+            download_model(bad_model, engine=LLAMA)

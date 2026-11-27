@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import logging
 import sys
+import warnings
+from functools import partial
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import typer
+
+from lilbee.app.services import reset_services_on_exit
 from lilbee.core.config import cfg
 
 _LOG_DIR_NAME = "logs"
@@ -49,7 +54,34 @@ def attach_rotating_file_handler(
     root.addHandler(handler)
 
 
-def route_diagnostics_to_log_file() -> Path | None:
+def detach_rotating_file_handler(log_path: Path) -> None:
+    """Remove and close the root logger's RotatingFileHandler for *log_path*, if any."""
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if isinstance(handler, RotatingFileHandler) and Path(handler.baseFilename) == log_path:
+            root.removeHandler(handler)
+            handler.close()
+
+
+def _is_terminal_handler(handler: logging.Handler) -> bool:
+    """Whether *handler* writes records to stderr or stdout."""
+    return (
+        isinstance(handler, logging.StreamHandler)
+        and not isinstance(handler, logging.FileHandler)
+        and handler.stream in (sys.stderr, sys.stdout)
+    )
+
+
+def warnings_reach_terminal() -> bool:
+    """Whether a WARNING record prints on the terminal."""
+    root = logging.getLogger()
+    return root.isEnabledFor(logging.WARNING) and any(
+        _is_terminal_handler(handler) and handler.level <= logging.WARNING
+        for handler in root.handlers
+    )
+
+
+def route_diagnostics_to_log_file(ctx: typer.Context) -> Path | None:
     """Send log records and Python warnings to ``cfg.data_root/logs/cli.log``.
 
     Answer-facing commands (ask, search, chat) call this after their overrides
@@ -57,6 +89,10 @@ def route_diagnostics_to_log_file() -> Path | None:
     ``py.warnings`` log records via ``logging.captureWarnings``; nothing is
     filtered and no logger level changes. Skipped entirely when --log-level or
     LILBEE_LOG_LEVEL was given: diagnostics then stay on stderr as usual.
+
+    The routing lasts as long as the running command: *ctx* undoes it when the
+    command ends, however it ends. These commands also end the process's services, so a
+    second command in the same process is refused.
     """
     if _router.explicit_verbosity:
         return None
@@ -66,14 +102,38 @@ def route_diagnostics_to_log_file() -> Path | None:
     except OSError:
         return None
     log_path = log_dir / _CLI_LOG_FILE_NAME
-    attach_rotating_file_handler(log_path)
     root = logging.getLogger()
+    ctx.call_on_close(partial(_restore_diagnostics, list(root.handlers), _warnings_are_captured()))
+    attach_rotating_file_handler(log_path)
     for handler in list(root.handlers):
-        if (
-            isinstance(handler, logging.StreamHandler)
-            and not isinstance(handler, logging.FileHandler)
-            and handler.stream in (sys.stderr, sys.stdout)
-        ):
+        if _is_terminal_handler(handler):
             root.removeHandler(handler)
     logging.captureWarnings(True)
     return log_path
+
+
+def _restore_diagnostics(handlers_before: list[logging.Handler], capture_was_on: bool) -> None:
+    """Run the service teardown, then put the root handlers and the warnings hook back.
+
+    The teardown would run at interpreter exit, after the handlers are back, so its
+    records would print after the answer. It runs here instead, under the log file.
+    """
+    try:
+        reset_services_on_exit()
+    finally:
+        root = logging.getLogger()
+        # Detach first, close after: a handler closed while attached reopens its file on
+        # the next record from another thread. removeHandler takes the logging lock.
+        added = [handler for handler in root.handlers if handler not in handlers_before]
+        for handler in added:
+            root.removeHandler(handler)
+        root.handlers[:] = handlers_before
+        for handler in added:
+            handler.close()
+        if not capture_was_on:
+            logging.captureWarnings(False)
+
+
+def _warnings_are_captured() -> bool:
+    """Whether ``logging.captureWarnings`` is on: its hook is the active ``showwarning``."""
+    return warnings.showwarning.__module__ == logging.__name__

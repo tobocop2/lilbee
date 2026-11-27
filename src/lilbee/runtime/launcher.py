@@ -11,6 +11,7 @@ import contextlib
 import io
 import os
 import sys
+from collections.abc import Callable
 
 # Shells fetch tab completions by running the console script with
 # ``_<PROG>_COMPLETE=...`` set (and an empty argv); click answers those itself.
@@ -34,9 +35,46 @@ def _force_utf8_stdio() -> None:
                 stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
+def _warn_missing_vc_runtime() -> None:
+    """Warn when a pip install on Windows has no Visual C++ runtime for its wheels."""
+    if sys.platform != "win32" or "__compiled__" in globals():
+        return
+    if sys.stderr is None:
+        return
+    import ctypes
+
+    from lilbee.runtime.vc_runtime import VC_REDIST_URL
+
+    try:
+        ctypes.WinDLL("msvcp140.dll")
+    except OSError:
+        sys.stderr.write(
+            "Warning: the Microsoft Visual C++ runtime may be missing, so some "
+            f"libraries can fail to load with 'DLL load failed'. Install it from {VC_REDIST_URL}.\n"
+        )
+
+
+def _run_cli(app: Callable[[], object]) -> None:
+    """Run the CLI *app*; a config.toml it cannot lock or read exits 1 with a plain message."""
+    from lilbee.core.security import FileLockUnavailableError
+    from lilbee.providers.server_registry import ConfigReadError
+
+    try:
+        app()
+    except FileLockUnavailableError as exc:
+        from lilbee.app.settings import config_write_failure_message
+
+        sys.stderr.write(f"Error: {config_write_failure_message(exc)}\n")
+        raise SystemExit(1) from None
+    except ConfigReadError as exc:
+        sys.stderr.write(f"Error: {exc}\n")
+        raise SystemExit(1) from None
+
+
 def main() -> None:
     """Entry point for the ``lilbee`` console script."""
     _force_utf8_stdio()
+    _warn_missing_vc_runtime()
     args = sys.argv[1:]
     # Help exits before the TUI, so it must not print through the animation.
     wants_help = any(arg in ("--help", "-h") for arg in args)
@@ -47,7 +85,13 @@ def main() -> None:
     if not is_interactive:
         from lilbee.cli import app
 
-        app()
+        try:
+            _run_cli(app)
+        except SystemExit as ended:
+            # A worker the command left would hang the interpreter's exit.
+            from lilbee.app.services import end_command
+
+            end_command(ended)
         return
 
     from lilbee.app.services import mark_interactive_session
@@ -71,7 +115,7 @@ def main() -> None:
     # own imports (Textual and every screen), which on a cold disk take seconds;
     # run_tui dismisses it right before Textual takes over the terminal.
     try:
-        app()
+        _run_cli(app)
     except KeyboardInterrupt:
         sys.stderr.write("\033[?25h")
         sys.stderr.flush()

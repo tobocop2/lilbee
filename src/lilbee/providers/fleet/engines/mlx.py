@@ -1,0 +1,360 @@
+"""The mlx adapter; the only module that names the servers of the mlx pack and their flags.
+
+mlx-lm's server serves chat. lilbee's own server in the same pack, on mlx-lm and mlx, serves
+embed and rerank: one process for each role, chosen by ``--task``.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+from lilbee.catalog.hf_client import HfToken
+from lilbee.catalog.refs import model_format, parse_model_ref
+from lilbee.catalog.types import ModelFormat
+from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
+from lilbee.providers.fleet.devices import DeviceProbe
+from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
+from lilbee.providers.fleet.engines.base import (
+    PORT_SLOT,
+    EngineName,
+    LaunchRequest,
+    RequestProfile,
+    RerankShape,
+    ServerProcess,
+)
+from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate
+from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
+from lilbee.providers.fleet.launch import InstanceLaunch
+from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
+from lilbee.providers.fleet.model_memory import estimate_memory
+from lilbee.providers.folder_embed_width import read_folder_config, read_generation_config
+from lilbee.providers.model_ref import routes_to_native_model
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
+
+_VERSION = "0.32.2"
+_TOOL = "mlx-lm-server"
+_CHAT_MODULE = "mlx_lm.server"
+"""The module that the chat launcher runs; the process table shows it, not the launcher."""
+_EMBED_TOOL = "mlx-embed-server"
+"""The launcher of lilbee's embed and rerank server, beside the chat launcher in the pack."""
+_EMBED_SCRIPT = "mlx_embed_server.py"
+"""The script that the embed launcher runs; the process table shows it, not the launcher."""
+_TASKS = {WorkerRole.EMBED: "embed", WorkerRole.RERANK: "rerank"}
+_ENDPOINTS = {
+    WorkerRole.CHAT: ROLE_SPECS[WorkerRole.CHAT].endpoint_path,
+    WorkerRole.EMBED: "/v1/embeddings",
+    WorkerRole.RERANK: "/v1/rerank",
+}
+SERVED_FAMILIES: dict[WorkerRole, tuple[str, str]] = {
+    WorkerRole.EMBED: ("Qwen3-Embedding", "mlx-community/Qwen3-Embedding-0.6B-8bit#mlx"),
+    WorkerRole.RERANK: ("Qwen3-Reranker", "mlx-community/Qwen3-Reranker-0.6B-4bit#mlx"),
+}
+"""The one model family that the embed server runs for each of its roles, and an example ref.
+
+The server implements the pooling of Qwen3-Embedding and the prompt of Qwen3-Reranker only.
+"""
+_EMBED_BATCH_LIMIT = 32
+"""The most inputs of one embed or rerank request; the server runs each request as one batch."""
+_HOST = "127.0.0.1"
+_METAL = "metal"
+_LICENCES = ["MIT", "Apache-2.0", "BSD-3-Clause"]
+MACOS_FLOOR = (14, 0)
+"""The oldest macOS the pack runs on.
+
+mlx is the one engine with a literal floor: it has no row in the pack record, so no ``min_os``
+reaches the shared floor check. When an mlx wheel row is published, its ``min_os`` gives the
+floor, as for every other engine, and this literal goes.
+"""
+_SERVED_NAME = "default_model"
+"""The model name that selects the model the server loaded at start.
+
+Any other name makes mlx-lm load that name as a Hugging Face repo.
+"""
+_PROMPT_CACHE_BYTES = 1024**3
+"""The byte bound on the prompt cache; the server default holds ten caches with no bound.
+
+Not measured on a Mac yet.
+"""
+_WINDOW_KEY = "max_position_embeddings"
+_SAMPLING_FLAGS = {
+    "temperature": "--temp",
+    "top_p": "--top-p",
+    "top_k": "--top-k",
+    "min_p": "--min-p",
+}
+"""The ``generation_config.json`` keys the launch passes on, and the server flag of each."""
+_LLAMA_SERVER_SAMPLING: dict[str, float | int] = {
+    "temperature": 0.8,
+    "top_p": 0.95,
+    "top_k": 40,
+    "min_p": 0.05,
+}
+"""llama-server's own sampling defaults, used for each key the model folder does not name."""
+
+_PROFILE = RequestProfile(
+    embed_fields={},
+    stream_fields={},
+    tokenize_path=None,
+    detokenize_path=None,
+    apply_template_path="/apply-template",
+    label="mlx-lm",
+    # The server has no prompt-length check and no overflow body; lilbee bounds the prompt itself.
+    context_overflow=re.compile(r"(?!)"),
+    batch_overflow=None,
+    unreadable_embedding_hint="mlx-lm serves no embeddings.",
+    # mlx-lm reads the penalty as "repetition_penalty" (mlx_lm/server.py v0.32.2, line 1318).
+    option_names={"repeat_penalty": "repetition_penalty"},
+    reasoning_field="reasoning",
+    structured_output=False,
+    # A request that is not streamed runs to its end after the client goes: the server
+    # reads its stop flag only between answer tokens and writes only at the end.
+    works_on_after_disconnect=True,
+)
+_EMBED_PROFILE = replace(
+    _PROFILE,
+    label="mlx embed server",
+    # The embed server answers these in the shape of llama-server, so an input that the
+    # character estimate under-counts is cut to the window by exact token counts.
+    tokenize_path="/tokenize",
+    detokenize_path="/detokenize",
+    # The server refuses an embed input past --max-length with a 400 in these words.
+    context_overflow=re.compile(r"exceeds the window of \d+ tokens"),
+    unreadable_embedding_hint="the mlx embed server returned vectors that could not be decoded.",
+    batch_limit=_EMBED_BATCH_LIMIT,
+)
+_RERANK_PROFILE = replace(
+    _EMBED_PROFILE,
+    rerank_path=_ENDPOINTS[WorkerRole.RERANK],
+    rerank_shape=RerankShape.DOCUMENTS,
+)
+_PROFILES = {
+    WorkerRole.CHAT: _PROFILE,
+    WorkerRole.EMBED: _EMBED_PROFILE,
+    WorkerRole.RERANK: _RERANK_PROFILE,
+}
+
+
+def role_refusal(role: WorkerRole, ref: str) -> str | None:
+    """Why the mlx engine cannot serve *ref* for *role*, in plain words, or ``None``.
+
+    Only a ``#mlx`` ref that routes to the mlx engine is checked, and only for a role that
+    the embed server serves. The family is read from the repo name.
+    """
+    served = SERVED_FAMILIES.get(role)
+    if (
+        served is None
+        or model_format(ref) is not ModelFormat.MLX
+        or not routes_to_native_model(ref)
+    ):
+        return None
+    family, example = served
+    repo = parse_model_ref(ref).hf_repo
+    if family.lower() in repo.rsplit("/", 1)[-1].lower():
+        return None
+    return (
+        f"The mlx engine runs the {role.value} role only for {family} models, and {repo} is "
+        f"not one. Choose a {family} model, for example {example}."
+    )
+
+
+def _floor_text() -> str:
+    return ".".join(map(str, MACOS_FLOOR))
+
+
+def _sampling_args(model: Path) -> list[str]:
+    """The sampling defaults for a request that names none, as server flags.
+
+    mlx-lm samples greedily unless a request or a flag says otherwise, and greedy decoding
+    makes a thinking model repeat itself until the answer budget runs out. Each value comes
+    from the folder's ``generation_config.json``, else from llama-server's defaults, so both
+    engines sample alike. A folder that turns sampling off keeps greedy decoding.
+    """
+    config = read_generation_config(model)
+    if config.get("do_sample") is False:
+        return []
+    args: list[str] = []
+    for key, flag in _SAMPLING_FLAGS.items():
+        value = config.get(key)
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            value = _LLAMA_SERVER_SAMPLING[key]
+        args += [flag, str(value)]
+    return args
+
+
+class MlxAdapter:
+    """The mlx pack behind the engine contract, on Apple Silicon with macOS 14 or newer.
+
+    Chat runs on mlx-lm's server; embed and rerank run on lilbee's own server of the pack.
+    """
+
+    name = EngineName.MLX
+    formats = frozenset({ModelFormat.MLX})
+    architectures: frozenset[str] = frozenset()
+    served_roles = frozenset(_ENDPOINTS)
+    memory_kind = MemoryKind.FIXED_RESERVE
+    takes_device_names = False
+    concatenates_pooling = False
+    writes_own_log = False
+    bundled = False
+    server_process = ServerProcess(
+        name=_TOOL, interpreted=True, scripts=(_CHAT_MODULE, _EMBED_SCRIPT)
+    )
+
+    def supports_architecture(self, architecture: str) -> bool:
+        return True
+
+    def host_gate(self, host: HostCaps) -> HostGate:
+        if host.os is None or host.arch is None:
+            return PLATFORM_UNREAD
+        if host.os is not HostOS.MACOS:
+            return HostGate(False, f"mlx is not offered on {host.os.value} {host.arch.value}.")
+        if host.arch is not HostArch.ARM64:
+            return HostGate(
+                False,
+                f"mlx needs Apple Silicon. This process reports {host.arch.value}. "
+                "If this Mac has Apple Silicon, run lilbee natively, not under Rosetta.",
+            )
+        if not host.macos_known or host.macos_version is None:
+            return HostGate(True, host.macos_reason, known=False)
+        if (*host.macos_version, 0, 0)[:2] < MACOS_FLOOR:
+            have = ".".join(map(str, host.macos_version))
+            return HostGate(
+                False,
+                f"mlx needs macOS {_floor_text()} or later; this computer has {have}.",
+            )
+        return PASS
+
+    def binary(self) -> Path:
+        from lilbee.catalog.runnable import session_host
+        from lilbee.providers.fleet.engines.choice import install_advice, store_tool
+
+        host = session_host()
+        tool = store_tool(self.pin_record(), _TOOL, host)
+        if tool is None:
+            raise ProviderError(
+                f"The mlx engine is not installed. {install_advice(self, host)}",
+                kind=ProviderErrorKind.NOT_FOUND,
+            )
+        return tool
+
+    def identity(self, binary: Path) -> str:
+        return f"{self.name.value} {_VERSION} {binary}"
+
+    def pin_record(self) -> Mapping[str, Any]:
+        from lilbee.catalog.runnable import session_host
+
+        host = session_host()
+        return {
+            "engine": self.name.value,
+            "version": _VERSION,
+            "backend": _METAL,
+            "sha256": pack_digest(self.name.value, _VERSION, host, _METAL),
+            "tool": _TOOL,
+            "launch": ["{binary}", "--model", "{model}", "--host", _HOST, "--port", PORT_SLOT],
+            "platforms": pack_platforms(self.name.value, _VERSION, host, _METAL),
+            "memory": {"sizing": None, "rule": MemoryKind.FIXED_RESERVE.value},
+            "licenses": _LICENCES,
+        }
+
+    def role_spec(
+        self, role: WorkerRole, rerank_mode: RerankMode | None, meta: dict[str, str] | None
+    ) -> RoleServerSpec:
+        if role not in self.served_roles:
+            raise ProviderError(f"Engine {self.name.value} does not serve {role}.")
+        task = _TASKS.get(role)
+        extra = () if task is None else ("--task", task)
+        return RoleServerSpec(role, _ENDPOINTS[role], extra, server_capable=True)
+
+    def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
+        """The server command; mlx places the model itself, so layers stay unset.
+
+        mlx-lm stops an answer at 512 tokens when the request names no max_tokens. A chat
+        names none unless the user sets one, so the answer budget is the window. The model
+        folder's own sampling defaults replace the server's greedy default.
+
+        Embed and rerank run the embed launcher beside the chat launcher. Its window is the
+        planned context: it refuses a longer embed input and cuts a longer rerank document.
+        """
+        if spec.role in _TASKS:
+            return [
+                str(request.binary.with_name(_EMBED_TOOL)),
+                "--model",
+                str(request.model_path),
+                "--host",
+                _HOST,
+                "--port",
+                PORT_SLOT,
+                "--max-length",
+                str(request.ctx_per_slot),
+                *spec.extra_args,
+            ]
+        return [
+            str(request.binary),
+            "--model",
+            str(request.model_path),
+            "--host",
+            _HOST,
+            "--port",
+            PORT_SLOT,
+            "--prompt-cache-bytes",
+            str(_PROMPT_CACHE_BYTES),
+            "--max-tokens",
+            str(request.ctx_per_slot),
+            *_sampling_args(request.model_path),
+            *spec.extra_args,
+        ]
+
+    def discover_devices(self, binary: Path) -> DeviceProbe:
+        return DeviceProbe(devices=[], output="", has_listing=False)
+
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
+        return frozenset({RoleTarget.GPU})
+
+    def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
+        """The weights of the model folder plus its cache at the planned context and slots."""
+        return estimate_memory(ModelFormat.MLX, request)
+
+    def check_readback(self, binary: Path) -> bool:
+        return False
+
+    def supports_fit_target(self, binary: Path) -> bool:
+        return False
+
+    def supports_shared_kv(self, binary: Path) -> bool:
+        return False
+
+    def model_meta(self, path: Path) -> dict[str, str] | None:
+        """The window of the model, from the ``config.json`` in its folder, or ``None``.
+
+        A vision-language model keeps the value under ``text_config``.
+        """
+        config = read_folder_config(path)
+        for section in (config, config.get("text_config")):
+            window = section.get(_WINDOW_KEY) if isinstance(section, dict) else None
+            if isinstance(window, int) and not isinstance(window, bool) and window > 0:
+                return {"context_length": str(window)}
+        return None
+
+    def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
+        return None
+
+    def runtime_env(self) -> Mapping[str, str]:
+        return {}
+
+    def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
+        return {}
+
+    def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:
+        return {"useModelName": _SERVED_NAME}
+
+    def request_profile(self, role: WorkerRole) -> RequestProfile:
+        return _PROFILES.get(role, _PROFILE)
+
+
+MLX = MlxAdapter()
+ADAPTER = MLX

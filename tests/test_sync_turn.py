@@ -19,6 +19,7 @@ from filelock import FileLock
 from lilbee.core.config import cfg
 from lilbee.data.ingest import SyncResult
 from lilbee.data.ingest.pipeline import _marks_sync_running
+from lilbee.runtime.cancellation import SignalFlag
 from lilbee.runtime.lock import (
     LibraryUnlockableError,
     SyncTurnOwner,
@@ -31,6 +32,7 @@ from lilbee.runtime.progress import (
     ProgressEvent,
     SyncWaitEvent,
 )
+from tests.conftest import child_pythonpath
 
 # Ends a test that hangs; no wait in these tests is a sleep.
 _HANG_LIMIT_S = 10.0
@@ -273,9 +275,7 @@ def test_lilbee_add_prints_the_wait_on_stderr_naming_the_running_sync(
 
     try:
         with mock.patch("lilbee.data.ingest.sync", _sync(library)):
-            ingest_sync._run_sync(
-                threading.Event(), on_progress=_free_the_turn, started_by="lilbee add"
-            )
+            ingest_sync._run_sync(SignalFlag(), on_progress=_free_the_turn, started_by="lilbee add")
     finally:
         holder.release()
     err = capsys.readouterr().err
@@ -487,7 +487,7 @@ async def test_a_waiter_takes_the_turn_when_its_holder_is_killed_with_sigkill() 
         _HOLDER_CHILD,
         str(cfg.data_root),
         stdout=asyncio.subprocess.PIPE,
-        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+        env={**os.environ, "PYTHONPATH": child_pythonpath(*sys.path)},
     )
     try:
         assert child.stdout is not None

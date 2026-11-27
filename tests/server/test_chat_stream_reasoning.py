@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.retrieval.query.searcher import RagContext
 from lilbee.retrieval.reasoning import CAP_NOTICE_TEMPLATE
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
@@ -259,7 +260,7 @@ def mock_svc():
     from tests.conftest import make_mock_services
 
     searcher = MagicMock()
-    searcher.build_rag_context.return_value = None
+    searcher.build_rag_context.return_value = RagContext([], [], refused=True)
     # These tests exercise the reasoning stream, not the no-embedder refusal.
     searcher.search_unavailable.return_value = False
     services = make_mock_services(searcher=searcher)

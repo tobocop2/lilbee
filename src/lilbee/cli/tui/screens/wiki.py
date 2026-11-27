@@ -538,6 +538,7 @@ def start_wikify(app: LilbeeApp) -> None:
 
     def _target(reporter: ProgressReporter) -> None:
         from lilbee.wiki.generation import run_full_build
+        from lilbee.wiki.stats import model_failures_message
 
         try:
             summary = run_full_build(on_progress=_build_progress(reporter))
@@ -547,6 +548,9 @@ def start_wikify(app: LilbeeApp) -> None:
             call_from_thread(app, app.task_bar.reload_wiki_screens)
             raise
         call_from_thread(app, app.notify, msg.WIKI_BUILD_DONE.format(count=summary["count"]))
+        failed = model_failures_message(summary["stats"])
+        if failed is not None:
+            call_from_thread(app, app.notify, failed, severity="error")
 
     app.task_bar.start_task(msg.TASK_NAME_WIKI, TaskType.WIKI, _target, indeterminate=True)
 

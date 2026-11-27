@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import shutil
-import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -21,6 +20,7 @@ from pathlib import Path
 from lilbee.core.config import Config, cfg
 from lilbee.data.store import SourceType, Store
 from lilbee.data.store.types import CitationRecord
+from lilbee.runtime.cancellation import CancelSignal
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.lint import IssueType, lint_wiki_page
 from lilbee.wiki.persistence import subdir_from_wiki_source
@@ -296,7 +296,7 @@ def prune_wiki(
     store: Store,
     config: Config | None = None,
     *,
-    cancel: threading.Event | None = None,
+    cancel: CancelSignal | None = None,
 ) -> PruneReport:
     """Scan all wiki pages and prune stale/orphaned ones.
 

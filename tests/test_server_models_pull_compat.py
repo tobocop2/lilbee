@@ -40,6 +40,24 @@ async def testenforce_arch_compat_raises_409() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_precheck_reads_a_ref_with_no_source_as_native() -> None:
+    mock_manager = MagicMock()
+    mock_manager.enforce_arch_compat.side_effect = UnsupportedArchError("acme/foo-GGUF", "kimi_k2")
+
+    with (
+        patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ),
+        pytest.raises(HTTPException) as excinfo,
+    ):
+        await handlers.enforce_pull_arch_compat("acme/foo-GGUF")
+
+    assert excinfo.value.status_code == 409
+    mock_manager.enforce_arch_compat.assert_called_once_with("acme/foo-GGUF")
+
+
+@pytest.mark.asyncio
 async def testenforce_arch_compat_skips_remote_and_override() -> None:
     """Remote source and allow_unsupported both bypass the native arch precheck."""
     mock_manager = MagicMock()
@@ -57,6 +75,7 @@ async def test_models_pull_generator_does_not_precheck() -> None:
     """The generator no longer prechecks (the route does); a raise here would be too
     late. manager.pull still enforces compatibility during the pull itself."""
     mock_manager = MagicMock()
+    mock_manager.is_installed.return_value = False
     mock_manager.enforce_arch_compat.side_effect = UnsupportedArchError("acme/foo-GGUF", "kimi_k2")
     mock_manager.pull.return_value = None
 
@@ -75,6 +94,7 @@ async def test_models_pull_generator_does_not_precheck() -> None:
 async def test_pull_native_with_allow_unsupported_skips_precheck() -> None:
     """allow_unsupported=True must bypass the pre-stream gate entirely."""
     mock_manager = MagicMock()
+    mock_manager.is_installed.return_value = False
 
     def fake_pull(
         model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False, cancel=None

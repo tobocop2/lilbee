@@ -10,13 +10,13 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.content import Content
-from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import COMMANDS, SlashCommand
 from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
+from lilbee.cli.tui.widgets.dialog import Dialog
 
 
 @dataclass(frozen=True)
@@ -57,7 +57,7 @@ CATALOG_GROUPS: tuple[CatalogGroup, ...] = (
     ),
     CatalogGroup(
         "MODELS",
-        ("/model", "/models", "/setup"),
+        ("/model", "/models", "/engine", "/preset", "/setup"),
     ),
     CatalogGroup(
         "KNOWLEDGE",
@@ -108,7 +108,7 @@ def _matches(cmd: SlashCommand, query: str) -> bool:
     return needle in cmd.help_text.lower()
 
 
-class SlashCommandCatalog(ModalScreen[str | None]):
+class SlashCommandCatalog(Dialog[str | None]):
     """Modal browser for every slash command; dismisses with the picked name or ``None``."""
 
     CSS_PATH = "slash_command_catalog.tcss"

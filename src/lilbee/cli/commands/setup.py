@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
+import functools
 import importlib
 import json
 import shutil
@@ -29,8 +29,11 @@ from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.crawler import CrawlerBrowserError, bootstrap_chromium, chromium_installed
+from lilbee.providers.base import is_header_safe
 from lilbee.providers.factory import sdk_library
+from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.providers.roles import WorkerRole
+from lilbee.runtime.asyncio_loop import run_main
 from lilbee.runtime.console import styled
 from lilbee.runtime.progress import EventType, SetupProgressEvent
 
@@ -95,17 +98,14 @@ def _installed_model_path(want: str, configured: str) -> Path | None:
     Prefers the configured ref when it is installed and matches the role,
     so the check exercises the model the user actually runs.
     """
-    from lilbee.catalog.query import reclassify_by_name
+    from lilbee.catalog.types import ModelFormat
     from lilbee.modelhub.registry import ModelRegistry
 
     registry = ModelRegistry(cfg.models_dir)
-    try:
-        manifests = [
-            m for m in registry.list_installed() if reclassify_by_name(m.ref, m.task) == want
-        ]
-    except Exception:
-        return None
-    refs = [m.ref for m in manifests]
+    manifests = [m for m in registry.list_installed() if m.task == want]
+    for skipped in (m for m in manifests if m.format is not ModelFormat.GGUF):
+        console.print(f"Skipping {skipped.ref}: the self-check loads GGUF files only.")
+    refs = [m.ref for m in manifests if m.format is ModelFormat.GGUF]
     ordered = [configured, *refs] if configured in refs else refs
     for ref in ordered:
         try:
@@ -147,15 +147,18 @@ def _resolved_provider_kwargs() -> dict[str, Any]:
     which dynamic ctx / FA / KV cache / GPU layers values their install
     chose without grepping debug logs.
     """
+    from lilbee.app.engine_choice import EngineBook
     from lilbee.core.config.enums import KvCacheType
     from lilbee.providers.fleet.planning import chat_cache_type_flag
 
+    engine = EngineBook(cfg).adapters().get(WorkerRole.CHAT)
     return {
         "num_ctx": cfg.num_ctx,
         "num_ctx_max": cfg.num_ctx_max,
         "chat_n_ctx_target": cfg.chat_n_ctx_target,
         "flash_attention": cfg.flash_attention,
-        "kv_cache_type": chat_cache_type_flag() or KvCacheType.F16.value,
+        "kv_cache_type": (chat_cache_type_flag(engine) if engine is not None else None)
+        or KvCacheType.F16.value,
         "n_gpu_layers": cfg.n_gpu_layers,
         "cpu_moe": cfg.cpu_moe,
         "n_cpu_moe": cfg.n_cpu_moe,
@@ -174,16 +177,19 @@ def _self_check_server(
     real request drives. The upstream loads on the first request; the caller
     shuts the manager down.
     """
+    from lilbee.app.engine_choice import resolve_engines
     from lilbee.providers.fleet.client import LlamaServerClient
     from lilbee.providers.fleet.groups import SwapGroup
     from lilbee.providers.fleet.planning import build_single_role_launch
+    from lilbee.providers.fleet.provider import load_role
     from lilbee.providers.fleet.swap_manager import SwapManager
 
-    launch = build_single_role_launch(role, model_path)
+    engine = resolve_engines(cfg).for_role(role).adapter
+    launch = build_single_role_launch(role, model_path, engine=engine)
     work_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
     swap = SwapManager(work_dir, SwapGroup(role.value))
     try:
-        swap.start([launch])
+        swap.start([launch], engines={role: engine})
     except BaseException:
         # start() raises on engine-load failure (the case self-check exists to
         # catch); work_dir is never returned, so clean it here rather than orphan it.
@@ -191,7 +197,11 @@ def _self_check_server(
         shutil.rmtree(work_dir, ignore_errors=True)
         raise
     client = LlamaServerClient(
-        swap.endpoint(), launch.model_id, inline_reasoning=role is WorkerRole.CHAT
+        swap.endpoint(),
+        launch.model_id,
+        inline_reasoning=role is WorkerRole.CHAT,
+        profile=engine.request_profile(role),
+        load=functools.partial(load_role, role),
     )
     return swap, client, work_dir
 
@@ -242,7 +252,7 @@ def _self_check_leg(
         console.print(Text.assemble(f"Loading {label} model ", str(model_path)), soft_wrap=True)
         result = check(model_path)
     except Exception as exc:
-        _self_check_emit_failure(repr(exc))
+        _self_check_emit_failure(str(exc) if isinstance(exc, PlacementError) else repr(exc))
         raise typer.Exit(1) from exc
     finally:
         if download_dir is not None:
@@ -303,10 +313,14 @@ def self_check_cmd(
     """
     from lilbee.catalog.types import ModelTask
 
-    if chat_model_path is None:
-        chat_model_path = _installed_model_path(ModelTask.CHAT, cfg.chat_model)
-    if embed_model_path is None and not skip_embedding:
-        embed_model_path = _installed_model_path(ModelTask.EMBEDDING, cfg.embedding_model)
+    try:
+        if chat_model_path is None:
+            chat_model_path = _installed_model_path(ModelTask.CHAT, cfg.chat_model)
+        if embed_model_path is None and not skip_embedding:
+            embed_model_path = _installed_model_path(ModelTask.EMBEDDING, cfg.embedding_model)
+    except OSError as exc:
+        _self_check_emit_failure(f"Could not read the model registry: {exc}")
+        raise typer.Exit(1) from exc
 
     with _teardown_on_sigterm():
         text, chat_path = _self_check_leg(
@@ -362,7 +376,7 @@ def self_check_cmd(
         console.print(styled(("SELF-CHECK PASSED", theme.ACCENT)))
 
 
-_SELF_CHECK_EXTRAS = ("providers", "crawlberg", "ada_url", "spacy", "graspologic_native")
+_SELF_CHECK_EXTRAS = ("providers", "crawlberg", "ada_url", "spacy", "graspologic_native", "xberg")
 
 
 def self_check_extras_cmd() -> None:
@@ -449,7 +463,17 @@ def login() -> None:
         typer.echo("No token provided.", err=True)
         raise typer.Exit(1)
 
-    hf_login(token=token.strip(), add_to_git_credential=False)
+    token = token.strip()
+    if not is_header_safe(token):
+        typer.echo(msg.CHAT_LOGIN_UNSENDABLE, err=True)
+        raise typer.Exit(1)
+
+    try:
+        hf_login(token=token, add_to_git_credential=False)
+    except Exception:
+        # No chained exception and no str(exc): the library's text can echo the token.
+        typer.echo(msg.CHAT_LOGIN_FAILED, err=True)
+        raise typer.Exit(1) from None
     typer.echo("Logged in! Gated models (Mistral, Llama, etc.) are now accessible.")
 
 
@@ -483,7 +507,7 @@ def setup_crawler_cmd() -> None:
             typer.echo(msg.SETUP_CHROMIUM_CLI_PROGRESS.format(pct=pct), err=True)
 
     try:
-        asyncio.run(bootstrap_chromium(on_progress=_on_progress))
+        run_main(bootstrap_chromium(on_progress=_on_progress))
     except CrawlerBrowserError as exc:
         if cfg.json_mode:
             typer.echo(json.dumps({"component": "chromium", "error": str(exc)}))

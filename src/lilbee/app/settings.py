@@ -10,15 +10,18 @@ from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from lilbee.app.engine_choice import resolve_engines
 from lilbee.app.settings_map import CHUNK_LIMIT_KEY, SETTINGS_MAP, SettingDef, SettingGroup
+from lilbee.catalog.hf_client import is_hf_token_sendable
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS,
     PUBLIC_CONFIG_FIELDS,
     REINDEX_FIELDS,
+    SERVICE_ONLY_FIELDS,
     WRITABLE_CONFIG_FIELDS,
 )
 from lilbee.core import settings as persistent_settings
@@ -33,9 +36,11 @@ from lilbee.core.config.login_host import refuse_unless_host
 from lilbee.core.config.model import (
     canonical_model_ref,
     checked_write,
+    commit_config,
     default_refusal,
     refusal_sentence,
     root_folders,
+    shown_value,
 )
 from lilbee.core.config.resolve import (
     PROFILE_FIELDS,
@@ -49,14 +54,19 @@ from lilbee.core.config.resolve import (
 from lilbee.core.config.schema import field_type_name
 from lilbee.core.crawl_patterns import exclude_patterns_refusal
 from lilbee.core.project_state import dismiss_tip
+from lilbee.core.security import FileLockUnavailableError
+from lilbee.providers.base import is_header_safe
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.reload_keys import FLEET_RELOAD_KEYS
 from lilbee.providers.roles import (
     MODEL_FIELD_TO_ROLE,
     ROLE_GATE_FIELD_TO_ROLE,
+    WorkerRole,
 )
 from lilbee.runtime.progress import OcrBackendUsed
 
 if TYPE_CHECKING:
+    from lilbee.catalog.types import ModelTask
     from lilbee.modelhub.registry import ModelRegistry
 
 log = logging.getLogger(__name__)
@@ -155,17 +165,38 @@ def list_setting_value(raw: str) -> list[str]:
     return [line.strip() for line in raw.split("\n") if line.strip()]
 
 
+def _no_engine_notices(changed_keys: set[str]) -> tuple[str, ...]:
+    """The engine notice of each changed local model that no installed engine loads."""
+    fields = [key for key in MODEL_FIELD_TO_ROLE if key in changed_keys]
+    if not fields:
+        return ()
+    choices = resolve_engines(cfg).choices
+    notices = []
+    for key in fields:
+        ref = str(getattr(cfg, key))
+        choice = choices[MODEL_FIELD_TO_ROLE[key]]
+        if ref and choice.name is None and not parse_model_ref(ref).is_remote:
+            notices.append(choice.notice or "")
+    return tuple(notices)
+
+
 def _update_warnings(changed_keys: set[str]) -> tuple[str, ...]:
-    """The notice for a vision model picked while ocr = off keeps it unused."""
-    return ocr_off_vision_notice() if "vision_model" in changed_keys else ()
+    """The notices for a vision model picked while ocr = off, and for a model with no engine."""
+    ocr = ocr_off_vision_notice() if "vision_model" in changed_keys else ()
+    return ocr + _no_engine_notices(changed_keys)
+
+
+def _field_flag(key: str, flag: str) -> bool:
+    """Return True when the declaration of *key* carries the marker *flag*."""
+    extra = Config.model_fields[key].json_schema_extra
+    if isinstance(extra, dict):
+        return bool(extra.get(flag, False))
+    return False
 
 
 def _is_write_only(key: str) -> bool:
     """Return True for fields persisted but never read back (API keys, hf_token)."""
-    extra = Config.model_fields[key].json_schema_extra
-    if isinstance(extra, dict):
-        return bool(extra.get("write_only", False))
-    return False
+    return _field_flag(key, "write_only")
 
 
 def _secret_refusal(key: str, error: ValidationError) -> str:
@@ -177,7 +208,9 @@ def _secret_refusal(key: str, error: ValidationError) -> str:
 def _public_writable_keys() -> list[str]:
     """Names of every writable config field minus write-only secrets and non-public fields."""
     keys = set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS)
-    return sorted(k for k in keys if k in PUBLIC_CONFIG_FIELDS and not _is_write_only(k))
+    return sorted(
+        k for k in keys - SERVICE_ONLY_FIELDS if k in PUBLIC_CONFIG_FIELDS and not _is_write_only(k)
+    )
 
 
 def _setting_help(key: str, definition: SettingDef | None) -> str:
@@ -193,17 +226,19 @@ def _setting_help(key: str, definition: SettingDef | None) -> str:
 
 def setting_sources() -> dict[str, SettingSource]:
     """The source of every Config field's effective value, from one read of config.toml."""
-    return _sources(read_layers(cfg.data_root))
+    return _sources(read_layers(cfg.data_root), cfg)
 
 
-def _sources(layers: SettingLayers) -> dict[str, SettingSource]:
-    """The source of every Config field's effective value under *layers*."""
-    return {key: _true_source(key, entry) for key, entry in resolve_all(layers).items()}
+def _sources(layers: SettingLayers, live: Config) -> dict[str, SettingSource]:
+    """The source of every Config field's effective value under *layers* and the *live* config."""
+    return {
+        key: _true_source(entry, getattr(live, key)) for key, entry in resolve_all(layers).items()
+    }
 
 
-def _true_source(key: str, entry: Resolved) -> SettingSource:
+def _true_source(entry: Resolved, live_value: Any) -> SettingSource:
     """The source of *entry*; a live value that differs from the built-in is not a built-in."""
-    if entry.source is SettingSource.BUILT_IN and getattr(cfg, key) != entry.value:
+    if entry.source is SettingSource.BUILT_IN and live_value != entry.value:
         return SettingSource.AUTO
     return entry.source
 
@@ -260,7 +295,7 @@ def _parse_group(group: SettingGroup | str) -> SettingGroup:
 def list_settings(group: SettingGroup | str | None = None) -> list[SettingInfo]:
     """List every writable non-secret setting, optionally filtered by group (case-insensitive)."""
     layers = read_layers(cfg.data_root)
-    sources = _sources(layers)
+    sources = _sources(layers, cfg)
     infos = [_setting_info(key, layers, sources[key]) for key in _public_writable_keys()]
     if group is not None:
         wanted = _parse_group(group)
@@ -275,10 +310,12 @@ def get_setting(key: str) -> SettingInfo:
     if _is_write_only(key):
         raise ValueError(f"Setting '{key}' is write-only and cannot be read back")
     layers = read_layers(cfg.data_root)
-    return _setting_info(key, layers, _sources(layers)[key])
+    return _setting_info(key, layers, _sources(layers, cfg)[key])
 
 
 def _is_settable(key: str) -> bool:
+    if key in SERVICE_ONLY_FIELDS:
+        return False
     return key in WRITABLE_CONFIG_FIELDS or key in MODEL_ROLE_FIELDS
 
 
@@ -344,6 +381,15 @@ def _validate_crawl_login(updates: dict[str, Any]) -> None:
     )
 
 
+def _validate_header_values(updates: dict[str, Any]) -> None:
+    """Reject a secret that a header cannot carry; the field declaration names such secrets."""
+    for key, value in updates.items():
+        if not isinstance(value, str) or not _field_flag(key, "header_value"):
+            continue
+        if not is_header_safe(value):
+            raise ValueError(f"{key} holds a character that cannot be sent. Copy it again.")
+
+
 def _validate(updates: dict[str, Any]) -> None:
     """Reject unknown keys, null on non-nullable, and out-of-range chunk sizes."""
     for key, value in updates.items():
@@ -354,6 +400,10 @@ def _validate(updates: dict[str, Any]) -> None:
     if refusal is not None:
         raise ValueError(refusal)
     _validate_crawl_login(updates)
+    _validate_header_values(updates)
+    hf_token = updates.get("hf_token")
+    if isinstance(hf_token, str) and not is_hf_token_sendable(hf_token):
+        raise ValueError("hf_token holds a character that cannot be sent. Copy it again.")
     new_ttl = _as_int_setting(updates.get("engine_idle_ttl_minutes"))
     if new_ttl is not None and new_ttl < 0:
         raise ValueError("engine_idle_ttl_minutes must be >= 0 (0 keeps weights loaded)")
@@ -376,40 +426,13 @@ def _coerce_value(key: str, value: Any) -> Any:
     """Canonicalize value before cfg assignment; model-role slots run task validation."""
     if key in MODEL_ROLE_FIELDS and isinstance(value, str):
         # heavy: role_validator pulls catalog + modelhub transitively (~300 ms)
+        from lilbee.app.services import get_services
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
-        return validate_model_task_assignment(key, value)
+        return validate_model_task_assignment(
+            key, value, hf_client_for=lambda: get_services().hf_client
+        )
     return checked_write(key, value)
-
-
-_T = TypeVar("_T")
-
-
-def _commit(change: Callable[[Config], _T]) -> _T:
-    """Make *change* on a copy of cfg, then publish every field it moved onto cfg in one step.
-
-    Each assignment validates on the copy, so a refusal raises before cfg moves. The
-    publish is one ``dict.update`` of keys cfg already holds: with the GIL, no other
-    thread runs inside it. A reader that reads two fields in two lookups can still read
-    one on each side of a commit. The whole field dict is compared, because the model
-    validator can re-derive a field the change does not name. It is compared against
-    cfg as it was at the copy, by value: a field another thread writes meanwhile keeps
-    its new value, and a re-derived equal value is not published.
-
-    ``model_copy`` is shallow, so *change* must assign a field and never mutate a
-    mutable value in place: an in-place change would reach cfg before the publish.
-    """
-    draft = cfg.model_copy()
-    base = dict(draft.__dict__)
-    result = change(draft)
-    moved = {
-        key: value
-        for key, value in draft.__dict__.items()
-        if value is not base[key] and value != base[key]
-    }
-    cfg.__dict__.update(moved)
-    cfg.__pydantic_fields_set__.update(moved)
-    return result
 
 
 def _set_each(config: Config, values: Mapping[str, Any]) -> None:
@@ -419,7 +442,7 @@ def _set_each(config: Config, values: Mapping[str, Any]) -> None:
 
 def _restore_values(values: Mapping[str, Any]) -> None:
     """Put *values* back on cfg in one step."""
-    _commit(lambda draft: _set_each(draft, values))
+    commit_config(lambda draft: _set_each(draft, values))
 
 
 def _restore_in_memory(snapshot: SettingsSnapshot) -> None:
@@ -520,7 +543,11 @@ def _config_failure_message(exc: OSError, verb: str) -> str:
     if isinstance(exc, persistent_settings.ReadOnlyConfigError):
         # The error text already names the file by its full path.
         return f"{exc}."
+    if isinstance(exc, persistent_settings.ConfigReadFailedError):
+        verb = "read"
     detail = f"Could not {verb} {CONFIG_FILE_NAME}: {exc}."
+    if isinstance(exc, FileLockUnavailableError):
+        return f"{detail} Nothing was changed. Close any other lilbee process and try again."
     if exc.errno in (errno.EACCES, errno.EPERM):
         detail += f" Close the program that holds {CONFIG_FILE_NAME} open and try again."
     return detail
@@ -530,23 +557,9 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
     """Drop every read-side cache whose freshness depends on a changed setting."""
     if not changed_keys:
         return
-    if changed_keys & MODEL_ROLE_FIELDS:
-        # heavy: model_info reads GGUF headers with the gguf parser (~130 ms)
-        from lilbee.modelhub.model_info import invalidate_cache as invalidate_arch_cache
-
-        invalidate_arch_cache()
     if changed_keys & FLEET_RELOAD_KEYS:
         # heavy: app.services pulls the provider stack + lancedb (~70 ms)
         _reload_changed_roles(changed_keys)
-    if "token_sizing" in changed_keys:
-        # Unregister lilbee's xberg tokenizer backend when token_sizing is turned
-        # off (via any settings path); the chunker binds it on demand when on.
-        from lilbee.app.services import peek_services
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
-
-        services = peek_services()
-        if services is not None:
-            sync_xberg_backend(BackendKind.TOKENIZER, services.provider)
     if "mcp_tool_threads" in changed_keys:
         # Resize the running server's thread pool now instead of only at startup.
         from lilbee.server.app import reapply_thread_pool_ceiling
@@ -645,6 +658,7 @@ def apply_settings_update(
             # so a legacy meta row is always canonicalized on the first swap
             # attempt.
             _pin_legacy_store_meta()
+        _pin_chunk_settings(updates.keys())
         before = snapshot_settings(updates)
 
         def change(draft: Config) -> tuple[dict[str, Any], list[str]]:
@@ -653,7 +667,7 @@ def apply_settings_update(
             _rederive_from_resolved(draft, set(updates))
             return result
 
-        to_persist, to_delete = _commit(change)
+        to_persist, to_delete = commit_config(change)
         written = False
         try:
             # A write can fail part way: the update lands and the delete raises.
@@ -752,6 +766,22 @@ def _put_back(snapshot: SettingsSnapshot, *, invalidate_caches: bool = True) -> 
         _invalidate_caches(set(snapshot.values))
 
 
+def role_command(role: WorkerRole) -> str:
+    """The command line that sets the model of *role*."""
+    if role is WorkerRole.EMBED:
+        return "lilbee use-embedder <ref>"
+    return f"lilbee model use {role.value} <ref>"
+
+
+def task_command(task: ModelTask) -> str:
+    """The command line that sets the role that models of *task* belong to."""
+    # heavy: role_validator pulls catalog + modelhub transitively (~300 ms)
+    from lilbee.modelhub.role_validator import MODEL_FIELD_TO_TASK
+
+    field = next(name for name, field_task in MODEL_FIELD_TO_TASK.items() if field_task == task)
+    return role_command(MODEL_FIELD_TO_ROLE[field])
+
+
 def _refuse_model_roles(keys: Iterable[str]) -> None:
     """Refuse model-role keys, which the dedicated model route owns."""
     rejected = MODEL_ROLE_FIELDS & set(keys)
@@ -759,7 +789,8 @@ def _refuse_model_roles(keys: Iterable[str]) -> None:
         offender = sorted(rejected)[0]
         raise ValueError(
             f"'{offender}' must be set through the dedicated model route "
-            "(on the command line, lilbee model), not the general settings update."
+            f"(on the command line, {role_command(MODEL_FIELD_TO_ROLE[offender])}), "
+            "not the general settings update."
         )
 
 
@@ -779,6 +810,7 @@ def _settle(
     """
     effective = keys if changed is None else changed
     reindex_effective = effective if reindex_changed is None else reindex_changed
+    _pin_chunk_settings(reindex_effective)
 
     def change(draft: Config) -> None:
         if values is None:
@@ -788,7 +820,7 @@ def _settle(
         _rederive_from_resolved(draft, effective)
 
     try:
-        _commit(change)
+        commit_config(change)
     finally:
         _invalidate_caches(effective)
     reindex_required = bool((REINDEX_FIELDS - inert_reindex_keys()) & reindex_effective)
@@ -814,12 +846,65 @@ def apply_ephemeral_model_swap(field: str, ref: str) -> None:
     """
     if field == "embedding_model":
         _pin_legacy_store_meta()
-        dim = _embedder_dim_from_gguf(ref)
+        dim = _embedder_dim(ref)
         setattr(cfg, field, ref)
         if dim is not None:
             cfg.embedding_dim = dim
         return
     setattr(cfg, field, ref)
+
+
+def use_installed_models_for_this_run(
+    *, chat_overridden: bool, fill_empty_chat_only: bool = False
+) -> list[str]:
+    """Swap an empty or stale chat/embedding ref to a usable model for this process.
+
+    A chat ref is filled with the first cloud model that has an accepted API key, or else
+    the first installed local model. An embedding ref is filled with an installed local model.
+
+    Every process that answers a question runs this before it builds its services,
+    so the CLI and the server resolve the same model. The config file is never
+    rewritten. An explicit --model override is kept as given. Returns one notice
+    per swap, for the caller to show.
+
+    With *fill_empty_chat_only* (for a long-running process), the only swap is a usable chat model
+    (cloud first, then installed) for an empty chat ref. A chat ref that is set stays as
+    set, even when it is not reachable yet, and the embedding ref is never swapped.
+    """
+    from lilbee.modelhub.model_manager import (
+        ValidationResult,
+        canonicalize_chat_model,
+        canonicalize_embedding_model,
+    )
+
+    checks = []
+    if not chat_overridden and not (fill_empty_chat_only and cfg.chat_model):
+        checks.append((canonicalize_chat_model(), "chat_model", "Chat"))
+    if not fill_empty_chat_only:
+        checks.append((canonicalize_embedding_model(), "embedding_model", "Embedding"))
+    notices: list[str] = []
+    for canon, field, label in checks:
+        if canon.status == ValidationResult.OK or canon.effective == canon.original:
+            continue
+        apply_ephemeral_model_swap(field, canon.effective)
+        chosen = (
+            f"installed '{canon.effective}'"
+            if parse_model_ref(canon.effective).is_local
+            else f"cloud model '{canon.effective}'"
+        )
+        if canon.original:
+            notices.append(
+                f"{label} model '{canon.original}' is unavailable ({canon.reason}); "
+                f"using {chosen} for this run."
+            )
+        else:
+            notices.append(f"No {label.lower()} model configured; using {chosen}.")
+    return notices
+
+
+def fill_empty_chat_model() -> list[str]:
+    """Fill an empty chat ref and keep a set one; one notice per fill."""
+    return use_installed_models_for_this_run(chat_overridden=False, fill_empty_chat_only=True)
 
 
 def _pin_legacy_store_meta() -> None:
@@ -830,21 +915,41 @@ def _pin_legacy_store_meta() -> None:
     get_services().store.initialize_meta_if_legacy()
 
 
-def _embedder_dim_from_gguf(ref: str, registry: ModelRegistry | None = None) -> int | None:
-    """The embedder's output width from its GGUF header (``<arch>.embedding_length``).
+def _concatenates_pooling(ref: str) -> bool:
+    """Whether the engine that serves *ref* gives one vector block per pooling mode.
 
-    None when the model can't be resolved or the header lacks the field. Cheap: a
-    cached header read, no load. *registry* is forwarded to resolve the GGUF without
-    ``get_services()`` (callers running inside its construction).
+    False when no installed engine loads the model: one block is the width
+    that the engines which serve a single mode give.
+    """
+    from lilbee.app.engine_choice import engine_for_ref
+    from lilbee.providers.fleet.engines.choice import NoEngineError
+
+    try:
+        return engine_for_ref(ref, cfg).concatenates_pooling
+    except NoEngineError:
+        return False
+
+
+def _embedder_dim(ref: str, registry: ModelRegistry | None = None) -> int | None:
+    """The embedder's output width, read from the model itself.
+
+    A model folder gives it from its config files; a GGUF file from its header
+    (``<arch>.embedding_length``). None when the model can't be resolved or
+    carries no width. Cheap: no load. *registry* is forwarded to resolve the
+    model without ``get_services()`` (callers running inside its construction).
     """
     from lilbee.providers.base import ProviderError
     from lilbee.providers.engine_params import resolve_model_path
+    from lilbee.providers.folder_embed_width import folder_embedding_width
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
     try:
         # resolve_model_path raises ProviderError for a non-native (ollama/SDK) ref,
-        # which has no local GGUF -- those embedders carry no width to derive here.
-        meta = read_gguf_metadata(resolve_model_path(ref, registry))
+        # which has no local model -- those embedders carry no width to derive here.
+        path = resolve_model_path(ref, registry)
+        if path.is_dir():
+            return folder_embedding_width(path, concatenates_pooling=_concatenates_pooling(ref))
+        meta = read_gguf_metadata(path)
     except (ProviderError, ValueError, OSError, RuntimeError, TypeError):
         return None
     raw = meta.get("embedding_length") if meta else None
@@ -860,10 +965,17 @@ def _embedder_dim_from_gguf(ref: str, registry: ModelRegistry | None = None) -> 
 def reconcile_embedding_dim(
     registry: ModelRegistry | None = None, config: Config | None = None
 ) -> None:
-    """Pin the embedding dim of *config* (default cfg) to the native embedder's GGUF width;
-    no-op for non-native embedders or an already-matching dim."""
+    """Pin the embedding dim of *config* (default cfg) to the width of its embedder.
+
+    The width comes from the model itself; a model that gives none (a non-native ref) takes
+    the width of an index that the same model built. No-op when neither names a width.
+    """
+    from lilbee.data.store.lance_helpers import persisted_embedding_width
+
     target = cfg if config is None else config
-    dim = _embedder_dim_from_gguf(target.embedding_model, registry)
+    dim = _embedder_dim(target.embedding_model, registry)
+    if dim is None:
+        dim = persisted_embedding_width(target.lancedb_dir, target.embedding_model)
     if dim is not None and dim != target.embedding_dim:
         target.embedding_dim = dim
 
@@ -889,12 +1001,39 @@ def inert_reindex_keys() -> set[str]:
     return inert
 
 
-def reindex_values() -> dict[str, Any]:
-    """The value in force of each setting that changes what the index holds.
+def reindex_values(config: Config | None = None) -> dict[str, Any]:
+    """The value in *config* (default cfg) of each setting that changes what the index holds.
 
     That is each of ``REINDEX_FIELDS`` and the chunk limit, which holds files out.
     """
-    return {key: getattr(cfg, key) for key in REINDEX_FIELDS | {CHUNK_LIMIT_KEY}}
+    source = cfg if config is None else config
+    return {key: getattr(source, key) for key in REINDEX_FIELDS | {CHUNK_LIMIT_KEY}}
+
+
+def _pin_chunk_settings(keys: Iterable[str]) -> None:
+    """Before a change to *keys*, let an index with no chunk-settings record record cfg's.
+
+    The check records the values in force, so call it before cfg changes: the change
+    then shows as drift. An index that holds a record, or no chunks, is left as it is.
+    """
+    if REINDEX_FIELDS.isdisjoint(keys):
+        return
+    from lilbee.app.services import chunk_drift_in_store
+
+    chunk_drift_in_store(reindex_values())
+
+
+def chunk_drift(config: Config | None = None) -> list[str]:
+    """The settings in force that differ from the ones the index's chunks were cut with.
+
+    The index records the settings of the sync that wrote its first chunks, so a change
+    that lands while that sync runs shows here once its write lands. A setting that is
+    inert under the effective config does not count, as for a single save.
+    """
+    from lilbee.app.services import chunk_drift_in_store
+
+    live = REINDEX_FIELDS - inert_reindex_keys()
+    return [key for key in chunk_drift_in_store(reindex_values(config)) if key in live]
 
 
 def chunk_limit_loosened(before: Mapping[str, Any]) -> bool:
@@ -951,7 +1090,7 @@ def embed_pick_needs_rebuild(ref: str) -> bool:
         canonical = canonical_model_ref(_coerce_value("embedding_model", ref))
     except ValueError:  # the write refuses this ref on its own
         canonical = ref
-    dim = _embedder_dim_from_gguf(canonical) or cfg.embedding_dim
+    dim = _embedder_dim(canonical) or cfg.embedding_dim
     return store.index_mismatch(model=canonical, dim=dim) is not None
 
 
@@ -1024,11 +1163,13 @@ def _refuse_invalid_fallbacks(
         value = builtin_value(key) if default_refusal(key, entry.value) else entry.value
         try:
             setattr(trial, key, value)
-        except ValueError as exc:
+        except ValueError:
+            # No cause is chained: the validation error holds the raw value.
+            shown = shown_value(key, entry.value)
             raise ValueError(
-                f"Cannot {action.value} '{key}': its {entry.source.value} value {entry.value!r} is "
+                f"Cannot {action.value} '{key}': its {entry.source.value} value {shown} is "
                 "invalid. Fix or remove that value first."
-            ) from exc
+            ) from None
     return {key: getattr(trial, key) for key in fallbacks}
 
 
@@ -1150,7 +1291,9 @@ def adopt_external_changes(
     startup value. The source registry is read by ``refresh_registry``: while a sync
     holds it, it keeps its folders, and a later check takes the change. The keys go
     through the same settle step as an update made here. A file that does not parse
-    changes nothing and keeps *last*, as at startup. A key in *hold* is never taken: a
+    changes nothing and keeps *last*, as at startup. A file that an in-place write
+    changed under a second ago is left for the next check (see ``read_settled``).
+    A key in *hold* is never taken: a
     warning says the process takes it at its next start. With *reset_providers* False a
     provider switch leaves the fleet running: the caller stops it with
     ``reset_for_provider_switch`` once the lock it holds around this call is free.
@@ -1160,7 +1303,7 @@ def adopt_external_changes(
     if persistent_settings.overlay_stamp(cfg.data_root) == last.stamp and not roots_changed:
         return last, None
     with _settings_transaction() as txn:
-        stamp, values = persistent_settings.read_persisted(cfg.data_root)
+        stamp, values = persistent_settings.read_settled(cfg.data_root, last.stamp)
         now = last if values is None else replace(last, stamp=stamp, values=values)
         targets: dict[str, Any] = {}
         for key in _RELOADED_KEYS:

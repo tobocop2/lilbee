@@ -1,0 +1,6 @@
+# The Python tools that the build of the llama.cpp server needs in the manylinux image. install_build_tools of
+# pack_common.sh installs them into a new venv. The digests are the wheels for manylinux x86_64.
+cmake==4.4.5 \
+    --hash=sha256:85625a9b6d5e88ff99c7eb79123d85570844e77ac076366cf75c609cc0b1b579
+ninja==1.13.2 \
+    --hash=sha256:65a24341b5ac09fcadcc37082660be40a94174e51a937fabf6e2cae26225fa2c

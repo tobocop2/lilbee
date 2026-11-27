@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import HealthWarning
 from lilbee.providers.base import THINK_CLOSE_TAG, THINK_OPEN_TAG, ClosableIterator
 
 if TYPE_CHECKING:
@@ -78,9 +79,10 @@ class CapNotice:
 
 @dataclass
 class RetrievalNotice:
-    """Emitted once before the first token when retrieval ran on a rewrite of the question."""
+    """Emitted once before the first token: the retrieval rewrite and any failed search steps."""
 
-    query: str
+    query: str | None = None
+    degraded: tuple[HealthWarning, ...] = ()
 
 
 @dataclass
@@ -239,9 +241,7 @@ def filter_reasoning(
     last_progress_tick = 0
     try:
         for token in tokens:
-            for st in parser.feed(token):
-                if st.content:
-                    yield st
+            yield from parser.feed(token)
             if (
                 on_progress is not None
                 and parser.reasoning_chars >= last_progress_tick + _PROGRESS_TICK_CHARS
@@ -324,9 +324,8 @@ def stream_chat_with_cap(
             for token in filter_reasoning(
                 _text_only(second_stream), show=show_reasoning, cap_chars=0
             ):
-                if token.content:
-                    answered = True
-                    yield StreamToken(content=token.content, is_reasoning=False)
+                answered = True
+                yield StreamToken(content=token.content, is_reasoning=False)
         finally:
             _close_iterator(second_stream)
     if reasoned and not answered:

@@ -1,6 +1,9 @@
 """Tests for the ``_memories`` table: CRUD, dedup, eviction, recall, and rebuild."""
 
-from datetime import UTC, datetime
+import subprocess
+import sys
+import time
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 import numpy.typing as npt
@@ -17,6 +20,7 @@ from lilbee.data.store import (
     agent_owner,
     human_recall_predicate,
     is_agent_owner,
+    lance_helpers,
 )
 
 LOCAL_PREDICATE = f"owner = '{LOCAL_OWNER}'"
@@ -398,6 +402,347 @@ class TestRebuildEmbeddings:
 
         store.rebuild_memory_embeddings(embed)
         assert locked_during == [True]  # embed ran while the write lock was held
+
+
+_ADD_FROM_OTHER_PROCESS = """
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+from lilbee.core.config import cfg
+from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemoryRow, MemorySource, Store
+
+store = Store(cfg.model_copy(update={"lancedb_dir": Path(sys.argv[1])}))
+now = datetime.now(UTC).isoformat()
+print("ready", flush=True)
+store.add_memory(
+    MemoryRow(
+        id="id-other-process",
+        owner=LOCAL_OWNER,
+        shared=False,
+        kind=MemoryKind.FACT,
+        source=MemorySource.MANUAL,
+        text="from another process",
+        vector=[0.0] * store._config.embedding_dim,
+        created_at=now,
+        updated_at=now,
+    )
+)
+"""
+
+
+# The production floor is minutes; the tests shorten it to this so an idle can pass it.
+_SHORT_FLOOR = timedelta(seconds=1)
+_PAST_THE_WINDOW = 2  # seconds: longer than the shortened floor
+
+
+def _table_bytes(store: Store) -> int:
+    """Bytes the memories table occupies on disk, old versions included."""
+    table_dir = store._config.lancedb_dir / f"{MEMORIES_TABLE}.lance"
+    return sum(path.stat().st_size for path in table_dir.rglob("*") if path.is_file())
+
+
+class TestRebuildPrunesVersions:
+    """Each rebuild replaces the table; the replaced versions must not pile up on disk."""
+
+    @pytest.fixture(autouse=True)
+    def short_floor(self, monkeypatch):
+        monkeypatch.setattr(lance_helpers, "_KEEP_VERSIONS", _SHORT_FLOOR)
+
+    @pytest.fixture()
+    def stocked(self, store):
+        for axis in range(40):
+            store.add_memory(_memory(store, text=f"memory {axis} " + "x" * 2000, axis=axis))
+        return store
+
+    def test_rebuilds_spaced_past_the_window_keep_the_disk_flat(self, stocked, monkeypatch):
+        # The production slack is 60 s; 1 s keeps the test fast.
+        monkeypatch.setattr(lance_helpers, "_CLOCK_SLACK", timedelta(seconds=1))
+        dim = stocked._config.embedding_dim
+
+        def rebuild() -> int:
+            time.sleep(1.2)
+            stocked.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 3) for _ in texts])
+            return _table_bytes(stocked)
+
+        rebuild()
+        steady = rebuild()
+        for _ in range(4):
+            rebuild()
+        assert steady > 0
+        assert _table_bytes(stocked) <= steady * 1.1
+
+    def test_reader_opened_before_a_rebuild_still_reads_after_it(self, stocked):
+        # The table sat idle past the window, so the version a rebuild replaces is older than it.
+        time.sleep(_PAST_THE_WINDOW)
+        reader = stocked.open_table(MEMORIES_TABLE)
+        assert reader is not None
+        dim = stocked._config.embedding_dim
+        stocked.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 3) for _ in texts])
+        assert reader.to_arrow().num_rows == 40
+
+    def test_reader_still_reads_after_a_slow_prune(self, stocked, monkeypatch):
+        # The prune starts 2 s after its clock read; the slack covers that delay.
+        time.sleep(_PAST_THE_WINDOW)
+        reader = stocked.open_table(MEMORIES_TABLE)
+        assert reader is not None
+        table_type = type(reader)
+        real_optimize = table_type.optimize
+        windows: list[timedelta] = []
+
+        def slow(self, *args, **kwargs):
+            windows.append(kwargs["cleanup_older_than"])
+            time.sleep(2)
+            return real_optimize(self, *args, **kwargs)
+
+        monkeypatch.setattr(table_type, "optimize", slow)
+        dim = stocked._config.embedding_dim
+        stocked.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 3) for _ in texts])
+        assert len(windows) == 1
+        assert windows[0] > timedelta(seconds=_PAST_THE_WINDOW)
+        assert reader.to_arrow().num_rows == 40
+
+    def test_a_failed_prune_after_the_overwrite_keeps_the_rebuilt_rows(
+        self, stocked, monkeypatch, caplog
+    ):
+        reader = stocked.open_table(MEMORIES_TABLE)
+        assert reader is not None
+
+        def failing(self, *args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(type(reader), "optimize", failing)
+        dim = stocked._config.embedding_dim
+        with caplog.at_level("WARNING", logger="lilbee.data.store.core"):
+            count = stocked.rebuild_memory_embeddings(
+                lambda texts: [_unit_array(dim, 3) for _ in texts]
+            )
+        assert count == 40
+        memories = stocked.get_memories(owner_predicate=LOCAL_PREDICATE)
+        assert len(memories) == 40
+        assert {m.vector.index(1.0) for m in memories} == {3}
+        assert any(
+            MEMORIES_TABLE in record.getMessage() and "disk full" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_prune_runs_under_the_write_lock(self, stocked, monkeypatch):
+        from lilbee.data.store import core
+        from lilbee.runtime.lock import _write_mutex
+
+        real_prune = core.prune_old_versions
+        locked_during: list[bool] = []
+
+        def spy(*args, **kwargs):
+            locked_during.append(_write_mutex.locked())
+            real_prune(*args, **kwargs)
+
+        monkeypatch.setattr(core, "prune_old_versions", spy)
+        dim = stocked._config.embedding_dim
+        stocked.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 3) for _ in texts])
+        assert locked_during == [True]
+
+    def test_memory_added_by_another_process_during_a_rebuild_is_kept(self, stocked, tmp_path):
+        script = tmp_path / "add_from_other_process.py"
+        script.write_text(_ADD_FROM_OTHER_PROCESS, encoding="utf-8")
+        dim = stocked._config.embedding_dim
+        other = subprocess.Popen(
+            [sys.executable, str(script), str(stocked._config.lancedb_dir)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        blocked_during: list[bool] = []
+
+        def embed(texts: list[str]) -> list[npt.NDArray[np.float32]]:
+            assert other.stdout is not None
+            assert other.stdout.readline().strip() == "ready"
+            time.sleep(1.0)
+            # The other process asked for the write lock; it must still be waiting for it.
+            blocked_during.append(other.poll() is None)
+            return [_unit_array(dim, 3) for _ in texts]
+
+        try:
+            stocked.rebuild_memory_embeddings(embed)
+            _, stderr = other.communicate(timeout=120)
+        finally:
+            other.kill()
+        assert blocked_during == [True]
+        assert other.returncode == 0, stderr
+        texts = {m.text for m in stocked.get_memories(owner_predicate=LOCAL_PREDICATE)}
+        assert "from another process" in texts
+        assert len(texts) == 41
+
+
+_NOW = 1_800_000_000.0  # a fixed epoch for the prune clock
+_DAY = 86400.0
+
+
+class _RecordingTable:
+    """A table that lists the versions it is given and records each call the prune makes."""
+
+    def __init__(self, ages: dict[int, float]) -> None:
+        # Stamps as LanceDB lists them: naive local times built from the manifest epoch.
+        self._versions = [
+            {"version": version, "timestamp": datetime.fromtimestamp(_NOW - age)}
+            for version, age in ages.items()
+        ]
+        self.calls: list[tuple[str, timedelta | None]] = []
+
+    def list_versions(self) -> list[dict[str, object]]:
+        self.calls.append(("list_versions", None))
+        return self._versions
+
+    def optimize(self, *, cleanup_older_than: timedelta) -> None:
+        self.calls.append(("optimize", cleanup_older_than))
+
+
+class TestPruneWindow:
+    """The single optimize of a prune names a window that keeps the keep version."""
+
+    @pytest.fixture(autouse=True)
+    def fixed_clock(self, monkeypatch):
+        monkeypatch.setattr(lance_helpers.time, "time", lambda: _NOW)
+
+    def _prune(self, ages: dict[int, float], keep_version: int | None) -> list[tuple]:
+        table = _RecordingTable(ages)
+        lance_helpers.prune_old_versions(table, keep_version=keep_version)
+        return table.calls
+
+    def test_an_eight_day_old_keep_version_sets_the_window(self):
+        calls = self._prune({1: 9 * _DAY, 2: 8 * _DAY, 3: 1.0}, keep_version=2)
+        window = timedelta(seconds=8 * _DAY) + lance_helpers._CLOCK_SLACK
+        assert calls == [("list_versions", None), ("optimize", window)]
+
+    def test_a_newer_version_stamped_earlier_sets_the_window(self):
+        # The clock stepped back between the replaced version and the overwrite.
+        calls = self._prune({1: 900.0, 2: 300.0, 3: 400.0}, keep_version=2)
+        assert calls[-1] == ("optimize", timedelta(seconds=400) + lance_helpers._CLOCK_SLACK)
+
+    def test_a_version_older_than_the_keep_version_does_not_set_the_window(self):
+        calls = self._prune({1: 3 * _DAY, 2: 300.0, 3: 1.0}, keep_version=2)
+        assert calls[-1] == ("optimize", timedelta(seconds=300) + lance_helpers._CLOCK_SLACK)
+
+    def test_a_keep_version_stamped_ahead_of_the_clock_gets_the_floor_window(self):
+        # The clock stepped back after the overwrite: the age is negative.
+        calls = self._prune({1: -120.0, 2: -121.0}, keep_version=1)
+        assert calls[-1] == ("optimize", lance_helpers._KEEP_VERSIONS)
+
+    def test_no_keep_version_folds_at_the_floor_window_without_listing(self):
+        calls = self._prune({1: 3 * _DAY, 2: 1.0}, keep_version=None)
+        assert calls == [("optimize", lance_helpers._KEEP_VERSIONS)]
+
+
+_KILL_DURING_SWAP = """
+import os
+import sys
+from pathlib import Path
+
+import lancedb.db as lancedb_db
+import lancedb.table as lancedb_table
+import numpy as np
+import pyarrow as pa
+
+from lilbee.core.config import cfg
+from lilbee.data.store import Store
+
+store = Store(cfg.model_copy(update={"lancedb_dir": Path(sys.argv[1])}))
+real_sanitize = lancedb_db.sanitize_create_table
+
+
+def killing_sanitize(*args, **kwargs):
+    data, schema = real_sanitize(*args, **kwargs)
+    if not isinstance(data, pa.RecordBatchReader):
+        return data, schema
+
+    def batches():
+        for batch in data:
+            yield batch
+            os._exit(9)
+
+    return pa.RecordBatchReader.from_batches(schema, batches()), schema
+
+
+def killing_add(*args, **kwargs):
+    os._exit(9)
+
+
+lancedb_db.sanitize_create_table = killing_sanitize
+lancedb_table.LanceTable.add = killing_add
+dim = store._config.embedding_dim
+store.rebuild_memory_embeddings(lambda texts: [np.ones(dim, dtype=np.float32) for _ in texts])
+"""
+
+
+def _vectors_by_text(store) -> dict[str, list[float]]:
+    return {m.text: list(m.vector) for m in store.get_memories(owner_predicate=LOCAL_PREDICATE)}
+
+
+class TestRebuildKeepsMemories:
+    """A failure while the vectors are rewritten leaves every memory with its old vector."""
+
+    @pytest.fixture()
+    def kept(self, store):
+        for axis, text in enumerate(["first", "second", "third"]):
+            store.add_memory(_memory(store, text=text, axis=axis))
+        return _vectors_by_text(store)
+
+    def test_wrong_dimension_keeps_old_vectors(self, store, kept):
+        with pytest.raises(ValueError, match="dimension 5, but the embedding_dim setting is"):
+            store.rebuild_memory_embeddings(
+                lambda texts: [np.ones(5, dtype=np.float32)] * len(texts)
+            )
+        assert _vectors_by_text(store) == kept
+
+    def test_wrong_count_keeps_old_vectors(self, store, kept):
+        dim = store._config.embedding_dim
+        with pytest.raises(ValueError, match="1 vectors for 3 memories"):
+            store.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 1)])
+        assert _vectors_by_text(store) == kept
+
+    def test_embedder_failure_keeps_old_vectors(self, store, kept):
+        def embed(texts: list[str]) -> list[npt.NDArray[np.float32]]:
+            raise RuntimeError("embedder down")
+
+        with pytest.raises(RuntimeError, match="embedder down"):
+            store.rebuild_memory_embeddings(embed)
+        assert _vectors_by_text(store) == kept
+
+    def test_failed_table_write_keeps_old_vectors(self, store, kept, monkeypatch):
+        dim = store._config.embedding_dim
+
+        def failing_create(self, *args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(type(store.get_db()), "create_table", failing_create)
+        with pytest.raises(OSError, match="disk full"):
+            store.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 3) for _ in texts])
+        monkeypatch.undo()
+        assert _vectors_by_text(store) == kept
+
+    def test_process_killed_mid_rewrite_keeps_old_vectors(self, store, kept, tmp_path):
+        script = tmp_path / "kill_during_swap.py"
+        script.write_text(_KILL_DURING_SWAP, encoding="utf-8")
+        done = subprocess.run(
+            [sys.executable, str(script), str(store._config.lancedb_dir)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=120,
+        )
+        assert done.returncode == 9, done.stderr
+        reopened = Store(store._config.model_copy())
+        assert _vectors_by_text(reopened) == kept
+
+    def test_successful_swap_replaces_every_vector(self, store, kept):
+        dim = store._config.embedding_dim
+        assert (
+            store.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 7) for _ in texts]) == 3
+        )
+        assert set(_vectors_by_text(store)) == set(kept)
+        assert all(vec[7] == 1.0 for vec in _vectors_by_text(store).values())
 
 
 class TestEmbeddingCompat:
