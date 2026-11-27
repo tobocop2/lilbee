@@ -34,6 +34,7 @@ from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.binary import llama_server_ready
 from lilbee.providers.fleet.engine_manifest import UnsupportedOsError, cell_key, host_cell
 from lilbee.providers.fleet.engine_store import (
+    BuildStamp,
     BundledEngineError,
     ChecksumError,
     EngineConflictError,
@@ -308,6 +309,11 @@ class BuildView:
 def engines_folder(config: Config = cfg) -> Path:
     """The machine-wide folder that holds the installed engine builds."""
     return engines_root(config.models_dir)
+
+
+def build_folders_stamp(config: Config = cfg) -> BuildStamp:
+    """A stamp of the build folders on disk; it differs after an install or a remove."""
+    return EngineStore(engines_root(config.models_dir)).stamp()
 
 
 def _pin_build(name: EngineName, adapter: EngineAdapter) -> tuple[str, str] | None:
