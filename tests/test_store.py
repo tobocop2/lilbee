@@ -2339,7 +2339,7 @@ class TestHybridSearch:
         chain.nprobes.return_value = chain
         chain.refine_factor.return_value = chain
         with mock.patch("lilbee.data.store.core._has_vector_index", return_value=True):
-            store._vector_arm(table, [0.5] * test_config.embedding_dim, 50, None)
+            store._vector_arm(table, [0.5] * test_config.embedding_dim, 50, None, [])
         chain.nprobes.assert_called_once()
         chain.refine_factor.assert_called_once()
 
@@ -4240,10 +4240,18 @@ class TestTitleSearch:
         store.add_chunks(_titled_records("a.pdf", 5, title="zebra manifesto"))
         store.ensure_fts_index()
         table = store.open_table("chunks")
-        rows = store._with_paths(store._title_arm(table, "zebra", 5, None))
+        rows = store._with_paths(
+            store._title_arm(
+                table, "zebra", 5, None, _index_registry(table, store._config.lancedb_dir)
+            )
+        )
         assert [(r.source, r.chunk_index) for r in rows] == [("a.pdf", 0)]
         # Deterministic across repeated calls (no implementation-defined tie order).
-        again = store._with_paths(store._title_arm(table, "zebra", 5, None))
+        again = store._with_paths(
+            store._title_arm(
+                table, "zebra", 5, None, _index_registry(table, store._config.lancedb_dir)
+            )
+        )
         assert [(r.source, r.chunk_index) for r in again] == [("a.pdf", 0)]
 
     def test_title_arm_one_row_per_matched_document(self, store, test_config):
@@ -4254,7 +4262,11 @@ class TestTitleSearch:
         store.add_chunks(_titled_records("safari.pdf", 4, title="zebra safari"))
         store.ensure_fts_index()
         table = store.open_table("chunks")
-        rows = store._with_paths(store._title_arm(table, "zebra", 5, None))
+        rows = store._with_paths(
+            store._title_arm(
+                table, "zebra", 5, None, _index_registry(table, store._config.lancedb_dir)
+            )
+        )
         assert sorted(r.source for r in rows) == ["safari.pdf", "zebra.pdf"]
         assert all(r.chunk_index == 0 for r in rows)
 
@@ -4274,7 +4286,11 @@ class TestTitleSearch:
         store.add_chunks(_titled_records("note.pdf", 1, title="zebra safari park visit"))
         store.ensure_fts_index()
         table = store.open_table("chunks")
-        rows = store._with_paths(store._title_arm(table, "zebra", 2, None))
+        rows = store._with_paths(
+            store._title_arm(
+                table, "zebra", 2, None, _index_registry(table, store._config.lancedb_dir)
+            )
+        )
         assert sorted(r.source for r in rows) == ["note.pdf", "tome.pdf"]
 
     def test_title_search_weight_reaches_fusion(self, store, test_config):
@@ -4332,8 +4348,15 @@ class TestTitleSearch:
         store.ensure_fts_index()
         table = store.open_table("chunks")
         assert _has_fts_index(_readable_registry(table), "title")
-        assert store._title_arm(table, "zebra", 5, ChunkType.RAW)
-        assert store._title_arm(table, "zebra", 5, ChunkType.WIKI) == []
+        assert store._title_arm(
+            table, "zebra", 5, ChunkType.RAW, _index_registry(table, store._config.lancedb_dir)
+        )
+        assert (
+            store._title_arm(
+                table, "zebra", 5, ChunkType.WIKI, _index_registry(table, store._config.lancedb_dir)
+            )
+            == []
+        )
 
     def test_title_arm_failure_degrades_to_empty(self, store, test_config):
         """A query-time title-arm failure returns no rows instead of raising,
@@ -4346,7 +4369,12 @@ class TestTitleSearch:
         from lilbee.data.store import core as store_core
 
         with mock.patch.object(store_core, "_lexical_rows", side_effect=RuntimeError("boom")):
-            assert store._title_arm(table, "zebra", 5, None) == []
+            assert (
+                store._title_arm(
+                    table, "zebra", 5, None, _index_registry(table, store._config.lancedb_dir)
+                )
+                == []
+            )
 
     def test_old_index_without_title_column_still_searches(self, store, test_config):
         """Feature detection: a pre-title index searches fine and the title arm
@@ -4354,7 +4382,12 @@ class TestTitleSearch:
         test_config.title_search = True
         store, table = _pre_title_store(test_config, _make_records())
         store.ensure_fts_index()
-        assert store._title_arm(table, "chunk", 5, None) == []
+        assert (
+            store._title_arm(
+                table, "chunk", 5, None, _index_registry(table, store._config.lancedb_dir)
+            )
+            == []
+        )
         query_vec = [0.5] * test_config.embedding_dim
         results = store.search(query_vec, top_k=3, max_distance=0, query_text="chunk number")
         assert results
@@ -4441,7 +4474,16 @@ class TestTitleSearch:
         ):
             store.ensure_fts_index()
         assert store._fts_ready
-        assert store._title_arm(store.open_table("chunks"), "zebra", 5, None) == []
+        assert (
+            store._title_arm(
+                store.open_table("chunks"),
+                "zebra",
+                5,
+                None,
+                _index_registry(store.open_table("chunks"), store._config.lancedb_dir),
+            )
+            == []
+        )
         warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert any("title" in r.message.lower() for r in warnings)
 

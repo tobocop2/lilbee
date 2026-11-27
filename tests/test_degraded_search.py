@@ -14,6 +14,7 @@ from lilbee.retrieval.query.searcher import Searcher
 from lilbee.retrieval.reasoning import RetrievalNotice
 from tests.server.conftest import parse_sse_events
 from tests.test_query import (
+    _expand_query,
     _make_result,
     _text_result,
     mock_svc,  # noqa: F401
@@ -243,7 +244,7 @@ def test_failed_llm_expansion_keeps_the_concept_variants(mock_svc):  # noqa: F81
         mock_svc.embedder.embed_query_batch.side_effect = lambda texts: [[0.1] * 4 for _ in texts]
         degraded: list = []
         with mock.patch.object(cfg, "concept_graph", True):
-            variants = mock_svc.searcher._expand_query("q", [0.1] * 4, degraded)
+            variants = _expand_query(mock_svc.searcher, "q", [0.1] * 4, degraded)
     finally:
         _stop(patches)
     assert [text for text, _ in variants] == ["python tutorial"]

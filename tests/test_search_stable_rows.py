@@ -47,6 +47,10 @@ def store(tmp_path) -> Store:
     return built
 
 
+def _registry(store: Store, table: Any) -> Any:
+    return core._index_registry(table, store._config.lancedb_dir)
+
+
 def _indexes(rows: list[Any]) -> list[int]:
     return [row.chunk_index for row in rows]
 
@@ -84,7 +88,7 @@ def test_tied_keyword_rows_keep_the_lowest_chunks_in_chunk_order(store: Store) -
 
 def test_tied_vector_rows_keep_the_lowest_chunks_in_chunk_order(store: Store) -> None:
     table = store.open_table(CHUNKS_TABLE)
-    rows = store._vector_arm(table, [0.5] * cfg.embedding_dim, 5, None)
+    rows = store._vector_arm(table, [0.5] * cfg.embedding_dim, 5, None, _registry(store, table))
     assert _indexes(rows) == _LOWEST_FIVE
 
 
@@ -134,7 +138,7 @@ def test_a_tied_search_prints_no_lance_warning(
 ) -> None:
     table = store.open_table(CHUNKS_TABLE)
     core._lexical_rows(table, "valve", 5, None)
-    store._vector_arm(table, [0.5] * cfg.embedding_dim, 5, None)
+    store._vector_arm(table, [0.5] * cfg.embedding_dim, 5, None, _registry(store, table))
     captured = capfd.readouterr()
     assert "WARN" not in captured.err + captured.out
 
@@ -193,7 +197,7 @@ def test_a_chunk_type_scope_also_holds_on_the_wide_fetch(tmp_path: Path) -> None
 def test_a_wide_vector_tie_reads_whole_rows_only_for_the_winners(store: Store) -> None:
     table = store.open_table(CHUNKS_TABLE)
     with _counted_reads() as reads:
-        rows = store._vector_arm(table, [0.5] * cfg.embedding_dim, 5, None)
+        rows = store._vector_arm(table, [0.5] * cfg.embedding_dim, 5, None, _registry(store, table))
     assert _indexes(rows) == _LOWEST_FIVE
     assert all(row.distance is not None for row in rows)
     assert reads == [(6, True), (_TIED_ROWS, False), (5, True)]
@@ -203,5 +207,5 @@ def test_lower_distances_rank_first_on_the_vector_arm(tmp_path: Path) -> None:
     far = {**_record(0), "vector": [1.0] + [0.0] * (cfg.embedding_dim - 1)}
     near = {**_record(1), "vector": [0.0] + [1.0] * (cfg.embedding_dim - 1)}
     built, table = _table_of([far, near], tmp_path)
-    rows = built._vector_arm(table, near["vector"], 2, None)
+    rows = built._vector_arm(table, near["vector"], 2, None, _registry(built, table))
     assert _indexes(rows) == [1, 0]
