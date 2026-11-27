@@ -59,12 +59,15 @@ tool_dir() {
   cells="${REPO_ROOT}/.github/release-cells.yml"
   arm=$(awk '/asset_name: lilbee-macos-arm64$/ { f = 1 } f && /macos_floor/ { gsub(/[" ]|macos_floor:/, ""); print; exit }' "${cells}")
   intel=$(awk '/asset_name: lilbee-macos-x86_64$/ { f = 1 } f && /macos_floor/ { gsub(/[" ]|macos_floor:/, ""); print; exit }' "${cells}")
-  compat=$(awk '/asset_name: lilbee-compat-macos-x86_64$/ { f = 1 } f && /macos_floor/ { gsub(/[" ]|macos_floor:/, ""); print; exit }' "${cells}")
+  oldmac="${REPO_ROOT}/.github/oldmac-cells.yml"
+  compat=$(awk '/asset_name: lilbee-compat-macos-x86_64$/ { f = 1 } f && /macos_floor/ { gsub(/[" ]|macos_floor:/, ""); print; exit }' "${oldmac}")
+  compat_arm=$(awk '/asset_name: lilbee-compat-macos-arm64$/ { f = 1 } f && /macos_floor/ { gsub(/[" ]|macos_floor:/, ""); print; exit }' "${oldmac}")
   glibc=$(grep -o 'manylinux_2_[0-9]*' "${cells}" | head -n 1 | sed 's/manylinux_2_//')
-  [ -n "${arm}" ] && [ -n "${intel}" ] && [ -n "${compat}" ] && [ -n "${glibc}" ]
+  [ -n "${arm}" ] && [ -n "${intel}" ] && [ -n "${compat}" ] && [ -n "${compat_arm}" ] && [ -n "${glibc}" ]
   grep -qx "MACOS_FLOOR_ARM64=\"${arm}\"" "${SCRIPT}"
   grep -qx "MACOS_FLOOR_X86_64=\"${intel}\"" "${SCRIPT}"
   grep -qx "MACOS_FLOOR_COMPAT_X86_64=\"${compat}\"" "${SCRIPT}"
+  grep -qx "MACOS_FLOOR_COMPAT_ARM64=\"${compat_arm}\"" "${SCRIPT}"
   grep -qx "GLIBC_FLOOR=\"2.${glibc}\"" "${SCRIPT}"
 }
 
@@ -250,6 +253,29 @@ tool_dir() {
   UNAME_S=Darwin MACOS=12.0 LILBEE_VARIANT=compat install_lilbee
   [ "$status" -eq 0 ]
   [ "$(cat "${LILBEE_INSTALL_DIR}/lilbee")" = "compat" ]
+}
+
+@test "an arm64 Mac below macOS 15 is pointed at the compat build" {
+  publish lilbee-macos-arm64 "body"
+  UNAME_S=Darwin UNAME_M=arm64 MACOS=14.7 install_lilbee
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"needs macOS 15.0 or newer. This Mac runs 14.7. For an older macOS, use the compat build: LILBEE_VARIANT=compat."* ]]
+}
+
+@test "the compat arm64 build installs on macOS 12.3" {
+  publish lilbee-macos-arm64 "body"
+  publish lilbee-compat-macos-arm64 "compat"
+  UNAME_S=Darwin UNAME_M=arm64 MACOS=12.3 LILBEE_VARIANT=compat install_lilbee
+  [ "$status" -eq 0 ]
+  [ "$(cat "${LILBEE_INSTALL_DIR}/lilbee")" = "compat" ]
+}
+
+@test "the compat arm64 build is refused below macOS 12.3" {
+  publish lilbee-compat-macos-arm64 "compat"
+  UNAME_S=Darwin UNAME_M=arm64 MACOS=12.2 LILBEE_VARIANT=compat install_lilbee
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"needs macOS 12.3 or newer. This Mac runs 12.2."* ]]
+  [[ "$output" != *"LILBEE_VARIANT=compat"* ]]
 }
 
 @test "a folder that is not on PATH is added to the shell startup file once" {

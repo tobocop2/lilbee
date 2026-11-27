@@ -1,6 +1,7 @@
 """Executable build config: Playwright plugin, exact Nuitka pin, no publishing from a check."""
 
 import importlib.util
+import os
 import re
 import subprocess
 import sys
@@ -19,7 +20,17 @@ _NUITKA_INSTALL = re.compile(r"'(nuitka\[onefile\][^']*)'")
 _ACTIONS = _ROOT / ".github" / "actions"
 _NUITKA_PIN = "nuitka[onefile]==4.3.1"
 _PUBLISH_MARKERS = ("gh release", "ci_mirror", "publish-engine-asset", "phase: publish")
-_INSTALL_FILES = ("release.yml", "build-gpu-executables.yml", "flatpak-validate.yml")
+_INSTALL_FILES = (
+    "release.yml",
+    "build-gpu-executables.yml",
+    "build-oldmac-executables.yml",
+    "flatpak-validate.yml",
+)
+# The tests that run a workflow step's script drive it through bash with a
+# colon-separated PATH, as the runner does.
+_POSIX_STEP = pytest.mark.skipif(
+    sys.platform == "win32", reason="the step runs only on Linux and macOS runners"
+)
 
 
 class _FakePluginBase:
@@ -82,13 +93,13 @@ def test_every_nuitka_install_names_the_same_requirement() -> None:
 
 
 def test_every_nuitka_install_site_is_counted() -> None:
-    """Four sites install Nuitka; a fifth added without the pin must fail the test above."""
+    """Five sites install Nuitka; a sixth added without the pin must fail the test above."""
     sites = sum(
         len(_NUITKA_INSTALL.findall((_WORKFLOWS / name).read_text(encoding="utf-8")))
         for name in _INSTALL_FILES
     )
 
-    assert sites == 4
+    assert sites == 5
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -289,3 +300,267 @@ def test_only_an_option_line_of_the_nuitka_call_counts_as_a_data_rule(
     script: str, covered: set[str]
 ) -> None:
     assert _executable_package_data(script, {_PROFILE, _RECORD}) == covered
+
+
+_OLDMAC = _WORKFLOWS / "build-oldmac-executables.yml"
+_OLDMAC_CELLS = _ROOT / ".github" / "oldmac-cells.yml"
+_OLDMAC_PINS = _BUILD_DIR / "oldmac-wheels.in"
+
+
+def _oldmac_cells() -> list[dict[str, Any]]:
+    cells: list[dict[str, Any]] = yaml.safe_load(_OLDMAC_CELLS.read_text(encoding="utf-8"))
+    return cells
+
+
+def _oldmac_pins() -> list[str]:
+    lines = _OLDMAC_PINS.read_text(encoding="utf-8").splitlines()
+    return [line for line in lines if line and not line.startswith("#")]
+
+
+def _oldmac_pin_projects() -> list[str]:
+    """Each project the pins name, once."""
+    return list(dict.fromkeys(pin.split(" @ ")[0] for pin in _oldmac_pins()))
+
+
+# A pin: the fork's wheel for one arch, a release asset named by URL and sha256.
+_ASSET_PIN = re.compile(
+    r"(?P<name>[a-z-]+) @ https://github\.com/tobocop2/(?P=name)/releases/download/"
+    r"v(?P<version>\d+\.\d+\.\d+)%2Bcompat/[a-z_]+-(?P=version)%2Bcompat-cp311-abi3-"
+    r"macosx_11_0_(?P<arch>arm64|x86_64)\.whl#sha256=[0-9a-f]{64} ; platform_machine == '(?P=arch)'"
+)
+
+
+def _oldmac_steps() -> dict[str, dict[str, Any]]:
+    steps = _load(_OLDMAC)["jobs"]["build"]["steps"]
+    return {step["name"]: step for step in steps if "name" in step}
+
+
+def test_both_old_mac_cells_are_droppable_and_checked_at_their_floor() -> None:
+    cells = _oldmac_cells()
+    floor_step = _oldmac_steps()["Verify macOS floor"]
+
+    assert {c["asset_name"] for c in cells} == {
+        "lilbee-compat-macos-x86_64",
+        "lilbee-compat-macos-arm64",
+    }
+    assert all(c["soft"] is True for c in cells)
+    assert floor_step["env"]["MACOSX_DEPLOYMENT_TARGET"] == "${{ matrix.macos_floor }}"
+    assert floor_step["run"] == "bash tools/wheel-build/check_macos_floor.sh"
+
+
+def test_each_old_mac_cell_claims_the_floor_its_wheels_reach() -> None:
+    """The scipy arm64 wheels bundle libraries built for macOS 12.3; the Intel ones load on 12.0."""
+    by_asset = {c["asset_name"]: c["macos_floor"] for c in _oldmac_cells()}
+
+    assert by_asset == {"lilbee-compat-macos-x86_64": "12.0", "lilbee-compat-macos-arm64": "12.3"}
+
+
+def _macos_floors() -> dict[str, dict[str, str]]:
+    """The macOS floor of each Mac build, by npm arch, read from the two cells files."""
+    release = yaml.safe_load((_ROOT / ".github" / "release-cells.yml").read_text(encoding="utf-8"))
+    floors = {c["asset_name"]: c.get("macos_floor") for c in release + _oldmac_cells()}
+    return {
+        "arm64": {
+            "main": floors["lilbee-macos-arm64"],
+            "compat": floors["lilbee-compat-macos-arm64"],
+        },
+        "x64": {
+            "main": floors["lilbee-macos-x86_64"],
+            "compat": floors["lilbee-compat-macos-x86_64"],
+        },
+    }
+
+
+_MACOS_NAMES = {12: "monterey", 13: "ventura", 14: "sonoma", 15: "sequoia", 26: "tahoe"}
+
+
+def test_the_npm_launcher_agrees_with_the_cells_on_the_macos_floors() -> None:
+    detect = (_ROOT / "packages" / "lilbee" / "lib" / "detect.mjs").read_text(encoding="utf-8")
+    table = re.search(r"const MACOS_FLOORS = (\{.*?\}\s*\});", detect, re.DOTALL)
+
+    assert table, "detect.mjs has no MACOS_FLOORS table"
+    launcher = {
+        arch: dict(re.findall(r'(main|compat): "([\d.]+)"', body))
+        for arch, body in re.findall(r"(arm64|x64): \{([^}]*)\}", table.group(1))
+    }
+    assert launcher == _macos_floors()
+
+
+def test_the_homebrew_formula_picks_the_compat_build_below_the_main_floor() -> None:
+    formula = (_ROOT / "packaging" / "homebrew" / "lilbee.rb").read_text(encoding="utf-8")
+
+    for arch, asset in (
+        ("arm64", "lilbee-compat-macos-arm64"),
+        ("x64", "lilbee-compat-macos-x86_64"),
+    ):
+        main = _macos_floors()[arch]["main"]
+        last_before_main = _MACOS_NAMES[int(main.split(".")[0]) - 1]
+        block = re.escape(f"on_{last_before_main} :or_older do")
+        assert re.search(rf'{block}\n\s*url "[^"]*/{asset}"', formula), arch
+
+
+def _install_calls(tmp_path: Path) -> list[list[str]]:
+    """Run the old-Mac install step against a fake uv and return each uv argv."""
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    log = tmp_path / "uv.log"
+    (fake / "uv").write_text(
+        f'#!/usr/bin/env bash\nprintf "%s\\0" "$@" >> {log}\nprintf "\\n" >> {log}\n',
+        encoding="utf-8",
+    )
+    (fake / "uv").chmod(0o755)
+    work = tmp_path / "work"
+    (work / "tools" / "wheel-build").mkdir(parents=True)
+    (work / "tools" / "wheel-build" / "oldmac-wheels.in").write_text(
+        _OLDMAC_PINS.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    env = {
+        "PATH": f"{fake}:{os.environ['PATH']}",
+        "PYTHON_PLATFORM": "aarch64-apple-darwin",
+        "LANCEDB_SPEC": "",
+    }
+    run = _oldmac_steps()["Install dependencies"]["run"]
+    subprocess.run(["bash", "-c", run], cwd=work, env=env, check=True, capture_output=True)
+    lines = log.read_text(encoding="utf-8").split("\n")
+    return [line.rstrip("\0").split("\0") for line in lines if line]
+
+
+@_POSIX_STEP
+def test_the_old_mac_install_takes_every_fork_pin_as_a_wheel_only(tmp_path: Path) -> None:
+    install = next(c for c in _install_calls(tmp_path) if c[:2] == ["pip", "install"])
+    binary_only = {install[i + 1] for i, arg in enumerate(install) if arg == "--only-binary"}
+
+    assert _oldmac_pin_projects()
+    assert binary_only == set(_oldmac_pin_projects())
+
+
+def test_only_the_intel_cell_swaps_lancedb_and_sets_a_cpu_baseline() -> None:
+    by_asset = {c["asset_name"]: c for c in _oldmac_cells()}
+
+    assert by_asset["lilbee-compat-macos-x86_64"]["lancedb_spec"] == "lancedb==0.40.0+compat"
+    assert by_asset["lilbee-compat-macos-x86_64"]["march"] == "x86-64-v2"
+    assert "lancedb_spec" not in by_asset["lilbee-compat-macos-arm64"]
+    assert "march" not in by_asset["lilbee-compat-macos-arm64"]
+
+
+def test_the_fork_wheels_are_exact_compat_pins_installed_binary_only() -> None:
+    pins = _oldmac_pins()
+    run = _oldmac_steps()["Install dependencies"]["run"]
+
+    assert pins
+    for pin in pins:
+        assert _ASSET_PIN.fullmatch(pin), pin
+    for project in _oldmac_pin_projects():
+        matches = [m for pin in pins if (m := _ASSET_PIN.fullmatch(pin))]
+        arches = [m["arch"] for m in matches if m["name"] == project]
+        assert sorted(arches) == ["arm64", "x86_64"], project
+    assert "https://lilbee.sh/compat/" not in run
+    assert '--python-platform "${PYTHON_PLATFORM}"' in run
+    assert "--no-emit-package" in run
+
+
+def _homebrew_render_args(tmp_path: Path, compat_sha: str) -> str:
+    """Run the Homebrew render-args step's script and return the args it writes."""
+    steps = _load(_WORKFLOWS / "publish-packages.yml")["jobs"]["homebrew"]["steps"]
+    step = next(s for s in steps if s.get("name") == "Build render-args")
+    out = tmp_path / ("output-with" if compat_sha else "output-without")
+    env = {
+        "PATH": os.environ["PATH"],
+        "VERSION": "1.2.3",
+        "SHA_MACOS_ARM64": "a" * 64,
+        "SHA_MACOS_X86_64": "b" * 64,
+        "SHA_LINUX": "c" * 64,
+        "SHA_MACOS_ARM64_COMPAT": compat_sha,
+        "SHA_MACOS_X86_64_COMPAT": compat_sha and "e" * 64,
+        "GITHUB_OUTPUT": str(out),
+    }
+    subprocess.run(["bash", "-c", step["run"]], env=env, check=True, capture_output=True)
+    return out.read_text(encoding="utf-8")
+
+
+@_POSIX_STEP
+def test_the_homebrew_args_carry_the_old_mac_digest_only_when_the_asset_exists(
+    tmp_path: Path,
+) -> None:
+    with_compat = _homebrew_render_args(tmp_path, "d" * 64)
+    without = _homebrew_render_args(tmp_path, "")
+
+    assert f"--sha-macos-arm64-compat {'d' * 64}" in with_compat
+    assert f"--sha-macos-x86_64-compat {'e' * 64}" in with_compat
+    assert "--sha-macos-arm64-compat" not in without
+    assert "--sha-macos-x86_64-compat" not in without
+    assert f"--sha-linux-x86_64 {'c' * 64}" in without
+
+
+def test_the_release_resolves_the_old_mac_digest_without_requiring_it() -> None:
+    steps = _load(_WORKFLOWS / "publish-packages.yml")["jobs"]["resolve"]["steps"]
+    run = next(s for s in steps if s.get("id") == "info")["run"]
+
+    assert "sha_macos_arm64_compat=$(get_sha lilbee-compat-macos-arm64)" in run
+    assert "sha_macos_x86_64_compat=$(get_sha lilbee-compat-macos-x86_64)" in run
+    assert "set -euo pipefail" in run
+
+
+def test_nothing_in_the_release_waits_on_the_old_mac_build() -> None:
+    jobs = _load(_WORKFLOWS / "release-candidate.yml")["jobs"]
+
+    assert jobs["build-oldmac"]["uses"] == "./.github/workflows/build-oldmac-executables.yml"
+    for name, job in jobs.items():
+        needs = job.get("needs", [])
+        needs = [needs] if isinstance(needs, str) else needs
+        assert "build-oldmac" not in needs, name
+
+
+def _docs_old_mac_section() -> str:
+    docs = (_ROOT / "docs" / "install.md").read_text(encoding="utf-8")
+    start = docs.index("## On older macOS")
+    return docs[start : docs.index("\n## ", start + 1)]
+
+
+def test_the_old_mac_pip_commands_take_the_wheels_the_build_pins() -> None:
+    docs = _docs_old_mac_section()
+    pins = [m for pin in _oldmac_pins() if (m := _ASSET_PIN.fullmatch(pin))]
+    urls = re.findall(r"'([a-z-]+ @ [^']+)'", docs)
+    from_index = set(re.findall(r"'([a-z-]+)==[\d.]+\+compat'", docs))
+
+    # Both commands take every fork wheel the build pins, for their arch, by URL and sha256.
+    assert sorted(urls) == sorted(m.group(0).split(" ; ")[0] for m in pins)
+    # Only lancedb comes from the compat index.
+    assert from_index == {"lancedb"}
+
+
+def test_the_compat_index_serves_lancedb_only() -> None:
+    """A fork on the compat index outranks PyPI for every pip user of the index, so it
+    serves lancedb only. The install guide says the same about the index."""
+    jobs = _load(_WORKFLOWS / "pages.yml")["jobs"]
+    runs = [s.get("run", "") for job in jobs.values() for s in job.get("steps", [])]
+    pages = next(run for run in runs if "build_wheel_indexes.py compat" in run)
+
+    assert re.findall(r"--(\S*repo) (\S+)", pages) == [("repo", "tobocop2/lancedb")]
+    docs = (_ROOT / "docs/install.md").read_text(encoding="utf-8")
+    carries = re.findall(r"compat package index carries ([^,.]+)", docs)
+    assert carries == ["only the patched lancedb"]
+
+
+def _locked_version(project: str) -> str:
+    lock = (_ROOT / "uv.lock").read_text(encoding="utf-8")
+    match = re.search(rf'\[\[package\]\]\nname = "{project}"\nversion = "([^"]+)"', lock)
+    assert match, project
+    return match.group(1)
+
+
+def test_xberg_comes_from_its_compat_release_at_the_locked_version_on_each_arch() -> None:
+    """The PyPI xberg wheels need macOS 15; the fork's need 11.0, and pip must not downgrade."""
+    pins = [m for pin in _oldmac_pins() if (m := _ASSET_PIN.fullmatch(pin))]
+    xberg = [m for m in pins if m["name"] == "xberg"]
+
+    assert sorted(m["arch"] for m in xberg) == ["arm64", "x86_64"]
+    assert {m["version"] for m in xberg} == {_locked_version("xberg")}
+
+
+def test_the_old_mac_cells_are_not_in_the_release_matrix() -> None:
+    release = yaml.safe_load((_ROOT / ".github" / "release-cells.yml").read_text(encoding="utf-8"))
+    names = {cell["asset_name"] for cell in release}
+
+    assert names
+    assert not names & {c["asset_name"] for c in _oldmac_cells()}

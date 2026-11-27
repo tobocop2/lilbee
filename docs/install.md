@@ -28,7 +28,7 @@ lilbee               # start the terminal app and pick your models
 
 | How                   | Command                                                                                  | Notes |
 | --------------------- | ---------------------------------------------------------------------------------------- | ----- |
-| **Homebrew**          | `brew tap tobocop2/lilbee && brew install lilbee`                                        | macOS 15+ (Apple silicon and Intel) and Linux x86_64. Clears the macOS quarantine flag for you. |
+| **Homebrew**          | `brew tap tobocop2/lilbee && brew install lilbee`                                        | macOS (Apple silicon and Intel) and Linux x86_64. Below macOS 15 it installs the [compat build](#on-older-macos). Clears the macOS quarantine flag for you. |
 | **AUR**               | `paru -S lilbee`                                                                         | Arch Linux. Works with `yay`, `pacaur` or any helper. |
 | **Docker**            | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | GHCR image, tagged by version and `latest`. Mount a volume at `/home/lilbee/data`. The `:cuda` and `:rocm` tags carry the vendor builds. |
 | **Nix**               | `nix run github:tobocop2/lilbee`                                                         | NixOS, nix-darwin, or any host with nix. On Linux the flake bundles `glibc`, `libgomp` and `vulkan-loader`, so it runs on bare NixOS. |
@@ -105,6 +105,41 @@ For an older CPU with an NVIDIA GPU (AVX, 2011+), `lilbee-compat-cuda` is the co
 
 The crash comes from [lancedb](https://lancedb.github.io/lancedb/)'s AVX2 wheels. The compat build uses a [lancedb fork](https://github.com/tobocop2/lance) that picks instructions at run time. A 👍 on the upstream [lance PR](https://github.com/lance-format/lance/pull/6630) helps it land.
 
+## On older macOS
+
+The main Mac builds need macOS 15. The compat Mac builds run on macOS 12.3 to 14 on Apple silicon, and on macOS 12 to 14 on Intel. No build runs on an older macOS.
+
+| Channel | macOS 15 and newer | macOS 12 to 14 (Apple silicon: 12.3 to 14) |
+| ------- | ------------------ | ------------------------------------------ |
+| **Executable** | `lilbee-macos-arm64` or `lilbee-macos-x86_64` | [`lilbee-compat-macos-arm64`](https://github.com/tobocop2/lilbee/releases/latest) or [`lilbee-compat-macos-x86_64`](https://github.com/tobocop2/lilbee/releases/latest) |
+| **Homebrew** | `brew tap tobocop2/lilbee && brew install lilbee` | The same command. Homebrew picks the compat build. |
+| **npm** | `npm install -g lilbee` | The same command. The launcher picks the compat build. |
+| **Install script** | `curl -fsSL https://lilbee.sh/install.sh \| sh` | `curl -fsSL https://lilbee.sh/install.sh \| LILBEE_VARIANT=compat sh` |
+| **pip** | [pip and uv](#pip-and-uv) | The commands below |
+
+The compat build bundles old-macOS builds of xberg, the crawler and the model client, because their PyPI wheels need a newer macOS. pip takes each one from its fork's release, by URL and sha256. For pip on Apple silicon, install them with lilbee:
+
+```bash
+pip install --pre lilbee --only-binary xberg,crawlberg,liter-llm \
+  'xberg @ https://github.com/tobocop2/xberg/releases/download/v1.5.4%2Bcompat/xberg-1.5.4%2Bcompat-cp311-abi3-macosx_11_0_arm64.whl#sha256=b85501e681238030e5796a75693988adee53deb7d465941ca587f2705911eb3e' \
+  'crawlberg @ https://github.com/tobocop2/crawlberg/releases/download/v1.13.0%2Bcompat/crawlberg-1.13.0%2Bcompat-cp311-abi3-macosx_11_0_arm64.whl#sha256=98a09b976b29d25196c7c977dd4474d62816202abea29d45d11bab4ed02dbc18' \
+  'liter-llm @ https://github.com/tobocop2/liter-llm/releases/download/v2.7.0%2Bcompat/liter_llm-2.7.0%2Bcompat-cp311-abi3-macosx_11_0_arm64.whl#sha256=039ad3029b89b666d591768b2465883c138408855573dcb5eee00df823e21bcf'
+```
+
+On Intel, the command also takes the patched lancedb from the compat index:
+
+```bash
+pip install --pre lilbee --only-binary xberg,crawlberg,liter-llm,lancedb \
+  'xberg @ https://github.com/tobocop2/xberg/releases/download/v1.5.4%2Bcompat/xberg-1.5.4%2Bcompat-cp311-abi3-macosx_11_0_x86_64.whl#sha256=fbfc2f9c885e57886046ccc8602a602d6b0a75602f7da90fca44ed221f3acce3' \
+  'crawlberg @ https://github.com/tobocop2/crawlberg/releases/download/v1.13.0%2Bcompat/crawlberg-1.13.0%2Bcompat-cp311-abi3-macosx_11_0_x86_64.whl#sha256=b2c6981eba2f3689c55e5a98915dd2159459b917157ee0878a1e297a58a012aa' \
+  'liter-llm @ https://github.com/tobocop2/liter-llm/releases/download/v2.7.0%2Bcompat/liter_llm-2.7.0%2Bcompat-cp311-abi3-macosx_11_0_x86_64.whl#sha256=82fd22b6a2b7f5e2ebe27940caf79aa3a74fa1918c1b439bba347945381669ad' \
+  'lancedb==0.40.0+compat' --extra-index-url https://lilbee.sh/compat/
+```
+
+lilbee downloads the engine pack the first time a model needs it, as on any other computer (see [The engine](#the-engine)). If no pack runs on your Mac, lilbee says so. Then set `LILBEE_LLAMA_SERVER_PATH` to your own `llama-server`.
+
+A Mac on macOS 15 or newer never needs these pins.
+
 ## Linux runtime requirements
 
 The Linux wheel and binary bundle the Vulkan loader, so they start on any distro. GPU detection still reads adapters through the system loader: without `libvulkan1`, lilbee treats the machine as CPU-only. Most desktop distros (Ubuntu 22.04+, Pop!\_OS, Mint) ship it. On a bare image, install it once:
@@ -169,7 +204,7 @@ The [usage guide](usage.md#optional-extras) covers how to configure each one.
 | **Windows x86_64** | 64-bit Intel or AMD from 2013+ (`x86-64-v3`), Windows 10/11 | Modern CPU with a GPU |
 | **Linux ARM64**    | ARMv8 with NEON (Raspberry Pi 4+, AWS Graviton, Ampere Altra) | Modern ARM server with 16+ GB RAM |
 
-Intel Macs on macOS 12 to 14 use the [`lilbee-compat-macos-x86_64`](https://github.com/tobocop2/lilbee/releases/latest) build (see [Older CPUs](#older-cpus-pre-avx2)). With the installer script, set `LILBEE_VARIANT=compat`.
+Macs on macOS 12 to 14 use the compat builds (see [On older macOS](#on-older-macos)).
 
 | Resource | Minimum | Recommended |
 | -------- | ------- | ----------- |

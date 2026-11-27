@@ -10,6 +10,7 @@ RELEASES_URL="https://github.com/${REPO}/releases"
 MACOS_FLOOR_ARM64="15.0"
 MACOS_FLOOR_X86_64="15.0"
 MACOS_FLOOR_COMPAT_X86_64="12.0"
+MACOS_FLOOR_COMPAT_ARM64="12.3"
 GLIBC_FLOOR="2.34"
 MIN_FREE_KB=2097152
 # Tests point this at a fake root holding /proc, /sys, /dev and /opt.
@@ -107,13 +108,11 @@ asset_name() {
     compat | compat-*) an_prefix=lilbee-compat; an_gpu="${an_variant#compat}"; an_gpu="${an_gpu#-}" ;;
   esac
   case "$1/$2" in
-    darwin/arm64)
-      [ -z "${an_variant}" ] || { echo "macOS arm64 ships a single build; unset LILBEE_VARIANT." >&2; return 1; }
-      echo lilbee-macos-arm64
-      ;;
-    darwin/x64)
+    darwin/arm64 | darwin/x64)
       [ -z "${an_gpu}" ] || { echo "macOS has no GPU-variant builds; unset LILBEE_VARIANT." >&2; return 1; }
-      echo "${an_prefix}-macos-x86_64"
+      an_arch=x86_64
+      [ "$2" != arm64 ] || an_arch=arm64
+      echo "${an_prefix}-macos-${an_arch}"
       ;;
     linux/x64) echo "${an_prefix}-linux-x86_64${an_gpu:+-${an_gpu}}" ;;
     win32/x64)
@@ -227,10 +226,11 @@ check_platform_floor() {
     darwin)
       cf_hint=""
       case "$3" in
-        lilbee-macos-arm64) cf_floor="${MACOS_FLOOR_ARM64}" ;;
+        lilbee-compat-macos-arm64) cf_floor="${MACOS_FLOOR_COMPAT_ARM64}" ;;
         lilbee-compat-macos-x86_64) cf_floor="${MACOS_FLOOR_COMPAT_X86_64}" ;;
         *)
           cf_floor="${MACOS_FLOOR_X86_64}"
+          [ "$3" != lilbee-macos-arm64 ] || cf_floor="${MACOS_FLOOR_ARM64}"
           cf_hint=" For an older macOS, use the compat build: LILBEE_VARIANT=compat."
           ;;
       esac

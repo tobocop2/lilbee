@@ -22,8 +22,9 @@ setup() {
 }
 
 @test "a cell keeps its optional fields as JSON values" {
-  run bash "${SCRIPT}" lilbee-compat-macos-x86_64 "${CELLS}"
+  run bash "${SCRIPT}" lilbee-compat-macos-x86_64 "${REPO_ROOT}/.github/oldmac-cells.yml"
   [ "$status" -eq 0 ]
+  [ "$(jq -r 'length' <<< "$output")" -eq 1 ]
   [ "$(jq -r '.[0].soft' <<< "$output")" = "true" ]
   [ "$(jq -r '.[0].macos_floor' <<< "$output")" = "12.0" ]
 }

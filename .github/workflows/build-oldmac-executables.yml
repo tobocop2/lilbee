@@ -1,0 +1,203 @@
+name: Build old-Mac executables
+
+# Standalone executables for Macs below the main build's macOS floor. They
+# bundle the owner's old-macOS forks of crawlberg, liter-llm and xberg, taken
+# from the fork releases by URL and sha256 (tools/wheel-build/oldmac-wheels.in).
+# Called from release-candidate.yml, or dispatched
+# for a released tag that has tools/wheel-build/oldmac-wheels.in (an older tag
+# lacks the pins, so its install step fails). Cells are independent and
+# droppable: no publish step or required check waits on this workflow, so a
+# fork that lags upstream delays these assets and nothing else. Under workflow_call each cell attaches
+# to the pre-release itself; under workflow_dispatch it attaches to the named
+# release when a tag is given.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        # Empty builds artifacts only, which is how you validate a cell without touching a release.
+        description: "Release tag to attach the executables to (empty = artifacts only)."
+        required: false
+        default: ""
+      only_asset:
+        description: "Build only the cell with this asset name (empty = every cell)."
+        required: false
+        default: ""
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build at (defaults to caller's ref)."
+        type: string
+        default: ""
+      release_tag:
+        description: "GH release tag to attach each built executable to (empty = artifacts only)."
+        type: string
+        default: ""
+      only_asset:
+        description: "Build only the cell with this asset name (empty = every cell)."
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-oldmac-executables-${{ inputs.tag || inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      cells: ${{ steps.plan.outputs.cells }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - name: Select the build cells
+        id: plan
+        env:
+          ONLY_ASSET: ${{ inputs.only_asset }}
+        run: echo "cells=$(bash scripts/release_plan_cells.sh "${ONLY_ASSET}" .github/oldmac-cells.yml)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    continue-on-error: true
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.cells) }}
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || inputs.tag || github.ref }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Compute version
+        # NUITKA_VERSION: int-tuple form Nuitka --product-version accepts.
+        shell: bash
+        run: |
+          VERSION=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
+          NUITKA_VERSION=$(echo "$VERSION" | tr -cs '0-9' ' ' | awk '{ printf "%s.%s.%s.%s", $1, $2, $3, $4 }')
+          echo "LILBEE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "LILBEE_NUITKA_VERSION=$NUITKA_VERSION" >> "$GITHUB_ENV"
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: oldmac-${{ matrix.os }}-${{ matrix.backend }}${{ matrix.march && format('-{0}', matrix.march) || '' }}
+          max-size: '2G'
+          save: ${{ github.ref_type != 'tag' }}
+
+      # Nuitka overrides ccache-action's config with its own CCACHE_DIR unless one is exported.
+      - name: Point ccache at the cached directory
+        shell: bash
+        run: echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "$GITHUB_ENV"
+
+      # One constrained install resolves the whole cell. Every package comes from
+      # uv.lock through a constraints file, except the fork wheels in
+      # oldmac-wheels.in (release wheels by URL and sha256, wheels only, so an
+      # sdist can never win) and, on Intel, lancedb (the locked version has no
+      # wheel there, so the cell takes the compat build, from the explicit index
+      # pyproject.toml binds to lancedb, as the main Intel cell does).
+      # --python-platform resolves wheels for the target instead of the runner, so
+      # numpy and scipy arrive at their oldest macOS build.
+      - name: Install dependencies
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_floor }}
+          PYTHON_PLATFORM: ${{ matrix.python_platform }}
+          LANCEDB_SPEC: ${{ matrix.lancedb_spec }}
+        run: |
+          set -euxo pipefail
+          pins=tools/wheel-build/oldmac-wheels.in
+          # Each pinned project once, after the flag: the text before `==`, or before ` @ `.
+          projects() {
+            awk -v flag="$1" '/^[^#]/ { split($1, p, "=="); if (!seen[p[1]]++) printf flag " %s ", p[1] }' "${pins}"
+          }
+          skip=$(projects --no-emit-package)
+          binary=$(projects --only-binary)
+          uv venv
+          # shellcheck disable=SC2086
+          uv export --frozen --extra release --no-hashes \
+            --no-emit-project --no-emit-package lilbee-engine-llama-cpp \
+            ${LANCEDB_SPEC:+--no-emit-package lancedb} ${skip} \
+            --format requirements-txt -o oldmac-constraints.txt
+          # shellcheck disable=SC2086
+          uv pip install --python-platform "${PYTHON_PLATFORM}" \
+            --constraint oldmac-constraints.txt ${binary} \
+            -r "${pins}" ${LANCEDB_SPEC} '.[release]' 'nuitka[onefile]==4.3.1' pip
+
+      - name: Verify extras installed in build venv
+        shell: bash
+        # --no-sync is load-bearing: re-syncing reinstalls python-multipart and shadows the shim.
+        run: uv run --no-sync python -c "import crawlberg, ada_url, liter_llm, spacy, graspologic_native; print('extras OK')"
+
+      - name: Bundle llama-server
+        uses: ./.github/actions/bundle-llama-server
+        with:
+          backend: ${{ matrix.backend }}
+          cache-env: oldmac-${{ matrix.os }}
+          asset-release-tag: ${{ inputs.only_asset == '' && 'engine-binaries' || '' }}
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_floor }}
+
+      # Nuitka bundles these dylibs, and dyld enforces each one's minos separately
+      # from the launcher's. Fail here rather than on the user's Mac.
+      - name: Verify macOS floor
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_floor }}
+        run: bash tools/wheel-build/check_macos_floor.sh
+
+      - name: Build executable
+        shell: bash
+        env:
+          ASSET_NAME: ${{ matrix.asset_name }}
+          PRODUCT_VERSION: ${{ env.LILBEE_NUITKA_VERSION }}
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_floor }}
+          CFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
+          CXXFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
+        run: bash tools/wheel-build/build_lilbee_binary.sh
+
+      # The runner is newer than the floor, so this proves the launcher boots, not that an old macOS loads it. The floor check above is the proof of the floor.
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euxo pipefail
+          EXPECTED=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
+          bash scripts/assert_launcher_boots.sh "$EXPECTED" "./dist/${{ matrix.asset_name }}"
+
+      - name: Upload binary as a run artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          compression-level: 0
+
+      - name: Attach binary to the GH pre-release (call mode)
+        if: inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: gh release upload "$TAG" "dist/${{ matrix.asset_name }}" --clobber
+
+      - name: Attach binary to release (dispatch mode)
+        if: inputs.tag != ''
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: dist/${{ matrix.asset_name }}
+          fail_on_unmatched_files: true
