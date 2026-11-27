@@ -236,6 +236,15 @@ class TestPlanFanout:
         monkeypatch.setattr("lilbee.data.ingest.discovery.corpus_has_at_least", lambda _n: True)
         assert fanout.plan_fanout() == []
 
+    def test_a_failed_probe_stays_in_process_whatever_ingest_processes_says(self, monkeypatch):
+        def failing(_engine):
+            raise ProviderError("probe failed")
+
+        monkeypatch.setattr(cfg, "ingest_processes", 4)
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", failing)
+        monkeypatch.setattr("lilbee.data.ingest.discovery.corpus_has_at_least", lambda _n: True)
+        assert fanout.plan_fanout() == []
+
     def test_a_probe_that_fails_for_another_reason_stops_the_plan(self, monkeypatch):
         def failing(_engine):
             raise OSError("device gone")

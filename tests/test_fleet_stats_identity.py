@@ -57,6 +57,12 @@ class TestTheRocmMasksAreUndoneInOrder:
         monkeypatch.setenv("GPU_DEVICE_ORDINAL", "GPU-abcdef12")
         assert _physical_index("ROCm", 0) == 0
 
+    def test_the_hip_backend_undoes_hip_then_rocr_beside_an_ordinal(self, monkeypatch) -> None:
+        monkeypatch.setenv("GPU_DEVICE_ORDINAL", "9,9")
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1,2")
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "4,5,6")
+        assert _physical_index("HIP", 0) == 5
+
     def test_hip_then_rocr_are_undone_beside_an_ordinal(self, monkeypatch) -> None:
         monkeypatch.setenv("GPU_DEVICE_ORDINAL", "9,9")
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1,2")
