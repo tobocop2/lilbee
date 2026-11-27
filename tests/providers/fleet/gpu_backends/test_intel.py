@@ -570,3 +570,54 @@ def test_util_hint_leaves_the_parent_locale_alone(
     finally:
         intel_mod.intel_util_hint.cache_clear()
     assert os.environ["LC_ALL"] == "de_DE.UTF-8"
+
+
+# ---------------------------------------------------------------------------
+# fdinfo source end to end (fake /proc tree, reader not stubbed)
+# ---------------------------------------------------------------------------
+
+_FDINFO_MS = 1_000_000
+
+
+def _fake_proc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clients: list[tuple[int, int, int, str]]
+) -> None:
+    """Point the reader at a fake /proc; counters move 50 ms per client in the window."""
+
+    def _write(busy_ns: int) -> None:
+        for pid, fd, client_id, pdev in clients:
+            fd_dir = tmp_path / str(pid) / "fdinfo"
+            fd_dir.mkdir(parents=True, exist_ok=True)
+            (fd_dir / str(fd)).write_text(
+                f"drm-driver:\ti915\ndrm-client-id:\t{client_id}\ndrm-pdev:\t{pdev}\n"
+                f"drm-engine-render:\t{busy_ns} ns\n",
+                encoding="utf-8",
+            )
+
+    clock = iter([1_000_000_000, 1_200_000_000])
+    monkeypatch.setattr(intel_mod.fdinfo.time, "monotonic_ns", lambda: next(clock))
+    monkeypatch.setattr(intel_mod.fdinfo.time, "sleep", lambda _s: _write(50 * _FDINFO_MS))
+    real_reader = intel_mod.fdinfo.read_drm_util
+    monkeypatch.setattr(
+        intel_mod.fdinfo,
+        "read_drm_util",
+        lambda driver, **kw: real_reader(driver, proc=tmp_path, **kw),
+    )
+    _write(0)
+
+
+def test_fdinfo_dup_fds_read_once_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_proc(tmp_path, monkeypatch, [(100, 3, 7, "0000:00:02.0"), (100, 4, 7, "0000:00:02.0")])
+    assert intel_mod._fdinfo_samples(frozenset({0}))[0].utilization_pct == 25
+
+
+def test_fdinfo_two_devices_falls_through_to_intel_gpu_top(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_proc(tmp_path, monkeypatch, [(100, 3, 1, "0000:00:02.0"), (200, 3, 2, "0000:03:00.0")])
+    monkeypatch.setattr(intel_mod, "run_smi", lambda *_a, **_k: "")
+    monkeypatch.setattr(intel_mod, "_intel_gpu_top_output", lambda: _IGT_STREAM)
+    assert intel_mod._fdinfo_samples(frozenset({0, 1})) == {}
+    assert IntelBackend().sample(frozenset({0, 1}))[0].utilization_pct == 85

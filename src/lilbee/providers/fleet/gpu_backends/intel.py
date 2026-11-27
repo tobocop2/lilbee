@@ -16,6 +16,8 @@ kernel, and privileges. We try them in order and take the first that reports:
 The fdinfo and intel_gpu_top sources report one device (the consumer case is a
 single iGPU); their reading is keyed to the lowest requested index. VRAM is left
 as the 0/0 structural sentinel since none of these report an iGPU's total memory.
+The fdinfo source reads no number when two or more Intel devices show clients, so
+the next source runs.
 """
 
 from __future__ import annotations
