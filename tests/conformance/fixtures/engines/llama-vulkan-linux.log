@@ -1,0 +1,20 @@
+engine: llama-vulkan-linux
+version: llama.cpp 1.12032.1 linux-x86_64-vulkan
+host: Linux-6.8.0-57-generic-x86_64-with-glibc2.35
+backend: vulkan
+reported-backend: vulkan
+devices: Vulkan0
+devices-from: engine-log
+models: chat=Qwen3-1.7B-Q8_0,embed=Qwen3-Embedding-0.6B-Q8_0,rerank=bge-reranker-v2-m3-Q8_0,vision=SmolVLM-256M-Instruct-Q8_0
+server-flags: chat: /root/.local/share/lilbee/engines/llama.cpp/1.12032.1-vulkan/lilbee_engine_llama_cpp/bin/llama-server --model /var/tmp/a-cov-rpvk/models/chat17/Qwen3-1.7B-Q8_0.gguf --host 127.0.0.1 --n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 16384 --threads 23 --no-context-shift --jinja --reasoning-format deepseek --no-prefill-assistant --sse-ping-interval 30 --port 8501 --alias Qwen3-1.7B-Q8_0; embed: /root/.local/share/lilbee/engines/llama.cpp/1.12032.1-vulkan/lilbee_engine_llama_cpp/bin/llama-server --model /var/tmp/a-cov-rpvk/models/qwen3-embedding-0.6b-gguf/Qwen3-Embedding-0.6B-Q8_0.gguf --host 127.0.0.1 --n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 16384 --threads 23 --no-context-shift --embeddings --sse-ping-interval 30 --port 8502 --alias Qwen3-Embedding-0.6B-Q8_0; rerank: /root/.local/share/lilbee/engines/llama.cpp/1.12032.1-vulkan/lilbee_engine_llama_cpp/bin/llama-server --model /var/tmp/a-cov-rpvk/models/bge-reranker-v2-m3-gguf/bge-reranker-v2-m3-Q8_0.gguf --host 127.0.0.1 --n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 16384 --threads 23 --no-context-shift --embeddings --pooling rank --sse-ping-interval 30 --port 8503 --alias bge-reranker-v2-m3-Q8_0; vision: /root/.local/share/lilbee/engines/llama.cpp/1.12032.1-vulkan/lilbee_engine_llama_cpp/bin/llama-server --model /var/tmp/a-cov-rpvk/models/smolvlm-256m-instruct-gguf/SmolVLM-256M-Instruct-Q8_0.gguf --host 127.0.0.1 --n-gpu-layers -1 --parallel 1 --cont-batching --ctx-size 8192 --threads 23 --mmproj /var/tmp/a-cov-rpvk/models/smolvlm-256m-instruct-gguf/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf --no-context-shift --sse-ping-interval 30 --port 8504 --alias SmolVLM-256M-Instruct-Q8_0
+gpu: NVIDIA GeForce RTX 3090
+STEP llama-vulkan-linux template ok=True finish=stop
+STEP llama-vulkan-linux tool ok=True tool_calls=['get_weather']
+STEP llama-vulkan-linux overflow ok=True kind=context_overflow
+STEP llama-vulkan-linux json_object ok=True finish=stop
+STEP llama-vulkan-linux json_schema ok=True finish=stop
+STEP llama-vulkan-linux reasoning ok=True finish=stop
+STEP llama-vulkan-linux embed ok=True dims=[1024]
+STEP llama-vulkan-linux rerank ok=True best=1
+STEP llama-vulkan-linux vision ok=True red_named=True blue_called_red=False
+STEP llama-vulkan-linux named ok=True log=['served by engine=llama-vulkan-linux version=preset build=none role=chat model=llama-vulkan-linux/Qwen3-1.7B-Q8_0'] status={<WorkerRole.CHAT: 'chat'>: 'llama-vulkan-linux', <WorkerRole.EMBED: 'embed'>: 'llama-vulkan-linux', <WorkerRole.RERANK: 'rerank'>: 'llama-vulkan-linux'}
