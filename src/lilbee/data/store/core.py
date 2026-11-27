@@ -2612,9 +2612,14 @@ class Store:
             if hits is not None:
                 return self._with_paths(hits)
 
+        indices = _index_registry(table, self._config.lancedb_dir)
         try:
             rows = self._vector_arm(
-                table, query_vector, top_k * self._config.candidate_multiplier, chunk_type
+                table,
+                query_vector,
+                top_k * self._config.candidate_multiplier,
+                chunk_type,
+                indices,
             )
         except Exception:
             # A dead scalar index fails the prefilter; the next query re-verifies.
@@ -2682,6 +2687,7 @@ class Store:
         query_vector: Vector,
         limit: int,
         chunk_type: ChunkType | None,
+        indices: list[IndexConfig] | None,
     ) -> list[SearchChunk]:
         """Vector-arm candidates with the ANN recall recovery applied.
 
@@ -2690,7 +2696,6 @@ class Store:
         silently starve wiki-only queries whose matches live past the window.
         """
         query = table.search(query_vector).distance_type(_VECTOR_METRIC)
-        indices = _index_registry(table, self._config.lancedb_dir)
         if indices is None or _has_vector_index(indices):
             # IVF_PQ is lossy; probe more partitions and refine against full
             # vectors so recall stays close to the exact flat scan. An unusable
@@ -2724,6 +2729,7 @@ class Store:
         query_text: str,
         limit: int,
         chunk_type: ChunkType | None,
+        indices: list[IndexConfig] | None,
     ) -> list[SearchChunk]:
         """One BM25 row per document whose title matches, in title-relevance order.
 
@@ -2740,7 +2746,6 @@ class Store:
         title arm must never take down the healthy chunk arm, so its failure
         degrades to no-titles, mirroring ``bm25_probe``.
         """
-        indices = _index_registry(table, self._config.lancedb_dir)
         if indices is None or not _has_fts_index(indices, _TITLE_COLUMN):
             return []
         # Every chunk of one document ties on title BM25, so a fixed window can
@@ -2794,10 +2799,11 @@ class Store:
         Title rows carry ``bm25_score``, so a title match counts as lexical
         support for the distance exemption like any other lexical hit.
         """
+        indices = _index_registry(table, self._config.lancedb_dir)
         title_rows: list[SearchChunk] = []
         if self._config.title_search:
-            title_rows = self._title_arm(table, query_text, top_k, chunk_type)
-        vector_rows = self._vector_arm(table, query_vector, top_k, chunk_type)
+            title_rows = self._title_arm(table, query_text, top_k, chunk_type, indices)
+        vector_rows = self._vector_arm(table, query_vector, top_k, chunk_type, indices)
         base_lexical_weight = self._config.lexical_fusion_weight
         base_title_weight = self._config.title_search_weight
         lexical_weight = base_lexical_weight
