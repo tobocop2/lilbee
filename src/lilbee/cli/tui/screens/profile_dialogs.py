@@ -349,10 +349,16 @@ class ApplyProfileDialog(Dialog[ApplyChoice]):
         table.can_focus = False
         table.add_columns(msg.PROFILE_COL_SETTING, msg.PROFILE_COL_NOW, msg.PROFILE_COL_AFTER)
         add_cost_column(table)
-        table.add_rows(diff_cells(row) for row in self._plan.diff.changes)
-        # The header and one line per change; an auto height measures 0 until a later layout.
-        table.styles.height = len(self._plan.diff.changes) + 1
         yield table
+
+    def on_mount(self) -> None:
+        """Add the change rows once the table is mounted, so its auto height follows them.
+
+        Rows added before the mount leave the table at height 0 until a later layout.
+        """
+        if self._plan.diff.changes:
+            table = self.query_one("#apply-changes", DataTable)
+            table.add_rows(diff_cells(row) for row in self._plan.diff.changes)
 
     def _compose_kept(self) -> ComposeResult:
         if not self._plan.kept:

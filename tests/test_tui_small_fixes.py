@@ -457,6 +457,17 @@ async def test_the_apply_dialog_draws_its_change_table_when_the_pill_has_focus(
         assert await wait_until(pilot, lambda: table.region.height > 0, max_pauses=30)
 
 
+def _defined_by_its_module(cls: type) -> bool:
+    """True for a class that a `class` statement in a lilbee TUI module made.
+
+    Another test builds subclasses with `type()` and a borrowed module name; those have no source.
+    """
+    module = sys.modules[cls.__module__]
+    return (
+        cls.__module__.startswith("lilbee.cli.tui.") and getattr(module, cls.__name__, None) is cls
+    )
+
+
 def test_every_dialog_with_a_scroll_area_is_covered() -> None:
     import importlib
     import pkgutil
@@ -477,7 +488,8 @@ def test_every_dialog_with_a_scroll_area_is_covered() -> None:
     scrolling = sorted(
         c.__name__
         for c in subclasses(Dialog)
-        if re.search(r"VerticalScroll|ScrollableContainer", inspect.getsource(c))
+        if _defined_by_its_module(c)
+        and re.search(r"VerticalScroll|ScrollableContainer", inspect.getsource(c))
     )
     assert scrolling
     # PresetDialog and CrawlDialog: tests/test_tui_form_dialog_buttons.py.

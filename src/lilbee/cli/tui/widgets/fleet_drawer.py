@@ -66,7 +66,7 @@ class FleetDrawer(Drawer):
         self.query_one(FleetBody).action_preview()
 
     def action_apply(self) -> None:
-        """Delegate apply (ctrl+s) to the hosted FleetBody."""
+        """Delegate apply (ctrl+s or f5) to the hosted FleetBody."""
         self.query_one(FleetBody).action_apply()
 
     def action_clear(self) -> None:
