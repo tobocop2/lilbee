@@ -2111,33 +2111,106 @@ class TestLinuxVulkanIcdDirectories:
 class TestXdgDirs:
     """``_xdg_dirs`` parses colon-separated XDG path lists.
 
-    Inputs use POSIX-style placeholders ("share", "etc") rather than
-    real ``tmp_path`` directories so the parser test is portable to
-    Windows (where a ``tmp_path`` would contain a drive-letter colon
-    and confuse the split).
+    Inputs use absolute POSIX values rather than ``tmp_path`` directories so
+    the parser test is portable to Windows (where a ``tmp_path`` would
+    contain a drive-letter colon and confuse the split).
     """
 
     def test_uses_default_when_env_var_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.providers.fleet import vulkan_icd_discovery
 
         monkeypatch.delenv("X_UNSET_TEST", raising=False)
-        out = list(vulkan_icd_discovery._xdg_dirs("X_UNSET_TEST", "default", "sub"))
-        assert out == [Path("default") / "sub"]
+        out = list(vulkan_icd_discovery._xdg_dirs("X_UNSET_TEST", "/default", "sub"))
+        assert out == [Path("/default") / "sub"]
+
+    def test_tilde_default_is_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The ``~`` default is expanded later, so the absolute check must not drop it."""
+        from lilbee.providers.fleet import vulkan_icd_discovery
+
+        monkeypatch.delenv("X_UNSET_TEST", raising=False)
+        out = list(vulkan_icd_discovery._xdg_dirs("X_UNSET_TEST", "~/.config", "sub"))
+        assert out == [Path("~/.config") / "sub"]
 
     def test_splits_colon_delimited_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.providers.fleet import vulkan_icd_discovery
 
-        monkeypatch.setenv("X_LIST_TEST", "share:opt")
-        out = list(vulkan_icd_discovery._xdg_dirs("X_LIST_TEST", "default", "sub"))
-        assert out == [Path("share") / "sub", Path("opt") / "sub"]
+        monkeypatch.setenv("X_LIST_TEST", "/share:/opt")
+        out = list(vulkan_icd_discovery._xdg_dirs("X_LIST_TEST", "/default", "sub"))
+        assert out == [Path("/share") / "sub", Path("/opt") / "sub"]
 
     def test_empty_components_are_dropped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Vulkan-Loader#2331: ``"a::b"`` and trailing colons must not yield ``Path("")``."""
         from lilbee.providers.fleet import vulkan_icd_discovery
 
-        monkeypatch.setenv("X_EXTRA_COLON_TEST", "::share:")
-        out = list(vulkan_icd_discovery._xdg_dirs("X_EXTRA_COLON_TEST", "default", "sub"))
-        assert out == [Path("share") / "sub"]
+        monkeypatch.setenv("X_EXTRA_COLON_TEST", "::/share:")
+        out = list(vulkan_icd_discovery._xdg_dirs("X_EXTRA_COLON_TEST", "/default", "sub"))
+        assert out == [Path("/share") / "sub"]
+
+    def test_only_empty_components_search_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.fleet import vulkan_icd_discovery
+
+        monkeypatch.setenv("X_EMPTY_ONLY_TEST", "::")
+        assert list(vulkan_icd_discovery._xdg_dirs("X_EMPTY_ONLY_TEST", "/default", "sub")) == []
+
+    @pytest.mark.parametrize(
+        ("value", "kept"),
+        [
+            ("/abs1:rel:/abs2", ["/abs1", "/abs2"]),
+            ("/abs:  rel  ", ["/abs"]),
+            ("./rel:/abs", ["/abs"]),
+            ("~/x:/abs", ["/abs"]),
+        ],
+    )
+    def test_relative_components_are_dropped(
+        self, monkeypatch: pytest.MonkeyPatch, value: str, kept: list[str]
+    ) -> None:
+        """The XDG basedir spec ignores a relative path; a literal ``~/x`` is relative."""
+        from lilbee.providers.fleet import vulkan_icd_discovery
+
+        monkeypatch.setenv("X_REL_TEST", value)
+        out = list(vulkan_icd_discovery._xdg_dirs("X_REL_TEST", "/default", "sub"))
+        assert out == [Path(part) / "sub" for part in kept]
+
+    def test_absolute_components_keep_order_around_a_relative_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.fleet import vulkan_icd_discovery
+
+        monkeypatch.setenv("X_ORDER_TEST", "/b:rel:/a")
+        out = list(vulkan_icd_discovery._xdg_dirs("X_ORDER_TEST", "/default", "sub"))
+        assert out == [Path("/b") / "sub", Path("/a") / "sub"]
+
+    @pytest.mark.parametrize("value", ["rel:other", "rel", "~/x"])
+    def test_all_relative_value_uses_the_default_list(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        from lilbee.providers.fleet import vulkan_icd_discovery
+
+        monkeypatch.setenv("X_ALL_REL_TEST", value)
+        out = list(vulkan_icd_discovery._xdg_dirs("X_ALL_REL_TEST", "/d1:/d2", "sub"))
+        assert out == [Path("/d1") / "sub", Path("/d2") / "sub"]
+
+    def test_relative_xdg_dir_is_not_scanned_by_discovery(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A manifest under a relative XDG_DATA_DIRS entry is not discovered."""
+        from lilbee.providers.fleet import vulkan_icd_discovery
+
+        manifest_dir = tmp_path / "rel" / "vulkan" / "icd.d"
+        manifest_dir.mkdir(parents=True)
+        manifest = manifest_dir / "probe_icd.json"
+        manifest.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(vulkan_icd_discovery.sys, "platform", "linux")
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        for var in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        monkeypatch.setenv("XDG_DATA_DIRS", str(tmp_path / "rel"))
+        assert str(manifest) in list(vulkan_icd_discovery.iter_vulkan_manifest_paths())
+
+        monkeypatch.setenv("XDG_DATA_DIRS", "rel")
+        assert str(manifest) not in list(vulkan_icd_discovery.iter_vulkan_manifest_paths())
 
 
 class TestIterKhronosSoftwareManifests:
@@ -2190,6 +2263,27 @@ class TestIterKhronosSoftwareManifests:
         winreg.OpenKey.side_effect = OSError("key not present")
 
         assert list(vulkan_icd_discovery._iter_khronos_software_manifests(winreg)) == []
+
+
+class TestKhronosDriverKeyHive:
+    """The loader reads the Khronos driver keys from HKLM only."""
+
+    def test_hkcu_khronos_driver_key_is_not_read(self) -> None:
+        """The loader skips the HKCU hive for driver manifests (loader_windows.c, line 767)."""
+        from lilbee.providers.fleet import vulkan_icd_discovery
+
+        winreg = mock.MagicMock(name="winreg")
+        winreg.HKEY_LOCAL_MACHINE = 1
+        winreg.HKEY_CURRENT_USER = 2
+        roots: list[int] = []
+
+        def _open(root: int, _sub_path: str) -> mock.MagicMock:
+            roots.append(root)
+            raise OSError("key not present")
+
+        winreg.OpenKey.side_effect = _open
+        assert list(vulkan_icd_discovery._iter_khronos_software_manifests(winreg)) == []
+        assert roots == [1, 1]
 
 
 class TestIterPnpClassManifests:

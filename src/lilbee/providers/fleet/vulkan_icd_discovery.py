@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -212,16 +212,21 @@ def _xdg_dirs(env_var: str, default: str, subpath: str) -> Iterator[Path]:
     """Split *env_var* (or *default*) on ``:``, append *subpath* to each.
 
     Empty components are dropped (the "extra slash in XDG_DATA_DIRS" loader
-    quirk, Vulkan-Loader#2331) and appends *subpath* to each remaining
-    entry. Falls back to *default* when the env var is unset.
+    quirk, Vulkan-Loader#2331). Relative components of the env var are dropped
+    too, as the XDG basedir spec says; this is the one deliberate difference
+    from the loader. Falls back to *default* when the env var is unset or
+    holds only relative components.
 
     The ":" separator is the XDG/Linux convention; this function is only
     called from Linux-gated discovery paths and must not be changed to ";"
     for cross-platform support.
     """
-    raw = os.environ.get(env_var) or default
-    for component in raw.split(":"):
-        stripped = component.strip()
-        if not stripped:
-            continue
-        yield Path(stripped) / subpath
+    value = os.environ.get(env_var, "")
+    given = [part.strip() for part in value.split(":") if part.strip()]
+    absolute = [part for part in given if PurePosixPath(part).is_absolute()]
+    if not value or (given and not absolute):
+        components = [part for part in default.split(":") if part]
+    else:
+        components = absolute
+    for component in components:
+        yield Path(component) / subpath
