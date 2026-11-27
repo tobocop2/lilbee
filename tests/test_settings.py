@@ -3017,8 +3017,8 @@ class TestThePersistedValuesReadTheFileOnce:
         if stored is not None:
             (tmp_path / "config.toml").write_text(stored, encoding="utf-8")
         reads = []
-        real_load = tomllib.load
-        monkeypatch.setattr(tomllib, "load", lambda f, *a, **k: reads.append(1) or real_load(f))
+        real_loads = tomllib.loads
+        monkeypatch.setattr(tomllib, "loads", lambda s, *a, **k: reads.append(1) or real_loads(s))
         values = settings.persisted_values(tmp_path)
         if expected is None:
             assert values is None

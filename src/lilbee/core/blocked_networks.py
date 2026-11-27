@@ -7,6 +7,8 @@ import re
 import socket
 from urllib.parse import urlsplit
 
+import httpx
+
 IpNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 IpAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
@@ -215,10 +217,13 @@ def check_url_form(url: str) -> str | None:
     """Check all of *url* that needs no DNS; return its host name, or None for an address."""
     host = url_host(url)
     literal = _literal_address(host)
-    if literal is None:
-        return host
-    _refuse_blocked(literal)
-    return None
+    if literal is not None:
+        _refuse_blocked(literal)
+    try:
+        httpx.Request("GET", url)
+    except (httpx.InvalidURL, ValueError):
+        raise ValueError("The server URL is not one lilbee can connect to.") from None
+    return host if literal is None else None
 
 
 def validate_preset_url(url: str) -> None:

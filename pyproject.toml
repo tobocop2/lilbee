@@ -81,6 +81,7 @@ dependencies = [
     "packaging>=24",
     # The read side is stdlib tomllib; this is its write half.
     "tomli-w>=1.0",
+    "tomlkit>=0.15.3",
     "cachetools>=7.1.4",
     # gitignore-syntax matching for .lilbeeignore. Already present transitively;
     # the floor is where the non-deprecated "gitignore" pattern factory lands.

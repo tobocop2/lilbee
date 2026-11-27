@@ -337,6 +337,7 @@ _RELOAD_KEY_VALUES: dict[str, object] = {
     "reranker_model": "org/Walk-GGUF/walk-rerank-Q4_K_M.gguf",
     "reranker_type": "llm",
     "chunk_size": 256,
+    "gpu_memory_fraction": 0.5,
     "ocr": "off",
 }
 _OTHER_KEY_VALUES: dict[str, object] = {"top_k": 3, "placement": '{"chat": {"devices": [0]}}'}
