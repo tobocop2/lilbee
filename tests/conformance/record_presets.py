@@ -76,6 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["", *(name.value for name in EngineName)],
         help="Managed engine behind --url, whose request rules the JSON steps apply.",
     )
+    parser.add_argument(
+        "--reasoning-tokens",
+        type=int,
+        default=0,
+        help="Most tokens the reasoning step lets the model write, for a slow engine.",
+    )
     parser.add_argument("--backend", default="cpu", help="Backend of the run: cpu, cuda, metal.")
     parser.add_argument(
         "--device-url",
@@ -108,6 +114,7 @@ def setup_from(args: argparse.Namespace) -> Setup:
         args.server,
         args.window,
         args.engine,
+        args.reasoning_tokens,
     )
 
 
