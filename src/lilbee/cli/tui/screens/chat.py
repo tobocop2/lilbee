@@ -59,7 +59,7 @@ from lilbee.app.settings_map import SETTINGS_MAP, SettingDef
 from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.app import LilbeeApp, apply_active_model
+from lilbee.cli.tui.app import LilbeeApp, TypeAheadKey, apply_active_model
 from lilbee.cli.tui.command_registry import (
     ANALYZE_OFF_ARG,
     ANALYZE_REPORT_ARG,
@@ -620,7 +620,17 @@ class ChatScreen(Screen[None]):
         typed = self.app.take_type_ahead()
         if typed:
             self._enter_insert_mode()
-            self._chat_input.insert(typed)
+            self._replay_type_ahead(typed)
+
+    def _replay_type_ahead(self, typed: list[str | TypeAheadKey]) -> None:
+        """Apply the keys kept at the gate through the prompt's own edit and submit paths."""
+        for piece in typed:
+            if piece is TypeAheadKey.BACKSPACE:
+                self._chat_input.action_delete_left()
+            elif piece is TypeAheadKey.ENTER:
+                self._submit_draft(self._chat_input, self._chat_input.text)
+            else:
+                self._chat_input.insert(piece)
 
     def _embedding_ready(self) -> bool:
         """Quick check if the embedding model resolves (no network calls)."""

@@ -61,6 +61,8 @@ class StartupGate(Screen[None]):
         self._upgrade_event = LibraryUpgradeEvent(phase=UpgradePhase.WAITING)
         self._upgrade_started = 0.0
         self._upgrade_timer: Timer | None = None
+        # True when a release found another screen on top and waits for it to close.
+        self._release_waiting = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="gate-body"):
@@ -191,9 +193,17 @@ class StartupGate(Screen[None]):
 
         reveal_landing switches whatever screen is on top, so a gate that resolved
         after another screen opened above it would replace that screen instead of
-        itself. No widget lookup here either: the gate can resolve before compose
+        itself; the release then waits for the resume event that closing the screen
+        above sends. No widget lookup here either: the gate can resolve before compose
         has mounted its children, and a missed query would strand the user.
         """
         if self._ui_app.screen is not self:
+            self._release_waiting = True
             return
+        self._release_waiting = False
         self._ui_app.reveal_landing()
+
+    def on_screen_resume(self) -> None:
+        """Retry a release that a screen above the gate held back."""
+        if self._release_waiting:
+            self._release()
