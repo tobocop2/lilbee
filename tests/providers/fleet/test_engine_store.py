@@ -2714,5 +2714,5 @@ def test_the_public_wheel_check_refuses_what_the_install_refuses(tmp_path: Path)
     lock = pin(make_wheel(good))
     engine_store.check_wheel(lock, good)
     make_wheel(bad, licence="GPL-3.0-only")
-    with pytest.raises(LicenceRefusedError, match="GPL-3.0-only"):
+    with pytest.raises(LicenceRefusedError, match=re.escape("GPL-3.0-only")):
         engine_store.check_wheel(lock, bad)
