@@ -113,7 +113,11 @@ def test_a_wheel_that_the_install_accepts_passes(tmp_path: Path) -> None:
 def test_the_lock_comes_from_the_shipped_adapter(tmp_path: Path) -> None:
     lock = cpl.wheel_lock(_ik(tmp_path))
     pin = ADAPTERS[EngineName.IK_LLAMA].pin_record()
-    assert (lock.engine, lock.version, lock.tool) == (EngineName.IK_LLAMA.value, _IK_VERSION, pin["tool"])
+    assert (lock.engine, lock.version, lock.tool) == (
+        EngineName.IK_LLAMA.value,
+        _IK_VERSION,
+        pin["tool"],
+    )
     assert lock.backend == "cpu"
 
 
