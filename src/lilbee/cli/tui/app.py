@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 from collections.abc import Callable, Iterable, Sequence
+from enum import StrEnum
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -80,6 +81,16 @@ _DEFAULT_THEME = "rose-pine"  # muted, low-glare; easier on the eyes than the wa
 _CHAT_SCREEN_NAME = "chat"
 # Textual's default screen, then the current view; anything higher is pushed over the view.
 _VIEW_DEPTH = 2
+
+
+class TypeAheadKey(StrEnum):
+    """A key kept at the gate besides text: the prompt replays it as an edit."""
+
+    BACKSPACE = "backspace"
+    ENTER = "enter"
+
+
+_TYPE_AHEAD_KEYS = {key.value: key for key in TypeAheadKey}
 # Long enough that a model-fallback notice or a load warning is readable before it fades.
 _FALLBACK_TOAST_TIMEOUT_S = 10.0
 
@@ -342,27 +353,30 @@ class LilbeeApp(App[None]):
     # Production never sets it. See tests/_lilbee_app_test_host.py.
     _test_skip_auto_init: ClassVar[bool] = False
 
-    # Text typed while chat starts, kept for the chat prompt. None when nothing
-    # is kept: before the gate shows, and after the prompt took the text.
-    _type_ahead: list[str] | None = None
+    # Text and edit keys typed while chat starts, kept for the chat prompt. None
+    # when nothing is kept: before the gate shows, and after the prompt took them.
+    _type_ahead: list[str | TypeAheadKey] | None = None
 
     async def on_event(self, event: events.Event) -> None:
         if not self._keep_for_the_prompt(event):
             await super().on_event(event)
 
     def _keep_for_the_prompt(self, event: events.Event) -> bool:
-        """Keep a typed key or a paste for the chat prompt while chat starts.
+        """Keep typed text, Backspace, Enter or a paste for the chat prompt while chat starts.
 
-        The app keeps the text as it reads the event, before it routes the
+        The app keeps them as it reads the event, before it routes the
         event to a screen. Chat replaces the gate in one step but focuses its
         prompt some steps later, and a key routed in that gap reaches no input.
         """
         if self._type_ahead is None or event.is_forwarded:
             return False
+        piece: str | TypeAheadKey
         if isinstance(event, events.Key) and event.is_printable and event.character:
-            text = event.character
+            piece = event.character
+        elif isinstance(event, events.Key) and event.key in _TYPE_AHEAD_KEYS:
+            piece = _TYPE_AHEAD_KEYS[event.key]
         elif isinstance(event, events.Paste):
-            text = event.text
+            piece = event.text
         else:
             return False
         from lilbee.cli.tui.screens.startup_gate import StartupGate
@@ -371,13 +385,13 @@ class LilbeeApp(App[None]):
         top = self.screen_stack[-1] if self.screen_stack else None
         if top is None or not (isinstance(top, StartupGate) or top is self.chat_screen()):
             return False
-        self._type_ahead.append(text)
+        self._type_ahead.append(piece)
         return True
 
-    def take_type_ahead(self) -> str:
-        """Return the text typed while chat started, and stop keeping more."""
+    def take_type_ahead(self) -> list[str | TypeAheadKey]:
+        """Return the keys typed while chat started, in order, and stop keeping more."""
         typed, self._type_ahead = self._type_ahead or [], None
-        return "".join(typed)
+        return typed
 
     async def on_mount(self) -> None:
         # The app's own signal graph is part of being a working app, not

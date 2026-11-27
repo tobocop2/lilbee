@@ -582,8 +582,9 @@ async def test_keys_typed_at_the_gate_reach_the_prompt_not_a_view_binding(monkey
     """Regression: a key typed while the gate shows fell to the app's view bindings.
 
     "t" opened Tasks, and the gate then gave up its handover because it no longer
-    owned the screen. The app now keeps printable keys for the prompt.
+    owned the screen. The app now keeps printable keys and Enter for the prompt.
     """
+    from lilbee.cli.tui.app import TypeAheadKey
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
     app = _app_held_at_the_gate(monkeypatch, tmp_path)
@@ -594,7 +595,7 @@ async def test_keys_typed_at_the_gate_reach_the_prompt_not_a_view_binding(monkey
         await pilot.pause()
         assert isinstance(app.screen, StartupGate)
         assert app.active_view != "Tasks"
-        assert app.take_type_ahead() == "thi"
+        assert app.take_type_ahead() == ["t", "h", "i", TypeAheadKey.ENTER]
 
 
 async def test_text_pasted_at_the_gate_is_kept_like_typed_keys(monkeypatch, tmp_path):
@@ -610,7 +611,7 @@ async def test_text_pasted_at_the_gate_is_kept_like_typed_keys(monkeypatch, tmp_
         app.post_message(events.Paste("bc d"))
         await pilot.pause()
         assert isinstance(app.screen, StartupGate)
-        assert app.take_type_ahead() == "abc d"
+        assert app.take_type_ahead() == ["a", "bc d"]
 
 
 async def test_keys_typed_over_a_screen_above_the_gate_reach_that_screen(monkeypatch, tmp_path):
@@ -631,7 +632,7 @@ async def test_keys_typed_over_a_screen_above_the_gate_reach_that_screen(monkeyp
         await pilot.press("x")
         await pilot.pause()
         assert keys == ["x"]
-        assert app.take_type_ahead() == ""
+        assert app.take_type_ahead() == []
 
 
 def test_the_prompt_takes_the_kept_text_once():
@@ -640,14 +641,14 @@ def test_the_prompt_takes_the_kept_text_once():
 
     app = LilbeeApp()
     app._type_ahead = ["a", "b"]
-    assert app.take_type_ahead() == "ab"
-    assert app.take_type_ahead() == ""
+    assert app.take_type_ahead() == ["a", "b"]
+    assert app.take_type_ahead() == []
     assert app._type_ahead is None
 
 
 @pytest.mark.parametrize(
     ("key", "character", "forwarded", "gate_up"),
-    [("a", "a", False, False), ("enter", None, False, True), ("a", "a", True, True)],
+    [("a", "a", False, False), ("left", None, False, True), ("a", "a", True, True)],
     ids=["no-screen-yet", "not-printable", "already-routed"],
 )
 def test_the_app_keeps_no_text_it_should_route(key, character, forwarded, gate_up):
@@ -697,7 +698,7 @@ async def test_pressing_the_sync_key_at_the_gate_starts_no_sync(monkeypatch, tmp
         gate = app.screen
         assert isinstance(gate, StartupGate)
         assert syncs == []
-        assert app.take_type_ahead() == "aSb"
+        assert app.take_type_ahead() == ["a", "S", "b"]
 
 
 @pytest.mark.parametrize(
@@ -912,6 +913,27 @@ def test_landing_on_the_catalog_drops_the_typed_keys():
     LilbeeApp.reveal_landing(app)
     assert app._type_ahead is None
     app.switch_view.assert_called_once_with(msg.CATALOG_VIEW)
+
+
+async def test_backspace_and_enter_at_the_gate_are_kept_in_order(monkeypatch, tmp_path):
+    from lilbee.cli.tui.app import TypeAheadKey
+
+    app = _app_held_at_the_gate(monkeypatch, tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("a", "backspace", "b", "enter")
+        await pilot.pause()
+        assert app.take_type_ahead() == ["a", TypeAheadKey.BACKSPACE, "b", TypeAheadKey.ENTER]
+
+
+async def test_other_keys_at_the_gate_are_not_kept(monkeypatch, tmp_path):
+    """Arrows, Delete and Tab are not typed text; the gate takes none of them."""
+    app = _app_held_at_the_gate(monkeypatch, tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("a", "left", "delete", "tab", "b")
+        await pilot.pause()
+        assert app.take_type_ahead() == ["a", "b"]
 
 
 def _record_landings(monkeypatch) -> list[str]:
