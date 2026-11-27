@@ -1,6 +1,6 @@
 """Tests for the document-structure (TOC / cover-page) chunk detector."""
 
-from lilbee.retrieval.query.structural import is_structural_chunk
+from lilbee.core.structural import is_structural_chunk
 
 # A table of contents: section titles followed by dot leaders and page numbers.
 TOC = """Contents
