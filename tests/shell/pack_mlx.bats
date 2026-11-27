@@ -30,9 +30,7 @@ setup() {
 @test "the wheel, its sha256 file and the licence expression reach the output folder" {
   run bash "${SCRIPT}"
   [ "$status" -eq 0 ]
-  [ "$(ls "${OUT}")" = "${WHEEL}
-${WHEEL}.sha256
-license-expression.txt" ]
+  [ "$(ls "${OUT}" | sort)" = "$(printf '%s\n' "${WHEEL}" "${WHEEL}.sha256" license-expression.txt | sort)" ]
   (cd "${OUT}" && sha256sum -c "${WHEEL}.sha256")
   [ "$(cat "${OUT}/license-expression.txt")" = "MIT AND Apache-2.0" ]
 }
