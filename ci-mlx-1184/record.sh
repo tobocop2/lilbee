@@ -39,7 +39,7 @@ echo "SERVERS UP"
 
 uv sync -q --locked --extra providers --python 3.12
 uv run --no-sync python -m tests.conformance.record_presets \
-  --server mlx-metal --version 0.32.2 --engine mlx --backend metal --strict --window 32768 \
+  --server mlx-metal-macos15 --version 0.32.2 --engine mlx --backend metal --strict --window 32768 \
   --url http://127.0.0.1:8081 --embed-url http://127.0.0.1:8082 --rerank-url http://127.0.0.1:8083 \
   --roles chat,embed,rerank --embed-dim 1024 \
   --models "chat=${chat_id},embed=${embed_id},rerank=${rerank_id}" \
