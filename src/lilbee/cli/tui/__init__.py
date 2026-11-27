@@ -52,6 +52,13 @@ class _StderrRedirect:
     saved_sys_dunder_stderr: object
 
 
+# xterm private mode 1036 (metaSendsEscape): Meta+key arrives as ESC plus the key, which
+# Textual reads, instead of one 8-bit byte that its UTF-8 decoder rejects. ``s`` saves the mode
+# and ``r`` restores it. Terminals that do not know the mode ignore all three sequences.
+_META_SENDS_ESCAPE_SAVE_AND_SET = "\x1b[?1036s\x1b[?1036h"
+_META_SENDS_ESCAPE_RESTORE = "\x1b[?1036r"
+
+
 def _redirect_native_stderr_to(log_path: Path) -> _StderrRedirect | None:
     """Send native fd-2 writes to *log_path* without breaking Textual's render.
 
@@ -100,6 +107,18 @@ def _restore_native_stderr(redirect: _StderrRedirect | None) -> None:
     os.close(redirect.saved_fd)
     sys.stderr = redirect.saved_sys_stderr  # type: ignore[assignment]
     sys.__stderr__ = redirect.saved_sys_dunder_stderr  # type: ignore[misc,assignment]
+
+
+def _write_to_terminal(sequence: str) -> None:
+    """Write *sequence* to the terminal; a stream that is not a terminal gets nothing."""
+    stream = sys.__stderr__
+    if stream is None or not stream.isatty():
+        return
+    try:
+        stream.write(sequence)
+        stream.flush()
+    except (OSError, ValueError):
+        pass  # The terminal is gone (hangup, closed stream); there is nothing to set or restore.
 
 
 def _prestart_mp_resource_tracker() -> None:
@@ -152,6 +171,7 @@ def run_tui(*, initial_view: str | None = None) -> None:
 
     app = LilbeeApp(initial_view=initial_view)
     status = 0
+    _write_to_terminal(_META_SENDS_ESCAPE_SAVE_AND_SET)
     try:
         # Textual's run would use asyncio.run, which joins a stuck worker with no bound on
         # 3.11; this leaves it to the straggler exit below.
@@ -165,6 +185,7 @@ def run_tui(*, initial_view: str | None = None) -> None:
         status = exit_code_of(stop)
         raise
     finally:
+        _write_to_terminal(_META_SENDS_ESCAPE_RESTORE)
         try:
             # Tasks stop through their own cancel while the executors and services live.
             app.task_bar.stop_all()
