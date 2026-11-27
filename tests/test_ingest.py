@@ -5529,13 +5529,18 @@ class TestIngestMarkdownEdgeCases:
         _, meta = await ingest_markdown(md, "_web/en.wikipedia.org/wiki/" + md.name)
         assert meta.title == "Cannabis"
 
-    async def test_frontmatter_only_produces_chunks(self, isolated_env):
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [("", []), ("\n# Heading\n\nBody text here.\n", ["# Heading\n\nHeading\nBody text here."])],
+    )
+    async def test_frontmatter_stays_out_of_the_chunks(self, isolated_env, body, expected):
+        """xberg keeps a note's frontmatter in its metadata, not in its text."""
         from lilbee.data.ingest import ingest_markdown
 
-        md = isolated_env / "fm_only.md"
-        md.write_text("---\ntitle: Just Frontmatter\ntags: [test]\n---\n")
-        result, _ = await ingest_markdown(md, "fm_only.md")
-        assert len(result) > 0, "Frontmatter content should be indexed"
+        md = isolated_env / "fm.md"
+        md.write_text(f"---\ntitle: Just Frontmatter\ntags: [test]\n---\n{body}", encoding="utf-8")
+        result, _ = await ingest_markdown(md, "fm.md")
+        assert [record["chunk"] for record in result] == expected
 
 
 class TestPageTextAccumulator:
@@ -6615,12 +6620,15 @@ class TestTesseractUnderRealXberg:
         assert _non_blank(_page_line(2, line)) == chars
         assert self._ocr_pages(_layout_pdf("STS", (line,)), OcrMode.AUTO) == expected
 
-    def test_ocr_text_replaces_a_text_layer_too_short_to_be_usable(self):
+    def test_a_short_text_layer_stays_when_its_ocr_read_finds_nothing(self):
+        """Page 2's layer is too short, so OCR reads the page; its white text gives OCR nothing."""
         line = "x" * (_USABLE_TEXT_CHARS - 1 - _non_blank(_page_line(2, "")))
         usable = "y" * (_USABLE_TEXT_CHARS - _non_blank(_page_line(3, "")))
         doc = self._extract(_layout_pdf("SHT", (line,)), OcrMode.AUTO)
         kept = self._extract(_layout_pdf("SHT", (usable,)), OcrMode.AUTO)
-        assert _page_line(2, line) not in doc.pages[1].content
+        assert doc.pages[1].ocr_confidence is not None
+        assert doc.pages[1].content == _page_line(2, line)
+        assert kept.pages[1].ocr_confidence is None
         assert _page_line(2, usable) in kept.pages[1].content
         assert _page_line(3, usable) in kept.pages[2].content
 
@@ -6713,10 +6721,11 @@ class TestVisionOcrStopsOnCancel:
         assert len(calls) == self._PAGES
 
     async def test_a_set_cancel_sends_no_page_to_the_model(self, tmp_path):
+        """The extract fails on the cancel; the error type is xberg's and is not pinned."""
         cancel = threading.Event()
         cancel.set()
         calls: list[bytes] = []
-        with pytest.raises(RuntimeError, match="TaskCancelledError"):
+        with pytest.raises(Exception, match="TaskCancelledError"):
             await self._extract(tmp_path, cancel, calls)
         assert calls == []
 
