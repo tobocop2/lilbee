@@ -864,12 +864,21 @@ footer .meta { text-align: right; font-size: 12px; }
   50%      { transform: translate(-3px, -6px) rotate(-2deg); }
 }
 @keyframes bee-flutter {
-  0%, 100% { transform: scaleY(1); opacity: 1; }
-  50%      { transform: scaleY(0.72); opacity: 0.7; }
+  0%{ transform: scaleY(1); opacity: 1; } 5%{ transform: scaleY(.72); opacity: .7; }
+  10%{ transform: scaleY(1); opacity: 1; } 15%{ transform: scaleY(.72); opacity: .7; }
+  20%{ transform: scaleY(1); opacity: 1; } 25%{ transform: scaleY(.72); opacity: .7; }
+  30%{ transform: scaleY(1); opacity: 1; } 35%{ transform: scaleY(.72); opacity: .7; }
+  40%{ transform: scaleY(1); opacity: 1; } 45%{ transform: scaleY(.72); opacity: .7; }
+  50%{ transform: scaleY(1); opacity: 1; } 55%{ transform: scaleY(.72); opacity: .7; }
+  60%{ transform: scaleY(1); opacity: 1; } 65%{ transform: scaleY(.72); opacity: .7; }
+  70%{ transform: scaleY(1); opacity: 1; } 75%{ transform: scaleY(.72); opacity: .7; }
+  80%{ transform: scaleY(1); opacity: 1; } 85%{ transform: scaleY(.72); opacity: .7; }
+  90%{ transform: scaleY(1); opacity: 1; } 95%{ transform: scaleY(.72); opacity: .7; }
+  100% { transform: scaleY(1); opacity: 1; }
 }
 @media (prefers-reduced-motion: no-preference) {
   .bee       { transform-origin: 50% 60%; animation: bee-hover 2.6s ease-in-out infinite; }
-  .bee-wings { transform-origin: 50% 50%; animation: bee-flutter 0.16s ease-in-out infinite; }
+  .bee-wings { transform-origin: 50% 50%; animation: bee-flutter 1.6s ease-in-out infinite; }
 }
 
 /* tutorial reel ---------------------------------------------------------- */

@@ -1,11 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 652 247" width="652" height="247" role="img" aria-label="lilbee">
   <style>
     .bee   { transform-box: fill-box; transform-origin: 50% 60%; animation: hover 2.6s ease-in-out infinite; }
-    .wings { transform-box: fill-box; transform-origin: 20% 100%; animation: flutter .16s ease-in-out infinite; }
+    .wings { transform-box: fill-box; transform-origin: 20% 100%; animation: flutter 1.6s ease-in-out infinite; }
     @keyframes hover   { 0%, 100% { transform: translate(0, 0) rotate(0deg); }
                          50%      { transform: translate(-3px, -6px) rotate(-2deg); } }
-    @keyframes flutter { 0%, 100% { transform: scaleY(1); opacity: 1; }
-                         50%      { transform: scaleY(.72); opacity: .7; } }
+    @keyframes flutter { 0%{ transform: scaleY(1); opacity: 1; } 5%{ transform: scaleY(.72); opacity: .7; } 10%{ transform: scaleY(1); opacity: 1; } 15%{ transform: scaleY(.72); opacity: .7; } 20%{ transform: scaleY(1); opacity: 1; } 25%{ transform: scaleY(.72); opacity: .7; } 30%{ transform: scaleY(1); opacity: 1; } 35%{ transform: scaleY(.72); opacity: .7; } 40%{ transform: scaleY(1); opacity: 1; } 45%{ transform: scaleY(.72); opacity: .7; } 50%{ transform: scaleY(1); opacity: 1; } 55%{ transform: scaleY(.72); opacity: .7; } 60%{ transform: scaleY(1); opacity: 1; } 65%{ transform: scaleY(.72); opacity: .7; } 70%{ transform: scaleY(1); opacity: 1; } 75%{ transform: scaleY(.72); opacity: .7; } 80%{ transform: scaleY(1); opacity: 1; } 85%{ transform: scaleY(.72); opacity: .7; } 90%{ transform: scaleY(1); opacity: 1; } 95%{ transform: scaleY(.72); opacity: .7; } 100% { transform: scaleY(1); opacity: 1; } }
     @media (prefers-reduced-motion: reduce) { .bee, .wings { animation: none; } }
   </style>
   <g transform="translate(0 44.32)"><text x="6" y="19" xml:space="preserve" font-family="ui-monospace,'JetBrains Mono','SF Mono',Menlo,Consolas,'DejaVu Sans Mono',monospace" font-size="16" fill="#d7827e"><tspan x="6" dy="0">888 d8b 888 888</tspan><tspan x="6" dy="19">888 Y8P 888 888</tspan><tspan x="6" dy="19">888     888 888</tspan><tspan x="6" dy="19">888 888 888 88888b.  .d88b.  .d88b.</tspan><tspan x="6" dy="19">888 888 888 888 "88bd8P  Y8bd8P  Y8b</tspan><tspan x="6" dy="19">888 888 888 888  88888888888888888888</tspan><tspan x="6" dy="19">888 888 888 888 d88PY8b.    Y8b.</tspan><tspan x="6" dy="19">888 888 888 88888P"  "Y8888  "Y8888</tspan></text></g>
