@@ -53,6 +53,7 @@ from lilbee.core.config.resolve import (
 )
 from lilbee.core.config.schema import field_type_name
 from lilbee.core.crawl_patterns import exclude_patterns_refusal
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.project_state import dismiss_tip
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.base import is_header_safe
@@ -1034,6 +1035,21 @@ def chunk_drift(config: Config | None = None) -> list[str]:
 
     live = REINDEX_FIELDS - inert_reindex_keys()
     return [key for key in chunk_drift_in_store(reindex_values(config)) if key in live]
+
+
+def index_drift_warning() -> HealthWarning | None:
+    """The rebuild notice for settings that drifted from the index, or None when none did."""
+    drifted = chunk_drift()
+    if not drifted:
+        return None
+    return HealthWarning(
+        code=WarningCode.INDEX_SETTINGS_DRIFT,
+        message=(
+            f"The index was built with other values of {', '.join(drifted)} than the ones "
+            "now in force, so its chunks differ from the ones a sync would write."
+        ),
+        remedy="Run `lilbee rebuild`.",
+    )
 
 
 def chunk_limit_loosened(before: Mapping[str, Any]) -> bool:

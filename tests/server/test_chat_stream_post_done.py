@@ -110,7 +110,7 @@ class TestPostDoneExtractionFailure:
                 headers=_auth_headers(),
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         events = parse_sse_events(resp.content)
         kinds = [kind for kind, _ in events]
         tokens = [data["token"] for kind, data in events if kind == "token"]
@@ -138,7 +138,7 @@ class TestPostDoneExtractionFailure:
                 headers=_auth_headers(),
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         events = parse_sse_events(resp.content)
         kinds = [kind for kind, _ in events]
         tokens = [data["token"] for kind, data in events if kind == "token"]

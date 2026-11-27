@@ -168,7 +168,7 @@ async def test_an_empty_chat_role_answers_with_the_installed_chat_model(
                 headers={"Authorization": f"Bearer {_auth_mod.session_manager.token}"},
             )
 
-    assert resp.status_code == 201, resp.text
+    assert resp.status_code == 200, resp.text
     assert resp.json()["answer"] == "hello"
     assert provider.chat.call_args.kwargs["model"] == ref
     assert f"No chat model configured; using installed {ref!r}." in caplog.messages

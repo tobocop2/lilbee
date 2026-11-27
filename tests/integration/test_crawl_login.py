@@ -254,7 +254,7 @@ class TestSecondHostEachEntryPoint:
             resp = TestClient(create_app()).post("/api/crawl", json=body)
         finally:
             auth_mod.session_manager.cleanup()
-        assert resp.status_code == HTTPStatus.CREATED
+        assert resp.status_code == HTTPStatus.OK
         assert site.seen("/away") == [(f"127.0.0.1:{site.port}", TOKEN, COOKIE)]
         assert site.seen("/landing")
         assert not _carries_login(site.seen("/landing"))
@@ -323,7 +323,7 @@ class TestNoLeak:
         logs = "\n".join(every_log_line.lines)
         saved = _files_under(isolated_env)
         # Positive controls: the crawl ran, logged, saved and answered about this seed.
-        assert resp.status_code == HTTPStatus.CREATED
+        assert resp.status_code == HTTPStatus.OK
         assert "BASIC-PAGE-OK" in saved
         assert str(site.port) in logs
         assert "files_written" in api

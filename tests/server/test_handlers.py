@@ -125,7 +125,7 @@ class TestAddEndpoint:
                 "/api/add", json={"paths": [str(src)]}, headers=_auth_headers()
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         events = _parse_sse_events(resp.content)
         event_types = [e[0] for e in events]
         assert "file_start" in event_types
@@ -146,7 +146,7 @@ class TestAddEndpoint:
                 headers=_auth_headers(),
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         event_types = [e[0] for e in _parse_sse_events(resp.content)]
         assert "file_start" in event_types
         assert "done" in event_types
@@ -181,7 +181,7 @@ class TestAddEndpoint:
                 headers=_auth_headers(),
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert (isolated_env / "notes/alpha/index.md").read_bytes() == content
         assert (isolated_env / "index.md").exists() is not moved
 
@@ -202,7 +202,7 @@ class TestAddEndpoint:
                 headers=_auth_headers(),
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert (isolated_env / "notes/gone.md").read_bytes() == content
 
     async def test_add_upload_leaves_a_file_with_other_content_alone(
@@ -221,7 +221,7 @@ class TestAddEndpoint:
                 headers=_auth_headers(),
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert (isolated_env / "index.md").read_bytes() == b"different bytes"
         assert (isolated_env / "notes/index.md").read_bytes() == b"new bytes"
 
@@ -258,7 +258,7 @@ class TestAddEndpoint:
                 headers=_auth_headers(),
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert (isolated_env / "pkg_a" / "__init__.py").read_bytes() == b"a"
         assert (isolated_env / "pkg_b" / "__init__.py").read_bytes() == b"b"
 
@@ -271,7 +271,7 @@ class TestAddEndpoint:
         files = [("data", (f"f{i}.txt", b"x", "text/plain")) for i in range(285)]
         async with AsyncTestClient(create_app()) as client:
             resp = await client.post("/api/add/upload", files=files, headers=_auth_headers())
-        assert resp.status_code == 201
+        assert resp.status_code == 200
 
     def test_validate_uploads_rejects_bad_input(self, mock_extract_file, isolated_env):
         """validate_upload_names guards empty/malformed names and keeps relative paths."""
@@ -306,7 +306,7 @@ class TestAddEndpoint:
                 "/api/add", json={"paths": ["/no/such/file.txt"]}, headers=_auth_headers()
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         events = _parse_sse_events(resp.content)
         summary = [d for t, d in events if t == "done" and "copied" in d][-1]
         assert "/no/such/file.txt" in summary["errors"]
@@ -322,7 +322,7 @@ class TestAddEndpoint:
                 "/api/add", json={"paths": [str(drawing)]}, headers=_auth_headers()
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         events = _parse_sse_events(resp.content)
         summary = [d for t, d in events if t == "done" and "copied" in d][-1]
         assert summary["errors"] == ["logo.svg: vector graphic, not a document"]
@@ -341,7 +341,7 @@ class TestAddEndpoint:
                     "/api/add", json={"paths": ["/no/such/file.txt"]}, headers=_auth_headers()
                 )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         events = _parse_sse_events(resp.content)
         summary = [d for t, d in events if t == "done" and "copied" in d][-1]
         assert summary["copied"] == []
@@ -364,7 +364,7 @@ class TestAddEndpoint:
                 "/api/add", json={"paths": [str(two)], "force": True}, headers=_auth_headers()
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         events = _parse_sse_events(resp.content)
         summary = [d for t, d in events if t == "done" and "copied" in d][-1]
         assert "dup" in summary["copied"]
@@ -434,7 +434,7 @@ class TestAddEndpoint:
                 headers=_auth_headers(),
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert observed and set(observed) == {OcrMode.ALL}
         assert cfg.ocr is OcrMode.AUTO
 
@@ -490,7 +490,7 @@ class TestAddEndpoint:
                     "/api/add", json={"paths": [str(src)]}, headers=_auth_headers()
                 )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         events = _parse_sse_events(resp.content)
         heartbeats = [d for t, d in events if t == "heartbeat"]
         assert heartbeats, f"expected heartbeat events during slow sync, got {events}"
@@ -523,7 +523,7 @@ class TestIngestStreamTerminalEvent:
         async with AsyncTestClient(create_app()) as client:
             resp = await client.post("/api/sync", headers=_auth_headers())
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         events = _parse_sse_events(resp.content)
         names = [name for name, _payload in events]
         assert names.count("done") == 1, names
@@ -572,7 +572,7 @@ class TestIngestStreamTerminalEvent:
                 "/api/add", json={"paths": [str(src)]}, headers=_auth_headers()
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         events = _parse_sse_events(resp.content)
         names = [name for name, _payload in events]
         assert names.count("done") == 1, names
@@ -592,7 +592,7 @@ class TestIngestStreamTerminalEvent:
                 headers=_auth_headers(),
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         events = _parse_sse_events(resp.content)
         names = [name for name, _payload in events]
         assert names.count("done") == 1, names
@@ -623,7 +623,7 @@ class TestIngestStreamTerminalEvent:
                 headers=_auth_headers(),
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert observed == {"ocr": OcrMode.OFF, "ocr_timeout": 17.0}
 
     @pytest.mark.parametrize(
@@ -710,7 +710,7 @@ class TestAddValidation:
             async with AsyncTestClient(create_app()) as client:
                 resp = await client.post("/api/add", json={"paths": paths}, headers=_auth_headers())
         # Request is valid even though every path is nonexistent.
-        assert resp.status_code == 201
+        assert resp.status_code == 200
 
 
 class TestSseStreamCallback:
@@ -795,7 +795,7 @@ class TestOptionsPassthrough:
                     json={"question": "test", "options": {"temperature": 0.3}},
                     headers=_auth_headers(),
                 )
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert "answer" in resp.json()
         # The body's options must actually reach the generation-options resolver,
         # not just produce a successful response.
@@ -823,7 +823,7 @@ class TestOptionsPassthrough:
                     },
                     headers=_auth_headers(),
                 )
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert "answer" in resp.json()
         spy.assert_any_call({"seed": 42})
 
@@ -833,7 +833,7 @@ class TestOptionsPassthrough:
 
         async with AsyncTestClient(create_app()) as client:
             resp = await client.post("/api/ask", json={"question": "test"}, headers=_auth_headers())
-        assert resp.status_code == 201
+        assert resp.status_code == 200
 
 
 class TestCreateApp:

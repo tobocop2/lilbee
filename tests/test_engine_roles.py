@@ -702,7 +702,7 @@ def test_the_rest_pull_of_a_format_nothing_loads_downloads_it_and_warns(
             {"model": MLX_REF, "allow_unsupported": True},
         ):
             response = client.post("/api/models/pull", json=body)
-            assert response.status_code == 201
+            assert response.status_code == 200
             done = response.text.split("event: done")[-1]
             assert _NO_MLX_TEXT in done
     assert pulls == ["download", "download"]

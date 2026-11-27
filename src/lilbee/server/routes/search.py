@@ -17,7 +17,7 @@ from litestar.exceptions import HTTPException, ValidationException
 from litestar.params import FromQuery, QueryParameter
 from litestar.response import Response, Stream
 
-from lilbee.app.services import server_is_stopping
+from lilbee.app.services import ServicesStoppingError, server_is_stopping
 from lilbee.core.health_warnings import warnings_payload
 from lilbee.core.results import DocumentResult
 from lilbee.data.store import EmbeddingEngineChangedError, EmbeddingModelMismatchError
@@ -94,6 +94,8 @@ def _raise_chat_http_error(exc: Exception) -> NoReturn:
     kind-mapped ProviderError carries its own status; anything else is a
     503 carrying the failure message.
     """
+    if isinstance(exc, ServicesStoppingError):
+        raise exc
     if isinstance(exc, ValueError):
         raise ValidationException(str(exc)) from exc
     headers = retry_after_headers(exc.kind) if isinstance(exc, ProviderError) else {}
@@ -134,7 +136,7 @@ async def _gated_stream(
     fires the ``finally`` block); a disconnect before the first iteration
     never enters this body, so the route also releases *guard* from the
     response's after-send hook. A failure inside the generator becomes an
-    SSE error event; raising after the 201 headers would drop the connection
+    SSE error event; raising after the 200 headers would drop the connection
     with no body for the client to read. When a stopping server cancels the
     response, the stream ends with the stop error event before the cut.
     """
@@ -205,6 +207,8 @@ async def search_route(
         ) from exc
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
+    except ServicesStoppingError:
+        raise
     except Exception as exc:
         if isinstance(exc, ProviderError) and (
             exc.kind in CLIENT_FAULT_STATUSES or exc.kind is ProviderErrorKind.ENGINE_MISSING
@@ -221,7 +225,7 @@ async def search_route(
         raise HTTPException(status_code=503, detail=detail) from exc
 
 
-@post("/api/ask")
+@post("/api/ask", status_code=200)
 async def ask_route(data: AskRequest) -> AskResponse:
     """One-shot RAG question returning an answer with source chunks."""
     await _acquire_chat_lock_or_raise()
@@ -243,7 +247,7 @@ async def ask_route(data: AskRequest) -> AskResponse:
         await release_chat_slot()
 
 
-@post("/api/ask/stream", media_type=SSE_MEDIA_TYPE)
+@post("/api/ask/stream", status_code=200, media_type=SSE_MEDIA_TYPE)
 async def ask_stream_route(data: AskRequest) -> Stream:
     """Streaming SSE version of ask, emitting token-by-token answer chunks."""
     await _acquire_chat_lock_or_raise()
@@ -258,7 +262,7 @@ async def ask_stream_route(data: AskRequest) -> Stream:
     )
 
 
-@post("/api/chat")
+@post("/api/chat", status_code=200)
 async def chat_route(data: ChatRequest) -> AskResponse:
     """RAG chat with conversation history, returning an answer with sources."""
     await _acquire_chat_lock_or_raise()
@@ -283,7 +287,7 @@ async def chat_route(data: ChatRequest) -> AskResponse:
         await release_chat_slot()
 
 
-@post("/api/chat/stream", media_type=SSE_MEDIA_TYPE)
+@post("/api/chat/stream", status_code=200, media_type=SSE_MEDIA_TYPE)
 async def chat_stream_route(data: ChatRequest) -> Stream:
     """Streaming SSE version of chat with conversation history."""
     await _acquire_chat_lock_or_raise()

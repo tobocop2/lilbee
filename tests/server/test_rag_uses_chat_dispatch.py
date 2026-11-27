@@ -95,7 +95,7 @@ class TestChatRouteUsesDispatch:
                 headers=_auth_headers(),
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert resp.json()["answer"] == "hello"
         assert len(captured) == 1
         assert isinstance(captured[0], CanonicalChatRequest)
@@ -147,7 +147,7 @@ class TestChatStreamRouteUsesDispatch:
                 headers=_auth_headers(),
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert "text/event-stream" in resp.headers["content-type"]
         events = parse_sse_events(resp.content)
         tokens = [data["token"] for kind, data in events if kind == "token"]

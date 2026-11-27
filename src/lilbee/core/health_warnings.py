@@ -47,6 +47,8 @@ class WarningCode(StrEnum):
     """A search ran without the cross-encoder re-rank because the reranker failed."""
     GPU_NOT_SERVED = "gpu_not_served"
     """The engine pack that installed on first use cannot use this computer's GPU."""
+    INDEX_SETTINGS_DRIFT = "index_settings_drift"
+    """A setting that shapes chunks changed after the index was built; a rebuild applies it."""
     ROUTER_OUTDATED = "router_outdated"
     """The llama-swap router is too old to copy the output of an engine that writes no log."""
 
