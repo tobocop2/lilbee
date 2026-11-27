@@ -983,3 +983,36 @@ async def test_failed_boot_under_a_screen_hands_over_once(monkeypatch, tmp_path)
         assert await wait_until(pilot, lambda: landings == ["landed"])
         await pilot.pause()
         assert landings == ["landed"]
+
+
+async def test_view_command_while_chat_loads_runs_after_hand_over(monkeypatch, tmp_path):
+    """A view key pressed before chat exists waits, then opens once chat has taken over."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from tests._async_wait import wait_until
+
+    monkeypatch.setattr(LilbeeApp, "_load_chat_screen", lambda self, gate: None)
+    app = _app_held_at_the_gate(monkeypatch, tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        gate = app.screen
+        app.switch_view("Tasks")
+        await pilot.pause()
+        assert app.screen is gate
+        assert app.active_view == msg.DEFAULT_VIEW
+        app._install_chat_screen(gate)
+        app.chat_is_ready = True
+        app.reveal_landing()
+        assert await wait_until(pilot, lambda: app.active_view == "Tasks", timeout=5.0)
+
+
+async def test_view_command_in_the_catalog_landing_instant_is_kept(monkeypatch, tmp_path):
+    """The landing's own switch is in flight when the first command arrives."""
+    from tests._async_wait import wait_until
+
+    app = _app_held_at_the_gate(monkeypatch, tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        assert await wait_until(pilot, lambda: app.is_screen_installed("chat"), timeout=5.0)
+        app.chat_is_ready = False
+        app.reveal_landing()
+        app.switch_view("Tasks")
+        assert await wait_until(pilot, lambda: app.active_view == "Tasks", timeout=5.0)

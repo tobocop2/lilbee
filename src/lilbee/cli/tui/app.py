@@ -266,6 +266,8 @@ class LilbeeApp(App[None]):
         # "back", not "Chat", on every top-level view.
         self._previous_view: str | None = None
         self._switching = False
+        # The last view command that arrived while a switch ran or chat loaded.
+        self._pending_view: str | None = None
         self._theme_index = 0
         # Names of non-Chat screens already installed via install_screen.
         # Subsequent visits switch by name to reuse the same instance,
@@ -468,6 +470,7 @@ class LilbeeApp(App[None]):
         else:
             self._type_ahead = None
             self.switch_view(msg.CATALOG_VIEW)
+        self._run_pending_view()
         # Cheap detection only: filesystem walk + hash compare. The user
         # initiates sync explicitly via S or the command palette.
         self.task_bar.start_detect_pending()
@@ -884,15 +887,16 @@ class LilbeeApp(App[None]):
         self.exit(message=settings.leave() if settings is not None else None)
 
     def _view_is_refused(self, view_name: str) -> bool:
-        """True when *view_name* cannot be entered now, having handled the refusal."""
-        if self._chat_is_loading():
-            return True
+        """True when *view_name* cannot be entered at all, having said why."""
         if view_name == msg.SESSIONS_VIEW and not cfg.sessions_enabled:
             # The tab stays visible so the feature is discoverable, but opening it
             # while off shows why rather than an empty list.
             self.notify_sessions_disabled()
             return True
-        return view_name != msg.DEFAULT_VIEW and get_views().get(view_name) is None
+        if view_name != msg.DEFAULT_VIEW and get_views().get(view_name) is None:
+            self.notify(msg.VIEW_UNKNOWN.format(view=view_name), severity="warning")
+            return True
+        return False
 
     def _chat_is_loading(self) -> bool:
         """True while the startup gate waits for chat, the view every other one returns to."""
@@ -906,12 +910,16 @@ class LilbeeApp(App[None]):
         """Switch to a named view, installing each screen at most once.
 
         Guards against concurrent switches via ``self._switching`` so rapid
-        keypresses can't corrupt the screen stack. ``active_view`` is updated
-        after the switch completes. A screen pushed over the current view (the
+        keypresses can't corrupt the screen stack. A command that arrives during
+        a switch or while chat loads waits in one slot, and the last one runs
+        when the switch ends. ``active_view`` is updated after the switch completes. A screen pushed over the current view (the
         catalog a model field opens, a dialog) is popped first, so the switch
         replaces the view itself and no view stays on the stack under another.
         """
-        if self._switching or self._view_is_refused(view_name):
+        if self._switching or self._chat_is_loading():
+            self._pending_view = view_name
+            return
+        if self._view_is_refused(view_name):
             return
         self._switching = True
         if view_name != self.active_view:
@@ -951,8 +959,15 @@ class LilbeeApp(App[None]):
             if awaitable is not None:
                 await awaitable
             self._switching = False
+            self._run_pending_view()
 
         self.call_next(_release)
+
+    def _run_pending_view(self) -> None:
+        """Run the view command that waited for a switch or for chat to load."""
+        view_name, self._pending_view = self._pending_view, None
+        if view_name is not None:
+            self.switch_view(view_name)
 
     def _pop_to_view(self) -> list[AwaitComplete]:
         """Pop each screen pushed over the current view; views are the installed screens.
@@ -1057,7 +1072,13 @@ class LilbeeApp(App[None]):
         return isinstance(self.screen, StartupGate)
 
     def go_back(self) -> None:
-        """Return to the view the user came from (Chat when there is none)."""
+        """Return to the view the user came from (Chat when there is none).
+
+        A switch in flight has already moved the view the user came from, so a
+        second back would return to the view the first one left.
+        """
+        if self._switching:
+            return
         self.switch_view(self._previous_view or msg.DEFAULT_VIEW)
 
     def action_open_tasks(self) -> None:

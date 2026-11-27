@@ -127,7 +127,7 @@ async def test_bracket_keys_cycle_all_screens():
 
 async def test_view_switch_guard_held_until_transition_completes():
     """The switch guard stays up until Textual's deferred transition completes,
-    so a rapid second switch is dropped instead of re-entering switch_screen
+    so a rapid second switch waits instead of re-entering switch_screen
     mid-transition and crashing on an empty result-callback stack.
     """
     app = LilbeeApp()
@@ -136,19 +136,53 @@ async def test_view_switch_guard_held_until_transition_completes():
         await pilot.pause()
 
         app.switch_view("Catalog")
-        # Guard is set synchronously; a re-entrant switch is dropped.
+        # Guard is set synchronously; a re-entrant switch waits.
         assert app._switching is True
         app.switch_view("Settings")
         assert app.active_view == "Catalog"
 
-        await pilot.pause()
-        # Guard releases only after the transition finishes; now the next
-        # switch is accepted.
+        # Guard releases only after the transition finishes; then the waiting
+        # switch runs.
+        await pump_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        assert app.active_view == "Settings"
         assert app._switching is False
-        assert isinstance(app.screen, CatalogScreen)
+
+
+async def test_view_command_during_a_switch_runs_after_it():
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pilot.pause()
+        app.switch_view("Catalog")
+        app.switch_view("Tasks")
+        assert app.active_view == "Catalog"
+        await pump_until(pilot, lambda: isinstance(app.screen, TaskCenter))
+        assert app.active_view == "Tasks"
+
+
+async def test_last_view_command_wins():
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pilot.pause()
+        app.switch_view("Catalog")
+        app.switch_view("Tasks")
         app.switch_view("Settings")
         await pump_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        assert app.active_view == "Settings"
+        await pilot.pause()
         assert isinstance(app.screen, SettingsScreen)
+
+
+async def test_unknown_view_says_so():
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pilot.pause()
+        app.switch_view("NoSuchView")
+        await pilot.pause()
+        assert msg.VIEW_UNKNOWN.format(view="NoSuchView") in [n.message for n in app._notifications]
+        assert app.active_view == msg.DEFAULT_VIEW
 
 
 async def test_bracket_keys_typed_literally_when_chat_input_focused():
