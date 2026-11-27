@@ -231,6 +231,25 @@ class TestLaunch:
     def test_llama_asks_for_the_memory_route_when_the_binary_has_it(self, run: _Run) -> None:
         assert "--memory" in self._argv(run, EngineName.LLAMA, WorkerRole.CHAT)
 
+    def test_an_engine_without_the_memory_route_logs_the_device_of_each_model(
+        self, run: _Run, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LLAMA_ARG_LOG_VERBOSITY", raising=False)
+        monkeypatch.delenv("LLAMA_LOG_VERBOSITY", raising=False)
+        adapter = ADAPTERS[EngineName.LLAMA]
+        env = record_hw.engine_env(adapter, ["engine", "--port", "8123"])
+        assert env["LLAMA_ARG_LOG_VERBOSITY"] == "4"
+        assert env["LLAMA_LOG_VERBOSITY"] == "4"
+
+    def test_an_engine_with_the_memory_route_keeps_its_log_level(
+        self, run: _Run, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LLAMA_ARG_LOG_VERBOSITY", raising=False)
+        monkeypatch.delenv("LLAMA_LOG_VERBOSITY", raising=False)
+        adapter = ADAPTERS[EngineName.LLAMA]
+        env = record_hw.engine_env(adapter, ["engine", "--memory", "--port", "8123"])
+        assert "LLAMA_ARG_LOG_VERBOSITY" not in env
+
     def test_llama_vision_carries_the_projector(self, run: _Run) -> None:
         model = record_hw._MODELS[EngineName.LLAMA][WorkerRole.VISION]
         part = record_hw.Part(WorkerRole.VISION, model, run.tmp / "v.gguf", "served")

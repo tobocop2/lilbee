@@ -38,6 +38,7 @@ from lilbee.providers.fleet.engines.base import PORT_SLOT, EngineAdapter, Engine
 from lilbee.providers.fleet.engines.choice import ADAPTERS
 from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.fleet.host_caps import HostCaps
+from lilbee.providers.fleet.readback import MEMORY_FLAG, load_report_env
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 from tests.conformance import record_presets
 from tests.conformance.record_cpu_compare import (
@@ -231,12 +232,24 @@ def _parts(engine: EngineName, models: Path) -> list[Part]:
     return parts
 
 
+def engine_env(adapter: EngineAdapter, argv: list[str]) -> dict[str, str]:
+    """The environment of one engine server.
+
+    An engine launched without ``--memory`` has no ``/memory`` route, so the recorder reads its
+    device from the engine log. That log names the device only at the load-report verbosity.
+    """
+    env = {**os.environ, **adapter.runtime_env(), **adapter.target_env(RoleTarget.GPU, 1)}
+    if MEMORY_FLAG not in argv:
+        env.update(load_report_env())
+    return env
+
+
 def _start(
     adapter: EngineAdapter, part: Part, binary: Path, mmproj: Path | None, port: int, logs: Path
 ) -> Running:
     argv = launch_argv(adapter, part, binary, mmproj, port)
     log = logs / f"{adapter.name}-{part.role.value}-{port}.log"
-    env = {**os.environ, **adapter.runtime_env(), **adapter.target_env(RoleTarget.GPU, 1)}
+    env = engine_env(adapter, argv)
     print("start", " ".join(argv), flush=True)
     handle: IO[bytes] = log.open("wb")
     try:

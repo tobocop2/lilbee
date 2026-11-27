@@ -252,6 +252,14 @@ def engine_log_of(engine: EngineAdapter, launch: InstanceLaunch, log_dir: Path) 
     return engine_log_path(log_dir, launch.model_id)
 
 
+def load_report_env() -> dict[str, str]:
+    """Environment that makes the engine log the device it loads each model on."""
+    return {
+        ENV_LOG_VERBOSITY: LOAD_REPORT_VERBOSITY,
+        ENV_ARG_LOG_VERBOSITY: LOAD_REPORT_VERBOSITY,
+    }
+
+
 def engine_log_env(log_path: Path, *, load_report: bool = True) -> dict[str, str]:
     """Environment that makes the engine write its output to *log_path*.
 
@@ -261,8 +269,7 @@ def engine_log_env(log_path: Path, *, load_report: bool = True) -> dict[str, str
     path = str(log_path)
     env = {ENV_LOG_FILE: path, ENV_ARG_LOG_FILE: path}
     if load_report:
-        env[ENV_LOG_VERBOSITY] = LOAD_REPORT_VERBOSITY
-        env[ENV_ARG_LOG_VERBOSITY] = LOAD_REPORT_VERBOSITY
+        env.update(load_report_env())
     return env
 
 
