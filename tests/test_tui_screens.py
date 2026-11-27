@@ -3302,12 +3302,14 @@ async def test_chat_enter_falls_through_for_full_windows_path():
 async def test_chat_send_message():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "_stream_response"):
+        with patch.object(app.screen, "_stream_response") as stream:
             inp = app.screen.query_one("#chat-input", ChatInput)
             inp.value = "What is RAG?"
             await _pilot.press("enter")
-            assert len(app.screen._history) == 1
-            assert app.screen._history[0]["role"] == "user"
+            turn = stream.call_args.args[0]
+            assert turn.question == "What is RAG?"
+            assert turn.session_id is None
+            assert app.screen._history == []
 
 
 async def test_chat_submit_blocked_while_required_model_downloading():
@@ -3346,9 +3348,9 @@ async def test_chat_submit_proceeds_when_download_is_unrelated():
         app.task_bar.queue.enqueue(lambda: None, "some other model", TaskType.DOWNLOAD.value)
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "What is RAG?"
-        with patch.object(app.screen, "_stream_response"):
+        with patch.object(app.screen, "_stream_response") as stream:
             await _pilot.press("enter")
-            assert len(app.screen._history) == 1
+            assert stream.call_args.args[0].question == "What is RAG?"
 
 
 async def test_chat_input_handler_uses_on_decorator():

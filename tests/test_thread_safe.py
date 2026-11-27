@@ -104,3 +104,33 @@ def test_call_from_thread_drops_when_the_app_has_stopped():
     node.app.is_running = False
     call_from_thread(node, MagicMock(), "arg")
     node.app.call_from_thread.assert_not_called()
+
+
+def test_call_from_thread_returns_the_result_of_the_call():
+    node = MagicMock()
+    node.app.call_from_thread.return_value = "done"
+    assert call_from_thread(node, MagicMock(), 1) == "done"
+
+
+@pytest.mark.parametrize("error", [OSError("queue closed"), RuntimeError("app is not running")])
+def test_call_from_thread_returns_none_when_the_call_is_dropped(error):
+    node = MagicMock()
+    node.app.call_from_thread.side_effect = error
+    assert call_from_thread(node, MagicMock(), 1) is None
+
+
+def test_call_from_thread_returns_none_for_a_stopped_app():
+    node = MagicMock()
+    node.app.is_running = False
+    assert call_from_thread(node, MagicMock(), 1) is None
+    node.app.call_from_thread.assert_not_called()
+
+
+class _NodeWithoutApp:
+    @property
+    def app(self):
+        raise AttributeError("no app")
+
+
+def test_call_from_thread_returns_none_when_the_node_has_no_app():
+    assert call_from_thread(_NodeWithoutApp(), MagicMock(), 1) is None  # type: ignore[arg-type]

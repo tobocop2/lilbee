@@ -646,8 +646,8 @@ async def test_resuming_mid_answer_keeps_the_old_answer_out_of_the_resumed_histo
         ):
             try:
                 screen._send_message("old question")
-                source = screen._session_id
                 assert await pump_until(pilot, first_token.is_set), "the answer must have started"
+                source = screen._session_id
                 app.resume_session(other)
             finally:
                 release.set()
