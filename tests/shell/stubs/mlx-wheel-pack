@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Stand-in for tools/wheel-build/mlx_wheel.sh. It writes one small wheel into <outdir> and prints its WHEEL line, as
+# the real script does. The chat server of the wheel is a shell script that logs its arguments.
+#
+# Reads:
+#   REAL_PYTHON         the interpreter that writes the wheel (required)
+#   MLX_BUILD_LOG       a file that receives the arguments, BUILD_NUMBER and the uv and delocate-wheel on PATH (required)
+#   MLX_WHEEL_NAME      the name of the wheel (default: the name of the 0.32.2 metal build 1 wheel)
+#   MLX_WHEEL_TAG       the Tag line of its WHEEL file (default: py3-none-macosx_14_0_arm64)
+#   MLX_EXPRESSION      the License-Expression of its METADATA (default: MIT AND Apache-2.0)
+#   MLX_BUILD_FAIL      when set, the build fails before it writes a wheel
+
+set -euo pipefail
+
+{
+  echo "args=$* build=${BUILD_NUMBER-unset}"
+  echo "uv=$(command -v uv || echo none) delocate=$(command -v delocate-wheel || echo none)"
+} >> "${MLX_BUILD_LOG:?}"
+[ -z "${MLX_BUILD_FAIL-}" ] || { echo "mlx_wheel: the build failed" >&2; exit 1; }
+mkdir -p "$1"
+name="${MLX_WHEEL_NAME:-lilbee_engine_mlx-0.32.2-1.metal-py3-none-macosx_14_0_arm64.whl}"
+"${REAL_PYTHON:?}" - "$1/${name}" "${MLX_WHEEL_TAG:-py3-none-macosx_14_0_arm64}" "${MLX_EXPRESSION:-MIT AND Apache-2.0}" <<'PY'
+import sys, zipfile
+
+path, tag, expression = sys.argv[1:]
+dist = "lilbee_engine_mlx-0.32.2.dist-info"
+server = '#!/bin/sh\necho "$@" >> "${MLX_SERVER_LOG:?}"\n[ -z "${MLX_SERVER_FAIL-}" ]\n'
+files = {
+    "lilbee_engine_mlx/__init__.py": "",
+    "lilbee_engine_mlx/bin/mlx-lm-server": server,
+    f"{dist}/METADATA": f"Metadata-Version: 2.4\nName: lilbee-engine-mlx\nVersion: 0.32.2\nLicense-Expression: {expression}\n\nText\n",
+    f"{dist}/WHEEL": f"Wheel-Version: 1.0\nGenerator: lilbee\nRoot-Is-Purelib: false\nTag: {tag}\nBuild: 1.metal\n",
+}
+with zipfile.ZipFile(path, "w") as archive:
+    for name, text in files.items():
+        info = zipfile.ZipInfo(name)
+        info.external_attr = (0o755 if name.endswith("server") else 0o644) << 16
+        archive.writestr(info, text)
+    archive.writestr(f"{dist}/RECORD", "".join(f"{name},,\n" for name in files) + f"{dist}/RECORD,,\n")
+PY
+echo "WHEEL $1/${name}"
