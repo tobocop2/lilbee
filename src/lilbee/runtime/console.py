@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from typing import IO, Any, TextIO, TypeAlias
 
 from rich.console import Console, RenderableType
@@ -21,19 +23,36 @@ def _redirects_stdout(console: Console) -> bool:
     return not console.stderr
 
 
+def _redirects_stderr(console: Console) -> bool:
+    """Whether a live display on *console* moves a stderr print above itself.
+
+    Only a stdout console on the terminal that ``sys.stderr`` also writes to qualifies. A
+    stderr line then gets its own row instead of joining the display row. When stderr goes to
+    a file, a pipe or another terminal, the line stays there.
+    """
+    if console.stderr:
+        return False
+    try:
+        out_fd, err_fd = console.file.fileno(), sys.stderr.fileno()
+        return os.isatty(err_fd) and os.path.samestat(os.fstat(out_fd), os.fstat(err_fd))
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
 def live_progress(
     *columns: str | ProgressColumn, console: Console, **options: Any
 ) -> ProgressDisplay:
-    """A progress display that moves a stdout print above the bar only on a stdout console.
+    """A progress display that moves a print above the bar only on the terminal it shares.
 
-    A stderr display leaves ``sys.stdout`` alone and no display touches ``sys.stderr``, so text
-    stays on the stream its writer chose. *options* go to ``Progress``.
+    A stdout print moves above the bar on a stdout console. A stderr print moves above it
+    only when stderr writes to the same terminal. Every other print stays on the stream its
+    writer chose. *options* go to ``Progress``.
     """
     return Progress(
         *columns,
         console=console,
         redirect_stdout=_redirects_stdout(console),
-        redirect_stderr=False,
+        redirect_stderr=_redirects_stderr(console),
         **options,
     )
 
@@ -65,7 +84,7 @@ class _LiteralStatus(Status):
             refresh_per_second=refresh_per_second,
             transient=True,
             redirect_stdout=_redirects_stdout(console),
-            redirect_stderr=False,
+            redirect_stderr=_redirects_stderr(console),
         )
 
 
