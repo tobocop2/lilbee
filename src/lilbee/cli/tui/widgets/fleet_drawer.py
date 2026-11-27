@@ -10,7 +10,7 @@ from textual.binding import Binding, BindingType
 from textual.screen import Screen
 
 from lilbee.cli.tui.widgets.drawer import Drawer
-from lilbee.cli.tui.widgets.fleet_body import FleetBody
+from lilbee.cli.tui.widgets.fleet_body import FleetBody, fleet_key_bindings
 
 _CSS_FILE = Path(__file__).parent / "fleet_drawer.tcss"
 _DRAWER_CSS = _CSS_FILE.read_text(encoding="utf-8")
@@ -33,10 +33,7 @@ class FleetDrawer(Drawer):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "close", "Close", show=True),
-        # priority so a focused toggle child doesn't swallow ctrl+r/s/x
-        Binding("ctrl+r", "preview", "Preview", show=True, priority=True),
-        Binding("ctrl+s", "apply", "Apply", show=True, priority=True),
-        Binding("ctrl+x", "clear", "Auto", show=True, priority=True),
+        *fleet_key_bindings(show_all=True),
     ]
 
     def __init__(self) -> None:

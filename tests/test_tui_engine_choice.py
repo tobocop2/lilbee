@@ -234,6 +234,19 @@ async def test_the_key_e_opens_the_picker_and_saves_the_pick(size: tuple[int, in
         )
 
 
+async def test_the_engine_key_twice_on_the_model_bar_opens_one_picker() -> None:
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        button = app.query_one("#model-pick-chat", ModelPickerButton)
+        button.action_pick_engine()
+        button.action_pick_engine()
+        assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+        for _ in range(10):
+            await pilot.pause()
+        assert sum(isinstance(s, EnginePickerModal) for s in app.screen_stack) == 1
+
+
 async def test_a_refused_save_shows_the_refusal_and_keeps_the_live_choice() -> None:
     app = _BarApp()
     async with app.run_test(size=(120, 40)) as pilot:

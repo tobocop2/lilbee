@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
-from textual.app import ComposeResult
+from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.content import Content
@@ -40,6 +40,11 @@ def state_text(option: EngineOption) -> str:
     if option.download_bytes is None:
         return msg.ENGINE_STATE_NOT_INSTALLED
     return msg.ENGINE_STATE_DOWNLOAD.format(size=format_size(option.download_bytes))
+
+
+def engine_picker_open(app: App[Any]) -> bool:
+    """True while an engine picker is on the screen stack."""
+    return any(isinstance(screen, EnginePickerModal) for screen in app.screen_stack)
 
 
 class EnginePickerModal(Dialog[EngineOption | None]):
