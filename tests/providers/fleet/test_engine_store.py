@@ -2707,3 +2707,12 @@ def test_the_wheel_is_copied_one_mebibyte_at_a_time(
     assert reads == [1024 * 1024] * 4
     assert target.read_bytes() == payload
     assert digest == hashlib.sha256(payload).hexdigest()
+
+
+def test_the_public_wheel_check_refuses_what_the_install_refuses(tmp_path: Path) -> None:
+    good, bad = tmp_path / "good.whl", tmp_path / "bad.whl"
+    lock = pin(make_wheel(good))
+    engine_store.check_wheel(lock, good)
+    make_wheel(bad, licence="GPL-3.0-only")
+    with pytest.raises(LicenceRefusedError, match="GPL-3.0-only"):
+        engine_store.check_wheel(lock, bad)
