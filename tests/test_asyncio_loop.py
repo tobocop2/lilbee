@@ -7,6 +7,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import gc
+import inspect
 import os
 import selectors
 import signal
@@ -162,6 +163,136 @@ def test_an_exit_asked_for_after_the_main_task_finished_leaves_when_the_run_retu
     assert raised.value.code == 143
     assert in_run == [True]
     assert in_close == [False]
+
+
+@contextmanager
+def _counted_loops() -> Iterator[list[asyncio.AbstractEventLoop]]:
+    """Record every loop the library builds through asyncio's one factory."""
+    built: list[asyncio.AbstractEventLoop] = []
+    real = asyncio.events.new_event_loop
+
+    def counted() -> asyncio.AbstractEventLoop:
+        built.append(real())
+        return built[-1]
+
+    asyncio.events.new_event_loop = counted
+    asyncio.new_event_loop = counted
+    try:
+        yield built
+    finally:
+        asyncio.events.new_event_loop = real
+        asyncio.new_event_loop = real
+
+
+_NESTED_RUNS = [
+    pytest.param(asyncio_loop.run_main, id="run_main"),
+    pytest.param(asyncio_loop.run_without_join, id="run_without_join"),
+]
+
+
+@pytest.mark.parametrize("nested_run", _NESTED_RUNS)
+def test_a_nested_run_is_refused_before_a_loop_is_built(nested_run) -> None:
+    async def inner() -> int:
+        return 1
+
+    refused: list[object] = []
+
+    async def outer() -> None:
+        coro = inner()
+        with (
+            _counted_loops() as built,
+            pytest.raises(RuntimeError, match="inside a running event loop"),
+        ):
+            nested_run(coro)
+        refused.extend([len(built), inspect.getcoroutinestate(coro)])
+
+    asyncio_loop.run_main(outer())
+    assert refused == [0, inspect.CORO_CLOSED]
+
+
+def test_a_nested_run_of_a_future_like_awaitable_is_refused_untouched() -> None:
+    class Waits:
+        def __await__(self):
+            yield from ()
+
+    async def outer() -> None:
+        with pytest.raises(RuntimeError, match="inside a running event loop"):
+            asyncio_loop.run_without_join(Waits())
+
+    asyncio_loop.run_main(outer())
+
+
+@pytest.mark.parametrize("nested_run", _NESTED_RUNS)
+def test_a_nested_refusal_keeps_the_outer_run_and_its_held_exit(nested_run) -> None:
+    """The refusal leaves the outer run's main task recorded, so its exit is still held."""
+    outer_task: list[asyncio.Task[object] | None] = []
+
+    async def inner() -> None:
+        raise AssertionError("the refused run must not start")
+
+    async def outer() -> int:
+        coro = inner()
+        with pytest.raises(RuntimeError):
+            nested_run(coro)
+        outer_task.append(asyncio_loop._main_run.task)
+        asyncio.get_running_loop().call_soon(_hold_or_raise)
+        await asyncio.sleep(0)
+        return 7
+
+    with pytest.raises(SystemExit) as raised:
+        asyncio_loop.run_main(outer())
+    assert raised.value.code == 143
+    assert outer_task[0] is not None
+
+
+def test_repeated_nested_refusals_leave_the_outer_run_and_a_later_run_clean() -> None:
+    async def inner() -> int:
+        return 1
+
+    async def outer() -> int:
+        for nested_run in (asyncio_loop.run_main, asyncio_loop.run_without_join) * 2:
+            with pytest.raises(RuntimeError, match="inside a running event loop"):
+                nested_run(inner())
+        return 7
+
+    assert asyncio_loop.run_main(outer()) == 7
+    assert asyncio_loop.run_without_join(inner()) == 1
+    assert asyncio_loop.run_main(inner()) == 1
+
+
+def _hold_or_raise() -> None:
+    """The signal handler's contract: raise the exit unless the run's end keeps it."""
+    stop = SystemExit(143)
+    if not asyncio_loop.hold_exit(stop):
+        raise stop
+
+
+def test_run_without_join_raises_an_exit_held_after_its_main_task_is_done() -> None:
+    """A handler after the main task ends keeps its exit for the run's end, as run_main does."""
+
+    async def finishes() -> str:
+        asyncio.get_running_loop().call_soon(_hold_or_raise)
+        return "done"
+
+    with pytest.raises(SystemExit) as raised:
+        asyncio_loop.run_without_join(finishes())
+    assert raised.value.code == 143
+    assert asyncio_loop._main_run.task is None
+    assert asyncio_loop._main_run.held is None
+
+
+def test_run_without_join_off_the_main_thread_records_no_main_task() -> None:
+    """A signal runs on the main thread only, so a run on another thread holds no exit."""
+    seen: list[object] = []
+
+    async def finishes() -> str:
+        seen.append(asyncio_loop._main_run.task)
+        return "done"
+
+    worker = threading.Thread(target=lambda: asyncio_loop.run_without_join(finishes()))
+    worker.start()
+    worker.join(timeout=10)
+    assert seen == [None]
 
 
 class _Woken(Exception):

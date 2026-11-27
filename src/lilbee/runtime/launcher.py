@@ -13,6 +13,8 @@ import os
 import sys
 from collections.abc import Callable
 
+from lilbee.runtime.cancellation import INTERRUPTED_EXIT_STATUS
+
 # Shells fetch tab completions by running the console script with
 # ``_<PROG>_COMPLETE=...`` set (and an empty argv); click answers those itself.
 _COMPLETION_ENV_SUFFIX = "_COMPLETE"
@@ -83,15 +85,16 @@ def main() -> None:
     )
 
     if not is_interactive:
+        from lilbee.app.services import end_command
         from lilbee.cli import app
 
+        # end_command: a worker the command left would hang the interpreter's exit.
         try:
             _run_cli(app)
         except SystemExit as ended:
-            # A worker the command left would hang the interpreter's exit.
-            from lilbee.app.services import end_command
-
             end_command(ended)
+        except KeyboardInterrupt:
+            end_command(SystemExit(INTERRUPTED_EXIT_STATUS))
         return
 
     from lilbee.app.services import mark_interactive_session
@@ -119,4 +122,4 @@ def main() -> None:
     except KeyboardInterrupt:
         sys.stderr.write("\033[?25h")
         sys.stderr.flush()
-        raise SystemExit(130) from None
+        raise SystemExit(INTERRUPTED_EXIT_STATUS) from None

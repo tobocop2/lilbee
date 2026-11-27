@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import faulthandler
+import gc
 import logging
 import logging.config
 import sys
 import threading
+import warnings
 from collections.abc import Iterator
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -489,6 +491,55 @@ def test_the_deadline_dumps_every_thread_to_the_fault_log_on_sigalrm(
     assert registration["all_threads"] is True
     assert registration["chain"] is True
     assert Path(registration["file"].name) == tmp_path / "logs" / "server-fault.log"
+
+
+@pytest.fixture
+def no_timers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Arm without a live timer thread or a kernel timer."""
+    monkeypatch.setattr(serve_logging.threading.Thread, "start", lambda thread: None)
+    monkeypatch.setattr(serve_logging.signal, "setitimer", lambda *_args: None, raising=False)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no interval timer")
+def test_a_second_arm_registers_sigalrm_once_on_the_same_handle(
+    no_timers: None, alarm_registrations: list[dict[str, Any]]
+) -> None:
+    serve_logging.arm_exit_deadline(60.0)
+    first = serve_logging._fault_log._alarm_handle
+    serve_logging.arm_exit_deadline(30.0)
+    assert len(alarm_registrations) == 1
+    assert first is not None
+    assert serve_logging._fault_log._alarm_handle is first
+    assert not first.closed
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no interval timer")
+def test_repeated_arms_drop_no_handle_unclosed(
+    no_timers: None, alarm_registrations: list[dict[str, Any]]
+) -> None:
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for seconds in (60.0, 30.0, 15.0):
+            serve_logging.arm_exit_deadline(seconds)
+        gc.collect()
+    assert [w for w in caught if issubclass(w.category, ResourceWarning)] == []
+    assert len(alarm_registrations) == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no interval timer")
+def test_an_arm_after_the_alarm_handle_closed_opens_and_registers_again(
+    no_timers: None, alarm_registrations: list[dict[str, Any]]
+) -> None:
+    serve_logging.arm_exit_deadline(60.0)
+    closed = serve_logging._fault_log._alarm_handle
+    assert closed is not None
+    closed.close()
+    serve_logging.arm_exit_deadline(60.0)
+    reopened = serve_logging._fault_log._alarm_handle
+    assert reopened is not None
+    assert reopened is not closed
+    assert not reopened.closed
+    assert len(alarm_registrations) == 2
 
 
 def test_a_fault_log_that_cannot_open_leaves_the_alarm_unregistered(

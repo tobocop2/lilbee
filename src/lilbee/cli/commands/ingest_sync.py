@@ -57,11 +57,14 @@ from lilbee.crawler.models import NO_LOGIN, CrawlLogin
 from lilbee.crawler.url_filter import without_userinfo
 from lilbee.providers.base import ProviderError
 from lilbee.runtime.asyncio_loop import run_interruptible
-from lilbee.runtime.cancellation import CancelSignal, SignalFlag, sigint_cancel
+from lilbee.runtime.cancellation import (
+    INTERRUPTED_EXIT_STATUS,
+    CancelSignal,
+    SignalFlag,
+    sigint_cancel,
+)
 
 _SYNC_CANCELLED_MESSAGE = "Sync cancelled."
-# The shell's exit status for a command stopped by Ctrl+C (128 + SIGINT).
-_EXIT_INTERRUPTED = 130
 
 _ocr_option = typer.Option(
     None,
@@ -393,7 +396,7 @@ def _exit_cancelled(
         json_output(payload)
     else:
         console.print(Text(message, style=theme.WARNING))
-    raise SystemExit(_EXIT_INTERRUPTED) from None
+    raise SystemExit(INTERRUPTED_EXIT_STATUS) from None
 
 
 @contextmanager
