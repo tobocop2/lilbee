@@ -120,7 +120,7 @@ def _console(*, terminal: bool):
     from lilbee.runtime.console import PlainConsole
 
     out = StringIO()
-    return PlainConsole(file=out, force_terminal=terminal, width=100), out
+    return PlainConsole(stderr=True, file=out, force_terminal=terminal, width=100), out
 
 
 def _table(done: int) -> LibraryUpgradeEvent:

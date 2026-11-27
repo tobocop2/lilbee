@@ -961,7 +961,7 @@ class TestSuperviseBar:
             bars.append(_RecordingBar(**kwargs))
             return bars[-1]
 
-        monkeypatch.setattr(fanout, "stdout_progress", make_bar)
+        monkeypatch.setattr(fanout, "live_progress", make_bar)
         queued = queue_mod.Queue()
         for message in messages:
             queued.put(message)
