@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import stat
 import zipfile
 from collections.abc import Awaitable, Callable
@@ -301,6 +302,32 @@ async def test_the_tab_shows_an_outside_preferred_engine_and_keeps_an_in_app_set
         await focus_back(app, pilot)
         assert await wait_until(pilot, lambda: select_of(app) == "llama.cpp", max_pauses=40)
         assert cfg.choose_engine_on_pick is False
+
+
+def _touch_later(folder: Path) -> None:
+    """Move the change time of *folder* one second on; name, inode and size stay."""
+    info = folder.stat()
+    os.utime(folder, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+
+
+def test_the_stamp_changes_with_the_change_time_of_a_build_folder(world: Path) -> None:
+    (engines_root(world) / "tei" / "0.9-cpu").mkdir(parents=True)
+    before = engine_service.build_folders_stamp()
+    _touch_later(engines_root(world) / "tei" / "0.9-cpu")
+    after = engine_service.build_folders_stamp()
+    assert [entry[:2] for entry in after] == [entry[:2] for entry in before]
+    assert after != before
+
+
+async def test_a_build_replaced_in_place_with_the_same_name_is_published(world: Path) -> None:
+    install_elsewhere(world)
+    app = _App()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await open_engines(app, pilot)
+        watch = Watch(app)
+        _touch_later(engines_root(world) / "tei" / "0.9-cpu")
+        await focus_back(app, pilot)
+        assert await wait_until(pilot, lambda: watch.keys.count(CHOICES_KEY) == 1, max_pauses=40)
 
 
 def test_the_stamp_of_a_missing_engines_folder_is_empty(world: Path) -> None:
