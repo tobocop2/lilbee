@@ -83,18 +83,21 @@ def main() -> None:
     )
 
     if not is_interactive:
+        from lilbee.app.services import end_command
         from lilbee.cli import app
+        from lilbee.runtime.cancellation import INTERRUPTED_EXIT_STATUS
 
+        # end_command: a worker the command left would hang the interpreter's exit.
         try:
             _run_cli(app)
         except SystemExit as ended:
-            # A worker the command left would hang the interpreter's exit.
-            from lilbee.app.services import end_command
-
             end_command(ended)
+        except KeyboardInterrupt:
+            end_command(SystemExit(INTERRUPTED_EXIT_STATUS))
         return
 
     from lilbee.app.services import mark_interactive_session
+    from lilbee.runtime.cancellation import INTERRUPTED_EXIT_STATUS
     from lilbee.runtime.splash import start, stop
 
     # A person is at the TUI for its whole lifetime, so hold a bound engine
@@ -119,4 +122,4 @@ def main() -> None:
     except KeyboardInterrupt:
         sys.stderr.write("\033[?25h")
         sys.stderr.flush()
-        raise SystemExit(130) from None
+        raise SystemExit(INTERRUPTED_EXIT_STATUS) from None

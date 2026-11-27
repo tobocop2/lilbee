@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
 from lilbee.runtime.add_registry import AddRegistry
 from lilbee.runtime.asyncio_loop import hold_exit
+from lilbee.runtime.cancellation import INTERRUPTED_EXIT_STATUS
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -936,8 +937,6 @@ class _EngineLifecycle:
             raise stop
 
 
-_FORCE_QUIT_EXIT_CODE = 130
-
 _STOPPING_NOTE = "lilbee: stopping the engine. Press Ctrl-C again to force quit.\n"
 
 _STOPPING_NOTE_GRACE_S = 1.0
@@ -1011,12 +1010,12 @@ def _force_quit_from_handler(status: int) -> None:
 
 def force_quit_from_handler() -> None:
     """End the process from a Ctrl-C handler, with the Ctrl-C status."""
-    _force_quit_from_handler(_FORCE_QUIT_EXIT_CODE)
+    _force_quit_from_handler(INTERRUPTED_EXIT_STATUS)
 
 
 def force_quit() -> None:
     """End the process with the Ctrl-C status; a normal exit joins a stuck worker thread."""
-    _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
+    _exit_now(INTERRUPTED_EXIT_STATUS, _FORCE_QUIT_NOTE)
 
 
 @contextmanager

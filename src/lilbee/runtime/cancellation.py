@@ -13,6 +13,9 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Protocol
 
+INTERRUPTED_EXIT_STATUS = 128 + signal.SIGINT
+"""The status a shell reports for a command that Ctrl+C ended."""
+
 
 class TaskCancelledError(Exception):
     """Raised inside a progress callback to abort a long-running task."""

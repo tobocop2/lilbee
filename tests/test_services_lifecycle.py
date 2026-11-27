@@ -188,7 +188,7 @@ def test_the_first_ctrl_c_stops_the_server_and_the_second_forces_the_exit(monkey
     finally:
         signal.signal(signal.SIGINT, previous)
         set_server_exit_hook(None)
-    assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
+    assert exits == [services_mod.INTERRUPTED_EXIT_STATUS]
     assert statuses == [128 + signal.SIGINT]
     provider.shutdown.assert_called_once()
 
@@ -283,7 +283,7 @@ def test_the_handler_force_quit_writes_to_fd_2_and_takes_no_lock(monkeypatch):
     services_mod._lifecycle._on_hard_exit(signal.SIGINT, None)
 
     assert writes == [(2, services_mod._FORCE_QUIT_NOTE.encode())]
-    assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
+    assert exits == [services_mod.INTERRUPTED_EXIT_STATUS]
 
 
 def test_the_exit_flush_uses_the_standard_logging_shutdown_then_flushes_stdio(monkeypatch):
@@ -312,7 +312,7 @@ def test_the_force_quit_kills_the_ingest_workers_then_ends_the_process(monkeypat
 
     services_mod.force_quit()
 
-    exit_code = services_mod._FORCE_QUIT_EXIT_CODE
+    exit_code = services_mod.INTERRUPTED_EXIT_STATUS
     assert steps == ["kill", "kill", services_mod._FORCE_QUIT_NOTE, exit_code]
 
 
@@ -327,7 +327,7 @@ def test_the_ctrl_c_force_quit_from_a_handler_kills_the_workers_first(monkeypatc
     services_mod.force_quit_from_handler()
 
     note = (2, services_mod._FORCE_QUIT_NOTE.encode())
-    assert steps == ["kill", "kill", note, services_mod._FORCE_QUIT_EXIT_CODE]
+    assert steps == ["kill", "kill", note, services_mod.INTERRUPTED_EXIT_STATUS]
 
 
 @pytest.mark.parametrize("error", [ValueError("process object is closed"), PermissionError()])
@@ -570,7 +570,7 @@ def test_a_ctrl_c_during_a_teardown_in_place_force_quits(monkeypatch):
 
     reset_services_on_exit()
 
-    assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
+    assert exits == [services_mod.INTERRUPTED_EXIT_STATUS]
 
 
 def test_a_second_interrupt_force_quits_instead_of_waiting(monkeypatch):
@@ -587,7 +587,7 @@ def test_a_second_interrupt_force_quits_instead_of_waiting(monkeypatch):
 
     services_mod.wait_for_hard_exit_teardown()
 
-    assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
+    assert exits == [services_mod.INTERRUPTED_EXIT_STATUS]
 
 
 def test_the_signal_handler_starts_no_thread(monkeypatch):
@@ -1176,7 +1176,7 @@ def test_a_ctrl_c_in_the_exit_wait_leaves_no_worker_process_running(tmp_path, si
         with contextlib.suppress(psutil.NoSuchProcess):
             worker.kill()
 
-    assert status == services_mod._FORCE_QUIT_EXIT_CODE, stderr
+    assert status == services_mod.INTERRUPTED_EXIT_STATUS, stderr
     assert alive == []
 
 
@@ -1202,7 +1202,7 @@ def test_a_ctrl_c_in_the_exit_wait_kills_the_workers_before_the_exit(monkeypatch
 
     services_mod.wait_for_hard_exit_teardown()
 
-    assert events == ["kill", services_mod._FORCE_QUIT_EXIT_CODE]
+    assert events == ["kill", services_mod.INTERRUPTED_EXIT_STATUS]
 
 
 def test_the_exit_while_an_open_runs_kills_the_workers_before_the_exit(monkeypatch):
@@ -1447,7 +1447,7 @@ class TestStragglerExit:
         services_mod.exit_when_stragglers_would_hang(1)
         del threads[1:]
 
-        status = services_mod._FORCE_QUIT_EXIT_CODE if join_raises else 1
+        status = services_mod.INTERRUPTED_EXIT_STATUS if join_raises else 1
         assert events == ["kill", status]
 
     def test_a_clean_shutdown_exits_normally(self, monkeypatch, capsys) -> None:
@@ -1473,7 +1473,7 @@ class TestStragglerExit:
         services_mod.exit_when_stragglers_would_hang(0)
         del threads[1:]
 
-        assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
+        assert exits == [services_mod.INTERRUPTED_EXIT_STATUS]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
@@ -1943,7 +1943,7 @@ class TestExitAfterSignal:
 
         services_mod.exit_after_signal(0)
 
-        assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
+        assert exits == [services_mod.INTERRUPTED_EXIT_STATUS]
 
 
 @pytest.mark.parametrize(("code", "status"), [(None, 0), (3, 3), ("a message", 1)])

@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 import lilbee.runtime.launcher as launcher
+from lilbee.runtime.cancellation import INTERRUPTED_EXIT_STATUS
 from lilbee.runtime.launcher import _COMPLETION_ENV_SUFFIX
 
 
@@ -161,7 +162,39 @@ def test_keyboard_interrupt_restores_cursor_and_exits_130(
     with pytest.raises(SystemExit) as exc:
         launcher.main()
 
-    assert exc.value.code == 130
+    assert exc.value.code == INTERRUPTED_EXIT_STATUS
+    assert INTERRUPTED_EXIT_STATUS == 130
+
+
+def test_a_one_shot_command_ends_quietly_with_130_on_ctrl_c(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A one-shot command prints no traceback and no cursor escape; its status is Ctrl+C's."""
+    fake_app, _, _ = _patch_app_and_splash(monkeypatch)
+    fake_app.side_effect = KeyboardInterrupt
+    monkeypatch.setattr(sys, "argv", ["lilbee", "status"])
+
+    with pytest.raises(SystemExit) as exc:
+        launcher.main()
+
+    assert exc.value.code == INTERRUPTED_EXIT_STATUS
+    assert capsys.readouterr().err == ""
+
+
+def test_a_one_shot_interrupt_ends_through_the_bounded_end(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None
+) -> None:
+    fake_app, _, _ = _patch_app_and_splash(monkeypatch)
+    fake_app.side_effect = KeyboardInterrupt
+    ended = Mock(side_effect=_reraise)
+    monkeypatch.setattr("lilbee.app.services.end_command", ended)
+    monkeypatch.setattr(sys, "argv", ["lilbee", "sync"])
+
+    with pytest.raises(SystemExit):
+        launcher.main()
+
+    ended.assert_called_once()
+    assert ended.call_args.args[0].code == INTERRUPTED_EXIT_STATUS
 
 
 class TestForceUtf8Stdio:
