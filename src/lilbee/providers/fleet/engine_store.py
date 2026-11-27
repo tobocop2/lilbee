@@ -175,6 +175,8 @@ _STAYS = "lilbee cannot delete %s. Correct its permissions; the next start remov
 _READ_ONLY = "The folder %s is read-only, so %s stays. Make it writable; the next start removes it."
 _LICENCE_JOINER = re.compile(r"\s+(?:OR|AND)\s+")
 PACK_DIR = "packs"
+# One entry per build folder; a stage folder is a dot folder, so an install in progress adds none.
+BuildStamp = tuple[tuple[str, int, int], ...]
 
 
 class ChecksumError(Exception):
@@ -860,6 +862,25 @@ class EngineStore:
         if not entry.is_dir(follow_symlinks=False):
             raise EngineFolderError(self.root / engine, engine)
         return dict(_builds(self.root / engine))
+
+    def stamp(self) -> BuildStamp:
+        """The name, inode and change time of each build folder; empty when unreadable."""
+        found: list[tuple[str, int, int]] = []
+        try:
+            for engine in _entries(self.root, ""):
+                if (
+                    engine.name == PACK_DIR
+                    or engine.name.startswith(".")
+                    or not engine.is_dir(follow_symlinks=False)
+                ):
+                    continue
+                for build in _entries(self.root / engine.name, engine.name):
+                    if not build.name.startswith("."):
+                        info = build.stat(follow_symlinks=False)
+                        found.append((f"{engine.name}/{build.name}", info.st_ino, info.st_mtime_ns))
+        except OSError:
+            return ()
+        return tuple(found)
 
     def pack_path(self, lock: PinLock) -> Path:
         """Where a hand-copied wheel of *lock* is looked up."""

@@ -25,6 +25,7 @@ from textual.signal import Signal
 from textual.timer import Timer
 from textual.widgets import Input, TextArea
 
+from lilbee.app import engine_service
 from lilbee.app.services import (
     follow_config_long_running,
     get_services,
@@ -50,6 +51,7 @@ from lilbee.cli.tui.color_compat import (
     resolve_term_program,
 )
 from lilbee.cli.tui.commands import LilbeeCommandProvider
+from lilbee.cli.tui.engine_commands import publish_engines_changed
 from lilbee.cli.tui.engine_mark import engine_variables
 from lilbee.cli.tui.pick_order import PickOrder
 from lilbee.cli.tui.screens.analyze_report import start_analysis
@@ -273,6 +275,7 @@ class LilbeeApp(App[None]):
         # The TUI runs until the user closes it and takes every key, a provider switch too.
         self._config_follower = follow_config_long_running(frozenset(), keeper="the TUI")
         self._config_follower.report_to(self._show_taken_settings_from_thread)
+        self.engines_stamp = engine_service.build_folders_stamp()
         # The one check scheduled after a skipped in-place write; see _recheck_a_skipped_file.
         self._settle_recheck: Timer | None = None
         self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
@@ -765,10 +768,13 @@ class LilbeeApp(App[None]):
         Returns whether the file changed since the last check, so a caller can reload
         state that lives outside cfg, such as the profile name. An editor the user is
         typing in keeps its text; saving it writes that value over the other process's.
+        A build that another process installed or removed is published as an engine change.
         """
         changed, result = self._config_follower.check()
         if result is not None:
             self._show_taken_settings(result)
+        if engine_service.build_folders_stamp() != self.engines_stamp:
+            publish_engines_changed(self)
         self._recheck_a_skipped_file()
         return changed
 

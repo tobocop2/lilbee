@@ -255,4 +255,5 @@ def announce(app: LilbeeApp, result: EngineCommandResult) -> None:
 
 def publish_engines_changed(app: LilbeeApp) -> None:
     """Tell the subscribers that the engines on disk changed, so they repaint the roles."""
+    app.engines_stamp = engine_service.build_folders_stamp()
     app.settings_changed_signal.publish((CHOICES_KEY, getattr(cfg, CHOICES_KEY)))
