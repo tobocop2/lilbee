@@ -286,6 +286,10 @@ jobs:
       # runner. Without it uv picks the newest wheel the macOS 15 image accepts
       # (numpy/scipy macosx_14_0) and bundles a binary that dies on macOS 12-13,
       # even though both ship older-built wheels that run just as well here.
+      #
+      # xberg is pinned with === to the locked version. == also matches a
+      # build with a local label, such as a +compat fork wheel, because PEP 440
+      # ignores the label. === matches the PyPI build only.
       - name: Install dependencies (Intel Mac)
         if: matrix.os == 'macos-15-intel'
         shell: bash
@@ -300,7 +304,8 @@ jobs:
             --format requirements-txt -o intel-constraints.txt
           uv pip install --python-platform x86_64-apple-darwin \
             --constraint intel-constraints.txt \
-            lancedb==0.40.0+compat '.[release]' 'nuitka[onefile]==4.3.1' pip
+            lancedb==0.40.0+compat 'xberg===1.5.4' '.[release]' \
+            'nuitka[onefile]==4.3.1' pip
 
       - name: Verify extras installed in build venv
         shell: bash
