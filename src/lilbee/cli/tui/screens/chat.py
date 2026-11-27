@@ -85,6 +85,7 @@ from lilbee.cli.tui.secret_lines import carries_secret
 from lilbee.cli.tui.thread_safe import call_from_thread, post_from_thread
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import (
+    OCR_OPTION_COMMANDS,
     PATH_ARG_COMMANDS,
     CompletionOverlay,
     get_completions,
@@ -94,6 +95,7 @@ from lilbee.cli.tui.widgets.autocomplete import (
     path_completion_prefix,
     reads_a_folder,
     reads_models,
+    split_ocr_options,
 )
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.context_chip import ContextChip
@@ -3216,8 +3218,10 @@ class ChatScreen(Screen[None]):
             return display
         cmd, _, partial = text.partition(" ")
         if cmd.lower() in PATH_ARG_COMMANDS:
-            head = path_completion_prefix(partial)
-            return f"{cmd} {head}{display}"
+            lead, path = (
+                split_ocr_options(partial) if cmd.lower() in OCR_OPTION_COMMANDS else ("", partial)
+            )
+            return f"{cmd} {lead}{path_completion_prefix(path)}{display}"
         return f"{cmd} {display}"
 
     def _set_input(self, value: str) -> None:

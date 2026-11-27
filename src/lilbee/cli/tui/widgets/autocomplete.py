@@ -5,6 +5,7 @@ from __future__ import annotations
 import heapq
 import logging
 import os
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
@@ -58,6 +59,9 @@ _MAX_PATH_COMPLETIONS = 20
 # the path-specific accept rules (typed-directory prefix kept, existing-path
 # collapse).
 PATH_ARG_COMMANDS = frozenset({"/add", "/import", "/export", "/export-chat", "/analyze"})
+# Commands whose argument may start with ``--ocr`` / ``--ocr-timeout`` pairs before the path.
+OCR_OPTION_COMMANDS = frozenset({"/add"})
+_OCR_OPTIONS_RE = re.compile(r"(?:--ocr(?:-timeout)?\s+\S+\s+)+")
 # Words a path-argument command also takes, offered ahead of the paths.
 PATH_ARG_WORDS: dict[str, tuple[str, ...]] = {"/analyze": (ANALYZE_OFF_ARG, ANALYZE_REPORT_ARG)}
 # Commands whose argument is an installed model. Listing the models probes the
@@ -65,6 +69,12 @@ PATH_ARG_WORDS: dict[str, tuple[str, ...]] = {"/analyze": (ANALYZE_OFF_ARG, ANAL
 MODEL_ARG_COMMANDS = frozenset({"/model", "/remove"})
 
 _CSS_FILE = Path(__file__).parent / "autocomplete.tcss"
+
+
+def split_ocr_options(partial: str) -> tuple[str, str]:
+    """Split *partial* into its leading finished OCR option pairs and the rest."""
+    found = _OCR_OPTIONS_RE.match(partial)
+    return (partial[: found.end()], partial[found.end() :]) if found else ("", partial)
 
 
 def reads_a_folder(text: str) -> bool:
@@ -93,6 +103,8 @@ def _get_arg_completions(cmd: str, partial: str) -> list[str]:
     fully-typed argument collapses the dropdown and lets Enter submit,
     mirroring the command-discovery rule for slash commands.
     """
+    if cmd in OCR_OPTION_COMMANDS:
+        partial = split_ocr_options(partial)[1]
     search = ARG_SEARCHES.get(cmd)
     if search is not None:
         return _match_args(search(partial), partial)

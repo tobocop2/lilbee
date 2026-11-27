@@ -56,10 +56,17 @@ def validate_ocr_timeout(ocr_timeout: float | None) -> None:
 def validate_ocr_options(ocr: OcrMode | str | None, ocr_timeout: float | None) -> OcrMode | None:
     """Return *ocr* as an ``OcrMode`` after checking both per-call OCR options.
 
-    Raises ``ValueError`` that names the bad value. ``None`` means "keep the setting".
+    Raises ``ValueError`` that names the option and the bad value. ``None`` means
+    "keep the setting".
     """
     validate_ocr_timeout(ocr_timeout)
-    return None if ocr is None else OcrMode(ocr)
+    if ocr is None:
+        return None
+    try:
+        return OcrMode(ocr)
+    except ValueError as exc:
+        accepted = ", ".join(mode.value for mode in OcrMode)
+        raise ValueError(f"ocr must be one of {accepted}; got {ocr!r}") from exc
 
 
 @contextmanager
