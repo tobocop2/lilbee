@@ -7,7 +7,12 @@ Live capture confirms the numbers; these tests pin the parsing and source order.
 
 from __future__ import annotations
 
+import json
+import os
+import random
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -344,3 +349,224 @@ def test_util_hint_os_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(intel_mod.subprocess, "run", _raise)
     assert intel_mod.intel_util_hint() is None
+
+
+# ---------------------------------------------------------------------------
+# Fallback sources fill util only for devices that have none
+# ---------------------------------------------------------------------------
+
+_XPU_NO_UTIL = """\
+{"device_id": 0, "device_level": [
+  {"metrics_type": "XPUM_STATS_GPU_CORE_TEMPERATURE", "value": 50}
+]}
+"""
+
+
+def _xpu_by_device(per_device: dict[str, str]):
+    """A run_smi stand-in answering by the ``-d <index>`` argument."""
+
+    def _run_smi(_tool: str, args: list[str], *_a: object, **_k: object) -> str:
+        return per_device.get(args[args.index("-d") + 1], "")
+
+    return _run_smi
+
+
+def test_sample_fills_missing_util_from_fdinfo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(intel_mod, "run_smi", lambda *_a, **_k: _XPU_NO_UTIL)
+    monkeypatch.setattr(intel_mod.fdinfo, "read_drm_util", lambda *_a, **_k: 42)
+
+    def _igt_must_not_run() -> str:
+        raise AssertionError("intel_gpu_top ran although fdinfo filled the gap")
+
+    monkeypatch.setattr(intel_mod, "_intel_gpu_top_output", _igt_must_not_run)
+    sample = IntelBackend().sample(frozenset({0}))[0]
+    assert (sample.utilization_pct, sample.temperature_c) == (42, 50)
+
+
+def test_sample_fills_missing_util_from_intel_gpu_top(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(intel_mod, "run_smi", lambda *_a, **_k: _XPU_NO_UTIL)
+    monkeypatch.setattr(intel_mod.fdinfo, "read_drm_util", lambda *_a, **_k: None)
+    monkeypatch.setattr(intel_mod, "_intel_gpu_top_output", lambda: _IGT_STREAM)
+    sample = IntelBackend().sample(frozenset({0}))[0]
+    assert (sample.utilization_pct, sample.temperature_c) == (85, 50)
+
+
+def test_sample_keeps_util_less_sample_when_fallbacks_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(intel_mod, "run_smi", lambda *_a, **_k: _XPU_NO_UTIL)
+    _no_fallbacks(monkeypatch)
+    sample = IntelBackend().sample(frozenset({0}))[0]
+    assert (sample.utilization_pct, sample.temperature_c) == (None, 50)
+
+
+def test_sample_skips_fallbacks_when_xpu_smi_has_util(monkeypatch: pytest.MonkeyPatch) -> None:
+    fdinfo_calls: list[object] = []
+
+    def _read(*args: object, **_k: object) -> int:
+        fdinfo_calls.append(args)
+        return 99
+
+    monkeypatch.setattr(intel_mod, "run_smi", lambda *_a, **_k: _XPU_JSON)
+    monkeypatch.setattr(intel_mod.fdinfo, "read_drm_util", _read)
+    sample = IntelBackend().sample(frozenset({0}))[0]
+    assert (sample.utilization_pct, fdinfo_calls) == (88, [])
+
+
+def test_sample_fallback_asks_only_for_devices_missing_util(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fdinfo_calls: list[object] = []
+
+    def _read(*args: object, **_k: object) -> int:
+        fdinfo_calls.append(args)
+        return 42
+
+    monkeypatch.setattr(intel_mod, "run_smi", _xpu_by_device({"0": _XPU_JSON, "1": _XPU_NO_UTIL}))
+    monkeypatch.setattr(intel_mod.fdinfo, "read_drm_util", _read)
+    monkeypatch.setattr(intel_mod, "_intel_gpu_top_output", lambda: "")
+    result = IntelBackend().sample(frozenset({0, 1}))
+    assert {i: s.utilization_pct for i, s in result.items()} == {0: 88, 1: 42}
+    assert len(fdinfo_calls) == 1
+
+
+def _count_calls(monkeypatch: pytest.MonkeyPatch, *, fdinfo: int | None, igt: str) -> list[str]:
+    """Stand in for both fallback tools and record which of them ran."""
+    ran: list[str] = []
+
+    def _read(*_a: object, **_k: object) -> int | None:
+        ran.append("fdinfo")
+        return fdinfo
+
+    def _capture() -> str:
+        ran.append("intel_gpu_top")
+        return igt
+
+    monkeypatch.setattr(intel_mod.fdinfo, "read_drm_util", _read)
+    monkeypatch.setattr(intel_mod, "_intel_gpu_top_output", _capture)
+    return ran
+
+
+def test_sample_one_fallback_reading_fills_one_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    """fdinfo and intel_gpu_top read the same GPU, so one reading never lands on two devices."""
+    monkeypatch.setattr(intel_mod, "run_smi", lambda *_a, **_k: "")
+    ran = _count_calls(monkeypatch, fdinfo=42, igt=_IGT_STREAM)
+    result = IntelBackend().sample(frozenset({0, 1}))
+    assert {i: s.utilization_pct for i, s in result.items()} == {0: 42}
+    assert ran == ["fdinfo"]
+
+
+def test_sample_fallback_reading_goes_to_the_lowest_util_less_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(intel_mod, "run_smi", lambda *_a, **_k: _XPU_NO_UTIL)
+    ran = _count_calls(monkeypatch, fdinfo=None, igt=_IGT_STREAM)
+    result = IntelBackend().sample(frozenset({0, 1}))
+    assert {i: s.utilization_pct for i, s in result.items()} == {0: 85, 1: None}
+    assert ran == ["fdinfo", "intel_gpu_top"]
+
+
+def test_sample_fallback_does_not_add_a_device_xpu_smi_never_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(intel_mod, "run_smi", _xpu_by_device({"0": _XPU_JSON}))
+    ran = _count_calls(monkeypatch, fdinfo=42, igt=_IGT_STREAM)
+    result = IntelBackend().sample(frozenset({0, 1}))
+    assert {i: s.utilization_pct for i, s in result.items()} == {0: 88}
+    assert ran == []
+
+
+# ---------------------------------------------------------------------------
+# intel_gpu_top stream cut at any byte
+# ---------------------------------------------------------------------------
+
+
+def _igt_object(render: int, video: int) -> str:
+    engines = {"Render/3D": {"busy": float(render), "unit": "%"}, "Video": {"busy": float(video)}}
+    return json.dumps({"engines": engines}, separators=(",", ":"))
+
+
+def test_igt_max_busy_reads_last_complete_sample_at_every_cut() -> None:
+    rng = random.Random(1378)
+    busies = [(rng.randint(0, 100), rng.randint(0, 100)) for _ in range(6)]
+    stream = "[\n"
+    complete_at: list[tuple[int, int]] = []  # (end offset of an object, its expected util)
+    for render, video in busies:
+        stream += _igt_object(render, video)
+        complete_at.append((len(stream), max(render, video)))
+        stream += ",\n"
+    checked = 0
+    for cut in range(len(stream) + 1):
+        done = [util for end, util in complete_at if end <= cut]
+        assert intel_mod._igt_max_busy(stream[:cut]) == (done[-1] if done else None), cut
+        checked += 1
+    assert checked == len(stream) + 1 > 100
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fake tool is a POSIX shell script")
+def test_intel_gpu_top_capture_ending_mid_object_reads_previous_sample(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tool = tmp_path / "intel_gpu_top"
+    tool.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' '[' '{_igt_object(10, 20)},' '{_igt_object(70, 5)},' "
+        '\'{"engines":{"Render/3D":{"bus\'\n'
+        "exec sleep 30\n",
+        encoding="utf-8",
+    )
+    tool.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(intel_mod, "run_smi", lambda *_a, **_k: "")
+    monkeypatch.setattr(intel_mod.fdinfo, "read_drm_util", lambda *_a, **_k: None)
+    assert IntelBackend().sample(frozenset({0}))[0].utilization_pct == 70
+
+
+# ---------------------------------------------------------------------------
+# A localized permission denial is still read as a denial
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fake tool is a POSIX shell script")
+def test_util_hint_grant_when_tool_localizes_the_denial(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tool = tmp_path / "intel_gpu_top"
+    tool.write_text(
+        "#!/bin/sh\n"
+        'if [ "$LC_ALL" = "C" ]; then\n'
+        "  echo 'Failed to initialize PMU! (Permission denied)' >&2\n"
+        "else\n"
+        "  echo 'PMU nicht initialisiert (Zugriff verweigert)' >&2\n"
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    tool.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+    intel_mod.intel_util_hint.cache_clear()
+    try:
+        hint = intel_mod.intel_util_hint()
+    finally:
+        intel_mod.intel_util_hint.cache_clear()
+    assert hint is not None
+    assert hint.kind is IntelHintKind.GRANT
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fake tool is a POSIX shell script")
+def test_util_hint_leaves_the_parent_locale_alone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The C locale applies to the tool call only, never to this process."""
+    tool = tmp_path / "intel_gpu_top"
+    tool.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    tool.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+    intel_mod.intel_util_hint.cache_clear()
+    try:
+        intel_mod.intel_util_hint()
+    finally:
+        intel_mod.intel_util_hint.cache_clear()
+    assert os.environ["LC_ALL"] == "de_DE.UTF-8"
