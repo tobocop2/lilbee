@@ -18,7 +18,8 @@ from collections.abc import AsyncGenerator, Callable, Sequence
 from typing import TYPE_CHECKING, Literal
 
 from lilbee.app.services import get_services
-from lilbee.app.status import chat_engine, gather_status
+from lilbee.app.settings import index_drift_warning
+from lilbee.app.status import chat_engine, gather_status, role_engine
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
@@ -134,8 +135,15 @@ def _chat_status(
 
 
 def _store_health(store: Store) -> tuple[list[HealthWarning], LibraryUpgradeEvent | None]:
-    """The store's health warnings and upgrade progress, read together."""
-    return store.health_warnings(), store.upgrade_progress()
+    """The store's health warnings and upgrade progress, read together.
+
+    An open library also reports settings that drifted from the index; a closed one is not
+    opened for it.
+    """
+    warnings = store.health_warnings()
+    if store.is_open and (drift := index_drift_warning()) is not None:
+        warnings = [*warnings, drift]
+    return warnings, store.upgrade_progress()
 
 
 async def health() -> HealthResponse:
@@ -156,6 +164,8 @@ async def health() -> HealthResponse:
         chat_slots=provider.served_chat_slots(),
         chat_prefill_processed=prefill[0] if prefill else None,
         chat_prefill_total=prefill[1] if prefill else None,
+        embed_engine=role_engine(WorkerRole.EMBED),
+        embed_ready=provider.role_ready(WorkerRole.EMBED),
         embed_token_cap=provider.embed_token_cap(),
         warnings=name_warnings([*store_warnings, *provider.health_warnings()], name_routes),
         upgrade=upgrade,

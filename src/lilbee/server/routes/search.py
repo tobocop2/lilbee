@@ -17,7 +17,7 @@ from litestar.exceptions import HTTPException, ValidationException
 from litestar.params import FromQuery, QueryParameter
 from litestar.response import Response, Stream
 
-from lilbee.app.services import server_is_stopping
+from lilbee.app.services import ServicesStoppingError, server_is_stopping
 from lilbee.core.health_warnings import warnings_payload
 from lilbee.core.results import DocumentResult
 from lilbee.data.store import EmbeddingEngineChangedError, EmbeddingModelMismatchError
@@ -94,6 +94,8 @@ def _raise_chat_http_error(exc: Exception) -> NoReturn:
     kind-mapped ProviderError carries its own status; anything else is a
     503 carrying the failure message.
     """
+    if isinstance(exc, ServicesStoppingError):
+        raise exc
     if isinstance(exc, ValueError):
         raise ValidationException(str(exc)) from exc
     headers = retry_after_headers(exc.kind) if isinstance(exc, ProviderError) else {}
@@ -205,6 +207,8 @@ async def search_route(
         ) from exc
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
+    except ServicesStoppingError:
+        raise
     except Exception as exc:
         if isinstance(exc, ProviderError) and (
             exc.kind in CLIENT_FAULT_STATUSES or exc.kind is ProviderErrorKind.ENGINE_MISSING

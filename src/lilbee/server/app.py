@@ -486,7 +486,11 @@ def _config_read_only_response(request: Request, exc: ReadOnlyConfigError) -> Re
 
 def _services_stopping_response(request: Request, exc: ServicesStoppingError) -> Response:
     """Answer a request that lands after the engine stop began as a 503."""
-    unavailable = HTTPException(status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    unavailable = HTTPException(
+        status_code=HTTP_503_SERVICE_UNAVAILABLE,
+        detail=str(exc),
+        headers=retry_after_headers(),
+    )
     return _json_error_response(request, unavailable)
 
 

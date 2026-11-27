@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, contextmanager
 from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -11,6 +11,12 @@ from unittest.mock import AsyncMock
 import pytest
 from litestar.testing import TestClient
 
+from lilbee.app.services import (
+    SERVICES_STOPPING_MESSAGE,
+    ServicesStoppingError,
+    _lifecycle,
+    set_services,
+)
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.server_registry import ConfigReadError
@@ -243,3 +249,88 @@ def test_a_config_write_that_fails_for_another_reason_carries_no_retry_after(
         response = getattr(client, method)(path, **kwargs)
     assert response.status_code == 503
     assert "retry-after" not in response.headers
+
+
+@contextmanager
+def _engine_stop_begun() -> Iterator[None]:
+    """The state a stop leaves: no container is bound, so every get_services() raises."""
+    set_services(None)
+    _lifecycle.stop_requested = True
+    try:
+        yield
+    finally:
+        _lifecycle.stop_requested = False
+
+
+_STOPPING_ROUTES = [
+    ("GET", "/api/status", None),
+    ("GET", "/api/health", None),
+    ("GET", "/api/search?q=x", None),
+    ("POST", "/api/chat", {"question": "q", "history": []}),
+    ("POST", "/api/ask", {"question": "q"}),
+    ("GET", "/api/models/installed", None),
+    ("GET", "/api/models/external", None),
+]
+
+
+@pytest.mark.parametrize(("method", "path", "body"), _STOPPING_ROUTES)
+def test_stopping_503_carries_retry_after_on_every_route(
+    client: TestClient, method: str, path: str, body: dict | None
+) -> None:
+    with _engine_stop_begun():
+        response = client.get(path) if method == "GET" else client.post(path, json=body)
+    assert response.status_code == 503
+    assert SERVICES_STOPPING_MESSAGE in response.text
+    assert response.headers["retry-after"] == _RETRY_AFTER
+
+
+def test_search_reports_stopping_not_unavailable(client: TestClient) -> None:
+    with _engine_stop_begun():
+        response = client.get("/api/search?q=x")
+    assert response.json()["detail"] == SERVICES_STOPPING_MESSAGE
+    assert "temporarily unavailable" not in response.text
+
+
+def test_no_get_route_answers_the_stopping_503_without_retry_after() -> None:
+    app = create_app()
+    sweep = TestClient(app, raise_server_exceptions=False)
+    skip = ("stream", "/api/export", "/mcp", "/schema", "/api/source", "/api/shutdown")
+    paths = sorted(
+        {
+            route.path
+            for route in app.routes
+            if "{" not in route.path
+            and not any(part in route.path for part in skip)
+            and "GET" in {m for h in route.route_handlers for m in h.http_methods}
+        }
+    )
+    assert paths
+    stopping = []
+    auth_mod.session_manager.disable()
+    try:
+        for path in paths:
+            with _engine_stop_begun():
+                response = sweep.get(path)
+            if response.status_code == 503 and SERVICES_STOPPING_MESSAGE in response.text:
+                stopping.append((path, response.headers.get("retry-after")))
+    finally:
+        auth_mod.session_manager.cleanup()
+    assert stopping
+    assert [path for path, header in stopping if header != _RETRY_AFTER] == []
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "target"),
+    [
+        ("/api/chat", {"question": "q", "history": []}, "lilbee.server.handlers.chat"),
+        ("/api/ask", {"question": "q"}, "lilbee.server.handlers.ask"),
+    ],
+)
+def test_a_stop_that_lands_inside_a_chat_turn_answers_stopping_with_retry_after(
+    client: TestClient, path: str, body: dict, target: str
+) -> None:
+    with mock.patch(target, new_callable=AsyncMock, side_effect=ServicesStoppingError()):
+        response = client.post(path, json=body)
+    assert response.status_code == 503
+    assert response.json()["detail"] == SERVICES_STOPPING_MESSAGE
+    assert response.headers["retry-after"] == _RETRY_AFTER

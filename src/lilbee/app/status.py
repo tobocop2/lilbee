@@ -191,9 +191,14 @@ def serving_roles() -> list[ServingStatus]:
     return rows
 
 
+def role_engine(role: WorkerRole) -> str | None:
+    """The engine name that serves *role*, or None when no model is configured for it."""
+    return next((row.engine for row in serving_roles() if row.role is role), None)
+
+
 def chat_engine() -> str | None:
     """The engine name that serves the chat model, or None when it names none."""
-    return next((row.engine for row in serving_roles() if row.role is WorkerRole.CHAT), None)
+    return role_engine(WorkerRole.CHAT)
 
 
 def _index_status() -> IndexStatus | None:
