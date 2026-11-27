@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -11,10 +13,10 @@ if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
     from lilbee.data.store import Store
     from lilbee.runtime.progress import DetailedProgressCallback, ProgressEvent
-    from lilbee.wiki.browse import WikiPageInfo
+    from lilbee.wiki.browse import WikiPageContent, WikiPageInfo
 
 from rich.text import Text
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -43,6 +45,11 @@ _INDEX_STEM = "index"
 # Wiki slugs of the form ``<subdir>/<name>`` carry a meaningful page type;
 # bare slugs (no slash) do not.
 _SLUG_WITH_TYPE_MIN_PARTS = 2
+# Worker groups: a newer worker of a group cancels the older one, so a slow
+# read can never paint over a newer result.
+_LOAD_GROUP = "wiki-load"
+_OPEN_GROUP = "wiki-open"
+_WIPE_OFFER_GROUP = "wiki-wipe-offer"
 
 
 def _wiki_root() -> Path:
@@ -60,6 +67,33 @@ def _root_shortcuts() -> list[tuple[str, str]]:
         for slug, label in (("index", msg.WIKI_INDEX_LABEL), ("log", msg.WIKI_LOG_LABEL))
         if (_wiki_root() / f"{slug}.md").is_file()
     ]
+
+
+@dataclass(frozen=True)
+class _Listing:
+    """What one scan of the wiki found."""
+
+    pages: list[WikiPageInfo]
+    stubs: dict[str, WikiStub]
+    shortcuts: list[tuple[str, str]]
+    error: str | None = None
+
+
+def _scan_wiki() -> _Listing:
+    """Read the pages, the stubs and the root pages from disk and the store."""
+    from lilbee.wiki.browse import list_pages
+
+    if not cfg.wiki:
+        return _Listing([], {}, [])
+    try:
+        pages = list_pages(_wiki_root())
+        stubs = {
+            stub.wiki_slug: stub for stub in ungenerated_stubs(load_stub_index(), _wiki_root())
+        }
+    except Exception as exc:
+        log.warning("Failed to list wiki pages", exc_info=True)
+        return _Listing([], {}, [], msg.WIKI_LOAD_FAILED.format(error=exc))
+    return _Listing(pages, stubs, _root_shortcuts())
 
 
 def _safe_float(value: object) -> float | None:
@@ -144,6 +178,7 @@ class WikiScreen(Screen[None]):
         self._page_slugs: list[str] = []
         self._pages: list[WikiPageInfo] = []
         self._stubs: dict[str, WikiStub] = {}
+        self._shortcuts: list[tuple[str, str]] = []
         self._load_error: str | None = None
         self._search_filter_timer: Timer | None = None
         # Filter the last paint ran under. Only a change to it drops the scroll
@@ -195,30 +230,14 @@ class WikiScreen(Screen[None]):
         """
         self.reload()
 
-    def reload(self) -> None:
-        """Re-walk the wiki from disk, then repaint under the live search filter.
-
-        Public entry point for external callers (the task bar refreshes an
-        open wiki screen after a sync or a wikify run). The walk parses every
-        page's frontmatter, so it runs here and not on every filter keystroke.
-        """
-        from lilbee.wiki.browse import list_pages
-
-        self._pages = []
-        self._stubs = {}
-        self._load_error = None
-        if cfg.wiki:
-            try:
-                self._pages = list_pages(_wiki_root())
-                self._stubs = {
-                    stub.wiki_slug: stub
-                    for stub in ungenerated_stubs(load_stub_index(), _wiki_root())
-                }
-            except Exception as exc:
-                log.warning("Failed to list wiki pages", exc_info=True)
-                self._load_error = msg.WIKI_LOAD_FAILED.format(error=exc)
-                self._show_load_failure(self._load_error)
-                return
+    @work(exclusive=True, group=_LOAD_GROUP, exit_on_error=False)
+    async def reload(self) -> None:
+        """Re-walk the wiki off the loop, then repaint under the live search filter."""
+        listing = await asyncio.to_thread(_scan_wiki)
+        self._pages = listing.pages
+        self._stubs = listing.stubs
+        self._shortcuts = listing.shortcuts
+        self._load_error = listing.error
         self._load_pages(filter_text=self.query_one("#wiki-search", Input).value.strip())
 
     def _show_load_failure(self, detail: str) -> None:
@@ -256,7 +275,7 @@ class WikiScreen(Screen[None]):
         needle = filter_text.lower()
         pages = [p for p in self._pages if needle in p.title.lower()]
         stubs = [s for s in self._stubs.values() if needle in s.label.lower()]
-        shortcuts = [(slug, label) for slug, label in _root_shortcuts() if needle in label.lower()]
+        shortcuts = [(slug, label) for slug, label in self._shortcuts if needle in label.lower()]
         if not pages and not stubs and not shortcuts:
             # Pages exist but none match: leave the content pane untouched
             # rather than rendering the empty-wiki state.
@@ -369,27 +388,33 @@ class WikiScreen(Screen[None]):
             return
         stub = self._stubs.get(slug)
         if stub is not None:
-            shown_label = strip_control_characters(stub.label)
-            # Opening a stub asks rather than generating. The detail pane
-            # explains the page either way, so dismissing the dialog leaves
-            # the reader looking at why the page is blank.
-            self._show_detail(
-                msg.WIKI_STUB_DETAIL.format(
-                    title=shown_label,
-                    label=shown_label,
-                    sources=_describe_sources(stub),
-                )
-            )
-            confirm_stub_generation(self.app, stub)
+            self._open_stub(stub)
             return
         self._display_page(slug)
 
-    def _display_page(self, slug: str) -> None:
-        """Read and render a wiki page by slug."""
+    @work(exclusive=True, group=_OPEN_GROUP, exit_on_error=False)
+    async def _open_stub(self, stub: WikiStub) -> None:
+        """Name the stub's documents off the loop, explain the blank page, then ask."""
+        sources = await asyncio.to_thread(_describe_sources, stub)
+        shown_label = strip_control_characters(stub.label)
+        # Opening a stub asks rather than generating. The detail pane
+        # explains the page either way, so dismissing the dialog leaves
+        # the reader looking at why the page is blank.
+        self._show_detail(
+            msg.WIKI_STUB_DETAIL.format(title=shown_label, label=shown_label, sources=sources)
+        )
+        confirm_stub_generation(self.app, stub, sources)
+
+    @work(exclusive=True, group=_OPEN_GROUP, exit_on_error=False)
+    async def _display_page(self, slug: str) -> None:
+        """Read a wiki page off the loop, then render it."""
         from lilbee.wiki.browse import read_page
 
-        root = _wiki_root()
-        page = read_page(root, slug)
+        page = await asyncio.to_thread(read_page, _wiki_root(), slug)
+        self._render_page(slug, page)
+
+    def _render_page(self, slug: str, page: WikiPageContent | None) -> None:
+        """Render a page read from disk, or the no-content text."""
         if page is None:
             self._show_detail(msg.WIKI_NO_CONTENT)
             return
@@ -562,7 +587,7 @@ def _describe_sources(stub: WikiStub) -> str:
     return shown[0] if shown else f"{count} documents"
 
 
-def confirm_stub_generation(app: LilbeeApp, stub: WikiStub) -> None:
+def confirm_stub_generation(app: LilbeeApp, stub: WikiStub, sources: str) -> None:
     """Ask before writing a page, then write it on the task bar.
 
     Generation always asks. It spends real GPU time on the user's own machine,
@@ -577,7 +602,7 @@ def confirm_stub_generation(app: LilbeeApp, stub: WikiStub) -> None:
     app.push_screen(
         ConfirmDialog(
             msg.WIKI_STUB_CONFIRM_TITLE,
-            msg.WIKI_STUB_CONFIRM_MESSAGE.format(label=stub.label, sources=_describe_sources(stub)),
+            msg.WIKI_STUB_CONFIRM_MESSAGE.format(label=stub.label, sources=sources),
         ),
         _on_confirm,
     )
@@ -642,9 +667,20 @@ def confirm_wiki_wipe(
     turn-off route passes its own wording and stays silent when there is
     nothing to delete, since the user asked to disable, not to clean up.
     """
+    app.run_worker(
+        _offer_wipe(app, title, message, notify_when_empty),
+        exclusive=True,
+        group=_WIPE_OFFER_GROUP,
+        exit_on_error=False,
+    )
+
+
+async def _offer_wipe(app: LilbeeApp, title: str, message: str, notify_when_empty: bool) -> None:
+    """Look for something to delete off the loop, then ask."""
     from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
-    if not wiki_has_content(get_services().store):
+    has_content = await asyncio.to_thread(lambda: wiki_has_content(get_services().store))
+    if not has_content:
         if notify_when_empty:
             app.notify(msg.WIKI_WIPE_NOTHING)
         return
