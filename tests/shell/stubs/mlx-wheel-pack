@@ -24,12 +24,16 @@ import sys, zipfile
 
 path, tag, expression = sys.argv[1:]
 dist = "lilbee_engine_mlx-0.32.2.dist-info"
+site = "lilbee_engine_mlx/python/lib/python3.12/site-packages"
 server = '#!/bin/sh\necho "$@" >> "${MLX_SERVER_LOG:?}"\n[ -z "${MLX_SERVER_FAIL-}" ]\n'
 files = {
     "lilbee_engine_mlx/__init__.py": "",
     "lilbee_engine_mlx/bin/mlx-lm-server": server,
     f"{dist}/METADATA": f"Metadata-Version: 2.4\nName: lilbee-engine-mlx\nVersion: 0.32.2\nLicense-Expression: {expression}\n\nText\n",
     f"{dist}/WHEEL": f"Wheel-Version: 1.0\nGenerator: lilbee\nRoot-Is-Purelib: false\nTag: {tag}\nBuild: 1.metal\n",
+    # The bundled interpreter holds the dist-info folders of its packages, with other tags and terms.
+    f"{site}/mlx-0.32.4.dist-info/METADATA": "Metadata-Version: 2.4\nName: mlx\nLicense-Expression: Apache-2.0\n",
+    f"{site}/mlx-0.32.4.dist-info/WHEEL": "Wheel-Version: 1.0\nTag: cp312-cp312-macosx_14_0_arm64\n",
 }
 with zipfile.ZipFile(path, "w") as archive:
     for name, text in files.items():
