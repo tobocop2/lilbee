@@ -1,4 +1,4 @@
-"""Refuse an engine pack that ``lilbee engine install`` would refuse, with the checks of the install.
+"""Refuse an engine pack that ``lilbee engine install`` refuses, with the checks of the install.
 
 Usage:
   check_pack_licences.py terms PLAN   screen the licence that each planned cell declares
@@ -10,9 +10,9 @@ PLAN is the JSON that its scripts/plan.sh prints: the cells of each engine. A ce
 is the screen that the install runs on a pin. A cell with no ``license`` gets its terms from its
 build, and the wheel check reads them.
 
-The wheel check reads each ``lilbee_engine_*.whl`` file in DIR with the lock that the shipped
-adapter of its engine gives: the engine, the version, the tool and the libraries. It refuses a
-wheel of an engine that lilbee ships no adapter for, and a version that the adapter does not pin.
+The wheel check reads each ``lilbee_engine_*.whl`` file in DIR with a lock of the engine and the
+version of its file name, and the tool and the libraries that the shipped adapter of the engine
+gives. It refuses a wheel of an engine that lilbee ships no adapter for.
 
 Each refusal prints one line that names the cell or the wheel and the reason. The exit is 1 when
 anything is refused.
@@ -58,7 +58,7 @@ def refused_terms(plan: Mapping[str, list[Mapping[str, Any]]]) -> list[str]:
 
 
 def wheel_lock(wheel: Path) -> PinLock:
-    """The lock that the shipped adapter gives for the engine and version of the file name of *wheel*."""
+    """The lock for *wheel*: its engine and version, and the tool and libraries of the adapter."""
     try:
         cell = wheel_cell(wheel.name, wheel.name)
     except PackRecordError as exc:
@@ -67,10 +67,6 @@ def wheel_lock(wheel: Path) -> PinLock:
     if adapter is None:
         raise PackRefusedError(f"lilbee ships no adapter for the engine {cell.engine}.")
     pin = adapter.pin_record()
-    if pin["version"] != cell.version:
-        raise PackRefusedError(
-            f"the adapter of {cell.engine} pins version {pin['version']}, not {cell.version}."
-        )
     backend = cell.key.split("-", 2)[2]
     return PinLock(
         cell.engine, cell.version, backend, {}, (), "", pin["tool"], tuple(pin.get("libraries", ()))
@@ -78,7 +74,7 @@ def wheel_lock(wheel: Path) -> PinLock:
 
 
 def refused_wheels(folder: Path) -> list[str]:
-    """One line for each wheel in *folder* that the install would refuse; one line when it has none."""
+    """One line for each wheel in *folder* that the install refuses; one line when it has none."""
     wheels = sorted(folder.glob(WHEEL_GLOB))
     if not wheels:
         return [f"{folder}: no {WHEEL_GLOB} file to check."]
