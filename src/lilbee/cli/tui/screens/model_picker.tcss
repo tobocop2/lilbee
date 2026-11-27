@@ -5,7 +5,7 @@ ModelPickerModal {
 
 #picker-root {
     width: 80%;
-    height: 80%;
+    height: auto;
     max-width: 90;
     max-height: 30;
     background: $surface;
@@ -26,7 +26,8 @@ ModelPickerModal {
 }
 
 #picker-list {
-    height: 1fr;
+    height: auto;
+    max-height: 100%;
     border: solid $surface-lighten-2;
 }
 

@@ -84,8 +84,24 @@ _FLEET_PANEL_ID = "#gpu-fleet-panel"
 _REPLICA_ROLES = REPLICATED_ROLES
 _HINT = (
     "Toggle a GPU for each role; -/+ sets replicas.  "
-    "ctrl+r preview · ctrl+s apply · ctrl+x auto · e engine"
+    "ctrl+r preview · ctrl+s/f5 apply · ctrl+x auto · e engine"
 )
+
+
+def fleet_key_bindings(*, show_all: bool) -> list[BindingType]:
+    """Preview, apply and clear keys for a fleet host; ctrl+s and f5 both apply.
+
+    Priority, so a focused toggle or editor child does not swallow them. *show_all*
+    lists preview and clear in the footer too, not only apply.
+    """
+    return [
+        Binding("ctrl+r", "preview", "Preview", show=show_all, priority=True),
+        Binding("ctrl+s", "apply", "Apply", show=True, priority=True),
+        Binding("f5", "apply", "Apply", show=False, priority=True),
+        Binding("ctrl+x", "clear", "Auto", show=show_all, priority=True),
+    ]
+
+
 _ENGINE_PILL_PREFIX = "eng-"
 # The role named by the id of a pill in a role row, such as dev-chat-0 or eng-chat.
 _ROW_PILL_RE = re.compile(r"^(?:dev|tgt|rep|eng)-([a-z]+)")
@@ -342,8 +358,10 @@ class FleetBody(MountWhenAttached, Widget):
 
     def pick_engine(self, role: WorkerRole) -> None:
         """Open the engine picker for *role*; the choice is saved for the model of the role."""
-        from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
+        from lilbee.cli.tui.screens.engine_picker import EnginePickerModal, engine_picker_open
 
+        if engine_picker_open(self.app):
+            return
         view = next(v for v in engine_service.roles() if v.role is role)
         if not view.model.strip():
             self.notify(msg.ENGINE_NO_MODEL.format(role=role), severity="warning")

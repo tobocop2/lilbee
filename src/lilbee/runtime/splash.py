@@ -13,6 +13,7 @@ from __future__ import annotations
 import atexit
 import contextlib
 import io
+import logging
 import os
 import subprocess
 import sys
@@ -20,6 +21,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from lilbee.runtime._splash_runner import TAKEOVER_BYTE
+
+log = logging.getLogger(__name__)
 
 _SHOW_CURSOR = "\033[?25h"
 
@@ -104,6 +107,18 @@ def start() -> SplashHandle | None:
     return handle
 
 
+def _reap(process: subprocess.Popen[bytes]) -> None:
+    """Wait for the child, kill it after the timeout, and give up on one that outlives the kill."""
+    try:
+        process.wait(timeout=_STOP_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            log.warning("splash child %d outlived SIGKILL and was left", process.pid)
+
+
 def stop(handle: SplashHandle | None) -> None:
     """Stop the splash animation and wait for the subprocess to exit."""
     global _active_handle
@@ -113,11 +128,7 @@ def stop(handle: SplashHandle | None) -> None:
 
     handle.pipe.close()
 
-    try:
-        handle.process.wait(timeout=_STOP_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        handle.process.kill()
-        handle.process.wait(timeout=1.0)
+    _reap(handle.process)
 
     _active_handle = None
 
@@ -145,11 +156,7 @@ def dismiss() -> None:
     # where writing cursor-show would produce a visible artifact.
     _signal_takeover(handle.pipe)
     handle.pipe.close()
-    try:
-        handle.process.wait(timeout=_STOP_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        handle.process.kill()
-        handle.process.wait(timeout=1.0)
+    _reap(handle.process)
 
 
 def _signal_takeover(pipe: io.FileIO) -> None:

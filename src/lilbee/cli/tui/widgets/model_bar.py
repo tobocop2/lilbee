@@ -309,8 +309,10 @@ class ModelPickerButton(Static, can_focus=True):
 
     def action_pick_engine(self) -> None:
         """Open the engine picker for the model of this role."""
-        from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
+        from lilbee.cli.tui.screens.engine_picker import EnginePickerModal, engine_picker_open
 
+        if engine_picker_open(self.app):
+            return
         role = WorkerRole(self._scope)
         view = next(v for v in engine_service.roles() if v.role is role)
         if not view.model.strip():

@@ -29,7 +29,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     CatalogRow,
     LocalCatalogRow,
 )
-from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
+from lilbee.cli.tui.screens.engine_picker import EnginePickerModal, engine_picker_open
 from lilbee.cli.tui.widgets.dialog import Dialog
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
@@ -242,6 +242,9 @@ class ModelPickerModal(Dialog[str | None]):
             yield ModelList(id="picker-list")
             yield Static(msg.MODEL_PICKER_HINT, id="picker-hint")
 
+    def on_resize(self, event: events.Resize) -> None:
+        self.query_one("#picker-root").styles.max_height = min(event.size.height * 4 // 5, 30)
+
     def on_mount(self) -> None:
         self._refresh_list("")
         self.query_one("#picker-search", Input).focus()
@@ -299,6 +302,8 @@ class ModelPickerModal(Dialog[str | None]):
         The saved engine, or auto when none is saved, is the highlighted row. Esc leaves
         the picker and the model list stays as it was.
         """
+        if engine_picker_open(self.app):
+            return True
         if not ref or not routes_to_native_model(ref):
             return False
         options = engine_service.engine_options(ref)
