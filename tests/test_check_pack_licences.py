@@ -155,11 +155,12 @@ def test_a_wheel_without_a_library_that_the_adapter_names_is_refused(tmp_path: P
     assert cpl.refused_wheels(full) == []
 
 
-def test_a_version_that_the_adapter_does_not_pin_is_refused(tmp_path: Path) -> None:
+def test_the_version_of_the_lock_is_the_version_of_the_wheel_name(tmp_path: Path) -> None:
+    """A pack of a new upstream version passes before lilbee pins that version."""
     name = f"lilbee_engine_ik_llama_cpp-0+git000000000000-4.cpu-{_LINUX}"
     _wheel(tmp_path, name)
-    (line,) = cpl.refused_wheels(tmp_path)
-    assert f"pins version {_IK_VERSION}, not 0+git000000000000" in line
+    assert cpl.wheel_lock(tmp_path / name).version == "0+git000000000000"
+    assert cpl.refused_wheels(tmp_path) == []
 
 
 def test_a_wheel_of_an_engine_with_no_shipped_adapter_is_refused(
