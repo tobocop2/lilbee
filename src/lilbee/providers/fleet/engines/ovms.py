@@ -259,10 +259,7 @@ class OvmsAdapter:
         The release archive holds ``ovms/bin/ovms`` beside ``ovms/lib``. A value already set
         stays after the new folder. Nothing is added when there is no ``lib`` folder.
         """
-        tool = self.user_binary()
-        if tool is None:
-            return {}
-        lib = tool.resolve().parent.parent / "lib"
+        lib = binary.resolve().parent.parent / "lib"
         if not lib.is_dir():
             return {}
         existing = os.environ.get(_LIBRARY_PATH_VAR, "")

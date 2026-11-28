@@ -85,7 +85,7 @@ def _dir_entries(directory: Path) -> list[Path]:
 
 
 def cuda_runtime_env(binary: Path) -> dict[str, str]:
-    """``LD_LIBRARY_PATH`` for running *binary*, or empty when there is nothing to add.
+    """``LD_LIBRARY_PATH`` for running *binary*: always its own folder, empty only off Linux.
 
     Ordering, which matters more than it looks: the binary's own directory, then
     any CUDA-runtime wheel directories, then whatever the caller already had.
