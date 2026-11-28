@@ -2762,7 +2762,7 @@ class ChatScreen(Screen[None]):
         self.app.notify(msg.MODEL_SWAP_APPLYING)
         self._reload_chat_model_worker()
 
-    def _apply_input_busy_state(self) -> None:
+    def _apply_input_busy_state(self, *, refocus: bool = True) -> None:
         """Disable the chat input while a swap or placement reload is loading, and
         say why in the placeholder so a person is never left facing a dead input
         with no explanation.
@@ -2790,7 +2790,7 @@ class ChatScreen(Screen[None]):
                 inp.placeholder = msg.CHAT_INPUT_RELOADING
             else:
                 inp.placeholder = msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
-            if not busy and self._insert_mode:
+            if refocus and not busy and self._insert_mode:
                 self.set_focus(inp)
 
     def watch_swapping_model(self, swapping: bool) -> None:
@@ -2800,8 +2800,13 @@ class ChatScreen(Screen[None]):
         self._apply_input_busy_state()
 
     def on_fleet_body_placement_reloading(self, event: FleetBody.PlacementReloading) -> None:
-        """Hold chat submissions while the Fleet drawer reloads the fleet."""
-        self.reloading_placement = event.active
+        """Hold chat submissions while the Fleet drawer reloads the fleet.
+
+        When the drawer gives the focus back to its own control at the end, the
+        input does not take it first.
+        """
+        self.set_reactive(ChatScreen.reloading_placement, event.active)
+        self._apply_input_busy_state(refocus=not event.restores_focus)
 
     @work(thread=True, name=_MODEL_SWAP_WORKER, exit_on_error=False)
     def _reload_chat_model_worker(self) -> None:
