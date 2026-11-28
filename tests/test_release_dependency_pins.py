@@ -11,6 +11,7 @@ names the release extra. An unconstrained install of lancedb alone still drags
 numpy, pyarrow, pydantic and tqdm in at whatever PyPI serves that day.
 """
 
+import tomllib
 from pathlib import Path
 
 import yaml
@@ -113,3 +114,17 @@ def test_lancedb_is_the_only_package_held_out_of_the_constraints() -> None:
             f"the export drops {sorted(excluded)} from the lock; every name "
             "here resolves from PyPI and needs a reason in the workflow comment"
         )
+
+
+def _locked_version(name: str) -> str:
+    lock = tomllib.loads((_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    (package,) = [p for p in lock["package"] if p["name"] == name]
+    return str(package["version"])
+
+
+def test_the_cell_takes_the_pypi_xberg_build_of_the_locked_version() -> None:
+    """== also matches a +compat build on the compat index; === matches PyPI's only."""
+    pin = f"'xberg==={_locked_version('xberg')}'"
+    for script in _release_extra_scripts():
+        named = [c for c in _installs(script) if any(".[release]" in w for w in c)]
+        assert [command.count(pin) for command in named] == [1]

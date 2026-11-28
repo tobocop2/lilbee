@@ -6468,13 +6468,18 @@ class TestIngestMarkdownEdgeCases:
         _, meta = await ingest_markdown(md, "_web/en.wikipedia.org/wiki/" + md.name)
         assert meta.title == "Cannabis"
 
-    async def test_frontmatter_only_produces_chunks(self, isolated_env):
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [("", []), ("\n# Heading\n\nBody text here.\n", ["# Heading\n\nHeading\nBody text here."])],
+    )
+    async def test_frontmatter_stays_out_of_the_chunks(self, isolated_env, body, expected):
+        """xberg keeps a note's frontmatter in its metadata, not in its text."""
         from lilbee.data.ingest import ingest_markdown
 
-        md = isolated_env / "fm_only.md"
-        md.write_text("---\ntitle: Just Frontmatter\ntags: [test]\n---\n")
-        result, _ = await ingest_markdown(md, "fm_only.md")
-        assert len(result) > 0, "Frontmatter content should be indexed"
+        md = isolated_env / "fm.md"
+        md.write_text(f"---\ntitle: Just Frontmatter\ntags: [test]\n---\n{body}", encoding="utf-8")
+        result, _ = await ingest_markdown(md, "fm.md")
+        assert [record["chunk"] for record in result] == expected
 
 
 class TestPageTextAccumulator:
@@ -7635,12 +7640,15 @@ class TestTesseractUnderRealXberg:
         assert self._ocr_pages(_mixed_pdf(), OcrMode.AUTO) == [2]
         assert list(Path.home().glob("**/tessdata/*.traineddata")) == []
 
-    def test_ocr_text_replaces_a_text_layer_too_short_to_be_usable(self):
+    def test_a_short_text_layer_stays_when_its_ocr_read_finds_nothing(self):
+        """Page 2's layer is too short, so OCR reads the page; its white text gives OCR nothing."""
         line = "x" * (_USABLE_TEXT_CHARS - 1 - _non_blank(_page_line(2, "")))
         usable = "y" * (_USABLE_TEXT_CHARS - _non_blank(_page_line(3, "")))
         doc = self._extract(_layout_pdf("SHT", (line,)), OcrMode.AUTO)
         kept = self._extract(_layout_pdf("SHT", (usable,)), OcrMode.AUTO)
-        assert _page_line(2, line) not in doc.pages[1].content
+        assert doc.pages[1].ocr_confidence is not None
+        assert doc.pages[1].content == _page_line(2, line)
+        assert kept.pages[1].ocr_confidence is None
         assert _page_line(2, usable) in kept.pages[1].content
         assert _page_line(3, usable) in kept.pages[2].content
 
@@ -7698,6 +7706,7 @@ class TestFailedOcrPagesFromXberg:
     """The adapter reads the records real xberg writes when a page's OCR raises."""
 
     def test_each_page_whose_ocr_raised_becomes_a_failed_page(self, isolated_env):
+        """Each page keeps its text layer, so xberg marks the failure as recovered."""
         from xberg import register_ocr_backend, unregister_ocr_backend
 
         from lilbee.data.extract.xberg import extract_document, failed_ocr_pages
@@ -7720,10 +7729,11 @@ class TestFailedOcrPagesFromXberg:
         read = [page.page_number for page in doc.pages if "OCR-TEXT" in page.content]
         assert len(read) == 1
         error = (
-            "Plugin 'lilbee-vision' method 'process_image' failed: RuntimeError: the model is gone"
+            "OCR error: Plugin 'lilbee-vision' method 'process_image' failed: "
+            "RuntimeError: the model is gone [cause chain: PyErr]"
         )
         assert failed_ocr_pages(doc) == tuple(
-            FailedPage(page=number, error=error, recovered=False)
+            FailedPage(page=number, error=error, recovered=True)
             for number in (1, 2, 3)
             if number not in read
         )
@@ -7781,14 +7791,17 @@ class TestVisionOcrStopsOnCancel:
         assert len(calls) == self._PAGES
 
     async def test_a_set_cancel_sends_no_page_to_the_model(self, tmp_path):
+        """xberg hands the backend's own cancel error back to the caller."""
+        from lilbee.runtime.cancellation import TaskCancelledError
+
         cancel = threading.Event()
         cancel.set()
         calls: list[bytes] = []
         with pytest.raises(asyncio.CancelledError) as raised:
             await self._extract(tmp_path, cancel, calls)
         assert calls == []
-        # xberg's error for the refused pages stays as the cause, for the DEBUG trace.
-        assert "TaskCancelledError" in str(raised.value.__cause__)
+        # The backend's own error for the refused pages stays as the cause, for the DEBUG trace.
+        assert isinstance(raised.value.__cause__, TaskCancelledError)
 
     @pytest.mark.parametrize("when", ["file_start", "first_page"])
     async def test_a_user_cancel_during_vision_ocr_logs_no_failure(
@@ -9444,7 +9457,7 @@ class TestTuiSurface:
             if config.disable_ocr:
                 raise RuntimeError("probe")  # the page-count probe; its failure is ignored
             cancelled.set()
-            raise RuntimeError("process_image failed: TaskCancelledError")
+            raise TaskCancelledError
 
         screen = ChatScreen.__new__(ChatScreen)
         with (
