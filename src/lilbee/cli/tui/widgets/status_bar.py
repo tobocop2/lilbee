@@ -56,7 +56,13 @@ class ViewTab(Label, can_focus=True):
     ]
 
     def __init__(self, view_name: str) -> None:
-        super().__init__(id=f"view-tab-{view_name.lower()}", classes="view-tab")
+        # The label is there from the first layout: a tab built empty measures zero wide,
+        # and the layout pass that already ran does not always measure it again.
+        super().__init__(
+            Content.assemble((f"  {view_name}  ", "dim")),
+            id=f"view-tab-{view_name.lower()}",
+            classes="view-tab",
+        )
         self.view_name = view_name
 
     def set_active(self, active: bool) -> None:
@@ -117,10 +123,9 @@ class ViewTabs(MountWhenAttached, Widget):
         self.active_view = self.app.active_view
         self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
         self._resolve_lilbee_label()
-        # Wiki visibility AND the initial paint both deferred: query() during
-        # on_mount can no-op while ViewTab children are still completing their
-        # mount cycle, leaving the Wiki tab visible even when cfg.wiki=False.
-        self.call_after_refresh(self._apply_wiki_visibility)
+        self._apply_wiki_visibility()
+        # The initial paint is deferred: query() during on_mount can no-op while
+        # ViewTab children are still completing their mount cycle.
         self.call_after_refresh(self._refresh)
 
     def watch_active_view(self, value: str) -> None:
@@ -155,13 +160,8 @@ class ViewTabs(MountWhenAttached, Widget):
         self._refresh()
 
     def _apply_wiki_visibility(self) -> None:
-        """Show or hide the Wiki tab and its preceding separator based on cfg.wiki."""
-        if not self.is_mounted:
-            return
-        visible = bool(cfg.wiki)
-        for selector in ("#view-tab-wiki", "#view-tab-sep-wiki"):
-            for widget in self.query(selector):
-                widget.display = visible
+        """Mark the strip when cfg.wiki is off; app.tcss then hides the Wiki tab and its dot."""
+        self.set_class(not cfg.wiki, "-wiki-off")
 
     def _refresh(self) -> None:
         if not self.is_mounted:

@@ -1,0 +1,470 @@
+"""The click census: every surface opens, takes a click, and a click acts like Enter."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any, ClassVar
+
+import pytest
+from textual import events
+from textual.app import App, ComposeResult
+from textual.binding import Binding, BindingType
+from textual.geometry import Size
+from textual.screen import Screen
+from textual.widgets import Button, DataTable, Footer, Static
+
+from lilbee.cli.tui.screens import status as status_screen
+from lilbee.cli.tui.screens.chat import ChatScreen
+from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+from lilbee.cli.tui.screens.profile_library import ProfileLibrary
+from lilbee.cli.tui.screens.startup_gate import StartupGate
+from lilbee.cli.tui.screens.status import StatusScreen
+from lilbee.cli.tui.widgets.dialog import Dialog
+from lilbee.cli.tui.widgets.model_list import ModelList
+from lilbee.cli.tui.widgets.status_bar import ViewTab
+from lilbee.core.config import cfg
+from lilbee.core.config.enums import ChatMode
+from lilbee.data.types import SkippedSource
+from tests._async_wait import wait_until
+from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._tui_census import (
+    SIZE_IDS,
+    SIZES,
+    NoBuilder,
+    Recorder,
+    SurfaceApp,
+    backdrop_click_effects,
+    build,
+    click,
+    click_effects,
+    discover_surfaces,
+    focus_labels,
+    is_reached,
+    key_effects,
+    mouse_close_controls,
+    open_surface,
+    probe_widget,
+    settle,
+)
+from tests.test_tui_small_fixes import _picker_rows
+
+# A surface test opens the surface afresh for each widget, twice; the default 60 s is too short.
+pytestmark = pytest.mark.timeout(600)
+
+SURFACES = discover_surfaces()
+SURFACE_IDS = [c.__name__ for c in SURFACES]
+MIN_SURFACES = 20
+# The gate is a loading screen with nothing to focus; every other surface has a control.
+NO_FOCUS = {StartupGate}
+# The library closes from the Close link in its hint row, a Static that takes no focus.
+CLOSES_BY_LINK = {ProfileLibrary}
+DIALOGS = [c for c in SURFACES if issubclass(c, Dialog) and c not in CLOSES_BY_LINK]
+
+
+def test_the_walk_finds_the_surfaces() -> None:
+    assert len(SURFACES) >= MIN_SURFACES
+
+
+def test_a_new_surface_without_a_builder_fails_the_census() -> None:
+    class NeedsArguments(Screen[None]):
+        def __init__(self, title: str) -> None:
+            super().__init__()
+            self.title_text = title
+
+    with pytest.raises(NoBuilder, match="NeedsArguments needs arguments"):
+        build(NeedsArguments)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cls", SURFACES, ids=SURFACE_IDS)
+async def test_every_surface_opens_with_a_focusable_widget(cls: type) -> None:
+    app = SurfaceApp(cls)
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await open_surface(pilot, app)
+        assert type(screen) is cls
+        assert bool(screen.focus_chain) == (cls not in NO_FOCUS)
+
+
+@pytest.mark.asyncio
+async def test_the_profile_library_closes_from_its_close_link() -> None:
+    app = SurfaceApp(ProfileLibrary)
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await open_surface(pilot, app)
+        hints = screen.query_one("#library-hints")
+        await pilot.click(hints, offset=(str(hints.content).rindex("Close"), 0))
+        await settle(pilot)
+        assert app.screen is not screen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cls", DIALOGS, ids=[c.__name__ for c in DIALOGS])
+async def test_every_dialog_can_be_closed_with_the_mouse(cls: type) -> None:
+    assert await mouse_close_controls(cls, (120, 40)), f"{cls.__name__} closes by key only"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", SIZES, ids=SIZE_IDS)
+@pytest.mark.parametrize("cls", SURFACES, ids=SURFACE_IDS)
+async def test_every_focusable_widget_is_reached_and_a_click_does_what_enter_does(
+    cls: type, size: tuple[int, int]
+) -> None:
+    app = SurfaceApp(cls)
+    missed: list[str] = []
+    async with app.run_test(size=size) as pilot:
+        screen = await open_surface(pilot, app)
+        count = len(screen.focus_chain)
+        for widget in screen.focus_chain:
+            widget.scroll_visible(animate=False)
+            await pilot.pause()
+            if not is_reached(screen, widget):
+                missed.append(f"{widget!r} region={widget.region}")
+    assert not missed, f"a click does not reach: {missed}"
+
+    key_only: list[str] = []
+    for index in range(count):
+        by_key = await probe_widget(cls, size, index, "enter")
+        if not by_key.owns_enter or by_key.text_entry:
+            continue
+        by_click = await probe_widget(cls, size, index, "click")
+        lost = sorted(by_key.effects - by_click.effects)
+        if lost:
+            key_only.append(f"{by_key.name}: Enter does {lost}, a click does not")
+    assert not key_only, key_only
+
+
+@pytest.mark.asyncio
+async def test_a_click_on_a_status_docs_row_selects_it_like_enter() -> None:
+    names = await focus_labels(StatusScreen, (120, 40))
+    index = names.index("DataTable#docs-table")
+    by_key = await probe_widget(StatusScreen, (120, 40), index, "enter")
+    by_click = await probe_widget(StatusScreen, (120, 40), index, "click")
+    assert by_key.effects
+    assert by_key.effects <= by_click.effects
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cls", SURFACES, ids=SURFACE_IDS)
+async def test_every_shown_binding_has_a_click_path(cls: type) -> None:
+    from textual.widgets import Footer
+
+    size = (120, 40)
+    app = SurfaceApp(cls)
+    async with app.run_test(size=size) as pilot:
+        screen = await open_surface(pilot, app)
+        footer = bool(screen.query(Footer))
+        shown = sorted(
+            key
+            for key, active in screen.active_bindings.items()
+            if active.binding.show and active.enabled
+        )
+    if footer or not shown:
+        return
+    clicks = await backdrop_click_effects(cls, size)
+    for index in range(len(await focus_labels(cls, size))):
+        clicks |= await click_effects(cls, size, index)
+    key_only: list[str] = []
+    for key in shown:
+        effects = await key_effects(cls, size, key)
+        if effects and not effects <= clicks:
+            key_only.append(f"{key} does {sorted(effects - clicks)} that no click does")
+    assert not key_only, key_only
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", SIZES, ids=SIZE_IDS)
+async def test_a_click_on_the_chat_mode_pill_sets_the_chat_mode(size: tuple[int, int]) -> None:
+    cfg.chat_mode = ChatMode.SEARCH.value
+    app = SurfaceApp(ChatScreen)
+    async with app.run_test(size=size) as pilot:
+        screen = await open_surface(pilot, app)
+        pill = screen.query_one("#chat-mode-chat")
+        pill.scroll_visible(animate=False)
+        await pilot.pause()
+        await pilot.click(pill)
+        assert await wait_until(pilot, lambda: cfg.chat_mode == ChatMode.CHAT.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", SIZES, ids=SIZE_IDS)
+async def test_a_click_on_a_held_out_row_selects_it_like_enter(
+    monkeypatch: pytest.MonkeyPatch, size: tuple[int, int]
+) -> None:
+    held_out = [SkippedSource(filename="a.pdf", reason="unreadable")]
+    monkeypatch.setattr(status_screen, "held_out_sources", lambda: (held_out, 1))
+    names = await focus_labels(StatusScreen, size)
+    index = names.index("DataTable#held-out-table")
+    by_key = await probe_widget(StatusScreen, size, index, "enter")
+    by_click = await probe_widget(StatusScreen, size, index, "click")
+    assert "msg:DataTable.CellSelected" in by_key.effects
+    assert by_key.effects <= by_click.effects
+
+
+class _Key(Static, can_focus=True):
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "noop", "Go"),
+        Binding("y", "noop", "Why"),
+    ]
+
+    def action_noop(self) -> None:
+        pass
+
+
+class _FooterHost(App[None]):
+    def compose(self) -> ComposeResult:
+        yield _Key("one", id="one")
+        yield Footer()
+
+
+@pytest.mark.asyncio
+async def test_a_footer_restyle_is_not_an_effect() -> None:
+    app = _FooterHost()
+    async with app.run_test() as pilot:
+        app.query_one("#one").focus()
+        await settle(pilot)
+        with Recorder(app) as rec:
+            app.query_one(Footer).compact = True
+            await settle(pilot)
+        assert rec.effects == set()
+
+
+class _FocusStartsWork(Screen[None]):
+    """A screen where the first focus that moves off the lead key starts a slow worker."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = False
+
+    def compose(self) -> ComposeResult:
+        yield _Key("lead", id="lead")
+        yield _Key("one", id="one")
+        yield _Key("two", id="two")
+        yield Static("idle", id="note")
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        if event.widget.id != "lead" and not self.started:
+            self.started = True
+            self.run_worker(self._note_later())
+
+    async def _note_later(self) -> None:
+        await asyncio.sleep(0.3)
+        self.query_one("#note", Static).update("done")
+
+
+async def _probe_enter(size: tuple[int, int]) -> set[str]:
+    return (await probe_widget(_FocusStartsWork, size, 1, "enter")).effects
+
+
+async def _key_enter(size: tuple[int, int]) -> set[str]:
+    return await key_effects(_FocusStartsWork, size, "enter")
+
+
+async def _click_first(size: tuple[int, int]) -> set[str]:
+    return await click_effects(_FocusStartsWork, size, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("probe", [_probe_enter, _key_enter, _click_first])
+async def test_a_probe_starts_after_the_work_that_its_focus_starts(probe: Any) -> None:
+    effects = await probe((80, 24))
+    assert "dom:changed" not in effects
+    assert "msg:Worker.StateChanged" not in effects
+
+
+class _Covered(App[None]):
+    CSS = "Screen { layers: base top; } #cover { layer: top; width: 100%; height: 100%; }"
+
+    def compose(self) -> ComposeResult:
+        yield Button("under", id="under")
+        yield Static("cover", id="cover")
+
+
+@pytest.mark.asyncio
+async def test_a_click_aimed_at_a_covered_widget_names_the_widget_hit() -> None:
+    app = _Covered()
+    async with app.run_test(size=(80, 24)) as pilot:
+        with pytest.raises(AssertionError, match=r"hits Static#cover, not Button#under"):
+            await click(pilot, app.query_one("#under", Button))
+
+
+class _LongTable(App[None]):
+    """A table with more rows than its screen shows, the cursor on a row past the first page."""
+
+    def __init__(self, show_header: bool) -> None:
+        super().__init__()
+        self.show_header = show_header
+        self.selected: list[int] = []
+
+    def compose(self) -> ComposeResult:
+        yield DataTable(show_header=self.show_header, cursor_type="row")
+
+    def on_mount(self) -> None:
+        table = self.query_one(DataTable)
+        table.add_column("name")
+        table.add_rows([(f"row {i}",) for i in range(60)])
+        table.move_cursor(row=40)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        self.selected.append(event.cursor_row)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("show_header", [True, False], ids=["header", "no-header"])
+async def test_a_table_click_aims_at_the_cursor_row_after_a_scroll(show_header: bool) -> None:
+    app = _LongTable(show_header)
+    async with app.run_test(size=(40, 12)) as pilot:
+        await settle(pilot)
+        table = app.query_one(DataTable)
+        assert table.scroll_offset.y > 0
+        await click(pilot, table)
+        await settle(pilot)
+        assert app.selected == [40]
+
+
+class _Late(App[None]):
+    """A button that is off until a worker that started at mount has finished."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pressed = 0
+
+    def compose(self) -> ComposeResult:
+        yield Button("target", id="target", disabled=True)
+
+    def on_mount(self) -> None:
+        self.run_worker(self._enable())
+
+    async def _enable(self) -> None:
+        await asyncio.sleep(1.0)
+        self.query_one("#target", Button).disabled = False
+
+    def on_button_pressed(self) -> None:
+        self.pressed += 1
+
+
+@pytest.mark.asyncio
+async def test_click_waits_for_work_in_flight() -> None:
+    app = _Late()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await click(pilot, app.query_one("#target", Button))
+        await pilot.pause()
+        assert app.pressed == 1
+
+
+class _Plain(App[None]):
+    def compose(self) -> ComposeResult:
+        yield Static("x", id="subject")
+
+
+@pytest.mark.asyncio
+async def test_settle_waits_for_a_worker() -> None:
+    done: list[bool] = []
+
+    async def work() -> None:
+        await asyncio.sleep(0.2)
+        done.append(True)
+
+    app = _Plain()
+    async with app.run_test() as pilot:
+        app.run_worker(work())
+        await settle(pilot)
+        assert done == [True]
+
+
+@pytest.mark.asyncio
+async def test_settle_waits_for_an_animation() -> None:
+    app = _Plain()
+    async with app.run_test() as pilot:
+        subject = app.query_one("#subject", Static)
+        subject.styles.animate("opacity", 0.0, duration=0.3)
+        await settle(pilot)
+        assert subject.styles.opacity == 0.0
+
+
+def test_a_view_tab_is_as_wide_as_its_label_before_it_mounts() -> None:
+    tab = ViewTab("Catalog")
+    width = tab.get_content_width(Size(80, 1), Size(80, 24))
+    assert width == len("  Catalog  ")
+
+
+@pytest.mark.asyncio
+async def test_the_view_tabs_fit_in_80_columns() -> None:
+    app = SurfaceApp(ChatScreen)
+    async with app.run_test(size=(80, 24)) as pilot:
+        screen: Any = await open_surface(pilot, app)
+        tabs = [t for t in screen.query(ViewTab) if t.display]
+        assert tabs
+        assert max(t.region.right for t in tabs) <= 80
+
+
+def _shown(screen: Any, selector: str) -> list[str | None]:
+    return [w.id for w in screen.query(selector) if w.display]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("width", "dots"), [(80, False), (99, False), (100, True), (120, True)])
+async def test_the_tab_dots_show_from_100_columns_and_hide_below(width: int, dots: bool) -> None:
+    cfg.wiki = True
+    app = SurfaceApp(ChatScreen)
+    async with app.run_test(size=(width, 24)) as pilot:
+        screen: Any = await open_surface(pilot, app)
+        assert bool(_shown(screen, ".view-tab-sep")) is dots
+        if dots:
+            assert len(_shown(screen, ".view-tab-sep")) == len(screen.query(ViewTab)) - 1
+
+
+@pytest.mark.asyncio
+async def test_the_tab_dots_follow_a_resize() -> None:
+    cfg.wiki = True
+    app = SurfaceApp(ChatScreen)
+    async with app.run_test(size=(120, 24)) as pilot:
+        screen: Any = await open_surface(pilot, app)
+        assert _shown(screen, ".view-tab-sep")
+        await pilot.resize_terminal(80, 24)
+        assert await wait_until(pilot, lambda: not _shown(screen, ".view-tab-sep"))
+        await pilot.resize_terminal(120, 24)
+        assert await wait_until(pilot, lambda: bool(_shown(screen, ".view-tab-sep")))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", [80, 120])
+@pytest.mark.parametrize("wiki", [True, False])
+async def test_the_wiki_tab_and_its_dot_follow_the_wiki_setting(width: int, wiki: bool) -> None:
+    cfg.wiki = wiki
+    app = SurfaceApp(ChatScreen)
+    async with app.run_test(size=(width, 24)) as pilot:
+        screen: Any = await open_surface(pilot, app)
+        assert ("view-tab-wiki" in _shown(screen, ".view-tab")) is wiki
+        if width >= 100:
+            assert ("view-tab-sep-wiki" in _shown(screen, ".view-tab-sep")) is wiki
+            assert _shown(screen, ".view-tab-sep")
+
+
+class _PickerHost(LilbeeAppHost):
+    """The app host with a model picker, holding more rows than the screen can show."""
+
+    def compose(self) -> ComposeResult:
+        yield Static("")
+
+    def on_mount(self) -> None:
+        self.push_screen(
+            ModelPickerModal(scope="chat", options=_picker_rows(40), pick_later=lambda ref: None)
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(80, 24), (80, 14), (120, 40)], ids=["80x24", "80x14", "120x40"])
+async def test_the_picker_footer_and_cancel_stay_in_view_over_a_long_list(
+    size: tuple[int, int],
+) -> None:
+    app = _PickerHost()
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, ModelPickerModal)
+        assert await wait_until(pilot, lambda: modal.query_one("#picker-list", ModelList).row_count)
+        await settle(pilot)
+        root = modal.query_one("#picker-root")
+        footer = modal.query_one("#picker-footer")
+        assert is_reached(modal, modal.query_one("#dialog-cancel"))
+        assert root.region.contains_region(footer.region)
+        assert modal.region.contains_region(root.region)

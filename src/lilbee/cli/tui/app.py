@@ -80,6 +80,10 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_THEME = "rose-pine"  # muted, low-glare; easier on the eyes than the warmer themes
 _CHAT_SCREEN_NAME = "chat"
+# Keys that do nothing useful over the startup gate, so the footer does not offer them.
+_GATE_BLOCKED_ACTIONS = frozenset(
+    {"run_sync", "toggle_fleet", "toggle_sessions", "nav_prev", "nav_next", "push_help"}
+)
 # Textual's default screen, then the current view; anything higher is pushed over the view.
 _VIEW_DEPTH = 2
 
@@ -176,6 +180,8 @@ class LilbeeApp(App[None]):
     # where the terminal needs it; see __init__.
     SAFE_CSS_PATH = Path(__file__).parent / "app_safe.tcss"
     ENABLE_COMMAND_PALETTE = True
+    # Under 100 columns the screen gets "-narrow"; app.tcss drops the tab dots by it.
+    HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (100, "-wide")]  # noqa: RUF012
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
     # The app row is [ and ] to move between views, plus Help and Quit. Every
@@ -1088,7 +1094,7 @@ class LilbeeApp(App[None]):
         # under the gate, which then skips its handover. A key typed at the gate
         # is kept for the prompt before any binding sees it, so this guard stops
         # the other ways to run the action there.
-        if (action == "run_sync" and self._gate_is_showing()) or (
+        if (action in _GATE_BLOCKED_ACTIONS and self._gate_is_showing()) or (
             action in ("open_tasks", "open_catalog", "open_chat")
             and isinstance(self.focused, (Input, TextArea))
         ):

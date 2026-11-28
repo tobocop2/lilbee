@@ -14,7 +14,7 @@ from textual.widgets.option_list import Option
 from lilbee.app.engine_service import EngineOption, InstallRoute, saved_engine
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_mark import engine_mark, format_size
-from lilbee.cli.tui.widgets.dialog import Dialog
+from lilbee.cli.tui.widgets.dialog import CancelButton, Dialog, DialogFooter
 from lilbee.providers.fleet.engines.choice import AUTO
 
 _DETAIL_SEP = " · "
@@ -108,7 +108,9 @@ class EnginePickerModal(Dialog[EngineOption | None]):
             yield Static(self._subtitle, id="engine-picker-model", markup=False)
             yield Static(msg.ENGINE_PICKER_NOTE, id="engine-picker-note")
             yield option_list
-            yield Static(msg.ENGINE_PICKER_HINT, id="engine-picker-hint")
+            with DialogFooter(id="engine-picker-footer"):
+                yield Static(msg.ENGINE_PICKER_HINT, id="engine-picker-hint")
+                yield CancelButton()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()

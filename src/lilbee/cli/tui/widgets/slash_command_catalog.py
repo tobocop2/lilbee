@@ -16,7 +16,7 @@ from textual.widgets.option_list import Option
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import COMMANDS, SlashCommand
 from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
-from lilbee.cli.tui.widgets.dialog import Dialog
+from lilbee.cli.tui.widgets.dialog import CancelButton, Dialog, DialogFooter
 
 
 @dataclass(frozen=True)
@@ -124,7 +124,9 @@ class SlashCommandCatalog(Dialog[str | None]):
             yield Static(msg.SLASH_CATALOG_TITLE, id="catalog-title")
             yield Input(placeholder=msg.SLASH_CATALOG_FILTER_PLACEHOLDER, id="catalog-filter")
             yield ClampedOptionList(id="catalog-list")
-            yield Static(msg.SLASH_CATALOG_FOOTER_HINT, id="catalog-hint")
+            with DialogFooter(id="catalog-footer"):
+                yield Static(msg.SLASH_CATALOG_FOOTER_HINT, id="catalog-hint")
+                yield CancelButton(msg.DIALOG_CLOSE_LABEL)
 
     def on_mount(self) -> None:
         self._rebuild("")

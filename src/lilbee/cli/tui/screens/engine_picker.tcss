@@ -32,7 +32,10 @@ EnginePickerModal {
     max-height: 12;
 }
 
+#engine-picker-footer {
+    margin: 1 0 0 0;
+}
+
 #engine-picker-hint {
     color: $text-muted;
-    padding: 1 0 0 0;
 }

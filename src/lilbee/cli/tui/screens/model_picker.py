@@ -30,7 +30,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     LocalCatalogRow,
 )
 from lilbee.cli.tui.screens.engine_picker import EnginePickerModal, engine_picker_open
-from lilbee.cli.tui.widgets.dialog import Dialog
+from lilbee.cli.tui.widgets.dialog import CancelButton, Dialog, DialogFooter
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.cli.tui.widgets.model_pick import config_key_for_scope
@@ -240,7 +240,9 @@ class ModelPickerModal(Dialog[str | None]):
                 select_on_focus=False,
             )
             yield ModelList(id="picker-list")
-            yield Static(msg.MODEL_PICKER_HINT, id="picker-hint")
+            with DialogFooter(id="picker-footer"):
+                yield Static(msg.MODEL_PICKER_HINT, id="picker-hint")
+                yield CancelButton()
 
     def on_resize(self, event: events.Resize) -> None:
         self.query_one("#picker-root").styles.max_height = min(event.size.height * 4 // 5, 30)

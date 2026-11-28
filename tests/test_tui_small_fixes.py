@@ -28,6 +28,7 @@ from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.cli.tui.widgets.model_list import ModelList
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._tui_census import build, discover_surfaces
 
 # The picker tests' fake engines: the picker asks for an engine only when two can load the model.
 from tests.test_tui_model_picker_engine import (  # noqa: F401
@@ -457,50 +458,20 @@ async def test_the_apply_dialog_draws_its_change_table_when_the_pill_has_focus(
         assert await wait_until(pilot, lambda: table.region.height > 0, max_pauses=30)
 
 
-def _defined_by_its_module(cls: type) -> bool:
-    """True for a class that a `class` statement in a lilbee TUI module made.
-
-    Another test builds subclasses with `type()` and a borrowed module name; those have no source.
-    """
-    module = sys.modules[cls.__module__]
-    return (
-        cls.__module__.startswith("lilbee.cli.tui.") and getattr(module, cls.__name__, None) is cls
-    )
-
-
-def test_every_dialog_with_a_scroll_area_is_covered() -> None:
-    import importlib
-    import pkgutil
-
-    import lilbee.cli.tui as tui
+def test_every_dialog_with_a_scroll_area_has_a_census_builder() -> None:
     from lilbee.cli.tui.widgets.dialog import Dialog
 
-    for mod in pkgutil.walk_packages(tui.__path__, "lilbee.cli.tui."):
-        importlib.import_module(mod.name)
-
-    def subclasses(cls: type) -> set[type]:
-        out: set[type] = set()
-        for sub in cls.__subclasses__():
-            out.add(sub)
-            out |= subclasses(sub)
-        return out
-
-    scrolling = sorted(
-        c.__name__
-        for c in subclasses(Dialog)
-        if _defined_by_its_module(c)
+    surfaces = discover_surfaces()
+    scrolling = [
+        c
+        for c in surfaces
+        if issubclass(c, Dialog)
         and re.search(r"VerticalScroll|ScrollableContainer", inspect.getsource(c))
-    )
+    ]
     assert scrolling
-    # PresetDialog and CrawlDialog: tests/test_tui_form_dialog_buttons.py.
-    covered = set(FOCUS_FACTORIES) | {
-        "ProfileLibrary",
-        "PresetDialog",
-        "ProfilePathDialog",
-        "CrawlDialog",
-        "TaskDetailModal",
-    }
-    assert [n for n in scrolling if n not in covered] == []
+    # The click census opens every surface; a dialog with no builder raises and names itself.
+    for dialog in scrolling:
+        build(dialog)
 
 
 # --- the model picker double Enter --------------------------------------------------------------
