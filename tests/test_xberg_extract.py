@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import logging
 from types import SimpleNamespace
 from unittest import mock
 
@@ -18,6 +20,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.context import config_scope
 from lilbee.data.extract import xberg as xberg_extract
 from lilbee.data.store import FailedPage
+from lilbee.data.types import failed_page_message
 
 
 class _FakeResult:
@@ -327,14 +330,44 @@ def _failure(page, error, recovered):
 
 def test_failed_ocr_pages_copies_each_record_of_the_document_in_order():
     doc = _doc([_failure(3, "backend timed out", False), _failure(7, "no content", True)])
-    assert xberg_extract.failed_ocr_pages(doc) == (
-        FailedPage(page=3, error="backend timed out", recovered=False),
-        FailedPage(page=7, error="no content", recovered=True),
+    assert xberg_extract.failed_ocr_pages(doc, "scan.pdf") == (
+        FailedPage.ocr(3, recovered=False),
+        FailedPage.ocr(7, recovered=True),
     )
 
 
+def test_a_failed_page_carries_lilbees_message_and_the_log_gets_the_parsers(caplog):
+    parser_text = "tesseract: image too small [cause chain: PyErr]"
+    doc = _doc([_failure(12, parser_text, False)])
+    with caplog.at_level("DEBUG", logger=xberg_extract.__name__):
+        [page] = xberg_extract.failed_ocr_pages(doc, "manual.pdf")
+    assert failed_page_message(page, name="manual.pdf") == (
+        "Could not read page 12 of manual.pdf: OCR failed."
+    )
+    assert parser_text not in repr(page)
+    assert caplog.messages == [f"OCR failed on page 12 of manual.pdf: {parser_text}"]
+
+
+def test_the_parsers_text_stays_off_the_terminal_at_the_cli_log_level():
+    """The CLI logs WARNING and above to stderr (cli/app.py); a failed page adds nothing there."""
+    parser_text = "tesseract: image too small [cause chain: PyErr]"
+    stderr = io.StringIO()
+    handler = logging.StreamHandler(stderr)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    level = root.level
+    root.addHandler(handler)
+    root.setLevel(logging.WARNING)
+    try:
+        xberg_extract.failed_ocr_pages(_doc([_failure(12, parser_text, False)]), "manual.pdf")
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(level)
+    assert parser_text not in stderr.getvalue()
+
+
 def test_failed_ocr_pages_is_empty_when_the_document_lists_no_failed_page():
-    assert xberg_extract.failed_ocr_pages(_doc(None)) == ()
+    assert xberg_extract.failed_ocr_pages(_doc(None), "scan.pdf") == ()
 
 
 def test_failed_ocr_pages_is_empty_for_a_real_document_with_only_ocr_warnings():
@@ -343,10 +376,10 @@ def test_failed_ocr_pages_is_empty_for_a_real_document_with_only_ocr_warnings():
         mime_type="text/plain",
         processing_warnings=[ProcessingWarning(source="ocr", message="OCR of page 3 failed")],
     )
-    assert xberg_extract.failed_ocr_pages(doc) == ()
+    assert xberg_extract.failed_ocr_pages(doc, "notes.txt") == ()
 
 
 def test_failed_ocr_pages_keeps_every_record_of_a_long_list():
     failures = [_failure(number, "boom", False) for number in range(1, 201)]
-    pages = xberg_extract.failed_ocr_pages(_doc(failures))
+    pages = xberg_extract.failed_ocr_pages(_doc(failures), "scan.pdf")
     assert [page.page for page in pages] == list(range(1, 201))

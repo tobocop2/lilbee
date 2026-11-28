@@ -1129,11 +1129,7 @@ class TestPartlyReadFanOut:
                 index=0,
                 result=SyncResult(
                     added=["a.pdf"],
-                    partial=[
-                        PartialFile(
-                            "a.pdf", [FailedPage(page=3, error="timed out", recovered=False)]
-                        )
-                    ],
+                    partial=[PartialFile("a.pdf", [FailedPage.ocr(3, recovered=False)])],
                     failed=["x.pdf"],
                     reasons={"x.pdf": "the file is encrypted"},
                 ),
@@ -1144,11 +1140,7 @@ class TestPartlyReadFanOut:
                 index=1,
                 result=SyncResult(
                     updated=["b.pdf"],
-                    partial=[
-                        PartialFile(
-                            "b.pdf", [FailedPage(page=1, error="timed out", recovered=False)]
-                        )
-                    ],
+                    partial=[PartialFile("b.pdf", [FailedPage.ocr(1, recovered=False)])],
                     skipped=["y.pdf"],
                     reasons={"y.pdf": "no text extracted (0 chunks)"},
                 ),

@@ -10240,9 +10240,7 @@ class TestPartlyReadCliOutput:
 
         partly_read = SyncResult(
             added=["scan.pdf"],
-            partial=[
-                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
-            ],
+            partial=[PartialFile("scan.pdf", [FailedPage.ocr(2, recovered=False)])],
             skipped=["blank.pdf"],
             reasons={"blank.pdf": "no text extracted (0 chunks)"},
         )
@@ -10257,13 +10255,13 @@ class TestPartlyReadCliOutput:
             assert payload["partial"] == [
                 {
                     "name": "scan.pdf",
-                    "pages": [{"page": 2, "error": "timed out", "recovered": False}],
+                    "pages": [{"page": 2, "error": "OCR failed", "recovered": False}],
                 }
             ]
             assert payload["reasons"] == {"blank.pdf": "no text extracted (0 chunks)"}
         else:
             assert "Partly read: 1" in result.output
-            assert "page 2: timed out" in result.output
+            assert "Could not read page 2 of scan.pdf: OCR failed." in result.output
 
     def test_rebuild_without_partly_read_files_prints_no_partly_read_line(self):
         from lilbee.data.ingest import SyncResult
@@ -10281,9 +10279,7 @@ class TestPartlyReadCliOutput:
 
         partly_read = SyncResult(
             added=["scan.pdf"],
-            partial=[
-                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
-            ],
+            partial=[PartialFile("scan.pdf", [FailedPage.ocr(2, recovered=False)])],
             failed=["bad.pdf"],
             reasons={"bad.pdf": "the file is encrypted"},
         )
@@ -10294,7 +10290,7 @@ class TestPartlyReadCliOutput:
 
         payload = json.loads(result.output)
         assert payload["partial"] == [
-            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "OCR failed", "recovered": False}]}
         ]
         assert payload["reasons"] == {"bad.pdf": "the file is encrypted"}
 
@@ -10309,9 +10305,7 @@ class TestPartlyReadCliOutput:
         src.write_bytes(b"%PDF-1.4")
         partly_read = SyncResult(
             added=["scan.pdf"],
-            partial=[
-                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
-            ],
+            partial=[PartialFile("scan.pdf", [FailedPage.ocr(2, recovered=False)])],
         )
         with mock.patch(
             "lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=partly_read
@@ -10324,9 +10318,9 @@ class TestPartlyReadCliOutput:
             assert sync["partial"] == [
                 {
                     "name": "scan.pdf",
-                    "pages": [{"page": 2, "error": "timed out", "recovered": False}],
+                    "pages": [{"page": 2, "error": "OCR failed", "recovered": False}],
                 }
             ]
         else:
             assert "Partly read: 1" in result.output
-            assert "page 2: timed out" in result.output
+            assert "Could not read page 2 of scan.pdf: OCR failed." in result.output

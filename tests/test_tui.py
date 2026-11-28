@@ -2007,9 +2007,7 @@ def test_is_one_action_two_ways(first: str, second: str, one_action: bool) -> No
     assert _is_one_action_two_ways(second, first) is one_action, "must be symmetric"
 
 
-_SCAN_PARTLY_READ = PartialFile(
-    "scan.pdf", [FailedPage(page=3, error="timed out", recovered=False)]
-)
+_SCAN_PARTLY_READ = PartialFile("scan.pdf", [FailedPage.ocr(3, recovered=False)])
 _PARTLY_READ_SYNC = SyncResult(
     added=["scan.pdf"],
     partial=[_SCAN_PARTLY_READ],
