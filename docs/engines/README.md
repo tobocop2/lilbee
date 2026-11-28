@@ -20,7 +20,7 @@ These pages explain the engines:
 | `ik_llama.cpp` | `gguf` | chat, embed | Linux x86_64: CPU, and NVIDIA (CUDA) | pack | no, opt-in |
 | `mistral.rs` | `gguf`, `safetensors` | chat, embed, vision | Linux x86_64: CPU, and NVIDIA (CUDA); Windows x86_64: CPU; macOS 15 on Apple Silicon: Metal | pack | no, opt-in |
 | `tei` | `safetensors` | embed, rerank | Linux x86_64: CPU, and NVIDIA (CUDA); macOS on Apple Silicon: Metal | pack | no, opt-in |
-| `mlx` | `mlx` | chat, embed, rerank | Apple Silicon, macOS 14 or newer | no pack is published yet | yes, on Apple Silicon |
+| `mlx` | `mlx` | chat, embed, rerank | Apple Silicon, macOS 14 or newer | pack | yes, on Apple Silicon |
 | `openvino` | `gguf` | chat | Linux x86_64 with an Intel GPU or an Intel NPU | no pack is published yet | no, opt-in |
 | `ovms` | `openvino` | chat, embed, rerank | Linux x86_64: CPU, Intel GPU, Intel NPU | you install it | no, opt-in |
 | `lemonade` | `xdna` | chat, embed | AMD XDNA2 NPU, Linux or Windows x86_64 | you install it | no, opt-in |
@@ -59,7 +59,7 @@ mlx (mlx-lm) needs Apple Silicon and macOS 14 or newer. It serves chat, embed an
 Chat runs on mlx-lm's server. Embed and rerank run on lilbee's own server in the same pack,
 for Qwen3-Embedding and Qwen3-Reranker models only. lilbee refuses any other `#mlx` model for
 the embedding or the reranker role, and names the supported family. lilbee loads `#mlx` models
-with it and does not offer it on an older macOS. No pack of mlx is published yet.
+with it and does not offer it on an older macOS.
 
 OpenVINO serves chat on the CPU, an Intel GPU or an Intel NPU. lilbee offers it only on
 Linux x86_64, on a computer with an Intel GPU or an Intel NPU. On the NPU, a role runs

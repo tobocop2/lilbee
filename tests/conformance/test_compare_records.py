@@ -433,7 +433,7 @@ class TestCurrentPin:
         assert cr.current_pin("tei", "c", table) is None
 
     def test_an_engine_with_no_pack_has_no_pin(self) -> None:
-        assert cr.current_pin("mlx", "macos-arm64-metal") is None
+        assert cr.current_pin("lemonade", "linux-x86_64-npu") is None
 
     def test_the_llama_pin_is_the_wheel_pin_not_the_engine_ref(self) -> None:
         assert cr.adapter_version("llama.cpp") in MANIFESTS["llama.cpp"]

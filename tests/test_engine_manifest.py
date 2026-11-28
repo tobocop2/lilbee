@@ -454,6 +454,19 @@ def test_the_metal_mistral_pack_states_the_macos_15_floor(monkeypatch: pytest.Mo
     assert pin["platforms"]["macos-arm64-metal"]["min_os"] == "15.0"
 
 
+def test_an_apple_silicon_host_resolves_the_mlx_pack_from_the_shipped_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pin = _pin(monkeypatch, EngineName.MLX, "Darwin", "arm64")
+    assert pin["sha256"] == "3fc3a9edc0799f03c63b042c309e432b903abcd8229158b19d33afa894d15764"
+    assert list(pin["platforms"]) == ["macos-arm64-metal"]
+    row = pin["platforms"]["macos-arm64-metal"]
+    assert row["url"].startswith(
+        "https://github.com/tobocop2/lilbee-engine-packs/releases/download/engine-packs-20261127/"
+    )
+    assert row["min_os"] == "14.0"
+
+
 SHIPPED_MISTRAL_CUDA = {
     80: "07976991691ce2188eaa4a43293ae7fbb85dac253e8f79bc3cc3fc2f3ee43eae",
     86: "74f15bf25cb9112947175b513533a6438d87016a66c5edaa4dc9de19813b3e2f",

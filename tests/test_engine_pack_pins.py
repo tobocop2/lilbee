@@ -90,6 +90,10 @@ PUBLISHED = {
         "f21ef879a4072e4ba3a98910eb87908ae7a219c8d8c0cfbe4a715de3e5f1019a",
         50923670,
     ),
+    "lilbee_engine_mlx-0.32.2-1.metal-py3-none-macosx_14_0_arm64.whl": (
+        "3fc3a9edc0799f03c63b042c309e432b903abcd8229158b19d33afa894d15764",
+        116168296,
+    ),
     "lilbee_engine_tei-1.9.4-1.cpu-py3-none-manylinux_2_34_x86_64.whl": (
         "a92f666c0cdc825f173c3e29486c409a4b5435d037f57d3a60f970844eaf09b8",
         13045675,
@@ -148,3 +152,11 @@ def test_every_llama_row_names_the_release_built_with_the_bumped_helpers() -> No
     rows = [r for r in RECORD if str(r["file"]).startswith("lilbee_engine_llama_cpp-")]
     assert len(rows) == 8
     assert {str(r["url"]).rsplit("/", 2)[1] for r in rows} == {"engine-packs-20261121-llama"}
+
+
+def test_the_mlx_row_is_the_apple_silicon_wheel_of_its_release() -> None:
+    rows = [r for r in RECORD if str(r["file"]).startswith("lilbee_engine_mlx-")]
+    assert [r["file"] for r in rows] == [
+        "lilbee_engine_mlx-0.32.2-1.metal-py3-none-macosx_14_0_arm64.whl"
+    ]
+    assert str(rows[0]["url"]).rsplit("/", 2)[1] == "engine-packs-20261127"

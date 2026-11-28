@@ -78,8 +78,9 @@ An engine that is not bundled needs a pack. These packs are published:
 | `ik_llama.cpp` | Linux x86_64 (CPU, CUDA) |
 | `mistral.rs` | Linux x86_64 (CPU, CUDA on Ampere to Blackwell cards), Windows x86_64 (CPU), macOS 15 on Apple Silicon (Metal) |
 | `tei` | Linux x86_64 (CPU, and CUDA for each card generation from compute capability 7.5), macOS 14 on Apple Silicon (Metal) |
+| `mlx` | macOS 14 on Apple Silicon (Metal) |
 
-No pack of `mlx`, `openvino`, `lemonade` or `ovms` is published yet, so those engines
+No pack of `openvino`, `lemonade` or `ovms` is published yet, so those engines
 refuse to install and print the no-pack text. A computer with no pack for its
 platform gets the same text. Nothing is installed, and llama.cpp stays in use.
 

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.providers.fleet import engine_store
+from lilbee.providers.fleet import engine_manifest, engine_store
 from lilbee.providers.fleet.engine_crates import MPL_PYPI_CHECKSUMS
 from lilbee.providers.fleet.engines import mlx
 from lilbee.providers.roles import WorkerRole
@@ -56,10 +56,17 @@ def test_the_pin_builds_the_version_the_adapter_launches() -> None:
     assert _pin()["MLX_LM_VERSION"] == mlx._VERSION
 
 
-def test_the_pin_floor_is_the_floor_the_adapter_gates_on() -> None:
+def _row_floor() -> str:
+    """The OS floor of the published mlx row, which is the only floor of the engine."""
+    cells = next(iter(engine_manifest.MANIFESTS["mlx"].values()))
+    return str(cells["macos-arm64-metal"]["min_os"])
+
+
+def test_the_pin_floor_is_the_floor_of_the_published_row() -> None:
     pin = _pin()
-    assert pin["MLX_FLOOR"] == ".".join(map(str, mlx.MACOS_FLOOR))
-    assert pin["MLX_PLATFORM"] == f"macosx_{mlx.MACOS_FLOOR[0]}_0_arm64"
+    floor = _row_floor()
+    assert pin["MLX_FLOOR"] == floor
+    assert pin["MLX_PLATFORM"] == f"macosx_{floor.split('.')[0]}_0_arm64"
     assert pin["MLX_BACKEND"] == "metal"
 
 
@@ -603,9 +610,9 @@ def _mlx_paragraph() -> str:
     return " ".join(paragraph.split())
 
 
-def test_the_docs_paragraph_of_mlx_states_the_floor_the_roles_and_that_no_pack_exists() -> None:
+def test_the_docs_paragraph_of_mlx_states_the_floor_and_the_roles() -> None:
     paragraph = _mlx_paragraph()
-    assert f"macOS {mlx.MACOS_FLOOR[0]} or newer" in paragraph
+    assert f"macOS {_row_floor().split('.')[0]} or newer" in paragraph
     assert "needs Apple Silicon" in paragraph
     assert mlx.MLX.served_roles == {WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK}
     assert "serves chat, embed and rerank" in paragraph
@@ -613,8 +620,8 @@ def test_the_docs_paragraph_of_mlx_states_the_floor_the_roles_and_that_no_pack_e
     packs = (ROOT / "src" / "lilbee" / "providers" / "fleet" / "engine_packs.json").read_text(
         encoding="utf-8"
     )
-    assert "mlx" not in packs
-    assert "No pack of mlx is published yet" in paragraph
+    assert "lilbee_engine_mlx-" in packs
+    assert "No pack of mlx" not in paragraph
 
 
 def test_the_launcher_is_executable_and_names_the_adapter_tool() -> None:

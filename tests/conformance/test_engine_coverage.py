@@ -365,8 +365,8 @@ def test_every_pack_cell_has_a_pack_row() -> None:
 
 
 def test_a_pack_route_on_a_cell_outside_the_pack_table_is_named() -> None:
-    rows = [_row(engine="mlx", cell="macos-arm64-metal", route=Route.PACK)]
-    assert route_faults(rows) == [("mlx", "macos-arm64-metal", Route.PACK)]
+    rows = [_row(engine="lemonade", cell="linux-x86_64-npu", route=Route.PACK)]
+    assert route_faults(rows) == [("lemonade", "linux-x86_64-npu", Route.PACK)]
 
 
 def test_a_pack_cell_with_another_route_is_named() -> None:
@@ -393,7 +393,7 @@ def test_the_install_path_refuses_each_row_that_has_no_pack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     refused = [r for r in COVERAGE_ROWS if r.route in (Route.UNPUBLISHED, Route.USER_INSTALLED)]
-    assert {r.engine for r in refused} == {"mlx", "openvino", "ovms", "lemonade"}
+    assert {r.engine for r in refused} == {"openvino", "ovms", "lemonade"}
     assert {install_refusal(r, monkeypatch) for r in refused} == {"NoPublishedPackError"}
 
 
@@ -408,7 +408,7 @@ def test_the_install_path_accepts_each_pack_row_it_can_run_here(
 def test_a_row_that_claims_a_pack_for_an_engine_with_none_is_refused_by_the_install_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    row = _row(engine="mlx", cell="macos-arm64-metal", route=Route.PACK)
+    row = _row(engine="lemonade", cell="linux-x86_64-npu", route=Route.PACK)
     assert install_refusal(row, monkeypatch) == "NoPublishedPackError"
 
 
