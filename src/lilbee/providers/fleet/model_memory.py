@@ -33,6 +33,7 @@ _MAX_SAFETENSORS_HEADER_BYTES = 100 * 1024 * 1024
 _SAFETENSORS_METADATA_KEY = "__metadata__"
 _SAFETENSORS_OFFSETS_KEY = "data_offsets"
 _SAFETENSORS_OFFSET_COUNT = 2
+_SAFETENSORS_DTYPE_KEY = "dtype"
 _IR_MODEL_STEM = "openvino_model"
 _IR_WEIGHTS_SUFFIX = ".bin"
 _IR_WEIGHT_SPAN = re.compile(r'<data\b[^>]*?\boffset="(\d+)"[^>]*?\bsize="(\d+)"')
@@ -66,9 +67,8 @@ _NARROWED_F32_BYTES = 2
 """A float32 tensor counts at this width when the engine runs it as float16."""
 _F32 = "F32"
 _CONFIG_TEXT_KEY = "text_config"
-_CONFIG_DTYPE_KEYS = ("dtype", "torch_dtype")
-_FLOAT32_NAMES = frozenset({"float32"})
-_HALF_NAMES = frozenset({"float16", "bfloat16"})
+_HALF_DTYPES = ("F16", "BF16")
+"""The header dtypes a float32 launch holds at twice their stored width."""
 _CONFIG_VOCAB_KEY = "vocab_size"
 _KV_ELEMENT_BYTES = 2
 """The chat engines for safetensors hold each cache element at the model's 2 byte dtype."""
@@ -419,36 +419,53 @@ def installed_folder_weight_bytes(model_path: Path) -> int:
     return _sum_suffix(sizes, _SAFETENSORS_SUFFIX) or _ir_pair_bytes(sizes)
 
 
-def _is_whole_safetensors(path: Path, size: int) -> bool:
-    """Whether the file of *size* bytes is a whole safetensors file, not cut short.
-
-    The file is a u64 header length, the JSON header, then the data the header's
-    ``data_offsets`` span; the sizes add up to the file size exactly.
-    """
+def _read_safetensors_header(path: Path, size: int) -> bytes | None:
+    """The JSON header text of the file of *size* bytes, or None when it cannot be read."""
     try:
         with path.open("rb") as stream:
             prefix = stream.read(_SAFETENSORS_PREFIX_BYTES)
             if len(prefix) < _SAFETENSORS_PREFIX_BYTES:
-                return False
+                return None
             header_bytes = int.from_bytes(prefix, "little")
             if header_bytes > min(size - _SAFETENSORS_PREFIX_BYTES, _MAX_SAFETENSORS_HEADER_BYTES):
-                return False
-            raw_header = stream.read(header_bytes)
+                return None
+            return stream.read(header_bytes)
     except OSError:
-        return False
+        return None
+
+
+def _safetensors_dtype_bytes(path: Path, size: int) -> dict[str, int] | None:
+    """The data bytes of each dtype in the file of *size* bytes; None unless the file is whole.
+
+    The file is a u64 header length, the JSON header, then the data the header's
+    ``data_offsets`` span; the sizes add up to the file size exactly.
+    """
+    raw_header = _read_safetensors_header(path, size)
+    if raw_header is None:
+        return None
     try:
         header = json.loads(raw_header)
     except (ValueError, RecursionError):
-        return False
-    data_end = _header_data_end(header)
-    return data_end is not None and size == _SAFETENSORS_PREFIX_BYTES + len(raw_header) + data_end
+        return None
+    layout = _header_layout(header)
+    if layout is None:
+        return None
+    data_end, dtype_bytes = layout
+    if size != _SAFETENSORS_PREFIX_BYTES + len(raw_header) + data_end:
+        return None
+    return dtype_bytes
 
 
-def _header_data_end(header: object) -> int | None:
-    """The largest ``data_offsets`` end in a safetensors header, or None when it is malformed."""
+def _header_layout(header: object) -> tuple[int, dict[str, int]] | None:
+    """The data end and the bytes of each dtype in a safetensors header, or None when malformed.
+
+    The data end is the largest ``data_offsets`` end. A tensor that names no dtype counts
+    under the empty name.
+    """
     if not isinstance(header, Mapping):
         return None
     data_end = 0
+    dtype_bytes: dict[str, int] = {}
     for name, entry in header.items():
         if name == _SAFETENSORS_METADATA_KEY:
             continue
@@ -459,7 +476,30 @@ def _header_data_end(header: object) -> int | None:
         if start is None or end is None or not 0 <= start <= end:
             return None
         data_end = max(data_end, end)
-    return data_end
+        dtype = entry.get(_SAFETENSORS_DTYPE_KEY)
+        name_of_dtype = dtype if isinstance(dtype, str) else ""
+        dtype_bytes[name_of_dtype] = dtype_bytes.get(name_of_dtype, 0) + end - start
+    return data_end, dtype_bytes
+
+
+def _whole_safetensors(model_path: Path) -> tuple[int, dict[str, int]]:
+    """The file bytes and the data bytes of each dtype of the installed ``.safetensors`` files.
+
+    Both are empty when any file is cut short.
+    """
+    sizes = _installed_sizes(model_path)
+    folder = model_path.parent if model_path.is_file() else model_path
+    shards = {
+        folder / name: size for name, size in sizes.items() if name.endswith(_SAFETENSORS_SUFFIX)
+    }
+    dtype_bytes: dict[str, int] = {}
+    for path, size in shards.items():
+        found = _safetensors_dtype_bytes(path, size)
+        if found is None:
+            return 0, {}
+        for dtype, count in found.items():
+            dtype_bytes[dtype] = dtype_bytes.get(dtype, 0) + count
+    return sum(shards.values()), dtype_bytes
 
 
 def whole_safetensors_bytes(model_path: Path) -> int:
@@ -467,31 +507,13 @@ def whole_safetensors_bytes(model_path: Path) -> int:
 
     A cut-off file makes the sum of the sizes smaller than the weights, so the size is unknown.
     """
-    sizes = _installed_sizes(model_path)
-    folder = model_path.parent if model_path.is_file() else model_path
-    shards = {
-        folder / name: size for name, size in sizes.items() if name.endswith(_SAFETENSORS_SUFFIX)
-    }
-    if not all(_is_whole_safetensors(path, size) for path, size in shards.items()):
-        return 0
-    return sum(shards.values())
+    return _whole_safetensors(model_path)[0]
 
 
 def installed_config(model_path: Path) -> dict[str, Any] | None:
     """The ``config.json`` of an installed model, or None when it is empty or not a mapping."""
     folder = model_path if model_path.is_dir() else model_path.parent
     return read_folder_config(folder) or None
-
-
-def _declares_dtype(config: Mapping[str, Any] | None, dtypes: frozenset[str]) -> bool:
-    """Whether a config declares one of *dtypes*, at its top level or in ``text_config``."""
-    if config is None:
-        return False
-    return any(
-        section.get(key) in dtypes
-        for section in (config, _config_section(config))
-        for key in _CONFIG_DTYPE_KEYS
-    )
 
 
 class EncoderCharge(StrEnum):
@@ -508,19 +530,19 @@ class EncoderCharge(StrEnum):
 def estimate_installed_encoder(model_path: Path, *, charge: EncoderCharge) -> MemoryEstimate:
     """The encoder figure of an installed folder.
 
-    A CUDA build is charged the weights it holds plus the runtime allowance. A half-precision
-    checkpoint doubles when the build loads float32 weights; the config names its dtype.
+    A CUDA build is charged the weights it holds plus the runtime allowance. A build that
+    loads float32 weights holds each F16 and BF16 tensor at twice its stored size. A build
+    that loads float16 holds each F32 tensor at half its stored size. The file header names
+    the dtypes, and the config is not read for either.
     """
-    weights = whole_safetensors_bytes(model_path)
+    weights, dtype_bytes = _whole_safetensors(model_path)
     if not weights:
         return _unknown_estimate(installed_safetensors_bytes(model_path))
-    config = installed_config(model_path)
     if charge is EncoderCharge.CUDA_FLOAT16:
-        halved = _declares_dtype(config, _FLOAT32_NAMES)
-        return encoder_estimate(weights // 2 if halved else weights)
+        return encoder_estimate(weights - dtype_bytes.get(_F32, 0) // 2)
     if charge is EncoderCharge.CUDA_FLOAT32:
-        doubled = _declares_dtype(config, _HALF_NAMES)
-        return encoder_estimate(weights * 2 if doubled else weights)
+        return encoder_estimate(weights + sum(dtype_bytes.get(d, 0) for d in _HALF_DTYPES))
+    config = installed_config(model_path)
     vocab_size = _whole_number((config or {}).get(_CONFIG_VOCAB_KEY))
     return cpu_encoder_estimate(weights, vocab_size)
 
