@@ -1,0 +1,20 @@
+engine: ovms-cpu
+version: ovms 2026.4.1 linux-x86_64-openvino
+host: Linux-7.0.0-1018-gcp-x86_64-with-glibc2.39
+backend: cpu
+reported-backend: none
+devices: none
+devices-from: none
+models: chat=default_model,embed=default_model,rerank=default_model,vision=default_model
+server-flags: chat: /var/tmp/a-fix-cmprows/ovms/ovms/bin/ovms --model_path /var/tmp/a-fix-cmprows/models/ovms-chat --model_name default_model --rest_bind_address 127.0.0.1 --rest_port 8501 --target_device CPU --task text_generation --max_num_seqs 1; embed: /var/tmp/a-fix-cmprows/ovms/ovms/bin/ovms --model_path /var/tmp/a-fix-cmprows/models/ovms-embed --model_name default_model --rest_bind_address 127.0.0.1 --rest_port 8502 --target_device CPU --task embeddings; rerank: /var/tmp/a-fix-cmprows/ovms/ovms/bin/ovms --model_path /var/tmp/a-fix-cmprows/models/ovms-rerank --model_name default_model --rest_bind_address 127.0.0.1 --rest_port 8503 --target_device CPU --task rerank; vision: /var/tmp/a-fix-cmprows/ovms/ovms/bin/ovms --model_path /var/tmp/a-fix-cmprows/models/ovms-vision --model_name default_model --rest_bind_address 127.0.0.1 --rest_port 8504 --target_device CPU --task text_generation
+cpu: Intel(R) Xeon(R) CPU @ 2.80GHz
+STEP ovms-cpu template ok=True finish=stop
+STEP ovms-cpu tool ok=True tool_calls=['get_weather']
+STEP ovms-cpu overflow ok=True kind=context_overflow
+STEP ovms-cpu json_object ok=True format dropped, scan found an object=True finish=stop
+STEP ovms-cpu json_schema ok=True refused kind=bad_request
+STEP ovms-cpu reasoning ok=True finish=length
+STEP ovms-cpu embed ok=True dims=[1024]
+STEP ovms-cpu rerank ok=True best=1
+STEP ovms-cpu vision ok=True red_named=True blue_called_red=False
+STEP ovms-cpu named ok=True log=['served by engine=ovms-cpu version=preset build=none role=rerank model=ovms-cpu/default_model'] status={<WorkerRole.RERANK: 'rerank'>: 'ovms-cpu'}

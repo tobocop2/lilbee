@@ -1,0 +1,904 @@
+{
+ "server": "ovms-cpu",
+ "version": "ovms 2026.4.1 linux-x86_64-openvino",
+ "roles": [
+  "chat",
+  "embed",
+  "rerank",
+  "vision"
+ ],
+ "models": {
+  "chat": "default_model",
+  "embed": "default_model",
+  "rerank": "default_model",
+  "vision": "default_model"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 1024,
+ "strict": true,
+ "engine": "ovms",
+ "reasoning_tokens": 1024,
+ "results": {
+  "template": {
+   "ok": true,
+   "detail": "finish=stop"
+  },
+  "tool": {
+   "ok": true,
+   "detail": "tool_calls=['get_weather']"
+  },
+  "overflow": {
+   "ok": true,
+   "detail": "kind=context_overflow"
+  },
+  "json_object": {
+   "ok": true,
+   "detail": "format dropped, scan found an object=True finish=stop"
+  },
+  "json_schema": {
+   "ok": true,
+   "detail": "refused kind=bad_request"
+  },
+  "reasoning": {
+   "ok": true,
+   "detail": "finish=length"
+  },
+  "embed": {
+   "ok": true,
+   "detail": "dims=[1024]"
+  },
+  "rerank": {
+   "ok": true,
+   "detail": "best=1"
+  },
+  "vision": {
+   "ok": true,
+   "detail": "red_named=True blue_called_red=False"
+  },
+  "named": {
+   "ok": true,
+   "detail": "log=['served by engine=ovms-cpu version=preset build=none role=rerank model=ovms-cpu/default_model'] status={<WorkerRole.RERANK: 'rerank'>: 'ovms-cpu'}"
+  }
+ },
+ "error_answers": [
+  [
+   400,
+   "{\"error\":\"Mediapipe execution failed. MP status - INVALID_ARGUMENT: CalculatorGraph::Run() failed: \\nCalculator::Process() for node \\\"LLMExecutor\\\" failed: Number of prompt tokens: 60009 exceeds model max length: 40960\"}"
+  ]
+ ],
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "model": "default_model",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a helpful assistant."
+     },
+     {
+      "role": "user",
+      "content": "Look something up."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+       {
+        "id": "probe-1",
+        "type": "function",
+        "function": {
+         "name": "probe",
+         "arguments": "{\"query\": \"x\"}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "probe-1",
+      "content": "first result"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+       {
+        "id": "probe-2",
+        "type": "function",
+        "function": {
+         "name": "probe",
+         "arguments": "{\"query\": \"x\"}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "probe-2",
+      "content": "second result"
+     },
+     {
+      "role": "user",
+      "content": "Summarize."
+     }
+    ],
+    "stream": false,
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "probe",
+       "description": "Probe whether the chat template renders a tool exchange.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "query"
+        ]
+       }
+      }
+     }
+    ],
+    "max_tokens": 1
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"logprobs\":null,\"message\":{\"content\":\"\",\"role\":\"assistant\",\"tool_calls\":[]}}],\"created\":1795832390,\"model\":\"default_model\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":236,\"completion_tokens\":1,\"total_tokens\":237}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "model": "default_model",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You answer in one short sentence."
+     },
+     {
+      "role": "user",
+      "content": "What is the capital of France?"
+     },
+     {
+      "role": "assistant",
+      "content": "Paris."
+     },
+     {
+      "role": "user",
+      "content": "And of Italy?"
+     }
+    ],
+    "stream": false,
+    "temperature": 0.0,
+    "seed": 7,
+    "max_tokens": 1024
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"logprobs\":null,\"message\":{\"content\":\"\\n\\nThe capital of Italy is Rome.\",\"reasoning_content\":\"\\nOkay, the user asked for the capital of France and then followed up with Italy. I remember that Paris is the capital of France. For Italy, the capital is Rome. Let me make sure I'm correct. I should check if there's any recent changes, but I don't think so. So the answer is Rome. I need to make sure the response is clear and concise.\\n\",\"role\":\"assistant\",\"tool_calls\":[]}}],\"created\":1795832391,\"model\":\"default_model\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":43,\"completion_tokens\":90,\"total_tokens\":133}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "model": "default_model",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a helpful assistant."
+     },
+     {
+      "role": "user",
+      "content": "Look something up."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+       {
+        "id": "probe-1",
+        "type": "function",
+        "function": {
+         "name": "probe",
+         "arguments": "{\"query\": \"x\"}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "probe-1",
+      "content": "first result"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+       {
+        "id": "probe-2",
+        "type": "function",
+        "function": {
+         "name": "probe",
+         "arguments": "{\"query\": \"x\"}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "probe-2",
+      "content": "second result"
+     },
+     {
+      "role": "user",
+      "content": "Summarize."
+     }
+    ],
+    "stream": false,
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "probe",
+       "description": "Probe whether the chat template renders a tool exchange.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "query"
+        ]
+       }
+      }
+     }
+    ],
+    "max_tokens": 1
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"logprobs\":null,\"message\":{\"content\":\"\",\"role\":\"assistant\",\"tool_calls\":[]}}],\"created\":1795832394,\"model\":\"default_model\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":236,\"completion_tokens\":1,\"total_tokens\":237}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "model": "default_model",
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris? Use the tool."
+     }
+    ],
+    "stream": false,
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Get the weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ],
+    "tool_choice": "auto",
+    "temperature": 0.0,
+    "seed": 7,
+    "max_tokens": 1024
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"logprobs\":null,\"message\":{\"content\":\"\",\"reasoning_content\":\"\\nOkay, the user is asking for the weather in Paris. I need to use the get_weather tool. Let me check the function parameters. The tool requires a 'city' parameter, which should be a string. The user mentioned Paris, so I'll set the city to \\\"Paris\\\". I'll structure the tool call as a JSON object with the name \\\"get_weather\\\" and the arguments as {\\\"city\\\": \\\"Paris\\\"}. That should retrieve the weather information for Paris.\\n\",\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"KbGfCTvaZ\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"Paris\\\"}\"}}]}}],\"created\":1795832394,\"model\":\"default_model\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":158,\"completion_tokens\":119,\"total_tokens\":277}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "model": "default_model",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a helpful assistant."
+     },
+     {
+      "role": "user",
+      "content": "Look something up."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+       {
+        "id": "probe-1",
+        "type": "function",
+        "function": {
+         "name": "probe",
+         "arguments": "{\"query\": \"x\"}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "probe-1",
+      "content": "first result"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+       {
+        "id": "probe-2",
+        "type": "function",
+        "function": {
+         "name": "probe",
+         "arguments": "{\"query\": \"x\"}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "probe-2",
+      "content": "second result"
+     },
+     {
+      "role": "user",
+      "content": "Summarize."
+     }
+    ],
+    "stream": false,
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "probe",
+       "description": "Probe whether the chat template renders a tool exchange.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "query"
+        ]
+       }
+      }
+     }
+    ],
+    "max_tokens": 1
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"logprobs\":null,\"message\":{\"content\":\"\",\"role\":\"assistant\",\"tool_calls\":[]}}],\"created\":1795832397,\"model\":\"default_model\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":236,\"completion_tokens\":1,\"total_tokens\":237}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "model": "default_model",
+    "messages": [
+     {
+      "role": "user",
+      "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]"
+     }
+    ],
+    "stream": false,
+    "temperature": 0.0,
+    "seed": 7,
+    "max_tokens": 16
+   },
+   "status": 400,
+   "content_type": "application/json",
+   "body": "{\"error\":\"Mediapipe execution failed. MP status - INVALID_ARGUMENT: CalculatorGraph::Run() failed: \\nCalculator::Process() for node \\\"LLMExecutor\\\" failed: Number of prompt tokens: 60009 exceeds model max length: 40960\"}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "model": "default_model",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a helpful assistant."
+     },
+     {
+      "role": "user",
+      "content": "Look something up."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+       {
+        "id": "probe-1",
+        "type": "function",
+        "function": {
+         "name": "probe",
+         "arguments": "{\"query\": \"x\"}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "probe-1",
+      "content": "first result"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+       {
+        "id": "probe-2",
+        "type": "function",
+        "function": {
+         "name": "probe",
+         "arguments": "{\"query\": \"x\"}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "probe-2",
+      "content": "second result"
+     },
+     {
+      "role": "user",
+      "content": "Summarize."
+     }
+    ],
+    "stream": false,
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "probe",
+       "description": "Probe whether the chat template renders a tool exchange.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "query"
+        ]
+       }
+      }
+     }
+    ],
+    "max_tokens": 1
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"logprobs\":null,\"message\":{\"content\":\"\",\"role\":\"assistant\",\"tool_calls\":[]}}],\"created\":1795832397,\"model\":\"default_model\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":236,\"completion_tokens\":1,\"total_tokens\":237}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "model": "default_model",
+    "messages": [
+     {
+      "role": "user",
+      "content": "Reply with a JSON object for Paris: city is the name and pop is the population."
+     }
+    ],
+    "stream": false,
+    "temperature": 0.0,
+    "seed": 7,
+    "max_tokens": 256,
+    "chat_template_kwargs": {
+     "enable_thinking": false
+    }
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"logprobs\":null,\"message\":{\"content\":\"{\\n  \\\"Paris\\\": {\\n    \\\"city\\\": \\\"Paris\\\",\\n    \\\"pop\\\": 2140000\\n  }\\n}\",\"role\":\"assistant\",\"tool_calls\":[]}}],\"created\":1795832398,\"model\":\"default_model\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":30,\"completion_tokens\":30,\"total_tokens\":60}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "model": "default_model",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a helpful assistant."
+     },
+     {
+      "role": "user",
+      "content": "Look something up."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+       {
+        "id": "probe-1",
+        "type": "function",
+        "function": {
+         "name": "probe",
+         "arguments": "{\"query\": \"x\"}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "probe-1",
+      "content": "first result"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+       {
+        "id": "probe-2",
+        "type": "function",
+        "function": {
+         "name": "probe",
+         "arguments": "{\"query\": \"x\"}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "probe-2",
+      "content": "second result"
+     },
+     {
+      "role": "user",
+      "content": "Summarize."
+     }
+    ],
+    "stream": false,
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "probe",
+       "description": "Probe whether the chat template renders a tool exchange.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "query"
+        ]
+       }
+      }
+     }
+    ],
+    "max_tokens": 1
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"logprobs\":null,\"message\":{\"content\":\"\",\"role\":\"assistant\",\"tool_calls\":[]}}],\"created\":1795832398,\"model\":\"default_model\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":236,\"completion_tokens\":1,\"total_tokens\":237}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "role": "user",
+      "content": "Think it through, then answer: what is 17 plus 25?"
+     }
+    ],
+    "model": "default_model",
+    "stream": false,
+    "temperature": 0,
+    "seed": 7,
+    "max_tokens": 1024
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"logprobs\":null,\"message\":{\"content\":\"\",\"reasoning_content\":\"\\nOkay, let's see. The user is asking what 17 plus 25 is. Hmm, I need to calculate 17 plus 25. Let me think. Well, 17 plus 25. Maybe I can break it down. Let's see, 17 plus 20 would be 37, and then add the remaining 5, so 37 plus 5 is 42. Wait, is that right? Let me check again. 17 plus 25. If I add 10 and 10, that's 20, so 17 plus 20 is 37, then plus 5 more is 42. Yeah, that seems right. Alternatively, I can add 25 to 17. Let's do 17 + 25. 17 + 25. 17 + 25. Let me do it step by step. 17 + 20 is 37, then 37 + 5 is 42. Yeah, that's correct. Alternatively, 25 + 17. 25 + 10 is 35, then 35 + 7 is 42. Either way, it's 42. I think that's the right answer. Let me confirm with another method. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. 17 + 25. \",\"role\":\"assistant\",\"tool_calls\":[]}}],\"created\":1795832398,\"model\":\"default_model\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":25,\"completion_tokens\":1024,\"total_tokens\":1049}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/embeddings",
+   "request": {
+    "model": "default_model",
+    "input": [
+     "alpha",
+     "beta gamma"
+    ],
+    "encoding_format": "base64"
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"embedding\":\"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\",\"index\":0},{\"object\":\"embedding\",\"embedding\":\"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\",\"index\":1}],\"usage\":{\"prompt_tokens\":5,\"total_tokens\":5}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/rerank",
+   "request": {
+    "documents": [
+     "Bananas are yellow.",
+     "Paris is the capital of France.",
+     "Dogs bark."
+    ],
+    "model": "default_model",
+    "query": "What is the capital of France?"
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"results\":[{\"index\":1,\"relevance_score\":0.9926320314407349},{\"index\":0,\"relevance_score\":0.0487242229282856},{\"index\":2,\"relevance_score\":0.025629878044128418}]}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "model": "default_model",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a helpful assistant."
+     },
+     {
+      "role": "user",
+      "content": "Look something up."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+       {
+        "id": "probe-1",
+        "type": "function",
+        "function": {
+         "name": "probe",
+         "arguments": "{\"query\": \"x\"}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "probe-1",
+      "content": "first result"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+       {
+        "id": "probe-2",
+        "type": "function",
+        "function": {
+         "name": "probe",
+         "arguments": "{\"query\": \"x\"}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "probe-2",
+      "content": "second result"
+     },
+     {
+      "role": "user",
+      "content": "Summarize."
+     }
+    ],
+    "stream": false,
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "probe",
+       "description": "Probe whether the chat template renders a tool exchange.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "query"
+        ]
+       }
+      }
+     }
+    ],
+    "max_tokens": 1
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"logprobs\":null,\"message\":{\"content\":\"\",\"role\":\"assistant\",\"tool_calls\":[]}}],\"created\":1795832423,\"model\":\"default_model\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":236,\"completion_tokens\":1,\"total_tokens\":237}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "model": "default_model",
+    "messages": [
+     {
+      "role": "user",
+      "content": [
+       {
+        "type": "image_url",
+        "image_url": {
+         "url": "data:image/png;base64,iVBORw0K..."
+        }
+       },
+       {
+        "type": "text",
+        "text": "What colour is this image? Answer in one word."
+       }
+      ]
+     }
+    ],
+    "stream": false,
+    "temperature": 0.0,
+    "seed": 7,
+    "max_tokens": 64
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"logprobs\":null,\"message\":{\"content\":\" red\",\"role\":\"assistant\",\"tool_calls\":[]}}],\"created\":1795832424,\"model\":\"default_model\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":27,\"completion_tokens\":2,\"total_tokens\":29}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "model": "default_model",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a helpful assistant."
+     },
+     {
+      "role": "user",
+      "content": "Look something up."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+       {
+        "id": "probe-1",
+        "type": "function",
+        "function": {
+         "name": "probe",
+         "arguments": "{\"query\": \"x\"}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "probe-1",
+      "content": "first result"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+       {
+        "id": "probe-2",
+        "type": "function",
+        "function": {
+         "name": "probe",
+         "arguments": "{\"query\": \"x\"}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "probe-2",
+      "content": "second result"
+     },
+     {
+      "role": "user",
+      "content": "Summarize."
+     }
+    ],
+    "stream": false,
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "probe",
+       "description": "Probe whether the chat template renders a tool exchange.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "query"
+        ]
+       }
+      }
+     }
+    ],
+    "max_tokens": 1
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"logprobs\":null,\"message\":{\"content\":\"\",\"role\":\"assistant\",\"tool_calls\":[]}}],\"created\":1795832425,\"model\":\"default_model\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":236,\"completion_tokens\":1,\"total_tokens\":237}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "model": "default_model",
+    "messages": [
+     {
+      "role": "user",
+      "content": [
+       {
+        "type": "image_url",
+        "image_url": {
+         "url": "data:image/png;base64,iVBORw0K..."
+        }
+       },
+       {
+        "type": "text",
+        "text": "What colour is this image? Answer in one word."
+       }
+      ]
+     }
+    ],
+    "stream": false,
+    "temperature": 0.0,
+    "seed": 7,
+    "max_tokens": 64
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"logprobs\":null,\"message\":{\"content\":\" blue\",\"role\":\"assistant\",\"tool_calls\":[]}}],\"created\":1795832425,\"model\":\"default_model\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":27,\"completion_tokens\":2,\"total_tokens\":29}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/rerank",
+   "request": {
+    "documents": [
+     "Bananas are yellow.",
+     "Paris is the capital of France.",
+     "Dogs bark."
+    ],
+    "model": "default_model",
+    "query": "What is the capital of France?"
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"results\":[{\"index\":1,\"relevance_score\":0.9926320314407349},{\"index\":0,\"relevance_score\":0.0487242229282856},{\"index\":2,\"relevance_score\":0.025629878044128418}]}"
+  }
+ ]
+}

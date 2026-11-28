@@ -224,7 +224,7 @@ def test_l2_cli_install_json_carries_not_run_on(unproven: None, wheel: Path) -> 
         (
             EngineName.OVMS,
             "openvino",
-            ["Intel CPU", "Intel integrated graphics", "Intel Arc graphics", "Intel NPU"],
+            ["Intel integrated graphics", "Intel Arc graphics", "Intel NPU"],
         ),
         (EngineName.LEMONADE, "npu", ["AMD XDNA2 NPU"]),
     ],
