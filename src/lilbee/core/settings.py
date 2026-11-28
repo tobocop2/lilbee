@@ -143,28 +143,42 @@ def save(data_root: Path, settings: dict[str, Any]) -> None:
     }
     # config.toml can hold provider API keys, so it gets the same owner-only
     # treatment as the session token rather than a post-hoc chmod.
-    write_private_text(path, _merged_text(path, present))
+    text, newline = _merged_text(path, present)
+    write_private_text(path, text, newline=newline)
 
 
-def _merged_text(path: Path, present: dict[str, Any]) -> str:
-    """The text of *path* with *present* applied; a missing or broken file starts new."""
+def _merged_text(path: Path, present: dict[str, Any]) -> tuple[str, str]:
+    """The text of *path* with *present* applied, and the line end to write it with.
+
+    A missing or broken file starts new. A file whose every line ends in CRLF keeps
+    CRLF; any other file gets LF.
+    """
     document = tomlkit.document()
+    newline = "\n"
     if path.exists():
+        with path.open(encoding="utf-8") as handle:
+            held = handle.read()
+            if handle.newlines == "\r\n":
+                newline = "\r\n"
         with suppress(TOMLKitError, RecursionError):
-            document = tomlkit.parse(path.read_text(encoding="utf-8"))
+            document = tomlkit.parse(held)
     _apply(document, present)
-    return tomlkit.dumps(document)
+    return tomlkit.dumps(document), newline
 
 
 def _apply(table: Any, wanted: Mapping[str, Any]) -> None:
-    """Make *table* hold *wanted*, touching only the keys that differ, so comments stay."""
+    """Make *table* hold *wanted*, touching only the keys that differ, so comments stay.
+
+    An empty table is assigned, not merged into: a table that holds only subtables
+    has no header of its own, so emptying it would write nothing and lose the key.
+    """
     held = table.unwrap()
     for key in [key for key in held if key not in wanted]:
         del table[key]
     for key, value in wanted.items():
         if key not in held:
             table[key] = value
-        elif isinstance(value, dict) and isinstance(held[key], dict):
+        elif isinstance(value, dict) and value and isinstance(held[key], dict):
             _apply(table[key], value)
         elif not _same(held[key], value):
             table[key] = value

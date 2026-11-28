@@ -99,7 +99,7 @@ def validate_path_within(path: str | Path, root: Path) -> Path:
     return resolved
 
 
-def write_private_text(path: Path, text: str) -> None:
+def write_private_text(path: Path, text: str, *, newline: str = "\n") -> None:
     """Write *text* to *path* so it is owner-only for its entire existence.
 
     Writing under the umask and chmod'ing afterwards leaves a window where any
@@ -108,13 +108,15 @@ def write_private_text(path: Path, text: str) -> None:
 
     Windows has no POSIX mode bits; there these rely on the inherited
     ``%LOCALAPPDATA%`` DACL.
+
+    Each ``\\n`` in *text* is written as *newline*.
     """
-    _write_atomically(path, text, private_opener)
+    _write_atomically(path, text, private_opener, newline)
 
 
 def write_text_atomically(path: Path, text: str) -> None:
     """Write *text* to *path* atomically, with the mode the umask gives a new file."""
-    _write_atomically(path, text, None)
+    _write_atomically(path, text, None, "\n")
 
 
 def sibling_temp_path(path: Path) -> Path:
@@ -126,7 +128,7 @@ def sibling_temp_path(path: Path) -> Path:
     return path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
 
 
-def _write_atomically(path: Path, text: str, opener: _Opener | None) -> None:
+def _write_atomically(path: Path, text: str, opener: _Opener | None, newline: str) -> None:
     """Write a temp file beside *path*, fsync it, then ``os.replace`` it onto *path*.
 
     The data is fsynced before the rename, so a crash cannot leave the target empty.
@@ -134,7 +136,7 @@ def _write_atomically(path: Path, text: str, opener: _Opener | None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = sibling_temp_path(path)
     try:
-        with open(tmp, "x", encoding="utf-8", newline="\n", opener=opener) as handle:
+        with open(tmp, "x", encoding="utf-8", newline=newline, opener=opener) as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())

@@ -196,7 +196,7 @@ class TestAnEmptyTableIsWritten:
         "held",
         ["[a.b]\nx = 1\n", "[a]\n[a.b]\nx = 1\n", "[a]\ny = 2\n"],
     )
-    def test_over_a_nested_table(self, tmp_path: Path, held: str) -> None:
+    def test_over_a_table_that_holds_keys(self, tmp_path: Path, held: str) -> None:
         (tmp_path / "config.toml").write_text(held, encoding="utf-8")
         settings.save(tmp_path, {"a": {}})
         assert tomllib.loads(_text(tmp_path)) == {"a": {}}
