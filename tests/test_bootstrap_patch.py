@@ -51,7 +51,7 @@ def test_c_logo_matches_the_python_wordmark(added_lines):
 
 def test_c_logo_has_no_extra_rows(added_lines):
     """The C array must hold exactly the non-blank wordmark rows, in order."""
-    row_starts = ('"@', '"!', '" :', '": ')
+    row_starts = ('"@', '"!', '" :', '": ', '" @')
     literals = [
         line.strip().removeprefix('"').removesuffix('",')
         for line in added_lines

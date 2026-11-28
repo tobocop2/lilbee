@@ -658,8 +658,6 @@ class TaskBarController:
 
     def reload_wiki_screens(self) -> None:
         """Rescan open wiki and drafts screens after a task rewrote pages or drafts on disk."""
-        from textual.css.query import QueryError
-
         from lilbee.cli.tui.screens.wiki import WikiScreen
         from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
 
@@ -667,10 +665,7 @@ class TaskBarController:
             # screen_stack is typed Screen[Any]; narrow at runtime to the
             # wiki views that expose a reload.
             if isinstance(screen, WikiScreen | WikiDraftsScreen):
-                try:
-                    screen.reload()
-                except QueryError:
-                    log.debug("Wiki screen not mounted yet; skipping reload", exc_info=True)
+                screen.reload()
 
     def start_download(
         self,

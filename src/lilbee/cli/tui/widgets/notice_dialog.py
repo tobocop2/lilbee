@@ -13,7 +13,7 @@ from typing import ClassVar
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Center, Vertical
+from textual.containers import Center, Vertical, VerticalScroll
 from textual.widgets import Label, Static
 
 from lilbee.cli.tui.widgets.dialog import Dialog
@@ -36,6 +36,7 @@ class NoticeDialog(Dialog[None]):
     """Modal that shows a title and a message with a single dismiss action."""
 
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
+    AUTO_FOCUS = "#notice-dismiss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "dismiss_notice", "OK", show=True),
@@ -51,7 +52,8 @@ class NoticeDialog(Dialog[None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(self._title, id="notice-title", markup=False)
-            yield Label(self._message, id="notice-message", markup=False)
+            with VerticalScroll(id="notice-scroll"):
+                yield Label(self._message, id="notice-message", markup=False)
             with Center():
                 yield _DismissPill(self._dismiss_label)
 

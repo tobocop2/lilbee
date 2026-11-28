@@ -136,3 +136,77 @@ async def test_keys_typed_before_a_catalog_landing_never_reach_the_prompt(monkey
         app.switch_view(msg.DEFAULT_VIEW)
         chat = await await_chat(app, pilot)
         assert chat.query_one("#chat-input", ChatInput).value == ""
+
+
+def _app_held_at_the_gate(monkeypatch, sent: list[str]) -> LilbeeApp:
+    """An app whose gate waits for the test to release it; a sent prompt lands in *sent*."""
+    monkeypatch.setattr(StartupGate, "start_boot", lambda self: None)
+    monkeypatch.setattr(ChatScreen, "_send_message", lambda self, text: sent.append(text))
+    return LilbeeApp()
+
+
+async def test_backspace_at_the_gate_edits_the_kept_text(monkeypatch) -> None:
+    sent: list[str] = []
+    app = _app_held_at_the_gate(monkeypatch, sent)
+    async with app.run_test(size=(160, 48)) as pilot:
+        gate = await _held_gate(app, pilot)
+        await pilot.press("a", "b", "backspace", "c")
+        app.chat_is_ready = True
+        gate._release()
+        chat = await await_chat(app, pilot)
+        inp = chat.query_one("#chat-input", ChatInput)
+        assert await wait_until(pilot, lambda: inp.value == "ac", timeout=5.0), inp.value
+
+
+async def test_backspace_removes_one_character_of_a_paste(monkeypatch) -> None:
+    from textual import events
+
+    sent: list[str] = []
+    app = _app_held_at_the_gate(monkeypatch, sent)
+    async with app.run_test(size=(160, 48)) as pilot:
+        gate = await _held_gate(app, pilot)
+        app.post_message(events.Paste("abc"))
+        await pilot.press("backspace")
+        app.chat_is_ready = True
+        gate._release()
+        chat = await await_chat(app, pilot)
+        inp = chat.query_one("#chat-input", ChatInput)
+        assert await wait_until(pilot, lambda: inp.value == "ab", timeout=5.0), inp.value
+
+
+async def test_enter_at_the_gate_sends_the_kept_text(monkeypatch) -> None:
+    sent: list[str] = []
+    app = _app_held_at_the_gate(monkeypatch, sent)
+    async with app.run_test(size=(160, 48)) as pilot:
+        gate = await _held_gate(app, pilot)
+        await pilot.press("h", "i", "enter")
+        app.chat_is_ready = True
+        gate._release()
+        chat = await await_chat(app, pilot)
+        assert await wait_until(pilot, lambda: sent == ["hi"], timeout=5.0), sent
+        assert chat.query_one("#chat-input", ChatInput).value == ""
+
+
+async def test_enter_with_nothing_kept_sends_nothing(monkeypatch) -> None:
+    sent: list[str] = []
+    app = _app_held_at_the_gate(monkeypatch, sent)
+    async with app.run_test(size=(160, 48)) as pilot:
+        gate = await _held_gate(app, pilot)
+        await pilot.press("enter")
+        app.chat_is_ready = True
+        gate._release()
+        chat = await await_chat(app, pilot)
+        await pilot.pause()
+        assert sent == []
+        assert chat.query_one("#chat-input", ChatInput).value == ""
+
+
+async def _held_gate(app, pilot) -> StartupGate:
+    assert await wait_until(
+        pilot,
+        lambda: isinstance(app.screen, StartupGate) and app.chat_screen() is not None,
+        timeout=10.0,
+    )
+    gate = app.screen
+    assert isinstance(gate, StartupGate)
+    return gate

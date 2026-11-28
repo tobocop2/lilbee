@@ -84,8 +84,24 @@ _FLEET_PANEL_ID = "#gpu-fleet-panel"
 _REPLICA_ROLES = REPLICATED_ROLES
 _HINT = (
     "Toggle a GPU for each role; -/+ sets replicas.  "
-    "ctrl+r preview · ctrl+s apply · ctrl+x auto · e engine"
+    "ctrl+r preview · ctrl+s/f5 apply · ctrl+x auto · e engine"
 )
+
+
+def fleet_key_bindings(*, show_all: bool) -> list[BindingType]:
+    """Preview, apply and clear keys for a fleet host; ctrl+s and f5 both apply.
+
+    Priority, so a focused toggle or editor child does not swallow them. *show_all*
+    lists preview and clear in the footer too, not only apply.
+    """
+    return [
+        Binding("ctrl+r", "preview", "Preview", show=show_all, priority=True),
+        Binding("ctrl+s", "apply", "Apply", show=True, priority=True),
+        Binding("f5", "apply", "Apply", show=False, priority=True),
+        Binding("ctrl+x", "clear", "Auto", show=show_all, priority=True),
+    ]
+
+
 _ENGINE_PILL_PREFIX = "eng-"
 # The role named by the id of a pill in a role row, such as dev-chat-0 or eng-chat.
 _ROW_PILL_RE = re.compile(r"^(?:dev|tgt|rep|eng)-([a-z]+)")
@@ -241,10 +257,15 @@ class FleetBody(MountWhenAttached, Widget):
 
     class PlacementReloading(Message):
         """Posted while an apply/clear reloads the fleet, so the chat screen can
-        hold submissions until the reload finishes instead of racing it."""
+        hold submissions until the reload finishes instead of racing it.
 
-        def __init__(self, active: bool) -> None:
+        ``restores_focus`` is True on the end message when the body gives the
+        focus back to its own control, so the screen does not take it first.
+        """
+
+        def __init__(self, active: bool, *, restores_focus: bool = False) -> None:
             self.active = active
+            self.restores_focus = restores_focus
             super().__init__()
 
     def __init__(self) -> None:
@@ -253,6 +274,7 @@ class FleetBody(MountWhenAttached, Widget):
         self._device_indices: tuple[int, ...] = ()
         self._view_manual = False
         self._page = 0
+        self._refocus_id: str | None = None
         self._command_actions: dict[str, Callable[[], None]] = {
             _CMD_PREVIEW: self.action_preview,
             _CMD_APPLY: self.action_apply,
@@ -262,12 +284,39 @@ class FleetBody(MountWhenAttached, Widget):
     def watch_applying(self, applying: bool) -> None:
         """Disable the editor controls while an apply/clear is in flight, surface a
         'Rebuilding fleet…' status so the reload isn't a silent idle screen, and tell
-        the chat screen to hold submissions until the fleet finishes reloading."""
-        self.post_message(self.PlacementReloading(applying))
+        the chat screen to hold submissions until the fleet finishes reloading.
+
+        Disabling the editor takes the focus from a control inside it, and the
+        re-render replaces every control, so the id of the focused control is kept
+        and focus goes back to it when the change ends.
+        """
+        if applying:
+            focused = self.app.focused
+            if focused is not None and self in focused.ancestors:
+                self._refocus_id = focused.id or _CMD_APPLY
+        restores_focus = not applying and self._refocus_id is not None
+        self.post_message(self.PlacementReloading(applying, restores_focus=restores_focus))
         with contextlib.suppress(NoMatches):
             self.query_one(_EDITOR_ID, Vertical).disabled = applying
         if applying:
             self._show_rebuilding()
+        elif self._refocus_id is not None:
+            self.call_after_refresh(self._restore_focus, self._refocus_id)
+            self._refocus_id = None
+
+    def _restore_focus(self, widget_id: str) -> None:
+        """Focus the control *widget_id*, or the Apply pill when it is gone.
+
+        A control the user focused during the change keeps the focus.
+        """
+        if self.app.focused is not None:
+            return
+        for selector in (f"#{widget_id}", f"#{_CMD_APPLY}"):
+            # A control the re-render replaced stays in the DOM, hidden, until it is removed.
+            for widget in self.query(selector):
+                if widget.display and widget.focusable:
+                    widget.focus()
+                    return
 
     def _show_rebuilding(self) -> None:
         """Hold a 'Rebuilding fleet…' status until the reloaded fleet reports ready.
@@ -342,8 +391,10 @@ class FleetBody(MountWhenAttached, Widget):
 
     def pick_engine(self, role: WorkerRole) -> None:
         """Open the engine picker for *role*; the choice is saved for the model of the role."""
-        from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
+        from lilbee.cli.tui.screens.engine_picker import EnginePickerModal, engine_picker_open
 
+        if engine_picker_open(self.app):
+            return
         view = next(v for v in engine_service.roles() if v.role is role)
         if not view.model.strip():
             self.notify(msg.ENGINE_NO_MODEL.format(role=role), severity="warning")

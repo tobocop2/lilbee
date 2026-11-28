@@ -15,6 +15,7 @@ from lilbee.app import engine_service
 from lilbee.app.engine_service import EngineOption, EngineRow, EngineState
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_commands import (
+    ENGINE_SETTING_KEYS,
     EngineCommandResult,
     announce,
     publish_engines_changed,
@@ -121,7 +122,12 @@ class EnginesPane(MountWhenAttached, VerticalScroll):
         yield Static(msg.ENGINES_HINT, id="engines-hint", markup=False)
 
     def on_mount(self) -> None:
+        self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
         self.reload()
+
+    def _on_settings_changed(self, payload: tuple[str, object]) -> None:
+        if payload[0] in ENGINE_SETTING_KEYS:
+            self.reload()
 
     @work(thread=True, exclusive=True, group="engines-load")
     def reload(self) -> None:

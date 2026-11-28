@@ -175,6 +175,8 @@ _STAYS = "lilbee cannot delete %s. Correct its permissions; the next start remov
 _READ_ONLY = "The folder %s is read-only, so %s stays. Make it writable; the next start removes it."
 _LICENCE_JOINER = re.compile(r"\s+(?:OR|AND)\s+")
 PACK_DIR = "packs"
+# One entry per build folder; a stage folder is a dot folder, so an install in progress adds none.
+BuildStamp = tuple[tuple[str, int, int], ...]
 
 
 class ChecksumError(Exception):
@@ -642,6 +644,26 @@ def _entries(folder: Path, engine: str) -> list[os.DirEntry[str]]:
         raise EngineFolderError(folder, engine, exc) from exc
 
 
+def _build_stamps(root: Path, engine: os.DirEntry[str]) -> list[tuple[str, int, int]]:
+    """The stamp entries of the builds of *engine*; none when its folder cannot be read."""
+    found: list[tuple[str, int, int]] = []
+    try:
+        if not engine.is_dir(follow_symlinks=False):
+            return found
+        builds = _entries(root / engine.name, engine.name)
+    except OSError:
+        return found
+    for build in builds:
+        if build.name.startswith("."):
+            continue
+        try:
+            info = build.stat(follow_symlinks=False)
+        except OSError:
+            continue
+        found.append((f"{engine.name}/{build.name}", info.st_ino, info.st_mtime_ns))
+    return found
+
+
 _Slot = tuple[Path, InstalledEngine | EngineFolderError | None]
 
 
@@ -860,6 +882,22 @@ class EngineStore:
         if not entry.is_dir(follow_symlinks=False):
             raise EngineFolderError(self.root / engine, engine)
         return dict(_builds(self.root / engine))
+
+    def stamp(self) -> BuildStamp:
+        """The name, inode and change time of each build folder that can be read.
+
+        An engine folder or a build that cannot be read is left out, so the others still
+        count. The stamp is empty when the engines folder itself cannot be read.
+        """
+        try:
+            engines = _entries(self.root, "")
+        except OSError:
+            return ()
+        found: list[tuple[str, int, int]] = []
+        for engine in engines:
+            if engine.name != PACK_DIR and not engine.name.startswith("."):
+                found.extend(_build_stamps(self.root, engine))
+        return tuple(found)
 
     def pack_path(self, lock: PinLock) -> Path:
         """Where a hand-copied wheel of *lock* is looked up."""

@@ -296,6 +296,7 @@ class ApplyProfileDialog(Dialog[ApplyChoice]):
     """Shows what applying a profile changes and keeps; nothing changes until a pill is picked."""
 
     CSS_PATH: ClassVar[CSSPathType] = ["dialog.tcss", "profile_dialogs.tcss"]
+    AUTO_FOCUS = "#apply-cancel"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
@@ -348,8 +349,16 @@ class ApplyProfileDialog(Dialog[ApplyChoice]):
         table.can_focus = False
         table.add_columns(msg.PROFILE_COL_SETTING, msg.PROFILE_COL_NOW, msg.PROFILE_COL_AFTER)
         add_cost_column(table)
-        table.add_rows(diff_cells(row) for row in self._plan.diff.changes)
         yield table
+
+    def on_mount(self) -> None:
+        """Add the change rows once the table is mounted, so its auto height follows them.
+
+        Rows added before the mount leave the table at height 0 until a later layout.
+        """
+        if self._plan.diff.changes:
+            table = self.query_one("#apply-changes", DataTable)
+            table.add_rows(diff_cells(row) for row in self._plan.diff.changes)
 
     def _compose_kept(self) -> ComposeResult:
         if not self._plan.kept:
@@ -383,9 +392,6 @@ class ApplyProfileDialog(Dialog[ApplyChoice]):
         yield ConfirmPill(
             msg.PROFILE_CANCEL_LABEL, pill_id="apply-cancel", answer=ApplyChoice.CANCEL
         )
-
-    def on_mount(self) -> None:
-        self.query_one("#apply-cancel", ConfirmPill).focus()
 
     @on(ConfirmPill.Picked)
     def _on_picked(self, event: ConfirmPill.Picked) -> None:

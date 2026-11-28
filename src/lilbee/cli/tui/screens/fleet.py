@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import ClassVar
 
 from textual.app import ComposeResult
-from textual.binding import Binding, BindingType
+from textual.binding import BindingType
 from textual.screen import Screen
 
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.browse_bindings import browse_back_bindings
-from lilbee.cli.tui.widgets.fleet_body import FleetBody
+from lilbee.cli.tui.widgets.fleet_body import FleetBody, fleet_key_bindings
 
 
 class FleetScreen(Screen[None]):
@@ -22,14 +22,11 @@ class FleetScreen(Screen[None]):
 
     CSS_PATH = "fleet.tcss"
     AUTO_FOCUS = ".dev-toggle"
-    HELP = "Configure GPU placement. ctrl+r preview, ctrl+s apply, ctrl+x auto, q back."
+    HELP = "Configure GPU placement. ctrl+r preview, ctrl+s or f5 apply, ctrl+x auto, q back."
 
     BINDINGS: ClassVar[list[BindingType]] = [
         *browse_back_bindings(),
-        # priority so they fire even when a button/editor child has focus.
-        Binding("ctrl+r", "preview", "Preview", show=False, priority=True),
-        Binding("ctrl+s", "apply", "Apply", show=True, priority=True),
-        Binding("ctrl+x", "clear", "Auto", show=False, priority=True),
+        *fleet_key_bindings(show_all=False),
     ]
 
     def compose(self) -> ComposeResult:

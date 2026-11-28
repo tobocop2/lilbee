@@ -2313,7 +2313,7 @@ async def test_prompt_overwrite_declined_notifies_a_bracketed_name_literally(tmp
             patch.object(app.screen, "notify") as mock_notify,
             patch.object(app.screen.app, "push_screen") as mock_push,
         ):
-            app.screen._prompt_overwrite([dup], [dup])
+            app.screen._prompt_overwrite([dup], [dup], None, None)
             await pilot.pause()
             on_confirm = mock_push.call_args[0][1]
             on_confirm(False)
@@ -3302,12 +3302,14 @@ async def test_chat_enter_falls_through_for_full_windows_path():
 async def test_chat_send_message():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "_stream_response"):
+        with patch.object(app.screen, "_stream_response") as stream:
             inp = app.screen.query_one("#chat-input", ChatInput)
             inp.value = "What is RAG?"
             await _pilot.press("enter")
-            assert len(app.screen._history) == 1
-            assert app.screen._history[0]["role"] == "user"
+            turn = stream.call_args.args[0]
+            assert turn.question == "What is RAG?"
+            assert turn.session_id is None
+            assert app.screen._history == []
 
 
 async def test_chat_submit_blocked_while_required_model_downloading():
@@ -3346,9 +3348,9 @@ async def test_chat_submit_proceeds_when_download_is_unrelated():
         app.task_bar.queue.enqueue(lambda: None, "some other model", TaskType.DOWNLOAD.value)
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "What is RAG?"
-        with patch.object(app.screen, "_stream_response"):
+        with patch.object(app.screen, "_stream_response") as stream:
             await _pilot.press("enter")
-            assert len(app.screen._history) == 1
+            assert stream.call_args.args[0].question == "What is RAG?"
 
 
 async def test_chat_input_handler_uses_on_decorator():
@@ -3836,6 +3838,22 @@ async def test_command_provider_slash_command_navigates_to_catalog():
         provider._run_slash_command(get_command("/models"))
         await pilot.pause()
         assert app.active_view == "Catalog"
+
+
+async def test_command_provider_add_prefills_the_prompt_for_a_path():
+    """A palette /add needs a path, so it fills the prompt, though its hint starts with options."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.command_registry import get_command
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        provider = LilbeeCommandProvider(app.screen, match_style=None)
+        provider._run_slash_command(get_command("/add"))
+        await pilot.pause()
+        assert chat._chat_input.text == "/add "
 
 
 async def test_command_provider_delete_document_no_chat_screen():
@@ -8103,15 +8121,15 @@ async def test_a_tab_listing_that_ends_after_the_input_changed_is_dropped():
 
 
 async def test_an_unknown_command_keeps_the_draft_and_says_so():
-    """``/sync`` is not a chat command: Enter keeps the draft and names the typo."""
+    """``/syncc`` is not a chat command: Enter keeps the draft and names the typo."""
     from lilbee.cli.tui import messages as msg
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.press(*"/sync", "enter")
-        unknown = msg.CMD_UNKNOWN.format(cmd="/sync")
+        await pilot.press(*"/syncc", "enter")
+        unknown = msg.CMD_UNKNOWN.format(cmd="/syncc")
         assert await wait_until(pilot, lambda: any(n.message == unknown for n in posted_toasts()))
-        assert app.screen._chat_input.value == "/sync"
+        assert app.screen._chat_input.value == "/syncc"
 
 
 async def test_do_add_raises_on_sync_failed(tmp_path):
@@ -8673,7 +8691,7 @@ async def test_chat_sync_gating_rejects_add(tmp_path):
 
 
 async def test_chat_sync_gating_rejects_sync():
-    """B3: /sync (/add synonym via run_sync) is rejected while a sync is queued."""
+    """B3: a sync from the palette or key is rejected while a sync is queued."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.task_bar.add_task("Sync", TaskType.SYNC)
@@ -9086,7 +9104,19 @@ def _stub_node_event(slug: str):
     return event
 
 
-class WikiTestApp(LilbeeAppHost):
+class _LoadedWikiHost(LilbeeAppHost):
+    """Starts a test only after the screen's first background read has painted."""
+
+    @contextlib.asynccontextmanager
+    async def run_test(self, *args, **kwargs):
+        async with super().run_test(*args, **kwargs) as pilot:
+            await pilot.pause()
+            await self.workers.wait_for_complete()
+            await pilot.pause()
+            yield pilot
+
+
+class WikiTestApp(_LoadedWikiHost):
     CSS = ""
 
     def compose(self) -> ComposeResult:
@@ -9298,10 +9328,11 @@ class TestWikiStubs:
             chunk_refs=(("a.md", 0),),
         )
         app = MagicMock()
-        confirm_stub_generation(app, stub)
+        confirm_stub_generation(app, stub, "handbook.md")
         dialog = app.push_screen.call_args.args[0]
         assert "GPU-heavy" in dialog._message
         assert "turn the wiki off" in dialog._message
+        assert "handbook.md" in dialog._message
 
 
 class TestStartStubGeneration:
@@ -9517,13 +9548,13 @@ class TestWikiScreenWithPages:
         )
 
         app = WikiTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)):
             from lilbee.cli.tui.screens.wiki import WikiScreen
 
             screen = app.screen
             assert isinstance(screen, WikiScreen)
             screen._display_page("summaries/my-page")
-            await pilot.pause()
+            await app.workers.wait_for_complete()
 
             header = app.screen.query_one("#wiki-page-header", Static)
             header_text = str(header.render())
@@ -9539,10 +9570,10 @@ class TestWikiScreenWithPages:
         _create_wiki_page(wiki_root, "summaries", "a[red]b/page", "Ford [/x] notes")
 
         app = WikiTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)):
             screen = app.screen
             screen._display_page("summaries/a[red]b/page")
-            await pilot.pause()
+            await app.workers.wait_for_complete()
             header = str(screen.query_one("#wiki-page-header", Static).render())
             crumb = str(screen.query_one("#wiki-breadcrumb", Static).render())
             tree = screen.query_one("#wiki-page-list", Tree)
@@ -9559,13 +9590,13 @@ class TestWikiScreenWithPages:
         _create_wiki_page(wiki_root, "summaries", "scored-page", "Scored Page")
 
         app = WikiTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)):
             from lilbee.cli.tui.screens.wiki import WikiScreen
 
             screen = app.screen
             assert isinstance(screen, WikiScreen)
             screen._display_page("summaries/scored-page")
-            await pilot.pause()
+            await app.workers.wait_for_complete()
 
             header = app.screen.query_one("#wiki-page-header", Static)
             header_text = str(header.render())
@@ -10153,18 +10184,6 @@ class TestWikiScreenReloadHook:
                 app.task_bar._after_done_hooks(TaskType.WIKI.value)
             reload_.assert_called_once_with()
 
-    async def test_reload_before_the_screen_is_composed_is_skipped(self, tmp_path):
-        from textual.css.query import NoMatches
-
-        cfg.wiki = True
-        cfg.data_root = tmp_path
-        app = WikiTestApp()
-        async with app.run_test(size=(120, 40)) as _pilot:
-            from lilbee.cli.tui.screens.wiki import WikiScreen
-
-            with patch.object(WikiScreen, "reload", side_effect=NoMatches("not yet")):
-                app.task_bar._after_done_hooks(TaskType.WIKI.value)
-
 
 class TestWikiViewRegistration:
     def test_wiki_not_in_views_when_disabled(self):
@@ -10196,7 +10215,7 @@ class TestWikiViewRegistration:
         assert "Wiki" not in get_nav_views()
 
 
-class WikiDraftsTestApp(LilbeeAppHost):
+class WikiDraftsTestApp(_LoadedWikiHost):
     """Bare app that pushes the drafts screen directly for isolated tests."""
 
     CSS = ""
@@ -10292,21 +10311,29 @@ def test_wiki_drafts_go_back_guarded_against_empty_stack() -> None:
 class TestWikiDraftsTraversal:
     """A traversal slug surfaces the generic message, not the absolute path."""
 
-    def test_display_diff_traversal_shows_generic(self) -> None:
+    async def test_display_diff_traversal_shows_generic(self, tmp_path) -> None:
         from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
         from lilbee.core.security import PathTraversalError
         from lilbee.wiki.shared import INVALID_DRAFT_SLUG_ERROR
 
-        screen = WikiDraftsScreen()
-        with (
-            patch.object(WikiDraftsScreen, "_show_diff") as show,
-            patch(
-                "lilbee.cli.tui.screens.wiki_drafts.diff_draft",
-                side_effect=PathTraversalError("Path escapes allowed directory: /abs/secret.md"),
-            ),
-        ):
-            screen._display_diff("../../secret")
-        show.assert_called_once_with(INVALID_DRAFT_SLUG_ERROR)
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)):
+            screen = app.screen
+            assert isinstance(screen, WikiDraftsScreen)
+            with (
+                patch.object(WikiDraftsScreen, "_show_diff") as show,
+                patch(
+                    "lilbee.cli.tui.screens.wiki_drafts.diff_draft",
+                    side_effect=PathTraversalError(
+                        "Path escapes allowed directory: /abs/secret.md"
+                    ),
+                ),
+            ):
+                screen._display_diff("../../secret")
+                await app.workers.wait_for_complete()
+            show.assert_called_once_with(INVALID_DRAFT_SLUG_ERROR)
 
     async def test_do_accept_traversal_notifies_generic(self, tmp_path) -> None:
         from lilbee.core.security import PathTraversalError
@@ -10520,14 +10547,14 @@ class TestWikiDraftsScreen:
         _write_published(wiki_root, "pairable", "original published body")
 
         app = WikiDraftsTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)):
             screen = app.screen
             assert isinstance(screen, WikiDraftsScreen)
             # Calling _display_diff directly is the hermetic route: the
             # RowHighlighted signal is covered by the list-render tests
             # above and by the accept/reject cursor paths.
             screen._display_diff("pairable")
-            await pilot.pause()
+            await app.workers.wait_for_complete()
             diff_widget = screen.query_one("#wiki-drafts-diff", Static)
             assert "Draft body for pairable" in diff_widget.content
 
@@ -10540,10 +10567,10 @@ class TestWikiDraftsScreen:
         _write_published(wiki_root, "pairable", "old [red]body[/x]")
 
         app = WikiDraftsTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)):
             screen = app.screen
             screen._display_diff("pairable")
-            await pilot.pause()
+            await app.workers.wait_for_complete()
             rendered = str(screen.query_one("#wiki-drafts-diff", Static).render())
         assert "-old [red]body[/x]" in rendered
 
@@ -10558,11 +10585,11 @@ class TestWikiDraftsScreen:
         wiki_root.mkdir(parents=True, exist_ok=True)
 
         app = WikiDraftsTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)):
             screen = app.screen
             assert isinstance(screen, WikiDraftsScreen)
             screen._display_diff("does-not-exist")
-            await pilot.pause()
+            await app.workers.wait_for_complete()
             diff_widget = screen.query_one("#wiki-drafts-diff", Static)
             assert diff_widget.content == msg.WIKI_DRAFTS_DIFF_EMPTY
 
@@ -10842,11 +10869,11 @@ class TestWikiDraftsScreen:
         monkeypatch.setattr(drafts_screen_mod, "diff_draft", _boom)
 
         app = WikiDraftsTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)):
             screen = app.screen
             assert isinstance(screen, WikiDraftsScreen)
             screen._display_diff("boomed")
-            await pilot.pause()
+            await app.workers.wait_for_complete()
             diff_widget = screen.query_one("#wiki-drafts-diff", Static)
             assert msg.WIKI_DRAFTS_DIFF_FAILED.split("{")[0] in diff_widget.content
 
@@ -11373,13 +11400,13 @@ class TestWikiDisplayPageMissing:
         wiki_root.mkdir(parents=True)
 
         app = WikiTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)):
             from lilbee.cli.tui.screens.wiki import WikiScreen
 
             screen = app.screen
             assert isinstance(screen, WikiScreen)
             screen._display_page("summaries/nonexistent")
-            await pilot.pause()
+            await app.workers.wait_for_complete()
             header = app.screen.query_one("#wiki-page-header", Static)
             assert header.content == ""
 
@@ -11423,7 +11450,7 @@ class TestWikiCoverageEdgeCases:
         cfg.wiki = True
         cfg.data_root = tmp_path
         app = WikiTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)):
             from textual.widgets import Markdown, Tree
 
             from lilbee.cli.tui import messages as msg
@@ -11433,7 +11460,7 @@ class TestWikiCoverageEdgeCases:
             assert isinstance(screen, WikiScreen)
             with patch("lilbee.wiki.browse.list_pages", side_effect=OSError("boom")):
                 screen.reload()
-            await pilot.pause()
+                await app.workers.wait_for_complete()
             tree = screen.query_one("#wiki-page-list", Tree)
             assert [str(c.label) for c in tree.root.children] == [msg.WIKI_LOAD_FAILED_LEAF]
             assert "boom" in screen.query_one("#wiki-content", Markdown).source
@@ -11457,6 +11484,7 @@ class TestWikiCoverageEdgeCases:
             assert isinstance(screen, WikiScreen)
             with patch("lilbee.wiki.browse.list_pages", side_effect=OSError("boom")):
                 screen.reload()
+                await app.workers.wait_for_complete()
             screen._load_pages(filter_text="anything")
             await pilot.pause()
             tree = screen.query_one("#wiki-page-list", Tree)
@@ -11465,7 +11493,7 @@ class TestWikiCoverageEdgeCases:
 
             with patch("lilbee.wiki.browse.list_pages", return_value=[]):
                 screen.reload()
-            await pilot.pause()
+                await app.workers.wait_for_complete()
             assert [str(c.label) for c in tree.root.children] == [msg.wiki_empty_state_leaf()]
 
     async def test_filtering_reads_the_cache_instead_of_re_walking_disk(self, tmp_path):
@@ -13926,6 +13954,7 @@ async def test_wiki_screen_reload():
         await pilot.pause()
         with patch.object(app.screen, "_load_pages") as mock_load:
             app.screen.reload()
+            await app.workers.wait_for_complete()
             mock_load.assert_called_once()
 
 
@@ -15899,6 +15928,7 @@ class TestTerminalSafeWikiScreen:
                 patch("lilbee.cli.tui.screens.wiki.confirm_stub_generation"),
             ):
                 screen._on_node_selected(event)
+                await app.workers.wait_for_complete()
             source = screen.query_one("#wiki-content", Markdown).source
             assert TERMINAL_CONTROL_RE.search(source.replace("\n", "")) is None
 
@@ -15919,6 +15949,7 @@ class TestTerminalSafeWikiScreen:
             assert isinstance(screen, WikiScreen)
             with patch("lilbee.wiki.browse.read_page", return_value=page):
                 screen._display_page("summaries/a/b")
+                await app.workers.wait_for_complete()
             assert screen.query_one("#wiki-content", Markdown).source == body
 
     @pytest.mark.parametrize("text", CONTROL_TITLES)
@@ -15938,6 +15969,7 @@ class TestTerminalSafeWikiScreen:
             assert isinstance(screen, WikiScreen)
             with patch("lilbee.wiki.browse.read_page", return_value=page):
                 screen._display_page("summaries/a/b")
+                await app.workers.wait_for_complete()
             header = screen.query_one("#wiki-page-header", Static).content.plain
             crumb = screen.query_one("#wiki-breadcrumb", Static).content.plain
             body = screen.query_one("#wiki-content", Markdown).source

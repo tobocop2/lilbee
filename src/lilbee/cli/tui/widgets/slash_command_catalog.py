@@ -63,6 +63,7 @@ CATALOG_GROUPS: tuple[CatalogGroup, ...] = (
         "KNOWLEDGE",
         (
             "/add",
+            "/sync",
             "/crawl",
             "/wiki",
             "/delete",
@@ -229,9 +230,13 @@ def _render_row(cmd: SlashCommand, width: int) -> Content:
     lead = f"  {cmd.name}"
     args = f" {cmd.args_hint}" if cmd.args_hint else ""
     help_col = max(_ROW_NAME_COLUMN_WIDTH, len(lead) + len(args) + _ROW_HELP_GUTTER_MIN)
+    first_pad = " " * (help_col - len(lead) - len(args))
+    if help_col + _ROW_HELP_MIN_WIDTH > width:
+        # A long args hint leaves no room beside it: the help starts on the next line.
+        help_col = _ROW_NAME_COLUMN_WIDTH
+        first_pad = "\n" + " " * help_col
     help_width = max(_ROW_HELP_MIN_WIDTH, width - help_col)
     wrapped = textwrap.wrap(cmd.help_text, help_width) or [""]
-    first_pad = " " * (help_col - len(lead) - len(args))
     help_block = first_pad + ("\n" + " " * help_col).join(wrapped)
     name_part = Content.styled(lead, "$success bold")
     args_part = Content.styled(args, "$text-muted") if args else Content("")

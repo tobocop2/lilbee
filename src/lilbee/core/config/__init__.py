@@ -28,6 +28,7 @@ from .defaults import (
 from .context import (
     active_config as active_config,
     config_scope as config_scope,
+    validate_ocr_options as validate_ocr_options,
     validate_ocr_timeout as validate_ocr_timeout,
 )
 from .enums import (
@@ -74,5 +75,6 @@ __all__ = [
     "config_scope",
     "load_warnings",
     "refuse_environment",
+    "validate_ocr_options",
     "validate_ocr_timeout",
 ]

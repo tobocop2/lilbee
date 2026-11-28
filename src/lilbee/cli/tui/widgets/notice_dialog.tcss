@@ -26,6 +26,15 @@ NoticeDialog #notice-message {
     color: $text;
 }
 
+NoticeDialog #notice-scroll {
+    height: auto;
+    max-height: 6;
+}
+
+NoticeDialog #notice-scroll #notice-message {
+    margin-bottom: 0;
+}
+
 NoticeDialog Center {
     width: 100%;
     height: auto;

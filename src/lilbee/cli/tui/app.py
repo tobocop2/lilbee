@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 from collections.abc import Callable, Iterable, Sequence
+from enum import StrEnum
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -24,7 +25,9 @@ from textual.screen import Screen
 from textual.signal import Signal
 from textual.timer import Timer
 from textual.widgets import Input, TextArea
+from textual.worker import Worker, get_current_worker
 
+from lilbee.app import engine_service
 from lilbee.app.services import (
     follow_config_long_running,
     get_services,
@@ -50,6 +53,7 @@ from lilbee.cli.tui.color_compat import (
     resolve_term_program,
 )
 from lilbee.cli.tui.commands import LilbeeCommandProvider
+from lilbee.cli.tui.engine_commands import announce_engines_changed
 from lilbee.cli.tui.engine_mark import engine_variables
 from lilbee.cli.tui.pick_order import PickOrder
 from lilbee.cli.tui.screens.analyze_report import start_analysis
@@ -78,6 +82,16 @@ _DEFAULT_THEME = "rose-pine"  # muted, low-glare; easier on the eyes than the wa
 _CHAT_SCREEN_NAME = "chat"
 # Textual's default screen, then the current view; anything higher is pushed over the view.
 _VIEW_DEPTH = 2
+
+
+class TypeAheadKey(StrEnum):
+    """A key kept at the gate besides text: the prompt replays it as an edit."""
+
+    BACKSPACE = "backspace"
+    ENTER = "enter"
+
+
+_TYPE_AHEAD_KEYS = {key.value: key for key in TypeAheadKey}
 # Long enough that a model-fallback notice or a load warning is readable before it fades.
 _FALLBACK_TOAST_TIMEOUT_S = 10.0
 
@@ -264,6 +278,8 @@ class LilbeeApp(App[None]):
         # "back", not "Chat", on every top-level view.
         self._previous_view: str | None = None
         self._switching = False
+        # The last view command that arrived while a switch ran or chat loaded.
+        self._pending_view: str | None = None
         self._theme_index = 0
         # Names of non-Chat screens already installed via install_screen.
         # Subsequent visits switch by name to reuse the same instance,
@@ -273,6 +289,10 @@ class LilbeeApp(App[None]):
         # The TUI runs until the user closes it and takes every key, a provider switch too.
         self._config_follower = follow_config_long_running(frozenset(), keeper="the TUI")
         self._config_follower.report_to(self._show_taken_settings_from_thread)
+        # The last stamp of the build folders; None until the first scan in a thread ends.
+        self.engines_stamp: engine_service.BuildStamp | None = None
+        # The app changed the engines itself; the next stamp publishes the change.
+        self._engines_publish_pending = False
         # The one check scheduled after a skipped in-place write; see _recheck_a_skipped_file.
         self._settle_recheck: Timer | None = None
         self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
@@ -337,27 +357,30 @@ class LilbeeApp(App[None]):
     # Production never sets it. See tests/_lilbee_app_test_host.py.
     _test_skip_auto_init: ClassVar[bool] = False
 
-    # Text typed while chat starts, kept for the chat prompt. None when nothing
-    # is kept: before the gate shows, and after the prompt took the text.
-    _type_ahead: list[str] | None = None
+    # Text and edit keys typed while chat starts, kept for the chat prompt. None
+    # when nothing is kept: before the gate shows, and after the prompt took them.
+    _type_ahead: list[str | TypeAheadKey] | None = None
 
     async def on_event(self, event: events.Event) -> None:
         if not self._keep_for_the_prompt(event):
             await super().on_event(event)
 
     def _keep_for_the_prompt(self, event: events.Event) -> bool:
-        """Keep a typed key or a paste for the chat prompt while chat starts.
+        """Keep typed text, Backspace, Enter or a paste for the chat prompt while chat starts.
 
-        The app keeps the text as it reads the event, before it routes the
+        The app keeps them as it reads the event, before it routes the
         event to a screen. Chat replaces the gate in one step but focuses its
         prompt some steps later, and a key routed in that gap reaches no input.
         """
         if self._type_ahead is None or event.is_forwarded:
             return False
+        piece: str | TypeAheadKey
         if isinstance(event, events.Key) and event.is_printable and event.character:
-            text = event.character
+            piece = event.character
+        elif isinstance(event, events.Key) and event.key in _TYPE_AHEAD_KEYS:
+            piece = _TYPE_AHEAD_KEYS[event.key]
         elif isinstance(event, events.Paste):
-            text = event.text
+            piece = event.text
         else:
             return False
         from lilbee.cli.tui.screens.startup_gate import StartupGate
@@ -366,13 +389,13 @@ class LilbeeApp(App[None]):
         top = self.screen_stack[-1] if self.screen_stack else None
         if top is None or not (isinstance(top, StartupGate) or top is self.chat_screen()):
             return False
-        self._type_ahead.append(text)
+        self._type_ahead.append(piece)
         return True
 
-    def take_type_ahead(self) -> str:
-        """Return the text typed while chat started, and stop keeping more."""
+    def take_type_ahead(self) -> list[str | TypeAheadKey]:
+        """Return the keys typed while chat started, in order, and stop keeping more."""
         typed, self._type_ahead = self._type_ahead or [], None
-        return "".join(typed)
+        return typed
 
     async def on_mount(self) -> None:
         # The app's own signal graph is part of being a working app, not
@@ -381,6 +404,7 @@ class LilbeeApp(App[None]):
         # wait is a timing window that wedges loaded CI runners.
         self.settings_changed_signal.subscribe(self, self._fan_out_provider_availability)
         self.settings_changed_signal.subscribe(self, self._recheck_models_on_model_change)
+        self.check_engines()
         if self._test_skip_auto_init:
             return
         # Paint the gate before any other work so the terminal is never blank
@@ -465,6 +489,7 @@ class LilbeeApp(App[None]):
         else:
             self._type_ahead = None
             self.switch_view(msg.CATALOG_VIEW)
+        self._run_pending_view()
         # Cheap detection only: filesystem walk + hash compare. The user
         # initiates sync explicitly via S or the command palette.
         self.task_bar.start_detect_pending()
@@ -765,12 +790,47 @@ class LilbeeApp(App[None]):
         Returns whether the file changed since the last check, so a caller can reload
         state that lives outside cfg, such as the profile name. An editor the user is
         typing in keeps its text; saving it writes that value over the other process's.
+        A build that another process installed or removed is published as an engine change.
         """
         changed, result = self._config_follower.check()
         if result is not None:
             self._show_taken_settings(result)
+        # Before the first stamp there is nothing to compare: the scan that mount
+        # started sees the folders as they are when it runs.
+        if self.engines_stamp is not None:
+            self.check_engines()
         self._recheck_a_skipped_file()
         return changed
+
+    def check_engines(self, *, publish: bool = False) -> None:
+        """Stamp the build folders in a thread, and publish an engine change when it moved.
+
+        *publish* says that the caller changed the engines itself, so the change is
+        published after the scan even when the stamp did not move. A newer check cancels
+        an older one that has not ended; a publish it asked for stays pending.
+        """
+        self._engines_publish_pending = self._engines_publish_pending or publish
+        self._stamp_engines()
+
+    @work(thread=True, group="engines-stamp", exclusive=True, exit_on_error=False)
+    def _stamp_engines(self) -> None:
+        worker = get_current_worker()
+        stamp = engine_service.build_folders_stamp()
+        call_from_thread(self, self._take_engines_stamp, worker, stamp)
+
+    def _take_engines_stamp(self, worker: Worker[None], stamp: engine_service.BuildStamp) -> None:
+        """Keep *stamp* from the newest check, and publish when it moved or a publish waits.
+
+        The first stamp is the baseline only, unless a publish waits for it. Each publish
+        follows the scan that sets the new baseline, so no change falls between them.
+        """
+        if worker.is_cancelled:
+            return
+        moved = self.engines_stamp is not None and stamp != self.engines_stamp
+        self.engines_stamp = stamp
+        if moved or self._engines_publish_pending:
+            self._engines_publish_pending = False
+            announce_engines_changed(self)
 
     def _recheck_a_skipped_file(self) -> None:
         """Check once more after the quiet window when the check skipped a young in-place write.
@@ -878,15 +938,16 @@ class LilbeeApp(App[None]):
         self.exit(message=settings.leave() if settings is not None else None)
 
     def _view_is_refused(self, view_name: str) -> bool:
-        """True when *view_name* cannot be entered now, having handled the refusal."""
-        if self._chat_is_loading():
-            return True
+        """True when *view_name* cannot be entered at all, having said why."""
         if view_name == msg.SESSIONS_VIEW and not cfg.sessions_enabled:
             # The tab stays visible so the feature is discoverable, but opening it
             # while off shows why rather than an empty list.
             self.notify_sessions_disabled()
             return True
-        return view_name != msg.DEFAULT_VIEW and get_views().get(view_name) is None
+        if view_name != msg.DEFAULT_VIEW and get_views().get(view_name) is None:
+            self.notify(msg.VIEW_UNKNOWN.format(view=view_name), severity="warning")
+            return True
+        return False
 
     def _chat_is_loading(self) -> bool:
         """True while the startup gate waits for chat, the view every other one returns to."""
@@ -900,12 +961,17 @@ class LilbeeApp(App[None]):
         """Switch to a named view, installing each screen at most once.
 
         Guards against concurrent switches via ``self._switching`` so rapid
-        keypresses can't corrupt the screen stack. ``active_view`` is updated
-        after the switch completes. A screen pushed over the current view (the
-        catalog a model field opens, a dialog) is popped first, so the switch
-        replaces the view itself and no view stays on the stack under another.
+        keypresses can't corrupt the screen stack. A command that arrives during
+        a switch or while chat loads waits in one slot, and the last one runs
+        when the switch ends. ``active_view`` is updated after the switch
+        completes. A screen pushed over the current view (the catalog a model
+        field opens, a dialog) is popped first, so the switch replaces the view
+        itself and no view stays on the stack under another.
         """
-        if self._switching or self._view_is_refused(view_name):
+        if self._switching or self._chat_is_loading():
+            self._pending_view = view_name
+            return
+        if self._view_is_refused(view_name):
             return
         self._switching = True
         if view_name != self.active_view:
@@ -945,8 +1011,15 @@ class LilbeeApp(App[None]):
             if awaitable is not None:
                 await awaitable
             self._switching = False
+            self._run_pending_view()
 
         self.call_next(_release)
+
+    def _run_pending_view(self) -> None:
+        """Run the view command that waited for a switch or for chat to load."""
+        view_name, self._pending_view = self._pending_view, None
+        if view_name is not None:
+            self.switch_view(view_name)
 
     def _pop_to_view(self) -> list[AwaitComplete]:
         """Pop each screen pushed over the current view; views are the installed screens.
@@ -1051,7 +1124,13 @@ class LilbeeApp(App[None]):
         return isinstance(self.screen, StartupGate)
 
     def go_back(self) -> None:
-        """Return to the view the user came from (Chat when there is none)."""
+        """Return to the view the user came from (Chat when there is none).
+
+        A switch in flight has already moved the view the user came from, so a
+        second back would return to the view the first one left.
+        """
+        if self._switching:
+            return
         self.switch_view(self._previous_view or msg.DEFAULT_VIEW)
 
     def action_open_tasks(self) -> None:

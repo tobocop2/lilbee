@@ -16,7 +16,11 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_install_flow import choose_for_model
 from lilbee.cli.tui.engine_mark import engine_mark
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
-from lilbee.cli.tui.screens.engine_picker import EnginePickerModal, option_detail
+from lilbee.cli.tui.screens.engine_picker import (
+    EnginePickerModal,
+    engine_picker_open,
+    option_detail,
+)
 from lilbee.cli.tui.widgets.dialog import Dialog
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.engines.choice import AUTO, NoEngineError
@@ -123,6 +127,8 @@ class ModelInfoModal(Dialog[None]):
 
     def action_pick_engine(self) -> None:
         """Open the engine picker for this model."""
+        if engine_picker_open(self.app):
+            return
         ref = self._row.ref
         options = engine_service.engine_options(ref)
         if len(options) <= 1:

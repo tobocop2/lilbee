@@ -26,6 +26,15 @@ ConfirmDialog #confirm-message {
     color: $text;
 }
 
+ConfirmDialog #confirm-scroll {
+    height: auto;
+    max-height: 6;
+}
+
+ConfirmDialog #confirm-scroll #confirm-message {
+    margin-bottom: 0;
+}
+
 ConfirmDialog Center {
     width: 100%;
     height: auto;

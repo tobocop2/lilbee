@@ -11,17 +11,17 @@ from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 GIB = 1024**3
 
 
-def _make_view(*, manual: bool = False):  # type: ignore[no-untyped-def]
+def _make_view(*, manual: bool = False, gpus: int = 2):  # type: ignore[no-untyped-def]
     from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
     from lilbee.providers.roles import WorkerRole
 
     return PlacementView(
         gpus=tuple(
-            GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(2)
+            GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(gpus)
         ),
         roles=(
             RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),
-            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1,), None, 1, "llama.cpp"),
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (gpus - 1,), None, 1, "llama.cpp"),
         ),
         unplaceable=(),
         manual=manual,
@@ -252,6 +252,94 @@ async def test_fleet_body_applying_emits_reloading_message(_patched):
         assert app.reload_events == [True, False]
 
 
+def _gate_apply(monkeypatch, returned):  # type: ignore[no-untyped-def]
+    """Hold each apply until the returned event is set; record every spec applied."""
+    import threading
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+
+    gate = threading.Event()
+    calls: list[object] = []
+
+    def _set(spec):  # type: ignore[no-untyped-def]
+        calls.append(spec)
+        gate.wait()
+        return returned
+
+    monkeypatch.setattr(fbm, "set_placement", _set)
+    monkeypatch.setattr(fbm, "wait_chat_ready", lambda: True)
+    return gate, calls
+
+
+async def _open_drawer_and_focus(app, pilot, selector: str):  # type: ignore[no-untyped-def]
+    from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+
+    await pilot.press("ctrl+g")
+    await pilot.pause()
+    await pilot.pause()
+    app.screen.query_one(FleetDrawer).query_one(selector).focus()
+    await pilot.pause()
+
+
+async def _finish_apply(app, pilot, gate) -> None:  # type: ignore[no-untyped-def]
+    gate.set()
+    await app.workers.wait_for_complete()
+    await pilot.pause()
+    await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_focus_returns_to_the_editor_control_after_apply(_patched, monkeypatch):
+    """Apply disables the editor, which drops the focus; the end of the apply gives
+    it back to the control that had it, so the drawer keys work at once."""
+    gate, calls = _gate_apply(monkeypatch, _make_view(manual=True))
+    app = _DrawerApp()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        await _open_drawer_and_focus(app, pilot, "#dev-embed-0")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert app.focused is None
+        await _finish_apply(app, pilot, gate)
+        assert app.focused is not None
+        assert app.focused.id == "dev-embed-0"
+        await pilot.press("ctrl+s")
+        await _finish_apply(app, pilot, gate)
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_focus_goes_to_apply_when_the_control_is_gone(_patched, monkeypatch):
+    """A control the new placement no longer shows hands the focus to the Apply pill."""
+    gate, _ = _gate_apply(monkeypatch, _make_view(manual=True, gpus=1))
+    app = _DrawerApp()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        await _open_drawer_and_focus(app, pilot, "#dev-embed-1")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await _finish_apply(app, pilot, gate)
+        assert not app.screen.query("#dev-embed-1")
+        assert app.focused is not None
+        assert app.focused.id == "cmd-apply"
+
+
+@pytest.mark.asyncio
+async def test_focus_moved_during_apply_stays_where_it_is(_patched, monkeypatch):
+    """Focus the user gives the chat prompt during the apply is not taken back."""
+    gate, _ = _gate_apply(monkeypatch, _make_view(manual=True))
+    app = _DrawerApp()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        await _open_drawer_and_focus(app, pilot, "#dev-embed-0")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        app.query_one("#probe-input", Input).focus()
+        await pilot.pause()
+        await _finish_apply(app, pilot, gate)
+        assert app.focused is app.query_one("#probe-input", Input)
+
+
 @pytest.mark.asyncio
 async def test_ctrl_g_noop_when_placement_already_shown(_patched):
     """On the Fleet tab (FleetBody already visible) ctrl+g does not add a drawer."""
@@ -371,6 +459,90 @@ async def test_normal_tab_focuses_drawer_and_enter_toggles(monkeypatch) -> None:
                 await pilot.press("tab")
                 await pilot.pause()
                 assert app.screen._insert_mode is False
+    finally:
+        set_services(None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("insert_mode", [True, False], ids=["insert", "normal"])
+async def test_chat_screen_leaves_the_focus_to_the_drawer_after_apply(
+    monkeypatch, insert_mode: bool
+) -> None:
+    """On the real chat screen, in either mode, the drawer control gets the focus back
+    after Apply: the chat input does not take it when the reload hold ends."""
+    from unittest import mock
+
+    from lilbee.app.services import set_services
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets import gpu_fleet_panel as gfp
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view3())
+    monkeypatch.setattr(gfp, "probe_gpu_stats", lambda devices: {})
+    gate, calls = _gate_apply(monkeypatch, _make_view3())
+    svc = mock.MagicMock()
+    svc.provider.list_models.return_value = []
+    svc.searcher._embedder.embedding_available.return_value = True
+    set_services(svc)
+    try:
+        cs = "lilbee.cli.tui.screens.chat.ChatScreen"
+        with (
+            mock.patch("lilbee.cli.tui.app.chat_ready", return_value=True),
+            mock.patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
+            mock.patch(f"{cs}._embedding_ready", return_value=True),
+        ):
+            app = LilbeeApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                await await_chat(app, pilot)
+                await pilot.pause()
+                if not insert_mode:
+                    await pilot.press("escape")
+                    await pilot.pause()
+                await _open_drawer_and_focus(app, pilot, "#dev-embed-0")
+                assert app.screen._insert_mode is insert_mode
+                await pilot.press("ctrl+s")
+                await pilot.pause()
+                await _finish_apply(app, pilot, gate)
+                assert app.focused is not None
+                assert app.focused.id == "dev-embed-0"
+                assert app.screen._insert_mode is insert_mode
+    finally:
+        set_services(None)
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_reload_the_drawer_does_not_refocus_gives_the_input_the_focus() -> None:
+    """With the focus outside the drawer, the end of the reload hold still gives
+    the chat input the focus in insert mode, as before."""
+    from unittest import mock
+
+    from lilbee.app.services import set_services
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    svc = mock.MagicMock()
+    svc.provider.list_models.return_value = []
+    svc.searcher._embedder.embedding_available.return_value = True
+    set_services(svc)
+    try:
+        cs = "lilbee.cli.tui.screens.chat.ChatScreen"
+        with (
+            mock.patch("lilbee.cli.tui.app.chat_ready", return_value=True),
+            mock.patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
+            mock.patch(f"{cs}._embedding_ready", return_value=True),
+        ):
+            app = LilbeeApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                await await_chat(app, pilot)
+                screen = app.screen
+                screen.on_fleet_body_placement_reloading(FleetBody.PlacementReloading(True))
+                await pilot.pause()
+                screen.set_focus(None)
+                screen.on_fleet_body_placement_reloading(FleetBody.PlacementReloading(False))
+                await pilot.pause()
+                assert screen._insert_mode is True
+                assert app.focused is screen._chat_input
     finally:
         set_services(None)
 

@@ -9,7 +9,7 @@ from typing import ClassVar
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Center, Horizontal, Vertical
+from textual.containers import Center, Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.widgets import Label, Static
 
@@ -78,7 +78,8 @@ class ConfirmDialog(Dialog[bool]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(self._title, id="confirm-title", markup=False)
-            yield Label(self._message, id="confirm-message", markup=False)
+            with VerticalScroll(id="confirm-scroll"):
+                yield Label(self._message, id="confirm-message", markup=False)
             with Center(), Horizontal(id="confirm-buttons"):
                 yield ConfirmPill(
                     msg.CONFIRM_YES_LABEL, pill_id="confirm-yes", answer=True, primary=True

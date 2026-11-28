@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, ClassVar
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
 
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal
@@ -15,10 +16,12 @@ from textual.content import Content
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Label, Static
+from textual.worker import Worker, get_current_worker
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.mount_guard import MountWhenAttached
 from lilbee.cli.tui.pill import DOT_SEP, pill
+from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.core.config import cfg
 
 _CSS_FILE = Path(__file__).parent / "status_bar.tcss"
@@ -31,7 +34,9 @@ _MODE_COLORS: dict[str, str] = {
 _DEFAULT_MODE_COLOR = "$error"
 
 # Settings keys that trigger a model-pill refresh.
-_TRAILING_PILL_KEYS = frozenset({"chat_model", "lilbee_name", "show_lilbee_path"})
+_TRAILING_PILL_KEYS = frozenset({"chat_model"})
+# Settings keys that change the lilbee pill text, which a thread resolves.
+_LILBEE_PILL_KEYS = frozenset({"lilbee_name", "show_lilbee_path"})
 
 
 class ViewTab(Label, can_focus=True):
@@ -103,9 +108,15 @@ class ViewTabs(MountWhenAttached, Widget):
                 yield ViewTab(name)
             yield Static(id="view-tabs-trailing")
 
+    def __init__(self) -> None:
+        super().__init__()
+        # The text of the lilbee pill; None until the thread that resolves the path ends.
+        self._lilbee_text: str | None = None
+
     def on_mount(self) -> None:
         self.active_view = self.app.active_view
         self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
+        self._resolve_lilbee_label()
         # Wiki visibility AND the initial paint both deferred: query() during
         # on_mount can no-op while ViewTab children are still completing their
         # mount cycle, leaving the Wiki tab visible even when cfg.wiki=False.
@@ -124,8 +135,24 @@ class ViewTabs(MountWhenAttached, Widget):
         if key == "wiki":
             self._apply_wiki_visibility()
             return
-        if key in _TRAILING_PILL_KEYS:
+        if key in _LILBEE_PILL_KEYS:
+            self._resolve_lilbee_label()
+        elif key in _TRAILING_PILL_KEYS:
             self._refresh()
+
+    @work(thread=True, group="lilbee-label", exclusive=True, exit_on_error=False)
+    def _resolve_lilbee_label(self) -> None:
+        """Resolve the lilbee pill text in a thread: on Python 3.12 the path resolve calls stat."""
+        from lilbee.app.status import lilbee_label
+
+        worker = get_current_worker()
+        call_from_thread(self, self._take_lilbee_label, worker, lilbee_label())
+
+    def _take_lilbee_label(self, worker: Worker[None], text: str) -> None:
+        if worker.is_cancelled or text == self._lilbee_text:
+            return
+        self._lilbee_text = text
+        self._refresh()
 
     def _apply_wiki_visibility(self) -> None:
         """Show or hide the Wiki tab and its preceding separator based on cfg.wiki."""
@@ -144,7 +171,6 @@ class ViewTabs(MountWhenAttached, Widget):
         self._update_trailing()
 
     def _update_trailing(self) -> None:
-        from lilbee.app.status import lilbee_label
         from lilbee.catalog import display_label_for_ref
 
         parts: list[Content | str | tuple[str, str]] = []
@@ -158,6 +184,7 @@ class ViewTabs(MountWhenAttached, Widget):
             color = _MODE_COLORS.get(self.mode_text, _DEFAULT_MODE_COLOR)
             parts.append("  ")
             parts.append(pill(self.mode_text, color, "$text"))
-        parts.append("  ")
-        parts.append(pill(lilbee_label(), "$secondary-muted", "$text"))
+        if self._lilbee_text is not None:
+            parts.append("  ")
+            parts.append(pill(self._lilbee_text, "$secondary-muted", "$text"))
         self.query_one("#view-tabs-trailing", Static).update(Content.assemble(*parts))

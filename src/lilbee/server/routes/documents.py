@@ -18,7 +18,7 @@ from litestar.response import Stream
 from litestar.status_codes import HTTP_200_OK, HTTP_409_CONFLICT
 from pydantic import BaseModel, Field
 
-from lilbee.core.config import validate_ocr_timeout
+from lilbee.core.config import validate_ocr_options
 from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, DOCUMENTS_PAGE_MAX
 from lilbee.runtime.add_registry import AddIdRunningError
 from lilbee.server import handlers
@@ -76,7 +76,7 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
     retry_skipped = data.retry_skipped if data else False
     prune_ignored = data.prune_ignored if data else False
     try:
-        validate_ocr_timeout(ocr_timeout)
+        validate_ocr_options(ocr, ocr_timeout)
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     return Stream(
@@ -131,8 +131,7 @@ async def add_upload_route(
     # full in-memory copy of a payload that was going to be rejected anyway.
     try:
         names = handlers.validate_upload_names([upload.filename for upload in data])
-        ocr_mode = handlers.parse_ocr_mode(ocr)
-        validate_ocr_timeout(ocr_timeout)
+        ocr_mode = validate_ocr_options(ocr, ocr_timeout)
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     cleaned = [(name, await upload.read()) for name, upload in zip(names, data, strict=True)]

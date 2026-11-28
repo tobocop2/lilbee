@@ -10,12 +10,13 @@ search, ``a`` / ``r`` for accept / reject, ``q`` / Esc to back out.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from rich.text import Text
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -45,6 +46,10 @@ if TYPE_CHECKING:
     from lilbee.wiki.drafts import DraftInfo
 
 log = logging.getLogger(__name__)
+
+# Worker groups: a newer worker of a group cancels the older one.
+_LOAD_GROUP = "wiki-drafts-load"
+_DIFF_GROUP = "wiki-drafts-diff"
 
 
 def _wiki_root() -> Path:
@@ -181,14 +186,11 @@ class WikiDraftsScreen(MountWhenAttached, Screen[None]):
         )
         self.reload()
 
-    def reload(self) -> None:
-        """Re-read drafts from disk and repopulate the table.
-
-        Public entry point for the task bar, which refreshes an open drafts
-        screen after work that wrote or removed drafts.
-        """
+    @work(exclusive=True, group=_LOAD_GROUP, exit_on_error=False)
+    async def reload(self) -> None:
+        """Re-read drafts off the loop and repopulate the table."""
         try:
-            self._drafts = list_drafts(_wiki_root())
+            self._drafts = await asyncio.to_thread(list_drafts, _wiki_root())
         except Exception as exc:
             log.warning("Failed to list wiki drafts", exc_info=True)
             self._drafts = []
@@ -252,10 +254,13 @@ class WikiDraftsScreen(MountWhenAttached, Screen[None]):
             return
         self._display_diff(str(key))
 
-    def _display_diff(self, slug: str) -> None:
-        """Compute and render the unified diff for *slug*."""
+    @work(exclusive=True, group=_DIFF_GROUP, exit_on_error=False)
+    async def _display_diff(self, slug: str) -> None:
+        """Compute the unified diff for *slug* off the loop, then render it."""
         try:
-            diff = diff_draft(slug, _wiki_root(), get_services().store)
+            diff = await asyncio.to_thread(
+                lambda: diff_draft(slug, _wiki_root(), get_services().store)
+            )
         except FileNotFoundError:
             self._show_diff(msg.WIKI_DRAFTS_DIFF_EMPTY)
             return
