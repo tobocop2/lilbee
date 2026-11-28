@@ -499,7 +499,7 @@ def test_a_published_pack_states_the_gate_floor_and_installs_its_tool(
 def test_the_members_that_need_no_reading_answer_plainly(tmp_path: Path) -> None:
     assert MLX.supports_architecture("anything")
     assert MLX.assert_loadable("repo", "file", None) is None
-    assert MLX.runtime_env() == {}
+    assert MLX.runtime_env(Path("/b/server")) == {}
 
 
 def test_binary_reports_two_builds_of_one_pin_as_a_provider_error(

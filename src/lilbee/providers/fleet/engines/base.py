@@ -322,8 +322,8 @@ class EngineAdapter(Protocol, Hashable):
         """
         ...
 
-    def runtime_env(self) -> Mapping[str, str]:
-        """Extra environment variables for a spawned engine process."""
+    def runtime_env(self, binary: Path) -> Mapping[str, str]:
+        """Extra environment variables for a spawned engine process running *binary*."""
         ...
 
     def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:

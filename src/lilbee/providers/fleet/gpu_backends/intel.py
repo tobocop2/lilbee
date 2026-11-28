@@ -16,12 +16,16 @@ kernel, and privileges. We try them in order and take the first that reports:
 The fdinfo and intel_gpu_top sources report one device (the consumer case is a
 single iGPU); their reading is keyed to the lowest requested index. VRAM is left
 as the 0/0 structural sentinel since none of these report an iGPU's total memory.
+The fdinfo source reads no number when two or more Intel devices show clients, so
+the next source runs.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -75,11 +79,30 @@ class IntelBackend:
     pci_vendor = PCIVendorID.INTEL
 
     def sample(self, indices: frozenset[int]) -> dict[int, UtilSample]:
-        for source in (_xpu_smi_samples, _fdinfo_samples, _intel_gpu_top_samples):
-            result = source(indices)
-            if result:
-                return result
-        return {}
+        samples = _xpu_smi_samples(indices)
+        target = _fallback_target(indices, samples)
+        if target is None:
+            return samples
+        # fdinfo and intel_gpu_top read the whole GPU, so one reading fills one device.
+        for source in (_fdinfo_samples, _intel_gpu_top_samples):
+            readings = source(frozenset({target}))
+            if readings:
+                known = samples.get(target)
+                reading = readings[target]
+                samples[target] = (
+                    reading
+                    if known is None
+                    else dataclasses.replace(known, utilization_pct=reading.utilization_pct)
+                )
+                break
+        return samples
+
+
+def _fallback_target(indices: frozenset[int], samples: dict[int, UtilSample]) -> int | None:
+    """The one device a device-level reading fills: the lowest without util, or None."""
+    if not samples:
+        return min(indices, default=None)
+    return min((i for i, s in samples.items() if s.utilization_pct is None), default=None)
 
 
 def _xpu_smi_output(index: int) -> str:
@@ -187,17 +210,22 @@ def _last_json_object(raw: str) -> dict[str, object] | None:
     raw = raw.strip()
     if not raw:
         return None
-    # The stream is an unclosed '[ {..}, {..},' -- close it and take the last item.
-    if raw.startswith("[") and not raw.endswith("]"):
-        raw = raw.rstrip().rstrip(",") + "]"
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    if isinstance(data, list):
-        last = data[-1] if data else None
-        return last if isinstance(last, dict) else None
-    return data if isinstance(data, dict) else None
+    # The stream is an unclosed '[ {..}, {..},' that can end inside an object.
+    decoder = json.JSONDecoder()
+    last: object = None
+    pos = _skip_separators(raw, 1 if raw.startswith("[") else 0)
+    while pos < len(raw) and raw[pos] != "]":
+        try:
+            last, end = decoder.raw_decode(raw, pos)
+        except json.JSONDecodeError:
+            break
+        pos = _skip_separators(raw, end)
+    return last if isinstance(last, dict) else None
+
+
+def _skip_separators(raw: str, pos: int) -> int:
+    """Index of the first character at or after *pos* that is not whitespace or a comma."""
+    return len(raw) - len(raw[pos:].lstrip(" \t\r\n,"))
 
 
 def _igt_max_busy(raw: str) -> int | None:
@@ -263,6 +291,7 @@ def _igt_permission_denied(binary: str) -> bool:
             errors="replace",
             timeout=_IGT_PERM_CHECK_S,
             check=False,
+            env={**os.environ, "LC_ALL": "C"},  # the denial text is matched in English
         )
     except subprocess.TimeoutExpired:
         return False  # it streamed rather than erroring out, so the PMU is usable

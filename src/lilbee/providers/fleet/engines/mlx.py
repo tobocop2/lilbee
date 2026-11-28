@@ -343,7 +343,7 @@ class MlxAdapter:
     def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         return None
 
-    def runtime_env(self) -> Mapping[str, str]:
+    def runtime_env(self, binary: Path) -> Mapping[str, str]:
         return {}
 
     def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:

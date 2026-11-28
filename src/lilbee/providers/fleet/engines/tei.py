@@ -33,7 +33,7 @@ from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.fleet.model_memory import estimate_installed_encoder
+from lilbee.providers.fleet.model_memory import EncoderCharge, estimate_installed_encoder
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "1.9.4"
@@ -43,6 +43,10 @@ _CUDA_PREFIX = "cuda-sm"
 _MIN_COMPUTE = (7, 5)
 _CUDA_CELLS = (75, 80, 86, 89, 90, 100, 120)
 """The compute capabilities (major * 10 + minor) a CUDA build exists for."""
+_FLOAT32_BELOW_CELL = 80
+"""The CUDA builds under this cell (Turing) run in float32."""
+_DTYPE_FLAG = "--dtype"
+_FLOAT32 = "float32"
 _BATCH_LIMIT = 64
 """The inputs per request: the launch argv sets it on the server, the client splits at it."""
 _TOKENIZATION_WORKERS = 2
@@ -114,6 +118,13 @@ def _longest_input_tokens() -> int:
     it must not grow with the context.
     """
     return cfg.chunk_size + INPUT_HEADROOM_TOKENS
+
+
+def _runs_float32(backend: str | None) -> bool:
+    """Whether TEI runs this build in float32; a Turing CUDA build does."""
+    if backend is None or not backend.startswith(_CUDA_PREFIX):
+        return False
+    return int(backend.removeprefix(_CUDA_PREFIX)) < _FLOAT32_BELOW_CELL
 
 
 class TeiAdapter:
@@ -206,6 +217,12 @@ class TeiAdapter:
         )
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
+        from lilbee.catalog.runnable import session_host
+
+        # Works around a TEI defect; drop it when float16 on sm75 scores a mixed-length batch.
+        on_turing = request.target is RoleTarget.GPU and _runs_float32(
+            self.pick_build(session_host()).backend
+        )
         return [
             str(request.binary),
             "--model-id",
@@ -218,6 +235,7 @@ class TeiAdapter:
             str(_longest_input_tokens()),
             "--tokenization-workers",
             str(_TOKENIZATION_WORKERS),
+            *((_DTYPE_FLAG, _FLOAT32) if on_turing else ()),
             *spec.extra_args,
         ]
 
@@ -242,8 +260,13 @@ class TeiAdapter:
         from lilbee.catalog.runnable import session_host
 
         backend = self.pick_build(session_host()).backend
-        narrow_f32 = backend is not None and backend.startswith(_CUDA_PREFIX)
-        return estimate_installed_encoder(request.model_path, narrow_f32=narrow_f32)
+        if _runs_float32(backend):
+            charge = EncoderCharge.CUDA_FLOAT32
+        elif backend is not None and backend.startswith(_CUDA_PREFIX):
+            charge = EncoderCharge.CUDA_FLOAT16
+        else:
+            charge = EncoderCharge.VOCABULARY
+        return estimate_installed_encoder(request.model_path, charge=charge)
 
     def check_readback(self, binary: Path) -> bool:
         return False
@@ -260,7 +283,7 @@ class TeiAdapter:
     def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         return None
 
-    def runtime_env(self) -> Mapping[str, str]:
+    def runtime_env(self, binary: Path) -> Mapping[str, str]:
         return {}
 
     def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:

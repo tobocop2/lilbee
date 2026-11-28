@@ -45,6 +45,7 @@ _CUDA_WHEEL_IMPORTS: tuple[str, ...] = (
 # could not initialize a device fell to CPU in exactly the silence this exists to
 # break.
 _CUDA_SONAME_RE = re.compile(r"\blib(?:cudart|cublas|nvrtc)\.so\.(\d+)")
+_CUDA_MODULE_RE = re.compile(r"libggml-cuda\.so(?:\.[\d.]+)?")
 
 
 def _wheel_lib_dir(import_name: str) -> Path | None:
@@ -83,8 +84,8 @@ def _dir_entries(directory: Path) -> list[Path]:
         return []
 
 
-def cuda_runtime_env(binary: Path | None = None) -> dict[str, str]:
-    """``LD_LIBRARY_PATH`` for running *binary*, or empty when there is nothing to add.
+def cuda_runtime_env(binary: Path) -> dict[str, str]:
+    """``LD_LIBRARY_PATH`` for running *binary*: always its own folder, empty only off Linux.
 
     Ordering, which matters more than it looks: the binary's own directory, then
     any CUDA-runtime wheel directories, then whatever the caller already had.
@@ -93,27 +94,20 @@ def cuda_runtime_env(binary: Path | None = None) -> dict[str, str]:
     libraries the engine ships beside itself. On a host that merely has torch
     installed, that swapped the bundled engine's CUDA runtime for torch's.
 
-    Wheel directories are added only for a binary that actually links CUDA and
-    does not already carry its own runtime. A Vulkan or CPU build has no use for
-    them, and putting them on its path only gives an unrelated install a way to
-    interfere. Without a *binary* to reason about, the wheel directories are
-    returned as before.
+    Wheel directories are added only for a CUDA build (it links CUDA or ships the
+    CUDA backend module beside itself) that does not already carry its own runtime.
+    A Vulkan or CPU build has no use for them, and putting them on its path only
+    gives an unrelated install a way to interfere.
 
     Empty off Linux, where neither the wheels nor ``LD_LIBRARY_PATH`` apply.
     """
     if not sys.platform.startswith("linux"):
         return {}
-    parts: list[str] = []
-    if binary is not None:
-        parts.append(str(binary.parent))
-        wants_wheels = _links_cuda_runtime(binary, dict(os.environ)) and not (
-            _ships_its_own_cuda_runtime(binary)
-        )
-    else:
-        wants_wheels = True
+    parts = [str(binary.parent)]
+    wants_wheels = _is_cuda_build(binary, dict(os.environ)) and not (
+        _ships_its_own_cuda_runtime(binary)
+    )
     dirs = _cuda_wheel_lib_dirs() if wants_wheels else []
-    if not parts and not dirs:
-        return {}
     parts += [str(d) for d in dirs]
     # Drop existing entries that are already wheel dirs so an inherited path that
     # already carries them does not gain duplicate copies in each spawned server's
@@ -136,6 +130,16 @@ def _links_cuda_runtime(binary: Path, env: dict[str, str]) -> bool:
     return out is not None and _linked_cuda_major(out) is not None
 
 
+def _ships_cuda_module(binary: Path) -> bool:
+    """True when the CUDA backend module sits beside *binary*, loaded at run time."""
+    return any(_CUDA_MODULE_RE.fullmatch(entry.name) for entry in _dir_entries(binary.parent))
+
+
+def _is_cuda_build(binary: Path, env: dict[str, str]) -> bool:
+    """True when *binary* ships a CUDA backend module or links a CUDA runtime."""
+    return _ships_cuda_module(binary) or _links_cuda_runtime(binary, env)
+
+
 def assert_cuda_devices_usable(binary: Path, devices: list[FleetDevice], probe_output: str) -> None:
     """Fail loud when a CUDA build links a runtime it cannot initialize a GPU with.
 
@@ -150,7 +154,7 @@ def assert_cuda_devices_usable(binary: Path, devices: list[FleetDevice], probe_o
     if devices:
         return
     env = {**os.environ, **cuda_runtime_env(binary)}
-    if not _links_cuda_runtime(binary, env):
+    if not _is_cuda_build(binary, env):
         return
     if not model_cache.has_nvidia_gpu():
         return

@@ -8,6 +8,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.data.store import SourceType, Store
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 
 
 @pytest.fixture(autouse=True)
@@ -324,6 +325,24 @@ class TestMaxConcurrent:
         monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
         monkeypatch.setattr(cfg, "embed_replicas", 1)
         assert pipeline._max_concurrent() == 32
+
+    @pytest.mark.parametrize("kind", list(ProviderErrorKind), ids=str)
+    def test_vision_admission_with_a_failed_probe_sizes_one_replica(
+        self, monkeypatch, kind: ProviderErrorKind
+    ) -> None:
+        from lilbee.data.ingest import pipeline
+
+        self._stub_vision_capacity(monkeypatch, None)
+
+        def failing(_engine):
+            raise ProviderError("probe failed", kind=kind)
+
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", failing)
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 4)
+        monkeypatch.setattr(cfg, "vision_model", "org/repo/model.gguf")
+        monkeypatch.setattr(cfg, "vision_replicas", 0)
+        monkeypatch.setattr(cfg, "vision_ocr_concurrency", 3)
+        assert pipeline._max_concurrent() == 3
 
     def test_prefers_fitted_vision_slots_when_fleet_up(self, monkeypatch) -> None:
         # Once the fleet is up the fan-out sizes to the servers' real fitted slots, not

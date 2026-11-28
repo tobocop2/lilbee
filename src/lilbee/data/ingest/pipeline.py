@@ -177,7 +177,7 @@ def _max_concurrent() -> int:
     the OCR queue shallow instead of piling pages behind the dispatcher with their deadlines
     ticking, and still keeps every slot fed.
     """
-    from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
+    from lilbee.providers.fleet.replicas import resolve_replica_count, sizing_device_count
 
     config = active_config()
     if ocr_backend() is OcrBackendUsed.VISION:
@@ -186,7 +186,7 @@ def _max_concurrent() -> int:
             return fitted
         replicas = resolve_replica_count(
             WorkerRole.VISION,
-            gpu_device_count(get_services().engines.for_role(WorkerRole.VISION).adapter),
+            sizing_device_count(get_services().engines.for_role(WorkerRole.VISION).adapter),
         )
         return max(1, replicas * config.vision_ocr_concurrency)
     if config.ingest_max_inflight > 0:

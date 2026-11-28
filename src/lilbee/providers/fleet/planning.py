@@ -2177,12 +2177,12 @@ def _charge_by_device(
 
 
 def _launch_env(
-    engine: EngineAdapter, chosen: tuple[FleetDevice, ...], target: RoleTarget
+    engine: EngineAdapter, binary: Path, chosen: tuple[FleetDevice, ...], target: RoleTarget
 ) -> dict[str, str]:
     """The env a launch carries; the telemetry opt-outs come last so no adapter drops them."""
     return {
         **visible_env(chosen),
-        **engine.runtime_env(),
+        **engine.runtime_env(binary),
         **engine.target_env(target, len(chosen)),
         **ENGINE_TELEMETRY_OPT_OUT,
     }
@@ -2567,7 +2567,7 @@ def _draft_launch(
     launch = InstanceLaunch(
         role=plan.role,
         argv=engine.launch_argv(spec, request),
-        env_overrides=_launch_env(engine, pinned, plan.target),
+        env_overrides=_launch_env(engine, binary, pinned, plan.target),
         model=model_ref,
         # token_cap drives cross-encoder/embed input truncation; the LLM rerank path
         # doesn't truncate (it relies on the per-slot ctx headroom), so leave it None.

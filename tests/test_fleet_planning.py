@@ -1272,7 +1272,7 @@ class TestBuildFleetWiring:
         # Pin the runtime env to empty: the real one reflects whatever CUDA
         # wheels the host venv has installed, and the assertion below checks
         # exact env equality for the pinning keys.
-        monkeypatch.setattr(llama_mod, "llama_server_runtime_env", lambda: {})
+        monkeypatch.setattr(llama_mod, "llama_server_runtime_env", lambda binary: {})
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
         launch = planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)
@@ -2848,6 +2848,26 @@ class TestResolveDevicesProbeFailureWarning:
         monkeypatch.setattr(cuda_runtime, "_links_cuda_runtime", lambda *_a: True)
         with pytest.raises(ProviderError, match="no CUDA-capable device"):
             planning_mod.resolve_devices(Path("/bin/llama-server"), engine=LLAMA)
+
+    def test_resolve_devices_raises_when_runtime_cuda_module_enumerates_no_device(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.fleet import cuda_runtime
+
+        (tmp_path / "libggml-cuda.so").write_bytes(b"")
+        binary = tmp_path / "llama-server"
+        binary.write_bytes(b"")
+        monkeypatch.setattr(cuda_runtime.sys, "platform", "linux")
+        monkeypatch.setattr(
+            llama_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([], "Available devices:\n", spoke_protocol=True),
+        )
+        monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
+        monkeypatch.setattr(cuda_runtime, "ldd_output", lambda *_a: "")
+        with pytest.raises(ProviderError, match="no CUDA-capable device"):
+            planning_mod.resolve_devices(binary, engine=LLAMA)
 
     def test_an_engine_that_never_answered_is_not_accused_of_a_broken_driver(
         self, monkeypatch

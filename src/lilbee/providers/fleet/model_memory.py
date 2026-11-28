@@ -7,6 +7,7 @@ import posixpath
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +67,8 @@ _NARROWED_F32_BYTES = 2
 _F32 = "F32"
 _CONFIG_TEXT_KEY = "text_config"
 _CONFIG_DTYPE_KEYS = ("dtype", "torch_dtype")
-_CONFIG_FLOAT32 = "float32"
+_FLOAT32_NAMES = frozenset({"float32"})
+_HALF_NAMES = frozenset({"float16", "bfloat16"})
 _CONFIG_VOCAB_KEY = "vocab_size"
 _KV_ELEMENT_BYTES = 2
 """The chat engines for safetensors hold each cache element at the model's 2 byte dtype."""
@@ -481,30 +483,44 @@ def installed_config(model_path: Path) -> dict[str, Any] | None:
     return read_folder_config(folder) or None
 
 
-def _is_float32(config: Mapping[str, Any] | None) -> bool:
-    """Whether a config declares float32 weights, at its top level or in ``text_config``."""
+def _declares_dtype(config: Mapping[str, Any] | None, dtypes: frozenset[str]) -> bool:
+    """Whether a config declares one of *dtypes*, at its top level or in ``text_config``."""
     if config is None:
         return False
     return any(
-        section.get(key) == _CONFIG_FLOAT32
+        section.get(key) in dtypes
         for section in (config, _config_section(config))
         for key in _CONFIG_DTYPE_KEYS
     )
 
 
-def estimate_installed_encoder(model_path: Path, *, narrow_f32: bool) -> MemoryEstimate:
+class EncoderCharge(StrEnum):
+    """How an engine build holds the weights of an encoder, which sets its memory charge."""
+
+    CUDA_FLOAT16 = "cuda-float16"
+    """A CUDA build that loads float32 weights as float16."""
+    CUDA_FLOAT32 = "cuda-float32"
+    """A CUDA build that loads every weight as float32."""
+    VOCABULARY = "vocabulary"
+    """Any other build: the charge follows the vocabulary in ``config.json``."""
+
+
+def estimate_installed_encoder(model_path: Path, *, charge: EncoderCharge) -> MemoryEstimate:
     """The encoder figure of an installed folder.
 
-    *narrow_f32* is true for a CUDA build, which holds float32 weights as float16 and is charged
-    the weights plus the runtime allowance. Any other build is charged by the vocabulary in
-    ``config.json``.
+    A CUDA build is charged the weights it holds plus the runtime allowance. A half-precision
+    checkpoint doubles when the build loads float32 weights; the config names its dtype.
     """
     weights = whole_safetensors_bytes(model_path)
     if not weights:
         return _unknown_estimate(installed_safetensors_bytes(model_path))
     config = installed_config(model_path)
-    if narrow_f32:
-        return encoder_estimate(weights // 2 if _is_float32(config) else weights)
+    if charge is EncoderCharge.CUDA_FLOAT16:
+        halved = _declares_dtype(config, _FLOAT32_NAMES)
+        return encoder_estimate(weights // 2 if halved else weights)
+    if charge is EncoderCharge.CUDA_FLOAT32:
+        doubled = _declares_dtype(config, _HALF_NAMES)
+        return encoder_estimate(weights * 2 if doubled else weights)
     vocab_size = _whole_number((config or {}).get(_CONFIG_VOCAB_KEY))
     return cpu_encoder_estimate(weights, vocab_size)
 

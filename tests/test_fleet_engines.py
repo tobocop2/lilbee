@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 import re
 from pathlib import Path
@@ -12,7 +13,7 @@ import pytest
 from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config.enums import KvCacheType
-from lilbee.providers.fleet import adapters
+from lilbee.providers.fleet import adapters, cuda_runtime
 from lilbee.providers.fleet.engines import LLAMA, EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.llama import _WHEEL_VERSION
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -341,11 +342,60 @@ def test_llama_assert_loadable_asks_the_gguf_parser_probe(monkeypatch: pytest.Mo
     assert calls == [("org/repo", "m.gguf", "tok")]
 
 
-def test_llama_runtime_env_is_the_server_runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        f"{_LLAMA_MODULE}.llama_server_runtime_env", lambda: {"LD_LIBRARY_PATH": "/x"}
-    )
-    assert LLAMA.runtime_env() == {"LD_LIBRARY_PATH": "/x"}
+def test_llama_runtime_env_asks_the_server_runtime_env_about_its_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Path] = []
+
+    def fake(binary: Path) -> dict[str, str]:
+        seen.append(binary)
+        return {"LD_LIBRARY_PATH": "/x"}
+
+    monkeypatch.setattr(f"{_LLAMA_MODULE}.llama_server_runtime_env", fake)
+    binary = Path("/b/llama-server")
+    assert LLAMA.runtime_env(binary) == {"LD_LIBRARY_PATH": "/x"}
+    assert seen == [binary]
+
+
+_WHEEL_DIR = Path("/wheels/cudart")
+_LDD_NO_CUDA = "\tlibstdc++.so.6 => /usr/lib/libstdc++.so.6 (0x00007f00)\n"
+_LDD_CUDA = "\tlibcudart.so.12 => not found\n"
+
+
+def _spawn_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, ldd: str | None, *entries: str
+) -> tuple[Path, dict[str, str]]:
+    """What the real CUDA rule gives a spawned LLAMA engine whose folder holds *entries*."""
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"")
+    for name in entries:
+        (tmp_path / name).write_bytes(b"")
+    monkeypatch.setattr(cuda_runtime.sys, "platform", "linux")
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [_WHEEL_DIR])
+    monkeypatch.setattr(cuda_runtime, "ldd_output", lambda _binary, _env: ldd)
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    return binary, dict(LLAMA.runtime_env(binary))
+
+
+def test_a_build_with_no_cuda_gets_no_wheel_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    binary, env = _spawn_env(monkeypatch, tmp_path, _LDD_NO_CUDA)
+    assert env == {"LD_LIBRARY_PATH": str(binary.parent)}
+
+
+def test_a_build_that_links_cuda_gets_the_wheel_folder_after_its_own(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    binary, env = _spawn_env(monkeypatch, tmp_path, _LDD_CUDA)
+    assert env == {"LD_LIBRARY_PATH": f"{binary.parent}{os.pathsep}{_WHEEL_DIR}"}
+
+
+def test_a_build_that_loads_the_cuda_module_at_run_time_gets_the_wheel_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    binary, env = _spawn_env(monkeypatch, tmp_path, _LDD_NO_CUDA, "libggml-cuda.so")
+    assert env == {"LD_LIBRARY_PATH": f"{binary.parent}{os.pathsep}{_WHEEL_DIR}"}
 
 
 def test_llama_swap_extras_is_empty() -> None:

@@ -67,6 +67,7 @@ class SpyEngine(BundledFakeAdapter):
         self.probed: list[Path] = []
         self.sized: list[MemoryRequest] = []
         self.meta_paths: list[Path] = []
+        self.env_binaries: list[Path] = []
         self.readback_asked = 0
 
     def binary(self) -> Path:
@@ -97,7 +98,8 @@ class SpyEngine(BundledFakeAdapter):
         self.meta_paths.append(path)
         return dict(SPY_META)
 
-    def runtime_env(self) -> Mapping[str, str]:
+    def runtime_env(self, binary: Path) -> Mapping[str, str]:
+        self.env_binaries.append(binary)
         return SPY_ENV
 
     def target_env(self, target: Any, cards: int) -> Mapping[str, str]:
@@ -741,6 +743,7 @@ class TestLaunchBuild:
         assert "--spy-readback=True" in argv  # check_readback()
         assert "--spy-moe=True" in argv  # model_meta(): the experts in its header
         assert launch.env_overrides["SPY_RUNTIME"] == "1"  # runtime_env()
+        assert spy.env_binaries == [spy.binary()]  # runtime_env() gets the launch binary
         assert launch.swap_extras == SPY_EXTRAS  # swap_extras()
         assert spy.meta_paths and set(spy.meta_paths) == {model_file}
 
@@ -1385,6 +1388,6 @@ def _llama_book() -> dict[WorkerRole, Any]:
 def test_the_spy_differs_from_llama_on_every_member(spy: SpyEngine) -> None:
     profile: RequestProfile = spy.request_profile(WorkerRole.CHAT)
     assert profile.label != LLAMA.request_profile(WorkerRole.CHAT).label
-    assert spy.runtime_env() != LLAMA.runtime_env()
+    assert spy.runtime_env(Path("/b/server")) != LLAMA.runtime_env(Path("/b/server"))
     assert spy.swap_extras(None) != LLAMA.swap_extras(None)  # type: ignore[arg-type]
     assert not LLAMA.supports_architecture("spyarch")

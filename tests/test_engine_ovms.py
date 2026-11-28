@@ -281,19 +281,27 @@ def test_the_launch_env_puts_the_archive_lib_folder_on_the_library_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     binary = _archive(tmp_path)
-    monkeypatch.setattr(ovms.shutil, "which", lambda name: str(binary))
     monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-    assert OVMS.runtime_env() == {"LD_LIBRARY_PATH": str(tmp_path / "ovms" / "lib")}
+    assert OVMS.runtime_env(binary) == {"LD_LIBRARY_PATH": str(tmp_path / "ovms" / "lib")}
+
+
+def test_the_launch_env_follows_the_binary_it_is_given_not_the_one_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    given = _archive(tmp_path / "given")
+    on_path = _archive(tmp_path / "on-path")
+    monkeypatch.setattr(ovms.shutil, "which", lambda name: str(on_path))
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    assert OVMS.runtime_env(given) == {"LD_LIBRARY_PATH": str(tmp_path / "given" / "ovms" / "lib")}
 
 
 def test_the_launch_env_keeps_a_library_path_already_set(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     binary = _archive(tmp_path)
-    monkeypatch.setattr(ovms.shutil, "which", lambda name: str(binary))
     monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/other")
     expected = os.pathsep.join([str(tmp_path / "ovms" / "lib"), "/opt/other"])
-    assert OVMS.runtime_env() == {"LD_LIBRARY_PATH": expected}
+    assert OVMS.runtime_env(binary) == {"LD_LIBRARY_PATH": expected}
 
 
 def test_the_launch_env_follows_a_link_to_the_binary(
@@ -304,24 +312,15 @@ def test_the_launch_env_follows_a_link_to_the_binary(
     link_dir.mkdir()
     link = link_dir / "ovms"
     link.symlink_to(binary)
-    monkeypatch.setattr(ovms.shutil, "which", lambda name: str(link))
     monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-    assert OVMS.runtime_env() == {"LD_LIBRARY_PATH": str(tmp_path / "unpacked" / "ovms" / "lib")}
+    assert OVMS.runtime_env(link) == {
+        "LD_LIBRARY_PATH": str(tmp_path / "unpacked" / "ovms" / "lib")
+    }
 
 
-def test_the_launch_env_is_empty_when_the_binary_has_no_lib_folder(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_the_launch_env_is_empty_when_the_binary_has_no_lib_folder(tmp_path: Path) -> None:
     binary = _archive(tmp_path, lib=False)
-    monkeypatch.setattr(ovms.shutil, "which", lambda name: str(binary))
-    assert OVMS.runtime_env() == {}
-
-
-def test_the_launch_env_is_empty_when_ovms_is_not_installed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(ovms.shutil, "which", lambda name: None)
-    assert OVMS.runtime_env() == {}
+    assert OVMS.runtime_env(binary) == {}
 
 
 def test_the_engine_has_no_optional_features_to_probe() -> None:

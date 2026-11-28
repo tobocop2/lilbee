@@ -31,7 +31,6 @@ from lilbee.providers.fleet.gpu_backends import (
 from lilbee.providers.fleet.gpu_backends.nvidia import card_count
 from lilbee.providers.fleet.gpu_env import (
     CUDA_VISIBLE_VAR,
-    GPU_DEVICE_ORDINAL_VAR,
     HIP_VISIBLE_VAR,
     ROCR_VISIBLE_VAR,
     gpu_environ,
@@ -125,8 +124,8 @@ _BACKEND_VISIBLE_VARS: dict[str, tuple[str, ...]] = {
     # Innermost mask first. ROCr filters, then HIP re-indexes within the
     # survivors, so walking outward from the fleet's index means undoing HIP
     # before ROCr.
-    "ROCm": (HIP_VISIBLE_VAR, GPU_DEVICE_ORDINAL_VAR, ROCR_VISIBLE_VAR),
-    "HIP": (HIP_VISIBLE_VAR, GPU_DEVICE_ORDINAL_VAR, ROCR_VISIBLE_VAR),
+    "ROCm": (HIP_VISIBLE_VAR, ROCR_VISIBLE_VAR),
+    "HIP": (HIP_VISIBLE_VAR, ROCR_VISIBLE_VAR),
 }
 
 

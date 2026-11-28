@@ -105,7 +105,7 @@ def _opposite_numbering(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict
     )
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", lambda *_a, **_k: 8192)
     monkeypatch.setattr(planning, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
-    monkeypatch.setattr(llama_mod, "llama_server_runtime_env", lambda: {})
+    monkeypatch.setattr(llama_mod, "llama_server_runtime_env", lambda binary: {})
     monkeypatch.setattr(
         "lilbee.providers.fleet.engines.llama.resolve_llama_server",
         lambda: Path("/bin/llama-server"),
