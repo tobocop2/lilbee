@@ -1,0 +1,9 @@
+# Fork wheels the old-Mac executables bundle: one line per project and arch,
+# each a release asset of the owner's fork, named by URL and sha256. The build
+# reads them from the fork releases, so it does not wait on a pages deploy.
+crawlberg @ https://github.com/tobocop2/crawlberg/releases/download/v1.13.0%2Bcompat/crawlberg-1.13.0%2Bcompat-cp311-abi3-macosx_11_0_arm64.whl#sha256=98a09b976b29d25196c7c977dd4474d62816202abea29d45d11bab4ed02dbc18 ; platform_machine == 'arm64'
+crawlberg @ https://github.com/tobocop2/crawlberg/releases/download/v1.13.0%2Bcompat/crawlberg-1.13.0%2Bcompat-cp311-abi3-macosx_11_0_x86_64.whl#sha256=b2c6981eba2f3689c55e5a98915dd2159459b917157ee0878a1e297a58a012aa ; platform_machine == 'x86_64'
+liter-llm @ https://github.com/tobocop2/liter-llm/releases/download/v2.7.0%2Bcompat/liter_llm-2.7.0%2Bcompat-cp311-abi3-macosx_11_0_arm64.whl#sha256=039ad3029b89b666d591768b2465883c138408855573dcb5eee00df823e21bcf ; platform_machine == 'arm64'
+liter-llm @ https://github.com/tobocop2/liter-llm/releases/download/v2.7.0%2Bcompat/liter_llm-2.7.0%2Bcompat-cp311-abi3-macosx_11_0_x86_64.whl#sha256=82fd22b6a2b7f5e2ebe27940caf79aa3a74fa1918c1b439bba347945381669ad ; platform_machine == 'x86_64'
+xberg @ https://github.com/tobocop2/xberg/releases/download/v1.5.4%2Bcompat/xberg-1.5.4%2Bcompat-cp311-abi3-macosx_11_0_arm64.whl#sha256=b85501e681238030e5796a75693988adee53deb7d465941ca587f2705911eb3e ; platform_machine == 'arm64'
+xberg @ https://github.com/tobocop2/xberg/releases/download/v1.5.4%2Bcompat/xberg-1.5.4%2Bcompat-cp311-abi3-macosx_11_0_x86_64.whl#sha256=fbfc2f9c885e57886046ccc8602a602d6b0a75602f7da90fca44ed221f3acce3 ; platform_machine == 'x86_64'

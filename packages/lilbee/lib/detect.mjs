@@ -30,6 +30,12 @@ const AVX2_PROBE_SCRIPT = [
 const AVX2_PROBE_ARGS = ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(AVX2_PROBE_SCRIPT, "utf16le").toString("base64")];
 
 const COMPAT_BUILD_LOG = "lilbee: this CPU has no AVX2 — using the -compat build (override with LILBEE_VARIANT).";
+const OLD_MACOS_LOG = "lilbee: this macOS is older than the main build supports — using the -compat build (override with LILBEE_VARIANT).";
+/**
+ * The first macOS release each Mac build runs on: the main build, and the compat build below it.
+ * The cells files hold the same floors, and a test fails when the two disagree.
+ */
+export const MACOS_FLOORS = { arm64: { main: "15.0", compat: "12.3" }, x64: { main: "15.0", compat: "12.0" } };
 const COMPAT_FAMILY_LOG = "lilbee: this CPU has no AVX2 — using the -compat build family (override with LILBEE_VARIANT).";
 
 const execFileAsync = promisify(execFile);
@@ -185,6 +191,24 @@ async function probeCpu(platform, arch, io, tryExec) {
   return { status: "skipped" };
 }
 
+/** Whether this Mac runs a macOS release the compat build supports and the main build does not. */
+async function macosBelowMainBuild(arch, tryExec) {
+  const floors = MACOS_FLOORS[arch];
+  if (!floors) return false;
+  const version = macosRelease(await tryExec("sw_vers", ["-productVersion"]));
+  return version !== null && atLeast(version, macosRelease(floors.compat)) && !atLeast(version, macosRelease(floors.main));
+}
+
+/** The [major, minor] of a macOS version such as "12.7.6", or null when the text is not one. */
+function macosRelease(text) {
+  const match = /^(\d+)(?:\.(\d+))?/.exec(text?.trim() ?? "");
+  return match ? [Number(match[1]), Number(match[2] ?? 0)] : null;
+}
+
+function atLeast([major, minor], [floorMajor, floorMinor]) {
+  return major > floorMajor || (major === floorMajor && minor >= floorMinor);
+}
+
 /** The report of a host whose build was forced: nothing was probed. */
 function skippedDetection() {
   return { nvidia: { status: "skipped" }, amd: { status: "skipped" }, cpu: { status: "skipped" }, detectedAt: new Date().toISOString() };
@@ -283,7 +307,9 @@ export async function detectVariant(platform, arch, io = nodeIo, log = () => {},
 
   if (platform === "darwin") {
     if (noAvx2) log(COMPAT_BUILD_LOG);
-    return host(noAvx2 ? "compat" : "default");
+    const oldMacos = await macosBelowMainBuild(arch, tryExec);
+    if (oldMacos && !noAvx2) log(OLD_MACOS_LOG);
+    return host(noAvx2 || oldMacos ? "compat" : "default");
   }
 
   const cuda = cudaBuild(detection.nvidia, platform, exists, log);

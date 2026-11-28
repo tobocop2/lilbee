@@ -1,0 +1,32 @@
+# The old-Mac executable build cells for build-oldmac-executables.yml. The
+# `plan` job in that workflow reads this file and hands the cells to the
+# `build` job as its matrix. Every cell is droppable (`soft: true`): they live
+# outside release.yml so a lag in a fork wheel never blocks a release.
+#
+# macos_floor is the OS the asset runs on. pyarrow and scipy ship no wheel
+# below macOS 12, so 12.0 is the lowest floor the locked dependency set reaches
+# on Intel. On arm64 the scipy wheels bundle libgfortran, or the scipy
+# extensions themselves, built for macOS 12.3, so that cell's floor is 12.3.
+# python_platform makes uv resolve wheels for that target instead of the
+# runner, so the deps arrive at their oldest macOS build.
+#
+# The npm launcher (packages/lilbee/lib/detect.mjs) and the Homebrew formula
+# (packaging/homebrew/lilbee.rb) carry these floors too, and
+# tests/test_executable_build_config.py fails when they disagree.
+#
+# lancedb_spec is set only where the locked lancedb has no wheel (Intel), and
+# the cell takes the pre-Haswell build from the compat index instead.
+- os: macos-15-intel
+  asset_name: lilbee-compat-macos-x86_64
+  backend: cpu
+  soft: true
+  march: x86-64-v2
+  macos_floor: "12.0"
+  python_platform: x86_64-apple-darwin
+  lancedb_spec: lancedb==0.40.0+compat
+- os: macos-latest
+  asset_name: lilbee-compat-macos-arm64
+  backend: metal
+  soft: true
+  macos_floor: "12.3"
+  python_platform: aarch64-apple-darwin

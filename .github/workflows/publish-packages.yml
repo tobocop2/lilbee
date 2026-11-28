@@ -39,6 +39,8 @@ jobs:
       sha_linux: ${{ steps.info.outputs.sha_linux }}
       sha_macos_arm64: ${{ steps.info.outputs.sha_macos_arm64 }}
       sha_macos_x86_64: ${{ steps.info.outputs.sha_macos_x86_64 }}
+      sha_macos_arm64_compat: ${{ steps.info.outputs.sha_macos_arm64_compat }}
+      sha_macos_x86_64_compat: ${{ steps.info.outputs.sha_macos_x86_64_compat }}
       sha_windows: ${{ steps.info.outputs.sha_windows }}
       sha_windows_cu125: ${{ steps.info.outputs.sha_windows_cu125 }}
       sha_windows_cu124: ${{ steps.info.outputs.sha_windows_cu124 }}
@@ -88,6 +90,8 @@ jobs:
           sha_linux=$(get_sha lilbee-linux-x86_64)
           sha_macos_arm64=$(get_sha lilbee-macos-arm64)
           sha_macos_x86_64=$(get_sha lilbee-macos-x86_64)
+          sha_macos_arm64_compat=$(get_sha lilbee-compat-macos-arm64)
+          sha_macos_x86_64_compat=$(get_sha lilbee-compat-macos-x86_64)
           sha_windows=$(get_sha lilbee-windows-x86_64.exe)
           sha_windows_cu125=$(get_sha lilbee-windows-x86_64-cu125.exe)
           sha_windows_cu124=$(get_sha lilbee-windows-x86_64-cu124.exe)
@@ -101,6 +105,8 @@ jobs:
             echo "sha_linux=$sha_linux"
             echo "sha_macos_arm64=$sha_macos_arm64"
             echo "sha_macos_x86_64=$sha_macos_x86_64"
+            echo "sha_macos_arm64_compat=$sha_macos_arm64_compat"
+            echo "sha_macos_x86_64_compat=$sha_macos_x86_64_compat"
             echo "sha_windows=$sha_windows"
             echo "sha_windows_cu125=$sha_windows_cu125"
             echo "sha_windows_cu124=$sha_windows_cu124"
@@ -119,6 +125,8 @@ jobs:
           SHA_MACOS_ARM64: ${{ needs.resolve.outputs.sha_macos_arm64 }}
           SHA_LINUX: ${{ needs.resolve.outputs.sha_linux }}
           SHA_MACOS_X86_64: ${{ needs.resolve.outputs.sha_macos_x86_64 }}
+          SHA_MACOS_ARM64_COMPAT: ${{ needs.resolve.outputs.sha_macos_arm64_compat }}
+          SHA_MACOS_X86_64_COMPAT: ${{ needs.resolve.outputs.sha_macos_x86_64_compat }}
         run: |
           set -euo pipefail
           # The three urls the default formula carries. Homebrew refuses to load a
@@ -129,6 +137,10 @@ jobs:
           [ -n "$SHA_LINUX" ] || { echo "lilbee-linux-x86_64 is not on the release"; exit 1; }
           args="--version ${VERSION} --sha-macos-arm64 ${SHA_MACOS_ARM64}"
           args="${args} --sha-macos-x86_64 ${SHA_MACOS_X86_64} --sha-linux-x86_64 ${SHA_LINUX}"
+          # The old-Mac builds are not required: without one the formula carries no
+          # old-Mac url for that arch, and the main build refuses a Mac below its floor.
+          [ -z "$SHA_MACOS_ARM64_COMPAT" ] || args="${args} --sha-macos-arm64-compat ${SHA_MACOS_ARM64_COMPAT}"
+          [ -z "$SHA_MACOS_X86_64_COMPAT" ] || args="${args} --sha-macos-x86_64-compat ${SHA_MACOS_X86_64_COMPAT}"
           echo "value=${args}" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/publish-homebrew-formula
         with:

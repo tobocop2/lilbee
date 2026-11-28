@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update version, license and per-platform sha256 in the Homebrew formula in place."""
+"""Write a Homebrew formula from its template with the version, license and sha256 values."""
 
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ def _replace_sha_for_asset(content: str, asset_name: str, new_sha: str) -> str:
     return new_content
 
 
-# The tap is the published artifact and nothing else rewrites it, so a formula already
-# there keeps whatever it says: the seeds in packaging/homebrew are only used when a
-# formula is absent. Every flavor carries the project license, so the renderer owns it.
+# Every publish writes the tap's formula from its template in packaging/homebrew, never
+# from the tap's own copy, so a block one release drops (a missing old-Mac digest) is
+# back in the next. Every flavor carries the project license.
 LICENSE = "MIT"
 
 
@@ -61,10 +61,38 @@ def _dest(flag: str) -> str:
     return flag[2:].replace("-", "_")
 
 
+# The old-Mac builds are built apart from the release, so their digests may not exist
+# yet. Without one the formula drops that block instead of carrying a placeholder digest.
+_OLD_MAC_ASSETS = (
+    ("lilbee-compat-macos-arm64", "--sha-macos-arm64-compat"),
+    ("lilbee-compat-macos-x86_64", "--sha-macos-x86_64-compat"),
+)
+
+
+def _old_mac_block(asset: str) -> re.Pattern[str]:
+    """The `on_sonoma :or_older` block that holds *asset*'s url and digest."""
+    return re.compile(
+        r'\n\n      on_sonoma :or_older do\n        url "[^"]*'
+        + re.escape(asset)
+        + r'"\n[^\n]*\n      end\n'
+    )
+
+
+def _render_old_mac(content: str, asset: str, sha: str | None) -> str:
+    if sha:
+        return _replace_sha_for_asset(content, asset, sha)
+    new_content, count = _old_mac_block(asset).subn("\n", content)
+    if count != 1:
+        raise SystemExit(f"expected one old-Mac block for {asset}, found {count}")
+    return new_content
+
+
 def _render_default(content: str, args: argparse.Namespace) -> str:
     content = _replace_version(content, args.version)
     for asset, flag in _DEFAULT_ASSETS:
         content = _replace_sha_for_asset(content, asset, getattr(args, _dest(flag)))
+    for asset, flag in _OLD_MAC_ASSETS:
+        content = _render_old_mac(content, asset, getattr(args, _dest(flag)))
     return content
 
 
@@ -108,7 +136,8 @@ def _selected_flavor(args: argparse.Namespace) -> tuple[str, Renderer, str] | No
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("formula", type=Path)
+    parser.add_argument("formula", type=Path, help="The formula file to write.")
+    parser.add_argument("--template", type=Path, required=True, help="The template to render.")
     parser.add_argument("--version", required=True)
     mode = parser.add_mutually_exclusive_group()
     for name, _, _ in _FLAVORS:
@@ -118,6 +147,8 @@ def main() -> None:
             help=f"Render the lilbee-{name} formula instead of the default lilbee formula.",
         )
     for _, flag in _DEFAULT_ASSETS:
+        parser.add_argument(flag, dest=_dest(flag))
+    for _, flag in _OLD_MAC_ASSETS:
         parser.add_argument(flag, dest=_dest(flag))
     for _, _, digest in _FLAVORS:
         parser.add_argument(f"--{digest.replace('_', '-')}")
@@ -134,7 +165,7 @@ def main() -> None:
         if not getattr(args, digest):
             parser.error(f"--{name} requires --{digest.replace('_', '-')}")
 
-    args.formula.write_text(_replace_license(render(args.formula.read_text(), args)))
+    args.formula.write_text(_replace_license(render(args.template.read_text(), args)))
 
 
 if __name__ == "__main__":
