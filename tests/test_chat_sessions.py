@@ -47,6 +47,11 @@ def sessions():
     return get_services().session_store
 
 
+def _persist(screen: ChatScreen, text: str) -> None:
+    """Save a user turn to the screen's session, as a turn that got an answer does."""
+    screen._session_id = screen._persist_user_turn(text, screen._session_id, "both")
+
+
 def _bubble_text(bubble: AssistantMessage) -> str:
     """The answer text a reader would actually see in a bubble.
 
@@ -68,7 +73,7 @@ async def test_first_turn_creates_titled_session(sessions):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
-        screen._persist_user_turn("Torque specs in the manual")
+        _persist(screen, "Torque specs in the manual")
         metas = sessions.list()
         assert len(metas) == 1
         assert metas[0].title == "Torque specs in the manual"
@@ -80,12 +85,12 @@ async def test_turns_append_to_the_same_session(sessions):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
-        screen._persist_user_turn("first question")
+        _persist(screen, "first question")
         session_id = screen._session_id
         screen._persist_assistant_turn(
             session_id, "the answer [2]", [SourceRef("manual.pdf", "manual.pdf", 2)]
         )
-        screen._persist_user_turn("second question")
+        _persist(screen, "second question")
         assert screen._session_id == session_id
         assert len(sessions.list()) == 1
         session = sessions.get(session_id)
@@ -99,10 +104,10 @@ async def test_user_turn_recovers_if_active_session_deleted(sessions):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
-        screen._persist_user_turn("first")
+        _persist(screen, "first")
         first_id = screen._session_id
         sessions.delete(first_id)  # deleted from the drawer / another surface
-        screen._persist_user_turn("second")  # must not raise
+        _persist(screen, "second")  # must not raise
         assert screen._session_id != first_id
         assert len(sessions.list()) == 1
 
@@ -111,7 +116,7 @@ async def test_assistant_turn_swallows_deleted_session(sessions):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
-        screen._persist_user_turn("q")
+        _persist(screen, "q")
         sessions.delete(screen._session_id)  # gone mid-stream
         screen._persist_assistant_turn(screen._session_id, "a", [])  # must not raise
         assert sessions.list() == []
@@ -129,11 +134,11 @@ async def test_reset_conversation_opens_a_fresh_session(sessions):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
-        screen._persist_user_turn("first")
+        _persist(screen, "first")
         first_id = screen._session_id
         screen._reset_conversation()
         assert screen._session_id is None
-        screen._persist_user_turn("second")
+        _persist(screen, "second")
         assert screen._session_id != first_id
         assert len(sessions.list()) == 2
 
@@ -480,7 +485,7 @@ async def test_assistant_turn_is_not_saved_after_sessions_go_off(sessions, monke
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
-        screen._persist_user_turn("first question")
+        _persist(screen, "first question")
         session_id = screen._session_id
         before = sessions.get(session_id).meta.message_count
 
@@ -495,7 +500,7 @@ async def test_compaction_summary_is_not_saved_after_sessions_go_off(sessions, m
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
-        screen._persist_user_turn("first question")
+        _persist(screen, "first question")
         session_id = screen._session_id
 
         monkeypatch.setattr(cfg, "sessions_enabled", False)
@@ -623,7 +628,8 @@ async def test_a_fold_in_the_same_conversation_lands_through_the_send_path(sessi
         assert screen._summary == "OLD NOTES"
         assert sessions.get(source).summary == "OLD NOTES"
         assert len(screen._history) < 7, "the folded turns leave the history"
-        assert screen._history[-1] == {"role": "user", "content": "new question"}
+        # The turn got no answer, so its question is not in the history.
+        assert {"role": "user", "content": "new question"} not in screen._history
 
 
 async def test_resuming_mid_answer_keeps_the_old_answer_out_of_the_resumed_history(sessions):
@@ -646,7 +652,6 @@ async def test_resuming_mid_answer_keeps_the_old_answer_out_of_the_resumed_histo
         ):
             try:
                 screen._send_message("old question")
-                source = screen._session_id
                 assert await pump_until(pilot, first_token.is_set), "the answer must have started"
                 app.resume_session(other)
             finally:
@@ -656,7 +661,217 @@ async def test_resuming_mid_answer_keeps_the_old_answer_out_of_the_resumed_histo
             {"role": "user", "content": "other q"},
             {"role": "assistant", "content": "other a"},
         ]
+        assert screen._session_id == other, "the stale turn does not take the session over"
+        (source,) = [m.id for m in sessions.list() if m.id != other]
         assert [m.content for m in sessions.get(source).messages] == ["old question", "PARTIAL"]
+
+
+def _answering(text: str):
+    def stream(*_args, **_kwargs):
+        yield StreamToken(content=text, is_reasoning=False)
+
+    return stream
+
+
+def _failing(*_args, **_kwargs):
+    raise RuntimeError("the engine died")
+    yield  # pragma: no cover - makes this a generator
+
+
+async def _ask(pilot, screen, question: str, **patches) -> None:
+    with (
+        patch.object(ChatScreen, "_await_chat_engine", return_value=patches.pop("ready", True)),
+        patch.object(get_services().searcher, "ask_stream", **patches),
+    ):
+        screen._send_message(question)
+        await wait_for_turn_end(pilot, screen)
+
+
+async def test_a_turn_that_fails_before_its_first_token_leaves_no_trace(sessions):
+    """The question of a turn with no answer is in neither the history nor the session,
+    so the next prompt sends one user turn."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        await _ask(pilot, screen, "lost question", side_effect=_failing)
+        assert screen._history == []
+        assert sessions.list() == []
+
+        with (
+            patch.object(ChatScreen, "_await_chat_engine", return_value=True),
+            patch.object(
+                get_services().searcher, "ask_stream", side_effect=_answering("an answer")
+            ) as ask,
+        ):
+            screen._send_message("second question")
+            await wait_for_turn_end(pilot, screen)
+        assert ask.call_args.args == ("second question",)
+        assert ask.call_args.kwargs["history"] == []
+        assert screen._history == [
+            {"role": "user", "content": "second question"},
+            {"role": "assistant", "content": "an answer"},
+        ]
+        (meta,) = sessions.list()
+        assert [m.content for m in sessions.get(meta.id).messages] == [
+            "second question",
+            "an answer",
+        ]
+
+
+async def test_a_turn_stopped_before_the_engine_serves_leaves_no_trace(sessions):
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        await _ask(pilot, screen, "never sent", ready=False, side_effect=_answering("x"))
+        assert screen._history == []
+        assert sessions.list() == []
+
+
+async def test_a_failed_turn_keeps_the_answered_turns_before_it(sessions):
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        await _ask(pilot, screen, "first", side_effect=_answering("one"))
+        await _ask(pilot, screen, "second", side_effect=_failing)
+        assert screen._history == [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one"},
+        ]
+        assert [m.content for m in sessions.get(screen._session_id).messages] == ["first", "one"]
+
+
+async def test_a_turn_answered_in_part_keeps_its_question(sessions):
+    def stream(*_args, **_kwargs):
+        yield StreamToken(content="half", is_reasoning=False)
+        raise RuntimeError("the engine died")
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        await _ask(pilot, screen, "q", side_effect=stream)
+        assert [m["role"] for m in screen._history] == ["user", "assistant"]
+        assert [m.content for m in sessions.get(screen._session_id).messages] == ["q", "half"]
+
+
+async def test_a_question_that_cannot_be_saved_is_reported_and_its_answer_is_not_saved(sessions):
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        with (
+            patch.object(sessions, "create", side_effect=OSError("disk full")),
+            patch.object(screen, "notify") as notify,
+        ):
+            await _ask(pilot, screen, "q", side_effect=_answering("a"))
+        assert notify.call_args.kwargs["severity"] == "error"
+        assert screen._session_id is None
+        assert sessions.list() == []
+        assert [m["role"] for m in screen._history] == ["user", "assistant"]
+
+
+async def test_a_turn_with_sessions_off_is_not_saved(sessions, monkeypatch):
+    monkeypatch.setattr(cfg, "sessions_enabled", False)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        await _ask(pilot, screen, "q", side_effect=_answering("a"))
+        assert screen._session_id is None
+        assert sessions.list() == []
+
+
+async def test_sessions_turned_on_mid_chat_keep_the_notes_of_the_earlier_turns(
+    sessions, monkeypatch
+):
+    """Notes folded while no session existed join the session the next answer opens."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        monkeypatch.setattr(cfg, "sessions_enabled", False)
+        await _ask(pilot, screen, "q1", side_effect=_answering("a1"))
+        assert sessions.list() == []
+        screen._summary = "NOTES"
+        monkeypatch.setattr(cfg, "sessions_enabled", True)
+        await _ask(pilot, screen, "q2", side_effect=_answering("a2"))
+        assert sessions.get(screen._session_id).summary == "NOTES"
+        await _ask(pilot, screen, "q3", side_effect=_answering("a3"))
+        assert sessions.get(screen._session_id).summary == "NOTES"
+
+
+async def test_a_turn_in_a_saved_session_leaves_its_stored_notes_alone(sessions):
+    session_id = sessions.create(model_ref=cfg.chat_model, scope="both")
+    sessions.set_summary(session_id, "STORED")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(session_id)
+        screen._summary = "IN MEMORY"
+        await _ask(pilot, screen, "q", side_effect=_answering("a"))
+        assert sessions.get(session_id).summary == "STORED"
+
+
+async def test_the_session_a_turn_opens_keeps_the_scope_it_was_sent_in(sessions):
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        with patch.object(screen, "_current_scope_value", return_value="wiki"):
+            await _ask(pilot, screen, "q", side_effect=_answering("a"))
+        assert sessions.get(screen._session_id).meta.scope == "wiki"
+
+
+async def test_a_turn_after_sessions_go_off_keeps_the_open_session_id(sessions, monkeypatch):
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        await _ask(pilot, screen, "first", side_effect=_answering("one"))
+        session_id = screen._session_id
+        monkeypatch.setattr(cfg, "sessions_enabled", False)
+        await _ask(pilot, screen, "second", side_effect=_answering("two"))
+        assert screen._session_id == session_id
+        assert sessions.get(session_id).meta.message_count == 2
+
+
+async def test_a_clear_before_the_failure_leaves_the_new_conversation_alone(sessions):
+    """The withdrawn question belongs to the conversation that ended; a new chat's own
+    history is not touched."""
+    started, release = threading.Event(), threading.Event()
+
+    def stream(*_args, **_kwargs):
+        started.set()
+        release.wait()
+        raise RuntimeError("the engine died")
+        yield  # pragma: no cover
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        with (
+            patch.object(ChatScreen, "_await_chat_engine", return_value=True),
+            patch.object(get_services().searcher, "ask_stream", side_effect=stream),
+        ):
+            try:
+                screen._send_message("old")
+                assert await pump_until(pilot, started.is_set)
+                screen._reset_conversation()
+                screen._history.append({"role": "user", "content": "old"})
+            finally:
+                release.set()
+            await wait_for_turn_end(pilot, screen)
+        assert screen._history == [{"role": "user", "content": "old"}]
+        assert sessions.list() == []
+
+
+async def test_a_question_that_is_not_last_in_the_history_is_left_alone(sessions):
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen._history = [{"role": "user", "content": "other"}]
+        turn = MagicMock(question="gone")
+        with screen._history_lock:
+            screen._withdraw_question(turn)
+        assert screen._history == [{"role": "user", "content": "other"}]
+        screen._history = []
+        with screen._history_lock:
+            screen._withdraw_question(turn)
+        assert screen._history == []
 
 
 _RESTORED_BODY = "# Title\n\n- a\n- b\n\n```py\nx = 1\n```\n"

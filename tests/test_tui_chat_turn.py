@@ -191,7 +191,6 @@ async def test_a_stale_turn_leaves_the_resumed_chat_alone(held):
     async with app.run_test(size=(120, 40)) as pilot:
         with _streaming(held), patch.object(ChatScreen, "_embedding_ready", return_value=True):
             screen = await _start_held_turn(app, pilot, held)
-            first_session = screen.session_id
             screen.resume_session(other)
             await pilot.pause()
             with (
@@ -204,7 +203,8 @@ async def test_a_stale_turn_leaves_the_resumed_chat_alone(held):
             assert msg.CHAT_MODE_SEARCH_NO_RESULTS not in _notified(notify)
             refresh_chip.assert_not_called()
             finish.assert_not_called()
-            assert store.get(first_session).messages[-1].content == "partial"
+            (first_session,) = [meta.id for meta in store.list() if meta.id != other]
+            assert [m.content for m in store.get(first_session).messages] == ["Q1", "partial"]
             assert screen._history == [{"role": "user", "content": "older"}]
 
 
@@ -389,7 +389,7 @@ async def test_a_send_during_a_fold_after_cancel_loses_no_turn():
             held_by_summary = [label for label in screen._summary.split("|") if label]
             in_history = [m["content"][:4] for m in screen._history]
         everything = held_by_summary + in_history
-        expected = [t[:4] for t in turns] + ["Q1", "Q2", "A-Q2"]
+        expected = [t[:4] for t in turns] + ["Q2", "A-Q2"]  # Q1 was cancelled with no answer
         assert sorted(everything) == sorted(expected)
 
 
