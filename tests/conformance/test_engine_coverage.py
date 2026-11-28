@@ -495,3 +495,29 @@ _FOLDER = str(RECORD_DIR)
 def test_a_compared_row_needs_a_tracked_json_record(repo: Path, record: str, fault: str) -> None:
     row = _row(status=Coverage.COMPARED, host="", record=record, steps=(Step.TOOL,))
     assert row_faults(row, repo) == ([fault] if fault else [])
+
+
+def _recordings_naming_a_cell() -> list[tuple[str, str, str]]:
+    """The (file, engine, cell) of each recording whose version ends with the cell it ran on."""
+    found = []
+    for path in sorted((ROOT / RECORDING_DIR).glob("*.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        engine, version = data.get("engine"), str(data.get("version", ""))
+        if engine and version.split(" ")[-1] in {row.cell for row in COVERAGE_ROWS}:
+            found.append((f"{RECORDING_DIR}/{path.name}", engine, version.split(" ")[-1]))
+    return found
+
+
+def test_the_recordings_that_name_a_cell_are_found() -> None:
+    names = {file.rsplit("/", 1)[-1] for file, _, _ in _recordings_naming_a_cell()}
+    assert {"llama-vulkan-linux.json", "mistralrs-cuda-sm89.json", "ovms-cpu.json"} <= names
+
+
+@pytest.mark.parametrize(("file", "engine", "cell"), _recordings_naming_a_cell())
+def test_a_recording_that_names_its_cell_is_the_record_of_that_row(
+    file: str, engine: str, cell: str
+) -> None:
+    rows = [row for row in COVERAGE_ROWS if row.engine == engine and row.cell == cell]
+    assert any(row.status is Coverage.RECORDED and row.record == file for row in rows), (
+        f"{file} is in git for {engine} on {cell}, and no row of that cell reads recorded with it"
+    )
