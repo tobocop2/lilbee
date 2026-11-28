@@ -5157,7 +5157,7 @@ class TestListDocuments:
         )
         result = await handlers.list_documents()
         assert [doc.model_dump()["ocr_page_failures"] for doc in result.documents] == [
-            [{"page": 2, "error": "timed out", "recovered": False}],
+            [{"page": 2, "error": "OCR failed", "recovered": False}],
             [],
         ]
 
@@ -7267,9 +7267,7 @@ class TestPartlyReadOverHttp:
             ),
             sources=[],
             total_chunks=3,
-            partly_read=[
-                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
-            ],
+            partly_read=[PartialFile("scan.pdf", [FailedPage.ocr(2, recovered=False)])],
             partial_total=4,
         )
         with patch("lilbee.server.handlers.gather_status", return_value=gathered):
@@ -7278,7 +7276,7 @@ class TestPartlyReadOverHttp:
         dumped = response.model_dump()
         assert dumped["partial_total"] == 4
         assert dumped["partly_read"] == [
-            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "OCR failed", "recovered": False}]}
         ]
 
     async def test_the_sync_stream_done_frame_names_partial_files_and_reasons(self):
@@ -7286,9 +7284,7 @@ class TestPartlyReadOverHttp:
 
         result = SyncResult(
             added=["scan.pdf"],
-            partial=[
-                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
-            ],
+            partial=[PartialFile("scan.pdf", [FailedPage.ocr(2, recovered=False)])],
             failed=["bad.pdf"],
             reasons={"bad.pdf": "the file is encrypted"},
         )
@@ -7315,7 +7311,7 @@ class TestPartlyReadOverHttp:
         assert json.loads(sync_done.split("data: ")[1])["partial"] == 1
         done = json.loads(next(e for e in events if e.startswith("event: done")).split("data: ")[1])
         assert done["partial"] == [
-            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "OCR failed", "recovered": False}]}
         ]
         assert done["reasons"] == {"bad.pdf": "the file is encrypted"}
 
@@ -7325,9 +7321,7 @@ class TestPartlyReadOverHttp:
 
         result = SyncResult(
             added=["scan.pdf"],
-            partial=[
-                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
-            ],
+            partial=[PartialFile("scan.pdf", [FailedPage.ocr(2, recovered=False)])],
             skipped=["blank.pdf"],
             reasons={"blank.pdf": "no text extracted (0 chunks)"},
         )
@@ -7337,7 +7331,7 @@ class TestPartlyReadOverHttp:
 
         dumped = summary.model_dump(mode="json")["sync"]
         assert dumped["partial"] == [
-            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "OCR failed", "recovered": False}]}
         ]
         assert dumped["reasons"] == {"blank.pdf": "no text extracted (0 chunks)"}
 
@@ -7346,9 +7340,7 @@ class TestPartlyReadOverHttp:
 
         return SyncResult(
             added=["scan.pdf"],
-            partial=[
-                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
-            ],
+            partial=[PartialFile("scan.pdf", [FailedPage.ocr(2, recovered=False)])],
             skipped=["blank.pdf"],
             reasons={"blank.pdf": "no text extracted (0 chunks)"},
         )
@@ -7365,7 +7357,7 @@ class TestPartlyReadOverHttp:
 
         sync = self._done_sync(events)
         assert sync["partial"] == [
-            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "OCR failed", "recovered": False}]}
         ]
         assert sync["reasons"] == {"blank.pdf": "no text extracted (0 chunks)"}
 
@@ -7375,6 +7367,6 @@ class TestPartlyReadOverHttp:
 
         sync = self._done_sync(events)
         assert sync["partial"] == [
-            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "OCR failed", "recovered": False}]}
         ]
         assert sync["reasons"] == {"blank.pdf": "no text extracted (0 chunks)"}

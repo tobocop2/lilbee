@@ -126,7 +126,7 @@ from lilbee.data.types import (
     SkippedSource,
     SyncResult,
     _IngestResult,
-    failed_page_lines,
+    failed_page_messages,
 )
 from lilbee.providers.base import ProviderError, ProviderErrorKind, WarmTimeoutError
 from lilbee.providers.fleet.gpu_stats import DeviceLike
@@ -2704,7 +2704,7 @@ def _zero_chunk_reason(result: _IngestResult) -> str:
         reason = "no text extracted, OCR is off (0 chunks)"
     else:
         reason = "no text extracted (0 chunks)"
-    return "; ".join([reason, *failed_page_lines(result.failed_pages)])
+    return "; ".join([reason, *failed_page_messages(result.failed_pages, name=result.name)])
 
 
 def _log_failure(name: str, error: BaseException) -> None:

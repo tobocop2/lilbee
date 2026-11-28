@@ -27,7 +27,7 @@ class SourceRefInput(TypedDict):
 
 
 LOCATOR_ERROR = (
-    "locator {locator!r} is not a page or line span: "
+    'locator "{locator}" is not a page or line span: '
     "use 'page N', 'pages A-B', 'line N' or 'lines A-B', or leave it out"
 )
 

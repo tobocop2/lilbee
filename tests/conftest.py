@@ -345,6 +345,21 @@ def _restore_signal_handlers():
 
 
 @pytest.fixture(autouse=True)
+def _test_leaves_the_signal_wakeup_fd_as_it_found_it():
+    """Fail a test that ends with a signal wakeup descriptor other than the one it found.
+
+    A test that sets a descriptor and then closes it leaves a number that names no open
+    file, and a later restore of that number fails in some other test. The teardown puts
+    the descriptor found at the start back first, so the next test starts clean.
+    """
+    found = signal.set_wakeup_fd(-1)
+    signal.set_wakeup_fd(found)
+    yield
+    left = signal.set_wakeup_fd(found)
+    assert left == found, f"the test left signal wakeup fd {left}, it found {found}"
+
+
+@pytest.fixture(autouse=True)
 def _restore_server_stop_flag():
     """Snapshot the flag that says the server is stopping around every test.
 

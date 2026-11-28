@@ -227,6 +227,7 @@ class FailedPageInfo(BaseModel):
     page: int
     """The page number, starting at 1."""
     error: str
+    """The kind of failure in lilbee's words, such as "OCR failed"; never the parser's text."""
     recovered: bool
     """Whether the page still has native text or text from an embedded image."""
 

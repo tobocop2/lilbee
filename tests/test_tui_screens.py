@@ -757,9 +757,7 @@ async def test_status_screen_lists_partly_read_files_with_a_line_for_each_page(
     from lilbee.cli.tui.screens import status as status_screen
     from lilbee.data.store import FailedPage
 
-    pages = [
-        FailedPage(page=number, error="[timeout]", recovered=number == 2) for number in range(1, 8)
-    ]
+    pages = [FailedPage.ocr(number, recovered=number == 2) for number in range(1, 8)]
     mock_svc.store.partly_read_sources.return_value = ({"scan[1].pdf": pages}, 3)
     monkeypatch.setattr(status_screen, "held_out_sources", lambda: ([], 0))
     app = StatusTestApp()
@@ -770,9 +768,9 @@ async def test_status_screen_lists_partly_read_files_with_a_line_for_each_page(
         filename, pages = table.get_row_at(0)
         assert filename.plain == "scan[1].pdf"
         assert pages.plain.splitlines() == [
-            "page 1: [timeout]",
-            "page 2: [timeout] (other text kept)",
-            *(f"page {number}: [timeout]" for number in range(3, 6)),
+            "Could not read page 1: OCR failed.",
+            "Could not read page 2: OCR failed (other text kept).",
+            *(f"Could not read page {number}: OCR failed." for number in range(3, 6)),
             "and 2 more",
         ]
         assert app.screen.query_one("#partly-read-section", Collapsible).collapsed is False

@@ -130,10 +130,7 @@ def _partly_read_status(partial_total: int = 1) -> StatusResult:
     status.partly_read = [
         PartialFile(
             "scan[1].pdf",
-            [
-                FailedPage(page=number, error="[timeout]", recovered=number == 2)
-                for number in range(1, 8)
-            ],
+            [FailedPage.ocr(number, recovered=number == 2) for number in range(1, 8)],
         )
     ]
     status.partial_total = partial_total
@@ -146,8 +143,8 @@ def test_partly_read_files_are_listed_with_one_line_for_each_failed_page() -> No
     files, pages = (list(column.cells) for column in table.columns)
     assert [cell.plain for cell in files] == ["scan[1].pdf"]
     lines = pages[0].plain.splitlines()
-    assert lines[0] == "page 1: [timeout]"
-    assert lines[1] == "page 2: [timeout] (other text kept)"
+    assert lines[0] == "Could not read page 1: OCR failed."
+    assert lines[1] == "Could not read page 2: OCR failed (other text kept)."
     assert lines[-1] == "and 2 more"
     assert len(lines) == 6
     assert any("1 partly read" in line and "--retry-skipped" in line for line in strings)
@@ -172,7 +169,7 @@ def test_sync_result_text_counts_partly_read_files_and_caps_their_failed_pages()
         partial=[
             PartialFile(
                 "scan.pdf",
-                [FailedPage(page=number, error="boom", recovered=False) for number in range(1, 8)],
+                [FailedPage.ocr(number, recovered=False) for number in range(1, 8)],
             )
         ],
     )
@@ -180,32 +177,51 @@ def test_sync_result_text_counts_partly_read_files_and_caps_their_failed_pages()
     assert "Partly read: 1" in lines
     start = lines.index("  [yellow]scan.pdf[/yellow]: partly read")
     assert lines[start + 1 : start + 7] == [
-        *(f"    page {number}: boom" for number in range(1, 6)),
+        *(f"    Could not read page {number} of scan.pdf: OCR failed." for number in range(1, 6)),
         "    and 2 more",
     ]
     assert "partial=1" in repr(result)
     assert "scan.pdf: partly read" in result.partial_summary().plain
 
 
-def test_failed_page_lines_at_the_display_cap_adds_no_count_line() -> None:
-    from lilbee.data.types import FAILED_PAGES_SHOWN, failed_page_lines
+def test_failed_page_messages_at_the_display_cap_adds_no_count_line() -> None:
+    from lilbee.data.types import FAILED_PAGES_SHOWN, failed_page_messages
 
-    pages = [
-        FailedPage(page=number, error="boom", recovered=False)
+    pages = [FailedPage.ocr(number, recovered=False) for number in range(1, FAILED_PAGES_SHOWN + 1)]
+    assert failed_page_messages(pages, name="a.pdf") == [
+        f"Could not read page {number} of a.pdf: OCR failed."
         for number in range(1, FAILED_PAGES_SHOWN + 1)
     ]
-    assert failed_page_lines(pages) == [
-        f"page {number}: boom" for number in range(1, FAILED_PAGES_SHOWN + 1)
-    ]
 
 
-def test_failed_page_line_marks_only_a_page_that_kept_other_text() -> None:
-    from lilbee.data.types import failed_page_line
+def test_failed_page_message_marks_only_a_page_that_kept_other_text() -> None:
+    from lilbee.data.types import failed_page_message
 
-    lost = FailedPage(page=3, error="timed out", recovered=False)
-    kept = FailedPage(page=4, error="timed out", recovered=True)
-    assert failed_page_line(lost) == "page 3: timed out"
-    assert failed_page_line(kept) == "page 4: timed out (other text kept)"
+    lost = FailedPage.ocr(3, recovered=False)
+    kept = FailedPage.ocr(4, recovered=True)
+    assert (
+        failed_page_message(lost, name="manual.pdf")
+        == "Could not read page 3 of manual.pdf: OCR failed."
+    )
+    assert failed_page_message(kept, name="manual.pdf") == (
+        "Could not read page 4 of manual.pdf: OCR failed (other text kept)."
+    )
+
+
+def test_a_failed_page_message_cleans_the_file_name_of_control_characters() -> None:
+    from lilbee.data.types import failed_page_message
+
+    page = FailedPage.ocr(1, recovered=False)
+    assert failed_page_message(page, name="scan\x1b[31m\x07.pdf") == (
+        "Could not read page 1 of scan.pdf: OCR failed."
+    )
+
+
+def test_the_partly_read_table_shows_the_file_name_only_in_its_name_column() -> None:
+    tables, _ = _texts(_partly_read_status())
+    table = next(t for t in tables if t.title == "Partly read")
+    _, pages = (list(column.cells) for column in table.columns)
+    assert "scan[1].pdf" not in pages[0].plain
 
 
 def _gather_status_with(services):
@@ -229,7 +245,7 @@ def test_gather_status_lists_the_partly_read_files_and_counts_them_all() -> None
     from lilbee.data.store import SourceSummary
     from tests.conftest import make_mock_services
 
-    page = FailedPage(page=2, error="timed out", recovered=False)
+    page = FailedPage.ocr(2, recovered=False)
     services = make_mock_services()
     services.store.source_summary.return_value = SourceSummary(0, 0, {}, [], partly_read=3)
     services.store.partly_read_sources.return_value = ({"b.pdf": [page]}, 3)
@@ -239,7 +255,7 @@ def test_gather_status_lists_the_partly_read_files_and_counts_them_all() -> None
     assert status.partial_total == 3
     assert [(source.name, source.pages) for source in status.partly_read] == [("b.pdf", [page])]
     assert status.model_dump()["partly_read"] == [
-        {"name": "b.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        {"name": "b.pdf", "pages": [{"page": 2, "error": "OCR failed", "recovered": False}]}
     ]
 
 

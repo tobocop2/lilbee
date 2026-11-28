@@ -350,6 +350,44 @@ def test_run_without_join_gives_the_wakeup_fd_back(error) -> None:
         assert after == writer.fileno()
 
 
+class _InterruptAfterTheSet:
+    """``signal`` for asyncio_loop: a Ctrl-C lands just after a socket becomes the wakeup fd."""
+
+    def __init__(self, before: int) -> None:
+        self._before = before
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(signal, name)
+
+    def set_wakeup_fd(self, fd: int, **kwargs: Any) -> int:
+        previous = signal.set_wakeup_fd(fd, **kwargs)
+        if fd not in (-1, self._before):
+            raise KeyboardInterrupt
+        return previous
+
+
+@posix_only
+def test_a_ctrl_c_just_after_the_loop_takes_the_wakeup_fd_gives_it_back(monkeypatch) -> None:
+    before = _wakeup_fd()
+    monkeypatch.setattr(asyncio_loop, "signal", _InterruptAfterTheSet(before))
+    loop = asyncio.SelectorEventLoop()
+    try:
+        with pytest.raises(KeyboardInterrupt), asyncio_loop._signals_wake(loop):
+            pass
+    finally:
+        loop.close()
+    assert signal.set_wakeup_fd(before) == before
+
+
+def test_a_ctrl_c_just_after_a_wait_takes_the_wakeup_fd_gives_it_back(monkeypatch) -> None:
+    before = _wakeup_fd()
+    monkeypatch.setattr(asyncio_loop, "signal", _InterruptAfterTheSet(before))
+    done: concurrent.futures.Future[int] = concurrent.futures.Future()
+    with pytest.raises(KeyboardInterrupt):
+        asyncio_loop._wait_for(done, SignalFlag())
+    assert signal.set_wakeup_fd(before) == before
+
+
 def test_run_without_join_off_the_main_thread_sets_no_wakeup_fd() -> None:
     """Only the main thread can set one."""
 

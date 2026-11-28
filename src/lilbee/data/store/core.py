@@ -131,6 +131,7 @@ from .types import (
     SourceSummary,
     SourceType,
     StoreMeta,
+    failed_page_from_row,
 )
 
 if TYPE_CHECKING:
@@ -3330,7 +3331,7 @@ class Store:
         listed = f"{_PARTLY_READ} = true AND {_PATH} IN ({_in_list(shown)})"
         query = table.search().where(listed).select([_PATH, _FAILED_PAGES]).limit(None)
         pages = {
-            shown[row[_PATH]]: [FailedPage(**page) for page in row[_FAILED_PAGES]]
+            shown[row[_PATH]]: [failed_page_from_row(page) for page in row[_FAILED_PAGES]]
             for row in query.to_list()
         }
         return dict(sorted(pages.items())), len(paths)

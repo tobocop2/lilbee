@@ -471,9 +471,7 @@ class TestFanOutPartlyRead:
 
         worker_result = SyncResult(
             added=["scan.pdf"],
-            partial=[
-                PartialFile("scan.pdf", [FailedPage(page=3, error="timed out", recovered=False)])
-            ],
+            partial=[PartialFile("scan.pdf", [FailedPage.ocr(3, recovered=False)])],
         )
         verdicts = [fanout.ShardDone(kind="done", index=0, result=worker_result, error=None)]
 

@@ -31,8 +31,8 @@ from lilbee.data.types import PartialFile, SyncResult
 from tests._async_wait import laid_out
 from tests._lilbee_app_test_host import LilbeeAppHost
 
-_PAGE_3 = FailedPage(page=3, error="[vision] timed out", recovered=False)
-_PAGE_3_LINE = "page 3: [vision] timed out"
+_PAGE_3 = FailedPage.ocr(3, recovered=False)
+_PAGE_3_LINE = "Could not read page 3 of scan.pdf: OCR failed."
 _PARTLY_READ = SyncResult(
     added=["scan.pdf"],
     partial=[PartialFile("scan.pdf", [_PAGE_3])],

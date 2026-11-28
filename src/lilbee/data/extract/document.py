@@ -670,7 +670,7 @@ async def ingest_document(
         page_texts_out=page_texts_out,
         ocr_backend=ocr.backend,
     )
-    return DocumentRecords(records, meta, ocr, failed_ocr_pages(doc))
+    return DocumentRecords(records, meta, ocr, failed_ocr_pages(doc, source_name))
 
 
 async def ingest_archive(
@@ -729,7 +729,7 @@ async def _collect_members(
             )
         except ChunkLimitError as exc:
             raise ChunkLimitError(exc.count, exc.limit, member=name) from None
-        failed = failed_ocr_pages(entry.result)
+        failed = failed_ocr_pages(entry.result, name)
         members.append(MemberRecords(name, content_type, records, page_texts, meta, failed))
     if unsupported:
         log.info(

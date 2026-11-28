@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
@@ -33,6 +34,8 @@ if TYPE_CHECKING:
     )
     from xberg.progress import ProgressCallback, ProgressEvent
 
+log = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class BatchItem:
@@ -45,12 +48,17 @@ class BatchItem:
     on_progress: ProgressCallback | None = None
 
 
-def failed_ocr_pages(doc: ExtractedDocument) -> tuple[FailedPage, ...]:
-    """The pages of *doc* whose OCR failed, as xberg lists them; empty when none did."""
-    return tuple(
-        FailedPage(page=failure.page, error=failure.error, recovered=failure.recovered)
-        for failure in doc.ocr_page_failures or []
-    )
+def failed_ocr_pages(doc: ExtractedDocument, name: str) -> tuple[FailedPage, ...]:
+    """The pages of *doc*, the file *name*, whose OCR failed; empty when none did.
+
+    Each page's parser error goes to the debug log, in full; the CLI shows warnings on
+    the terminal, so a lower level keeps the text off it. The pages carry only the kind
+    of failure, so no surface shows the parser's text.
+    """
+    failures = doc.ocr_page_failures or []
+    for failure in failures:
+        log.debug("OCR failed on page %d of %s: %s", failure.page, name, failure.error)
+    return tuple(FailedPage.ocr(failure.page, recovered=failure.recovered) for failure in failures)
 
 
 def _input(data: bytes, mime_type: str | None, filename: str | None) -> ExtractInput:

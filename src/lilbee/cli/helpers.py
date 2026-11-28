@@ -23,7 +23,7 @@ from lilbee.data.types import (
     PARTLY_READ_FILE_COLUMN,
     PARTLY_READ_PAGES_COLUMN,
     PARTLY_READ_TITLE,
-    failed_page_lines,
+    failed_page_messages,
     rebuild_advice,
 )
 from lilbee.runtime.asyncio_loop import run_main
@@ -239,7 +239,7 @@ def _render_partly_read(status: StatusResult) -> Generator[RenderableType, None,
     for source in status.partly_read:
         table.add_row(
             Text(strip_control_characters(source.name)),
-            Text("\n".join(failed_page_lines(source.pages))),
+            Text("\n".join(failed_page_messages(source.pages))),
         )
     yield table
     shown = len(status.partly_read)

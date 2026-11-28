@@ -1062,14 +1062,16 @@ it, add its path again, or run `lilbee rebuild`.
 When OCR fails on some pages of a file, lilbee indexes the text it has and
 reports the file as partly read. `lilbee sync`, `lilbee add` and
 `lilbee rebuild` print a `Partly read` count and, for each file, one line for
-each failed page: `page 3: <error>`. The line ends with `(other text kept)`
-when the page still has native text or text from an embedded image. With
-`--json`, `partial` lists each file as `{"name", "pages"}`. Each entry of
-`pages` is `{"page", "error", "recovered"}`: the page number from 1, the OCR
-error, and whether the page kept other text. `reasons` gives the reason for
-each failed or skipped file. `lilbee status` lists the partly read files in a
-`Partly read` table of the first 50 files by name, and says how many of them
-it shows when there are more; with `--json`, `partly_read` lists
+each failed page: `Could not read page 3 of scan.pdf: OCR failed.` When the
+page still has native text or text from an embedded image, the line says
+`OCR failed (other text kept).` The parser's own error text goes to the debug
+log only; run with `--log-level DEBUG` to see it. With `--json`, `partial`
+lists each file as `{"name", "pages"}`. Each entry of `pages` is
+`{"page", "error", "recovered"}`: the page number from 1, the kind of failure
+(`OCR failed`), and whether the page kept other text. `reasons` gives the
+reason for each failed or skipped file. `lilbee status` lists the partly read
+files in a `Partly read` table of the first 50 files by name, and says how
+many of them it shows when there are more; with `--json`, `partly_read` lists
 them in the same shape, and `partial_total` counts all of them. The text output
 shows the first five failed pages of a file and counts the rest; `--json`
 carries all of them. A normal sync does not read a partly read file again.
@@ -1304,8 +1306,9 @@ The server settings, such as `LILBEE_SERVER_PORT`, are in the [settings referenc
 
 A partly read file is an indexed file with at least one page whose OCR
 failed. Each failed page is `{"page", "error", "recovered"}`: the page number
-from 1, the OCR error, and whether the page kept native text or text from an
-embedded image. The API reports partly read files in these places:
+from 1, the kind of failure (`OCR failed`), and whether the page kept native
+text or text from an embedded image. The parser's own error text goes to the
+debug log only. The API reports partly read files in these places:
 
 - The `done` event of `POST /api/sync`, and `sync` in the `done` event of `POST /api/add` and `POST /api/add/upload`: `partial` lists each partly read file as `{"name", "pages"}`, where `pages` holds its failed pages, and `reasons` maps each failed or skipped file to its reason.
 - The `file_done` progress event: `status` is `ok`, `partial`, `skipped` or `error`. The `sync_done` event carries a `partial` count, and `batch_progress` uses the `partial` status for the same files.
