@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from unittest import mock
 
 import pytest
@@ -101,14 +102,73 @@ async def test_a_long_project_label_ends_in_an_ellipsis_instead_of_the_screen_ed
         await await_chat(app, pilot)
         tabs = app.screen.query_one(ViewTabs)
         tabs.mode_text = "NORMAL"
-        with mock.patch("lilbee.app.status.lilbee_label", return_value=label):
-            tabs._update_trailing()
-        await pilot.pause()
         trailing = tabs.query_one("#view-tabs-trailing", Static)
+        with mock.patch("lilbee.app.status.lilbee_label", return_value=label):
+            tabs._resolve_lilbee_label()
+            assert await wait_until(pilot, lambda: label in str(trailing.render()))
+        await pilot.pause()
         assert trailing.region.right <= tabs.region.right
         assert trailing.region.width < len(label), "the label fits, so the test shows nothing"
         row = "".join(strip.text for strip in trailing.render_lines(trailing.size.region)).rstrip()
         assert row.endswith("…"), row
+
+
+async def test_the_lilbee_pill_resolves_its_path_off_the_ui_thread(_patch_chat_setup) -> None:
+    from lilbee.app import status
+
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    real = status.lilbee_label
+
+    def spy() -> str:
+        threads.append(threading.get_ident())
+        return real()
+
+    app = LilbeeApp()
+    with mock.patch("lilbee.app.status.lilbee_label", spy):
+        async with app.run_test(size=(120, 36)) as pilot:
+            await await_chat(app, pilot)
+            assert await wait_until(pilot, lambda: len(threads) >= 1)
+            seen = len(threads)
+            app.set_setting("show_lilbee_path", not cfg.show_lilbee_path)
+            assert await wait_until(pilot, lambda: len(threads) > seen)
+    assert loop_thread not in threads
+
+
+async def test_the_lilbee_pill_follows_the_path_toggle(_patch_chat_setup) -> None:
+    from textual.widgets import Static
+
+    cfg.lilbee_name = "my-bee"
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        await await_chat(app, pilot)
+        tabs = app.screen.query_one(ViewTabs)
+        trailing = tabs.query_one("#view-tabs-trailing", Static)
+        assert await wait_until(pilot, lambda: "my-bee" in str(trailing.render()))
+        app.set_setting("lilbee_name", "", ask_rebuild=False)
+        assert await wait_until(pilot, lambda: "my-bee" not in str(trailing.render()))
+        assert tabs._lilbee_text is not None
+        assert tabs._lilbee_text in str(trailing.render())
+
+
+async def test_the_lilbee_pill_drops_a_cancelled_or_unchanged_label(_patch_chat_setup) -> None:
+    cfg.lilbee_name = "my-bee"
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 36)) as pilot:
+        await await_chat(app, pilot)
+        tabs = app.screen.query_one(ViewTabs)
+        assert await wait_until(pilot, lambda: tabs._lilbee_text == "my-bee")
+        painted: list[None] = []
+        with mock.patch.object(tabs, "_refresh", lambda: painted.append(None)):
+
+            class Worker:
+                is_cancelled = False
+
+            tabs._take_lilbee_label(Worker(), "my-bee")  # type: ignore[arg-type]
+            Worker.is_cancelled = True
+            tabs._take_lilbee_label(Worker(), "other")  # type: ignore[arg-type]
+        assert tabs._lilbee_text == "my-bee"
+        assert painted == []
 
 
 async def test_view_tabs_hides_model_pill_on_chat(_patch_chat_setup) -> None:
