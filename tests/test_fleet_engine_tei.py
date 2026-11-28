@@ -39,6 +39,7 @@ from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.fleet.host_caps import HostCaps, collect
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import ENCODER_RUNTIME_BYTES, UNKNOWN_SIZE_RESERVE_BYTES
+from lilbee.providers.fleet.placement import ModelPlacementInput, Placement, plan_placement
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from lilbee.providers.truncation import note_truncated, truncation_scope
 from tests._safetensors import safetensors_bytes
@@ -47,6 +48,8 @@ from tests._stated_sizes import state_size
 FIXTURES = Path(__file__).parent / "conformance" / "fixtures" / "engines"
 L4 = ("NVIDIA L4", (8, 9))
 GTX = ("NVIDIA GeForce GTX 1070 Ti", (6, 1))
+T4 = ("Tesla T4", (7, 5))
+A100 = ("A100", (8, 0))
 
 
 def _caps(
@@ -294,6 +297,91 @@ def test_a_cuda_build_leaves_bfloat16_weights_whole(
     assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
         4_000 + ENCODER_RUNTIME_BYTES
     )
+
+
+@pytest.mark.parametrize(
+    ("dtype", "held"),
+    [("float32", 4_000), ("float16", 8_000), ("bfloat16", 8_000)],
+)
+def test_a_turing_build_is_charged_the_float32_width_of_any_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dtype: str, held: int
+) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=T4))
+    folder = _encoder_folder(tmp_path, 4_000, dtype)
+    assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
+        held + ENCODER_RUNTIME_BYTES
+    )
+
+
+@pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
+@pytest.mark.parametrize(
+    ("gpu", "flags"),
+    [(T4, ["float32"]), (("GeForce RTX 2080", (7, 5)), ["float32"]), (A100, []), (None, [])],
+    ids=["t4", "rtx2080", "a100", "no-gpu"],
+)
+def test_the_planner_launch_for_a_role_carries_the_dtype_of_the_build(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, role: WorkerRole, gpu, flags: list[str]
+) -> None:
+    from lilbee.providers.fleet import planning
+
+    caps = _caps(gpu=gpu) if gpu else _caps()
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: caps)
+    monkeypatch.setattr(
+        type(TEI), "binary", lambda _self: Path("/engines/bin/text-embeddings-router")
+    )
+    folder = _encoder_folder(tmp_path, 64, None)
+    argv = planning.build_single_role_launch(role, folder, engine=TEI).argv
+    assert [argv[i + 1] for i, word in enumerate(argv[:-1]) if word == "--dtype"] == flags
+
+
+def test_a_newer_cuda_build_still_halves_a_float32_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=A100))
+    folder = _encoder_folder(tmp_path, 4_000, "float32")
+    assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
+        2_000 + ENCODER_RUNTIME_BYTES
+    )
+
+
+def _small_card_roles(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, refuse_oversize: bool
+) -> Placement:
+    """The planner's answer for a float32 embedder and reranker on one 4 GiB Turing card."""
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=T4))
+    folder = _sparse_encoder_folder(tmp_path, 2300, 250_002, "float32")
+    charge = TEI.estimate_memory(_encoder_request(folder)).device_bytes
+    models = [
+        ModelPlacementInput(role, charge, kind=MemoryKind.FIXED_RESERVE)
+        for role in (WorkerRole.EMBED, WorkerRole.RERANK)
+    ]
+
+    def no_split(role: WorkerRole, ratio: tuple[int, ...]) -> tuple[int, ...]:
+        raise AssertionError("a fixed reserve is never split")
+
+    return plan_placement(
+        models, [(0, 4096 * _MIB)], estimate_peak=no_split, refuse_oversize=refuse_oversize
+    )
+
+
+@pytest.mark.usefixtures("stated_sizes")
+def test_two_float32_encoders_that_do_not_share_a_4_gib_card_load_one_tight(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan = _small_card_roles(monkeypatch, tmp_path, refuse_oversize=False)
+    assert {inst.role for inst in plan.instances} == {WorkerRole.EMBED, WorkerRole.RERANK}
+    assert len(plan.tight_roles) == 1
+    assert plan.unplaceable_roles == ()
+
+
+@pytest.mark.usefixtures("stated_sizes")
+def test_two_float32_encoders_beyond_a_4_gib_card_leave_one_unplaced_when_oversize_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan = _small_card_roles(monkeypatch, tmp_path, refuse_oversize=True)
+    assert len(plan.instances) == 1
+    assert len(plan.unplaceable_roles) == 1
+    assert plan.instances[0].role not in plan.unplaceable_roles
 
 
 def test_a_metal_build_is_charged_by_vocabulary_like_a_cpu_build(
@@ -617,6 +705,52 @@ def test_the_launch_argv_keeps_the_default_truncation_for_long_inputs(tmp_path: 
     argv = TEI.launch_argv(TEI.role_spec(WorkerRole.EMBED, None, None), request)
     assert "--auto-truncate" not in argv
     assert not any(a.startswith("--auto-truncate=") for a in argv)
+
+
+def _dtype_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gpu, role: WorkerRole, target: RoleTarget
+) -> list[str]:
+    """The values that follow each `--dtype` in the launch command."""
+    monkeypatch.setattr(
+        "lilbee.catalog.runnable.session_host", lambda: _caps(gpu=gpu) if gpu else _caps()
+    )
+    request = LaunchRequest(
+        binary=tmp_path / "router",
+        model_path=tmp_path / "model",
+        devices=(0,),
+        n_gpu_layers=0,
+        slots=1,
+        ctx_per_slot=512,
+        target=target,
+    )
+    argv = TEI.launch_argv(TEI.role_spec(role, None, None), request)
+    return [argv[i + 1] for i, word in enumerate(argv[:-1]) if word == "--dtype"]
+
+
+@pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
+def test_a_turing_build_launches_with_float32_for_embed_and_rerank(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, role: WorkerRole
+) -> None:
+    assert _dtype_flags(tmp_path, monkeypatch, T4, role, RoleTarget.GPU) == ["float32"]
+
+
+@pytest.mark.parametrize("compute", [(8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0)])
+def test_a_build_for_compute_8_or_newer_launches_with_no_dtype(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, compute: tuple[int, int]
+) -> None:
+    flags = _dtype_flags(tmp_path, monkeypatch, ("GPU", compute), WorkerRole.RERANK, RoleTarget.GPU)
+    assert flags == []
+
+
+@pytest.mark.parametrize(
+    ("gpu", "target"),
+    [(None, RoleTarget.CPU), (GTX, RoleTarget.GPU), (T4, RoleTarget.CPU)],
+    ids=["no-gpu", "pascal-cpu-build", "turing-host-cpu-target"],
+)
+def test_a_cpu_build_and_a_cpu_target_launch_with_no_dtype(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, gpu, target: RoleTarget
+) -> None:
+    assert _dtype_flags(tmp_path, monkeypatch, gpu, WorkerRole.RERANK, target) == []
 
 
 def test_an_unreadable_platform_stands_and_is_never_auto_selected() -> None:

@@ -53,6 +53,8 @@ OpenSSL Toolkit (http://www.openssl.org/) and cryptographic software written by 
 
 TEI (text-embeddings-inference) serves embed and rerank only. On Linux x86_64 it
 uses CUDA on a card of compute capability 7.5 or newer, and the CPU on other hosts.
+On a Turing card (compute capability 7.5, for example a T4) TEI runs in float32. It holds
+a float32 model in full, not as float16.
 TEI does not run on Windows.
 
 mlx (mlx-lm) needs Apple Silicon and macOS 14 or newer. It serves chat, embed and rerank.
