@@ -14,7 +14,7 @@ import sys
 from collections.abc import Awaitable, Callable, Iterator
 from typing import Any
 
-from textual.app import ComposeResult
+from textual.app import App, ComposeResult
 from textual.errors import NoWidget
 from textual.message_pump import MessagePump
 from textual.pilot import Pilot
@@ -23,6 +23,7 @@ from textual.widget import Widget
 from textual.widgets import (
     Button,
     DataTable,
+    Footer,
     Input,
     ListView,
     OptionList,
@@ -237,19 +238,20 @@ def _screen_state(screen: Screen[Any]) -> list[tuple[object, ...]]:
     """The state of every widget that a control can change.
 
     The task bar is left out: it polls the task queue on its own timer, so it shows a
-    task that a control started at a time that no Textual signal reports.
+    task that a control started at a time that no Textual signal reports. The Footer is
+    left out: it rebuilds its keys after any focus change, later than any Textual wait.
     """
     return [
         _widget_state(w)
         for w in screen.query("*")
-        if not any(isinstance(a, TaskBar) for a in w.ancestors_with_self)
+        if not any(isinstance(a, (TaskBar, Footer)) for a in w.ancestors_with_self)
     ]
 
 
 class Recorder:
     """Records the effects of one input: messages, the screen stack, visible state, focus."""
 
-    def __init__(self, app: SurfaceApp, *, track_focus: bool = False) -> None:
+    def __init__(self, app: App[Any], *, track_focus: bool = False) -> None:
         self.app = app
         self.track_focus = track_focus
         self.effects: Effects = set()
@@ -338,17 +340,42 @@ def _clicks_to_act(widget: Widget) -> int:
     return 2 if isinstance(widget, ModelGrid) else 1
 
 
+def _table_row(widget: DataTable[Any]) -> int:
+    """The line of the cursor row that Enter would act on, counted from the top of the content."""
+    header = widget.header_height if widget.show_header else 0
+    above = sum(row.height for row in widget.ordered_rows[: widget.cursor_row])
+    return header + above - widget.scroll_offset.y
+
+
+def _aim(widget: Widget) -> tuple[int, int]:
+    """The click offset, from the top-left of the widget, of the place where Enter acts."""
+    # The rows of a list or a table start inside the border box that the offset counts from.
+    inner = widget.content_region.offset - widget.region.offset
+    if isinstance(widget, OptionList):
+        return (inner.x + 2, inner.y + _option_row(widget))
+    if isinstance(widget, DataTable):
+        return (inner.x + 1, inner.y + _table_row(widget))
+    return (0, 0)
+
+
+def _assert_aim_on(widget: Widget, offset: tuple[int, int]) -> None:
+    """Fail, naming the widget hit, when the point is not on the widget or a child of it."""
+    x, y = widget.region.offset + offset
+    try:
+        hit = widget.screen.get_widget_at(x, y)[0]
+    except NoWidget:
+        raise AssertionError(f"a click at {(x, y)} hits nothing, not {label(widget)}") from None
+    if hit is not widget and widget not in hit.ancestors:
+        raise AssertionError(f"a click at {(x, y)} hits {label(hit)}, not {label(widget)}")
+
+
 async def click(pilot: Pilot[Any], widget: Widget) -> None:
-    """Click the place where a person acts on the widget: a list row, a card, the centre."""
+    """Click the place where Enter acts: the highlighted option, the cursor row, or the top-left."""
     widget.scroll_visible(animate=False)
     await settle(pilot)
-    times = _clicks_to_act(widget)
-    if isinstance(widget, OptionList):
-        # The click offset counts from the widget's border box; the rows start inside it.
-        inner = widget.content_region.offset - widget.region.offset
-        await pilot.click(widget, offset=(inner.x + 2, inner.y + _option_row(widget)), times=times)
-    else:
-        await pilot.click(widget, times=times)
+    offset = _aim(widget)
+    _assert_aim_on(widget, offset)
+    await pilot.click(widget, offset=offset, times=_clicks_to_act(widget))
 
 
 @contextlib.contextmanager
@@ -399,7 +426,7 @@ async def probe_widget(cls: type, size: tuple[int, int], index: int, how: str) -
             screen = await open_surface(pilot, app)
             widget = screen.focus_chain[index]
             widget.focus()
-            await pilot.pause()
+            await settle(pilot)
             owns = owns_enter(app, widget)
             entry = is_text_entry(widget)
             effects: Effects = set()
@@ -433,7 +460,7 @@ async def key_effects(cls: type, size: tuple[int, int], key: str) -> Effects:
     async def act(pilot: Pilot[Any], app: SurfaceApp, screen: Screen[Any]) -> Effects:
         if screen.focus_chain:
             screen.focus_chain[-1].focus()
-            await pilot.pause()
+            await settle(pilot)
         with Recorder(app, track_focus=True) as rec:
             await pilot.press(key)
             await settle(pilot)
@@ -491,7 +518,7 @@ async def click_effects(cls: type, size: tuple[int, int], index: int) -> Effects
         widget = chain[index]
         other = chain[-1] if widget is not chain[-1] else chain[0]
         other.focus()
-        await pilot.pause()
+        await settle(pilot)
         with Recorder(app, track_focus=True) as rec:
             await click(pilot, widget)
             await settle(pilot)

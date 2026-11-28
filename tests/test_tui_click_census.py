@@ -54,9 +54,6 @@ pytestmark = pytest.mark.timeout(600)
 SURFACES = discover_surfaces()
 SURFACE_IDS = [c.__name__ for c in SURFACES]
 MIN_SURFACES = 20
-# Widgets whose click is an open question for the owner: the census skips them, and the
-# expected failure below names the hold and turns red when a click starts to match Enter.
-HELD = {(StatusScreen, "DataTable#docs-table")}
 # The gate is a loading screen with nothing to focus; every other surface has a control.
 NO_FOCUS = {StartupGate}
 # The library closes from the Close link in its hint row, a Static that takes no focus.
@@ -126,7 +123,7 @@ async def test_every_focusable_widget_is_reached_and_a_click_does_what_enter_doe
     key_only: list[str] = []
     for index in range(count):
         by_key = await probe_widget(cls, size, index, "enter")
-        if not by_key.owns_enter or by_key.text_entry or (cls, by_key.name) in HELD:
+        if not by_key.owns_enter or by_key.text_entry:
             continue
         by_click = await probe_widget(cls, size, index, "click")
         lost = sorted(by_key.effects - by_click.effects)
@@ -136,12 +133,6 @@ async def test_every_focusable_widget_is_reached_and_a_click_does_what_enter_doe
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="HELD for the owner: Enter selects a docs row, a click gives a header event; "
-    "the issue names no row action, so a click on a row stays as it is until the owner rules.",
-)
 async def test_a_click_on_a_status_docs_row_selects_it_like_enter() -> None:
     names = await focus_labels(StatusScreen, (120, 40))
     index = names.index("DataTable#docs-table")
@@ -230,7 +221,7 @@ async def test_a_footer_restyle_is_not_an_effect() -> None:
     async with app.run_test() as pilot:
         app.query_one("#one").focus()
         await settle(pilot)
-        with Recorder(app) as rec:  # type: ignore[arg-type]
+        with Recorder(app) as rec:
             app.query_one(Footer).compact = True
             await settle(pilot)
         assert rec.effects == set()
