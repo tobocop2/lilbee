@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,6 +21,9 @@ from lilbee.sessions import MessageRole, SessionMessage, StoredSourceRef, TitleS
 from tests._async_wait import wait_for_turn_end
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
+
+if TYPE_CHECKING:
+    import httpx
 
 
 @pytest.fixture(autouse=True)
@@ -879,6 +883,7 @@ _ATTACK_LOCATORS = [
     "page 3 **bold** ![px](https://evil.example/p.png)",
     "page 3\n\n# Heading",
     "<https://evil.example/auto>",
+    "page 9\\",
 ]
 # Sources a client may post whose label reads as a link elsewhere: one with no file
 # (a NUL byte), one with markup, ones whose label holds a ``](file://`` target.
@@ -943,8 +948,8 @@ def _own_file_url(source: str) -> str | None:
     return None if is_memory_source(source) else _source_file_url(source)
 
 
-def _post_both(sessions, refs: list[dict]) -> tuple[int, dict, str, str]:
-    """*refs* posted over HTTP and over MCP: the HTTP status, the MCP result and both ids."""
+def _post_both(sessions, refs: list[dict]) -> tuple[httpx.Response, dict, str, str]:
+    """*refs* posted over HTTP and over MCP: the HTTP response, the MCP result and both ids."""
     from litestar.testing import TestClient
 
     import lilbee.server.auth as auth_mod
@@ -965,16 +970,21 @@ def _post_both(sessions, refs: list[dict]) -> tuple[int, dict, str, str]:
             result = session_add_message(mcp_id, "assistant", content, source_refs=refs)
     finally:
         auth_mod.session_manager.cleanup()
-    return response.status_code, result, http_id, mcp_id
+    return response, result, http_id, mcp_id
 
 
 @pytest.mark.parametrize("locator", _ATTACK_LOCATORS)
 def test_a_locator_lilbee_never_writes_is_refused_over_http_and_mcp(sessions, locator):
     """HTTP answers 422 and MCP an error naming the locator forms; nothing is saved."""
     refs = [{"source": "a.md", "citation_number": 1, "locator": locator}]
-    status, result, http_id, mcp_id = _post_both(sessions, refs)
-    assert status == 422
-    assert "page N" in result["error"] and repr(locator) in result["error"]
+    response, result, http_id, mcp_id = _post_both(sessions, refs)
+    expected = (
+        f'locator "{locator}" is not a page or line span: '
+        "use 'page N', 'pages A-B', 'line N' or 'lines A-B', or leave it out"
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == expected
+    assert result["error"] == expected
     assert not sessions.get(http_id).messages and not sessions.get(mcp_id).messages
 
 
@@ -986,8 +996,8 @@ async def test_every_link_in_the_resumed_tui_list_targets_its_own_source(session
         {"source": source, "citation_number": n, "locator": locator}
         for n, (source, locator) in enumerate(_ATTACK_SOURCES, 1)
     ]
-    status, result, http_id, mcp_id = _post_both(sessions, refs)
-    assert status == 201 and "error" not in result
+    response, result, http_id, mcp_id = _post_both(sessions, refs)
+    assert response.status_code == 201 and "error" not in result
     shown = {}
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
