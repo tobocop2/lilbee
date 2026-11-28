@@ -1070,8 +1070,8 @@ lists each file as `{"name", "pages"}`. Each entry of `pages` is
 `{"page", "error", "recovered"}`: the page number from 1, the kind of failure
 (`OCR failed`), and whether the page kept other text. `reasons` gives the
 reason for each failed or skipped file. `lilbee status` lists the partly read
-files in a `Partly read` table of the first 50 files by name, and says how many of them
-it shows when there are more; with `--json`, `partly_read` lists
+files in a `Partly read` table of the first 50 files by name, and says how
+many of them it shows when there are more; with `--json`, `partly_read` lists
 them in the same shape, and `partial_total` counts all of them. The text output
 shows the first five failed pages of a file and counts the rest; `--json`
 carries all of them. A normal sync does not read a partly read file again.

@@ -99,9 +99,6 @@ class PageFailureKind(StrEnum):
     OCR = "OCR failed"
 
 
-_PAGE_FAILURE_KINDS: Final = frozenset(PageFailureKind)
-
-
 @dataclass(frozen=True)
 class FailedPage:
     """One page whose OCR failed; ``recovered`` when the page still has other content.
@@ -359,12 +356,11 @@ def failed_pages(record: SourceRecord) -> list[FailedPage]:
 def failed_page_from_row(row: FailedPageRow) -> FailedPage:
     """The failed page a stored row records.
 
-    A stored kind is kept. A row written by an older lilbee holds the parser's text in
-    its place, which is never shown, so that row reads as an OCR failure.
+    The stored error is not read: the parser lists a page only when its OCR failed, so
+    every row gives the one kind lilbee has. A row written by an older lilbee holds the
+    parser's text there, and that text is never shown.
     """
-    stored = row["error"]
-    kind = PageFailureKind(stored) if stored in _PAGE_FAILURE_KINDS else PageFailureKind.OCR
-    return FailedPage(page=row["page"], error=kind, recovered=row["recovered"])
+    return FailedPage.ocr(row["page"], recovered=row["recovered"])
 
 
 def source_stat(record: SourceRecord) -> SourceStat | None:
