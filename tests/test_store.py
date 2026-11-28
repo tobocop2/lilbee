@@ -3212,6 +3212,34 @@ class TestDatesOf:
         with mock.patch("lilbee.data.store.core._SOURCE_STAT_BATCH_ROWS", 100):
             assert set(store.dates_of(names)) == {"a.md"}
 
+    def test_reads_every_batch_of_stored_rows(self, store):
+        names = [f"s{i}.md" for i in range(5)]
+        for i, name in enumerate(names):
+            store.upsert_source(name, f"h{i}", 1, meta=SourceMeta(created_at=f"2020-01-0{i + 1}"))
+        with mock.patch("lilbee.data.store.core._SOURCE_STAT_BATCH_ROWS", 2):
+            result = store.dates_of(names)
+        assert {name: created for name, (created, _) in result.items()} == {
+            name: f"2020-01-0{i + 1}" for i, name in enumerate(names)
+        }
+
+    def test_a_wiki_page_beside_sources_adds_no_date(self, store, test_config, tmp_path):
+        """A document under a linked root is stored at its location, not its name."""
+        test_config.linked_roots = {"work": str(tmp_path / "work")}
+        store.upsert_source("work/a.md", "h1", 1, meta=SourceMeta(created_at="2020-05-06"))
+        store.upsert_source("notes.md", "h2", 1, SourceType.IMPORTED)
+        store.upsert_source("wiki/a.md", "h3", 1, SourceType.WIKI)
+        result = store.dates_of(["work/a.md", "notes.md", "wiki/a.md"])
+        ingested = store.source_ingested_at_map()
+        assert result == {
+            "work/a.md": ("2020-05-06", ingested["work/a.md"]),
+            "notes.md": ("", ingested["notes.md"]),
+        }
+
+    def test_a_row_with_no_ingest_time_reads_as_empty(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        store.open_table(SOURCES_TABLE).update(values_sql={"ingested_at": "CAST(NULL AS STRING)"})
+        assert store.dates_of(["a.md"]) == {"a.md": ("", "")}
+
     def test_chat_turn_with_time_word_reads_no_full_source_record(self, store, test_config):
         """A temporal question reads zero full source records and still filters by date."""
         from lilbee.retrieval.query.searcher import Searcher

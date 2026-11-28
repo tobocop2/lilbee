@@ -1,7 +1,6 @@
 """Tests for temporal keyword detection and date range resolution."""
 
 import re
-import time
 from datetime import UTC, datetime, timedelta, timezone
 from datetime import time as dtime
 
@@ -15,43 +14,10 @@ from lilbee.runtime.temporal import (
     document_instant,
     resolve_date_range,
 )
-
-needs_tzset = pytest.mark.skipif(not hasattr(time, "tzset"), reason="no time.tzset on this OS")
+from tests._clock import FrozenClock, needs_tzset
 
 PACIFIC = "PST8PDT,M3.2.0,M11.1.0"
 INDIA = "IST-5:30"
-
-
-class _FrozenClock(datetime):
-    """A ``datetime`` whose ``now`` is a fixed instant."""
-
-    frozen = datetime(2026, 3, 22, 15, 30, tzinfo=UTC)
-
-    @classmethod
-    def now(cls, tz=None):
-        return cls.fromtimestamp(cls.frozen.timestamp(), tz)
-
-
-@pytest.fixture
-def frozen_clock(monkeypatch):
-    def freeze(instant: datetime) -> None:
-        monkeypatch.setattr(_FrozenClock, "frozen", instant)
-        monkeypatch.setattr(temporal, "datetime", _FrozenClock)
-
-    return freeze
-
-
-@pytest.fixture
-def process_zone(monkeypatch):
-    """Set the process zone from a POSIX TZ string; restore it afterwards."""
-
-    def use(spec: str) -> None:
-        monkeypatch.setenv("TZ", spec)
-        time.tzset()
-
-    yield use
-    monkeypatch.undo()
-    time.tzset()
 
 
 class TestDetectTemporal:
@@ -118,8 +84,7 @@ class TestResolveDateRange:
     def test_this_month(self):
         now = datetime(2026, 3, 22, 15, 30, 0, tzinfo=UTC)
         dr = resolve_date_range("this_month", now=now)
-        assert dr.start.day == 1
-        assert dr.start.month == 3
+        assert dr == DateRange(start=datetime(2026, 3, 1, tzinfo=UTC), end=now)
 
     def test_last_month(self):
         now = datetime(2026, 3, 22, 15, 30, 0, tzinfo=UTC)
@@ -144,7 +109,7 @@ class TestResolveDateRange:
         assert dr.end.utcoffset() == dr.start.utcoffset()
         assert dr.start.timetz().replace(tzinfo=None) == dtime.min
         assert dr.start.date() == dr.end.date()
-        assert dr.end.timestamp() == _FrozenClock.frozen.timestamp()
+        assert dr.end.timestamp() == FrozenClock.frozen.timestamp()
 
 
 class TestDefaultClockZone:
