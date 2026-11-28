@@ -223,6 +223,21 @@ async def test_the_apps_own_removal_is_published_once_and_the_next_events_add_no
         assert watch.keys.count(CHOICES_KEY) == 1
 
 
+async def test_the_apps_own_publish_goes_out_when_the_stamp_does_not_move(world: Path) -> None:
+    install_elsewhere(world)
+    app = _App()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await open_engines(app, pilot)
+        assert await wait_until(pilot, lambda: bool(app.engines_stamp))
+        before = app.engines_stamp
+        watch = Watch(app)
+        publish_engines_changed(app)
+        assert await wait_until(pilot, lambda: watch.keys.count(CHOICES_KEY) == 1)
+        assert app.engines_stamp == before
+        await focus_back(app, pilot)
+        assert watch.keys.count(CHOICES_KEY) == 1
+
+
 async def test_an_outside_install_after_the_apps_own_change_is_published(world: Path) -> None:
     install_elsewhere(world)
     app = _App()
