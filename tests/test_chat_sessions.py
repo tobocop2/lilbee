@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from lilbee.app.services import get_services, set_services
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage, _answer_markdown_parser
@@ -20,6 +21,8 @@ from lilbee.sessions import (
     MessageRole,
     SessionMessage,
     SessionNotFoundError,
+    SessionOrigin,
+    SessionOwnershipError,
     StoredSourceRef,
     TitleSource,
 )
@@ -672,6 +675,69 @@ async def test_resuming_mid_answer_keeps_the_old_answer_out_of_the_resumed_histo
         assert [m.content for m in sessions.get(source).messages] == ["old question", "PARTIAL"]
 
 
+async def test_a_question_sent_into_an_agent_session_is_refused_and_reported(sessions):
+    """The user write names the TUI as its surface, so an agent's session stays the agent's."""
+    agent_id = sessions.create(model_ref=cfg.chat_model, scope="both", origin=SessionOrigin.MCP)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(agent_id)
+        with patch.object(screen, "notify") as notify:
+            await _ask(pilot, screen, "q", side_effect=_answering("a"))
+        refusal = SessionOwnershipError(agent_id, SessionOrigin.MCP, SessionOrigin.TUI)
+        assert notify.call_args_list == [
+            call(msg.SESSIONS_SAVE_FAILED.format(error=refusal), severity="error")
+        ]
+        assert sessions.get(agent_id).meta.message_count == 0
+
+
+async def test_every_user_write_names_the_tui_as_its_surface(sessions):
+    """Both writes, the one into the open session and the one into a fresh session after a
+    delete, carry the surface that lets the store check ownership."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        _persist(screen, "first")
+        sessions.delete(screen._session_id)
+        with patch.object(sessions, "add_message", wraps=sessions.add_message) as add:
+            _persist(screen, "second")
+        assert [c.kwargs.get("surface") for c in add.call_args_list] == [
+            SessionOrigin.TUI,
+            SessionOrigin.TUI,
+        ]
+
+
+async def test_a_stale_turn_that_opens_a_session_saves_no_notes_into_it(sessions):
+    """The notes in memory belong to the conversation on screen, not to the one that ended."""
+    other = _seed_other(sessions)
+    first_token, release = threading.Event(), threading.Event()
+
+    def stream(*_args, **_kwargs):
+        yield StreamToken(content="PARTIAL", is_reasoning=False)
+        first_token.set()
+        release.wait()
+        yield StreamToken(content=" more", is_reasoning=False)
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        with (
+            patch.object(ChatScreen, "_await_chat_engine", return_value=True),
+            patch.object(get_services().searcher, "ask_stream", side_effect=stream),
+        ):
+            try:
+                screen._send_message("old question")
+                assert await pump_until(pilot, first_token.is_set), "the answer must have started"
+                app.resume_session(other)
+                screen._summary = "NOTES OF THE RESUMED CHAT"
+            finally:
+                release.set()
+            await wait_for_turn_end(pilot, screen)
+        (source,) = [m.id for m in sessions.list() if m.id != other]
+        assert [m.content for m in sessions.get(source).messages] == ["old question", "PARTIAL"]
+        assert sessions.get(source).summary == ""
+
+
 def _answering(text: str):
     def stream(*_args, **_kwargs):
         yield StreamToken(content=text, is_reasoning=False)
@@ -768,7 +834,9 @@ async def test_a_question_that_cannot_be_saved_is_reported_and_its_answer_is_not
             patch.object(screen, "notify") as notify,
         ):
             await _ask(pilot, screen, "q", side_effect=_answering("a"))
-        assert notify.call_args.kwargs["severity"] == "error"
+        assert notify.call_args_list == [
+            call(msg.SESSIONS_SAVE_FAILED.format(error="disk full"), severity="error")
+        ]
         assert screen._session_id is None
         assert sessions.list() == []
         assert [m["role"] for m in screen._history] == ["user", "assistant"]
@@ -818,7 +886,9 @@ async def test_notes_that_cannot_be_saved_are_reported_and_the_answer_is_still_s
             patch.object(screen, "notify") as notify,
         ):
             await _ask(pilot, screen, "q2", side_effect=_answering("a2"))
-        assert notify.call_args.kwargs["severity"] == "error"
+        assert notify.call_args_list == [
+            call(msg.SESSIONS_SAVE_FAILED.format(error="disk full"), severity="error")
+        ]
         saved = sessions.get(screen._session_id)
         assert [m.content for m in saved.messages] == ["q2", "a2"]
         assert saved.summary == ""
