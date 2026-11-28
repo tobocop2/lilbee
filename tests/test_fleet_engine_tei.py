@@ -42,7 +42,7 @@ from lilbee.providers.fleet.model_memory import ENCODER_RUNTIME_BYTES, UNKNOWN_S
 from lilbee.providers.fleet.placement import ModelPlacementInput, Placement, plan_placement
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from lilbee.providers.truncation import note_truncated, truncation_scope
-from tests._safetensors import safetensors_bytes
+from tests._safetensors import safetensors_bytes, safetensors_mixed_bytes
 from tests._stated_sizes import state_size
 
 FIXTURES = Path(__file__).parent / "conformance" / "fixtures" / "engines"
@@ -299,17 +299,63 @@ def test_a_cuda_build_leaves_bfloat16_weights_whole(
     )
 
 
+def _mixed_encoder_folder(
+    root: Path, data_bytes: dict[str, int], config: dict[str, Any] | None
+) -> tuple[Path, int]:
+    """A folder whose one weight file holds a tensor per dtype; also the file's size."""
+    folder = root / "mixed-encoder"
+    folder.mkdir()
+    blob = safetensors_mixed_bytes(data_bytes)
+    (folder / "model.safetensors").write_bytes(blob)
+    (folder / "config.json").write_text(json.dumps(config or {}), encoding="utf-8")
+    return folder, len(blob)
+
+
 @pytest.mark.parametrize(
-    ("dtype", "held"),
-    [("float32", 4_000), ("float16", 8_000), ("bfloat16", 8_000)],
+    ("data_bytes", "config", "doubled"),
+    [
+        ({"F16": 3_000}, {}, 3_000),
+        ({"BF16": 3_000}, {}, 3_000),
+        ({"F32": 3_000}, {}, 0),
+        ({"F16": 3_000}, {"torch_dtype": "float32"}, 3_000),
+        ({"BF16": 3_000}, {"dtype": "float32"}, 3_000),
+        ({"F32": 3_000}, {"torch_dtype": "float16"}, 0),
+        ({"F16": 1_000, "BF16": 500, "F32": 2_000, "I64": 100}, {}, 1_500),
+        ({"F16": 1_000, "F32": 2_000}, {"torch_dtype": "float32"}, 1_000),
+    ],
+    ids=[
+        "f16-no-dtype",
+        "bf16-no-dtype",
+        "f32-no-dtype",
+        "f16-under-a-float32-config",
+        "bf16-under-a-float32-config",
+        "f32-under-a-float16-config",
+        "mixed-no-dtype",
+        "mixed-float32-config",
+    ],
 )
-def test_a_turing_build_is_charged_the_float32_width_of_any_checkpoint(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dtype: str, held: int
+def test_a_turing_build_doubles_the_half_precision_bytes_in_the_header(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    data_bytes: dict[str, int],
+    config: dict[str, Any],
+    doubled: int,
 ) -> None:
     monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=T4))
-    folder = _encoder_folder(tmp_path, 4_000, dtype)
+    folder, size = _mixed_encoder_folder(tmp_path, data_bytes, config)
     assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
-        held + ENCODER_RUNTIME_BYTES
+        size + doubled + ENCODER_RUNTIME_BYTES
+    )
+
+
+@pytest.mark.parametrize("gpu", [L4, A100], ids=["sm89", "sm80"])
+def test_a_newer_cuda_build_keeps_the_stored_size_of_a_half_precision_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, gpu: tuple[str, tuple[int, int]]
+) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=gpu))
+    folder, size = _mixed_encoder_folder(tmp_path, {"F16": 3_000, "BF16": 500}, {})
+    assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
+        size + ENCODER_RUNTIME_BYTES
     )
 
 
