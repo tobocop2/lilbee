@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import sys
+from collections.abc import Callable
 from unittest import mock
 
 import pytest
@@ -25,10 +26,21 @@ class _GoneTerminal(_Terminal):
         raise OSError(5, "Input/output error")
 
 
+class _ClosedTerminal(_Terminal):
+    def write(self, text: str) -> int:
+        raise ValueError("I/O operation on closed file.")
+
+
 def _run(
-    monkeypatch: pytest.MonkeyPatch, stream: io.StringIO | None, run_async: mock.Mock
+    monkeypatch: pytest.MonkeyPatch,
+    stream: io.StringIO | None,
+    run_async: mock.Mock,
+    at_straggler_exit: Callable[[int], None] | None = None,
 ) -> mock.Mock:
-    """Run run_tui with *stream* as the terminal; return the mock of the final forced exit."""
+    """Run run_tui with *stream* as the terminal; return the mock of the final forced exit.
+
+    *at_straggler_exit* runs in place of that exit, with the status it gets.
+    """
     monkeypatch.setattr(sys, "__stderr__", stream)
     with (
         mock.patch("lilbee.cli.tui._redirect_native_stderr_to", return_value=None),
@@ -36,7 +48,9 @@ def _run(
         mock.patch.object(LilbeeApp, "return_code", None),
         mock.patch("lilbee.cli.sync.shutdown_executor"),
         mock.patch("lilbee.cli.tui.reset_services_on_exit"),
-        mock.patch("lilbee.cli.tui.exit_when_stragglers_would_hang") as straggler,
+        mock.patch(
+            "lilbee.cli.tui.exit_when_stragglers_would_hang", side_effect=at_straggler_exit
+        ) as straggler,
     ):
         run_tui()
     return straggler
@@ -86,7 +100,25 @@ def test_no_terminal_stream_still_exits(monkeypatch: pytest.MonkeyPatch) -> None
     straggler.assert_called_once_with(0)
 
 
-def test_a_terminal_that_is_gone_does_not_stop_the_exit(monkeypatch: pytest.MonkeyPatch) -> None:
-    straggler = _run(monkeypatch, _GoneTerminal(), mock.AsyncMock())
+@pytest.mark.parametrize("terminal", [_GoneTerminal, _ClosedTerminal], ids=["gone", "closed"])
+def test_a_terminal_that_is_gone_does_not_stop_the_exit(
+    monkeypatch: pytest.MonkeyPatch, terminal: type[_Terminal]
+) -> None:
+    straggler = _run(monkeypatch, terminal(), mock.AsyncMock())
 
     straggler.assert_called_once_with(0)
+
+
+def test_exit_writes_restore_before_the_straggler_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The straggler exit can end the process, so a restore written after it never arrives.
+    terminal = _Terminal()
+    seen_at_straggler_exit: list[str] = []
+
+    _run(
+        monkeypatch,
+        terminal,
+        mock.AsyncMock(),
+        at_straggler_exit=lambda _status: seen_at_straggler_exit.append(terminal.getvalue()),
+    )
+
+    assert seen_at_straggler_exit == [SAVE_AND_SET + RESTORE]
