@@ -52,6 +52,7 @@ from lilbee.retrieval.query.searcher import (
     SEARCH_NEEDS_EMBEDDER,
     QueryMode,
 )
+from tests._clock import needs_tzset
 from tests._crafted_titles import (
     CONTROL_TITLES,
     CRAFTED_SOURCE,
@@ -2655,6 +2656,68 @@ class TestTemporalFilter:
         results = [_make_result(source="a.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "recent")
         assert len(filtered) == 1
+
+    def test_a_document_at_either_bound_is_kept(self, mock_svc, frozen_clock):
+        """Both ends of a range are inclusive: yesterday's first instant and today's."""
+        from datetime import UTC, datetime, timedelta
+
+        from lilbee.runtime.temporal import resolve_date_range
+
+        frozen_clock(datetime(2026, 3, 22, 15, 30, tzinfo=UTC))
+        bounds = resolve_date_range("yesterday")
+        mock_svc.store.dates_of.return_value = {
+            "start.md": (bounds.start.isoformat(), ""),
+            "end.md": (bounds.end.isoformat(), ""),
+            "after.md": ((bounds.end + timedelta(seconds=1)).isoformat(), ""),
+        }
+        results = [_make_result(source=s) for s in ("start.md", "end.md", "after.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "yesterday's notes")
+        assert [r.source for r in filtered] == ["start.md", "end.md"]
+
+    def test_an_undated_source_is_kept_beside_dated_matches(self, mock_svc):
+        """A source with no usable date stays when the range keeps other sources."""
+        from datetime import UTC, datetime, timedelta
+
+        mock_svc.store.dates_of.return_value = {
+            "new.md": ("", (datetime.now(UTC) - timedelta(days=2)).isoformat()),
+            "old.md": ("", "2020-01-01T00:00:00+00:00"),
+            "undated.md": ("", ""),
+        }
+        results = [_make_result(source=s) for s in ("new.md", "old.md", "undated.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "recent notes")
+        assert [r.source for r in filtered] == ["new.md", "undated.md"]
+
+    @needs_tzset
+    def test_the_search_filters_by_the_process_zone(self, mock_svc, frozen_clock, process_zone):
+        """At 02:00 on 11 March in UTC+14, "today" starts at 10:00 UTC on 10 March,
+        so a document from 05:00 UTC that day is yesterday's."""
+        from datetime import UTC, datetime
+
+        process_zone("LINT-14")
+        frozen_clock(datetime(2026, 3, 10, 12, 0, tzinfo=UTC))
+        mock_svc.store.dates_of.return_value = {
+            "utc-today.md": ("2026-03-10T05:00:00+00:00", ""),
+            "local-today.md": ("2026-03-10T11:00:00+00:00", ""),
+        }
+        results = [_make_result(source="utc-today.md"), _make_result(source="local-today.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "today's notes")
+        assert [r.source for r in filtered] == ["local-today.md"]
+
+    @pytest.mark.parametrize("question", ["recent notes", "vec: recent notes"])
+    def test_the_typed_arm_applies_the_date_filter(self, mock_svc, question):
+        """The typed question's own search, plain or with a mode prefix, drops old sources."""
+        from datetime import UTC, datetime, timedelta
+
+        mock_svc.store.search.return_value = [
+            _make_result(source="old.md"),
+            _make_result(source="new.md"),
+        ]
+        mock_svc.store.dates_of.return_value = {
+            "old.md": ("", "2020-01-01T00:00:00+00:00"),
+            "new.md": ("", (datetime.now(UTC) - timedelta(days=2)).isoformat()),
+        }
+        typed = get_services().searcher._search_typed_arm(question, 5, None)
+        assert [r.source for r in typed] == ["new.md"]
 
 
 def _memory_fact(text: str) -> MemoryRow:
