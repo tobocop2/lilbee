@@ -415,7 +415,14 @@ def stop_spawned_server(proc: subprocess.Popen[bytes]) -> None:
         proc.wait(timeout=_TERMINATE_GRACE_S)
     except (OSError, subprocess.TimeoutExpired):
         proc.kill()
-        proc.wait(timeout=_KILL_GRACE_S)
+        try:
+            proc.wait(timeout=_KILL_GRACE_S)
+        except subprocess.TimeoutExpired:
+            log.warning(
+                "Server process %d was not reaped within %ds after SIGKILL",
+                proc.pid,
+                _KILL_GRACE_S,
+            )
 
 
 def ensure_server_running(
