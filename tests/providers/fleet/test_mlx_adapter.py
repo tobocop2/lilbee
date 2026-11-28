@@ -19,7 +19,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers import engine_params
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.fleet import host_caps, swap_config
+from lilbee.providers.fleet import engine_manifest, host_caps, swap_config
 from lilbee.providers.fleet.engine_store import (
     EngineConflictError,
     EngineStore,
@@ -406,6 +406,13 @@ def test_an_oversize_prompt_is_refused_before_any_request(
     assert client.method_calls == []
 
 
+@pytest.fixture
+def unpublished_mlx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The table as it was before the mlx pack was published: no mlx row."""
+    monkeypatch.delitem(engine_manifest.MANIFESTS, "mlx")
+
+
+@pytest.mark.usefixtures("unpublished_mlx")
 def test_a_pin_with_no_digest_refuses_with_the_named_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -417,6 +424,7 @@ def test_a_pin_with_no_digest_refuses_with_the_named_message(
         pin_lock(pin)
 
 
+@pytest.mark.usefixtures("unpublished_mlx")
 def test_install_refuses_without_a_digest_and_names_the_stay(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -438,6 +446,7 @@ def test_install_on_macos_13_is_refused_by_the_gate(
         engine_service.install("mlx")
 
 
+@pytest.mark.usefixtures("unpublished_mlx")
 def test_binary_of_an_engine_with_no_published_pack_says_there_is_nothing_to_install(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

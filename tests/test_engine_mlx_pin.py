@@ -603,7 +603,7 @@ def _mlx_paragraph() -> str:
     return " ".join(paragraph.split())
 
 
-def test_the_docs_paragraph_of_mlx_states_the_floor_the_roles_and_that_no_pack_exists() -> None:
+def test_the_docs_paragraph_of_mlx_states_the_floor_and_the_roles() -> None:
     paragraph = _mlx_paragraph()
     assert f"macOS {mlx.MACOS_FLOOR[0]} or newer" in paragraph
     assert "needs Apple Silicon" in paragraph
@@ -613,8 +613,8 @@ def test_the_docs_paragraph_of_mlx_states_the_floor_the_roles_and_that_no_pack_e
     packs = (ROOT / "src" / "lilbee" / "providers" / "fleet" / "engine_packs.json").read_text(
         encoding="utf-8"
     )
-    assert "mlx" not in packs
-    assert "No pack of mlx is published yet" in paragraph
+    assert "lilbee_engine_mlx-" in packs
+    assert "No pack of mlx" not in paragraph
 
 
 def test_the_launcher_is_executable_and_names_the_adapter_tool() -> None:

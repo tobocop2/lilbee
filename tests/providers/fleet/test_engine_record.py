@@ -51,6 +51,7 @@ def test_the_table_is_built_from_the_shipped_record_once() -> None:
         "lilbee_engine_llama_cpp",
         "lilbee_engine_ik_llama_cpp",
         "lilbee_engine_mistral_rs",
+        "lilbee_engine_mlx",
         "lilbee_engine_tei",
     }
 

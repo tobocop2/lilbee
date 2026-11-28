@@ -114,6 +114,12 @@
     "size": 50923670
   },
   {
+    "file": "lilbee_engine_mlx-0.32.2-1.metal-py3-none-macosx_14_0_arm64.whl",
+    "url": "https://github.com/tobocop2/lilbee-engine-packs/releases/download/engine-packs-20261127/lilbee_engine_mlx-0.32.2-1.metal-py3-none-macosx_14_0_arm64.whl",
+    "sha256": "3fc3a9edc0799f03c63b042c309e432b903abcd8229158b19d33afa894d15764",
+    "size": 116168296
+  },
+  {
     "file": "lilbee_engine_tei-1.9.4-1.cpu-py3-none-manylinux_2_34_x86_64.whl",
     "url": "https://github.com/tobocop2/lilbee-engine-packs/releases/download/engine-packs-20261118/lilbee_engine_tei-1.9.4-1.cpu-py3-none-manylinux_2_34_x86_64.whl",
     "sha256": "a92f666c0cdc825f173c3e29486c409a4b5435d037f57d3a60f970844eaf09b8",
