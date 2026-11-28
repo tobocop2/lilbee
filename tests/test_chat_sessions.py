@@ -16,7 +16,13 @@ from lilbee.core.config import Config, cfg
 from lilbee.retrieval.query.compaction import CompactionResult
 from lilbee.retrieval.query.formatting import SourceRef
 from lilbee.retrieval.reasoning import StreamToken
-from lilbee.sessions import MessageRole, SessionMessage, StoredSourceRef, TitleSource
+from lilbee.sessions import (
+    MessageRole,
+    SessionMessage,
+    SessionNotFoundError,
+    StoredSourceRef,
+    TitleSource,
+)
 from tests._async_wait import wait_for_turn_end
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
@@ -794,6 +800,47 @@ async def test_sessions_turned_on_mid_chat_keep_the_notes_of_the_earlier_turns(
         assert sessions.get(screen._session_id).summary == "NOTES"
         await _ask(pilot, screen, "q3", side_effect=_answering("a3"))
         assert sessions.get(screen._session_id).summary == "NOTES"
+
+
+async def test_notes_that_cannot_be_saved_are_reported_and_the_answer_is_still_saved(
+    sessions, monkeypatch
+):
+    """A full disk on the notes write toasts and does not drop the answer save."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        monkeypatch.setattr(cfg, "sessions_enabled", False)
+        await _ask(pilot, screen, "q1", side_effect=_answering("a1"))
+        screen._summary = "NOTES"
+        monkeypatch.setattr(cfg, "sessions_enabled", True)
+        with (
+            patch.object(sessions, "set_summary", side_effect=OSError("disk full")),
+            patch.object(screen, "notify") as notify,
+        ):
+            await _ask(pilot, screen, "q2", side_effect=_answering("a2"))
+        assert notify.call_args.kwargs["severity"] == "error"
+        saved = sessions.get(screen._session_id)
+        assert [m.content for m in saved.messages] == ["q2", "a2"]
+        assert saved.summary == ""
+
+
+async def test_notes_for_a_session_deleted_in_the_meantime_are_dropped_without_a_toast(
+    sessions, monkeypatch
+):
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        monkeypatch.setattr(cfg, "sessions_enabled", False)
+        await _ask(pilot, screen, "q1", side_effect=_answering("a1"))
+        screen._summary = "NOTES"
+        monkeypatch.setattr(cfg, "sessions_enabled", True)
+        with (
+            patch.object(sessions, "set_summary", side_effect=SessionNotFoundError("gone")),
+            patch.object(screen, "notify") as notify,
+        ):
+            await _ask(pilot, screen, "q2", side_effect=_answering("a2"))
+        notify.assert_not_called()
+        assert [m["content"] for m in screen._history] == ["q1", "a1", "q2", "a2"]
 
 
 async def test_a_turn_in_a_saved_session_leaves_its_stored_notes_alone(sessions):

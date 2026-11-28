@@ -1284,7 +1284,7 @@ class TestContextAwareQuit:
             from lilbee.cli.tui.screens.chat import _Turn
 
             screen = app.screen
-            turn = _Turn("q", mock.MagicMock(), 0, None)
+            turn = _Turn("q", mock.MagicMock(), 0, None, "both")
             screen._turn = turn
             screen.streaming = True
             await app.action_quit()

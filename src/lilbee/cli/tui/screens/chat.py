@@ -195,12 +195,12 @@ class _Turn:
     widget: AssistantMessage
     generation: int
     session_id: str | None
+    # The scope chip's value when the question was sent, for a session the answer opens.
+    scope: str
     stop: threading.Event = field(default_factory=threading.Event)
     answer: str = ""
     # The answer's Sources list, kept out of ``answer``.
     source_refs: list[SourceRef] = field(default_factory=list)
-    # The scope chip's value when the question was sent, for a session the answer opens.
-    scope: str = SearchScope.BOTH.value
 
 
 class _TurnEnded(Message):
@@ -2015,9 +2015,8 @@ class ChatScreen(Screen[None]):
         """Append the assistant turn and its Sources list to *session_id*, the session
         its turn started in."""
         if session_id is None or not cfg.sessions_enabled:
-            # Sessions switched off mid-conversation: the id outlives the
-            # setting, so the toggle has to be re-checked here rather than
-            # relying on _persist_user_turn having left the id unset.
+            # Sessions switched off mid-conversation: the open session's id
+            # outlives the setting, so the toggle is checked here as well.
             return
         # A concurrent delete of the active session must not crash the worker.
         with contextlib.suppress(SessionNotFoundError):
@@ -2409,8 +2408,14 @@ class ChatScreen(Screen[None]):
         if opened and session_id and summary:
             # Sessions went on mid-chat: the fold of this turn had no session to
             # save its notes to, so they join the session this turn opened.
-            with contextlib.suppress(SessionNotFoundError):
-                get_services().session_store.set_summary(session_id, summary)
+            try:
+                with contextlib.suppress(SessionNotFoundError):
+                    get_services().session_store.set_summary(session_id, summary)
+            except OSError as exc:
+                log.warning("Could not save the notes of the earlier turns", exc_info=True)
+                call_from_thread(
+                    self, self.notify, msg.SESSIONS_SAVE_FAILED.format(error=exc), severity="error"
+                )
         # No trim here: the next turn compacts before it builds its prompt, so
         # trimming now would drop turns without folding them in.
         self._save_assistant_turn(session_id, turn.answer, turn.source_refs)
