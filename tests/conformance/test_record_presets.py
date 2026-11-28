@@ -15,8 +15,9 @@ from typing import Any
 
 import pytest
 
+from lilbee.providers.base import ChatResult, FinishReason
 from tests.conformance.preset_check import Setup, fixture_json, recording
-from tests.conformance.record_presets import build_parser, token_from
+from tests.conformance.record_presets import build_parser, setup_from, token_from
 from tests.conformance.request_set import JSON_ASK
 
 _TOKEN = "s3cret-token-value"  # pragma: allowlist secret
@@ -623,3 +624,208 @@ class TestEngineJsonSteps:
         assert build_parser().parse_args([*base, *rest, "--engine", "mlx"]).engine == "mlx"
         with pytest.raises(SystemExit):
             build_parser().parse_args([*base, *rest, "--engine", "mlx-lm"])
+
+
+_OVMS_OVERFLOW = "Number of prompt tokens: 60009 exceeds model max length: 40960"
+_OVMS_MODELS = {"chat": "chat-m", "embed": "embed-m", "vision": "vision-m"}
+
+
+def _ovms_chat_reply(request: dict, finish: str) -> tuple[int, dict]:
+    """The chat reply of OVMS 2026.4.1, which has no ``id`` field."""
+    from tests.conformance.fake_engine import image_colour
+    from tests.conformance.request_set import CONVERSATION, OVERSIZE, TOOL_NAME
+
+    content = request["messages"][0]["content"]
+    message: dict[str, Any] = {"role": "assistant", "content": "42", "reasoning_content": "17+25"}
+    if content == OVERSIZE:
+        return 400, {"error": _OVMS_OVERFLOW}
+    if request["messages"] == CONVERSATION:
+        message = {"role": "assistant", "content": "Rome"}
+    elif request.get("tools"):
+        call = {"name": TOOL_NAME, "arguments": '{"city": "Paris"}'}
+        message = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_1", "type": "function", "function": call}],
+        }
+    elif isinstance(content, list):
+        url = next(part["image_url"]["url"] for part in content if part["type"] == "image_url")
+        message = {"role": "assistant", "content": image_colour(url)}
+    return 200, {"choices": [{"index": 0, "message": message, "finish_reason": finish}]}
+
+
+def _ovms_embed_reply(request: dict) -> dict:
+    """The embeddings reply of OVMS 2026.4.1, which has no ``model`` field."""
+    import base64
+    import struct
+
+    texts = request["input"] if isinstance(request["input"], list) else [request["input"]]
+    data = []
+    for index in range(len(texts)):
+        vector = [1.0 if slot == index else 0.0 for slot in range(3)]
+        raw = base64.b64encode(struct.pack("<3f", *vector)).decode()
+        encoded = raw if request.get("encoding_format") == "base64" else vector
+        data.append({"object": "embedding", "embedding": encoded, "index": index})
+    return {"object": "list", "data": data}
+
+
+@contextmanager
+def _ovms_server(bodies: list[dict], finish: str = "stop") -> Iterator[str]:
+    """A local server that answers as OVMS 2026.4.1 does and keeps each request body."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            request = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+            bodies.append(request)
+            status, reply = 404, {"error": "Unsupported endpoint"}
+            if self.path.endswith("/chat/completions"):
+                status, reply = _ovms_chat_reply(request, finish)
+            elif self.path.endswith("/embeddings"):
+                status, reply = 200, _ovms_embed_reply(request)
+            body = json.dumps(reply).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def _run_ovms_step(
+    tmp_path, step: str, finish: str = "stop", bodies: list[dict] | None = None, **fields: Any
+) -> Any:
+    from tests.conformance import preset_check
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    setup = Setup(
+        ("chat", "embed", "vision"),
+        _OVMS_MODELS,
+        embed_dim=3,
+        strict=True,
+        engine="ovms",
+        **fields,
+    )
+    with (
+        _ovms_server([] if bodies is None else bodies, finish) as url,
+        preset_check.configured(url, setup, tmp_path),
+    ):
+        return preset_check._STEP_FUNCTIONS[step](setup)
+
+
+def _asked(bodies: list[dict]) -> list[dict]:
+    """The requests the step asked for, without the template probe the client sends first."""
+    return [body for body in bodies if body.get("max_tokens") != 1]
+
+
+class TestOvmsRepliesWithoutIdOrModel:
+    """OVMS sends chat with no ``id`` and embeddings with no ``model``; the SDK refuses both."""
+
+    @pytest.mark.parametrize("step", ["template", "tool", "embed", "vision", "overflow"])
+    def test_the_step_reads_the_reply_of_ovms(self, tmp_path, step: str) -> None:
+        outcome = _run_ovms_step(tmp_path, step)
+        assert outcome.ok, outcome.detail
+
+    def test_the_overflow_step_reads_the_ovms_text_as_a_context_overflow(self, tmp_path) -> None:
+        outcome = _run_ovms_step(tmp_path, "overflow")
+        assert outcome.detail == "kind=context_overflow"
+
+    def test_the_tool_request_asks_for_auto_and_the_template_request_names_no_choice(
+        self, tmp_path
+    ) -> None:
+        tool_bodies: list[dict] = []
+        template_bodies: list[dict] = []
+        _run_ovms_step(tmp_path / "tool", "tool", bodies=tool_bodies)
+        _run_ovms_step(tmp_path / "template", "template", bodies=template_bodies)
+        assert [body["tool_choice"] for body in _asked(tool_bodies)] == ["auto"]
+        assert all("tool_choice" not in body for body in template_bodies)
+
+    def test_the_cap_goes_out_as_max_tokens_the_name_that_ovms_reads(self, tmp_path) -> None:
+        bodies: list[dict] = []
+        _run_ovms_step(tmp_path, "template", bodies=bodies)
+        assert [body["max_tokens"] for body in _asked(bodies)] == [1024]
+        assert all("num_predict" not in body for body in bodies)
+
+    def test_the_vision_request_caps_the_answer(self, tmp_path) -> None:
+        bodies: list[dict] = []
+        _run_ovms_step(tmp_path, "vision", bodies=bodies)
+        assert [body["max_tokens"] for body in _asked(bodies)] == [64, 64]
+        assert {body["model"] for body in bodies} == {"vision-m"}
+
+    def test_the_embed_request_goes_to_the_embed_model(self, tmp_path) -> None:
+        bodies: list[dict] = []
+        _run_ovms_step(tmp_path, "embed", bodies=bodies)
+        assert [body["model"] for body in bodies] == ["embed-m"]
+
+    def test_another_engine_keeps_the_sdk_client(self, tmp_path, monkeypatch) -> None:
+        from tests.conformance import preset_check
+
+        seen: list[str] = []
+
+        class Sdk:
+            def chat(self, messages: Any, **kwargs: Any) -> ChatResult:
+                seen.append(kwargs["model"])
+                return ChatResult("Rome", (), FinishReason.STOP)
+
+        monkeypatch.setattr(preset_check, "create_sdk_provider", lambda: Sdk())
+        setup = Setup(("chat",), {"chat": "m"}, engine="llama.cpp")
+        with preset_check.configured("http://127.0.0.1:9", setup, tmp_path):
+            outcome = preset_check._template(setup)
+        assert outcome.ok
+        assert seen == [f"{setup.preset}/m"]
+
+    def test_the_named_step_sends_the_rerank_role_for_ovms(self) -> None:
+        from tests.conformance import preset_check
+
+        roles = ("chat", "embed", "rerank")
+        assert preset_check._named_role(Setup(roles, {}, engine="ovms")) == "rerank"
+        assert preset_check._named_role(Setup(roles, {}, engine="llama.cpp")) == "chat"
+        assert preset_check._named_role(Setup(("chat",), {}, engine="ovms")) == "chat"
+
+
+class TestReasoningTokens:
+    def test_a_bound_goes_out_as_max_tokens_and_accepts_an_answer_the_bound_cut(
+        self, tmp_path
+    ) -> None:
+        outcome = _run_ovms_step(tmp_path, "reasoning", finish="length", reasoning_tokens=64)
+        assert outcome.ok, outcome.detail
+
+    def test_no_bound_sends_no_max_tokens_and_fails_a_cut_answer(self, tmp_path) -> None:
+        outcome = _run_ovms_step(tmp_path, "reasoning", finish="length")
+        assert not outcome.ok
+        assert "finish is length" in outcome.detail
+
+    def test_the_bound_is_on_the_wire(self, tmp_path) -> None:
+        from tests.conformance import preset_check
+
+        bodies: list[dict] = []
+        setup = Setup(("chat",), {"chat": "default_model"}, engine="ovms", reasoning_tokens=64)
+        with _ovms_server(bodies) as url, preset_check.configured(url, setup, tmp_path):
+            preset_check._reasoning_text(setup)
+        assert [body["max_tokens"] for body in bodies] == [64]
+
+    def test_the_bound_is_read_from_the_fixture_and_the_parser(self, tmp_path) -> None:
+        from tests.conformance.preset_check import load_fixture
+
+        setup = Setup(("chat",), {"chat": "m"}, reasoning_tokens=64)
+        path = tmp_path / "s.json"
+        doc = fixture_json("s", "1", setup, {}, _empty_tape())
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        assert load_fixture(path)[0].reasoning_tokens == 64
+        base = ["--server", "s", "--version", "1", "--url", "u", "--roles", "chat"]
+        rest = ["--models", "chat=m", "--out", "o.json", "--reasoning-tokens", "64"]
+        assert build_parser().parse_args([*base, *rest]).reasoning_tokens == 64
+        no_flag = build_parser().parse_args([*base, *rest[:-2]])
+        assert no_flag.reasoning_tokens == 0
+        assert setup_from(build_parser().parse_args([*base, *rest])).reasoning_tokens == 64

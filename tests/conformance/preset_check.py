@@ -17,13 +17,15 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import combinations
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lilbee.app import presets
 from lilbee.app.status import chat_engine, serving_roles
 from lilbee.core.config import Config, cfg
 from lilbee.providers.base import ChatResult, ProviderError, aux_options
+from lilbee.providers.engine_params import chat_options_to_kwargs
 from lilbee.providers.factory import create_sdk_provider
+from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.retrieval.reasoning import split_reasoning
@@ -35,6 +37,7 @@ from tests.conformance.harness import (
     cosine,
     json_fault,
     png,
+    reasoning_fault,
     reasoning_split_fault,
     tool_arguments_fault,
 )
@@ -55,6 +58,9 @@ from tests.conformance.request_set import (
     VISION_PROMPT,
     WEATHER,
 )
+
+if TYPE_CHECKING:
+    from lilbee.providers.fleet.client import LlamaServerClient
 
 PRESET = "check"
 FIXTURES = Path(__file__).with_name("fixtures") / "presets"
@@ -81,6 +87,12 @@ _ROLE_STEPS = {
     "vision": ("vision",),
 }
 _STRICT_STEPS = {"chat": ("json_object", "json_schema", "reasoning")}
+_FLEET_CLIENT_ENGINES = frozenset({EngineName.OVMS})
+"""Engines whose replies carry no ``id`` or ``model``, which the SDK client of a preset refuses.
+
+Their steps go through the fleet client, which lilbee uses for a managed engine.
+"""
+_VISION_TOKENS = 64
 _SKIPPED_HEADERS = frozenset({"transfer-encoding", "connection", "content-length"})
 
 
@@ -118,6 +130,11 @@ class Setup:
     A named engine sends the JSON steps through the fleet client with the engine's request
     profile, which drops or refuses a reply format the engine does not enforce.
     """
+    reasoning_tokens: int = 0
+    """The most tokens the reasoning step lets the model write, or 0 for no bound.
+
+    A bounded step accepts an answer that the bound cut off, so a slow engine ends the step.
+    """
 
     @property
     def preset(self) -> str:
@@ -144,26 +161,66 @@ def _ref(setup: Setup, role: str) -> str:
     return f"{setup.preset}/{setup.models[role]}"
 
 
-def _template(setup: Setup) -> Outcome:
+def _through_fleet(setup: Setup) -> bool:
+    """Whether the steps of this setup go through the fleet client, not the SDK client."""
+    return setup.engine in _FLEET_CLIENT_ENGINES
+
+
+@contextmanager
+def _engine_client(setup: Setup, role: str) -> Iterator[LlamaServerClient]:
+    """The fleet client for *role*, with the request profile of the named engine."""
+    from lilbee.providers.fleet.client import LlamaServerClient
+    from lilbee.providers.fleet.engines.choice import discover_adapters
+
+    profile = discover_adapters()[EngineName(setup.engine)].request_profile(WorkerRole(role))
+    client = LlamaServerClient(
+        presets.get_preset(setup.preset).base_url,
+        setup.models[role],
+        timeout=_TIMEOUT_S,
+        profile=profile,
+    )
+    try:
+        yield client
+    finally:
+        client.close()
+
+
+def _chat(
+    setup: Setup,
+    messages: list[dict[str, Any]],
+    options: dict[str, Any],
+    tools: list[dict[str, Any]] | None = None,
+) -> ChatResult:
+    """One chat request through the client that lilbee uses for the server of *setup*."""
+    tool_choice = "auto" if tools else None
+    if _through_fleet(setup):
+        with _engine_client(setup, "chat") as client:
+            return client.chat_result(
+                messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                options=chat_options_to_kwargs(options),
+            )
     result = create_sdk_provider().chat(
-        CONVERSATION,
-        model=_ref(setup, "chat"),
-        options={**PINNED_SAMPLING, "num_predict": 1024},
+        messages, model=_ref(setup, "chat"), tools=tools, tool_choice=tool_choice, options=options
     )
     assert isinstance(result, ChatResult)
+    return result
+
+
+def _template(setup: Setup) -> Outcome:
+    result = _chat(setup, CONVERSATION, {**PINNED_SAMPLING, "num_predict": 1024})
     answer = split_reasoning(result.text).answer
     return Outcome(TEMPLATE_FACT in answer.lower(), f"finish={result.finish_reason}")
 
 
 def _tool(setup: Setup) -> Outcome:
-    result = create_sdk_provider().chat(
+    result = _chat(
+        setup,
         [{"role": "user", "content": TOOL_ASK}],
-        model=_ref(setup, "chat"),
+        {**PINNED_SAMPLING, "num_predict": 1024},
         tools=[WEATHER],
-        tool_choice="auto",
-        options={**PINNED_SAMPLING, "num_predict": 1024},
     )
-    assert isinstance(result, ChatResult)
     names = [call.name for call in result.tool_calls]
     first = result.tool_calls[0] if result.tool_calls else None
     ok = first is not None and first.name == TOOL_NAME and not tool_arguments_fault(first.arguments)
@@ -171,8 +228,12 @@ def _tool(setup: Setup) -> Outcome:
 
 
 def _embed(setup: Setup) -> Outcome:
-    cfg.embedding_model = _ref(setup, "embed")
-    vectors = create_sdk_provider().embed(EMBED_TEXTS)
+    if _through_fleet(setup):
+        with _engine_client(setup, "embed") as client:
+            vectors = client.embed(EMBED_TEXTS)
+    else:
+        cfg.embedding_model = _ref(setup, "embed")
+        vectors = create_sdk_provider().embed(EMBED_TEXTS)
     dims = {len(vector) for vector in vectors}
     distinct = (
         len(vectors) == len(EMBED_TEXTS) and cosine(vectors[0], vectors[1]) < NEAR_COPY_COSINE
@@ -203,7 +264,7 @@ def _send_oversize(setup: Setup) -> Outcome:
             provider = FleetProvider()
             provider._chat_ctx = setup.window
             provider._fit_chat_context(messages, None, options, _ref(setup, "chat"))
-        create_sdk_provider().chat(messages, model=_ref(setup, "chat"), options=options)
+        _chat(setup, messages, options)
     except ProviderError as exc:
         return Outcome(exc.kind == "context_overflow", f"kind={exc.kind}")
     return Outcome(False, "the oversize prompt was accepted")
@@ -219,6 +280,15 @@ def _overflow(setup: Setup) -> Outcome:
 
 
 def _colour(setup: Setup, rgb: tuple[int, int, int]) -> str:
+    if _through_fleet(setup):
+        from lilbee.vision import build_vision_messages
+
+        with _engine_client(setup, "vision") as client:
+            messages = build_vision_messages(VISION_PROMPT, png(rgb))
+            return client.chat_result(
+                messages,
+                options=chat_options_to_kwargs({**PINNED_SAMPLING, "num_predict": _VISION_TOKENS}),
+            ).text
     return create_sdk_provider().vision_ocr(png(rgb), _ref(setup, "vision"), VISION_PROMPT)
 
 
@@ -257,32 +327,21 @@ def _engine_json_step(
     """
     from lilbee.core.llm_json import first_json_object
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.engine_params import chat_options_to_kwargs
-    from lilbee.providers.fleet.client import LlamaServerClient
-    from lilbee.providers.fleet.engines.base import EngineName
-    from lilbee.providers.fleet.engines.choice import discover_adapters
 
-    profile = discover_adapters()[EngineName(setup.engine)].request_profile(WorkerRole.CHAT)
-    client = LlamaServerClient(
-        presets.get_preset(setup.preset).base_url,
-        setup.models["chat"],
-        timeout=_TIMEOUT_S,
-        profile=profile,
-    )
-    try:
-        # The options of lilbee's own JSON calls, a small cap with thinking off, put on the
-        # wire as the fleet provider puts them.
-        result = client.chat_result(
-            [{"role": "user", "content": JSON_ASK}],
-            options=chat_options_to_kwargs(
-                aux_options(256, response_format=response_format, **PINNED_SAMPLING)
-            ),
-        )
-    except ProviderError as exc:
-        refused = not profile.structured_output and exc.kind is ProviderErrorKind.BAD_REQUEST
-        return Outcome(refused and schema is not None, f"refused kind={exc.kind}")
-    finally:
-        client.close()
+    with _engine_client(setup, "chat") as client:
+        profile = client.profile
+        try:
+            # The options of lilbee's own JSON calls, a small cap with thinking off, put on the
+            # wire as the fleet provider puts them.
+            result = client.chat_result(
+                [{"role": "user", "content": JSON_ASK}],
+                options=chat_options_to_kwargs(
+                    aux_options(256, response_format=response_format, **PINNED_SAMPLING)
+                ),
+            )
+        except ProviderError as exc:
+            refused = not profile.structured_output and exc.kind is ProviderErrorKind.BAD_REQUEST
+            return Outcome(refused and schema is not None, f"refused kind={exc.kind}")
     finish = f"finish={result.finish_reason}"
     if profile.structured_output:
         return Outcome(not json_fault(result.text, schema), finish)
@@ -316,6 +375,7 @@ def _reasoning_text(setup: Setup) -> Outcome:
         "model": setup.models["chat"],
         "stream": False,
         **PINNED_SAMPLING,
+        **({"max_tokens": setup.reasoning_tokens} if setup.reasoning_tokens else {}),
     }
     request = urllib.request.Request(  # noqa: S310  a local server under test
         presets.get_preset(setup.preset).base_url + "/v1/chat/completions",
@@ -324,7 +384,8 @@ def _reasoning_text(setup: Setup) -> Outcome:
     )
     with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as resp:  # noqa: S310
         choice = json.loads(resp.read())["choices"][0]
-    fault = reasoning_split_fault(choice["message"], choice.get("finish_reason"))
+    judge = reasoning_fault if setup.reasoning_tokens else reasoning_split_fault
+    fault = judge(choice["message"], choice.get("finish_reason"))
     return Outcome(not fault, f"finish={choice.get('finish_reason')} {fault}".strip())
 
 
@@ -339,9 +400,15 @@ class _LogTap(logging.Handler):
         self.messages.append(record.getMessage())
 
 
+def _named_role(setup: Setup) -> str:
+    """The role of the named step: rerank for an engine whose chat the SDK client refuses."""
+    roles = [role for role in _ROLE_STEPS if role in setup.roles]
+    return "rerank" if _through_fleet(setup) and "rerank" in roles else roles[0]
+
+
 def _named(setup: Setup) -> Outcome:
     """One request through the routing provider: the log line and the status name the preset."""
-    role = next(r for r in _ROLE_STEPS if r in setup.roles)
+    role = _named_role(setup)
     model = _ref(setup, role)
     routing = RoutingProvider()
     logger = logging.getLogger("lilbee.providers.routing_provider")
@@ -669,6 +736,7 @@ def fixture_json(
         "strict": setup.strict,
         **({"window": setup.window} if setup.window else {}),
         **({"engine": setup.engine} if setup.engine else {}),
+        **({"reasoning_tokens": setup.reasoning_tokens} if setup.reasoning_tokens else {}),
         "results": {step: outcome.as_json() for step, outcome in results.items()},
         "error_answers": error_answers(tape.exchanges),
         "exchanges": [exchange.as_json() for exchange in tape.exchanges],
@@ -686,6 +754,7 @@ def load_fixture(path: Path) -> tuple[Setup, dict[str, Outcome], list[Exchange],
         doc["server"],
         doc.get("window", 0),
         doc.get("engine", ""),
+        doc.get("reasoning_tokens", 0),
     )
     results = {step: Outcome(**value) for step, value in doc["results"].items()}
     old = doc.get(SAMPLING_KNOBS_KEY) == KNOBS_NOT_RECORDED

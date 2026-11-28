@@ -29,6 +29,7 @@ from typing import Any
 import httpx
 import pytest
 
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.engines.ovms import OVMS
 from lilbee.providers.roles import WorkerRole
@@ -38,6 +39,9 @@ SERVED = "default_model"
 _OVMS_ROUTE = re.compile(r"(?:/v3/|/v1/)(?:v1/)?(.+)")
 _DOC_LIMIT = 10000
 """The server's ``max_allowed_chunks`` default."""
+LONG_PROMPT = "w " * 60000
+OVERFLOW_ERROR = "Number of prompt tokens: 60009 exceeds model max length: 40960"
+"""The 400 text of OVMS 2026.4.1 for a prompt past the model's length, as recorded."""
 
 
 def _b64(values: list[float]) -> str:
@@ -112,6 +116,8 @@ class _FakeOvms:
             ]
             text = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
             return httpx.Response(200, text=text, headers={"content-type": "text/event-stream"})
+        if body["messages"][0]["content"] == LONG_PROMPT:
+            return httpx.Response(400, json={"error": OVERFLOW_ERROR})
         message = {"role": "assistant", "content": "Bees make honey."}
         choice = {"index": 0, "message": message, "finish_reason": "stop"}
         return httpx.Response(200, json={"object": "chat.completion", "choices": [choice]})
@@ -156,6 +162,32 @@ def test_chat_reads_the_answer_and_the_stream() -> None:
     assert client.chat(messages) == "Bees make honey."
     assert "".join(client.chat(messages, stream=True)) == "Bees make honey."
     assert [endpoint for endpoint, _ in server.seen] == ["chat/completions"] * 2
+
+
+def test_a_prompt_past_the_model_length_is_a_context_overflow() -> None:
+    server = _FakeOvms()
+    with pytest.raises(ProviderError) as refused:
+        _client(WorkerRole.CHAT, server).chat([{"role": "user", "content": LONG_PROMPT}])
+    assert refused.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+def test_another_bad_request_is_not_a_context_overflow() -> None:
+    assert not OVMS.request_profile(WorkerRole.CHAT).context_overflow.search(
+        "Model with requested name is not found"
+    )
+
+
+def test_the_overflow_text_is_matched_in_any_case() -> None:
+    pattern = OVMS.request_profile(WorkerRole.CHAT).context_overflow
+    assert pattern.search("Exceeds Model Max Length")
+
+
+def test_a_chat_reply_without_an_id_is_read() -> None:
+    server = _FakeOvms()
+    result = _client(WorkerRole.CHAT, server).chat_result(
+        [{"role": "user", "content": "What do bees make?"}]
+    )
+    assert result.text == "Bees make honey."
 
 
 def test_an_image_chat_sends_the_image_as_an_image_url_part() -> None:
