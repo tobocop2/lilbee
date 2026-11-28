@@ -21,7 +21,7 @@ from lilbee.data.types import (
     PARTLY_READ_PAGES_COLUMN,
     PARTLY_READ_TITLE,
     SyncResult,
-    failed_page_line,
+    failed_page_message,
 )
 from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
 from lilbee.providers.roles import EngineBackend
@@ -164,7 +164,9 @@ def task_report_text(report: TaskReport) -> str:
         lines.append(PARTLY_READ_TITLE)
         for partial in report.partial:
             lines.append(f"  {partial.name}")
-            lines += [f"    {failed_page_line(page)}" for page in partial.pages]
+            lines += [
+                f"    {failed_page_message(page, name=partial.name)}" for page in partial.pages
+            ]
         lines.append("")
     lines += _reason_section(TASK_DETAIL_FAILED_TITLE, report.failed)
     lines += _reason_section(TASK_DETAIL_SKIPPED_TITLE, report.skipped)
