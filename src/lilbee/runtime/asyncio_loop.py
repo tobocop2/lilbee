@@ -132,12 +132,24 @@ def _signals_wake(loop: asyncio.AbstractEventLoop) -> Iterator[None]:
             reader.setblocking(False)
             writer.setblocking(False)
             loop.add_reader(reader, _read_wakeups, reader)
-            previous = signal.set_wakeup_fd(writer.fileno())
+            previous = _wakeup_fd()
             try:
+                signal.set_wakeup_fd(writer.fileno())
                 yield
             finally:
                 signal.set_wakeup_fd(previous)
                 loop.remove_reader(reader)
+
+
+def _wakeup_fd() -> int:
+    """The signal wakeup descriptor now set, left in place.
+
+    A caller reads it before its ``try`` and sets its own socket inside it, so a signal
+    that raises just after the set still meets the ``finally`` that puts this one back.
+    """
+    fd = signal.set_wakeup_fd(-1)
+    signal.set_wakeup_fd(fd)
+    return fd
 
 
 def _read_wakeups(reader: socket.socket) -> None:
@@ -170,8 +182,9 @@ def _wait_for(done: concurrent.futures.Future[Any], cancel: SignalFlag) -> None:
         reader.setblocking(False)
         writer.setblocking(False)
         done.add_done_callback(lambda _done: _send_wakeup(writer))
-        previous = signal.set_wakeup_fd(writer.fileno())
+        previous = _wakeup_fd()
         try:
+            signal.set_wakeup_fd(writer.fileno())
             while not cancel.interrupted:
                 if done.done():
                     return
