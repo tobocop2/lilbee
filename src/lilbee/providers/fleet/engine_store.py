@@ -644,6 +644,26 @@ def _entries(folder: Path, engine: str) -> list[os.DirEntry[str]]:
         raise EngineFolderError(folder, engine, exc) from exc
 
 
+def _build_stamps(root: Path, engine: os.DirEntry[str]) -> list[tuple[str, int, int]]:
+    """The stamp entries of the builds of *engine*; none when its folder cannot be read."""
+    found: list[tuple[str, int, int]] = []
+    try:
+        if not engine.is_dir(follow_symlinks=False):
+            return found
+        builds = _entries(root / engine.name, engine.name)
+    except OSError:
+        return found
+    for build in builds:
+        if build.name.startswith("."):
+            continue
+        try:
+            info = build.stat(follow_symlinks=False)
+        except OSError:
+            continue
+        found.append((f"{engine.name}/{build.name}", info.st_ino, info.st_mtime_ns))
+    return found
+
+
 _Slot = tuple[Path, InstalledEngine | EngineFolderError | None]
 
 
@@ -864,22 +884,19 @@ class EngineStore:
         return dict(_builds(self.root / engine))
 
     def stamp(self) -> BuildStamp:
-        """The name, inode and change time of each build folder; empty when unreadable."""
-        found: list[tuple[str, int, int]] = []
+        """The name, inode and change time of each build folder that can be read.
+
+        An engine folder or a build that cannot be read is left out, so the others still
+        count. The stamp is empty when the engines folder itself cannot be read.
+        """
         try:
-            for engine in _entries(self.root, ""):
-                if (
-                    engine.name == PACK_DIR
-                    or engine.name.startswith(".")
-                    or not engine.is_dir(follow_symlinks=False)
-                ):
-                    continue
-                for build in _entries(self.root / engine.name, engine.name):
-                    if not build.name.startswith("."):
-                        info = build.stat(follow_symlinks=False)
-                        found.append((f"{engine.name}/{build.name}", info.st_ino, info.st_mtime_ns))
+            engines = _entries(self.root, "")
         except OSError:
             return ()
+        found: list[tuple[str, int, int]] = []
+        for engine in engines:
+            if engine.name != PACK_DIR and not engine.name.startswith("."):
+                found.extend(_build_stamps(self.root, engine))
         return tuple(found)
 
     def pack_path(self, lock: PinLock) -> Path:
