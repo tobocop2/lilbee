@@ -257,10 +257,15 @@ class FleetBody(MountWhenAttached, Widget):
 
     class PlacementReloading(Message):
         """Posted while an apply/clear reloads the fleet, so the chat screen can
-        hold submissions until the reload finishes instead of racing it."""
+        hold submissions until the reload finishes instead of racing it.
 
-        def __init__(self, active: bool) -> None:
+        ``restores_focus`` is True on the end message when the body gives the
+        focus back to its own control, so the screen does not take it first.
+        """
+
+        def __init__(self, active: bool, *, restores_focus: bool = False) -> None:
             self.active = active
+            self.restores_focus = restores_focus
             super().__init__()
 
     def __init__(self) -> None:
@@ -269,6 +274,7 @@ class FleetBody(MountWhenAttached, Widget):
         self._device_indices: tuple[int, ...] = ()
         self._view_manual = False
         self._page = 0
+        self._refocus_id: str | None = None
         self._command_actions: dict[str, Callable[[], None]] = {
             _CMD_PREVIEW: self.action_preview,
             _CMD_APPLY: self.action_apply,
@@ -278,12 +284,39 @@ class FleetBody(MountWhenAttached, Widget):
     def watch_applying(self, applying: bool) -> None:
         """Disable the editor controls while an apply/clear is in flight, surface a
         'Rebuilding fleet…' status so the reload isn't a silent idle screen, and tell
-        the chat screen to hold submissions until the fleet finishes reloading."""
-        self.post_message(self.PlacementReloading(applying))
+        the chat screen to hold submissions until the fleet finishes reloading.
+
+        Disabling the editor takes the focus from a control inside it, and the
+        re-render replaces every control, so the id of the focused control is kept
+        and focus goes back to it when the change ends.
+        """
+        if applying:
+            focused = self.app.focused
+            if focused is not None and self in focused.ancestors:
+                self._refocus_id = focused.id or _CMD_APPLY
+        restores_focus = not applying and self._refocus_id is not None
+        self.post_message(self.PlacementReloading(applying, restores_focus=restores_focus))
         with contextlib.suppress(NoMatches):
             self.query_one(_EDITOR_ID, Vertical).disabled = applying
         if applying:
             self._show_rebuilding()
+        elif self._refocus_id is not None:
+            self.call_after_refresh(self._restore_focus, self._refocus_id)
+            self._refocus_id = None
+
+    def _restore_focus(self, widget_id: str) -> None:
+        """Focus the control *widget_id*, or the Apply pill when it is gone.
+
+        A control the user focused during the change keeps the focus.
+        """
+        if self.app.focused is not None:
+            return
+        for selector in (f"#{widget_id}", f"#{_CMD_APPLY}"):
+            # A control the re-render replaced stays in the DOM, hidden, until it is removed.
+            for widget in self.query(selector):
+                if widget.display and widget.focusable:
+                    widget.focus()
+                    return
 
     def _show_rebuilding(self) -> None:
         """Hold a 'Rebuilding fleet…' status until the reloaded fleet reports ready.
