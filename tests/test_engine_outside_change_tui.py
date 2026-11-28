@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import threading
 import zipfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -356,3 +357,86 @@ def test_the_stamp_of_an_unreadable_engines_folder_is_empty(
     (engines_root(world) / "tei" / "0.9-cpu").mkdir(parents=True)
     monkeypatch.setattr("lilbee.providers.fleet.engine_store._entries", refuse)
     assert engine_service.build_folders_stamp() == ()
+
+
+def test_one_unreadable_engine_folder_leaves_the_other_engines_in_the_stamp(
+    world: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.providers.fleet import engine_store
+
+    real = engine_store._entries
+
+    def refuse_tei(folder: Path, engine: str) -> list[Any]:
+        if engine == "tei":
+            raise EngineFolderError(folder, engine, PermissionError("denied"))
+        return real(folder, engine)
+
+    root = engines_root(world)
+    (root / "tei" / "0.9-cpu").mkdir(parents=True)
+    (root / "llama.cpp" / "b1-cpu").mkdir(parents=True)
+    monkeypatch.setattr("lilbee.providers.fleet.engine_store._entries", refuse_tei)
+    stamp = engine_service.build_folders_stamp()
+    assert [name for name, _inode, _time in stamp] == ["llama.cpp/b1-cpu"]
+
+
+def test_a_build_that_goes_away_during_the_scan_is_left_out(
+    world: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.providers.fleet import engine_store
+
+    real = engine_store._entries
+    root = engines_root(world)
+    (root / "tei" / "0.9-cpu").mkdir(parents=True)
+    (root / "tei" / "1.0-cpu").mkdir()
+
+    def list_then_move(folder: Path, engine: str) -> list[Any]:
+        found = real(folder, engine)
+        if engine == "tei":
+            (folder / "0.9-cpu").rename(world / "moved-away")
+        return found
+
+    monkeypatch.setattr("lilbee.providers.fleet.engine_store._entries", list_then_move)
+    stamp = engine_service.build_folders_stamp()
+    assert [name for name, _inode, _time in stamp] == ["tei/1.0-cpu"]
+
+
+async def test_the_app_stamps_the_engines_off_the_ui_thread(
+    world: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    real = engine_service.build_folders_stamp
+
+    def spy() -> engine_service.BuildStamp:
+        threads.append(threading.get_ident())
+        return real()
+
+    monkeypatch.setattr(engine_service, "build_folders_stamp", spy)
+    app = _App()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await open_engines(app, pilot)
+        assert await wait_until(pilot, lambda: app.engines_stamp is not None)
+        watch = Watch(app)
+        install_elsewhere(world)
+        await focus_back(app, pilot)
+        assert await wait_until(pilot, lambda: watch.keys.count(CHOICES_KEY) == 1, max_pauses=40)
+        publish_engines_changed(app)
+        assert await wait_until(pilot, lambda: len(threads) >= 3, max_pauses=40)
+    assert threads
+    assert loop_thread not in threads
+
+
+async def test_a_stamp_from_a_cancelled_check_is_dropped(world: Path) -> None:
+    app = _App()
+    async with app.run_test(size=(140, 40)) as pilot:
+        assert await wait_until(pilot, lambda: app.engines_stamp is not None)
+        before = app.engines_stamp
+        watch = Watch(app)
+
+        class Cancelled:
+            is_cancelled = True
+
+        app._take_engines_stamp(Cancelled(), (("tei/9-cpu", 1, 1),))  # type: ignore[arg-type]
+        await pilot.pause()
+        assert app.engines_stamp == before
+        assert watch.keys == []
