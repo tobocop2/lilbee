@@ -291,8 +291,8 @@ class LilbeeApp(App[None]):
         self._config_follower.report_to(self._show_taken_settings_from_thread)
         # The last stamp of the build folders; None until the first scan in a thread ends.
         self.engines_stamp: engine_service.BuildStamp | None = None
-        # A caller published the change already, so the next stamp is only the baseline.
-        self._engines_announced = False
+        # The app changed the engines itself; the next stamp publishes the change.
+        self._engines_publish_pending = False
         # The one check scheduled after a skipped in-place write; see _recheck_a_skipped_file.
         self._settle_recheck: Timer | None = None
         self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
@@ -802,13 +802,14 @@ class LilbeeApp(App[None]):
         self._recheck_a_skipped_file()
         return changed
 
-    def check_engines(self, *, announced: bool = False) -> None:
+    def check_engines(self, *, publish: bool = False) -> None:
         """Stamp the build folders in a thread, and publish an engine change when it moved.
 
-        *announced* says that the caller published the change itself, so the new stamp is
-        only the baseline. A newer check cancels an older one that has not ended.
+        *publish* says that the caller changed the engines itself, so the change is
+        published after the scan even when the stamp did not move. A newer check cancels
+        an older one that has not ended; a publish it asked for stays pending.
         """
-        self._engines_announced = self._engines_announced or announced
+        self._engines_publish_pending = self._engines_publish_pending or publish
         self._stamp_engines()
 
     @work(thread=True, group="engines-stamp", exclusive=True, exit_on_error=False)
@@ -818,14 +819,18 @@ class LilbeeApp(App[None]):
         call_from_thread(self, self._take_engines_stamp, worker, stamp)
 
     def _take_engines_stamp(self, worker: Worker[None], stamp: engine_service.BuildStamp) -> None:
-        """Keep *stamp* from the newest check; the first stamp is the baseline only."""
+        """Keep *stamp* from the newest check, and publish when it moved or a publish waits.
+
+        The first stamp is the baseline only, unless a publish waits for it. Each publish
+        follows the scan that sets the new baseline, so no change falls between them.
+        """
         if worker.is_cancelled:
             return
         moved = self.engines_stamp is not None and stamp != self.engines_stamp
         self.engines_stamp = stamp
-        if moved and not self._engines_announced:
+        if moved or self._engines_publish_pending:
+            self._engines_publish_pending = False
             announce_engines_changed(self)
-        self._engines_announced = False
 
     def _recheck_a_skipped_file(self) -> None:
         """Check once more after the quiet window when the check skipped a young in-place write.

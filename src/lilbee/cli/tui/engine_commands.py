@@ -254,9 +254,8 @@ def announce(app: LilbeeApp, result: EngineCommandResult) -> None:
 
 
 def publish_engines_changed(app: LilbeeApp) -> None:
-    """Tell the subscribers that the engines on disk changed, and stamp the folders anew."""
-    announce_engines_changed(app)
-    app.check_engines(announced=True)
+    """Stamp the engines folders anew, then tell the subscribers that the engines changed."""
+    app.check_engines(publish=True)
 
 
 def announce_engines_changed(app: LilbeeApp) -> None:
