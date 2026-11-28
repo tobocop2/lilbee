@@ -214,24 +214,36 @@ def test_l2_cli_install_json_carries_not_run_on(unproven: None, wheel: Path) -> 
     assert out["installed"] == PLAIN_LINE
 
 
+def _unrecorded_devices(engine: EngineName, backend: str) -> list[str]:
+    """The devices of one shipped cell that have no record, read from the coverage file itself."""
+    rows = json.loads(proof.COVERAGE_FILE.read_text(encoding="utf-8"))["rows"]
+    cell = cell_key(LINUX, backend)
+    return list(
+        dict.fromkeys(
+            row["device_label"]
+            for row in rows
+            if row["engine"] == engine.value
+            and row["cell"] == cell
+            and row["status"] not in proof.HAS_RECORD
+        )
+    )
+
+
 @pytest.mark.parametrize(
-    ("engine", "backend", "not_run"),
+    ("engine", "backend"),
     [
-        (EngineName.LLAMA, "cpu", []),
-        (EngineName.LLAMA, "rocm", ["AMD GPU"]),
-        (EngineName.LLAMA, "vulkan", ["Vulkan GPU"]),
-        (EngineName.OPENVINO, "openvino", ["Intel Arc graphics", "Intel NPU"]),
-        (
-            EngineName.OVMS,
-            "openvino",
-            ["Intel integrated graphics", "Intel Arc graphics", "Intel NPU"],
-        ),
-        (EngineName.LEMONADE, "npu", ["AMD XDNA2 NPU"]),
+        (EngineName.LLAMA, "cpu"),
+        (EngineName.LLAMA, "rocm"),
+        (EngineName.LLAMA, "vulkan"),
+        (EngineName.OPENVINO, "openvino"),
+        (EngineName.OVMS, "openvino"),
+        (EngineName.LEMONADE, "npu"),
     ],
 )
 def test_l2_cli_install_json_keeps_the_label_plain_on_the_shipped_table(
-    engine: EngineName, backend: str, not_run: list[str], monkeypatch: pytest.MonkeyPatch
+    engine: EngineName, backend: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    not_run = _unrecorded_devices(engine, backend)
     built = engine_service.InstalledBuild(engine.value, VERSION, backend)
     monkeypatch.setattr(runnable, "session_host", lambda: LINUX)
     monkeypatch.setattr(engine_service, "install", lambda name, wheel=None, **_: built)
