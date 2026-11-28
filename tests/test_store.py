@@ -5988,10 +5988,10 @@ def _write_with_failed_pages(store, name, pages):
 class TestSourceFailedPages:
     """The ``_sources`` column of pages whose OCR failed."""
 
-    _PAGE_3 = FailedPage(page=3, error="timed out", recovered=False)
-    _PAGE_4 = FailedPage(page=4, error="no text", recovered=True)
-    _PAGE_3_ROW: ClassVar[dict] = {"page": 3, "error": "timed out", "recovered": False}
-    _PAGE_4_ROW: ClassVar[dict] = {"page": 4, "error": "no text", "recovered": True}
+    _PAGE_3 = FailedPage.ocr(3, recovered=False)
+    _PAGE_4 = FailedPage.ocr(4, recovered=True)
+    _PAGE_3_ROW: ClassVar[dict] = {"page": 3, "error": "OCR failed", "recovered": False}
+    _PAGE_4_ROW: ClassVar[dict] = {"page": 4, "error": "OCR failed", "recovered": True}
 
     def _write(self, store, name, pages):
         _write_with_failed_pages(store, name, pages)
@@ -6008,7 +6008,7 @@ class TestSourceFailedPages:
         assert failed_pages(row) == []
 
     def test_a_long_list_of_failed_pages_is_stored_whole(self, store):
-        pages = [FailedPage(page=number, error="boom", recovered=False) for number in range(1, 201)]
+        pages = [FailedPage.ocr(number, recovered=False) for number in range(1, 201)]
         self._write(store, "scan.pdf", pages)
         assert failed_pages(store.get_sources()[0]) == pages
 
@@ -6019,6 +6019,15 @@ class TestSourceFailedPages:
     def test_failed_pages_of_a_record_without_the_column_is_empty(self):
         record = {"filename": "old.pdf", "file_hash": "h", "ingested_at": "", "chunk_count": 1}
         assert failed_pages(record) == []
+
+    def test_a_row_that_holds_the_parsers_text_reads_back_as_the_kind_of_failure(self, store):
+        """A row an older lilbee wrote holds the parser's text, which no surface shows."""
+        parser_text = "tesseract: image too small [cause chain: PyErr]"
+        self._write(store, "scan.pdf", [FailedPage(page=3, error=parser_text, recovered=True)])
+        [row] = store.get_sources()
+        assert row["ocr_page_failures"][0]["error"] == parser_text
+        assert failed_pages(row) == [FailedPage.ocr(3, recovered=True)]
+        assert store.partly_read_sources(5) == ({"scan.pdf": failed_pages(row)}, 1)
 
     def test_an_index_without_the_column_gains_it_when_opened(self, test_config):
         import lancedb
@@ -6062,7 +6071,7 @@ class TestSourceFailedPages:
 class TestPartlyReadSources:
     """The listing of indexed sources with pages whose OCR failed."""
 
-    _PAGE = FailedPage(page=2, error="timed out", recovered=False)
+    _PAGE = FailedPage.ocr(2, recovered=False)
 
     def _write(self, store, name, pages):
         _write_with_failed_pages(store, name, pages)

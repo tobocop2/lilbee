@@ -855,7 +855,7 @@ class TestSync:
 
         result = await sync(quiet=True)
 
-        page = FailedPage(page=3, error="timed out", recovered=False)
+        page = FailedPage.ocr(3, recovered=False)
         assert [(p.name, p.pages) for p in result.partial] == [("docs.zip/report.pdf", [page])]
         rows = {s["filename"]: failed_pages(s) for s in store.get_sources()}
         assert rows["docs.zip/report.pdf"] == [page]
@@ -7722,10 +7722,9 @@ class TestFailedOcrPagesFromXberg:
         error = (
             "Plugin 'lilbee-vision' method 'process_image' failed: RuntimeError: the model is gone"
         )
-        assert failed_ocr_pages(doc) == tuple(
-            FailedPage(page=number, error=error, recovered=False)
-            for number in (1, 2, 3)
-            if number not in read
+        assert [record.error for record in records] == [error] * 2
+        assert failed_ocr_pages(doc, "born.pdf") == tuple(
+            FailedPage.ocr(number, recovered=False) for number in (1, 2, 3) if number not in read
         )
 
 
@@ -10596,11 +10595,11 @@ class TestSyncLoadsThePersistedRegistry:
         assert cfg.linked_roots == {"work": str(work)}
 
 
-_PAGE_3_FAILED = FailedPage(page=3, error="vision backend timed out", recovered=False)
-_PAGE_5_FAILED = FailedPage(page=5, error="returned no text", recovered=True)
-_PAGE_3_ROW = {"page": 3, "error": "vision backend timed out", "recovered": False}
-_PAGE_5_ROW = {"page": 5, "error": "returned no text", "recovered": True}
-_PAGE_3_LINE = "page 3: vision backend timed out"
+_PAGE_3_FAILED = FailedPage.ocr(3, recovered=False)
+_PAGE_5_FAILED = FailedPage.ocr(5, recovered=True)
+_PAGE_3_ROW = {"page": 3, "error": "OCR failed", "recovered": False}
+_PAGE_5_ROW = {"page": 5, "error": "OCR failed", "recovered": True}
+_PAGE_3_LINE = "Could not read page 3 of scan.pdf: OCR failed."
 
 
 def _partly_read_doc(*pages: FailedPage, num_chunks: int = 2):
@@ -10834,13 +10833,13 @@ class TestPartlyReadFiles:
         from lilbee.data.ingest import pipeline
         from lilbee.data.types import _IngestResult
 
-        pages = [FailedPage(page=number, error="boom", recovered=False) for number in range(1, 8)]
+        pages = [FailedPage.ocr(number, recovered=False) for number in range(1, 8)]
         result = _IngestResult("scan.pdf", Path("scan.pdf"), 0, error=None, failed_pages=pages)
         reasons: dict[str, str] = {}
 
         pipeline._classify_result(result, {}, {}, {}, {}, reasons)
 
-        shown = [f"page {number}: boom" for number in range(1, 6)]
+        shown = [f"Could not read page {number} of scan.pdf: OCR failed." for number in range(1, 6)]
         assert reasons["scan.pdf"] == "; ".join(
             ["no text extracted (0 chunks)", *shown, "and 2 more"]
         )

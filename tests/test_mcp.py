@@ -371,13 +371,13 @@ class TestStatus:
         assert status()["ocr_note"] == "skipped (ocr = off)"
 
     def test_status_lists_the_partly_read_files_and_counts_them_all(self, mock_svc):
-        page = FailedPage(page=2, error="timed out", recovered=False)
+        page = FailedPage.ocr(2, recovered=False)
         mock_svc.store.source_summary.return_value = SourceSummary(0, 0, {}, [], partly_read=2)
         mock_svc.store.partly_read_sources.return_value = ({"scan.pdf": [page]}, 2)
         result = status()
         assert result["partial_total"] == 2
         assert result["partly_read"] == [
-            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "OCR failed", "recovered": False}]}
         ]
 
     def test_status_includes_entities_when_enabled(self, mock_svc):
@@ -736,7 +736,7 @@ class TestListDocuments:
         ]
         documents = list_documents()["documents"]
         assert [doc["ocr_page_failures"] for doc in documents] == [
-            [{"page": 2, "error": "timed out", "recovered": False}],
+            [{"page": 2, "error": "OCR failed", "recovered": False}],
             [],
         ]
 
@@ -1412,9 +1412,7 @@ class TestAdd:
         new_callable=AsyncMock,
         return_value=SyncResult(
             added=["scan.pdf"],
-            partial=[
-                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
-            ],
+            partial=[PartialFile("scan.pdf", [FailedPage.ocr(2, recovered=False)])],
         ),
     )
     async def test_add_reports_partly_read_files_with_a_warning(self, mock_sync, tmp_path):
@@ -1423,7 +1421,7 @@ class TestAdd:
         result = await add([str(src)])
         assert result["warning"] == "some files were partly read"
         assert result["sync"]["partial"] == [
-            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "OCR failed", "recovered": False}]}
         ]
 
     @mock.patch(
@@ -1431,9 +1429,7 @@ class TestAdd:
         new_callable=AsyncMock,
         return_value=SyncResult(
             added=["scan.pdf"],
-            partial=[
-                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
-            ],
+            partial=[PartialFile("scan.pdf", [FailedPage.ocr(2, recovered=False)])],
             failed=["bad.pdf"],
             reasons={"bad.pdf": "the file is encrypted"},
         ),
@@ -1441,7 +1437,7 @@ class TestAdd:
     async def test_sync_output_carries_partial_files_and_reasons(self, mock_sync):
         result = await sync()
         assert result["partial"] == [
-            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "OCR failed", "recovered": False}]}
         ]
         assert result["reasons"] == {"bad.pdf": "the file is encrypted"}
 

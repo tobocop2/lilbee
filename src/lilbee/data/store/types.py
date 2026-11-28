@@ -92,13 +92,29 @@ class SourceMeta(NamedTuple):
     created_at: str = ""
 
 
+class PageFailureKind(StrEnum):
+    """The kind of failure a failed page records, in lilbee's words."""
+
+    # The parser lists a page only when its OCR failed.
+    OCR = "OCR failed"
+
+
 @dataclass(frozen=True)
 class FailedPage:
-    """One page whose OCR failed; ``recovered`` when the page still has other content."""
+    """One page whose OCR failed; ``recovered`` when the page still has other content.
+
+    ``error`` names the kind of failure. The parser's own text goes to the debug log
+    where the page is extracted and never into this record.
+    """
 
     page: int
-    error: str
+    error: PageFailureKind
     recovered: bool
+
+    @classmethod
+    def ocr(cls, page: int, *, recovered: bool) -> FailedPage:
+        """A page whose OCR failed."""
+        return cls(page=page, error=PageFailureKind.OCR, recovered=recovered)
 
 
 class FailedPageRow(TypedDict):
@@ -334,7 +350,17 @@ class SourceStat(NamedTuple):
 
 def failed_pages(record: SourceRecord) -> list[FailedPage]:
     """The pages of *record* whose OCR failed; empty when the column is absent or NULL."""
-    return [FailedPage(**row) for row in record.get(FAILED_PAGES_COLUMN) or []]
+    return [failed_page_from_row(row) for row in record.get(FAILED_PAGES_COLUMN) or []]
+
+
+def failed_page_from_row(row: FailedPageRow) -> FailedPage:
+    """The failed page a stored row records.
+
+    The stored error is not read: the parser lists a page only when its OCR failed, so
+    every row gives the one kind lilbee has. A row written by an older lilbee holds the
+    parser's text there, and that text is never shown.
+    """
+    return FailedPage.ocr(row["page"], recovered=row["recovered"])
 
 
 def source_stat(record: SourceRecord) -> SourceStat | None:

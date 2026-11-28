@@ -33,7 +33,7 @@ from lilbee.cli.tui.pill import pill
 from lilbee.core.config import cfg
 from lilbee.core.text import strip_control_characters
 from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, FailedPage, SourceRecord
-from lilbee.data.types import SkippedSource, failed_page_lines
+from lilbee.data.types import SkippedSource, failed_page_messages
 from lilbee.modelhub.model_info import ModelArchInfo, get_model_architecture
 
 log = logging.getLogger(__name__)
@@ -445,7 +445,7 @@ class StatusScreen(MountWhenAttached, Screen[None]):
                 table.add_row(msg.STATUS_PARTLY_READ_EMPTY, "")
                 return
             for name, pages in docs.partly_read.items():
-                lines = failed_page_lines(pages)
+                lines = failed_page_messages(pages)
                 table.add_row(
                     Text(strip_control_characters(name)), Text("\n".join(lines)), height=len(lines)
                 )

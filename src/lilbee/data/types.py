@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from rich.highlighter import ReprHighlighter
 from rich.text import Text
 
+from lilbee.core.text import strip_control_characters
 from lilbee.core.vectors import Vector
 from lilbee.data.store import (
     ChunkType,
@@ -45,7 +46,8 @@ PARTIAL_NOTE = ": partly read"
 # Failed pages listed under one partly read file before the rest are counted.
 FAILED_PAGES_SHOWN = 5
 FAILED_PAGES_MORE = "and {count} more"
-FAILED_PAGE_LINE = "page {page}: {error}"
+FAILED_PAGE_MESSAGE = "Could not read page {page}{of_file}: {kind}{kept}."
+FAILED_PAGE_OF_FILE = " of {name}"
 # Marks a failed page that still has native text or text from an embedded image.
 FAILED_PAGE_RECOVERED = " (other text kept)"
 
@@ -311,15 +313,23 @@ class SyncResult(BaseModel):
         return ReprHighlighter()(rendered)
 
 
-def failed_page_line(page: FailedPage) -> str:
-    """One failed page as display text: its number, the error, and a mark when text was kept."""
-    line = FAILED_PAGE_LINE.format(page=page.page, error=page.error)
-    return line + FAILED_PAGE_RECOVERED if page.recovered else line
+def failed_page_message(page: FailedPage, *, name: str | None = None) -> str:
+    """The message for one failed *page*: the page, the file *name* when given, the kind.
+
+    Every surface that shows a failed page shows this message, never the parser's text.
+    A table with its own file column leaves *name* out. The name is cleaned of control
+    characters, as every file name a terminal shows.
+    """
+    kept = FAILED_PAGE_RECOVERED if page.recovered else ""
+    of_file = (
+        "" if name is None else FAILED_PAGE_OF_FILE.format(name=strip_control_characters(name))
+    )
+    return FAILED_PAGE_MESSAGE.format(page=page.page, of_file=of_file, kind=page.error, kept=kept)
 
 
-def failed_page_lines(pages: Sequence[FailedPage]) -> list[str]:
-    """One line for each of the first FAILED_PAGES_SHOWN of *pages*, then one counting the rest."""
-    shown = [failed_page_line(page) for page in pages[:FAILED_PAGES_SHOWN]]
+def failed_page_messages(pages: Sequence[FailedPage], *, name: str | None = None) -> list[str]:
+    """The message for each of the first FAILED_PAGES_SHOWN of *pages*, then a count of the rest."""
+    shown = [failed_page_message(page, name=name) for page in pages[:FAILED_PAGES_SHOWN]]
     hidden = len(pages) - len(shown)
     return [*shown, FAILED_PAGES_MORE.format(count=hidden)] if hidden else shown
 
@@ -327,7 +337,8 @@ def failed_page_lines(pages: Sequence[FailedPage]) -> list[str]:
 def _partial_lines(partial: PartialFile) -> list[list[tuple[str, str]]]:
     """A partly read file's summary lines: its name, then its failed pages."""
     lines = [[("  ", ""), (partial.name, "yellow"), (PARTIAL_NOTE, "")]]
-    lines += [[("    ", ""), (line, "")] for line in failed_page_lines(partial.pages)]
+    messages = failed_page_messages(partial.pages, name=partial.name)
+    lines += [[("    ", ""), (line, "")] for line in messages]
     return lines
 
 
