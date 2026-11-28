@@ -58,13 +58,17 @@ def test_links_cuda_runtime_false_when_ldd_absent(monkeypatch: pytest.MonkeyPatc
     assert cuda_runtime._links_cuda_runtime(Path("/bin/llama-server"), {}) is False
 
 
-def test_cuda_runtime_env_keeps_unrelated_existing_path(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cuda_runtime_env_keeps_unrelated_existing_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     _force_linux(monkeypatch)
+    _ldd_returns(monkeypatch, _LINKS_CUDA)
+    binary = _engine_dir(tmp_path)
     wheel = Path("/wheel/lib")
     monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [wheel])
     monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/local/lib")
-    result = cuda_runtime.cuda_runtime_env()["LD_LIBRARY_PATH"]
-    assert result == cuda_runtime.os.pathsep.join([str(wheel), "/usr/local/lib"])
+    result = cuda_runtime.cuda_runtime_env(binary)["LD_LIBRARY_PATH"]
+    assert result == cuda_runtime.os.pathsep.join([str(tmp_path), str(wheel), "/usr/local/lib"])
 
 
 def test_assert_devices_noop_off_linux(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -125,34 +129,47 @@ def test_assert_devices_raises_with_engine_diagnostic(monkeypatch: pytest.Monkey
 def test_runtime_env_empty_off_linux(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cuda_runtime.sys, "platform", "darwin")
     monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [Path("/wheel/lib")])
-    assert cuda_runtime_env() == {}
+    assert cuda_runtime_env(Path("/b/llama-server")) == {}
 
 
-def test_runtime_env_empty_when_no_wheels(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_env_is_only_the_binary_folder_when_no_wheels(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     _force_linux(monkeypatch)
+    _ldd_returns(monkeypatch, _LINKS_CUDA)
+    binary = _engine_dir(tmp_path)
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
     monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [])
-    assert cuda_runtime_env() == {}
+    assert cuda_runtime_env(binary) == {"LD_LIBRARY_PATH": str(tmp_path)}
 
 
 def test_runtime_env_sets_wheel_dirs_without_existing_path(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _force_linux(monkeypatch)
+    _ldd_returns(monkeypatch, _LINKS_CUDA)
+    binary = _engine_dir(tmp_path)
     monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
     dirs = [Path("/a/lib"), Path("/b/lib")]
     monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: dirs)
     # os.pathsep / str(Path) keep this host-agnostic (':' vs ';', / vs \).
-    assert cuda_runtime_env() == {"LD_LIBRARY_PATH": os.pathsep.join(str(d) for d in dirs)}
+    assert cuda_runtime_env(binary) == {
+        "LD_LIBRARY_PATH": os.pathsep.join([str(tmp_path), *(str(d) for d in dirs)])
+    }
 
 
-def test_runtime_env_prepends_wheel_dirs_before_existing_path(
-    monkeypatch: pytest.MonkeyPatch,
+def test_runtime_env_puts_wheel_dirs_before_existing_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _force_linux(monkeypatch)
+    _ldd_returns(monkeypatch, _LINKS_CUDA)
+    binary = _engine_dir(tmp_path)
     monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/lib")
     lib = Path("/a/lib")
     monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [lib])
-    assert cuda_runtime_env() == {"LD_LIBRARY_PATH": os.pathsep.join([str(lib), "/usr/lib"])}
+    assert cuda_runtime_env(binary) == {
+        "LD_LIBRARY_PATH": os.pathsep.join([str(tmp_path), str(lib), "/usr/lib"])
+    }
 
 
 def test_wheel_lib_dir_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
