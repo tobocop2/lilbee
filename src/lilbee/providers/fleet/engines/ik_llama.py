@@ -185,8 +185,8 @@ class IkLlamaAdapter:
     def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         LLAMA.assert_loadable(repo, filename, token)
 
-    def runtime_env(self) -> Mapping[str, str]:
-        return LLAMA.runtime_env()
+    def runtime_env(self, binary: Path) -> Mapping[str, str]:
+        return LLAMA.runtime_env(binary)
 
     def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
         return LLAMA.target_env(target, cards)

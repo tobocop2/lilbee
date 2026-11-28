@@ -110,7 +110,7 @@ def test_a1_a_gpu_target_sets_the_gpu_device_and_keeps_the_llama_form(both_devic
 
 
 def test_a1_the_device_is_not_in_the_shared_environment() -> None:
-    assert OPENVINO.runtime_env() == {}
+    assert OPENVINO.runtime_env(Path("/b/server")) == {}
 
 
 INTEL = 0x8086

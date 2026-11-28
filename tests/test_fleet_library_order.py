@@ -87,13 +87,6 @@ class TestTheEngineDirectoryComesFirst:
 
         assert path == [str(engine), str(wheel), "/opt/mine"]
 
-    def test_without_a_binary_the_old_wheel_only_answer_stands(self, monkeypatch, tmp_path) -> None:
-        # Callers that have no binary to reason about still get the wheel dirs.
-        wheel = tmp_path / "wheel-lib"
-        wheel.mkdir()
-        monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [wheel])
-        assert cuda_runtime.cuda_runtime_env()["LD_LIBRARY_PATH"].startswith(str(wheel))
-
 
 class TestAnUnreadableEngineDirectory:
     """A directory the process cannot list is not a reason to fail a launch."""

@@ -503,7 +503,7 @@ def test_other_probes_of_the_adapter_answer_without_a_server(tmp_path: Path) -> 
     assert TEI.supports_architecture("bert")
     assert TEI.model_meta(tmp_path) is None
     assert TEI.assert_loadable("org/repo", "file", None) is None
-    assert TEI.runtime_env() == {}
+    assert TEI.runtime_env(Path("/b/server")) == {}
     assert not TEI.check_readback(tmp_path)
     assert not TEI.supports_fit_target(tmp_path)
     assert not TEI.supports_shared_kv(tmp_path)

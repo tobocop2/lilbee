@@ -253,16 +253,13 @@ class OvmsAdapter:
     def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         return None
 
-    def runtime_env(self) -> Mapping[str, str]:
+    def runtime_env(self, binary: Path) -> Mapping[str, str]:
         """``ovms/lib`` on ``LD_LIBRARY_PATH``: the binary finds ``libtbb`` only through it.
 
         The release archive holds ``ovms/bin/ovms`` beside ``ovms/lib``. A value already set
         stays after the new folder. Nothing is added when there is no ``lib`` folder.
         """
-        tool = self.user_binary()
-        if tool is None:
-            return {}
-        lib = tool.resolve().parent.parent / "lib"
+        lib = binary.resolve().parent.parent / "lib"
         if not lib.is_dir():
             return {}
         existing = os.environ.get(_LIBRARY_PATH_VAR, "")

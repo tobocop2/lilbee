@@ -77,7 +77,7 @@ def test_the_fixed_answers_of_the_contract(adapter) -> None:
     assert adapter.supports_fit_target(BINARY) is False
     assert adapter.supports_shared_kv(BINARY) is False
     assert adapter.assert_loadable("repo", "file.gguf", None) is None
-    assert adapter.runtime_env() == {}
+    assert adapter.runtime_env(BINARY) == {}
     assert adapter.request_profile(WorkerRole.CHAT).label
 
 

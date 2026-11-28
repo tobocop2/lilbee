@@ -65,7 +65,9 @@ def _llama_launch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, plan: Instanc
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
     monkeypatch.setattr(planning, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
-    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.llama_server_runtime_env", dict)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.llama_server_runtime_env", lambda binary: {}
+    )
     card = FleetDevice("CUDA", 0, "gpu0", 24 * GIB, 23 * GIB)
     return planning._launch_for(plan, "ref", {0: card}, engine=engine)
 
@@ -865,7 +867,9 @@ class TestSelfCheckUsesTheRoleTarget:
             "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
         )
         monkeypatch.setattr(planning, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
-        monkeypatch.setattr("lilbee.providers.fleet.engines.llama.llama_server_runtime_env", dict)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.llama_server_runtime_env", lambda binary: {}
+        )
         monkeypatch.setattr(
             planning, "_peak_estimator", lambda *_a: lambda _r, ratio: (1,) * len(ratio)
         )

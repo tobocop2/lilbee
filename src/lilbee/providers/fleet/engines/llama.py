@@ -327,8 +327,8 @@ class LlamaCppAdapter:
     def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         assert_engine_can_load(repo, filename, token)
 
-    def runtime_env(self) -> Mapping[str, str]:
-        return llama_server_runtime_env()
+    def runtime_env(self, binary: Path) -> Mapping[str, str]:
+        return llama_server_runtime_env(binary)
 
     def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
         return {}

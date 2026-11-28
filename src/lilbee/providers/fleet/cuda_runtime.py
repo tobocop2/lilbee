@@ -84,8 +84,8 @@ def _dir_entries(directory: Path) -> list[Path]:
         return []
 
 
-def cuda_runtime_env(binary: Path | None = None) -> dict[str, str]:
-    """``LD_LIBRARY_PATH`` for running *binary*, or empty when there is nothing to add.
+def cuda_runtime_env(binary: Path) -> dict[str, str]:
+    """``LD_LIBRARY_PATH`` for running *binary*: always its own folder, empty only off Linux.
 
     Ordering, which matters more than it looks: the binary's own directory, then
     any CUDA-runtime wheel directories, then whatever the caller already had.
@@ -97,24 +97,17 @@ def cuda_runtime_env(binary: Path | None = None) -> dict[str, str]:
     Wheel directories are added only for a CUDA build (it links CUDA or ships the
     CUDA backend module beside itself) that does not already carry its own runtime.
     A Vulkan or CPU build has no use for them, and putting them on its path only
-    gives an unrelated install a way to interfere. Without a *binary* to reason
-    about, the wheel directories are returned as before.
+    gives an unrelated install a way to interfere.
 
     Empty off Linux, where neither the wheels nor ``LD_LIBRARY_PATH`` apply.
     """
     if not sys.platform.startswith("linux"):
         return {}
-    parts: list[str] = []
-    if binary is not None:
-        parts.append(str(binary.parent))
-        wants_wheels = _is_cuda_build(binary, dict(os.environ)) and not (
-            _ships_its_own_cuda_runtime(binary)
-        )
-    else:
-        wants_wheels = True
+    parts = [str(binary.parent)]
+    wants_wheels = _is_cuda_build(binary, dict(os.environ)) and not (
+        _ships_its_own_cuda_runtime(binary)
+    )
     dirs = _cuda_wheel_lib_dirs() if wants_wheels else []
-    if not parts and not dirs:
-        return {}
     parts += [str(d) for d in dirs]
     # Drop existing entries that are already wheel dirs so an inherited path that
     # already carries them does not gain duplicate copies in each spawned server's

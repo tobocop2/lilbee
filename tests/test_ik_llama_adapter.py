@@ -583,7 +583,7 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
     IK_LLAMA.identity(path)
     IK_LLAMA.model_meta(path)
     IK_LLAMA.assert_loadable("repo", "file", None)
-    IK_LLAMA.runtime_env()
+    IK_LLAMA.runtime_env(path)
     IK_LLAMA.target_env(RoleTarget.CPU, 0)
     IK_LLAMA.estimate_memory(
         MemoryRequest(
@@ -612,6 +612,21 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
         "supports_shared_kv",
         "swap_extras",
     ]
+
+
+def test_the_adapter_gives_llama_cpp_the_binary_the_server_will_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Path] = []
+
+    def spy(self: Any, binary: Path) -> dict[str, str]:
+        seen.append(binary)
+        return {}
+
+    monkeypatch.setattr(type(LLAMA), "runtime_env", spy)
+    binary = Path("/b/ik-server")
+    IK_LLAMA.runtime_env(binary)
+    assert seen == [binary]
 
 
 def _nvidia_host(

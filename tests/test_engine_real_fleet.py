@@ -78,7 +78,7 @@ class _Gguf(BundledFakeAdapter):
     def supports_shared_kv(self, binary: Path) -> bool:
         return False
 
-    def runtime_env(self) -> dict[str, str]:
+    def runtime_env(self, binary: Path) -> dict[str, str]:
         return {}
 
     def target_env(self, target, cards):
