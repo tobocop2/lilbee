@@ -279,13 +279,29 @@ def test_a_cuda_build_keeps_the_weights_plus_allowance_charge_for_a_large_vocabu
     )
 
 
-def test_a_cuda_build_holds_float32_weights_as_float16(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("gpu", [L4, A100], ids=["sm89", "sm80"])
+@pytest.mark.parametrize(
+    ("data_bytes", "config", "halved"),
+    [
+        ({"F32": 3_000}, {}, 1_500),
+        ({"F32": 3_000}, {"torch_dtype": "float16"}, 1_500),
+        ({"F16": 3_000}, {"torch_dtype": "float32"}, 0),
+        ({"F32": 2_000, "F16": 1_000}, {}, 1_000),
+    ],
+    ids=["f32-no-dtype", "f32-float16-config", "f16-float32-config", "mixed"],
+)
+def test_a_newer_cuda_build_holds_the_float32_bytes_of_the_header_as_float16(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    gpu: tuple[str, tuple[int, int]],
+    data_bytes: dict[str, int],
+    config: dict[str, Any],
+    halved: int,
 ) -> None:
-    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=L4))
-    folder = _encoder_folder(tmp_path, 4_000, "float32")
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=gpu))
+    folder, size = _mixed_encoder_folder(tmp_path, data_bytes, config)
     assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
-        2_000 + ENCODER_RUNTIME_BYTES
+        size - halved + ENCODER_RUNTIME_BYTES
     )
 
 
@@ -378,16 +394,6 @@ def test_the_planner_launch_for_a_role_carries_the_dtype_of_the_build(
     folder = _encoder_folder(tmp_path, 64, None)
     argv = planning.build_single_role_launch(role, folder, engine=TEI).argv
     assert [argv[i + 1] for i, word in enumerate(argv[:-1]) if word == "--dtype"] == flags
-
-
-def test_a_newer_cuda_build_still_halves_a_float32_checkpoint(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=A100))
-    folder = _encoder_folder(tmp_path, 4_000, "float32")
-    assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
-        2_000 + ENCODER_RUNTIME_BYTES
-    )
 
 
 def _small_card_roles(

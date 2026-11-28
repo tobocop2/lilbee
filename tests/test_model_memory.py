@@ -312,16 +312,15 @@ class TestInstalledConfig:
 
 
 class TestInstalledEncoder:
-    @pytest.mark.parametrize("key", ["torch_dtype", "dtype"])
-    def test_a_float32_config_halves_the_weights_when_narrowing(
-        self, key: str, tmp_path: Path
+    def test_a_float32_tensor_counts_at_half_size_only_on_the_float16_build(
+        self, tmp_path: Path
     ) -> None:
-        _write(tmp_path, "model.safetensors", 4000)
-        (tmp_path / "config.json").write_text(f'{{"{key}": "float32"}}', encoding="utf-8")
+        blob = safetensors_mixed_bytes({"F32": 3000})
+        (tmp_path / "model.safetensors").write_bytes(blob)
         narrow = mm.estimate_installed_encoder(tmp_path, charge=_HALF)
         plain = mm.estimate_installed_encoder(tmp_path, charge=_VOCAB)
-        assert narrow.device_bytes == 2000 + mm.ENCODER_RUNTIME_BYTES
-        assert plain.device_bytes == _large_vocab_charge(4000)
+        assert narrow.device_bytes == len(blob) - 1500 + mm.ENCODER_RUNTIME_BYTES
+        assert plain.device_bytes == _large_vocab_charge(len(blob))
 
     @pytest.mark.parametrize(
         ("data_bytes", "doubled"),
@@ -379,31 +378,63 @@ class TestInstalledEncoder:
         estimate = mm.estimate_installed_encoder(tmp_path, charge=_FULL)
         assert (estimate.device_bytes, estimate.size_known) == (RESERVE, False)
 
-    def test_halving_an_odd_float32_size_keeps_whole_bytes(self, tmp_path: Path) -> None:
-        _write(tmp_path, "model.safetensors", 4001)
-        (tmp_path / "config.json").write_text('{"torch_dtype": "float32"}', encoding="utf-8")
-        estimate = mm.estimate_installed_encoder(tmp_path, charge=_HALF)
-        assert estimate.device_bytes == 2000 + mm.ENCODER_RUNTIME_BYTES
-
-    def test_a_float32_text_section_halves_the_weights_when_narrowing(self, tmp_path: Path) -> None:
-        _write(tmp_path, "model.safetensors", 4000)
-        (tmp_path / "config.json").write_text(
-            '{"text_config": {"torch_dtype": "float32"}}', encoding="utf-8"
-        )
-        assert mm.estimate_installed_encoder(tmp_path, charge=_HALF).device_bytes == (
-            2000 + mm.ENCODER_RUNTIME_BYTES
-        )
-
-    @pytest.mark.parametrize("config", ['{"torch_dtype": "bfloat16"}', "{}", None])
-    def test_a_config_that_is_not_float32_leaves_the_weights_whole(
-        self, config: str | None, tmp_path: Path
+    @pytest.mark.parametrize(
+        ("data_bytes", "halved"),
+        [
+            ({"F32": 3000}, 1500),
+            ({"F32": 3001}, 1500),
+            ({"F16": 3000}, 0),
+            ({"BF16": 3000}, 0),
+            ({"U8": 3000}, 0),
+            ({"F32": 2000, "F16": 1000, "I64": 100}, 1000),
+        ],
+        ids=["float32", "odd-float32", "float16", "bfloat16", "bytes", "mixed"],
+    )
+    def test_a_build_that_loads_float16_halves_the_float32_bytes_of_the_header(
+        self, tmp_path: Path, data_bytes: dict[str, int], halved: int
     ) -> None:
-        _write(tmp_path, "model.safetensors", 4000)
-        if config is not None:
-            (tmp_path / "config.json").write_text(config, encoding="utf-8")
-        assert mm.estimate_installed_encoder(tmp_path, charge=_HALF).device_bytes == (
-            4000 + mm.ENCODER_RUNTIME_BYTES
-        )
+        blob = safetensors_mixed_bytes(data_bytes)
+        (tmp_path / "model.safetensors").write_bytes(blob)
+        estimate = mm.estimate_installed_encoder(tmp_path, charge=_HALF)
+        assert estimate.device_bytes == len(blob) - halved + mm.ENCODER_RUNTIME_BYTES
+
+    @pytest.mark.parametrize(
+        ("data_bytes", "config", "halved"),
+        [
+            ({"F32": 3000}, "{}", 1500),
+            ({"F32": 3000}, '{"torch_dtype": "float16"}', 1500),
+            ({"F32": 3000}, '{"text_config": {"torch_dtype": "bfloat16"}}', 1500),
+            ({"F16": 3000}, '{"torch_dtype": "float32"}', 0),
+            ({"BF16": 3000}, '{"dtype": "float32"}', 0),
+            ({"F16": 3000}, '{"text_config": {"torch_dtype": "float32"}}', 0),
+        ],
+        ids=[
+            "f32-empty-config",
+            "f32-float16-config",
+            "f32-bfloat16-text-config",
+            "f16-float32-config",
+            "bf16-float32-config",
+            "f16-float32-text-config",
+        ],
+    )
+    def test_a_build_that_loads_float16_ignores_the_config_dtype(
+        self, tmp_path: Path, data_bytes: dict[str, int], config: str, halved: int
+    ) -> None:
+        blob = safetensors_mixed_bytes(data_bytes)
+        (tmp_path / "model.safetensors").write_bytes(blob)
+        (tmp_path / "config.json").write_text(config, encoding="utf-8")
+        estimate = mm.estimate_installed_encoder(tmp_path, charge=_HALF)
+        assert estimate.device_bytes == len(blob) - halved + mm.ENCODER_RUNTIME_BYTES
+
+    def test_a_build_that_loads_float16_sums_the_float32_bytes_of_every_shard(
+        self, tmp_path: Path
+    ) -> None:
+        first = safetensors_mixed_bytes({"F32": 1000})
+        second = safetensors_mixed_bytes({"F32": 600, "F16": 400})
+        (tmp_path / "model-00001-of-00002.safetensors").write_bytes(first)
+        (tmp_path / "model-00002-of-00002.safetensors").write_bytes(second)
+        estimate = mm.estimate_installed_encoder(tmp_path, charge=_HALF)
+        assert estimate.device_bytes == (len(first) + len(second) - 800 + mm.ENCODER_RUNTIME_BYTES)
 
     @pytest.mark.parametrize(
         ("vocab", "charge"),
