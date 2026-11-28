@@ -187,3 +187,55 @@ class TestAWriteChangesAValueOfAnotherTypeThatComparesEqual:
         path.write_text(before, encoding="utf-8")
         settings.save(tmp_path, {"key": [1, 2], "other": "x"})
         assert path.read_text(encoding="utf-8") == before
+
+
+class TestAnEmptyTableIsWritten:
+    """An empty table holds its key; a table that only holds subtables is not written then."""
+
+    @pytest.mark.parametrize(
+        "held",
+        ["[a.b]\nx = 1\n", "[a]\n[a.b]\nx = 1\n", "[a]\ny = 2\n"],
+    )
+    def test_over_a_table_that_holds_keys(self, tmp_path: Path, held: str) -> None:
+        (tmp_path / "config.toml").write_text(held, encoding="utf-8")
+        settings.save(tmp_path, {"a": {}})
+        assert tomllib.loads(_text(tmp_path)) == {"a": {}}
+
+    def test_inside_a_table(self, tmp_path: Path) -> None:
+        (tmp_path / "config.toml").write_text("[a.b.c]\nx = 1\n", encoding="utf-8")
+        settings.save(tmp_path, {"a": {"b": {}}})
+        assert tomllib.loads(_text(tmp_path)) == {"a": {"b": {}}}
+
+    def test_over_an_empty_table_leaves_the_file_bytes(self, tmp_path: Path) -> None:
+        (tmp_path / "config.toml").write_text("[a]  # note\n", encoding="utf-8")
+        before = (tmp_path / "config.toml").read_bytes()
+        settings.save(tmp_path, {"a": {}})
+        assert (tmp_path / "config.toml").read_bytes() == before
+
+
+class TestTheFileKeepsItsLineEnds:
+    """A write keeps the line end the file uses; a file with mixed line ends gets LF."""
+
+    def test_a_write_of_the_value_a_key_has_leaves_crlf_bytes(self, tmp_path: Path) -> None:
+        before = CORPUS.replace("\n", "\r\n").encode()
+        (tmp_path / "config.toml").write_bytes(before)
+        settings.set_value(tmp_path, "alpha", "x")
+        assert (tmp_path / "config.toml").read_bytes() == before
+
+    def test_a_changed_and_a_new_key_use_crlf(self, tmp_path: Path) -> None:
+        (tmp_path / "config.toml").write_bytes(CORPUS.replace("\n", "\r\n").encode())
+        settings.update_values(tmp_path, {"alpha": "y", "new_key": 2})
+        raw = (tmp_path / "config.toml").read_bytes()
+        assert raw.count(b"\n") == raw.count(b"\r\n")
+        assert b'alpha = "y"\r\n' in raw
+        assert b"new_key = 2\r\n" in raw
+        _assert_comments_and_order(raw.decode())
+
+    def test_a_file_with_mixed_line_ends_gets_lf(self, tmp_path: Path) -> None:
+        (tmp_path / "config.toml").write_bytes(b"a = 1\r\nb = 2\n")
+        settings.set_value(tmp_path, "c", 3)
+        assert (tmp_path / "config.toml").read_bytes() == b"a = 1\nb = 2\nc = 3\n"
+
+    def test_a_new_file_gets_lf(self, tmp_path: Path) -> None:
+        settings.set_value(tmp_path, "c", 3)
+        assert (tmp_path / "config.toml").read_bytes() == b"c = 3\n"
