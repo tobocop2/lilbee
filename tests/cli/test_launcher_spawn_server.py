@@ -330,6 +330,34 @@ def test_windows_stop_kills_serve_when_ctrl_break_cannot_be_sent(monkeypatch) ->
     proc.wait.assert_called_once_with(timeout=server_mod._KILL_GRACE_S)
 
 
+def test_stop_returns_and_warns_when_child_outlives_sigkill(monkeypatch, caplog) -> None:
+    """A child stuck past SIGKILL (uninterruptible sleep) must not raise out of stop."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    proc = mock.MagicMock()
+    proc.pid = 4242
+    proc.poll.return_value = None
+    proc.wait.side_effect = [
+        subprocess.TimeoutExpired(cmd="x", timeout=server_mod._TERMINATE_GRACE_S),
+        subprocess.TimeoutExpired(cmd="x", timeout=server_mod._KILL_GRACE_S),
+    ]
+    with caplog.at_level("WARNING", logger=server_mod.log.name):
+        server_mod.stop_spawned_server(proc)
+    proc.kill.assert_called_once()
+    assert "4242" in caplog.text
+
+
+def test_stop_is_quiet_when_child_is_reaped_after_sigkill(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    proc = mock.MagicMock()
+    proc.pid = 4242
+    proc.poll.return_value = None
+    proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="x", timeout=1), None]
+    with caplog.at_level("WARNING", logger=server_mod.log.name):
+        server_mod.stop_spawned_server(proc)
+    proc.kill.assert_called_once()
+    assert caplog.text == ""
+
+
 def test_quiet_mode_routes_output_to_devnull(monkeypatch, _capture_popen) -> None:
     monkeypatch.setenv("LILBEE_LAUNCHER_SERVE_QUIET", "1")
     server_mod.spawn_server(8080)
