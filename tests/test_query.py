@@ -52,6 +52,7 @@ from lilbee.retrieval.query.searcher import (
     SEARCH_NEEDS_EMBEDDER,
     QueryMode,
 )
+from tests._clock import needs_tzset
 from tests._crafted_titles import (
     CONTROL_TITLES,
     CRAFTED_SOURCE,
@@ -827,8 +828,8 @@ class TestExpandQuery:
         mock_svc.provider.chat.return_value = _text_result(
             "explain how X works in detail\nexplain the purpose of X"
         )
-        variants = get_services().searcher._expand_query(
-            "explain X in detail", self._QUESTION_VEC, []
+        variants = _expand_query(
+            get_services().searcher, "explain X in detail", self._QUESTION_VEC, []
         )
         assert len(variants) == 2
         for text, vec in variants:
@@ -857,8 +858,8 @@ class TestExpandQuery:
 
     def test_caps_at_three(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("A\nB\nC\nD\nE")
-        variants = get_services().searcher._expand_query(
-            "explain how kubernetes pods schedule", self._QUESTION_VEC, []
+        variants = _expand_query(
+            get_services().searcher, "explain how kubernetes pods schedule", self._QUESTION_VEC, []
         )
         assert len(variants) == 3
 
@@ -892,15 +893,18 @@ class TestExpandQuery:
     def test_returns_empty_on_error(self, mock_svc):
         mock_svc.provider.chat.side_effect = RuntimeError("no provider")
         assert (
-            get_services().searcher._expand_query(
-                "explain how kubernetes pods schedule", self._QUESTION_VEC, []
+            _expand_query(
+                get_services().searcher,
+                "explain how kubernetes pods schedule",
+                self._QUESTION_VEC,
+                [],
             )
             == []
         )
 
     def test_disabled_when_count_zero(self, mock_svc):
         cfg.query_expansion_count = 0
-        assert get_services().searcher._expand_query("anything", self._QUESTION_VEC, []) == []
+        assert _expand_query(get_services().searcher, "anything", self._QUESTION_VEC, []) == []
         cfg.query_expansion_count = 3
 
     def test_count_zero_still_runs_concept_expansion_when_enabled(self, mock_svc):
@@ -915,7 +919,7 @@ class TestExpandQuery:
         mock_svc.concepts.get_graph.return_value = True
         mock_svc.concepts.expand_query.return_value = ["kubernetes"]
         try:
-            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC, [])
+            variants = _expand_query(get_services().searcher, "k8s", self._QUESTION_VEC, [])
             assert [text for text, _ in variants] == ["kubernetes"]
             mock_svc.provider.chat.assert_not_called()
         finally:
@@ -928,7 +932,7 @@ class TestExpandQuery:
         old = cfg.query_expansion_count
         cfg.query_expansion_count = 0
         try:
-            assert get_services().searcher._expand_query("q", self._QUESTION_VEC, []) == []
+            assert _expand_query(get_services().searcher, "q", self._QUESTION_VEC, []) == []
             mock_svc.provider.chat.assert_not_called()
             mock_svc.embedder.embed_query_batch.assert_not_called()
         finally:
@@ -937,8 +941,8 @@ class TestExpandQuery:
     def test_returns_empty_on_non_string(self, mock_svc):
         mock_svc.provider.chat.return_value = iter(["stream"])
         assert (
-            get_services().searcher._expand_query(
-                "kubernetes scheduling internals", self._QUESTION_VEC, []
+            _expand_query(
+                get_services().searcher, "kubernetes scheduling internals", self._QUESTION_VEC, []
             )
             == []
         )
@@ -947,20 +951,20 @@ class TestExpandQuery:
         # 1-token query is below the default threshold of 2, so LLM expansion
         # should not fire. Concept-graph is off in this test, so the result is [].
         mock_svc.provider.chat.return_value = _text_result("should not be reached")
-        assert get_services().searcher._expand_query("k8s", self._QUESTION_VEC, []) == []
+        assert _expand_query(get_services().searcher, "k8s", self._QUESTION_VEC, []) == []
         mock_svc.provider.chat.assert_not_called()
 
     def test_skips_llm_at_threshold_boundary(self, mock_svc):
         # 2-token query == threshold; ≤ short_threshold means skip.
         mock_svc.provider.chat.return_value = _text_result("should not be reached")
-        assert get_services().searcher._expand_query("k8s pods", self._QUESTION_VEC, []) == []
+        assert _expand_query(get_services().searcher, "k8s pods", self._QUESTION_VEC, []) == []
         mock_svc.provider.chat.assert_not_called()
 
     def test_runs_llm_above_threshold(self, mock_svc):
         # 3-token query > threshold; LLM expansion runs.
         mock_svc.provider.chat.return_value = _text_result("v one\nv two")
-        variants = get_services().searcher._expand_query(
-            "kubernetes scheduling internals", self._QUESTION_VEC, []
+        variants = _expand_query(
+            get_services().searcher, "kubernetes scheduling internals", self._QUESTION_VEC, []
         )
         assert len(variants) == 2
         mock_svc.provider.chat.assert_called_once()
@@ -969,7 +973,7 @@ class TestExpandQuery:
         # "R" is query content, so a 3-token query with a single-character
         # subject runs LLM expansion instead of skipping as short.
         mock_svc.provider.chat.return_value = _text_result("v one\nv two")
-        variants = get_services().searcher._expand_query("R intro guide", self._QUESTION_VEC, [])
+        variants = _expand_query(get_services().searcher, "R intro guide", self._QUESTION_VEC, [])
         assert len(variants) == 2
         mock_svc.provider.chat.assert_called_once()
 
@@ -978,7 +982,7 @@ class TestExpandQuery:
         cfg.expansion_short_query_tokens = 0
         mock_svc.provider.chat.return_value = _text_result("v one\nv two")
         try:
-            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC, [])
+            variants = _expand_query(get_services().searcher, "k8s", self._QUESTION_VEC, [])
             assert len(variants) == 2
             mock_svc.provider.chat.assert_called_once()
         finally:
@@ -991,7 +995,7 @@ class TestExpandQuery:
         mock_svc.concepts.get_graph.return_value = True
         mock_svc.concepts.expand_query.return_value = ["kubernetes"]
         try:
-            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC, [])
+            variants = _expand_query(get_services().searcher, "k8s", self._QUESTION_VEC, [])
             assert [text for text, _ in variants] == ["kubernetes"]
             mock_svc.provider.chat.assert_not_called()
         finally:
@@ -1002,8 +1006,8 @@ class TestExpandQuery:
         mock_svc.provider.chat.return_value = _text_result(
             "variant one\nvariant two\nvariant three"
         )
-        get_services().searcher._expand_query(
-            "kubernetes scheduling internals", self._QUESTION_VEC, []
+        _expand_query(
+            get_services().searcher, "kubernetes scheduling internals", self._QUESTION_VEC, []
         )
         assert mock_svc.embedder.embed_query_batch.call_count >= 1
         batch_call_args = mock_svc.embedder.embed_query_batch.call_args_list[0].args[0]
@@ -1021,8 +1025,8 @@ class TestExpandQuery:
         mock_svc.concepts.expand_query.return_value = ["kubernetes", "scheduling"]
         mock_svc.provider.chat.return_value = _text_result("restate one\nrestate two")
         try:
-            get_services().searcher._expand_query(
-                "kubernetes scheduling internals", self._QUESTION_VEC, []
+            _expand_query(
+                get_services().searcher, "kubernetes scheduling internals", self._QUESTION_VEC, []
             )
         finally:
             cfg.concept_graph = old_concept
@@ -2256,6 +2260,16 @@ def _engine_changed_error() -> EmbeddingEngineChangedError:
     )
 
 
+def _expand_query(searcher, question, question_vec, degraded):
+    llm = searcher._llm_query_variants(question, question_vec, degraded)
+    return [*llm, *searcher._concept_query_expansion(question, degraded)]
+
+
+def _merge_hyde(searcher, question, results, seen, top_k, chunk_type, degraded):
+    hits = searcher._hyde_rows(question, top_k, chunk_type, degraded)
+    searcher._append_unseen(hits, results, seen, cfg.hyde_weight)
+
+
 class TestHydeSearch:
     def test_returns_results(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("hypothetical document about X")
@@ -2371,7 +2385,7 @@ class TestHydeSearch:
     def test_blend_skip_logs_the_failure_at_warning_and_the_trace_at_debug(self, mock_svc, caplog):
         mock_svc.provider.chat.side_effect = ProviderError("chat engine is down")
         with caplog.at_level("DEBUG", logger="lilbee.retrieval.query.searcher"):
-            get_services().searcher._merge_hyde_results("vague question", [], set(), 5, None, [])
+            _merge_hyde(get_services().searcher, "vague question", [], set(), 5, None, [])
         warning = next(r for r in caplog.records if r.levelname == "WARNING")
         assert warning.getMessage() == ("HyDE widening disabled for this call: chat engine is down")
         trace = next(r for r in caplog.records if r.levelname == "DEBUG")
@@ -2382,7 +2396,7 @@ class TestHydeSearch:
     def test_blend_asks_for_the_question_with_the_caller_depth(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("a passage")
         mock_svc.store.search.return_value = []
-        get_services().searcher._merge_hyde_results("vague question", [], set(), 9, None, [])
+        _merge_hyde(get_services().searcher, "vague question", [], set(), 9, None, [])
         content = mock_svc.provider.chat.call_args.args[0][0]["content"]
         assert content == cfg.hyde_prompt.format(question="vague question")
         assert mock_svc.store.search.call_args.kwargs["top_k"] == 9
@@ -2398,7 +2412,7 @@ class TestHydeSearch:
         ]
         results = [direct]
         seen = {("direct.md", 0)}
-        get_services().searcher._merge_hyde_results("vague question", results, seen, 5, None, [])
+        _merge_hyde(get_services().searcher, "vague question", results, seen, 5, None, [])
         assert [(r.source, r.chunk_index) for r in results] == [
             ("direct.md", 0),
             ("new.md", 1),
@@ -2479,7 +2493,13 @@ class TestHydeSearch:
             mock_svc.provider.chat.side_effect = error
             mock_svc.store.search.return_value = direct
         else:
-            mock_svc.store.search.side_effect = [direct, error]
+
+            def search(*args, query_text=None, **kwargs):
+                if query_text is None:
+                    raise error
+                return direct
+
+            mock_svc.store.search.side_effect = search
         with (
             mock.patch.object(cfg, "hyde", True),
             mock.patch.object(cfg, "query_expansion_count", 0),
@@ -2497,9 +2517,9 @@ class TestTemporalFilter:
         from datetime import UTC, datetime, timedelta
 
         recent = (datetime.now(UTC) - timedelta(days=5)).isoformat()
-        mock_svc.store.ingested_at_of.return_value = {
-            "old.md": "2020-01-01T00:00:00+00:00",
-            "new.md": recent,
+        mock_svc.store.dates_of.return_value = {
+            "old.md": ("", "2020-01-01T00:00:00+00:00"),
+            "new.md": ("", recent),
         }
         results = [
             _make_result(source="old.md"),
@@ -2511,7 +2531,7 @@ class TestTemporalFilter:
 
     def test_result_without_ingested_at_passes_through(self, mock_svc):
         """Sources absent from the ingested_at map are kept (no date info = don't filter)."""
-        mock_svc.store.ingested_at_of.return_value = {}
+        mock_svc.store.dates_of.return_value = {}
         results = [_make_result(source="mystery.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "recent changes")
         assert [r.source for r in filtered] == ["mystery.md"]
@@ -2564,22 +2584,140 @@ class TestTemporalFilter:
             cfg.temporal_filtering = old
 
     def test_keeps_results_without_dates(self, mock_svc):
-        mock_svc.store.ingested_at_of.return_value = {"a.md": ""}
+        mock_svc.store.dates_of.return_value = {"a.md": ("", "")}
         results = [_make_result(source="a.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "today's notes")
         assert len(filtered) == 1
 
     def test_falls_back_when_nothing_matches(self, mock_svc):
-        mock_svc.store.ingested_at_of.return_value = {"old.md": "2020-01-01T00:00:00+00:00"}
+        mock_svc.store.dates_of.return_value = {"old.md": ("", "2020-01-01T00:00:00+00:00")}
         results = [_make_result(source="old.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "today's notes")
         assert len(filtered) == 1
 
+    def test_created_at_beats_ingest_time(self, mock_svc):
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime.now(UTC)
+        mock_svc.store.dates_of.return_value = {
+            "fresh.md": (
+                (now - timedelta(days=3)).isoformat(),
+                (now - timedelta(days=400)).isoformat(),
+            ),
+            "stale.md": (
+                (now - timedelta(days=400)).isoformat(),
+                (now - timedelta(days=1)).isoformat(),
+            ),
+        }
+        results = [_make_result(source="fresh.md"), _make_result(source="stale.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "what changed recently")
+        assert [r.source for r in filtered] == ["fresh.md"]
+
+    def test_old_created_at_new_ingest_is_dropped(self, mock_svc):
+        from datetime import UTC, datetime, timedelta
+
+        today = datetime.now().date()
+        mock_svc.store.dates_of.return_value = {
+            "old.md": ((today - timedelta(days=400)).isoformat(), datetime.now(UTC).isoformat()),
+            "new.md": (today.isoformat(), "2001-01-01T00:00:00+00:00"),
+        }
+        results = [_make_result(source="old.md"), _make_result(source="new.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "recent notes")
+        assert [r.source for r in filtered] == ["new.md"]
+
+    def test_naive_created_at_is_compared_as_local(self, mock_svc):
+        from datetime import datetime, timedelta
+
+        now = datetime.now()
+        mock_svc.store.dates_of.return_value = {
+            "new.md": ((now - timedelta(days=2)).isoformat(), "2001-01-01T00:00:00+00:00"),
+            "old.md": ((now - timedelta(days=200)).isoformat(), now.astimezone().isoformat()),
+        }
+        results = [_make_result(source="new.md"), _make_result(source="old.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "recent notes")
+        assert [r.source for r in filtered] == ["new.md"]
+
+    def test_extreme_created_at_falls_back_to_ingest(self, mock_svc):
+        from datetime import UTC, datetime, timedelta
+
+        fresh = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+        stale = (datetime.now(UTC) - timedelta(days=400)).isoformat()
+        mock_svc.store.dates_of.return_value = {
+            "low.md": ("0001-01-01T00:00:00", fresh),
+            "high.md": ("9999-12-31T23:59:59", stale),
+            "aware.md": ("9999-12-31T23:59:59-05:00", fresh),
+        }
+        results = [_make_result(source=s) for s in ("low.md", "high.md", "aware.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "recent notes")
+        assert [r.source for r in filtered] == ["low.md"]
+
     def test_handles_invalid_date(self, mock_svc):
-        mock_svc.store.ingested_at_of.return_value = {"a.md": "not-a-date"}
+        mock_svc.store.dates_of.return_value = {"a.md": ("", "not-a-date")}
         results = [_make_result(source="a.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "recent")
         assert len(filtered) == 1
+
+    def test_a_document_at_either_bound_is_kept(self, mock_svc, frozen_clock):
+        """Both ends of a range are inclusive: yesterday's first instant and today's."""
+        from datetime import UTC, datetime, timedelta
+
+        from lilbee.runtime.temporal import resolve_date_range
+
+        frozen_clock(datetime(2026, 3, 22, 15, 30, tzinfo=UTC))
+        bounds = resolve_date_range("yesterday")
+        mock_svc.store.dates_of.return_value = {
+            "start.md": (bounds.start.isoformat(), ""),
+            "end.md": (bounds.end.isoformat(), ""),
+            "after.md": ((bounds.end + timedelta(seconds=1)).isoformat(), ""),
+        }
+        results = [_make_result(source=s) for s in ("start.md", "end.md", "after.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "yesterday's notes")
+        assert [r.source for r in filtered] == ["start.md", "end.md"]
+
+    def test_an_undated_source_is_kept_beside_dated_matches(self, mock_svc):
+        """A source with no usable date stays when the range keeps other sources."""
+        from datetime import UTC, datetime, timedelta
+
+        mock_svc.store.dates_of.return_value = {
+            "new.md": ("", (datetime.now(UTC) - timedelta(days=2)).isoformat()),
+            "old.md": ("", "2020-01-01T00:00:00+00:00"),
+            "undated.md": ("", ""),
+        }
+        results = [_make_result(source=s) for s in ("new.md", "old.md", "undated.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "recent notes")
+        assert [r.source for r in filtered] == ["new.md", "undated.md"]
+
+    @needs_tzset
+    def test_the_search_filters_by_the_process_zone(self, mock_svc, frozen_clock, process_zone):
+        """At 02:00 on 11 March in UTC+14, "today" starts at 10:00 UTC on 10 March,
+        so a document from 05:00 UTC that day is yesterday's."""
+        from datetime import UTC, datetime
+
+        process_zone("LINT-14")
+        frozen_clock(datetime(2026, 3, 10, 12, 0, tzinfo=UTC))
+        mock_svc.store.dates_of.return_value = {
+            "utc-today.md": ("2026-03-10T05:00:00+00:00", ""),
+            "local-today.md": ("2026-03-10T11:00:00+00:00", ""),
+        }
+        results = [_make_result(source="utc-today.md"), _make_result(source="local-today.md")]
+        filtered = get_services().searcher._apply_temporal_filter(results, "today's notes")
+        assert [r.source for r in filtered] == ["local-today.md"]
+
+    @pytest.mark.parametrize("question", ["recent notes", "vec: recent notes"])
+    def test_the_typed_arm_applies_the_date_filter(self, mock_svc, question):
+        """The typed question's own search, plain or with a mode prefix, drops old sources."""
+        from datetime import UTC, datetime, timedelta
+
+        mock_svc.store.search.return_value = [
+            _make_result(source="old.md"),
+            _make_result(source="new.md"),
+        ]
+        mock_svc.store.dates_of.return_value = {
+            "old.md": ("", "2020-01-01T00:00:00+00:00"),
+            "new.md": ("", (datetime.now(UTC) - timedelta(days=2)).isoformat()),
+        }
+        typed = get_services().searcher._search_typed_arm(question, 5, None)
+        assert [r.source for r in typed] == ["new.md"]
 
 
 def _memory_fact(text: str) -> MemoryRow:
@@ -2902,10 +3040,9 @@ class TestSearchContextIntegration:
         # relevance cutoff, and a far vector-only HyDE row is filtered like
         # any other unsupported far row.
         hyde_only_result = _make_result(source="hyde.md", chunk_index=0, distance=0.6)
-        mock_svc.store.search.side_effect = [
-            [normal_result],
-            [hyde_only_result],
-        ]
+        mock_svc.store.search.side_effect = lambda *args, query_text=None, **kwargs: (
+            [normal_result] if query_text else [hyde_only_result]
+        )
         mock_svc.provider.chat.return_value = _text_result("hypothetical document")
         # Disable query expansion so the HyDE path owns the second
         # store.search call.
@@ -2934,7 +3071,7 @@ class TestHydeMergeLegacyScore:
         seen: set = set()
         searcher = get_services().searcher
         with mock.patch.object(searcher, "_hyde_search", return_value=[legacy]):
-            searcher._merge_hyde_results("q", results, seen, 5, None, [])
+            _merge_hyde(searcher, "q", results, seen, 5, None, [])
         assert results == [legacy]
         assert results[0].score is None
         assert seen == {("legacy.md", 0)}
@@ -4108,7 +4245,7 @@ class TestConceptFailuresAreReported:
             mock.patch.object(cfg, "expansion_short_query_tokens", 0),
             caplog.at_level("WARNING"),
         ):
-            variants = get_services().searcher._expand_query("kubernetes scheduling", vec, [])
+            variants = _expand_query(get_services().searcher, "kubernetes scheduling", vec, [])
         assert [text for text, _ in variants] == ["restate one", "restate two"]
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert len(warnings) == 1
@@ -4276,7 +4413,7 @@ class TestConceptQueryExpansion:
                 mock_svc.reranker,
                 mock_svc.concepts,
             )
-            variants = searcher._expand_query("python frameworks", [0.1] * 768, [])
+            variants = _expand_query(searcher, "python frameworks", [0.1] * 768, [])
             texts = [text for text, _ in variants]
             assert "python web frameworks" in texts
         finally:

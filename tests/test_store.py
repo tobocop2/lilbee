@@ -2339,7 +2339,7 @@ class TestHybridSearch:
         chain.nprobes.return_value = chain
         chain.refine_factor.return_value = chain
         with mock.patch("lilbee.data.store.core._has_vector_index", return_value=True):
-            store._vector_arm(table, [0.5] * test_config.embedding_dim, 50, None)
+            store._vector_arm(table, [0.5] * test_config.embedding_dim, 50, None, [])
         chain.nprobes.assert_called_once()
         chain.refine_factor.assert_called_once()
 
@@ -3176,34 +3176,69 @@ class TestSourceIngestedAtMap:
         assert store.source_ingested_at_map() == {}
 
 
-class TestIngestedAtOf:
+class TestDatesOf:
     """The temporal filter reads the dates of the hits, never a map of every source."""
 
     def test_returns_only_the_named_sources(self, store):
         store.upsert_source("a.md", "h1", 1)
         store.upsert_source("b.md", "h2", 1)
-        result = store.ingested_at_of(["a.md", "missing.md"])
+        result = store.dates_of(["a.md", "missing.md"])
         assert set(result) == {"a.md"}
-        assert result["a.md"] == store.source_ingested_at_map()["a.md"]
+        assert result["a.md"][1] == store.source_ingested_at_map()["a.md"]
+
+    def test_returns_the_stored_creation_date(self, store):
+        store.upsert_source("a.md", "h1", 1, meta=SourceMeta(created_at="2020-05-06"))
+        store.upsert_source("b.md", "h2", 1)
+        result = store.dates_of(["a.md", "b.md"])
+        assert result["a.md"][0] == "2020-05-06"
+        assert result["b.md"][0] == ""
 
     def test_empty_store_and_no_names(self, store):
-        assert store.ingested_at_of(["a.md"]) == {}
+        assert store.dates_of(["a.md"]) == {}
         store.upsert_source("a.md", "h1", 1)
-        assert store.ingested_at_of([]) == {}
+        assert store.dates_of([]) == {}
 
     def test_wiki_pages_have_no_date(self, store):
         store.upsert_source("wiki/a.md", "h1", 1, SourceType.WIKI)
-        assert store.ingested_at_of(["wiki/a.md"]) == {}
+        assert store.dates_of(["wiki/a.md"]) == {}
 
     def test_name_with_quote_is_escaped(self, store):
         store.upsert_source("it's.md", "h1", 1)
-        assert set(store.ingested_at_of(["it's.md"])) == {"it's.md"}
+        assert set(store.dates_of(["it's.md"])) == {"it's.md"}
 
     def test_batches_over_many_names(self, store):
         store.upsert_source("a.md", "h1", 1)
         names = [f"n{i}.md" for i in range(700)] + ["a.md"]
         with mock.patch("lilbee.data.store.core._SOURCE_STAT_BATCH_ROWS", 100):
-            assert set(store.ingested_at_of(names)) == {"a.md"}
+            assert set(store.dates_of(names)) == {"a.md"}
+
+    def test_reads_every_batch_of_stored_rows(self, store):
+        names = [f"s{i}.md" for i in range(5)]
+        for i, name in enumerate(names):
+            store.upsert_source(name, f"h{i}", 1, meta=SourceMeta(created_at=f"2020-01-0{i + 1}"))
+        with mock.patch("lilbee.data.store.core._SOURCE_STAT_BATCH_ROWS", 2):
+            result = store.dates_of(names)
+        assert {name: created for name, (created, _) in result.items()} == {
+            name: f"2020-01-0{i + 1}" for i, name in enumerate(names)
+        }
+
+    def test_a_wiki_page_beside_sources_adds_no_date(self, store, test_config, tmp_path):
+        """A document under a linked root is stored at its location, not its name."""
+        test_config.linked_roots = {"work": str(tmp_path / "work")}
+        store.upsert_source("work/a.md", "h1", 1, meta=SourceMeta(created_at="2020-05-06"))
+        store.upsert_source("notes.md", "h2", 1, SourceType.IMPORTED)
+        store.upsert_source("wiki/a.md", "h3", 1, SourceType.WIKI)
+        result = store.dates_of(["work/a.md", "notes.md", "wiki/a.md"])
+        ingested = store.source_ingested_at_map()
+        assert result == {
+            "work/a.md": ("2020-05-06", ingested["work/a.md"]),
+            "notes.md": ("", ingested["notes.md"]),
+        }
+
+    def test_a_row_with_no_ingest_time_reads_as_empty(self, store):
+        store.upsert_source("a.md", "h1", 1)
+        store.open_table(SOURCES_TABLE).update(values_sql={"ingested_at": "CAST(NULL AS STRING)"})
+        assert store.dates_of(["a.md"]) == {"a.md": ("", "")}
 
     def test_chat_turn_with_time_word_reads_no_full_source_record(self, store, test_config):
         """A temporal question reads zero full source records and still filters by date."""
@@ -4240,10 +4275,18 @@ class TestTitleSearch:
         store.add_chunks(_titled_records("a.pdf", 5, title="zebra manifesto"))
         store.ensure_fts_index()
         table = store.open_table("chunks")
-        rows = store._with_paths(store._title_arm(table, "zebra", 5, None))
+        rows = store._with_paths(
+            store._title_arm(
+                table, "zebra", 5, None, _index_registry(table, store._config.lancedb_dir)
+            )
+        )
         assert [(r.source, r.chunk_index) for r in rows] == [("a.pdf", 0)]
         # Deterministic across repeated calls (no implementation-defined tie order).
-        again = store._with_paths(store._title_arm(table, "zebra", 5, None))
+        again = store._with_paths(
+            store._title_arm(
+                table, "zebra", 5, None, _index_registry(table, store._config.lancedb_dir)
+            )
+        )
         assert [(r.source, r.chunk_index) for r in again] == [("a.pdf", 0)]
 
     def test_title_arm_one_row_per_matched_document(self, store, test_config):
@@ -4254,7 +4297,11 @@ class TestTitleSearch:
         store.add_chunks(_titled_records("safari.pdf", 4, title="zebra safari"))
         store.ensure_fts_index()
         table = store.open_table("chunks")
-        rows = store._with_paths(store._title_arm(table, "zebra", 5, None))
+        rows = store._with_paths(
+            store._title_arm(
+                table, "zebra", 5, None, _index_registry(table, store._config.lancedb_dir)
+            )
+        )
         assert sorted(r.source for r in rows) == ["safari.pdf", "zebra.pdf"]
         assert all(r.chunk_index == 0 for r in rows)
 
@@ -4274,7 +4321,11 @@ class TestTitleSearch:
         store.add_chunks(_titled_records("note.pdf", 1, title="zebra safari park visit"))
         store.ensure_fts_index()
         table = store.open_table("chunks")
-        rows = store._with_paths(store._title_arm(table, "zebra", 2, None))
+        rows = store._with_paths(
+            store._title_arm(
+                table, "zebra", 2, None, _index_registry(table, store._config.lancedb_dir)
+            )
+        )
         assert sorted(r.source for r in rows) == ["note.pdf", "tome.pdf"]
 
     def test_title_search_weight_reaches_fusion(self, store, test_config):
@@ -4332,8 +4383,15 @@ class TestTitleSearch:
         store.ensure_fts_index()
         table = store.open_table("chunks")
         assert _has_fts_index(_readable_registry(table), "title")
-        assert store._title_arm(table, "zebra", 5, ChunkType.RAW)
-        assert store._title_arm(table, "zebra", 5, ChunkType.WIKI) == []
+        assert store._title_arm(
+            table, "zebra", 5, ChunkType.RAW, _index_registry(table, store._config.lancedb_dir)
+        )
+        assert (
+            store._title_arm(
+                table, "zebra", 5, ChunkType.WIKI, _index_registry(table, store._config.lancedb_dir)
+            )
+            == []
+        )
 
     def test_title_arm_failure_degrades_to_empty(self, store, test_config):
         """A query-time title-arm failure returns no rows instead of raising,
@@ -4346,7 +4404,12 @@ class TestTitleSearch:
         from lilbee.data.store import core as store_core
 
         with mock.patch.object(store_core, "_lexical_rows", side_effect=RuntimeError("boom")):
-            assert store._title_arm(table, "zebra", 5, None) == []
+            assert (
+                store._title_arm(
+                    table, "zebra", 5, None, _index_registry(table, store._config.lancedb_dir)
+                )
+                == []
+            )
 
     def test_old_index_without_title_column_still_searches(self, store, test_config):
         """Feature detection: a pre-title index searches fine and the title arm
@@ -4354,7 +4417,12 @@ class TestTitleSearch:
         test_config.title_search = True
         store, table = _pre_title_store(test_config, _make_records())
         store.ensure_fts_index()
-        assert store._title_arm(table, "chunk", 5, None) == []
+        assert (
+            store._title_arm(
+                table, "chunk", 5, None, _index_registry(table, store._config.lancedb_dir)
+            )
+            == []
+        )
         query_vec = [0.5] * test_config.embedding_dim
         results = store.search(query_vec, top_k=3, max_distance=0, query_text="chunk number")
         assert results
@@ -4441,7 +4509,16 @@ class TestTitleSearch:
         ):
             store.ensure_fts_index()
         assert store._fts_ready
-        assert store._title_arm(store.open_table("chunks"), "zebra", 5, None) == []
+        assert (
+            store._title_arm(
+                store.open_table("chunks"),
+                "zebra",
+                5,
+                None,
+                _index_registry(store.open_table("chunks"), store._config.lancedb_dir),
+            )
+            == []
+        )
         warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert any("title" in r.message.lower() for r in warnings)
 

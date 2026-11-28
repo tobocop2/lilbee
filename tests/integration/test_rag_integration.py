@@ -357,7 +357,7 @@ class TestConceptGraph:
 
 
 class TestTemporalFilter:
-    """Tests with temporal_filtering enabled: filters by ingestion date."""
+    """Tests with temporal_filtering enabled: filters by document date."""
 
     @pytest.fixture(autouse=True)
     def _enable_temporal(self):

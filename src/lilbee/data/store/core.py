@@ -40,6 +40,7 @@ from lilbee.core.config import (
 )
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.security import write_private_text
+from lilbee.core.structural import is_structural_chunk
 from lilbee.core.vectors import Vector
 from lilbee.core.web_names import is_web_source
 from lilbee.providers.base import ProviderError
@@ -488,6 +489,24 @@ _TERM_SCAN_BATCH_ROWS = 20_000
 _TITLE_FETCH_FACTOR = 20
 _TITLE_MIN_FETCH = 200
 _TITLE_FETCH_CEILING = 4096
+
+
+def _title_representatives(
+    rows: Iterable[SearchChunk], *, skip_structural: bool
+) -> dict[str, SearchChunk]:
+    """The first chunk of each source, or its first non-structural chunk when asked."""
+    first: dict[str, SearchChunk] = {}
+    prose: dict[str, SearchChunk] = {}
+    for row in rows:
+        seen = first.get(row.source)
+        if seen is None or row.chunk_index < seen.chunk_index:
+            first[row.source] = row
+        if skip_structural and not is_structural_chunk(row.chunk):
+            seen = prose.get(row.source)
+            if seen is None or row.chunk_index < seen.chunk_index:
+                prose[row.source] = row
+    return {source: prose.get(source, row) for source, row in first.items()}
+
 
 # Bounds the fetch that settles a tie across a search limit, so a term in every
 # chunk of a huge corpus cannot make one query read all of them.
@@ -1294,7 +1313,7 @@ class Store:
 
         Best-effort: a reader racing a concurrent invalidation can store a
         pre-mutation snapshot. The consumer (wiki prune) reads it off the
-        query path; a query reads ``ingested_at_of`` instead.
+        query path; a query reads ``dates_of`` instead.
         """
         if self._source_ingested_cache is not None:
             return self._source_ingested_cache
@@ -1302,10 +1321,10 @@ class Store:
         self._source_ingested_cache = mapping
         return mapping
 
-    def ingested_at_of(self, names: Iterable[str]) -> dict[str, str]:
-        """``{name: ingested_at}`` for the listed sources among *names*, read by key.
+    def dates_of(self, names: Iterable[str]) -> dict[str, tuple[str, str]]:
+        """``{name: (created_at, ingested_at)}`` for the listed sources among *names*, read by key.
 
-        Reads two columns of the rows *names* key to, never the whole table.
+        Reads three columns of the rows *names* key to, never the whole table.
         """
         table = self.open_table(SOURCES_TABLE)
         if table is None:
@@ -1317,13 +1336,13 @@ class Store:
             for kind in _READ_ORDER
             if kind != SourceType.WIKI
         }
-        found: dict[str, str] = {}
+        found: dict[str, tuple[str, str]] = {}
         paths = sorted(wanted)
         for start in range(0, len(paths), _SOURCE_STAT_BATCH_ROWS):
             batch = _in_list(paths[start : start + _SOURCE_STAT_BATCH_ROWS])
             query = table.search().where(f"{_LISTED} AND {_PATH} IN ({batch})")
-            for row in query.select([_PATH, "ingested_at"]).limit(None).to_list():
-                found[wanted[row[_PATH]]] = row["ingested_at"] or ""
+            for row in query.select([_PATH, "created_at", "ingested_at"]).limit(None).to_list():
+                found[wanted[row[_PATH]]] = (row["created_at"] or "", row["ingested_at"] or "")
         return found
 
     def _chunks_schema(self) -> pa.Schema:
@@ -2612,9 +2631,14 @@ class Store:
             if hits is not None:
                 return self._with_paths(hits)
 
+        indices = _index_registry(table, self._config.lancedb_dir)
         try:
             rows = self._vector_arm(
-                table, query_vector, top_k * self._config.candidate_multiplier, chunk_type
+                table,
+                query_vector,
+                top_k * self._config.candidate_multiplier,
+                chunk_type,
+                indices,
             )
         except Exception:
             # A dead scalar index fails the prefilter; the next query re-verifies.
@@ -2682,6 +2706,7 @@ class Store:
         query_vector: Vector,
         limit: int,
         chunk_type: ChunkType | None,
+        indices: list[IndexConfig] | None,
     ) -> list[SearchChunk]:
         """Vector-arm candidates with the ANN recall recovery applied.
 
@@ -2690,7 +2715,6 @@ class Store:
         silently starve wiki-only queries whose matches live past the window.
         """
         query = table.search(query_vector).distance_type(_VECTOR_METRIC)
-        indices = _index_registry(table, self._config.lancedb_dir)
         if indices is None or _has_vector_index(indices):
             # IVF_PQ is lossy; probe more partitions and refine against full
             # vectors so recall stays close to the exact flat scan. An unusable
@@ -2724,6 +2748,7 @@ class Store:
         query_text: str,
         limit: int,
         chunk_type: ChunkType | None,
+        indices: list[IndexConfig] | None,
     ) -> list[SearchChunk]:
         """One BM25 row per document whose title matches, in title-relevance order.
 
@@ -2733,6 +2758,9 @@ class Store:
         source to one deterministic representative (its first chunk), and returns
         the top *limit* documents ordered by title score -- so "a query naming a
         document by title surfaces its chunks" holds as one stable row per doc.
+        With ``filter_structural_chunks`` on, the representative is the first
+        chunk that is not a table of contents or cover page; a document with no
+        such chunk keeps its first chunk.
 
         Empty when the store predates the title column or its FTS index (old
         indexes keep working), when the index registry is unusable, and on
@@ -2740,7 +2768,6 @@ class Store:
         title arm must never take down the healthy chunk arm, so its failure
         degrades to no-titles, mirroring ``bm25_probe``.
         """
-        indices = _index_registry(table, self._config.lancedb_dir)
         if indices is None or not _has_fts_index(indices, _TITLE_COLUMN):
             return []
         # Every chunk of one document ties on title BM25, so a fixed window can
@@ -2754,12 +2781,9 @@ class Store:
             except Exception:
                 log.debug("Title arm search failed; contributing no title rows", exc_info=True)
                 return []
-            rows = _id_chunks(hits)
-            best: dict[str, SearchChunk] = {}
-            for row in rows:
-                seen = best.get(row.source)
-                if seen is None or row.chunk_index < seen.chunk_index:
-                    best[row.source] = row
+            best = _title_representatives(
+                _id_chunks(hits), skip_structural=self._config.filter_structural_chunks
+            )
             if len(best) >= limit or len(hits) < fetch or fetch >= _TITLE_FETCH_CEILING:
                 break
             fetch = min(fetch * 4, _TITLE_FETCH_CEILING)
@@ -2794,10 +2818,11 @@ class Store:
         Title rows carry ``bm25_score``, so a title match counts as lexical
         support for the distance exemption like any other lexical hit.
         """
+        indices = _index_registry(table, self._config.lancedb_dir)
         title_rows: list[SearchChunk] = []
         if self._config.title_search:
-            title_rows = self._title_arm(table, query_text, top_k, chunk_type)
-        vector_rows = self._vector_arm(table, query_vector, top_k, chunk_type)
+            title_rows = self._title_arm(table, query_text, top_k, chunk_type, indices)
+        vector_rows = self._vector_arm(table, query_vector, top_k, chunk_type, indices)
         base_lexical_weight = self._config.lexical_fusion_weight
         base_title_weight = self._config.title_search_weight
         lexical_weight = base_lexical_weight

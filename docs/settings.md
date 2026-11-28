@@ -109,7 +109,7 @@ The TUI marks an override with a pill on the setting's row: `set by you` for a `
 | `rerank_blend` | `LILBEE_RERANK_BLEND` | `bool` | `true` | yes | yes | yes | `lilbee settings set` | no | Blend reranker scores with retrieval fusion (off = pure reranker order). |
 | `rerank_candidates` | `LILBEE_RERANK_CANDIDATES` | `int` | `60` | yes | yes | yes | `lilbee settings set` | yes | Candidate pool size for reranking. |
 | `rerank_min_score` | `LILBEE_RERANK_MIN_SCORE` | `float|null` | *(none)* | yes | yes | yes | `lilbee settings set` | yes | Drop candidates whose raw reranker score is below this (unset = off). |
-| `temporal_filtering` | `LILBEE_TEMPORAL_FILTERING` | `bool` | `true` | yes | yes | yes | `lilbee settings set` | no | Detect temporal queries and bias retrieval toward recent chunks. |
+| `temporal_filtering` | `LILBEE_TEMPORAL_FILTERING` | `bool` | `true` | yes | yes | yes | `lilbee settings set` | no | Detect date words in a query and keep results from that date range. |
 | `title_search` | `LILBEE_TITLE_SEARCH` | `bool` | `false` | yes | yes | yes | `lilbee settings set` | no | Match queries against document titles as a third hybrid-search arm. |
 | `title_search_weight` | `LILBEE_TITLE_SEARCH_WEIGHT` | `float` | `0.5` | yes | yes | yes | `lilbee settings set` | yes | Title arm weight in rank fusion (1.0 = equal voice with the other arms). |
 | `top_k` | `LILBEE_TOP_K` | `int` | `12` | yes | yes | yes | `lilbee settings set` | no | Number of chunks returned by search. |

@@ -6,8 +6,10 @@ import logging
 import math
 import re
 from collections.abc import Callable, Generator
-from datetime import datetime
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import copy_context
 from enum import StrEnum
+from functools import partial
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from pydantic import BaseModel, Field
@@ -17,6 +19,7 @@ from lilbee.core.config import Config
 from lilbee.core.config.enums import ChatMode
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.llm_json import json_reply_format
+from lilbee.core.structural import is_structural_chunk
 from lilbee.core.vectors import Vector
 from lilbee.data.store import (
     INGEST_FAILURES,
@@ -95,7 +98,6 @@ from lilbee.retrieval.query.intent import (
 )
 from lilbee.retrieval.query.memory import format_memory_block, memory_to_chunk
 from lilbee.retrieval.query.neighbors import NeighborCache, expand_neighbors
-from lilbee.retrieval.query.structural import is_structural_chunk
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
 from lilbee.retrieval.reasoning import (
     RetrievalNotice,
@@ -459,24 +461,17 @@ class Searcher:
     ) -> list[SearchChunk]:
         if not self._config.temporal_filtering:
             return results
-        from lilbee.runtime.temporal import detect_temporal, resolve_date_range
+        from lilbee.runtime.temporal import detect_temporal, document_instant, resolve_date_range
 
         keyword = detect_temporal(question)
         if keyword is None:
             return results
         date_range = resolve_date_range(keyword)
-        source_dates = self._store.ingested_at_of({r.source for r in results})
+        source_dates = self._store.dates_of({r.source for r in results})
         filtered: list[SearchChunk] = []
         for r in results:
-            ingested_at = source_dates.get(r.source, "")
-            if not ingested_at:
-                filtered.append(r)
-                continue
-            try:
-                doc_date = datetime.fromisoformat(ingested_at)
-                if date_range.start <= doc_date <= date_range.end:
-                    filtered.append(r)
-            except (ValueError, TypeError):
+            instant = document_instant(*source_dates.get(r.source, ("", "")))
+            if instant is None or date_range.start <= instant <= date_range.end:
                 filtered.append(r)
         return filtered if filtered else results
 
@@ -569,20 +564,6 @@ class Searcher:
         except Exception as exc:
             _degrade(degraded, WarningCode.QUERY_EXPANSION_FAILED, exc)
             return []
-
-    def _expand_query(
-        self, question: str, question_vec: Vector, degraded: list[HealthWarning]
-    ) -> list[tuple[str, Vector]]:
-        """Return ``(variant, variant_vec)`` pairs for downstream search.
-
-        LLM variants run through ``_apply_guardrails``; concept-graph
-        variants bypass it since they come from deterministic traversal.
-        Each step fails on its own, so a failed LLM step keeps the concept variants.
-        """
-        return [
-            *self._llm_query_variants(question, question_vec, degraded),
-            *self._concept_query_expansion(question, degraded),
-        ]
 
     def _should_skip_expansion(self, question: str, chunk_type: ChunkType | None = None) -> bool:
         if self._config.expansion_skip_threshold <= 0:
@@ -752,58 +733,113 @@ class Searcher:
         selected.sort()
         return [results[i] for i in selected]
 
-    def _merge_variant_results(
+    def _append_unseen(
         self,
-        question: str,
-        query_vec: Vector,
+        found: list[SearchChunk],
         results: list[SearchChunk],
         seen: set[tuple[str, int]],
-        top_k: int,
-        chunk_type: ChunkType | None,
-        degraded: list[HealthWarning],
+        weight: float | None = None,
     ) -> None:
-        """Append unseen variant-search hits to ``results`` (in place)."""
-        for variant, variant_vec in self._expand_query(question, query_vec, degraded):
-            variant_results = self._store.search(
-                variant_vec,
-                top_k=top_k,
-                query_text=variant,
-                chunk_type=chunk_type,
-            )
-            for r in variant_results:
-                key = (r.source, r.chunk_index)
-                if key not in seen:
-                    results.append(r)
-                    seen.add(key)
-
-    def _merge_hyde_results(
-        self,
-        question: str,
-        results: list[SearchChunk],
-        seen: set[tuple[str, int]],
-        top_k: int,
-        chunk_type: ChunkType | None,
-        degraded: list[HealthWarning],
-    ) -> None:
-        """Append unseen HyDE hits to ``results`` (in place), down-weighted by
-        ``hyde_weight`` in canonical score space (a weight of 1.0 trusts HyDE
-        hits as much as direct hits; lower discounts them proportionally).
-
-        HyDE here only widens a search that already ran, so a failure skips the
-        widening and records it, as a failed query expansion does."""
-        try:
-            hyde_results = self._hyde_search(question, top_k, chunk_type=chunk_type)
-        except Exception as exc:
-            _degrade(degraded, WarningCode.HYDE_BLEND_FAILED, exc)
-            return
-        for r in hyde_results:
+        """Append the hits not in ``seen`` to ``results`` (in place), scores times ``weight``."""
+        for r in found:
             key = (r.source, r.chunk_index)
             if key in seen:
                 continue
-            if r.score is not None:
-                r = r.model_copy(update={"score": r.score * self._config.hyde_weight})
+            if weight is not None and r.score is not None:
+                r = r.model_copy(update={"score": r.score * weight})
             results.append(r)
             seen.add(key)
+
+    def _hyde_rows(
+        self,
+        question: str,
+        top_k: int,
+        chunk_type: ChunkType | None,
+        degraded: list[HealthWarning],
+    ) -> list[SearchChunk]:
+        """HyDE hits; a failed HyDE search yields none and is recorded."""
+        try:
+            return self._hyde_search(question, top_k, chunk_type=chunk_type)
+        except Exception as exc:
+            _degrade(degraded, WarningCode.HYDE_BLEND_FAILED, exc)
+            return []
+
+    def _submit_search(
+        self,
+        pool: ThreadPoolExecutor,
+        variant: str,
+        variant_vec: Vector,
+        top_k: int,
+        chunk_type: ChunkType | None,
+    ) -> Future[list[SearchChunk]]:
+        """Start one variant search on *pool*, in a copy of this thread's context."""
+        return pool.submit(
+            copy_context().run,
+            self._store.search,
+            variant_vec,
+            top_k=top_k,
+            query_text=variant,
+            chunk_type=chunk_type,
+        )
+
+    def _start_variant_steps(
+        self, pool: ThreadPoolExecutor, question: str, query_vec: Vector
+    ) -> list[tuple[Future[list[tuple[str, Vector]]], list[HealthWarning]]]:
+        """Start the chat-model and concept-graph variant steps, each with its own warnings."""
+        llm_degraded: list[HealthWarning] = []
+        concept_degraded: list[HealthWarning] = []
+        llm = pool.submit(
+            copy_context().run, self._llm_query_variants, question, query_vec, llm_degraded
+        )
+        concept = pool.submit(
+            copy_context().run, self._concept_query_expansion, question, concept_degraded
+        )
+        return [(llm, llm_degraded), (concept, concept_degraded)]
+
+    def _search_widened(
+        self,
+        direct_search: Callable[[], list[SearchChunk]],
+        question: str,
+        query_vec: Vector,
+        top_k: int,
+        chunk_type: ChunkType | None,
+        degraded: list[HealthWarning],
+    ) -> list[SearchChunk]:
+        """The direct hits plus the variant and HyDE hits, searching at the same time.
+
+        The variant steps and HyDE start before the direct search ends, and each variant
+        search starts when its step ends. Every task runs in a copy of this thread's
+        context. Hits merge, and failed steps are recorded in ``degraded``, in the order
+        of a serial run. An error, a Ctrl+C included, leaves at once: queued tasks are
+        cancelled and a running call ends in the background.
+        """
+        hyde_degraded: list[HealthWarning] = []
+        pool = ThreadPoolExecutor()
+        try:
+            hyde = None
+            if self._config.hyde:
+                hyde = pool.submit(
+                    copy_context().run, self._hyde_rows, question, top_k, chunk_type, hyde_degraded
+                )
+            steps = self._start_variant_steps(pool, question, query_vec)
+            results = direct_search()
+            seen = {(r.source, r.chunk_index) for r in results}
+            searches = []
+            for step, step_degraded in steps:
+                variants = step.result()
+                degraded.extend(step_degraded)
+                searches += [
+                    self._submit_search(pool, variant, vec, top_k, chunk_type)
+                    for variant, vec in variants
+                ]
+            for search in searches:
+                self._append_unseen(search.result(), results, seen)
+            if hyde is not None:
+                self._append_unseen(hyde.result(), results, seen, self._config.hyde_weight)
+                degraded.extend(hyde_degraded)
+            return results
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def search(
         self,
@@ -883,7 +919,8 @@ class Searcher:
         retrieve_k = (
             max(top_k, self._config.rerank_candidates) if self._config.reranker_model else top_k
         )
-        results = self._store.search(
+        direct_search = partial(
+            self._store.search,
             query_vec,
             top_k=retrieve_k,
             query_text=question,
@@ -892,13 +929,12 @@ class Searcher:
         # Query expansion (variant + HyDE searches) is skipped for short/term
         # queries, but concept boost is a separate graph re-rank that should still
         # apply -- the early return used to drop it on the skip path.
-        if not self._should_skip_expansion(question, chunk_type):
-            seen = {(r.source, r.chunk_index) for r in results}
-            self._merge_variant_results(
-                question, query_vec, results, seen, top_k, chunk_type, degraded
+        if self._should_skip_expansion(question, chunk_type):
+            results = direct_search()
+        else:
+            results = self._search_widened(
+                direct_search, question, query_vec, top_k, chunk_type, degraded
             )
-            if self._config.hyde:
-                self._merge_hyde_results(question, results, seen, top_k, chunk_type, degraded)
         # Merged variant/HyDE hits arrive appended, not ranked; every consumer
         # of this method (bare search surfaces included) gets one global order
         # over the canonical score rather than insertion order.

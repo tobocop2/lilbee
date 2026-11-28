@@ -13,6 +13,7 @@ import time
 import warnings
 from collections.abc import Callable, Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager
+from datetime import datetime
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from unittest import mock
@@ -26,6 +27,7 @@ from PIL import Image, ImageDraw
 
 import tests._suite_data_root  # noqa: F401  # must run before lilbee and huggingface_hub load
 from tests import _stated_sizes as stated_sizes_module
+from tests._clock import FrozenClock
 
 # Opt tests out of the per-role catalog-task validator at import time so
 # the many ``cfg.chat_model = "test-model"``-style fixtures don't trip
@@ -174,6 +176,31 @@ def stated_sizes(monkeypatch) -> Generator[None]:
     stated_sizes_module.install(monkeypatch)
     yield
     stated_sizes_module.uninstall()
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch) -> Callable[[datetime], None]:
+    """Fix the clock the date ranges read at the instant given."""
+    from lilbee.runtime import temporal
+
+    def freeze(instant: datetime) -> None:
+        monkeypatch.setattr(FrozenClock, "frozen", instant)
+        monkeypatch.setattr(temporal, "datetime", FrozenClock)
+
+    return freeze
+
+
+@pytest.fixture
+def process_zone(monkeypatch) -> Generator[Callable[[str], None]]:
+    """Set the process zone from a POSIX TZ string; restore it afterwards."""
+
+    def use(spec: str) -> None:
+        monkeypatch.setenv("TZ", spec)
+        time.tzset()
+
+    yield use
+    monkeypatch.undo()
+    time.tzset()
 
 
 CALLER_THREAD = "work-order-caller"
