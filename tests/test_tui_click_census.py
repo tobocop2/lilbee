@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
+from textual import events
 from textual.app import App, ComposeResult
+from textual.binding import Binding, BindingType
 from textual.geometry import Size
 from textual.screen import Screen
-from textual.widgets import Static
+from textual.widgets import Button, DataTable, Footer, Static
 
+from lilbee.cli.tui.screens import status as status_screen
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.model_picker import ModelPickerModal
 from lilbee.cli.tui.screens.profile_library import ProfileLibrary
@@ -21,15 +24,18 @@ from lilbee.cli.tui.widgets.model_list import ModelList
 from lilbee.cli.tui.widgets.status_bar import ViewTab
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
+from lilbee.data.types import SkippedSource
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost
 from tests._tui_census import (
     SIZE_IDS,
     SIZES,
     NoBuilder,
+    Recorder,
     SurfaceApp,
     backdrop_click_effects,
     build,
+    click,
     click_effects,
     discover_surfaces,
     focus_labels,
@@ -185,6 +191,172 @@ async def test_a_click_on_the_chat_mode_pill_sets_the_chat_mode(size: tuple[int,
         await pilot.pause()
         await pilot.click(pill)
         assert await wait_until(pilot, lambda: cfg.chat_mode == ChatMode.CHAT.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", SIZES, ids=SIZE_IDS)
+async def test_a_click_on_a_held_out_row_selects_it_like_enter(
+    monkeypatch: pytest.MonkeyPatch, size: tuple[int, int]
+) -> None:
+    held_out = [SkippedSource(filename="a.pdf", reason="unreadable")]
+    monkeypatch.setattr(status_screen, "held_out_sources", lambda: (held_out, 1))
+    names = await focus_labels(StatusScreen, size)
+    index = names.index("DataTable#held-out-table")
+    by_key = await probe_widget(StatusScreen, size, index, "enter")
+    by_click = await probe_widget(StatusScreen, size, index, "click")
+    assert "msg:DataTable.CellSelected" in by_key.effects
+    assert by_key.effects <= by_click.effects
+
+
+class _Key(Static, can_focus=True):
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "noop", "Go"),
+        Binding("y", "noop", "Why"),
+    ]
+
+    def action_noop(self) -> None:
+        pass
+
+
+class _FooterHost(App[None]):
+    def compose(self) -> ComposeResult:
+        yield _Key("one", id="one")
+        yield Footer()
+
+
+@pytest.mark.asyncio
+async def test_a_footer_restyle_is_not_an_effect() -> None:
+    app = _FooterHost()
+    async with app.run_test() as pilot:
+        app.query_one("#one").focus()
+        await settle(pilot)
+        with Recorder(app) as rec:  # type: ignore[arg-type]
+            app.query_one(Footer).compact = True
+            await settle(pilot)
+        assert rec.effects == set()
+
+
+class _FocusStartsWork(Screen[None]):
+    """A screen where the first focus that moves off the lead key starts a slow worker."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = False
+
+    def compose(self) -> ComposeResult:
+        yield _Key("lead", id="lead")
+        yield _Key("one", id="one")
+        yield _Key("two", id="two")
+        yield Static("idle", id="note")
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        if event.widget.id != "lead" and not self.started:
+            self.started = True
+            self.run_worker(self._note_later())
+
+    async def _note_later(self) -> None:
+        await asyncio.sleep(0.3)
+        self.query_one("#note", Static).update("done")
+
+
+async def _probe_enter(size: tuple[int, int]) -> set[str]:
+    return (await probe_widget(_FocusStartsWork, size, 1, "enter")).effects
+
+
+async def _key_enter(size: tuple[int, int]) -> set[str]:
+    return await key_effects(_FocusStartsWork, size, "enter")
+
+
+async def _click_first(size: tuple[int, int]) -> set[str]:
+    return await click_effects(_FocusStartsWork, size, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("probe", [_probe_enter, _key_enter, _click_first])
+async def test_a_probe_starts_after_the_work_that_its_focus_starts(probe: Any) -> None:
+    effects = await probe((80, 24))
+    assert "dom:changed" not in effects
+    assert "msg:Worker.StateChanged" not in effects
+
+
+class _Covered(App[None]):
+    CSS = "Screen { layers: base top; } #cover { layer: top; width: 100%; height: 100%; }"
+
+    def compose(self) -> ComposeResult:
+        yield Button("under", id="under")
+        yield Static("cover", id="cover")
+
+
+@pytest.mark.asyncio
+async def test_a_click_aimed_at_a_covered_widget_names_the_widget_hit() -> None:
+    app = _Covered()
+    async with app.run_test(size=(80, 24)) as pilot:
+        with pytest.raises(AssertionError, match=r"hits Static#cover, not Button#under"):
+            await click(pilot, app.query_one("#under", Button))
+
+
+class _LongTable(App[None]):
+    """A table with more rows than its screen shows, the cursor on a row past the first page."""
+
+    def __init__(self, show_header: bool) -> None:
+        super().__init__()
+        self.show_header = show_header
+        self.selected: list[int] = []
+
+    def compose(self) -> ComposeResult:
+        yield DataTable(show_header=self.show_header, cursor_type="row")
+
+    def on_mount(self) -> None:
+        table = self.query_one(DataTable)
+        table.add_column("name")
+        table.add_rows([(f"row {i}",) for i in range(60)])
+        table.move_cursor(row=40)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        self.selected.append(event.cursor_row)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("show_header", [True, False], ids=["header", "no-header"])
+async def test_a_table_click_aims_at_the_cursor_row_after_a_scroll(show_header: bool) -> None:
+    app = _LongTable(show_header)
+    async with app.run_test(size=(40, 12)) as pilot:
+        await settle(pilot)
+        table = app.query_one(DataTable)
+        assert table.scroll_offset.y > 0
+        await click(pilot, table)
+        await settle(pilot)
+        assert app.selected == [40]
+
+
+class _Late(App[None]):
+    """A button that is off until a worker that started at mount has finished."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pressed = 0
+
+    def compose(self) -> ComposeResult:
+        yield Button("target", id="target", disabled=True)
+
+    def on_mount(self) -> None:
+        self.run_worker(self._enable())
+
+    async def _enable(self) -> None:
+        await asyncio.sleep(1.0)
+        self.query_one("#target", Button).disabled = False
+
+    def on_button_pressed(self) -> None:
+        self.pressed += 1
+
+
+@pytest.mark.asyncio
+async def test_click_waits_for_work_in_flight() -> None:
+    app = _Late()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await click(pilot, app.query_one("#target", Button))
+        await pilot.pause()
+        assert app.pressed == 1
 
 
 class _Plain(App[None]):
