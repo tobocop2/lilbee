@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 import lilbee.runtime.launcher as launcher
+from lilbee.runtime.cancellation import INTERRUPTED_EXIT_STATUS
 from lilbee.runtime.launcher import _COMPLETION_ENV_SUFFIX
 
 
@@ -161,7 +162,45 @@ def test_keyboard_interrupt_restores_cursor_and_exits_130(
     with pytest.raises(SystemExit) as exc:
         launcher.main()
 
-    assert exc.value.code == 130
+    assert exc.value.code == INTERRUPTED_EXIT_STATUS
+    assert INTERRUPTED_EXIT_STATUS == 130
+
+
+def _status_of_main() -> int | str | None:
+    """Run the launcher and return its exit status; an interrupt that leaves it fails by name."""
+    try:
+        launcher.main()
+    except KeyboardInterrupt:
+        pytest.fail("the interrupt left the launcher")
+    except SystemExit as ended:
+        return ended.code
+    pytest.fail("the launcher returned instead of ending the process")
+
+
+def test_a_one_shot_command_ends_quietly_with_130_on_ctrl_c(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A one-shot command prints no traceback and no cursor escape; its status is Ctrl+C's."""
+    fake_app, _, _ = _patch_app_and_splash(monkeypatch)
+    fake_app.side_effect = KeyboardInterrupt
+    monkeypatch.setattr(sys, "argv", ["lilbee", "status"])
+
+    assert _status_of_main() == INTERRUPTED_EXIT_STATUS
+    assert capsys.readouterr().err == ""
+
+
+def test_a_one_shot_interrupt_ends_through_the_bounded_end(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None
+) -> None:
+    fake_app, _, _ = _patch_app_and_splash(monkeypatch)
+    fake_app.side_effect = KeyboardInterrupt
+    ended = Mock(side_effect=_reraise)
+    monkeypatch.setattr("lilbee.app.services.end_command", ended)
+    monkeypatch.setattr(sys, "argv", ["lilbee", "sync"])
+
+    assert _status_of_main() == INTERRUPTED_EXIT_STATUS
+    ended.assert_called_once()
+    assert ended.call_args.args[0].code == INTERRUPTED_EXIT_STATUS
 
 
 class TestForceUtf8Stdio:
@@ -281,3 +320,60 @@ class TestMissingVcRuntimeWarning:
         monkeypatch.setattr(sys, "argv", ["lilbee", "status"])
         launcher.main()
         calls.assert_called_once_with()
+
+
+class _InterruptOnImport:
+    """A stand-in module whose first ``from ... import name`` is a Ctrl+C."""
+
+    def __init__(self) -> None:
+        self.interrupted = False
+
+    def __getattr__(self, name: str) -> object:
+        if name.startswith("__") or self.interrupted:
+            raise AttributeError(name)
+        self.interrupted = True
+        raise KeyboardInterrupt
+
+
+_CURSOR_SHOW = "\033[?25h"
+
+
+def test_interrupt_before_the_splash_starts_ends_quietly_with_130(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ctrl+C in the services step, before the splash starts, exits 130 with the cursor shown."""
+    _, start_spy, _ = _patch_app_and_splash(monkeypatch)
+    monkeypatch.setattr(
+        "lilbee.app.services.mark_interactive_session", Mock(side_effect=KeyboardInterrupt)
+    )
+    monkeypatch.setattr(sys, "argv", ["lilbee"])
+
+    assert _status_of_main() == INTERRUPTED_EXIT_STATUS
+    assert capsys.readouterr().err == _CURSOR_SHOW
+    start_spy.assert_not_called()
+
+
+def test_interrupt_in_splash_start_ends_quietly_with_130(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ctrl+C while the splash child starts exits 130 with the cursor shown."""
+    fake_app, start_spy, _ = _patch_app_and_splash(monkeypatch)
+    start_spy.side_effect = KeyboardInterrupt
+    monkeypatch.setattr(sys, "argv", ["lilbee"])
+
+    assert _status_of_main() == INTERRUPTED_EXIT_STATUS
+    assert capsys.readouterr().err == _CURSOR_SHOW
+    fake_app.assert_not_called()
+
+
+def test_interrupt_in_cli_import_ends_quietly_with_130_and_shows_cursor(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ctrl+C in the CLI import stops the splash, then exits 130 with the cursor shown."""
+    _, _, stop_spy = _patch_app_and_splash(monkeypatch)
+    monkeypatch.setitem(sys.modules, "lilbee.cli", _InterruptOnImport())
+    monkeypatch.setattr(sys, "argv", ["lilbee"])
+
+    assert _status_of_main() == INTERRUPTED_EXIT_STATUS
+    assert capsys.readouterr().err == _CURSOR_SHOW
+    stop_spy.assert_called_once()

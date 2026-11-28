@@ -35,8 +35,10 @@ from lilbee.core.config.enums import ChatMode, FtsLanguage, KvCacheType, OcrMode
 from lilbee.core.config.model import (
     _TAKES_DEFAULT_WHEN_REFUSED,
     SERVICE_ONLY_FIELDS,
+    _refusals,
     _TomlSource,
     env_value,
+    refusal_sentence,
     value_is_set,
 )
 from lilbee.core.config.resolve import read_layers
@@ -819,12 +821,11 @@ class TestFlashAttentionConfig:
             c.flash_attention = True
             assert c.flash_attention is True
 
-    def test_assignment_with_int_coerces_to_bool(self, tmp_path) -> None:
-        """Non-string non-bool values fall through to bool(v)."""
-        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
-            c = Config()
-            c.flash_attention = 1  # type: ignore[assignment]
-            assert c.flash_attention is True
+    @pytest.mark.parametrize("bad", [0, 2, 1.9, 2.0, [], [1], ["a"], {}, {"a": 1}])
+    def test_flash_attention_refuses_a_number_or_a_list(self, bad) -> None:
+        with pytest.raises(ValidationError, match="use true, false or auto"):
+            Config(flash_attention=bad)
+        assert refusal_sentence("flash_attention", bad).startswith("flash_attention = ")
 
 
 class TestNGpuLayersConfig:
@@ -1069,20 +1070,14 @@ class TestSemanticChunkingConfig:
             setattr(built, key, bad)
         assert getattr(built, key) == before
 
-    def test_non_string_non_bool_coerced(self) -> None:
-        """Validator coerces non-str, non-bool inputs via ``bool()``.
+    @pytest.mark.parametrize("bad", [0, 2, 1.9, 2.0, [], [1], ["a"], {}, {"a": 1}])
+    def test_semantic_chunking_refuses_a_number_or_a_list(self, bad) -> None:
+        with pytest.raises(ValidationError, match="use true or false"):
+            Config(semantic_chunking=bad)
+        assert refusal_sentence("semantic_chunking", bad).startswith("semantic_chunking = ")
 
-        Calls the validator directly because pydantic may pre-coerce via
-        its own conversion before a mode="before" validator even sees
-        simple types like int.
-        """
-        from lilbee.core.config import Config
-
-        parse = Config._parse_semantic_chunking
-        assert parse(1) is True
-        assert parse(0) is False
-        assert parse([1]) is True
-        assert parse([]) is False
+    def test_semantic_chunking_none_reads_as_off(self) -> None:
+        assert Config(semantic_chunking=None).semantic_chunking is False  # type: ignore[arg-type]
 
 
 class TestSoftFieldWarningNamesItsRealSource:
@@ -1557,14 +1552,21 @@ class TestConceptAllowedEntTypes:
             c = Config()
             assert "PERSON" in c.concept_allowed_ent_types
 
-    def test_non_string_non_collection_input_falls_back_to_default(self):
-        """A programmatic override with an unsupported type keeps defaults.
+    @pytest.mark.parametrize("bad", [None, True, False, 0, 2, 1.9, 2.0, {}, {"a": 1}])
+    def test_ent_types_refuses_a_scalar_or_a_table(self, bad):
+        with pytest.raises(ValidationError, match="entity type names"):
+            Config(concept_allowed_ent_types=bad)
+        assert refusal_sentence("concept_allowed_ent_types", bad).startswith(
+            "concept_allowed_ent_types = "
+        )
 
-        The validator accepts str/set/frozenset/list. Anything else (None,
-        int, bytes) hits the trailing fallback branch instead of raising.
-        """
-        c = Config(concept_allowed_ent_types=None)  # type: ignore[arg-type]
-        assert "PERSON" in c.concept_allowed_ent_types
+    @pytest.mark.parametrize("bad", [[1], [None], ["PERSON", 2]])
+    def test_ent_types_refuses_an_entry_that_is_not_text(self, bad):
+        with pytest.raises(ValidationError, match="list of entity type names"):
+            Config(concept_allowed_ent_types=bad)
+
+    def test_an_empty_ent_types_list_keeps_the_default_set(self):
+        assert "PERSON" in Config(concept_allowed_ent_types=[]).concept_allowed_ent_types
 
 
 class TestEmptyStringValidation:
@@ -1628,11 +1630,14 @@ class TestBlankOptionalNumberInTheEnvironment:
 
 
 class TestIgnoreDirsFallback:
-    def test_non_string_non_collection_returns_defaults(self, tmp_path):
-        env = clean_env(tmp_path)
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config(ignore_dirs=42)  # type: ignore[arg-type]
-        assert c.ignore_dirs == DEFAULT_IGNORE_DIRS
+    @pytest.mark.parametrize("bad", [None, True, False, 0, 2, 1.9, 2.0, {}, {"a": 1}])
+    def test_ignore_dirs_refuses_a_scalar_or_a_table(self, bad):
+        with pytest.raises(ValidationError, match="list of directory names"):
+            Config(ignore_dirs=bad)
+        assert refusal_sentence("ignore_dirs", bad).startswith("ignore_dirs = ")
+
+    def test_an_empty_ignore_dirs_list_keeps_the_default_set(self):
+        assert Config(ignore_dirs=[]).ignore_dirs == DEFAULT_IGNORE_DIRS
 
 
 # The first path segment of a site, as a whole segment: how each generic auth or shop name is
@@ -3634,3 +3639,106 @@ class TestFtsLanguage:
 
         with pytest.raises(ValidationError, match="fts_language must be one of"):
             Config(fts_language="Klingon")
+
+
+def _numeric_field_names() -> list[str]:
+    names = []
+    for name, info in Config.model_fields.items():
+        parts = [
+            a for a in (get_args(info.annotation) or (info.annotation,)) if a is not type(None)
+        ]
+        if parts and all(a in (int, float) for a in parts):
+            names.append(name)
+    return names
+
+
+class TestANumberFieldRefusesABool:
+    def test_the_census_finds_the_number_fields(self) -> None:
+        assert len(_numeric_field_names()) > 50
+
+    @pytest.mark.parametrize("name", _numeric_field_names())
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_a_number_field_refuses_true_and_false(self, name, flag) -> None:
+        with pytest.raises(
+            ValidationError,
+            match=r"use a number, not true or false|not a page number|use a whole number",
+        ):
+            Config(**{name: flag})
+        assert refusal_sentence(name, flag).startswith(f"{name} = ")
+
+    @pytest.mark.parametrize(
+        ("name", "text", "expected"),
+        [("num_ctx", "4096", 4096), ("temperature", "0.7", 0.7), ("seed", "3", 3), ("top_k", 7, 7)],
+    )
+    def test_a_number_field_still_takes_a_number_and_its_text(self, name, text, expected) -> None:
+        assert getattr(Config(**{name: text}), name) == expected
+
+    @pytest.mark.parametrize("name", ["temperature", "top_p", "repeat_penalty", "top_k_sampling"])
+    def test_a_blank_optional_number_is_still_unset(self, name) -> None:
+        assert getattr(Config(**{name: ""}), name) is None
+
+    def test_a_bool_field_still_takes_a_bool(self) -> None:
+        assert Config(cpu_moe=True).cpu_moe is True
+
+
+class TestAnyOtherTypeIsRefusedWithTheKey:
+    @pytest.mark.parametrize("bad", [True, False, 1.9, [1], {}])
+    def test_n_gpu_layers_refuses_a_bool_a_fraction_and_a_collection(self, bad) -> None:
+        with pytest.raises(ValidationError, match="use a whole number, cpu or auto"):
+            Config(n_gpu_layers=bad)
+        assert refusal_sentence("n_gpu_layers", bad).startswith("n_gpu_layers = ")
+
+    def test_n_gpu_layers_takes_a_whole_float(self) -> None:
+        assert Config(n_gpu_layers=2.0).n_gpu_layers == 2
+
+    @pytest.mark.parametrize("bad", [True, False, 1.9, 2.0, [], [1], ["a"], {}, {"a": 1}, [0, 1]])
+    def test_gpu_devices_refuses_a_bool_a_float_and_a_collection(self, bad) -> None:
+        with pytest.raises(ValidationError, match="GPU indexes"):
+            Config(gpu_devices=bad)
+        assert refusal_sentence("gpu_devices", bad).startswith("gpu_devices = ")
+
+    @pytest.mark.parametrize(("given", "expected"), [(0, "0"), (2, "2"), ("0,1", "0,1")])
+    def test_gpu_devices_takes_an_index_or_its_text(self, given, expected) -> None:
+        assert Config(gpu_devices=given).gpu_devices == expected
+
+    @pytest.mark.parametrize(
+        "key", ["flash_attention", "semantic_chunking", "n_gpu_layers", "gpu_devices"]
+    )
+    def test_a_refused_load_value_is_dropped_by_the_load_path(self, key) -> None:
+        reasons = _refusals(Config, {key: [1]})
+        assert key in reasons
+        assert "is not a value it accepts" not in reasons[key]
+
+
+class TestEngineIdleTtlIsNotNegative:
+    @pytest.mark.parametrize("value", [0, 1, 30])
+    def test_zero_and_more_are_accepted(self, value) -> None:
+        assert Config(engine_idle_ttl_minutes=value).engine_idle_ttl_minutes == value
+
+    @pytest.mark.parametrize("value", [-1, "-1"])
+    def test_a_negative_value_is_refused_with_the_key(self, value) -> None:
+        with pytest.raises(ValidationError, match="engine_idle_ttl_minutes"):
+            Config(engine_idle_ttl_minutes=value)
+        assert refusal_sentence("engine_idle_ttl_minutes", value).startswith(
+            "engine_idle_ttl_minutes = "
+        )
+
+    def test_a_negative_variable_stops_the_command_and_names_the_variable(self, tmp_path) -> None:
+        env = {**clean_env(tmp_path), "LILBEE_ENGINE_IDLE_TTL_MINUTES": "-1"}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            pytest.raises(RefusedVariableError, match="LILBEE_ENGINE_IDLE_TTL_MINUTES = '-1'"),
+        ):
+            Config()
+
+    def test_a_negative_value_in_config_toml_takes_the_default_and_warns(
+        self, tmp_path, caplog
+    ) -> None:
+        (tmp_path / "config.toml").write_text("engine_idle_ttl_minutes = -3\n", encoding="utf-8")
+        with (
+            mock.patch.dict(os.environ, clean_env(tmp_path), clear=True),
+            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
+        ):
+            c = Config()
+        assert c.engine_idle_ttl_minutes == Config.model_fields["engine_idle_ttl_minutes"].default
+        assert any("engine_idle_ttl_minutes" in rec.message for rec in caplog.records)

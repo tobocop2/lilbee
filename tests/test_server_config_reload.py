@@ -19,6 +19,7 @@ from lilbee.app.settings import OCR_OFF_VISION_NOTICE
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import CONFIG_FILE_NAME, cfg
 from lilbee.core.config.enums import LlmProvider, OcrMode
+from lilbee.core.toml_read import load_toml
 from tests.conftest import make_mock_services
 
 
@@ -217,7 +218,6 @@ def test_a_settings_write_over_a_file_changed_under_its_read_keeps_the_file(
     first_file_taken, monkeypatch
 ):
     import tomllib
-    from types import SimpleNamespace
 
     path = cfg.data_root / CONFIG_FILE_NAME
     second = _toml_of(_SECOND)
@@ -225,16 +225,14 @@ def test_a_settings_write_over_a_file_changed_under_its_read_keeps_the_file(
 
     def load_while_an_editor_saves(f: Any) -> dict[str, Any]:
         if rewrites:
-            return tomllib.load(f)
+            return load_toml(f)
         rewrites.append(1)
         _rewrite_in_place(b"", tick=1)
-        values = tomllib.load(f)
+        values = load_toml(f)
         _rewrite_in_place(second, tick=2)
         return values
 
-    monkeypatch.setattr(
-        persistent_settings, "tomllib", SimpleNamespace(load=load_while_an_editor_saves)
-    )
+    monkeypatch.setattr(persistent_settings, "load_toml", load_while_an_editor_saves)
     response = first_file_taken.patch("/api/config", json={"top_k": 21})
     assert response.status_code == 503
     assert "changed while it was read; try again" in response.json()["detail"]

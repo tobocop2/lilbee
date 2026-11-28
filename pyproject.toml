@@ -79,8 +79,10 @@ dependencies = [
     "gguf>=0.19",
     # PEP 440 comparison for a profile's min_lilbee; stdlib has none.
     "packaging>=24",
-    # The read side is stdlib tomllib; this is its write half.
+    # The read side is stdlib tomllib. tomli-w writes state.toml and the profile export.
+    # tomlkit writes config.toml and keeps its comments.
     "tomli-w>=1.0",
+    "tomlkit>=0.15.3",
     "cachetools>=7.1.4",
     # gitignore-syntax matching for .lilbeeignore. Already present transitively;
     # the floor is where the non-deprecated "gitignore" pattern factory lands.

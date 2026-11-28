@@ -36,6 +36,8 @@ LOAD_AFFECTING_KEYS: frozenset[str] = frozenset(
         "reranker_type",
         # The embed/rerank window and the chat floor are sized from the chunk budget.
         "chunk_size",
+        # The chat window and the fleet plan are sized against it.
+        "gpu_memory_fraction",
     }
 )
 

@@ -6,7 +6,6 @@ Per-run CLI flags and ``apply_ephemeral_model_swap`` set cfg for one process and
 from __future__ import annotations
 
 import os
-import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +14,8 @@ from typing import Any
 
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
+
+from lilbee.core.toml_read import load_toml
 
 from .defaults import CONFIG_FILE_NAME, SKIP_TOML_ENV, env_var_name
 from .enums import ProfileScope, SettingSource
@@ -105,7 +106,7 @@ def read_config_table(path: Path) -> dict[str, Any] | None:
         return {}
     try:
         with path.open("rb") as f:
-            return tomllib.load(f)
+            return load_toml(f)
     except (ValueError, OSError):
         return None
 
@@ -114,7 +115,7 @@ def toml_is_readable(path: Path) -> bool:
     """Whether the config.toml at *path* opens and parses."""
     try:
         with path.open("rb") as f:
-            tomllib.load(f)
+            load_toml(f)
     except (ValueError, OSError):
         return False
     return True

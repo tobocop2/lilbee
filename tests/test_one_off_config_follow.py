@@ -85,6 +85,21 @@ def test_a_one_off_peer_keeps_its_start_time_library_settings(
     assert cfg.chunk_size == start
 
 
+def test_a_one_off_retry_takes_the_owner_gpu_memory_fraction_write(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    """gpu_memory_fraction is an engine tuning key: a one-off retry follows the owner's write."""
+    from lilbee.providers.reload_keys import ENGINE_TUNING_KEYS
+
+    assert "gpu_memory_fraction" in ENGINE_TUNING_KEYS
+    new = 0.5 if cfg.gpu_memory_fraction != 0.5 else 0.6
+    follow_config_one_off(frozenset())
+    refresh = _refresh_a_one_off_process_gets(monkeypatch)
+    persistent_settings.save(cfg.data_root, {"gpu_memory_fraction": new})
+    refresh()  # type: ignore[operator]
+    assert cfg.gpu_memory_fraction == new
+
+
 def test_ask_with_num_ctx_keeps_the_flag_over_the_owner_num_ctx_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

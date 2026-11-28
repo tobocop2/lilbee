@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import logging
 import os
-import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
@@ -39,6 +38,7 @@ from lilbee.cli.commands.serve_logging import (
 from lilbee.cli.upgrade_line import UpgradeLine
 from lilbee.core.config import cfg
 from lilbee.runtime.asyncio_loop import run_main
+from lilbee.runtime.cancellation import INTERRUPTED_EXIT_STATUS
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.lock import (
     SERVER_LOCK_TIMEOUT,
@@ -73,9 +73,6 @@ _EXIT_DEADLINE_S = 60.0
 
 _GRACEFUL_SHUTDOWN_S = 10
 """Seconds open requests get before uvicorn cancels them and runs the lifespan teardown."""
-
-_INTERRUPTED_EXIT_STATUS = 128 + signal.SIGINT
-"""The status a shell reports for a process that Ctrl-C ended."""
 
 _HARD_EXIT_GRACE_S = 1
 """The same wait on SIGTERM or SIGHUP: long enough for a woken write to send its answer."""
@@ -276,7 +273,7 @@ def serve(
     except KeyboardInterrupt:
         # The exit in the finally can end the process before the interrupt reaches the
         # interpreter, so the status is the shell's own for Ctrl-C.
-        status = _INTERRUPTED_EXIT_STATUS
+        status = INTERRUPTED_EXIT_STATUS
         raise
     finally:
         _stop_server(status, server_lock, scope_hold)

@@ -134,7 +134,7 @@ from lilbee.providers.roles import WorkerRole
 from lilbee.providers.truncation import cut_inputs_in_scope, one_truncation_warning
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
-from lilbee.runtime.console import PlainConsole, ProgressDisplay, stdout_progress
+from lilbee.runtime.console import PlainConsole, ProgressDisplay, live_progress
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
 from lilbee.runtime.lock import (
     LockTimeoutError,
@@ -1999,7 +1999,7 @@ def _phase_progress_callback(
 
 def _ingest_progress_bar(quiet: bool) -> ProgressDisplay:
     """The transient bar an in-process ingest reports on, disabled when *quiet*."""
-    return stdout_progress(
+    return live_progress(
         SpinnerColumn(),
         literal_text_column("{task.description}"),
         BarColumn(),

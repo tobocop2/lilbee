@@ -12,6 +12,7 @@ from typing import Any
 import tomli_w
 
 from lilbee.core.security import file_lock_or_warn, write_private_text
+from lilbee.core.toml_read import load_toml
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ def _read_table(path: Path) -> dict[str, Any]:
     """The TOML table at *path*; a missing, unreadable or broken file reads as empty."""
     try:
         with path.open("rb") as f:
-            return tomllib.load(f)
+            return load_toml(f)
     except FileNotFoundError:
         return {}
     except (OSError, tomllib.TOMLDecodeError) as exc:

@@ -871,7 +871,7 @@ def _check_live_displays(paths: Iterable[Path]) -> Iterator[str]:
     """Yield findings for a live display built outside the console module.
 
     Columns stay importable from rich.progress. The display itself comes from
-    live_progress (stderr) or stdout_progress, which fix the stream redirects.
+    live_progress, which fixes the stream redirects.
     """
     for path in paths:
         if path == PLAIN_CONSOLE_MODULE:
@@ -879,7 +879,7 @@ def _check_live_displays(paths: Iterable[Path]) -> Iterator[str]:
         for lineno, reason in _live_display_hits(path):
             yield (
                 f"{path}:{lineno}: {reason}, a live display (build it with "
-                "lilbee.runtime.console.live_progress or stdout_progress)"
+                "lilbee.runtime.console.live_progress)"
             )
 
 

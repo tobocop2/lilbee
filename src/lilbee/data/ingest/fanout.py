@@ -25,7 +25,7 @@ from lilbee.core.config import active_config
 from lilbee.data.ingest.errors import error_reason
 from lilbee.data.types import ShardId, SyncResult
 from lilbee.runtime.asyncio_loop import run_main
-from lilbee.runtime.console import PlainConsole, ProgressDisplay, stdout_progress
+from lilbee.runtime.console import PlainConsole, ProgressDisplay, live_progress
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
 from lilbee.runtime.progress import (
     BatchProgressEvent,
@@ -319,7 +319,7 @@ def _drain(messages: Queue[ShardMessage]) -> list[ShardMessage]:
 
 def _shard_progress_bar(quiet: bool) -> ProgressDisplay:
     """The one bar a fan-out reports on, disabled when the caller wants no output."""
-    return stdout_progress(
+    return live_progress(
         SpinnerColumn(),
         literal_text_column("{task.description}", style="progress.description"),
         BarColumn(),

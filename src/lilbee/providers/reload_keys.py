@@ -23,6 +23,7 @@ ENGINE_TUNING_KEYS: frozenset[str] = frozenset(
         "cpu_moe",
         "n_cpu_moe",
         "flash_attention",
+        "gpu_memory_fraction",
     }
 )
 """The fleet reload keys that change how a server runs, not what a role answers with.

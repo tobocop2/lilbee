@@ -22,6 +22,7 @@ from lilbee.core.config.model import ignore_not_settings
 from lilbee.core.config.resolve import PROFILE_FIELDS, builtin_value
 from lilbee.core.security import write_text_atomically
 from lilbee.core.system import canonical_data_root, default_data_dir
+from lilbee.core.toml_read import loads_toml
 
 T = TypeVar("T")
 
@@ -372,9 +373,8 @@ def _parse_toml(text: str) -> dict[str, Any]:
     """The parsed TOML in *text*; raises ``ProfileFileError`` when it is too large or not TOML."""
     _check_size(len(text.encode("utf-8")))
     try:
-        return tomllib.loads(text)
-    # tomllib raises RecursionError on arrays nested a few hundred deep
-    except (tomllib.TOMLDecodeError, RecursionError) as exc:
+        return loads_toml(text)
+    except tomllib.TOMLDecodeError as exc:
         raise ProfileFileError(f"Not valid TOML: {exc}") from None
 
 

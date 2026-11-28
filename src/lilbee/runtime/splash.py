@@ -54,6 +54,9 @@ def _spawn_args(read_fd: int) -> tuple[str, dict[str, Any]]:
     (msvcrt.open_osfhandle in the runner; inherited handles keep their value
     in the child). handle_list restricts inheritance to exactly this handle,
     the same no-leak guarantee pass_fds gives on POSIX.
+
+    The child leaves the terminal's foreground group (a new session on POSIX, a
+    new process group on Windows), so Ctrl+C reaches only the main process.
     """
     if sys.platform == "win32":  # pragma: no cover - Windows-only, covered on the Windows CI leg
         import msvcrt
@@ -62,9 +65,12 @@ def _spawn_args(read_fd: int) -> tuple[str, dict[str, Any]]:
         os.set_handle_inheritable(handle, True)
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.lpAttributeList = {"handle_list": [handle]}
-        return str(handle), {"startupinfo": startupinfo}
+        return str(handle), {
+            "startupinfo": startupinfo,
+            "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP,
+        }
     os.set_inheritable(read_fd, True)
-    return str(read_fd), {"pass_fds": (read_fd,)}
+    return str(read_fd), {"pass_fds": (read_fd,), "start_new_session": True}
 
 
 def start() -> SplashHandle | None:

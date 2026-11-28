@@ -13,6 +13,8 @@ import os
 import sys
 from collections.abc import Callable
 
+from lilbee.runtime.cancellation import INTERRUPTED_EXIT_STATUS
+
 # Shells fetch tab completions by running the console script with
 # ``_<PROG>_COMPLETE=...`` set (and an empty argv); click answers those itself.
 _COMPLETION_ENV_SUFFIX = "_COMPLETE"
@@ -71,29 +73,8 @@ def _run_cli(app: Callable[[], object]) -> None:
         raise SystemExit(1) from None
 
 
-def main() -> None:
-    """Entry point for the ``lilbee`` console script."""
-    _force_utf8_stdio()
-    _warn_missing_vc_runtime()
-    args = sys.argv[1:]
-    # Help exits before the TUI, so it must not print through the animation.
-    wants_help = any(arg in ("--help", "-h") for arg in args)
-    is_interactive = (
-        (not args or args[0] in ("chat", "")) and not wants_help and not _shell_completion_active()
-    )
-
-    if not is_interactive:
-        from lilbee.cli import app
-
-        try:
-            _run_cli(app)
-        except SystemExit as ended:
-            # A worker the command left would hang the interpreter's exit.
-            from lilbee.app.services import end_command
-
-            end_command(ended)
-        return
-
+def _run_interactive() -> None:
+    """Start the splash, import the CLI and run the TUI; Ctrl+C anywhere in it reaches ``main``."""
     from lilbee.app.services import mark_interactive_session
     from lilbee.runtime.splash import start, stop
 
@@ -114,9 +95,36 @@ def main() -> None:
     # The splash keeps animating through the CLI dispatch and the TUI stack's
     # own imports (Textual and every screen), which on a cold disk take seconds;
     # run_tui dismisses it right before Textual takes over the terminal.
+    _run_cli(app)
+
+
+def main() -> None:
+    """Entry point for the ``lilbee`` console script."""
+    _force_utf8_stdio()
+    _warn_missing_vc_runtime()
+    args = sys.argv[1:]
+    # Help exits before the TUI, so it must not print through the animation.
+    wants_help = any(arg in ("--help", "-h") for arg in args)
+    is_interactive = (
+        (not args or args[0] in ("chat", "")) and not wants_help and not _shell_completion_active()
+    )
+
+    if not is_interactive:
+        from lilbee.app.services import end_command
+        from lilbee.cli import app
+
+        # end_command: a worker the command left would hang the interpreter's exit.
+        try:
+            _run_cli(app)
+        except SystemExit as ended:
+            end_command(ended)
+        except KeyboardInterrupt:
+            end_command(SystemExit(INTERRUPTED_EXIT_STATUS))
+        return
+
     try:
-        _run_cli(app)
+        _run_interactive()
     except KeyboardInterrupt:
         sys.stderr.write("\033[?25h")
         sys.stderr.flush()
-        raise SystemExit(130) from None
+        raise SystemExit(INTERRUPTED_EXIT_STATUS) from None
