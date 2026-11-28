@@ -26,9 +26,16 @@ class _GoneTerminal(_Terminal):
         raise OSError(5, "Input/output error")
 
 
-class _ClosedTerminal(_Terminal):
+class _WriteRefusedTerminal(_Terminal):
     def write(self, text: str) -> int:
         raise ValueError("I/O operation on closed file.")
+
+
+def _closed_stream() -> io.StringIO:
+    """A real closed stream: its isatty() raises ValueError, as every closed stream does."""
+    stream = io.StringIO()
+    stream.close()
+    return stream
 
 
 def _run(
@@ -100,9 +107,13 @@ def test_no_terminal_stream_still_exits(monkeypatch: pytest.MonkeyPatch) -> None
     straggler.assert_called_once_with(0)
 
 
-@pytest.mark.parametrize("terminal", [_GoneTerminal, _ClosedTerminal], ids=["gone", "closed"])
+@pytest.mark.parametrize(
+    "terminal",
+    [_GoneTerminal, _WriteRefusedTerminal, _closed_stream],
+    ids=["gone", "write-refused", "closed"],
+)
 def test_a_terminal_that_is_gone_does_not_stop_the_exit(
-    monkeypatch: pytest.MonkeyPatch, terminal: type[_Terminal]
+    monkeypatch: pytest.MonkeyPatch, terminal: Callable[[], io.StringIO]
 ) -> None:
     straggler = _run(monkeypatch, terminal(), mock.AsyncMock())
 
