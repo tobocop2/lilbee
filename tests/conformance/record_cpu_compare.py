@@ -53,6 +53,7 @@ class Model:
 
 # The weights of the record of commit 3df1d204f. A safetensors model is a folder: the run
 # also fetches the small files at the top of its repo, and the pooling config of an embedder.
+# The same holds for an OpenVINO IR model.
 # mistral.rs answers with its model folder as the model name, so the engine folders keep the
 # names of that run. The record refuses a path under /home: keep --models under /var/tmp.
 _ENGINE_MODELS = {
@@ -160,11 +161,20 @@ def _repo_files(repo: str) -> list[str]:
     return [e["path"] for e in entries if e["type"] == "file"]
 
 
+def _is_ir_weights(name: str) -> bool:
+    """Is *name* the weights of an OpenVINO IR folder, such as ``openvino_model.bin``?"""
+    return name.startswith("openvino_") and name.endswith(".bin")
+
+
 def _fetch(model: Model, root: Path) -> Path:
-    """The local path of *model*, downloaded when absent, with its sha256 checked."""
+    """The local path of *model*, downloaded when absent, with its sha256 checked.
+
+    A safetensors model or an OpenVINO IR model is a folder: the run fetches every file at the
+    top of its repo, which holds the config, the tokenizer and the detokenizer of the IR.
+    """
     folder = root / model.folder
     path = folder / model.file
-    if model.file.endswith(".safetensors"):
+    if model.file.endswith(".safetensors") or _is_ir_weights(model.file):
         wanted = [f for f in _repo_files(model.repo) if "/" not in f or f in _SAFETENSORS_EXTRAS]
         for name in wanted:
             if not (folder / name).exists():

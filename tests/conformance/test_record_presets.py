@@ -192,6 +192,57 @@ class TestRerankUrl:
         assert args.rerank_url == "http://r"
 
 
+class TestRoutesOfOtherEngines:
+    @pytest.mark.parametrize(
+        "route",
+        ["/rerank", "/v1/rerank", "/v3/rerank", "/rerank?top=3", "/rerank/", "/v1/rerank/?a=1"],
+    )
+    def test_every_rerank_route_goes_to_the_rerank_server(self, route: str) -> None:
+        seen: list[tuple[str, str, str]] = []
+        with (
+            _server("lilbee", seen) as upstream,
+            _server("rerank", seen) as rerank,
+            recording(upstream, token=_TOKEN, rerank_url=rerank) as (proxy, _),
+        ):
+            _post_body(proxy, route, {"query": "q", "texts": ["a"]})
+        assert seen == [("rerank", route, "")]
+
+    @pytest.mark.parametrize(
+        "route", ["/v1/embeddings", "/v3/embeddings", "/embeddings/", "/v1/embeddings?x=1"]
+    )
+    def test_every_embeddings_route_goes_to_the_embed_server(self, route: str) -> None:
+        seen: list[tuple[str, str, str]] = []
+        with (
+            _server("lilbee", seen) as upstream,
+            _server("embed", seen) as embed,
+            recording(upstream, token=_TOKEN, embed_url=embed) as (proxy, _),
+        ):
+            _post_body(proxy, route, {"input": ["a"]})
+        assert seen == [("embed", route, "")]
+
+    @pytest.mark.parametrize(
+        "route",
+        [
+            "/health",
+            "/info",
+            "/v1/chat/completions",
+            "/foorerank",
+            "/v1/not-rerank",
+            "/fooembeddings",
+        ],
+    )
+    def test_any_other_route_stays_on_the_main_server(self, route: str) -> None:
+        seen: list[tuple[str, str, str]] = []
+        with (
+            _server("lilbee", seen) as upstream,
+            _server("rerank", seen) as rerank,
+            _server("embed", seen) as embed,
+            recording(upstream, token=_TOKEN, rerank_url=rerank, embed_url=embed) as (proxy, _),
+        ):
+            _post_body(proxy, route, _TEXT_CHAT)
+        assert seen == [("lilbee", route, f"Bearer {_TOKEN}")]
+
+
 class TestTokenOption:
     @staticmethod
     def _args(*extra: str) -> argparse.Namespace:

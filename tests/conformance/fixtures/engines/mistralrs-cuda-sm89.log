@@ -1,0 +1,19 @@
+engine: mistralrs-cuda-sm89
+version: mistral.rs 0.9.5 linux-x86_64-cuda-sm89
+host: Linux-7.0.0-1017-gcp-x86_64-with-glibc2.39
+backend: cuda
+reported-backend: cuda
+devices: cuda0
+devices-from: engine-log
+models: chat=default,embed=default,vision=default
+server-flags: chat: <home>/.local/share/lilbee/engines/mistral.rs/0.9.5-cuda-sm89/lilbee_engine_mistral_rs/bin/mistralrs serve --host 127.0.0.1 --port 8501 text --paged-attn off --max-model-len 16384 -m /var/tmp/hw-models/chat17 -f Qwen3-1.7B-Q8_0.gguf; embed: <home>/.local/share/lilbee/engines/mistral.rs/0.9.5-cuda-sm89/lilbee_engine_mistral_rs/bin/mistralrs serve --host 127.0.0.1 --port 8502 embedding --paged-attn off -m /var/tmp/hw-models/st_embed; vision: <home>/.local/share/lilbee/engines/mistral.rs/0.9.5-cuda-sm89/lilbee_engine_mistral_rs/bin/mistralrs serve --host 127.0.0.1 --port 8503 multimodal --paged-attn off -m /var/tmp/hw-models/st_vision
+gpu: NVIDIA L4
+STEP mistralrs-cuda-sm89 template ok=True finish=stop
+STEP mistralrs-cuda-sm89 tool ok=True tool_calls=['get_weather']
+STEP mistralrs-cuda-sm89 overflow ok=True kind=context_overflow
+STEP mistralrs-cuda-sm89 json_object ok=True finish=stop
+STEP mistralrs-cuda-sm89 json_schema ok=True finish=stop
+STEP mistralrs-cuda-sm89 reasoning ok=True finish=stop
+STEP mistralrs-cuda-sm89 embed ok=True dims=[1024]
+STEP mistralrs-cuda-sm89 vision ok=True red_named=True blue_called_red=False
+STEP mistralrs-cuda-sm89 named ok=True log=['served by engine=mistralrs-cuda-sm89 version=preset build=none role=chat model=mistralrs-cuda-sm89/default'] status={<WorkerRole.CHAT: 'chat'>: 'mistralrs-cuda-sm89', <WorkerRole.EMBED: 'embed'>: 'mistralrs-cuda-sm89'}

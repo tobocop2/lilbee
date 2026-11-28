@@ -171,7 +171,7 @@ def test_the_device_list_row_matches_its_log() -> None:
 def test_an_unrecorded_row_has_no_fixture(row: Row) -> None:
     assert row.result.startswith(NOT_RECORDED)
     assert not row.version
-    assert not list(FIXTURES.glob(f"{row.recording}*"))
+    assert not list(FIXTURES.glob(f"{row.recording}.*"))
 
 
 def test_every_fixture_has_a_row() -> None:

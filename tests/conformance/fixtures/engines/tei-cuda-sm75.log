@@ -1,0 +1,13 @@
+engine: tei-cuda-sm75
+version: tei 1.9.4 linux-x86_64-cuda-sm75
+host: Linux-7.0.0-1017-gcp-x86_64-with-glibc2.39
+backend: cuda
+reported-backend: cuda
+devices: Cuda1
+devices-from: engine-log
+models: embed=st_embed,rerank=bge-reranker-v2-m3
+server-flags: embed: <home>/.local/share/lilbee/engines/tei/1.9.4-cuda-sm75/lilbee_engine_tei/bin/text-embeddings-router --model-id /var/tmp/hw-models/st_embed --hostname 127.0.0.1 --max-client-batch-size 64 --max-batch-tokens 640 --tokenization-workers 2 --dtype float32 --port 8501; rerank: <home>/.local/share/lilbee/engines/tei/1.9.4-cuda-sm75/lilbee_engine_tei/bin/text-embeddings-router --model-id /var/tmp/hw-models/bge-reranker-v2-m3 --hostname 127.0.0.1 --max-client-batch-size 64 --max-batch-tokens 640 --tokenization-workers 2 --dtype float32 --port 8502
+gpu: Tesla T4
+STEP tei-cuda-sm75 embed ok=True dims=[1024]
+STEP tei-cuda-sm75 rerank ok=True best=1
+STEP tei-cuda-sm75 named ok=True log=['served by engine=tei-cuda-sm75 version=preset build=none role=embed model=tei-cuda-sm75/st_embed'] status={<WorkerRole.EMBED: 'embed'>: 'tei-cuda-sm75', <WorkerRole.RERANK: 'rerank'>: 'tei-cuda-sm75'}

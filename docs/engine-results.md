@@ -33,6 +33,7 @@ The Machine column names the machine that the recording names. The Version colum
 | mistralrs-cuda | chat, embed, vision | NVIDIA GPU | not recorded |  |  |
 | tei-cpu | embed, rerank | CPU host | pass, 3 of 3 steps | 1.9.4 BAAI/bge-small-en-v1.5,BAAI/bge-reranker-base cpu-1.9 | `tei-cpu.json` |
 | tei-cuda | embed, rerank | NVIDIA GeForce RTX 3090 | pass, 3 of 3 steps | 1.9.4 BAAI/bge-small-en-v1.5,BAAI/bge-reranker-base cuda-source-1.9.4 | `tei-cuda.json` |
+| infinity-cpu | embed, rerank | CPU host | pass, 3 of 3 steps | 0.0.80 BAAI/bge-small-en-v1.5,BAAI/bge-reranker-base torch-cpu | `infinity-cpu.json` |
 | openvino-cpu | chat | Intel i7-10750H | manual run: 1 chat request, HTTP 200, no strict steps | llama-server 0.8.0-dev (build 12020, commit 0ec4027a2) openvino 2026.4.1 | `openvino-cpu.json` |
 | openvino-gpu | chat | Intel i7-10750H | manual run: 1 chat request, HTTP 200, no strict steps | llama-server 0.8.0-dev (build 12020, commit 0ec4027a2) openvino 2026.4.1 | `openvino-gpu.json` |
 | openvino-gpu-no-runtime | none | Intel i7-10750H | fail: the server aborts and does not fall back to the CPU | llama.cpp b12020 ubuntu-openvino-2026.4.1-x64 | `openvino-gpu-no-runtime.log` |
@@ -46,5 +47,10 @@ The Machine column names the machine that the recording names. The Version colum
 | ovms-intel-igpu | chat | Intel machine | not recorded, no machine |  |  |
 | ovms-intel-npu | embed, rerank | Intel NPU machine | not recorded, no machine |  |  |
 | geniex-snapdragon-npu | chat | Snapdragon X machine | not recorded, no machine |  |  |
+| llama-vulkan-linux | chat, embed, rerank, vision | NVIDIA GeForce RTX 3090 | pass, 10 of 10 steps | llama.cpp 1.12032.1 linux-x86_64-vulkan | `llama-vulkan-linux.json` |
+| ovms-cpu | chat, embed, rerank, vision | CPU host | pass, 10 of 10 steps | ovms 2026.4.1 linux-x86_64-openvino | `ovms-cpu.json` |
+| mistralrs-cuda-sm89 | chat, embed, vision | NVIDIA L4 | pass, 9 of 9 steps | mistral.rs 0.9.5 linux-x86_64-cuda-sm89 | `mistralrs-cuda-sm89.json` |
+| tei-cuda-sm75 | embed, rerank | Tesla T4 | pass, 3 of 3 steps | tei 1.9.4 linux-x86_64-cuda-sm75 | `tei-cuda-sm75.json` |
+| tei-cuda-sm89 | embed, rerank | NVIDIA L4 | pass, 3 of 3 steps | tei 1.9.4 linux-x86_64-cuda-sm89 | `tei-cuda-sm89.json` |
 
 **Experimental.** An engine is experimental on a device while its row in the coverage table (`src/lilbee/providers/fleet/engines/coverage.json`) has no record. A record is a comparison record (`compared`) or a hardware recording (`recorded`). `lilbee engine list` ends the line of such an engine with ", experimental: not run on" and the device names, for example ", experimental: not run on Intel Arc graphics and Intel NPU", and then prints this note: "Experimental: built and tested without the real device. If you run it, report the result at https://github.com/tobocop2/lilbee/issues." A cell with no row in the table has no record either, and the line names it by its raw key, for example ", experimental: not run on linux-arm64-cpu". The JSON list and `/api/engines` carry the same devices in the `experimental` field, by engine. `auto` never chooses an experimental engine, except the bundled llama.cpp. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. If you run lilbee on such a device, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).

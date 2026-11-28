@@ -74,8 +74,12 @@ def harness_recordings() -> list[Path]:
 
 
 _TIMEOUT_S = 600.0
-_EMBED_PATH = "/v1/embeddings"
-_RERANK_PATH = "/v1/rerank"
+_EMBED_ROUTE = "embeddings"
+_RERANK_ROUTE = "rerank"
+"""The last segment of the embeddings route and of the rerank route.
+
+Engines differ in the rest of the path: ``/v1/rerank``, ``/rerank`` (TEI) and ``/v3/rerank`` (OVMS).
+"""
 _IMAGE_PART = b'"image_url"'
 _NOT_NAME = re.compile(r"[^a-z0-9_-]")
 _OVERFLOW_CAP_S = 30.0
@@ -543,6 +547,11 @@ class _SameOriginRedirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def _is_route(path: str, route: str) -> bool:
+    """Whether the last segment of *path*, before any query, is *route*."""
+    return path.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1] == route
+
+
 def _proxy_handler(
     upstream: str,
     tape: _Tape,
@@ -559,9 +568,9 @@ def _proxy_handler(
             raw = self.rfile.read(size) if size else b""
             headers = {"Content-Type": self.headers.get("Content-Type", "application/json")}
             target = upstream
-            if embed_url is not None and self.path.startswith(_EMBED_PATH):
+            if embed_url is not None and _is_route(self.path, _EMBED_ROUTE):
                 target = embed_url
-            elif rerank_url is not None and self.path.startswith(_RERANK_PATH):
+            elif rerank_url is not None and _is_route(self.path, _RERANK_ROUTE):
                 target = rerank_url
             elif vision_url is not None and _IMAGE_PART in raw:
                 target = vision_url

@@ -380,8 +380,8 @@ def test_the_memory_estimate_of_a_vision_ir_folder_sums_its_parts_not_the_reserv
     assert 2 * 3 * 4096 <= estimate.device_bytes < UNKNOWN_SIZE_RESERVE_BYTES
 
 
-def test_the_proof_table_lists_every_device_as_not_run() -> None:
-    devices = ("Intel CPU", "Intel integrated graphics", "Intel Arc graphics", "Intel NPU")
+def test_the_proof_table_lists_every_device_but_the_cpu_as_not_run() -> None:
+    devices = ("Intel integrated graphics", "Intel Arc graphics", "Intel NPU")
     assert proof.experimental_devices("ovms") == devices
     assert not proof.is_proven("ovms")
 
