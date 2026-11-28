@@ -112,9 +112,12 @@ def _restore_native_stderr(redirect: _StderrRedirect | None) -> None:
 def _write_to_terminal(sequence: str) -> None:
     """Write *sequence* to the terminal; a stream that is not a terminal gets nothing."""
     stream = sys.__stderr__
-    if stream is None or not stream.isatty():
+    if stream is None:
         return
     try:
+        # A closed stream raises from isatty() too, so the check sits inside the guard.
+        if not stream.isatty():
+            return
         stream.write(sequence)
         stream.flush()
     except (OSError, ValueError):
