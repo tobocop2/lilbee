@@ -14,7 +14,7 @@ from textual.widgets.option_list import Option
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
-from lilbee.cli.tui.widgets.dialog import Dialog
+from lilbee.cli.tui.widgets.dialog import CancelButton, Dialog, DialogFooter
 from lilbee.sessions import MessageRole, SessionMessage, derive_title
 
 
@@ -67,7 +67,9 @@ class ForkPicker(Dialog[int | None]):
             yield ClampedOptionList(
                 *(Option(_label(point)) for point in self._points), id="fork-list"
             )
-            yield Static(msg.FORK_PICKER_HINT, id="fork-hint")
+            with DialogFooter(id="fork-footer"):
+                yield Static(msg.FORK_PICKER_HINT, id="fork-hint")
+                yield CancelButton(msg.DIALOG_CLOSE_LABEL)
 
     def on_mount(self) -> None:
         self.query_one("#fork-list", OptionList).focus()

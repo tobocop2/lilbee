@@ -15,7 +15,7 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.format_rows import FormatRow, format_prompt
 from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
-from lilbee.cli.tui.widgets.dialog import Dialog
+from lilbee.cli.tui.widgets.dialog import CancelButton, Dialog, DialogFooter
 
 
 class FormatPicker(Dialog[ModelFormat | None]):
@@ -38,7 +38,9 @@ class FormatPicker(Dialog[ModelFormat | None]):
             yield ClampedOptionList(
                 *(Option(format_prompt(row)) for row in self._rows), id="format-list"
             )
-            yield Static(msg.FORMAT_PICKER_HINT, id="format-hint")
+            with DialogFooter(id="format-footer"):
+                yield Static(msg.FORMAT_PICKER_HINT, id="format-hint")
+                yield CancelButton(msg.DIALOG_CLOSE_LABEL)
 
     def on_mount(self) -> None:
         self.query_one("#format-list", OptionList).focus()

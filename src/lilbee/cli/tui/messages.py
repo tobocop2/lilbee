@@ -1070,7 +1070,7 @@ MODEL_BAR_NOT_INSTALLED_TOOLTIP = (
     "or press m to open the Catalog and install it."
 )
 MODEL_PICKER_TURN_OFF = "Turn off this model"
-MODEL_PICKER_HINT = "Enter use model · e or ctrl+l engine · Esc close · / search"
+MODEL_PICKER_HINT = "Enter use model · e or ctrl+l engine · / search"
 MODEL_PICKER_LATE_PICK_SKIPPED = (
     "The engine is saved. {model} is not used: you picked another model after it."
 )
@@ -1117,6 +1117,7 @@ PROFILE_APPLY_HELD_OUT = "A rebuild retries the files that lilbee holds out."
 PROFILE_APPLY_REINDEX_LABEL = "Apply and reindex"
 PROFILE_APPLY_LABEL = "Apply"
 PROFILE_CANCEL_LABEL = "Cancel"
+DIALOG_CLOSE_LABEL = "Close"
 PROFILE_APPLIED = "Switched to {name}."
 PROFILE_SAVE_TITLE = "Save as a new profile"
 PROFILE_SAVE_PLACEHOLDER = "Profile name"

@@ -31,8 +31,13 @@ ModelPickerModal {
     border: solid $surface-lighten-2;
 }
 
+/* Docked, so the list gives up its rows and the footer and Cancel stay in view. */
+#picker-footer {
+    dock: bottom;
+    height: 1;
+}
+
 #picker-hint {
     height: 1;
     color: $text-muted;
-    padding: 1 0 0 0;
 }

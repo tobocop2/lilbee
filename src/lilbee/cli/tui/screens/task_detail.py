@@ -11,7 +11,7 @@ from textual.widgets import Static
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.task_queue import TaskReport
-from lilbee.cli.tui.widgets.dialog import Dialog
+from lilbee.cli.tui.widgets.dialog import CancelButton, Dialog, DialogFooter
 
 
 class TaskDetailModal(Dialog[None]):
@@ -40,4 +40,6 @@ class TaskDetailModal(Dialog[None]):
                 yield Static(
                     msg.task_report_text(self._report), id="task-detail-text", markup=False
                 )
-            yield Static(msg.TASK_DETAIL_HINT, id="task-detail-hint")
+            with DialogFooter():
+                yield Static(msg.TASK_DETAIL_HINT, id="task-detail-hint")
+                yield CancelButton(msg.DIALOG_CLOSE_LABEL)

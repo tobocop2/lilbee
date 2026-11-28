@@ -37,9 +37,11 @@ ForkPicker #fork-list > .option-list--option-highlighted {
     background: $primary 25%;
 }
 
+ForkPicker #fork-footer {
+    margin-top: 1;
+}
+
 ForkPicker #fork-hint {
-    width: 100%;
     content-align: center middle;
     color: $text-muted;
-    margin-top: 1;
 }

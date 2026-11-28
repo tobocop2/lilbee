@@ -1,5 +1,15 @@
 /* lilbee TUI layout — colors come from Textual's built-in theme system */
 
+/* Under 100 columns the tab strip drops its dots so all eight tabs fit in 80. */
+Screen.-narrow .view-tab-sep {
+    display: none;
+}
+
+ViewTabs.-wiki-off #view-tab-wiki,
+ViewTabs.-wiki-off #view-tab-sep-wiki {
+    display: none;
+}
+
 /* Textual's stock Button focus is bold-reverse: a flat light block with the
  * label inverted into a dark box. Use the app's focus language instead:
  * $primary border rails and a slight lift, like every other focused control. */

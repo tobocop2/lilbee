@@ -6,8 +6,11 @@ from collections.abc import Callable
 from typing import Any
 
 from textual.await_complete import AwaitComplete
+from textual.containers import Horizontal
 from textual.screen import ModalScreen, Screen, ScreenResultType
+from textual.widgets import Button
 
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.mount_guard import MountWhenAttached
 
 
@@ -28,6 +31,43 @@ def pop_screens_above(screen: Screen[Any], retry: Callable[[], object]) -> bool:
             return False
         top.dismiss()
     return screen in app.screen_stack
+
+
+class CancelButton(Button):
+    """A compact button that closes its dialog with no answer."""
+
+    DEFAULT_CSS = """
+    CancelButton {
+        width: auto;
+        min-width: 8;
+        height: 1;
+        padding: 0 1;
+        margin-left: 1;
+    }
+    """
+
+    def __init__(self, label: str = msg.PROFILE_CANCEL_LABEL) -> None:
+        super().__init__(label, id="dialog-cancel", compact=True)
+        # The button theme draws a border at every state; inline style beats all of them.
+        self.styles.border = ("none", "white")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.screen.dismiss(None)
+
+
+class DialogFooter(Horizontal):
+    """The bottom row of a dialog: a hint that takes the width, then a close button."""
+
+    DEFAULT_CSS = """
+    DialogFooter {
+        height: auto;
+        width: 100%;
+    }
+    DialogFooter > Static {
+        width: 1fr;
+    }
+    """
 
 
 class Dialog(MountWhenAttached, ModalScreen[ScreenResultType]):

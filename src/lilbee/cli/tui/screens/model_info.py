@@ -21,7 +21,7 @@ from lilbee.cli.tui.screens.engine_picker import (
     engine_picker_open,
     option_detail,
 )
-from lilbee.cli.tui.widgets.dialog import Dialog
+from lilbee.cli.tui.widgets.dialog import CancelButton, Dialog, DialogFooter
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.engines.choice import AUTO, NoEngineError
 
@@ -91,7 +91,9 @@ class ModelInfoModal(Dialog[None]):
                 yield Markdown(head, id="info-md")
                 yield Static(engine_section(self._row.ref), id="info-engine")
                 yield Markdown(tail, id="info-md-tail")
-            yield Static(msg.MODEL_INFO_HINT, id="info-hint")
+            with DialogFooter():
+                yield Static(msg.MODEL_INFO_HINT, id="info-hint")
+                yield CancelButton(msg.DIALOG_CLOSE_LABEL)
 
     def _markdown_parts(self) -> tuple[str, str]:
         """The fields before the Engine section (up to Status) and the fields after it."""
