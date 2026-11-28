@@ -216,10 +216,27 @@ async def test_the_apps_own_removal_is_published_once_and_the_next_events_add_no
         watch = Watch(app)
         remove_elsewhere()
         publish_engines_changed(app)
-        await pilot.pause()
+        assert await wait_until(pilot, lambda: watch.keys.count(CHOICES_KEY) == 1)
+        assert await wait_until(pilot, lambda: app.engines_stamp == ())
         await focus_back(app, pilot)
         await question(app, pilot)
         assert watch.keys.count(CHOICES_KEY) == 1
+
+
+async def test_an_outside_install_after_the_apps_own_change_is_published(world: Path) -> None:
+    install_elsewhere(world)
+    app = _App()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await open_engines(app, pilot)
+        assert await wait_until(pilot, lambda: bool(app.engines_stamp))
+        watch = Watch(app)
+        remove_elsewhere()
+        publish_engines_changed(app)
+        assert await wait_until(pilot, lambda: watch.keys.count(CHOICES_KEY) == 1)
+        assert await wait_until(pilot, lambda: app.engines_stamp == ())
+        install_elsewhere(world)
+        await focus_back(app, pilot)
+        assert await wait_until(pilot, lambda: watch.keys.count(CHOICES_KEY) == 2, max_pauses=40)
 
 
 async def test_a_stage_folder_of_another_process_is_not_a_change(world: Path) -> None:
