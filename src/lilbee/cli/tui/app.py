@@ -25,6 +25,7 @@ from textual.screen import Screen
 from textual.signal import Signal
 from textual.timer import Timer
 from textual.widgets import Input, TextArea
+from textual.worker import Worker, get_current_worker
 
 from lilbee.app import engine_service
 from lilbee.app.services import (
@@ -52,7 +53,7 @@ from lilbee.cli.tui.color_compat import (
     resolve_term_program,
 )
 from lilbee.cli.tui.commands import LilbeeCommandProvider
-from lilbee.cli.tui.engine_commands import publish_engines_changed
+from lilbee.cli.tui.engine_commands import announce_engines_changed
 from lilbee.cli.tui.engine_mark import engine_variables
 from lilbee.cli.tui.pick_order import PickOrder
 from lilbee.cli.tui.screens.analyze_report import start_analysis
@@ -288,7 +289,10 @@ class LilbeeApp(App[None]):
         # The TUI runs until the user closes it and takes every key, a provider switch too.
         self._config_follower = follow_config_long_running(frozenset(), keeper="the TUI")
         self._config_follower.report_to(self._show_taken_settings_from_thread)
-        self.engines_stamp = engine_service.build_folders_stamp()
+        # The last stamp of the build folders; None until the first scan in a thread ends.
+        self.engines_stamp: engine_service.BuildStamp | None = None
+        # A caller published the change already, so the next stamp is only the baseline.
+        self._engines_announced = False
         # The one check scheduled after a skipped in-place write; see _recheck_a_skipped_file.
         self._settle_recheck: Timer | None = None
         self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
@@ -400,6 +404,7 @@ class LilbeeApp(App[None]):
         # wait is a timing window that wedges loaded CI runners.
         self.settings_changed_signal.subscribe(self, self._fan_out_provider_availability)
         self.settings_changed_signal.subscribe(self, self._recheck_models_on_model_change)
+        self.check_engines()
         if self._test_skip_auto_init:
             return
         # Paint the gate before any other work so the terminal is never blank
@@ -790,10 +795,37 @@ class LilbeeApp(App[None]):
         changed, result = self._config_follower.check()
         if result is not None:
             self._show_taken_settings(result)
-        if engine_service.build_folders_stamp() != self.engines_stamp:
-            publish_engines_changed(self)
+        # Before the first stamp there is nothing to compare: the scan that mount
+        # started sees the folders as they are when it runs.
+        if self.engines_stamp is not None:
+            self.check_engines()
         self._recheck_a_skipped_file()
         return changed
+
+    def check_engines(self, *, announced: bool = False) -> None:
+        """Stamp the build folders in a thread, and publish an engine change when it moved.
+
+        *announced* says that the caller published the change itself, so the new stamp is
+        only the baseline. A newer check cancels an older one that has not ended.
+        """
+        self._engines_announced = self._engines_announced or announced
+        self._stamp_engines()
+
+    @work(thread=True, group="engines-stamp", exclusive=True, exit_on_error=False)
+    def _stamp_engines(self) -> None:
+        worker = get_current_worker()
+        stamp = engine_service.build_folders_stamp()
+        call_from_thread(self, self._take_engines_stamp, worker, stamp)
+
+    def _take_engines_stamp(self, worker: Worker[None], stamp: engine_service.BuildStamp) -> None:
+        """Keep *stamp* from the newest check; the first stamp is the baseline only."""
+        if worker.is_cancelled:
+            return
+        moved = self.engines_stamp is not None and stamp != self.engines_stamp
+        self.engines_stamp = stamp
+        if moved and not self._engines_announced:
+            announce_engines_changed(self)
+        self._engines_announced = False
 
     def _recheck_a_skipped_file(self) -> None:
         """Check once more after the quiet window when the check skipped a young in-place write.
