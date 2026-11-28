@@ -67,8 +67,6 @@ _NARROWED_F32_BYTES = 2
 """A float32 tensor counts at this width when the engine runs it as float16."""
 _F32 = "F32"
 _CONFIG_TEXT_KEY = "text_config"
-_CONFIG_DTYPE_KEYS = ("dtype", "torch_dtype")
-_FLOAT32_NAMES = frozenset({"float32"})
 _HALF_DTYPES = ("F16", "BF16")
 """The header dtypes a float32 launch holds at twice their stored width."""
 _CONFIG_VOCAB_KEY = "vocab_size"
@@ -518,17 +516,6 @@ def installed_config(model_path: Path) -> dict[str, Any] | None:
     return read_folder_config(folder) or None
 
 
-def _declares_dtype(config: Mapping[str, Any] | None, dtypes: frozenset[str]) -> bool:
-    """Whether a config declares one of *dtypes*, at its top level or in ``text_config``."""
-    if config is None:
-        return False
-    return any(
-        section.get(key) in dtypes
-        for section in (config, _config_section(config))
-        for key in _CONFIG_DTYPE_KEYS
-    )
-
-
 class EncoderCharge(StrEnum):
     """How an engine build holds the weights of an encoder, which sets its memory charge."""
 
@@ -544,19 +531,18 @@ def estimate_installed_encoder(model_path: Path, *, charge: EncoderCharge) -> Me
     """The encoder figure of an installed folder.
 
     A CUDA build is charged the weights it holds plus the runtime allowance. A build that
-    loads float32 weights holds each F16 and BF16 tensor at twice its stored size; the file
-    header names the dtypes, and the config is not read. A build that loads float16 halves
-    the weights when the config declares float32.
+    loads float32 weights holds each F16 and BF16 tensor at twice its stored size. A build
+    that loads float16 holds each F32 tensor at half its stored size. The file header names
+    the dtypes, and the config is not read for either.
     """
     weights, dtype_bytes = _whole_safetensors(model_path)
     if not weights:
         return _unknown_estimate(installed_safetensors_bytes(model_path))
-    config = installed_config(model_path)
     if charge is EncoderCharge.CUDA_FLOAT16:
-        halved = _declares_dtype(config, _FLOAT32_NAMES)
-        return encoder_estimate(weights // 2 if halved else weights)
+        return encoder_estimate(weights - dtype_bytes.get(_F32, 0) // 2)
     if charge is EncoderCharge.CUDA_FLOAT32:
         return encoder_estimate(weights + sum(dtype_bytes.get(d, 0) for d in _HALF_DTYPES))
+    config = installed_config(model_path)
     vocab_size = _whole_number((config or {}).get(_CONFIG_VOCAB_KEY))
     return cpu_encoder_estimate(weights, vocab_size)
 
