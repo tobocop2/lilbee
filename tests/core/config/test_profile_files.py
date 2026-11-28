@@ -452,9 +452,8 @@ def test_every_builtin_file_validates_and_holds_no_language_or_retrieval_key():
 def test_frozen_binary_ships_the_package_profiles_folder():
     repo = Path(__file__).resolve().parents[3]
     build = (repo / "tools" / "wheel-build" / "build_lilbee_binary.sh").read_text(encoding="utf-8")
-    source = REAL_PACKAGE_PROFILES_DIR.relative_to(repo).as_posix()
-    shipped = REAL_PACKAGE_PROFILES_DIR.relative_to(repo / "src").as_posix()
-    assert f"--include-data-dir={source}={shipped}" in build
+    package = REAL_PACKAGE_PROFILES_DIR.relative_to(repo / "src").parts[0]
+    assert re.search(rf"^\s*--include-package-data={package}\s*\\?$", build, re.MULTILINE)
 
 
 @pytest.mark.parametrize("text", ["[values\n", "x = " + "[" * 1000 + "]" * 1000 + "\n"])

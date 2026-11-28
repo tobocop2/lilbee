@@ -120,6 +120,10 @@ ONEFILE_BUILD_KEY=${ONEFILE_BUILD_KEY%.exe}
 # filelock loads its read-write and soft lock classes on first access by module
 # name, which Nuitka cannot follow. Without the whole package, importing
 # ReadWriteLock or AsyncReadWriteLock raises ImportError at startup.
+#
+# lilbee reads its own data files (TUI styles, built-in profiles, the engine
+# pack record) at runtime. --include-package-data=lilbee ships every one of
+# them, as the wheel does, so a new data file needs no new flag here.
 uv run --no-sync python -m nuitka \
     --mode=onefile \
     --user-plugin=tools/wheel-build/playwright_node_verbatim.py \
@@ -162,9 +166,8 @@ uv run --no-sync python -m nuitka \
     --include-distribution-metadata=spacy \
     --include-distribution-metadata=en_core_web_sm \
     --include-distribution-metadata=catalogue \
-    --include-data-dir=src/lilbee/cli/tui=lilbee/cli/tui \
+    --include-package-data=lilbee \
     --include-data-dir=plugins/lilbee/skills/lilbee-mcp=lilbee/skills/lilbee_mcp \
-    --include-data-dir=src/lilbee/profiles=lilbee/profiles \
     --include-data-dir=packages/lilbee/plugin=lilbee/agent_plugin \
     "${CHILD_MODULE_FLAGS[@]}" \
     "${MYPYC_FLAGS[@]}" \

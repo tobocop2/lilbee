@@ -2,9 +2,10 @@
 
 import importlib.util
 import re
+import subprocess
 import sys
 import types
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
@@ -187,3 +188,104 @@ def test_every_windows_trigger_also_triggers_the_check() -> None:
     paths = workflow.get("on", workflow.get(True))["pull_request"]["paths"]
 
     assert set(_windows_filter()) <= set(paths)
+
+
+_PACKAGE = "src/lilbee"
+_CODE_SUFFIXES = (".py", ".pyc")
+_WHOLE_PACKAGE_DATA = "--include-package-data=lilbee"
+_DATA_DIR = "--include-data-dir="
+# Nuitka's package data rules skip these, so a runtime data file must not use them.
+_TYPE_MARKER = "py.typed"
+_NUITKA_SKIPPED_SUFFIXES = (
+    ".pyi",
+    ".pyw",
+    ".pyo",
+    ".pyx",
+    ".so",
+    ".pyd",
+    ".dll",
+    ".dylib",
+    ".exe",
+    ".bin",
+)
+
+
+def _wheel_package_data() -> set[str]:
+    """Every tracked non-code file of the package, as the wheel ships it, except the type marker."""
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--", _PACKAGE],
+        cwd=_ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout
+    paths = [PurePosixPath(name) for name in listed.split("\0") if name]
+    return {
+        path.relative_to("src").as_posix()
+        for path in paths
+        if path.suffix not in _CODE_SUFFIXES and path.name != _TYPE_MARKER
+    }
+
+
+def _nuitka_flags(script: str) -> list[str]:
+    """The option lines of the script's Nuitka call: each line that starts with ``--``."""
+    lines = (line.strip().removesuffix("\\").strip() for line in script.splitlines())
+    return [line for line in lines if line.startswith("--")]
+
+
+def _executable_package_data(script: str, files: set[str]) -> set[str]:
+    """The files of *files* that a data rule of the build script puts at their package path."""
+    flags = _nuitka_flags(script)
+    if _WHOLE_PACKAGE_DATA in flags:
+        return set(files)
+    rules = (flag.removeprefix(_DATA_DIR) for flag in flags if flag.startswith(_DATA_DIR))
+    folders = [
+        shipped
+        for source, _, shipped in (r.partition("=") for r in rules)
+        if source == f"src/{shipped}"
+    ]
+    return {name for name in files if any(name.startswith(f"{folder}/") for folder in folders)}
+
+
+def test_the_executable_ships_every_data_file_the_wheel_ships() -> None:
+    script = (_BUILD_DIR / "build_lilbee_binary.sh").read_text(encoding="utf-8")
+    shipped = _wheel_package_data()
+
+    assert "lilbee/providers/fleet/engine_packs.json" in shipped
+    missing = shipped - _executable_package_data(script, shipped)
+    assert missing == set(), f"the executable leaves out: {sorted(missing)}"
+    skipped = sorted(name for name in shipped if name.endswith(_NUITKA_SKIPPED_SUFFIXES))
+    assert skipped == [], f"Nuitka does not ship these as package data: {skipped}"
+
+
+_PROFILE = "lilbee/profiles/builtin/default.toml"
+_RECORD = "lilbee/providers/fleet/engine_packs.json"
+
+
+@pytest.mark.parametrize(
+    ("script", "covered"),
+    [
+        pytest.param(
+            "    --include-package-data=lilbee \\\n", {_PROFILE, _RECORD}, id="package-rule"
+        ),
+        pytest.param(
+            "    --include-data-dir=src/lilbee/profiles=lilbee/profiles \\\n",
+            {_PROFILE},
+            id="folder-rule-covers-its-folder-only",
+        ),
+        pytest.param("#    --include-package-data=lilbee \\\n", set(), id="commented-out-rule"),
+        pytest.param(
+            "# --include-package-data=lilbee ships every data file\n",
+            set(),
+            id="rule-named-in-a-comment",
+        ),
+        pytest.param(
+            "    --include-package-data=lilbee.cli \\\n", set(), id="rule-narrowed-to-a-subpackage"
+        ),
+    ],
+)
+def test_only_an_option_line_of_the_nuitka_call_counts_as_a_data_rule(
+    script: str, covered: set[str]
+) -> None:
+    assert _executable_package_data(script, {_PROFILE, _RECORD}) == covered
