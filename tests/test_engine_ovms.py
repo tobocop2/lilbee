@@ -283,7 +283,7 @@ def test_the_launch_env_puts_the_archive_lib_folder_on_the_library_path(
     binary = _archive(tmp_path)
     monkeypatch.setattr(ovms.shutil, "which", lambda name: str(binary))
     monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-    assert OVMS.runtime_env() == {"LD_LIBRARY_PATH": str(tmp_path / "ovms" / "lib")}
+    assert OVMS.runtime_env(Path("/b/ovms")) == {"LD_LIBRARY_PATH": str(tmp_path / "ovms" / "lib")}
 
 
 def test_the_launch_env_keeps_a_library_path_already_set(
@@ -293,7 +293,7 @@ def test_the_launch_env_keeps_a_library_path_already_set(
     monkeypatch.setattr(ovms.shutil, "which", lambda name: str(binary))
     monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/other")
     expected = os.pathsep.join([str(tmp_path / "ovms" / "lib"), "/opt/other"])
-    assert OVMS.runtime_env() == {"LD_LIBRARY_PATH": expected}
+    assert OVMS.runtime_env(Path("/b/ovms")) == {"LD_LIBRARY_PATH": expected}
 
 
 def test_the_launch_env_follows_a_link_to_the_binary(
@@ -306,7 +306,9 @@ def test_the_launch_env_follows_a_link_to_the_binary(
     link.symlink_to(binary)
     monkeypatch.setattr(ovms.shutil, "which", lambda name: str(link))
     monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-    assert OVMS.runtime_env() == {"LD_LIBRARY_PATH": str(tmp_path / "unpacked" / "ovms" / "lib")}
+    assert OVMS.runtime_env(Path("/b/ovms")) == {
+        "LD_LIBRARY_PATH": str(tmp_path / "unpacked" / "ovms" / "lib")
+    }
 
 
 def test_the_launch_env_is_empty_when_the_binary_has_no_lib_folder(
@@ -314,14 +316,14 @@ def test_the_launch_env_is_empty_when_the_binary_has_no_lib_folder(
 ) -> None:
     binary = _archive(tmp_path, lib=False)
     monkeypatch.setattr(ovms.shutil, "which", lambda name: str(binary))
-    assert OVMS.runtime_env() == {}
+    assert OVMS.runtime_env(Path("/b/ovms")) == {}
 
 
 def test_the_launch_env_is_empty_when_ovms_is_not_installed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(ovms.shutil, "which", lambda name: None)
-    assert OVMS.runtime_env() == {}
+    assert OVMS.runtime_env(Path("/b/ovms")) == {}
 
 
 def test_the_engine_has_no_optional_features_to_probe() -> None:

@@ -1272,7 +1272,7 @@ class TestBuildFleetWiring:
         # Pin the runtime env to empty: the real one reflects whatever CUDA
         # wheels the host venv has installed, and the assertion below checks
         # exact env equality for the pinning keys.
-        monkeypatch.setattr(llama_mod, "llama_server_runtime_env", lambda: {})
+        monkeypatch.setattr(llama_mod, "llama_server_runtime_env", lambda binary: {})
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
         launch = planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)

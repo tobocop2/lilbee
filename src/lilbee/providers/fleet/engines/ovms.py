@@ -253,7 +253,7 @@ class OvmsAdapter:
     def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         return None
 
-    def runtime_env(self) -> Mapping[str, str]:
+    def runtime_env(self, binary: Path) -> Mapping[str, str]:
         """``ovms/lib`` on ``LD_LIBRARY_PATH``: the binary finds ``libtbb`` only through it.
 
         The release archive holds ``ovms/bin/ovms`` beside ``ovms/lib``. A value already set

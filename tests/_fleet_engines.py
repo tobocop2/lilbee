@@ -133,7 +133,7 @@ class CardEngine(FakeAdapter):
     def supports_shared_kv(self, binary: Path) -> bool:
         return False
 
-    def runtime_env(self):
+    def runtime_env(self, binary):
         return {}
 
     def target_env(self, target, cards):
@@ -219,7 +219,7 @@ class SizedEngine(FakeAdapter):
     def supports_shared_kv(self, binary: Path) -> bool:
         return False
 
-    def runtime_env(self):
+    def runtime_env(self, binary):
         return {}
 
     def target_env(self, target, cards):

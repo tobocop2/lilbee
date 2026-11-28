@@ -1402,7 +1402,7 @@ def test_a_tensor_parallel_launch_env_carries_the_p2p_level(
     monkeypatch.delenv("NCCL_P2P_LEVEL", raising=False)
     monkeypatch.delenv("NCCL_P2P_DISABLE", raising=False)
     chosen = tuple(FleetDevice("CUDA", i, f"card{i}", 24 * GIB, 22 * GIB) for i in range(cards))
-    env = planning._launch_env(MISTRAL, chosen, RoleTarget.GPU)
+    env = planning._launch_env(MISTRAL, Path("/b/server"), chosen, RoleTarget.GPU)
     assert env["NCCL_P2P_LEVEL"] == "NVL"
     assert "MISTRALRS_NO_NCCL" not in env
 
@@ -1431,7 +1431,7 @@ def test_the_collective_library_stays_off_unless_the_launch_is_tensor_parallel(
     monkeypatch.delenv("NCCL_P2P_LEVEL", raising=False)
     monkeypatch.delenv("NCCL_P2P_DISABLE", raising=False)
     assert MISTRAL.target_env(target, cards) == env
-    assert MISTRAL.runtime_env() == {}
+    assert MISTRAL.runtime_env(Path("/b/server")) == {}
 
 
 def _estimate(model: Path, split: tuple[int, ...]) -> Any:

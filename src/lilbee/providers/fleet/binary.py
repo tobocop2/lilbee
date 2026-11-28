@@ -419,18 +419,18 @@ def resolve_gguf_parser() -> Path:
     return resolve_engine_tool(EngineTool.GGUF_PARSER)
 
 
-def llama_server_runtime_env() -> dict[str, str]:
-    """Extra environment for a spawned ``llama-server``.
+def llama_server_runtime_env(binary: Path) -> dict[str, str]:
+    """Extra environment for the spawned ``llama-server`` *binary*.
 
     The bundled wheel ships its own ggml/llama/mtmd next to the binary with a baked
     rpath (``@loader_path`` on macOS, ``$ORIGIN`` on Linux), but a CUDA build also
     links the CUDA 12 runtime, which driver-only GPU images omit. On Linux this
-    adds any installed CUDA-runtime wheel libs to ``LD_LIBRARY_PATH``; elsewhere it
-    is empty.
+    adds any installed CUDA-runtime wheel libs to ``LD_LIBRARY_PATH`` for a CUDA build
+    only, by the same rule the device probe uses; elsewhere it is empty.
     """
     from lilbee.providers.fleet.cuda_runtime import cuda_runtime_env
 
-    return cuda_runtime_env()
+    return cuda_runtime_env(binary)
 
 
 class _NoHelpTextError(Exception):
