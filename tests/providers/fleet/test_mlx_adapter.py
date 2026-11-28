@@ -33,7 +33,7 @@ from lilbee.providers.fleet.engines.choice import (
     installed_engines,
     pin_lock,
 )
-from lilbee.providers.fleet.engines.mlx import MACOS_FLOOR, MLX
+from lilbee.providers.fleet.engines.mlx import MLX
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import CHAT_RUNTIME_BYTES
 from lilbee.providers.roles import RoleTarget, WorkerRole
@@ -44,14 +44,19 @@ CONTEXT = 40960
 PROMPT_TOKENS = 60008
 
 
-def _floor_text(floor: tuple[int, ...]) -> str:
-    return ".".join(map(str, floor))
-
-
 def host(system: str, machine: str, mac_ver: str = "") -> host_caps.HostCaps:
     return host_caps.collect(
         system=system, machine=machine, cpu_info={}, nvidia=None, mac_ver=mac_ver
     )
+
+
+def _mac(monkeypatch: pytest.MonkeyPatch, version: str) -> host_caps.HostCaps:
+    """Make an Apple Silicon Mac of macOS *version* the host, for the gate and for the floor."""
+    caps = host("Darwin", "arm64", version)
+    monkeypatch.setattr(runnable, "session_host", lambda: caps)
+    monkeypatch.setattr(engine_service, "refresh_session_host", lambda: caps)
+    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: version)
+    return caps
 
 
 @pytest.mark.parametrize(
@@ -61,8 +66,7 @@ def host(system: str, machine: str, mac_ver: str = "") -> host_caps.HostCaps:
         (host("Darwin", "arm64", "14"), True, True, ""),
         (host("Darwin", "arm64", "15.2"), True, True, ""),
         (host("Darwin", "arm64", "26.0"), True, True, ""),
-        (host("Darwin", "arm64", "13.6"), False, True, "needs macOS 14.0 or later"),
-        (host("Darwin", "arm64", "13.6"), False, True, "this computer has 13.6"),
+        (host("Darwin", "arm64", "13.6"), True, True, ""),
         (host("Darwin", "x86_64", "14.0"), False, True, "run lilbee natively"),
         (host("Linux", "x86_64"), False, True, "not offered on linux x86_64"),
         (host("Linux", "aarch64"), False, True, "not offered on linux arm64"),
@@ -70,13 +74,28 @@ def host(system: str, machine: str, mac_ver: str = "") -> host_caps.HostCaps:
         (host("Darwin", "arm64", ""), True, False, "could not be read"),
     ],
 )
-def test_the_gate_passes_apple_silicon_on_macos_14_and_refuses_the_rest(
+def test_the_gate_passes_apple_silicon_of_any_macos_and_refuses_the_rest(
     caps: host_caps.HostCaps, ok: bool, known: bool, words: str
 ) -> None:
     gate = MLX.host_gate(caps)
     assert (gate.ok, gate.known) == (ok, known)
     assert words in gate.reason
     assert gate.auto_selectable is (ok and known)
+
+
+@pytest.mark.parametrize(("version", "offered"), [("13.6", False), ("14.0", True)])
+def test_the_pack_row_floor_decides_whether_mlx_is_offered(
+    monkeypatch: pytest.MonkeyPatch, version: str, offered: bool
+) -> None:
+    caps = _mac(monkeypatch, version)
+    gate = choice.install_offer(MLX, caps)
+    assert gate.ok is offered
+    if not offered:
+        assert gate.reason == (
+            "Engine mlx 0.32.2 (metal) needs macOS 14.0 or later. "
+            "This computer has macOS 13.6. Update macOS."
+        )
+        assert gate.reason == choice.install_advice(MLX, caps)
 
 
 def test_a_host_whose_platform_cannot_be_read_neither_passes_nor_refuses() -> None:
@@ -439,10 +458,12 @@ def test_install_refuses_without_a_digest_and_names_the_stay(
 def test_install_on_macos_13_is_refused_by_the_gate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    caps = host("Darwin", "arm64", "13.6")
+    _mac(monkeypatch, "13.6")
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
-    monkeypatch.setattr(engine_service, "refresh_session_host", lambda: caps)
-    with pytest.raises(engine_service.EngineRefusedError, match=r"needs macOS 14\.0 or later"):
+    with pytest.raises(
+        engine_service.EngineRefusedError,
+        match=r"needs macOS 14\.0 or later\. This computer has macOS 13\.6",
+    ):
         engine_service.install("mlx")
 
 
@@ -473,6 +494,7 @@ def test_the_engine_list_names_mlx_only_on_apple_silicon_with_macos_14(
     ]:
         caps = host(system, machine, version)
         monkeypatch.setattr(runnable, "session_host", lambda caps=caps: caps)
+        monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os, v=version: v)
         assert ("mlx" in engine_service.not_installed()) is named, (system, machine, version)
 
 
@@ -495,7 +517,7 @@ def test_a_published_pack_states_the_gate_floor_and_installs_its_tool(
     sha = make_pack(tmp_path / "pack.whl")
     publish(monkeypatch, EngineName.MLX, sha)
     pin = MLX.pin_record()
-    assert {row["min_os"] for row in pin["platforms"].values()} == {_floor_text(MACOS_FLOOR)}
+    assert {row["min_os"] for row in pin["platforms"].values()} == {"14.0"}
     lock = PinLock(
         pin["engine"], pin["version"], pin["backend"], {}, ("MIT",), sha, "mlx-lm-server"
     )

@@ -63,13 +63,6 @@ _EMBED_BATCH_LIMIT = 32
 _HOST = "127.0.0.1"
 _METAL = "metal"
 _LICENCES = ["MIT", "Apache-2.0", "BSD-3-Clause"]
-MACOS_FLOOR = (14, 0)
-"""The oldest macOS the pack runs on.
-
-mlx is the one engine with a literal floor: it has no row in the pack record, so no ``min_os``
-reaches the shared floor check. When an mlx wheel row is published, its ``min_os`` gives the
-floor, as for every other engine, and this literal goes.
-"""
 _SERVED_NAME = "default_model"
 """The model name that selects the model the server loaded at start.
 
@@ -162,10 +155,6 @@ def role_refusal(role: WorkerRole, ref: str) -> str | None:
     )
 
 
-def _floor_text() -> str:
-    return ".".join(map(str, MACOS_FLOOR))
-
-
 def _sampling_args(model: Path) -> list[str]:
     """The sampling defaults for a request that names none, as server flags.
 
@@ -221,12 +210,6 @@ class MlxAdapter:
             )
         if not host.macos_known or host.macos_version is None:
             return HostGate(True, host.macos_reason, known=False)
-        if (*host.macos_version, 0, 0)[:2] < MACOS_FLOOR:
-            have = ".".join(map(str, host.macos_version))
-            return HostGate(
-                False,
-                f"mlx needs macOS {_floor_text()} or later; this computer has {have}.",
-            )
         return PASS
 
     def binary(self) -> Path:
