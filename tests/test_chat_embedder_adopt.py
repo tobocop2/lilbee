@@ -88,7 +88,7 @@ class TestStreamResponseDispatch:
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
             ),
         ):
-            screen._do_stream_response(_Turn("q", widget, 0, None), None)
+            screen._do_stream_response(_Turn("q", widget, 0, None, "both"), None)
         screen._on_embedding_mismatch.assert_called_once()
         widget.append_content.assert_not_called()
 
@@ -104,7 +104,7 @@ class TestStreamResponseDispatch:
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
             ),
         ):
-            screen._do_stream_response(_Turn("q", widget, 0, None), None)
+            screen._do_stream_response(_Turn("q", widget, 0, None, "both"), None)
         services.searcher.ask_stream.assert_not_called()
         screen._save_turn.assert_called_once()
 
@@ -124,7 +124,7 @@ class TestStreamResponseDispatch:
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
             ),
         ):
-            screen._do_stream_response(_Turn("q", widget, 0, None), None)
+            screen._do_stream_response(_Turn("q", widget, 0, None, "both"), None)
         rendered = " ".join(str(c.args) for c in widget.append_content.call_args_list)
         assert "forcibly closed" not in rendered
         assert msg.STREAM_DISCONNECTED.strip("\n") in rendered
@@ -143,7 +143,7 @@ class TestStreamResponseDispatch:
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
             ),
         ):
-            screen._do_stream_response(_Turn("q", widget, 0, None), None)
+            screen._do_stream_response(_Turn("q", widget, 0, None, "both"), None)
         rendered = " ".join(str(c.args) for c in widget.append_content.call_args_list)
         assert "model server stopped answering" in rendered
         assert "Send your message again" in rendered
@@ -160,7 +160,7 @@ class TestStreamResponseDispatch:
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
             ),
         ):
-            screen._do_stream_response(_Turn("q", widget, 0, None), None)
+            screen._do_stream_response(_Turn("q", widget, 0, None, "both"), None)
         screen._on_embedding_mismatch.assert_not_called()
         assert any("kaboom" in str(c.args) for c in widget.append_content.call_args_list)
 

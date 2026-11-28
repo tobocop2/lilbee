@@ -2510,7 +2510,7 @@ async def test_chat_scroll_actions():
 
 def _live_turn(screen, widget=None) -> _Turn:
     """Put *screen* mid-answer without starting a worker."""
-    turn = _Turn("q", widget or MagicMock(), screen._conversation_generation, None)
+    turn = _Turn("q", widget or MagicMock(), screen._conversation_generation, None, "both")
     screen._turn = turn
     screen.streaming = True
     return turn
@@ -6164,7 +6164,7 @@ def test_consume_stream_shows_the_rewrite_in_the_status_row():
         "lilbee.cli.tui.screens.chat.call_from_thread",
         side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
     ):
-        screen._consume_stream(stream, _Turn("q", widget, 0, None), parts)
+        screen._consume_stream(stream, _Turn("q", widget, 0, None, "both"), parts)
     widget.set_thinking_status.assert_called_once_with(
         "Searching for: when was the journal written"
     )
@@ -6196,7 +6196,7 @@ def test_consume_stream_toasts_each_degraded_step_and_keeps_the_status_row():
         ),
         patch.object(ChatScreen, "notify", create=True) as notify,
     ):
-        screen._consume_stream(stream, _Turn("q", widget, 0, None), [])
+        screen._consume_stream(stream, _Turn("q", widget, 0, None, "both"), [])
     notify.assert_called_once_with(warning.line, severity="warning")
     widget.set_thinking_status.assert_not_called()
 

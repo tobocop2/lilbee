@@ -225,7 +225,7 @@ async def test_disabled_does_not_persist(sessions, monkeypatch) -> None:
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
-        screen._persist_user_turn("this must not be saved")
+        assert screen._persist_user_turn("this must not be saved", None, "both") is None
         assert screen._session_id is None
         assert sessions.list() == []
 

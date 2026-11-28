@@ -967,7 +967,7 @@ class TestChatInteractions:
             from lilbee.cli.tui.screens.chat import _Turn
 
             app.screen._insert_mode = True
-            turn = _Turn("q", mock.MagicMock(), 0, None)
+            turn = _Turn("q", mock.MagicMock(), 0, None, "both")
             app.screen._turn = turn
             app.screen.streaming = True
             await pilot.press("ctrl+c")
@@ -2499,7 +2499,7 @@ class TestChatSlashCommands:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            turn = _Turn("q", mock.MagicMock(), 0, None)
+            turn = _Turn("q", mock.MagicMock(), 0, None, "both")
             app.screen._turn = turn
             app.screen.streaming = True
             mock_worker = mock.MagicMock()

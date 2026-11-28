@@ -600,7 +600,7 @@ async def test_a_turn_stopped_before_it_ran_ends_and_lets_fork_proceed(sessions)
             await wait_for_turn_end(pilot, screen)
             await _open_picker(app, pilot)
         assert not reply.started.is_set()
-        assert [m.content for m in sessions.get(source).messages][-1] == "Q3"
+        assert [m.content for m in sessions.get(source).messages][-1] == "A2"
 
 
 async def test_forking_a_session_an_agent_claimed_is_refused(sessions):

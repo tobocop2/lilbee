@@ -195,6 +195,8 @@ class _Turn:
     widget: AssistantMessage
     generation: int
     session_id: str | None
+    # The scope chip's value when the question was sent, for a session the answer opens.
+    scope: str
     stop: threading.Event = field(default_factory=threading.Event)
     answer: str = ""
     # The answer's Sources list, kept out of ``answer``.
@@ -1914,8 +1916,13 @@ class ChatScreen(Screen[None]):
 
         with self._history_lock:
             self._history.append({"role": "user", "content": text})
-        self._persist_user_turn(text)
-        turn = _Turn(text, assistant_msg, self._conversation_generation, self._session_id)
+        turn = _Turn(
+            text,
+            assistant_msg,
+            self._conversation_generation,
+            self._session_id,
+            scope=self._current_scope_value(),
+        )
         self._turn = turn
         self.streaming = True
         self._stream_response(turn, self._current_chunk_type())
@@ -1940,29 +1947,55 @@ class ChatScreen(Screen[None]):
         """
         return scope_to_chunk_type(self._current_scope_value())
 
-    def _open_session(self, store: SessionStore, first_text: str) -> str:
-        """Create the active session, auto-title it, and return its id."""
-        session_id = store.create(model_ref=cfg.chat_model, scope=self._current_scope_value())
+    @staticmethod
+    def _open_session(store: SessionStore, first_text: str, scope: str) -> str:
+        """Create a session, auto-title it, and return its id."""
+        session_id = store.create(model_ref=cfg.chat_model, scope=scope)
         store.set_title(session_id, derive_title(first_text), TitleSource.AUTO)
-        self._session_id = session_id
         return session_id
 
-    def _persist_user_turn(self, text: str) -> None:
-        """Open a session on the first turn (auto-titled), then append the message."""
+    def _persist_user_turn(self, text: str, session_id: str | None, scope: str) -> str | None:
+        """Append the message to *session_id*, opening a session (auto-titled) if none holds it.
+
+        Returns the id of the session that holds the message, or None when sessions
+        are off: the conversation stays live in memory but is never written to disk.
+        """
         if not cfg.sessions_enabled:
-            # Sessions turned off: the conversation stays live in memory but is
-            # never written to disk. _session_id stays None, so the assistant
-            # turn's persist is a no-op too.
-            return
+            return None
         store = get_services().session_store
-        session_id = self._session_id or self._open_session(store, text)
         message = SessionMessage(role=MessageRole.USER, content=text)
+        if session_id is not None:
+            try:
+                store.add_message(session_id, message, surface=SessionOrigin.TUI)
+                return session_id
+            except SessionNotFoundError:
+                # The session was deleted mid-chat (e.g. from the drawer);
+                # open a fresh one so auto-save keeps working instead of crashing.
+                log.debug("Session %s is gone; opening a new one", session_id)
+        session_id = self._open_session(store, text, scope)
+        store.add_message(session_id, message, surface=SessionOrigin.TUI)
+        return session_id
+
+    def _save_user_turn(self, turn: _Turn, session_id: str | None) -> str | None:
+        """Save *turn*'s question beside its answer and return the session that holds it.
+
+        *session_id* is the session the turn belongs to, None before its first save.
+        The session becomes the active one only while the turn's conversation is
+        still on screen. Worker thread; call it without the history lock held.
+        """
         try:
-            store.add_message(session_id, message, surface=SessionOrigin.TUI)
-        except SessionNotFoundError:
-            # The active session was deleted mid-chat (e.g. from the drawer);
-            # open a fresh one so auto-save keeps working instead of crashing.
-            store.add_message(self._open_session(store, text), message, surface=SessionOrigin.TUI)
+            saved = self._persist_user_turn(turn.question, session_id, turn.scope)
+        except (OSError, SessionOwnershipError) as exc:
+            log.warning("Could not save the user turn", exc_info=True)
+            call_from_thread(
+                self, self.notify, msg.SESSIONS_SAVE_FAILED.format(error=exc), severity="error"
+            )
+            return None
+        if saved is not None:
+            with self._history_lock:
+                if turn.generation == self._conversation_generation:
+                    self._session_id = saved
+        return saved
 
     def _save_assistant_turn(
         self, session_id: str | None, content: str, sources: list[SourceRef]
@@ -1982,9 +2015,8 @@ class ChatScreen(Screen[None]):
         """Append the assistant turn and its Sources list to *session_id*, the session
         its turn started in."""
         if session_id is None or not cfg.sessions_enabled:
-            # Sessions switched off mid-conversation: the id outlives the
-            # setting, so the toggle has to be re-checked here rather than
-            # relying on _persist_user_turn having left the id unset.
+            # Sessions switched off mid-conversation: the open session's id
+            # outlives the setting, so the toggle is checked here as well.
             return
         # A concurrent delete of the active session must not crash the worker.
         with contextlib.suppress(SessionNotFoundError):
@@ -2354,19 +2386,44 @@ class ChatScreen(Screen[None]):
     def _save_turn(self, turn: _Turn) -> None:
         """Add *turn*'s answer to the history and its session. Worker thread.
 
-        The answer joins the history only while the turn's conversation is still
-        on screen; it is saved to the turn's session either way.
+        The question and the answer are saved together, so a turn that ends with no
+        answer leaves nothing in the history or the session. The turn joins the
+        history only while its conversation is still on screen; it is saved to the
+        turn's session either way.
         """
-        if not turn.answer:
-            return
         with self._history_lock:
+            current = turn.generation == self._conversation_generation
+            if not turn.answer:
+                if current:
+                    self._withdraw_question(turn)
+                return
             # A resume or /clear mid-answer replaced the conversation; the
             # answer belongs to the one that is gone.
-            if turn.generation == self._conversation_generation:
+            if current:
                 self._history.append({"role": "assistant", "content": turn.answer})
+            session_id = turn.session_id
+            summary = self._summary if current else ""
+        opened = session_id is None
+        session_id = self._save_user_turn(turn, session_id)
+        if opened and session_id and summary:
+            # Sessions went on mid-chat: the fold of this turn had no session to
+            # save its notes to, so they join the session this turn opened.
+            try:
+                with contextlib.suppress(SessionNotFoundError):
+                    get_services().session_store.set_summary(session_id, summary)
+            except OSError as exc:
+                log.warning("Could not save the notes of the earlier turns", exc_info=True)
+                call_from_thread(
+                    self, self.notify, msg.SESSIONS_SAVE_FAILED.format(error=exc), severity="error"
+                )
         # No trim here: the next turn compacts before it builds its prompt, so
         # trimming now would drop turns without folding them in.
-        self._save_assistant_turn(turn.session_id, turn.answer, turn.source_refs)
+        self._save_assistant_turn(session_id, turn.answer, turn.source_refs)
+
+    def _withdraw_question(self, turn: _Turn) -> None:
+        """Take *turn*'s unanswered question back out of the history. History lock held."""
+        if self._history and self._history[-1] == {"role": "user", "content": turn.question}:
+            self._history.pop()
 
     @on(_TurnEnded)
     def _on_turn_ended(self, event: _TurnEnded) -> None:

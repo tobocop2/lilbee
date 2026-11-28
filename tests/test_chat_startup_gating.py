@@ -21,7 +21,7 @@ from tests._toasts import posted_toasts
 
 
 def _turn(widget: mock.MagicMock) -> _Turn:
-    return _Turn("q", widget, 0, None)
+    return _Turn("q", widget, 0, None, "both")
 
 
 class _ChatHost(LilbeeAppHost):
