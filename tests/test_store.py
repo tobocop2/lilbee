@@ -3222,14 +3222,16 @@ class TestDatesOf:
             name: f"2020-01-0{i + 1}" for i, name in enumerate(names)
         }
 
-    def test_a_wiki_page_beside_sources_adds_no_date(self, store):
-        store.upsert_source("a.md", "h1", 1, meta=SourceMeta(created_at="2020-05-06"))
+    def test_a_wiki_page_beside_sources_adds_no_date(self, store, test_config, tmp_path):
+        """A document under a linked root is stored at its location, not its name."""
+        test_config.linked_roots = {"work": str(tmp_path / "work")}
+        store.upsert_source("work/a.md", "h1", 1, meta=SourceMeta(created_at="2020-05-06"))
         store.upsert_source("notes.md", "h2", 1, SourceType.IMPORTED)
         store.upsert_source("wiki/a.md", "h3", 1, SourceType.WIKI)
-        result = store.dates_of(["a.md", "notes.md", "wiki/a.md"])
+        result = store.dates_of(["work/a.md", "notes.md", "wiki/a.md"])
         ingested = store.source_ingested_at_map()
         assert result == {
-            "a.md": ("2020-05-06", ingested["a.md"]),
+            "work/a.md": ("2020-05-06", ingested["work/a.md"]),
             "notes.md": ("", ingested["notes.md"]),
         }
 
