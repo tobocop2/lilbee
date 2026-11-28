@@ -71,6 +71,7 @@ from tests._profile_fixtures import (
     isolated_cfg,  # noqa: F401 -- autouse fixture, applied by import
     sources_totaling,
 )
+from tests._settings_test_app import _wait_for_pane_rows
 from tests._toasts import posted_toasts
 
 
@@ -137,6 +138,8 @@ layout_detection = true
 max_chunks_per_file = 3000
 """
 _PAUSES = 300
+_INGEST_PANE_ID = "settings-tab-ingest"
+_MODELS_PANE_ID = "settings-tab-models"
 _TAB_PRESSES = 4
 _SECONDS = 30.0
 _YOURS = "chunk_size = 384\nlayout_detection = false\nmax_chunks_per_file = 2000\n"
@@ -212,6 +215,21 @@ async def _until(pilot: Pilot, predicate: Callable[[], bool]) -> bool:
     return await wait_until(pilot, predicate, max_pauses=_PAUSES, timeout=_SECONDS)
 
 
+async def _open_tab(
+    app: LilbeeApp, pilot: Pilot, screen: SettingsScreen, pane_id: str
+) -> TabbedContent:
+    """Show the *pane_id* tab and wait until its rows, each dropdown included, have mounted.
+
+    The suspected cause of the failure this waits out: the test harness closes the app
+    without its exit flag, so a dropdown still mounting at the end of a test fails in its
+    own mount (Textualize/textual#6581 and #6754).
+    """
+    tabs = screen.query_one("#settings-tabs", TabbedContent)
+    tabs.active = pane_id
+    await _wait_for_pane_rows(app, pilot, pane_id, timeout=_SECONDS)
+    return tabs
+
+
 async def _press(pilot: Pilot, widget: Widget) -> None:
     """Focus *widget*, wait until it holds focus, then press Enter on it."""
     await press_widget(pilot, widget, max_pauses=_PAUSES)
@@ -271,9 +289,7 @@ async def test_line_shows_the_profile_and_your_count_on_any_tab_and_jumps_to_the
     app = _SettingsApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await _loaded(app, pilot, "legal-discovery")
-        tabs = screen.query_one("#settings-tabs", TabbedContent)
-        tabs.active = "settings-tab-ingest"
-        await _until(pilot, lambda: tabs.active == "settings-tab-ingest")
+        tabs = await _open_tab(app, pilot, screen, _INGEST_PANE_ID)
         assert _text(screen.query_one("#profile-line-count", Static)) == "3 values set by you"
         assert not screen.query_one("#profile-line-status", Static).display
         await _press(pilot, screen.query_one("#profile-line-name", ProfileLinePill))
@@ -286,9 +302,7 @@ async def test_clicking_the_line_pill_jumps_to_the_profile_tab() -> None:
     app = _SettingsApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await _loaded(app, pilot, "Default")
-        tabs = screen.query_one("#settings-tabs", TabbedContent)
-        tabs.active = "settings-tab-models"
-        await _until(pilot, lambda: tabs.active == "settings-tab-models")
+        tabs = await _open_tab(app, pilot, screen, _MODELS_PANE_ID)
         assert _text(screen.query_one("#profile-line-count", Static)) == ""
         await pilot.click("#profile-line-name")
         assert await _until(pilot, lambda: tabs.active == PROFILE_PANE_ID)
@@ -405,10 +419,8 @@ async def test_returning_to_the_profile_tab_and_to_the_screen_each_load_once() -
         async with app.run_test(size=(120, 40)) as pilot:
             screen = await _loaded(app, pilot, "Default")
             await _settled(pilot, loads)
-            tabs = screen.query_one("#settings-tabs", TabbedContent)
-            tabs.active = next(
-                pane_id for pane_id in screen._pane_ids if pane_id != PROFILE_PANE_ID
-            )
+            other = next(pane_id for pane_id in screen._pane_ids if pane_id != PROFILE_PANE_ID)
+            await _open_tab(app, pilot, screen, other)
             await _settled(pilot, loads)
             before = loads.count
             screen.show_profile_tab()
@@ -1129,9 +1141,7 @@ async def test_a_file_dropped_in_the_global_folder_shows_on_returning_to_the_tab
         select = screen.query_one("#profile-select", Select)
         assert "dropped" not in [value for _label, value in select._options]
         _write_global("dropped", "[values]\nchunk_size = 900\n")
-        tabs = screen.query_one("#settings-tabs", TabbedContent)
-        tabs.active = "settings-tab-models"
-        await _until(pilot, lambda: tabs.active == "settings-tab-models")
+        tabs = await _open_tab(app, pilot, screen, _MODELS_PANE_ID)
         tabs.active = PROFILE_PANE_ID
         assert await _until(
             pilot, lambda: "dropped" in [value for _label, value in select._options]
@@ -1245,9 +1255,7 @@ async def test_slash_profile_from_another_tab_returns_to_the_profile_tab(chat_ap
         chat_app.switch_view("Settings")
         assert await _until(pilot, lambda: isinstance(chat_app.screen, SettingsScreen))
         screen = await _loaded(chat_app, pilot, "Default")
-        tabs = screen.query_one("#settings-tabs", TabbedContent)
-        tabs.active = "settings-tab-ingest"
-        await _until(pilot, lambda: tabs.active == "settings-tab-ingest")
+        tabs = await _open_tab(chat_app, pilot, screen, _INGEST_PANE_ID)
         chat_app.switch_view("Chat")
         # switch_view drops a request while an earlier switch is still settling
         assert await _until(pilot, lambda: chat_app.screen is chat and not chat_app._switching)

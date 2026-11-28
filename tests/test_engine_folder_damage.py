@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import json
 import os
@@ -119,6 +120,24 @@ def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return store
 
 
+def test_the_list_orders_the_builds_by_name_not_by_the_folder_listing(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file system may list a folder in any order; the list still goes by engine name."""
+    real_scandir = os.scandir
+
+    def reversed_scandir(path: str) -> contextlib.AbstractContextManager[list[os.DirEntry[str]]]:
+        with real_scandir(path) as listing:
+            entries = sorted(listing, key=lambda entry: entry.name, reverse=True)
+        return contextlib.nullcontext(entries)
+
+    # Only the read is patched: the fixtures walk folders with scandir at teardown.
+    with monkeypatch.context() as patch:
+        patch.setattr(engine_store.os, "scandir", reversed_scandir)
+        installed = EngineStore(root).installed()
+    assert [build.engine for build in installed] == sorted([*GOOD, ENGINE])
+
+
 def _cli_json(*argv: str) -> tuple[int, dict[str, Any]]:
     result = CliRunner().invoke(cli_app, ["--json", "engine", *argv])
     return result.exit_code, json.loads((result.output.strip() or "{}").splitlines()[-1])
@@ -138,15 +157,16 @@ def _assert_every_surface_names(folder: Path) -> None:
     status, rest = _rest_list()
     assert status == 200
     mcp = mcp_server.engine_list_tool()
+    # The order of the builds has its own test; this one asks only which builds stay listed.
     for body in (cli, rest, mcp):
-        assert [build["engine"] for build in body["builds"]] == GOOD
+        assert sorted(build["engine"] for build in body["builds"]) == GOOD
         # REST and MCP callers have no command line, so the route or the tool stands beside it.
         shown = {id(rest): name_routes(error), id(mcp): name_tools(error)}.get(id(body), error)
         assert body.get("damaged") == [{"folder": str(folder), "error": shown}]
     text = CliRunner().invoke(cli_app, ["engine", "list"])
     assert (text.exit_code, text.output.splitlines().count(error)) == (0, 1)
     chat = run_engine_command("list").text.splitlines()
-    assert [line.split()[0] for line in chat[: len(GOOD)]] == GOOD
+    assert sorted(line.split()[0] for line in chat[: len(GOOD)]) == GOOD
     assert chat[len(GOOD)] == error
     rows = engine_service.engine_rows()
     assert [row.engine for row in rows if row.version] == GOOD
