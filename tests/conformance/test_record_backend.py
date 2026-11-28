@@ -255,6 +255,11 @@ _LLAMA_CUDA_LOG = """\
   [45325] 0.00.233.880 I cmn  common_param:   - CUDA0   : NVIDIA GeForce RTX 3090 (24126 MiB, 23861 MiB free)
   [45325] 0.00.776.313 I llama_prepare_model_devices: using device CUDA0 (NVIDIA GeForce RTX 3090) (0000:a1:00.0) - 23861 MiB free
 """  # noqa: E501
+# Lines copied from the log of mistral.rs 0.9.5 on an NVIDIA L4 (the cuda-sm89 pack, 2026-11-28).
+_MISTRALRS_CUDA_LOG = """\
+2026-11-28T06:23:53.769413Z  INFO mistralrs_quant::utils::log: Layers 0-27: cuda[0] (23 GB)
+2026-11-28T06:24:21.001916Z  INFO mistralrs_core: Preloaded 755 Candle CUDA PTX functions.
+"""
 # The startup line of lilbee's mlx embed server (packaging/engine-mlx), which prints it itself.
 _MLX_LOG = "mlx device: Device(gpu, 0) (Apple M3 Pro)\n127.0.0.1 POST /v1/embeddings 200\n"
 _MLX_CPU_LOG = "mlx device: Device(cpu, 0)\n"
@@ -288,6 +293,18 @@ class TestLoggedDevices:
     def test_the_device_line_of_the_llama_engine_names_the_label(self, tmp_path: Path) -> None:
         devices = record_presets.logged_devices(Path(_log(tmp_path, _LLAMA_CUDA_LOG)))
         assert devices == ["CUDA0"]
+
+    def test_the_layer_line_of_mistral_rs_names_the_device(self, tmp_path: Path) -> None:
+        devices = record_presets.logged_devices(Path(_log(tmp_path, _MISTRALRS_CUDA_LOG)))
+        assert devices == ["cuda0"]
+        assert record_presets.reported_backend(devices) == "cuda"
+
+    @pytest.mark.parametrize("line", ["Layers 0-29: cpu", "Layers 0-29: cpu (12 GB)"])
+    def test_the_layer_line_of_a_cpu_run_of_mistral_rs_names_no_device(
+        self, tmp_path: Path, line: str
+    ) -> None:
+        log = f"2026-11-28T06:23:53.769413Z  INFO mistralrs_quant::utils::log: {line}\n"
+        assert record_presets.logged_devices(Path(_log(tmp_path, log))) == []
 
     def test_the_startup_line_of_the_mlx_server_names_its_gpu_as_metal(
         self, tmp_path: Path
