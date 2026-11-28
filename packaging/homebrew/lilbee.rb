@@ -5,6 +5,9 @@ class Lilbee < Formula
   license "MIT"
 
   on_macos do
+    # The release cells build both Mac assets with a macOS 15 floor.
+    depends_on macos: :sequoia
+
     on_arm do
       url "https://github.com/tobocop2/lilbee/releases/download/v#{version}/lilbee-macos-arm64"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"

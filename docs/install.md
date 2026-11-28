@@ -28,7 +28,7 @@ lilbee               # start the terminal app and pick your models
 
 | How                   | Command                                                                                  | Notes |
 | --------------------- | ---------------------------------------------------------------------------------------- | ----- |
-| **Homebrew**          | `brew tap tobocop2/lilbee && brew install lilbee`                                        | macOS (Apple silicon and Intel) and Linux x86_64. Clears the macOS quarantine flag for you. |
+| **Homebrew**          | `brew tap tobocop2/lilbee && brew install lilbee`                                        | macOS 15+ (Apple silicon and Intel) and Linux x86_64. Clears the macOS quarantine flag for you. |
 | **AUR**               | `paru -S lilbee`                                                                         | Arch Linux. Works with `yay`, `pacaur` or any helper. |
 | **Docker**            | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | GHCR image, tagged by version and `latest`. Mount a volume at `/home/lilbee/data`. The `:cuda` and `:rocm` tags carry the vendor builds. |
 | **Nix**               | `nix run github:tobocop2/lilbee`                                                         | NixOS, nix-darwin, or any host with nix. On Linux the flake bundles `glibc`, `libgomp` and `vulkan-loader`, so it runs on bare NixOS. |
@@ -163,11 +163,13 @@ The [usage guide](usage.md#optional-extras) covers how to configure each one.
 
 | Platform           | Minimum | Recommended |
 | ------------------ | ------- | ----------- |
-| **macOS arm64**    | Apple silicon (M1 or newer), macOS 11+ | M-series Pro, Max or Ultra |
-| **macOS x86_64**   | Intel Mac with AVX (Ivy Bridge or newer), macOS 12+ | Quad-core Intel with 16+ GB RAM |
+| **macOS arm64**    | Apple silicon (M1 or newer), macOS 15+ | M-series Pro, Max or Ultra |
+| **macOS x86_64**   | Intel Mac with AVX (Ivy Bridge or newer), macOS 15+ | Quad-core Intel with 16+ GB RAM |
 | **Linux x86_64**   | 64-bit Intel or AMD from 2013+ ([`x86-64-v3`](https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels)) | Modern CPU with an NVIDIA, AMD or Intel Arc GPU |
 | **Windows x86_64** | 64-bit Intel or AMD from 2013+ (`x86-64-v3`), Windows 10/11 | Modern CPU with a GPU |
 | **Linux ARM64**    | ARMv8 with NEON (Raspberry Pi 4+, AWS Graviton, Ampere Altra) | Modern ARM server with 16+ GB RAM |
+
+Intel Macs on macOS 12 to 14 use the [`lilbee-compat-macos-x86_64`](https://github.com/tobocop2/lilbee/releases/latest) build (see [Older CPUs](#older-cpus-pre-avx2)). With the installer script, set `LILBEE_VARIANT=compat`.
 
 | Resource | Minimum | Recommended |
 | -------- | ------- | ----------- |

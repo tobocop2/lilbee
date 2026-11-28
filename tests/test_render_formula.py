@@ -9,13 +9,16 @@ went on declaring Elastic-2.0 long after the project moved to MIT.
 from __future__ import annotations
 
 import pathlib
+import re
 import subprocess
 import sys
 
 import pytest
+import yaml
 
 _RENDER = pathlib.Path(__file__).resolve().parents[1] / "packaging/tools/render_formula.py"
 _SEEDS = pathlib.Path(__file__).resolve().parents[1] / "packaging/homebrew"
+_CELLS = pathlib.Path(__file__).resolve().parents[1] / ".github/release-cells.yml"
 
 _SHA = "1" * 64
 
@@ -155,3 +158,20 @@ def test_every_formula_seed_conflicts_with_every_other_lilbee_binary_formula():
         seed = _SEEDS.joinpath(f"{name}.rb").read_text(encoding="utf-8")
         for other in names - {name}:
             assert f'conflicts_with "tobocop2/lilbee/{other}"' in seed, (name, other)
+
+
+# Homebrew names each macOS release; the formula's floor is one of these names.
+_MACOS_RELEASES = {"sequoia": "15.0", "sonoma": "14.0", "ventura": "13.0", "monterey": "12.0"}
+
+
+def test_the_default_formula_needs_the_macos_floor_of_the_main_mac_builds():
+    """Homebrew refuses the install below the floor, instead of a binary that dies at load."""
+    cells = yaml.safe_load(_CELLS.read_text(encoding="utf-8"))
+    floors = {
+        cell["macos_floor"]
+        for cell in cells
+        if cell["asset_name"] in {"lilbee-macos-arm64", "lilbee-macos-x86_64"}
+    }
+    seed = (_SEEDS / "lilbee.rb").read_text(encoding="utf-8")
+    names = re.findall(r"depends_on macos: :(\w+)", seed)
+    assert [_MACOS_RELEASES[name] for name in names] == sorted(floors)
