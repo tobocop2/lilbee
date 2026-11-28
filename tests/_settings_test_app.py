@@ -81,7 +81,7 @@ def populate_pane_of(screen, key: str) -> None:
             screen._populate_pane(pane_id)
 
 
-async def _wait_for_pane_rows(app, pilot, pane_id):
+async def _wait_for_pane_rows(app, pilot, pane_id, *, timeout: float = 5.0):
     """Wait until *pane_id* holds rows and the screen, each dropdown included, has mounted.
 
     A dropdown that still mounts when the app exits raises for the overlay it misses.
@@ -96,7 +96,7 @@ async def _wait_for_pane_rows(app, pilot, pane_id):
             and all(select.query("SelectOverlay") for select in app.screen.query(Select))
         )
 
-    assert await wait_until(pilot, _ready, timeout=5.0), f"{pane_id} did not mount all its rows"
+    assert await wait_until(pilot, _ready, timeout=timeout), f"{pane_id} did not mount all its rows"
 
 
 async def _blur_after_focus(pilot, app, editor) -> None:
